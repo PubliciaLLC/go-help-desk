@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Plugin Development — Open Help Desk Docs</title>
+  <link rel="stylesheet" href="../style.css" />
+  <style>
+    .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
+    .param-table td:nth-child(2) { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
+    .param-table td:nth-child(3) { font-size:0.875rem; }
+    .fn-sig { background:var(--code-bg); color:var(--code-fg); font-family:var(--mono); font-size:0.85rem; padding:0.6rem 1rem; border-radius:6px; margin:0.5rem 0; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Open Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/open-help-desk/open-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Getting Started</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Plugin Development</div>
+    <ul>
+      <li><a href="plugins.html" class="active">Overview</a></li>
+      <li><a href="#plugin-manifest">Plugin manifest</a></li>
+      <li><a href="#plugin-events">Event hooks</a></li>
+      <li><a href="#plugin-host-api">Host API reference</a></li>
+      <li><a href="#plugin-ui">UI panels</a></li>
+      <li><a href="#plugin-example">Example — Slack</a></li>
+      <li><a href="#plugin-sandbox">Sandbox &amp; security</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="plugin-overview">Plugin Development</h1>
+<p class="docs-page-sub">Build WASM plugins that react to ticket events, call external APIs, and add custom UI panels.</p>
+
+<p>Open Help Desk plugins are WebAssembly modules that run sandboxed inside the application process via <a href="https://wazero.io">wazero</a>. They communicate with the host through a defined set of imported and exported functions.</p>
+
+<p>Plugins can be written in any language that compiles to WASM with a C-compatible ABI. Well-supported options include:</p>
+<ul>
+  <li><strong>Go</strong> — compiled with <a href="https://tinygo.org">TinyGo</a> (the examples below use TinyGo)</li>
+  <li><strong>Rust</strong> — native WASM support via <code>wasm32-unknown-unknown</code> target</li>
+  <li><strong>C / C++</strong> — via Emscripten or clang with the WASM target</li>
+  <li><strong>Zig</strong> — built-in WASM target</li>
+</ul>
+
+<h3>What plugins can do</h3>
+<ul>
+  <li><strong>React to ticket lifecycle events</strong> — fire when tickets are created, assigned, resolved, closed, etc.</li>
+  <li><strong>Make outbound HTTP requests</strong> — call external APIs (Slack, Teams, PagerDuty, JIRA, etc.), subject to declared allowed hosts.</li>
+  <li><strong>Add replies or internal notes</strong> — annotate tickets programmatically.</li>
+  <li><strong>Set custom fields on tickets</strong> — store arbitrary key/value metadata.</li>
+  <li><strong>Render UI panels</strong> — inject an iframe panel into the ticket detail view.</li>
+  <li><strong>Log messages</strong> — written to the host application's log at a configured level.</li>
+</ul>
+
+<h3>What plugins cannot do</h3>
+<ul>
+  <li>Access the database directly</li>
+  <li>Read environment variables or the filesystem</li>
+  <li>Make network requests to undeclared hosts</li>
+  <li>Spawn threads or subprocesses</li>
+  <li>Access memory outside the WASM sandbox</li>
+</ul>
+
+
+<h2 id="plugin-manifest">Plugin manifest</h2>
+
+<p>Every plugin must embed a JSON manifest in a WASM custom section named <code>ohd_manifest</code>. This declares the plugin's identity, the events it subscribes to, the permissions it needs, and the configuration fields it exposes in the admin UI.</p>
+
+<pre><code>{
+  "id":          "com.example.slack-notifications",
+  "name":        "Slack Notifications",
+  "version":     "1.2.0",
+  "description": "Posts a Slack message when a ticket is created or resolved.",
+  "author":      "Example Corp &lt;support@example.com&gt;",
+  "license":     "MIT",
+  "homepage":    "https://github.com/example/ohd-slack-plugin",
+
+  "events": [
+    "ticket.created",
+    "ticket.resolved"
+  ],
+
+  "permissions": {
+    "http": {
+      "allowed_hosts": ["hooks.slack.com"]
+    }
+  },
+
+  "config_schema": {
+    "webhook_url": {
+      "type":        "string",
+      "label":       "Slack Webhook URL",
+      "description": "Incoming webhook URL from your Slack app configuration.",
+      "required":    true,
+      "secret":      true
+    },
+    "channel": {
+      "type":        "string",
+      "label":       "Default channel",
+      "description": "Channel to post to (e.g. #support). Overrides the webhook's default.",
+      "required":    false,
+      "default":     "#support"
+    },
+    "mention_on_critical": {
+      "type":        "boolean",
+      "label":       "Mention @channel for Critical tickets",
+      "default":     false
+    }
+  }
+}</code></pre>
+
+<h3>Manifest fields</h3>
+<table class="param-table">
+  <thead><tr><th>Field</th><th>Required</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>yes</td><td>Reverse-domain unique identifier. Must be stable across versions — changing it creates a new plugin entry.</td></tr>
+    <tr><td><code>name</code></td><td>yes</td><td>Human-readable display name shown in the admin panel.</td></tr>
+    <tr><td><code>version</code></td><td>yes</td><td>Semantic version string (e.g. <code>"1.2.0"</code>).</td></tr>
+    <tr><td><code>description</code></td><td>yes</td><td>One-sentence description shown in the plugin list.</td></tr>
+    <tr><td><code>author</code></td><td>no</td><td>Author name and optional email.</td></tr>
+    <tr><td><code>license</code></td><td>no</td><td>SPDX license identifier.</td></tr>
+    <tr><td><code>homepage</code></td><td>no</td><td>URL to the plugin's documentation or source.</td></tr>
+    <tr><td><code>events</code></td><td>yes</td><td>Array of event names to subscribe to. Receiving an event you're not subscribed to is impossible — the host filters before calling the plugin.</td></tr>
+    <tr><td><code>permissions.http.allowed_hosts</code></td><td>no</td><td>Hostnames the plugin may make outbound HTTP requests to. Exact hostnames only — no wildcards, no ports, no schemes. Example: <code>"hooks.slack.com"</code>.</td></tr>
+    <tr><td><code>config_schema</code></td><td>no</td><td>Map of configuration field names to field definitions. Fields are rendered as a form in the admin panel.</td></tr>
+  </tbody>
+</table>
+
+<h3>Config schema field types</h3>
+<table class="param-table">
+  <thead><tr><th>Type</th><th></th><th>Renders as</th></tr></thead>
+  <tbody>
+    <tr><td><code>string</code></td><td></td><td>Text input</td></tr>
+    <tr><td><code>string</code> + <code>"secret": true</code></td><td></td><td>Password input. Value is encrypted at rest and never returned by the API after saving.</td></tr>
+    <tr><td><code>boolean</code></td><td></td><td>Checkbox</td></tr>
+    <tr><td><code>integer</code></td><td></td><td>Number input</td></tr>
+    <tr><td><code>select</code> + <code>"options": [...]</code></td><td></td><td>Dropdown</td></tr>
+  </tbody>
+</table>
+
+<h3>Embedding the manifest</h3>
+<p>In TinyGo, embed the manifest as a custom WASM section using a linker flag:</p>
+<pre><code>tinygo build -o plugin.wasm \
+  -target wasm \
+  -scheduler none \
+  -ldflags '-X main.manifestJSON=@manifest.json' \
+  ./</code></pre>
+<p>Or embed it directly in the Go source using a custom section annotation (requires TinyGo ≥ 0.32):</p>
+<pre><code>//go:wasmexport ohd_manifest
+var manifestSection = []byte(`{ ... }`)  // content is the manifest JSON</code></pre>
+
+
+<h2 id="plugin-events">Event hooks</h2>
+
+<p>The host calls the plugin's exported <code>on_event</code> function for each subscribed event. The function receives a pointer and byte length for a JSON-encoded event payload in WASM linear memory, reads it, and performs its work.</p>
+
+<h3>Exported function</h3>
+<div class="fn-sig">//go:export on_event<br>func OnEvent(ptr uint32, length uint32)</div>
+
+<h3>Event payload structure</h3>
+<pre><code>{
+  "event":       "ticket.created",
+  "occurred_at": "2026-04-05T14:00:00Z",
+
+  "ticket": {
+    "id":          "01JQXYZ...",
+    "subject":     "New laptop request",
+    "description": "I need a replacement for the one that was stolen.",
+    "status":      "New",
+    "priority":    "Medium",
+    "category":    "Hardware",
+    "type":        "Laptop",
+    "item":        null,
+    "submitter":   { "id": "...", "name": "Sam Ortiz", "email": "sam@example.com" },
+    "assignee":    null,
+    "created_at":  "2026-04-05T14:00:00Z",
+    "url":         "https://helpdesk.example.com/tickets/01JQXYZ..."
+  },
+
+  "actor": {
+    "id":   "01JQABC...",
+    "name": "Sam Ortiz",
+    "role": "user"
+  },
+
+  "config": {
+    "webhook_url": "https://hooks.slack.com/services/...",
+    "channel":     "#support",
+    "mention_on_critical": false
+  }
+}</code></pre>
+
+<p>The <code>config</code> field contains the plugin's saved configuration values. Secret fields are decrypted before being passed into the WASM sandbox. Your plugin can access them like any other config value.</p>
+
+<h3>Event-specific additions</h3>
+<table>
+  <thead><tr><th>Event</th><th>Extra fields in payload</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket.created</code></td><td>—</td></tr>
+    <tr><td><code>ticket.assigned</code></td><td><code>data.assignee</code> — the new assignee (user or group)</td></tr>
+    <tr><td><code>ticket.status_changed</code></td><td><code>data.from_status</code>, <code>data.to_status</code></td></tr>
+    <tr><td><code>ticket.reply_added</code></td><td><code>data.reply_id</code>, <code>data.body</code>, <code>data.is_internal</code>, <code>data.author</code></td></tr>
+    <tr><td><code>ticket.note_added</code></td><td>same as <code>reply_added</code>, always with <code>is_internal: true</code></td></tr>
+    <tr><td><code>ticket.resolved</code></td><td><code>data.resolution_notes</code> (may be empty string)</td></tr>
+    <tr><td><code>ticket.closed</code></td><td>—</td></tr>
+    <tr><td><code>ticket.reopened</code></td><td><code>data.reason</code> (may be empty)</td></tr>
+  </tbody>
+</table>
+
+<h3>Return value</h3>
+<p><code>on_event</code> has no return value. If your handler encounters an error, log it with <code>ohd_log</code>. The host does not inspect the return value — it only tracks whether the function returned without trapping (panicking).</p>
+
+
+<h2 id="plugin-host-api">Host API reference</h2>
+
+<p>The host provides a set of functions imported into the <code>ohd</code> WASM namespace. These are the only I/O operations available to the plugin.</p>
+
+<h3>Memory management</h3>
+<p>Exchanging data between the plugin and host requires writing to and reading from WASM linear memory. The plugin allocates buffers for data it wants to hand to the host, and the host writes response data to buffers allocated by the plugin.</p>
+
+<table class="param-table">
+  <thead><tr><th>Function</th><th>Signature</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>ohd_alloc</code></td>
+      <td><code>(size u32) → ptr u32</code></td>
+      <td>Allocate <code>size</code> bytes in WASM linear memory. Returns a pointer. The caller is responsible for freeing.</td>
+    </tr>
+    <tr>
+      <td><code>ohd_free</code></td>
+      <td><code>(ptr u32, size u32)</code></td>
+      <td>Free a previously allocated buffer.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Logging</h3>
+<table class="param-table">
+  <thead><tr><th>Function</th><th>Signature</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>ohd_log</code></td>
+      <td><code>(ptr u32, len u32, level u32)</code></td>
+      <td>Write a UTF-8 log message to the host application's structured log. Level values: <code>0</code>=debug, <code>1</code>=info, <code>2</code>=warn, <code>3</code>=error. Output is tagged with the plugin ID.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>HTTP requests</h3>
+<table class="param-table">
+  <thead><tr><th>Function</th><th>Signature</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>ohd_http_request</code></td>
+      <td><code>(req_ptr u32, req_len u32, resp_ptr_out u32, resp_len_out u32) → status u32</code></td>
+      <td>
+        Make an outbound HTTP request. The request is a JSON object written to WASM memory. The response body is written back by the host; its pointer and length are stored at <code>resp_ptr_out</code> and <code>resp_len_out</code>. Returns the HTTP status code, or <code>0</code> on network error.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<h4>HTTP request JSON format</h4>
+<pre><code>{
+  "method":  "POST",
+  "url":     "https://hooks.slack.com/services/T.../B.../...",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body":    "{\"text\": \"New ticket: Laptop won't power on\"}"
+}</code></pre>
+
+<p>Requests to hosts not declared in the manifest's <code>allowed_hosts</code> are rejected immediately — no network connection is made — and the function returns <code>403</code>.</p>
+
+<h3>Ticket operations</h3>
+<table class="param-table">
+  <thead><tr><th>Function</th><th>Signature</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>ohd_add_reply</code></td>
+      <td><code>(ptr u32, len u32) → status u32</code></td>
+      <td>Add a reply or internal note to a ticket. Payload is a JSON object. Returns <code>0</code> on success, non-zero on error.</td>
+    </tr>
+    <tr>
+      <td><code>ohd_set_custom_field</code></td>
+      <td><code>(ptr u32, len u32) → status u32</code></td>
+      <td>Set a custom field key/value pair on a ticket. Returns <code>0</code> on success.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h4>ohd_add_reply payload</h4>
+<pre><code>{
+  "ticket_id":   "01JQXYZ...",
+  "body":        "PagerDuty incident #12345 created: https://...",
+  "is_internal": true
+}</code></pre>
+
+<h4>ohd_set_custom_field payload</h4>
+<pre><code>{
+  "ticket_id": "01JQXYZ...",
+  "key":       "pagerduty_incident_id",
+  "value":     "12345"
+}</code></pre>
+
+<p>Custom fields are stored as string key/value pairs associated with the ticket. They are visible to plugins via the ticket object in event payloads (under <code>ticket.custom_fields</code>) and are shown in the ticket detail view as metadata rows.</p>
+
+
+<h2 id="plugin-ui">UI panels</h2>
+
+<p>A plugin can inject a panel into the ticket detail view. The panel is rendered as an <code>&lt;iframe&gt;</code> that the plugin's server renders. Communication between the iframe content and the host page uses <code>window.postMessage</code>.</p>
+
+<h3>Declaring a panel</h3>
+<p>Add a <code>ui_panel</code> section to the manifest:</p>
+<pre><code>{
+  "ui_panel": {
+    "title":  "JIRA Issue",
+    "height": 140
+  }
+}</code></pre>
+
+<p><code>height</code> is the fixed iframe height in pixels. The panel cannot be resized by the iframe content after mount.</p>
+
+<h3>Providing the panel URL</h3>
+<p>The host calls the plugin's exported <code>render_panel</code> function when loading the ticket detail view. The function receives the ticket ID as a UTF-8 string and returns a URL the host renders in the iframe.</p>
+
+<div class="fn-sig">//go:export render_panel<br>func RenderPanel(ticketIDPtr, ticketIDLen uint32) (urlPtr, urlLen uint32)</div>
+
+<pre><code>//go:export render_panel
+func renderPanel(ticketIDPtr, ticketIDLen uint32) (uint32, uint32) {
+    ticketID := readString(ticketIDPtr, ticketIDLen)
+    url := "https://plugin-server.example.com/panel?ticket=" + ticketID
+    return writeString(url)
+}</code></pre>
+
+<p>The URL's hostname must be listed in <code>permissions.http.allowed_hosts</code> in the manifest. The iframe's <code>sandbox</code> attribute allows scripts and same-origin access, but blocks top-level navigation, form submission to other origins, and popups.</p>
+
+<h3>postMessage protocol</h3>
+<p>The iframe can send messages to the host page to request data or trigger actions.</p>
+
+<p><strong>Request ticket data:</strong></p>
+<pre><code>// iframe → parent
+window.parent.postMessage({
+  type:      "ohd:request",
+  requestId: "req-1",
+  action:    "getTicket"
+}, "*");
+
+// parent → iframe (response)
+{
+  type:      "ohd:response",
+  requestId: "req-1",
+  data:      { /* full ticket object */ }
+}</code></pre>
+
+<p><strong>Available actions:</strong></p>
+<table>
+  <thead><tr><th>Action</th><th>Data returned</th></tr></thead>
+  <tbody>
+    <tr><td><code>getTicket</code></td><td>Full ticket object (same shape as REST API response)</td></tr>
+    <tr><td><code>getCurrentUser</code></td><td>Authenticated user object (id, name, role)</td></tr>
+    <tr><td><code>getCustomFields</code></td><td>Object with all custom fields set on the ticket by any plugin</td></tr>
+  </tbody>
+</table>
+
+<p>The host responds to all messages with the same <code>requestId</code> so the iframe can correlate multiple in-flight requests.</p>
+
+
+<h2 id="plugin-example">Example plugin — Slack notifications</h2>
+
+<p>A complete plugin in Go (TinyGo) that posts to Slack when a ticket is created or resolved.</p>
+
+<h3>Project structure</h3>
+<pre><code>slack-notifications/
+  main.go          -- plugin logic
+  manifest.json    -- plugin manifest
+  Makefile         -- build commands</code></pre>
+
+<h3>manifest.json</h3>
+<pre><code>{
+  "id":          "com.example.slack-notifications",
+  "name":        "Slack Notifications",
+  "version":     "1.0.0",
+  "description": "Posts to Slack when tickets are created or resolved.",
+  "events":      ["ticket.created", "ticket.resolved"],
+  "permissions": {
+    "http": { "allowed_hosts": ["hooks.slack.com"] }
+  },
+  "config_schema": {
+    "webhook_url": {
+      "type": "string", "label": "Webhook URL",
+      "required": true, "secret": true
+    },
+    "channel": {
+      "type": "string", "label": "Channel",
+      "default": "#support"
+    }
+  }
+}</code></pre>
+
+<h3>main.go</h3>
+<pre><code>package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "unsafe"
+)
+
+// ── Host imports ──────────────────────────────────────────────────────────────
+
+//go:wasmimport ohd ohd_log
+func hostLog(ptr, length, level uint32)
+
+//go:wasmimport ohd ohd_http_request
+func hostHTTP(reqPtr, reqLen, respPtrOut, respLenOut uint32) uint32
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func ptrLen(b []byte) (uint32, uint32) {
+    if len(b) == 0 {
+        return 0, 0
+    }
+    return uint32(uintptr(unsafe.Pointer(&b[0]))), uint32(len(b))
+}
+
+func readBytes(ptr, length uint32) []byte {
+    b := make([]byte, length)
+    copy(b, unsafe.Slice((*byte)(unsafe.Pointer(uintptr(ptr))), length))
+    return b
+}
+
+func logf(level uint32, format string, args ...any) {
+    msg := []byte(fmt.Sprintf(format, args...))
+    p, l := ptrLen(msg)
+    hostLog(p, l, level)
+}
+
+func httpPost(url, contentType, body string) uint32 {
+    req, _ := json.Marshal(map[string]any{
+        "method":  "POST",
+        "url":     url,
+        "headers": map[string]string{"Content-Type": contentType},
+        "body":    body,
+    })
+    p, l := ptrLen(req)
+    var respPtr, respLen uint32
+    return hostHTTP(p, l,
+        uint32(uintptr(unsafe.Pointer(&respPtr))),
+        uint32(uintptr(unsafe.Pointer(&respLen))),
+    )
+}
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+type Event struct {
+    Event  string  `json:"event"`
+    Ticket Ticket  `json:"ticket"`
+    Config Config  `json:"config"`
+}
+
+type Ticket struct {
+    ID      string `json:"id"`
+    Subject string `json:"subject"`
+    Status  string `json:"status"`
+    URL     string `json:"url"`
+}
+
+type Config struct {
+    WebhookURL string `json:"webhook_url"`
+    Channel    string `json:"channel"`
+}
+
+// ── Handler ───────────────────────────────────────────────────────────────────
+
+//go:export on_event
+func onEvent(ptr, length uint32) {
+    var ev Event
+    if err := json.Unmarshal(readBytes(ptr, length), &ev); err != nil {
+        logf(3, "unmarshal error: %s", err)
+        return
+    }
+
+    var text string
+    switch ev.Event {
+    case "ticket.created":
+        text = fmt.Sprintf(":ticket: *New ticket*: <%s|%s>", ev.Ticket.URL, ev.Ticket.Subject)
+    case "ticket.resolved":
+        text = fmt.Sprintf(":white_check_mark: *Resolved*: <%s|%s>", ev.Ticket.URL, ev.Ticket.Subject)
+    default:
+        return
+    }
+
+    payload, _ := json.Marshal(map[string]any{
+        "channel": ev.Config.Channel,
+        "text":    text,
+    })
+
+    status := httpPost(ev.Config.WebhookURL, "application/json", string(payload))
+    if status != 200 {
+        logf(2, "slack returned HTTP %d", status)
+    }
+}
+
+func main() {}</code></pre>
+
+<h3>Makefile</h3>
+<pre><code>.PHONY: build
+
+build:
+	tinygo build \
+	  -o slack-notifications.wasm \
+	  -target wasm \
+	  -scheduler none \
+	  .
+
+# Embed the manifest into the compiled binary
+embed:
+	wasm-opt --enable-bulk-memory \
+	  -o slack-notifications.wasm \
+	  slack-notifications.wasm
+	# Use a tool like wasm-custom-section to embed manifest.json
+	# into the ohd_manifest custom section</code></pre>
+
+<div class="callout callout-note">
+  <p>The <a href="https://github.com/open-help-desk/open-help-desk/tree/main/plugins/examples">examples directory</a> in the repository contains complete, buildable plugins including the Slack example above, a PagerDuty integration, and a JIRA issue linker.</p>
+</div>
+
+
+<h2 id="plugin-sandbox">Sandbox &amp; security</h2>
+
+<p>Every plugin runs in a strict WASM sandbox enforced by wazero. The sandbox provides strong isolation between plugins and from the host process.</p>
+
+<h3>Isolation guarantees</h3>
+<ul>
+  <li><strong>No filesystem access</strong> — the WASM module cannot open, read, write, or list files on the host system. The only "files" available are WASM linear memory and the host API.</li>
+  <li><strong>No environment variables</strong> — the host environment is never visible to plugins. Configuration is passed explicitly via the event payload's <code>config</code> field.</li>
+  <li><strong>No direct network access</strong> — all outbound HTTP goes through <code>ohd_http_request</code>, which enforces the allowlist. Requests to undeclared hosts are rejected without making a TCP connection.</li>
+  <li><strong>No subprocesses</strong> — the WASM spec does not provide process creation, and wazero does not import any such function.</li>
+  <li><strong>Memory isolation</strong> — each plugin module has its own linear memory. Plugins cannot read or write each other's memory or any part of the host process's memory outside the WASM sandbox.</li>
+  <li><strong>Separate instances</strong> — each plugin is a separate wazero module instance. State does not leak between plugins.</li>
+</ul>
+
+<h3>Execution timeouts</h3>
+<p>Event handlers have a maximum execution time of <strong>5 seconds</strong>. If a handler does not return within 5 seconds, wazero terminates the execution and the event is logged as timed out. The ticket operation that triggered the event has already completed — plugin execution is asynchronous from the user's perspective.</p>
+
+<h3>Error handling</h3>
+<p>Plugin errors (panics, traps, timeouts) are caught by the host and logged. They do not crash the application or affect other plugins. Each plugin's error count is tracked and visible in the admin panel under <em>Admin → Plugins → [plugin name]</em>.</p>
+
+<p>A plugin that errors on more than 50% of event deliveries in a 10-minute rolling window is automatically disabled, and an in-app notification is sent to admins. The threshold is configurable under <em>Admin → Settings → Plugin error threshold</em>. The plugin can be manually re-enabled after fixing the issue.</p>
+
+<h3>Reviewing a plugin before enabling</h3>
+<p>Before enabling a third-party plugin, review its declared manifest:</p>
+<ul>
+  <li><strong>Events</strong> — what events does it receive? A notification plugin only needs <code>ticket.created</code> and similar creation/status events. Be suspicious of a notification plugin that subscribes to <code>ticket.note_added</code> (internal notes).</li>
+  <li><strong>Allowed hosts</strong> — what external services does it call? Verify that you recognize and trust every host listed.</li>
+  <li><strong>Source</strong> — where did the plugin come from? First-party plugins from the Open Help Desk organization are reviewed. Third-party plugins should ideally be open-source so you can inspect the source.</li>
+</ul>
+
+
+<div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="mcp.html" class="btn btn-outline">← MCP Server</a>
+  <a href="contributing.html" class="btn btn-outline">Contributing →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Open Help Desk — <a href="https://github.com/open-help-desk/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/open-help-desk/open-help-desk">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

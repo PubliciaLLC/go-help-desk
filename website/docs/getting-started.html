@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Getting Started — Open Help Desk Docs</title>
+  <link rel="stylesheet" href="../style.css" />
+  <style>
+    .step { display:flex; gap:1rem; margin-bottom:1.5rem; }
+    .step-num { flex-shrink:0; width:28px; height:28px; border-radius:50%; background:var(--blue); color:#fff; font-size:0.8rem; font-weight:700; display:flex; align-items:center; justify-content:center; margin-top:2px; }
+    .step-body h4 { margin-top:0; margin-bottom:0.4rem; }
+    .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
+    .param-table td:nth-child(2) { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
+    .param-table td:nth-child(3) { font-size:0.875rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Open Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/open-help-desk/open-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul>
+      <li><a href="getting-started.html" class="active">Overview</a></li>
+      <li><a href="#quick-start">Quick start</a></li>
+      <li><a href="#configuration">Configuration</a></li>
+      <li><a href="#first-run">First-run setup</a></li>
+      <li><a href="#upgrading">Upgrading</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="introduction">Getting Started</h1>
+<p class="docs-page-sub">Deploy Open Help Desk with Docker Compose in under five minutes.</p>
+
+<p>Open Help Desk is distributed as a single Go binary with the React frontend embedded — there is nothing to install or serve beyond the binary and a PostgreSQL database. The Docker Compose stack in <code>docker/</code> sets both up with a single command.</p>
+
+<h3>Architecture overview</h3>
+<ul>
+  <li><strong>Binary</strong> — a single Go executable that serves the REST API at <code>/api/</code>, the MCP server at <code>/mcp/</code>, and the React SPA at <code>/</code>.</li>
+  <li><strong>Frontend</strong> — compiled at build time and embedded in the binary via <code>go:embed</code>. No Node.js in production.</li>
+  <li><strong>Database</strong> — PostgreSQL. Schema migrations run automatically on every startup before accepting traffic.</li>
+  <li><strong>Plugins</strong> — WASM modules sandboxed via wazero, loaded from <code>ATTACHMENT_DIR/../plugins/</code>.</li>
+</ul>
+
+
+<h2 id="quick-start">Quick start</h2>
+
+<p><strong>Requirements:</strong> Docker Engine 24+ and Docker Compose V2.</p>
+
+<div class="step">
+  <div class="step-num">1</div>
+  <div class="step-body">
+    <h4>Clone the repository</h4>
+    <pre><code>git clone https://github.com/open-help-desk/open-help-desk
+cd open-help-desk/docker</code></pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">2</div>
+  <div class="step-body">
+    <h4>Create your environment file</h4>
+    <pre><code>cp .env.example .env</code></pre>
+    <p>Open <code>.env</code> and set the three required values. Generate secure secrets with <code>openssl rand -base64 32</code>.</p>
+    <pre><code>BASE_URL=http://localhost:8080
+SESSION_SECRET=&lt;at-least-32-random-chars&gt;
+JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">3</div>
+  <div class="step-body">
+    <h4>Start the stack</h4>
+    <pre><code>docker compose up -d</code></pre>
+    <p>Docker pulls the images, builds the application (Go + React), and starts PostgreSQL. Migrations run automatically before the app begins serving traffic. Wait for:</p>
+    <pre><code>open-help-desk  | open-help-desk listening on :8080</code></pre>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-num">4</div>
+  <div class="step-body">
+    <h4>Open the app and create your admin account</h4>
+    <p>Navigate to <code>http://localhost:8080</code> and register. The first account created is automatically granted the Admin role.</p>
+  </div>
+</div>
+
+<div class="callout callout-note">
+  <p><strong>Data persistence</strong> — Postgres data is stored in <code>docker/data/postgres/</code> and file attachments in <code>docker/data/attachments/</code>. Both directories are gitignored and survive container restarts and rebuilds.</p>
+</div>
+
+<h3>Verify the installation</h3>
+<pre><code>curl http://localhost:8080/health
+# → {"status":"ok"}</code></pre>
+
+
+<h2 id="configuration">Configuration reference</h2>
+
+<p>All configuration is read from environment variables at startup. Variables marked <strong>required</strong> cause the server to exit with an error if unset or empty.</p>
+
+<h3>Required</h3>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>DATABASE_URL</code></td><td>string</td><td>Full PostgreSQL DSN. Example: <code>postgres://user:pass@host:5432/db?sslmode=disable</code></td></tr>
+    <tr><td><code>BASE_URL</code></td><td>string</td><td>Public-facing URL of the app, no trailing slash. Used in email notification links and SAML SP metadata. Example: <code>https://helpdesk.example.com</code></td></tr>
+    <tr><td><code>SESSION_SECRET</code></td><td>string</td><td>Secret used to sign and verify session cookies. Must be at least 32 characters. Rotating this value invalidates all active user sessions.</td></tr>
+    <tr><td><code>JWT_SECRET</code></td><td>string</td><td>Secret used to sign JWTs for the OAuth2 token endpoint and API bearer tokens. Must be at least 32 characters.</td></tr>
+  </tbody>
+</table>
+
+<h3>Server</h3>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>HTTP_PORT</code></td><td><code>8080</code></td><td>TCP port the HTTP server listens on. Change this when running behind a reverse proxy that handles TLS.</td></tr>
+    <tr><td><code>ATTACHMENT_DIR</code></td><td><code>/data/attachments</code></td><td>Filesystem path where uploaded files are stored. The directory and its parents are created on startup if they don't exist. Must be writable by the application user (<code>ohd</code> in Docker).</td></tr>
+    <tr><td><code>APP_ENV</code></td><td><code>production</code></td><td>Set to <code>development</code> to enable verbose request logging, relaxed CORS, and friendlier error messages in API responses.</td></tr>
+  </tbody>
+</table>
+
+<h3>Email (SMTP)</h3>
+<p>Email notifications are silently disabled when <code>SMTP_HOST</code> is not set. No restart is needed to toggle email; the app checks this value at startup.</p>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>SMTP_HOST</code></td><td>—</td><td>Hostname of the SMTP server. Examples: <code>smtp.sendgrid.net</code>, <code>email-smtp.us-east-1.amazonaws.com</code></td></tr>
+    <tr><td><code>SMTP_PORT</code></td><td><code>587</code></td><td>SMTP port. 587 for STARTTLS (recommended), 465 for implicit TLS (SMTPS), 25 for plain/relay.</td></tr>
+    <tr><td><code>SMTP_USER</code></td><td>—</td><td>SMTP username for authentication.</td></tr>
+    <tr><td><code>SMTP_PASSWORD</code></td><td>—</td><td>SMTP password. Use a secret manager or Docker secret in production — avoid committing this to <code>.env</code>.</td></tr>
+    <tr><td><code>SMTP_FROM</code></td><td>—</td><td>The <code>From</code> address for all outbound email. Example: <code>Open Help Desk &lt;helpdesk@example.com&gt;</code></td></tr>
+  </tbody>
+</table>
+
+<h3>SAML 2.0</h3>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>SAML_ENABLED</code></td><td><code>false</code></td><td>Enable SAML 2.0 SSO. When <code>true</code>, local auth is disabled for non-admin users.</td></tr>
+    <tr><td><code>SAML_METADATA_URL</code></td><td>—</td><td>URL to your Identity Provider's SAML metadata XML document. Required when <code>SAML_ENABLED=true</code>.</td></tr>
+    <tr><td><code>SAML_CERT_FILE</code></td><td>—</td><td>Container path to the SP certificate PEM file. Required when SAML is enabled.</td></tr>
+    <tr><td><code>SAML_KEY_FILE</code></td><td>—</td><td>Container path to the SP private key PEM file. Required when SAML is enabled.</td></tr>
+  </tbody>
+</table>
+
+<h3>Feature flags</h3>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>MFA_ENABLED</code></td><td><code>false</code></td><td>Enable TOTP MFA enrollment for all users. Admins can additionally enforce MFA per-role from the settings panel.</td></tr>
+    <tr><td><code>SLA_ENABLED</code></td><td><code>false</code></td><td>Enable SLA policy tracking. When <code>false</code>, no SLA-related UI or data is shown.</td></tr>
+    <tr><td><code>GUEST_SUBMISSION_ENABLED</code></td><td><code>false</code></td><td>Allow unauthenticated ticket submission. Guests receive a tracking number and email link for their specific ticket.</td></tr>
+  </tbody>
+</table>
+
+
+<h2 id="first-run">First-run setup</h2>
+
+<p>After deploying and registering your admin account, work through this checklist before inviting users:</p>
+
+<ol>
+  <li>
+    <strong>Create your CTI hierarchy</strong> — go to <em>Admin → Categories</em> and define at least one Category. Without a Category, no ticket can be created. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
+  </li>
+  <li>
+    <strong>Review ticket statuses</strong> — the system creates five default statuses (New, In Progress, Pending, Resolved, Closed). If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a>.
+  </li>
+  <li>
+    <strong>Create groups and assign scope</strong> — define which staff teams handle which categories. See <a href="admin-guide.html#admin-groups">Admin Guide: Groups &amp; scope</a>.
+  </li>
+  <li>
+    <strong>Create or invite staff accounts</strong> — create staff accounts from <em>Admin → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
+  </li>
+  <li>
+    <strong>Configure email</strong> (optional) — set the SMTP environment variables and restart. Preview and customize templates under <em>Admin → Email</em>. See <a href="admin-guide.html#admin-email-tpl">Admin Guide: Email templates</a>.
+  </li>
+  <li>
+    <strong>Configure SLA policies</strong> (optional, requires <code>SLA_ENABLED=true</code>) — set response and resolution targets per priority or category under <em>Admin → SLA</em>. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
+  </li>
+  <li>
+    <strong>Set up SSO</strong> (optional) — configure SAML environment variables and restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
+  </li>
+  <li>
+    <strong>Install plugins</strong> (optional) — upload or point to WASM plugin files from <em>Admin → Plugins</em>. See <a href="admin-guide.html#admin-plugins">Admin Guide: Installing plugins</a>.
+  </li>
+</ol>
+
+
+<h2 id="upgrading">Upgrading</h2>
+
+<pre><code>cd open-help-desk
+git pull
+cd docker
+docker compose up -d --build</code></pre>
+
+<p>The application runs database migrations automatically on startup, before it begins accepting traffic. There is no manual migration step. If a migration fails (e.g. due to a conflict with manual schema changes), the server exits with an error message — check the container logs.</p>
+
+<div class="callout callout-warn">
+  <p><strong>Back up your database before upgrading</strong> in production. Migrations are forward-only; there is no automatic rollback if you need to downgrade.</p>
+</div>
+
+<h3>Zero-downtime upgrades</h3>
+<p>For production deployments where downtime is unacceptable, the recommended approach is:</p>
+<ol>
+  <li>Take a database backup.</li>
+  <li>Pull the new image.</li>
+  <li>Start a second container with the new image pointing to the same database. Migrations run and complete.</li>
+  <li>Shift traffic to the new container.</li>
+  <li>Stop the old container.</li>
+</ol>
+<p>This works because migrations are idempotent — running them on an already-migrated database is a no-op.</p>
+
+
+<div style="display:flex; justify-content:flex-end; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="authentication.html" class="btn btn-outline">Authentication →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Open Help Desk — <a href="https://github.com/open-help-desk/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/open-help-desk/open-help-desk">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

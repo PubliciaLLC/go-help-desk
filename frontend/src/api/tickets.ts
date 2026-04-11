@@ -1,0 +1,70 @@
+import { api } from './client'
+import type { Ticket, Reply, TicketLink, LinkType } from './types'
+
+export interface CreateTicketInput {
+  subject: string
+  description: string
+  category_id: string
+  type_id?: string
+  item_id?: string
+  priority?: string
+}
+
+export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
+  const res = await api.post<Ticket>('/tickets', input)
+  return res.data
+}
+
+export async function getTicket(id: string): Promise<Ticket> {
+  const res = await api.get<Ticket>(`/tickets/${id}`)
+  return res.data
+}
+
+export async function updateTicket(
+  id: string,
+  patch: { status_id?: string; assignee_user_id?: string; assignee_group_id?: string }
+): Promise<Ticket> {
+  const res = await api.patch<Ticket>(`/tickets/${id}`, patch)
+  return res.data
+}
+
+export async function resolveTicket(id: string, notes?: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/resolve`, { notes })
+  return res.data
+}
+
+export async function reopenTicket(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+  return res.data
+}
+
+export async function listReplies(ticketId: string): Promise<Reply[]> {
+  const res = await api.get<Reply[]>(`/tickets/${ticketId}/replies`)
+  return res.data
+}
+
+export async function addReply(ticketId: string, body: string, internal = false): Promise<Reply> {
+  const res = await api.post<Reply>(`/tickets/${ticketId}/replies`, { body, internal })
+  return res.data
+}
+
+export async function listLinks(ticketId: string): Promise<TicketLink[]> {
+  const res = await api.get<TicketLink[]>(`/tickets/${ticketId}/links`)
+  return res.data
+}
+
+export async function addLink(
+  ticketId: string,
+  targetId: string,
+  linkType: LinkType
+): Promise<void> {
+  await api.post(`/tickets/${ticketId}/links`, { target_id: targetId, link_type: linkType })
+}
+
+export async function removeLink(
+  ticketId: string,
+  targetId: string,
+  linkType: LinkType
+): Promise<void> {
+  await api.delete(`/tickets/${ticketId}/links/${targetId}/${linkType}`)
+}

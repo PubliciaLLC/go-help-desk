@@ -1,0 +1,333 @@
+package server
+
+import (
+	"net/http"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
+	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
+)
+
+// POST /api/v1/tickets
+func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	if a == nil {
+		// Check guest submission
+		if !s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+			Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+			return
+		}
+	}
+
+	var body struct {
+		Subject     string     `json:"subject"`
+		Description string     `json:"description"`
+		CategoryID  uuid.UUID  `json:"category_id"`
+		TypeID      *uuid.UUID `json:"type_id"`
+		ItemID      *uuid.UUID `json:"item_id"`
+		Priority    string     `json:"priority"`
+		GuestEmail  string     `json:"guest_email"` // used when unauthenticated
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+
+	if strings.TrimSpace(body.Subject) == "" {
+		Error(w, http.StatusBadRequest, "bad_request", "subject is required")
+		return
+	}
+	if body.CategoryID == uuid.Nil {
+		Error(w, http.StatusBadRequest, "bad_request", "category_id is required")
+		return
+	}
+
+	in := ticket.CreateInput{
+		Subject:     body.Subject,
+		Description: body.Description,
+		CategoryID:  body.CategoryID,
+		TypeID:      body.TypeID,
+		ItemID:      body.ItemID,
+		Priority:    ticket.Priority(body.Priority),
+	}
+	if in.Priority == "" {
+		in.Priority = ticket.PriorityMedium
+	}
+
+	if a != nil {
+		in.ReporterUserID = &a.UserID
+	} else {
+		if body.GuestEmail == "" {
+			Error(w, http.StatusBadRequest, "bad_request", "guest_email is required for unauthenticated submissions")
+			return
+		}
+		in.GuestEmail = &body.GuestEmail
+	}
+
+	t, err := s.tickets.Create(r.Context(), in)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusCreated, t)
+}
+
+// GET /api/v1/tickets/{id}
+func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	id := chi.URLParam(r, "id")
+
+	// Support both UUID and tracking number lookup.
+	var t ticket.Ticket
+	var err error
+	if uid, parseErr := uuid.Parse(id); parseErr == nil {
+		t, err = s.tickets.GetByID(r.Context(), uid)
+	} else {
+		t, err = s.tickets.GetByTrackingNumber(r.Context(), ticket.TrackingNumber(strings.ToUpper(id)))
+	}
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	// Users can only view their own tickets.
+	if a != nil && a.Role == user.RoleUser {
+		if t.ReporterUserID == nil || *t.ReporterUserID != a.UserID {
+			Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+			return
+		}
+	}
+
+	JSON(w, http.StatusOK, t)
+}
+
+// PATCH /api/v1/tickets/{id}
+func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+
+	var body struct {
+		StatusID        *uuid.UUID `json:"status_id"`
+		AssigneeUserID  *uuid.UUID `json:"assignee_user_id"`
+		AssigneeGroupID *uuid.UUID `json:"assignee_group_id"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+
+	if body.StatusID != nil {
+		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	t, err := s.tickets.GetByID(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, t)
+}
+
+// POST /api/v1/tickets/{id}/replies
+func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+
+	var body struct {
+		Body     string `json:"body"`
+		Internal bool   `json:"internal"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if strings.TrimSpace(body.Body) == "" {
+		Error(w, http.StatusBadRequest, "bad_request", "body is required")
+		return
+	}
+
+	// Internal replies are staff/admin only.
+	if body.Internal && a.Role == user.RoleUser {
+		Error(w, http.StatusForbidden, "forbidden", "only staff can post internal notes")
+		return
+	}
+
+	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
+	reopenStatusName := s.adminSvc.ReopenTargetStatusName(r.Context())
+
+	// Look up the reopen target status ID.
+	statuses, err := s.tickets.ListStatuses(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	var reopenStatusID uuid.UUID
+	for _, st := range statuses {
+		if st.Name == reopenStatusName {
+			reopenStatusID = st.ID
+			break
+		}
+	}
+
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, body.Internal, actor, reopenDays, reopenStatusID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusCreated, reply)
+}
+
+// GET /api/v1/tickets/{id}/replies
+func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	replies, err := s.tickets.ListReplies(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, replies)
+}
+
+// POST /api/v1/tickets/{id}/resolve
+func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	var body struct {
+		Notes string `json:"notes"`
+	}
+	_ = DecodeJSON(r, &body)
+
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	t, err := s.tickets.Resolve(r.Context(), id, body.Notes, actor)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, t)
+}
+
+// POST /api/v1/tickets/{id}/reopen
+func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	if a.Role == user.RoleUser {
+		Error(w, http.StatusForbidden, "forbidden", "users cannot directly reopen tickets")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+
+	statuses, err := s.tickets.ListStatuses(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	targetName := s.adminSvc.ReopenTargetStatusName(r.Context())
+	var targetID uuid.UUID
+	for _, st := range statuses {
+		if st.Name == targetName {
+			targetID = st.ID
+			break
+		}
+	}
+
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	t, err := s.tickets.Reopen(r.Context(), id, targetID, actor)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, t)
+}
+
+// POST /api/v1/tickets/{id}/links
+func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	var body struct {
+		TargetID uuid.UUID `json:"target_id"`
+		LinkType string    `json:"link_type"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	if err := s.tickets.AddLink(r.Context(), sourceID, body.TargetID, ticket.LinkType(body.LinkType), actor); err != nil {
+		handleError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/v1/tickets/{id}/links/{targetId}/{linkType}
+func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
+	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	targetID, err := uuid.Parse(chi.URLParam(r, "targetId"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid target ID")
+		return
+	}
+	lt := ticket.LinkType(chi.URLParam(r, "linkType"))
+	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
+		handleError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/tickets/{id}/links
+func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	links, err := s.tickets.ListLinks(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, links)
+}

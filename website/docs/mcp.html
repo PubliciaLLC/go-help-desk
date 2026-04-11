@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MCP Server — Open Help Desk Docs</title>
+  <link rel="stylesheet" href="../style.css" />
+  <style>
+    .tool-card { border:1px solid var(--border); border-radius:8px; margin:1rem 0; overflow:hidden; }
+    .tool-card-header { padding:0.75rem 1rem; background:var(--bg-2); border-bottom:1px solid var(--border); display:flex; align-items:baseline; gap:0.75rem; }
+    .tool-card-header code { font-size:0.95rem; font-weight:700; }
+    .tool-card-header span { font-size:0.8rem; color:var(--muted); }
+    .tool-card-body { padding:0.75rem 1rem; }
+    .tool-card-body p { font-size:0.9rem; margin-bottom:0.5rem; }
+    .tool-card-body pre { font-size:0.8rem; margin:0.5rem 0 0; }
+    .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
+    .param-table td:nth-child(2) { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
+    .param-table td:nth-child(3) { font-size:0.875rem; }
+    .role-badge { display:inline-block; padding:0.1rem 0.45rem; border-radius:4px; font-size:0.72rem; font-weight:700; font-family:var(--mono); }
+    .role-any   { background:#f1f5f9; color:#475569; }
+    .role-staff { background:#dbeafe; color:#1d4ed8; }
+    .role-admin { background:#fef3c7; color:#92400e; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Open Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/open-help-desk/open-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Getting Started</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="mcp.html" class="active">MCP Server</a></li>
+      <li><a href="#mcp-overview">Overview</a></li>
+      <li><a href="#mcp-tools">Available tools</a></li>
+      <li><a href="#mcp-connect">Connecting clients</a></li>
+      <li><a href="#mcp-auth">Authentication</a></li>
+      <li><a href="#mcp-permissions">Permissions</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="mcp-overview">MCP Server</h1>
+<p class="docs-page-sub">Give AI assistants native access to your help desk using the Model Context Protocol.</p>
+
+<p>Open Help Desk includes a built-in <a href="https://modelcontextprotocol.io">Model Context Protocol (MCP)</a> server mounted at <code>/mcp/</code>. MCP allows AI assistants — Claude, Cursor, VS Code with Continue, and others — to call help desk operations as structured tools, rather than trying to interact with the web UI.</p>
+
+<p>With the MCP server connected, an AI assistant can:</p>
+<ul>
+  <li>List open tickets and summarize them</li>
+  <li>Look up the details and history of a specific ticket</li>
+  <li>Create a ticket on behalf of a user</li>
+  <li>Add a reply or internal note</li>
+  <li>Change a ticket's status or assignee</li>
+</ul>
+
+<p>The MCP server sits on top of the REST API — every operation goes through the same permission checks. An AI assistant using a Staff user's API key cannot do anything a Staff user couldn't do manually.</p>
+
+
+<h2 id="mcp-tools">Available tools</h2>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>list_tickets</code>
+    <span>List open tickets with optional filters</span>
+    <span class="role-badge role-any">any role</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Returns a list of tickets the authenticated user has permission to view. Scope rules apply — a Staff user only sees tickets within their group scope.</p>
+    <h4 style="margin-top:0.5rem;margin-bottom:0.35rem;font-size:0.875rem;">Parameters</h4>
+    <table class="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>status</code></td><td>string (optional)</td><td>Filter by status name, e.g. <code>"New"</code> or <code>"In Progress"</code>.</td></tr>
+        <tr><td><code>priority</code></td><td>string (optional)</td><td><code>"Critical"</code>, <code>"High"</code>, <code>"Medium"</code>, or <code>"Low"</code>.</td></tr>
+        <tr><td><code>assignee_id</code></td><td>string (optional)</td><td>Filter to a specific assignee's tickets.</td></tr>
+        <tr><td><code>category</code></td><td>string (optional)</td><td>Filter by category name (case-insensitive).</td></tr>
+        <tr><td><code>q</code></td><td>string (optional)</td><td>Text search across subject and description.</td></tr>
+        <tr><td><code>limit</code></td><td>int (optional)</td><td>Maximum results to return (default: 20, max: 100).</td></tr>
+      </tbody>
+    </table>
+    <h4 style="margin-top:0.75rem;margin-bottom:0.35rem;font-size:0.875rem;">Example</h4>
+    <pre><code>list_tickets(status="New", priority="High", limit=10)</code></pre>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>get_ticket</code>
+    <span>Retrieve a ticket with its full reply thread</span>
+    <span class="role-badge role-any">any role</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Returns the complete ticket including all replies (public and, for Staff/Admin, internal notes), linked tickets, and metadata.</p>
+    <table class="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>create_ticket</code>
+    <span>Submit a new support ticket</span>
+    <span class="role-badge role-any">any role</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Creates a ticket on behalf of the authenticated user. The ticket is attributed to the API key's owner as the submitter.</p>
+    <table class="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>subject</code></td><td>string (required)</td><td>Short summary, max 255 characters.</td></tr>
+        <tr><td><code>description</code></td><td>string (required)</td><td>Full detail of the request. Markdown supported.</td></tr>
+        <tr><td><code>category_id</code></td><td>string (required)</td><td>Category ULID. Use <code>list_categories</code> to get available IDs.</td></tr>
+        <tr><td><code>type_id</code></td><td>string (optional)</td><td>Type ULID.</td></tr>
+        <tr><td><code>item_id</code></td><td>string (optional)</td><td>Item ULID.</td></tr>
+        <tr><td><code>priority</code></td><td>string (optional)</td><td>Default: <code>"Medium"</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>reply_to_ticket</code>
+    <span>Add a public reply or internal note</span>
+    <span class="role-badge role-any">any role</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Adds a reply to a ticket's thread. Internal notes (<code>is_internal: true</code>) require Staff or Admin role — attempting to post an internal note as a User returns an error.</p>
+    <p>If the ticket is Resolved and within the reopen window, submitting a reply as a User automatically reopens the ticket.</p>
+    <table class="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID to reply to.</td></tr>
+        <tr><td><code>body</code></td><td>string (required)</td><td>Reply content. Markdown supported.</td></tr>
+        <tr><td><code>is_internal</code></td><td>bool (optional)</td><td>Default: <code>false</code>. If <code>true</code>, posts as an internal note visible only to Staff and Admins.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>update_ticket_status</code>
+    <span>Change a ticket's status</span>
+    <span class="role-badge role-staff">staff / admin</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Transitions the ticket to a new status. Use <code>list_statuses</code> to get available status IDs.</p>
+    <table class="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID.</td></tr>
+        <tr><td><code>status_id</code></td><td>string (required)</td><td>The target status ULID.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>assign_ticket</code>
+    <span>Assign a ticket to a staff member or group</span>
+    <span class="role-badge role-staff">staff / admin</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Assigns a ticket. Provide either <code>assignee_id</code> (a staff user) or <code>group_id</code> (a group), not both. Pass <code>null</code> to both to unassign.</p>
+    <table class="param-table">
+      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID.</td></tr>
+        <tr><td><code>assignee_id</code></td><td>string (optional)</td><td>Staff user ULID to assign to.</td></tr>
+        <tr><td><code>group_id</code></td><td>string (optional)</td><td>Group ULID to assign to.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>list_categories</code>
+    <span>List available ticket categories</span>
+    <span class="role-badge role-any">any role</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Returns all categories. Useful for getting category IDs before calling <code>create_ticket</code>.</p>
+  </div>
+</div>
+
+<div class="tool-card">
+  <div class="tool-card-header">
+    <code>list_statuses</code>
+    <span>List all ticket statuses</span>
+    <span class="role-badge role-any">any role</span>
+  </div>
+  <div class="tool-card-body">
+    <p>Returns all statuses with their IDs and names. Useful for getting status IDs before calling <code>update_ticket_status</code>.</p>
+  </div>
+</div>
+
+
+<h2 id="mcp-connect">Connecting clients</h2>
+
+<h3>Claude (claude.ai / Claude Code)</h3>
+<p>Add a server entry to your MCP configuration. In Claude Code, this lives in <code>.claude/mcp.json</code> (project-level) or <code>~/.claude/mcp.json</code> (global).</p>
+<pre><code>{
+  "mcpServers": {
+    "helpdesk": {
+      "type": "http",
+      "url": "https://helpdesk.example.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ohd_sk_xxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+}</code></pre>
+<p>After saving, Claude will have access to the help desk tools in any conversation where MCP is active.</p>
+
+<h3>VS Code with Continue</h3>
+<pre><code>// .continue/config.json
+{
+  "experimental": {
+    "modelContextProtocolServers": [
+      {
+        "transport": {
+          "type": "http",
+          "url": "https://helpdesk.example.com/mcp/",
+          "requestOptions": {
+            "headers": {
+              "Authorization": "Bearer ohd_sk_xxxxxxxxxxxxxxxxxxx"
+            }
+          }
+        }
+      }
+    ]
+  }
+}</code></pre>
+
+<h3>Cursor</h3>
+<pre><code>// cursor/mcp.json (in project root or ~/.cursor/mcp.json)
+{
+  "mcpServers": {
+    "helpdesk": {
+      "url": "https://helpdesk.example.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ohd_sk_xxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+}</code></pre>
+
+<h3>Any HTTP MCP client</h3>
+<p>The MCP server implements the standard <a href="https://spec.modelcontextprotocol.io/specification/2025-03-26/basic/transports/#streamable-http">Streamable HTTP transport</a>. Point any compliant client at:</p>
+<pre><code>https://&lt;BASE_URL&gt;/mcp/</code></pre>
+<p>Include an <code>Authorization</code> header with either an API key or a JWT from the OAuth2 token endpoint.</p>
+
+
+<h2 id="mcp-auth">Authentication</h2>
+
+<p>The MCP server uses the same authentication mechanisms as the REST API:</p>
+
+<ul>
+  <li><strong>API key</strong> (recommended for long-lived client configs) — <code>Authorization: Bearer ohd_sk_...</code></li>
+  <li><strong>OAuth2 JWT</strong> (recommended for server-to-server) — obtain a token from <code>POST /api/auth/token</code>, include as <code>Authorization: Bearer &lt;jwt&gt;</code>. Tokens expire after 1 hour; your client must handle token refresh.</li>
+</ul>
+
+<p>Session cookies are not accepted by the MCP server — they require a browser context.</p>
+
+<div class="callout callout-note">
+  <p><strong>One API key per integration</strong> — create a dedicated API key for each AI assistant or integration that connects to the MCP server. This lets you revoke a single client's access without affecting others, and gives you a named audit trail in logs.</p>
+</div>
+
+
+<h2 id="mcp-permissions">Permissions</h2>
+
+<p>Every MCP tool call is subject to the same permission system as the REST API. The permissions granted depend on the role of the account whose credentials are used.</p>
+
+<table>
+  <thead><tr><th>Tool</th><th>Minimum role</th><th>Scope applied?</th></tr></thead>
+  <tbody>
+    <tr><td><code>list_tickets</code></td><td>Any</td><td>Yes — Users see only their own tickets; Staff see their group scope.</td></tr>
+    <tr><td><code>get_ticket</code></td><td>Any</td><td>Yes — Users can only get their own tickets.</td></tr>
+    <tr><td><code>create_ticket</code></td><td>Any</td><td>N/A — ticket is attributed to the key owner.</td></tr>
+    <tr><td><code>reply_to_ticket</code> (public)</td><td>Any</td><td>Yes — Users can only reply to their own tickets.</td></tr>
+    <tr><td><code>reply_to_ticket</code> (internal)</td><td>Staff / Admin</td><td>Yes</td></tr>
+    <tr><td><code>update_ticket_status</code></td><td>Staff / Admin</td><td>Yes</td></tr>
+    <tr><td><code>assign_ticket</code></td><td>Staff / Admin</td><td>No — any Staff member can assign to any user or group.</td></tr>
+    <tr><td><code>list_categories</code></td><td>Any</td><td>N/A</td></tr>
+    <tr><td><code>list_statuses</code></td><td>Any</td><td>N/A</td></tr>
+  </tbody>
+</table>
+
+<p>If a tool call fails a permission check, the MCP server returns a structured error response and does not execute the operation. The AI assistant receives a description of the error and can inform the user.</p>
+
+
+<div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="api.html" class="btn btn-outline">← REST API</a>
+  <a href="plugins.html" class="btn btn-outline">Plugin Development →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Open Help Desk — <a href="https://github.com/open-help-desk/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/open-help-desk/open-help-desk">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

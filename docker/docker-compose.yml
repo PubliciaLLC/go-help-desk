@@ -1,0 +1,40 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: helpdesk
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helpdesk"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://helpdesk:helpdesk@db:5432/helpdesk?sslmode=disable
+      SESSION_SECRET: change-me-in-production
+      HTTP_PORT: 8080
+      # Optional — uncomment to enable email notifications
+      # SMTP_HOST: smtp.example.com
+      # SMTP_PORT: 587
+      # SMTP_USER: user@example.com
+      # SMTP_PASS: secret
+      # SMTP_FROM: helpdesk@example.com
+      # Optional — uncomment to enable SLA tracking
+      # SLA_ENABLED: "true"
+    volumes:
+      - ./data/attachments:/data/attachments
