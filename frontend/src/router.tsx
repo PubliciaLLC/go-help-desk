@@ -1,7 +1,9 @@
 import { createRouter, createRoute, createRootRoute, redirect } from '@tanstack/react-router'
 import { getMe } from '@/api/auth'
+import { getSetupStatus } from '@/api/setup'
 import { useAuthStore } from '@/store/auth'
 import { LoginPage } from '@/pages/LoginPage'
+import { SetupPage } from '@/pages/SetupPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
@@ -34,6 +36,17 @@ const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/login',
   component: LoginPage,
+})
+
+// Only accessible when no users exist yet; redirects to /login otherwise.
+const setupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/setup',
+  beforeLoad: async () => {
+    const { needed } = await getSetupStatus()
+    if (!needed) throw redirect({ to: '/login' })
+  },
+  component: SetupPage,
 })
 
 // ── Authenticated ─────────────────────────────────────────────────────────────
@@ -84,7 +97,10 @@ const adminSettingsRoute = createRoute({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  beforeLoad: () => { throw redirect({ to: '/dashboard' }) },
+  beforeLoad: async () => {
+    const { needed } = await getSetupStatus()
+    throw redirect({ to: needed ? '/setup' : '/dashboard' })
+  },
   component: () => null,
 })
 
@@ -92,6 +108,7 @@ export const router = createRouter({
   routeTree: rootRoute.addChildren([
     indexRoute,
     loginRoute,
+    setupRoute,
     dashboardRoute,
     ticketsRoute,
     newTicketRoute,

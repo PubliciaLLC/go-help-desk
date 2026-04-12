@@ -1,3 +1,7 @@
+networks:
+  backend:
+    driver: bridge
+
 services:
   db:
     image: postgres:17-alpine
@@ -6,6 +10,8 @@ services:
       POSTGRES_DB: helpdesk
       POSTGRES_USER: helpdesk
       POSTGRES_PASSWORD: helpdesk
+    ports:
+      - "5432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -13,6 +19,25 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - backend
+
+  test:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      target: gobuilder
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TEST_DATABASE_URL: postgres://helpdesk:helpdesk@db:5432/helpdesk?sslmode=disable
+    working_dir: /build
+    command: go test ./...
+    profiles:
+      - test
+    networks:
+      - backend
 
   app:
     build:
@@ -38,3 +63,5 @@ services:
       # SLA_ENABLED: "true"
     volumes:
       - ./data/attachments:/data/attachments
+    networks:
+      - backend

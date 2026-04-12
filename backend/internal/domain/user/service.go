@@ -164,6 +164,15 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 	})
 }
 
+// HasUsers returns true when at least one user record exists.
+func (s *Service) HasUsers(ctx context.Context) (bool, error) {
+	n, err := s.store.Count(ctx)
+	if err != nil {
+		return false, fmt.Errorf("counting users: %w", err)
+	}
+	return n > 0, nil
+}
+
 // GetByID returns the user with the given ID.
 func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.store.GetByID(ctx, id)

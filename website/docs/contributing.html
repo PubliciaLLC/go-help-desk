@@ -151,8 +151,13 @@ go test ./internal/domain/...</code></pre>
 
 <h3>Integration tests</h3>
 <p>Integration tests hit a real PostgreSQL database. They live in <code>internal/database/database_test.go</code> and <code>internal/server/server_test.go</code>.</p>
-<pre><code>TEST_DATABASE_URL="postgres://localhost:5432/helpdesk_test?sslmode=disable" \
-  go test ./internal/...</code></pre>
+
+<p><strong>Via Docker Compose</strong> (recommended — no local Postgres needed):</p>
+<pre><code>docker-compose -f docker/docker-compose.yml --profile test run --rm test</code></pre>
+
+<p><strong>From the host</strong> (port 5432 is exposed by docker-compose, or use a local Postgres):</p>
+<pre><code>TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" \
+  go test ./...</code></pre>
 
 <p>If <code>TEST_DATABASE_URL</code> is not set, integration tests are skipped (not failed). This allows running unit tests in CI environments without a database.</p>
 
@@ -165,14 +170,14 @@ go test ./internal/domain/...</code></pre>
 <pre><code>TEST_DATABASE_URL="..." go test ./internal/server/... -run TestCreateTicket -v</code></pre>
 
 <h3>Frontend tests</h3>
-<pre><code>cd frontend
-npm run test</code></pre>
+<p>Frontend unit tests are not yet set up. End-to-end testing of the UI is done manually or via the backend integration tests, which exercise the full HTTP layer.</p>
 
 <h3>Full test run</h3>
 <pre><code>cd backend
-go build ./...                                              # compilation check
-go vet ./...                                               # static analysis
-TEST_DATABASE_URL="..." go test ./... -race -count=1       # all tests with race detector</code></pre>
+go build ./...                                                         # compilation check
+go vet ./...                                                           # static analysis
+go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...  # unit tests
+TEST_DATABASE_URL="..." go test ./... -race -count=1                   # all tests with race detector</code></pre>
 
 
 <h2 id="schema-changes">Schema changes</h2>

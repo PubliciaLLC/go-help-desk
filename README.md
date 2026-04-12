@@ -37,7 +37,7 @@ cp .env.example .env   # set SESSION_SECRET, JWT_SECRET, BASE_URL
 docker compose up -d
 ```
 
-Open `http://localhost:8080`. The first account registered is automatically an admin.
+Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`, where you create the first admin account. The setup route is permanently disabled once any user exists.
 
 ## Configuration
 
@@ -78,9 +78,15 @@ The Vite dev server proxies `/api` and `/mcp` to `:8080`.
 Tests:
 
 ```sh
+# Unit tests (no DB required)
 cd backend
-go test ./internal/domain/...                                       # unit (no DB)
-TEST_DATABASE_URL=postgres://... go test ./internal/...            # integration
+go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...
+
+# Integration tests via Docker Compose
+docker-compose -f docker/docker-compose.yml --profile test run --rm test
+
+# Integration tests from the host (port 5432 is exposed)
+TEST_DATABASE_URL=postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable go test ./...
 ```
 
 Schema changes: edit `queries/*.sql`, add a migration, run `sqlc generate`. Never hand-edit `internal/dbgen/`.

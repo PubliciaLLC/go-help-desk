@@ -704,3 +704,139 @@ func TestLogout(t *testing.T) {
 	resp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/logout", nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
+
+// newBareHarness builds a test server with no seeded users, for testing the
+// first-run setup flow.
+func newBareHarness(t *testing.T) (*harness, func()) {
+	t.Helper()
+	db, closeDB := testutil.NewDB(t)
+	q, rollback := testutil.TxQueries(t, db)
+
+	ctx := context.Background()
+
+	uStore := userstore.New(q)
+	tStore := ticketstore.New(q)
+	cStore := categorystore.New(q)
+	gStore := groupstore.New(q)
+	aStore := adminstore.New(q)
+	auStore := auditstore.New(q)
+	authSt := authstore.New(q)
+
+	userSvc := user.NewService(uStore)
+	categorySvc := category.NewService(cStore)
+	groupSvc := group.NewService(gStore)
+	adminSvc := admin.NewService(aStore)
+	dispatcher := notify.NewMulti()
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
+	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
+
+	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {
+		k, err := authSt.GetByHash(ctx, hashed)
+		if err != nil {
+			return auth.APIKey{}, user.User{}, err
+		}
+		u, err := userSvc.GetByID(ctx, k.UserID)
+		if err != nil {
+			return auth.APIKey{}, user.User{}, err
+		}
+		return k, u, nil
+	})
+
+	cfg := &config.Config{
+		SessionSecret: "test-session-secret-32-bytes-long!",
+		JWTSecret:     "test-jwt-secret",
+	}
+	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
+
+	srv := server.New(
+		cfg,
+		sessionStore,
+		userSvc,
+		ticketSvc,
+		categorySvc,
+		groupSvc,
+		adminSvc,
+		plugin.NewRegistry(),
+		apiKeyLookup,
+		authSt,
+		authSt,
+	)
+
+	h := &harness{srv: srv}
+	cleanup := func() {
+		rollback()
+		closeDB()
+	}
+	return h, cleanup
+}
+
+func TestSetupStatus_Needed(t *testing.T) {
+	h, cleanup := newBareHarness(t)
+	defer cleanup()
+
+	resp := h.doUnauth(t, http.MethodGet, "/api/v1/setup/status", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Needed bool `json:"needed"`
+	}
+	decodeJSON(t, resp, &body)
+	require.True(t, body.Needed)
+}
+
+func TestSetupStatus_NotNeeded(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doUnauth(t, http.MethodGet, "/api/v1/setup/status", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body struct {
+		Needed bool `json:"needed"`
+	}
+	decodeJSON(t, resp, &body)
+	require.False(t, body.Needed)
+}
+
+func TestSetup_CreatesAdmin(t *testing.T) {
+	h, cleanup := newBareHarness(t)
+	defer cleanup()
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/setup", map[string]any{
+		"email":        "admin@example.com",
+		"display_name": "Admin",
+		"password":     "correct-horse-battery",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var u user.User
+	decodeJSON(t, resp, &u)
+	require.Equal(t, "admin@example.com", u.Email)
+	require.Equal(t, user.RoleAdmin, u.Role)
+	require.Empty(t, u.PasswordHash) // never expose the hash
+}
+
+func TestSetup_BlockedWhenUsersExist(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/setup", map[string]any{
+		"email":        "another@example.com",
+		"display_name": "Another",
+		"password":     "password",
+	})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+}
+
+func TestSetup_MissingFields(t *testing.T) {
+	h, cleanup := newBareHarness(t)
+	defer cleanup()
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/setup", map[string]any{
+		"email": "admin@example.com",
+		// missing display_name and password
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}

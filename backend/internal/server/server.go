@@ -111,6 +111,10 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Get("/health", s.handleHealth)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		// Setup endpoints require no auth and are only usable before any user exists.
+		r.Get("/setup/status", s.handleSetupStatus)
+		r.Post("/setup", s.handleSetup)
+
 		r.Mount("/auth", s.authRouter())
 		r.Mount("/tickets", s.ticketRouter())
 		r.Mount("/admin", s.adminRouter())

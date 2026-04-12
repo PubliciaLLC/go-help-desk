@@ -127,8 +127,8 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
 <div class="step">
   <div class="step-num">4</div>
   <div class="step-body">
-    <h4>Open the app and create your admin account</h4>
-    <p>Navigate to <code>http://localhost:8080</code> and register. The first account created is automatically granted the Admin role.</p>
+    <h4>Open the app and complete setup</h4>
+    <p>Navigate to <code>http://localhost:8080</code>. On a fresh database the app redirects to <code>/setup</code>, where you enter a name, email address, and password to create the first admin account. The setup page is permanently disabled once any user exists — it cannot be reached again.</p>
   </div>
 </div>
 
@@ -203,7 +203,7 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
 
 <h2 id="first-run">First-run setup</h2>
 
-<p>After deploying and registering your admin account, work through this checklist before inviting users:</p>
+<p>After completing the <code>/setup</code> wizard and creating your admin account, work through this checklist before inviting users:</p>
 
 <ol>
   <li>
