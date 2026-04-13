@@ -78,6 +78,10 @@ export async function createType(categoryId: string, input: { name: string; sort
   return res.data
 }
 
+export async function deleteType(categoryId: string, typeId: string): Promise<void> {
+  await api.delete(`/admin/categories/${categoryId}/types/${typeId}`)
+}
+
 export async function listItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
   const res = await api.get<TicketItem[]>(`/admin/categories/${categoryId}/types/${typeId}/items`)
   return res.data
@@ -95,11 +99,29 @@ export async function createItem(
   return res.data
 }
 
+export async function deleteItem(categoryId: string, typeId: string, itemId: string): Promise<void> {
+  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
+}
+
 // ── Statuses ─────────────────────────────────────────────────────────────────
 
 export async function listStatuses(): Promise<Status[]> {
   const res = await api.get<Status[]>('/admin/statuses')
   return res.data
+}
+
+export async function createStatus(input: { name: string; sort_order?: number; color?: string }): Promise<Status> {
+  const res = await api.post<Status>('/admin/statuses', input)
+  return res.data
+}
+
+export async function updateStatus(id: string, patch: { name?: string; sort_order?: number; color?: string }): Promise<Status> {
+  const res = await api.patch<Status>(`/admin/statuses/${id}`, patch)
+  return res.data
+}
+
+export async function deleteStatus(id: string): Promise<void> {
+  await api.delete(`/admin/statuses/${id}`)
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────

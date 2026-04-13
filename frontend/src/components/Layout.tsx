@@ -2,7 +2,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { Button } from '@/components/ui/button'
-import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon } from 'lucide-react'
+import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface NavItemProps {
@@ -55,10 +55,19 @@ export function Layout({ children }: LayoutProps) {
           <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" />
           <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" />
           {(user?.role === 'admin' || user?.role === 'staff') && (
-            <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" />
+            <>
+              <div className="px-3 pt-4 pb-1">
+                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Admin</span>
+              </div>
+              <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" />
+            </>
           )}
           {user?.role === 'admin' && (
-            <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" />
+            <>
+              <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" />
+              <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" />
+              <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" />
+            </>
           )}
         </nav>
 
