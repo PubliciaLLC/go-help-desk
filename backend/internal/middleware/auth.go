@@ -4,6 +4,8 @@ package middleware
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -43,18 +45,27 @@ func setActor(r *http.Request, a *Actor) *http.Request {
 func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, cookieErr := r.Cookie(auth.SessionName)
 			session, err := store.Get(r, auth.SessionName)
+			slog.Debug("session auth",
+				"path", r.URL.Path,
+				"cookie_present", cookieErr == nil,
+				"store_err", err,
+				"is_new", session.IsNew,
+			)
 			if err != nil || session.IsNew {
 				next.ServeHTTP(w, r)
 				return
 			}
 			raw, ok := session.Values["session"]
 			if !ok {
+				slog.Debug("session auth: key not found in values")
 				next.ServeHTTP(w, r)
 				return
 			}
 			sd, ok := raw.(auth.SessionData)
 			if !ok {
+				slog.Debug("session auth: type assertion failed", "raw_type", fmt.Sprintf("%T", raw))
 				next.ServeHTTP(w, r)
 				return
 			}
