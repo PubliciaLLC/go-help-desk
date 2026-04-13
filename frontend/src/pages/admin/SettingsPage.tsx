@@ -1,12 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings } from '@/api/admin'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 // ── Toggle ────────────────────────────────────────────────────────────────────
 
@@ -59,6 +59,175 @@ function SettingRow({
         {description && <div className="mt-0.5 text-sm text-gray-500">{description}</div>}
       </div>
       <div className="shrink-0">{children}</div>
+    </div>
+  )
+}
+
+// ── SAML configuration section ────────────────────────────────────────────────
+
+function SAMLSection() {
+  const qc = useQueryClient()
+  const certFileRef = useRef<HTMLInputElement>(null)
+  const keyFileRef = useRef<HTMLInputElement>(null)
+
+  const [metadataURL, setMetadataURL] = useState('')
+  const [certPEM, setCertPEM] = useState('')
+  const [keyPEM, setKeyPEM] = useState('')
+  const [saveError, setSaveError] = useState('')
+  const [saved, setSaved] = useState(false)
+  const [warning, setWarning] = useState('')
+
+  const { data: saml, isLoading } = useQuery({
+    queryKey: ['admin', 'saml'],
+    queryFn: getSAMLConfig,
+  })
+
+  useEffect(() => {
+    if (saml) {
+      setMetadataURL(saml.metadata_url)
+      setCertPEM(saml.cert_pem)
+    }
+  }, [saml])
+
+  function readFile(file: File, setter: (v: string) => void) {
+    const reader = new FileReader()
+    reader.onload = (e) => setter((e.target?.result as string) ?? '')
+    reader.readAsText(file)
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: () => saveSAMLConfig({ metadata_url: metadataURL, cert_pem: certPEM, key_pem: keyPEM }),
+    onSuccess: (res) => {
+      setSaved(true)
+      setSaveError('')
+      setWarning(res.warning ?? '')
+      setTimeout(() => setSaved(false), 3000)
+      qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
+    },
+    onError: (err) => setSaveError(extractError(err)),
+  })
+
+  if (isLoading) return <div className="py-4 text-center text-sm text-gray-400">Loading…</div>
+
+  const spMetadataURL = saml?.sp_metadata_url ?? ''
+
+  return (
+    <div className="space-y-4 px-5 py-4">
+      {/* Status badge */}
+      <div className="flex items-center gap-3">
+        <span
+          className={cn(
+            'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+            saml?.configured
+              ? 'bg-green-100 text-green-800'
+              : 'bg-gray-100 text-gray-600'
+          )}
+        >
+          {saml?.configured ? 'Configured' : 'Not configured'}
+        </span>
+        {saml?.configured && (
+          <span className="text-xs text-gray-500">
+            SP metadata URL:{' '}
+            <button
+              className="font-mono text-blue-600 underline decoration-dotted hover:decoration-solid"
+              onClick={() => navigator.clipboard.writeText(spMetadataURL)}
+              title="Copy to clipboard"
+            >
+              {spMetadataURL}
+            </button>
+          </span>
+        )}
+      </div>
+
+      {/* Metadata URL */}
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-gray-700">IdP metadata URL</label>
+        <Input
+          placeholder="https://idp.example.com/saml/metadata"
+          value={metadataURL}
+          onChange={(e) => setMetadataURL(e.target.value)}
+          className="max-w-lg font-mono text-sm"
+        />
+      </div>
+
+      {/* SP Certificate */}
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-gray-700">
+          SP certificate (PEM)
+          {saml?.configured && !certPEM && (
+            <span className="ml-2 text-xs font-normal text-gray-400">already configured</span>
+          )}
+        </label>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>
+            Upload .pem / .crt
+          </Button>
+          {certPEM && (
+            <span className="text-xs text-gray-500 truncate max-w-xs font-mono">
+              {certPEM.split('\n')[0]}…
+            </span>
+          )}
+        </div>
+        <input
+          ref={certFileRef}
+          type="file"
+          accept=".pem,.crt,.cer"
+          className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setCertPEM) }}
+        />
+        {certPEM && (
+          <textarea
+            rows={4}
+            className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+            value={certPEM}
+            onChange={(e) => setCertPEM(e.target.value)}
+          />
+        )}
+      </div>
+
+      {/* SP Private Key */}
+      <div className="space-y-1">
+        <label className="block text-sm font-medium text-gray-700">
+          SP private key (PEM)
+          {saml?.configured && !keyPEM && (
+            <span className="ml-2 text-xs font-normal text-gray-400">already configured — upload to replace</span>
+          )}
+        </label>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => keyFileRef.current?.click()}>
+            Upload .pem / .key
+          </Button>
+          {keyPEM && (
+            <span className="text-xs text-gray-500 font-mono">
+              {keyPEM.split('\n')[0]}…
+            </span>
+          )}
+        </div>
+        <input
+          ref={keyFileRef}
+          type="file"
+          accept=".pem,.key"
+          className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setKeyPEM) }}
+        />
+        {keyPEM && (
+          <textarea
+            rows={4}
+            className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+            value={keyPEM}
+            onChange={(e) => setKeyPEM(e.target.value)}
+          />
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 pt-1">
+        <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+          {saveMutation.isPending ? 'Saving…' : 'Save SAML config'}
+        </Button>
+        {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+        {saved && !warning && <p className="text-sm text-green-600">SAML config saved.</p>}
+        {warning && <p className="text-sm text-amber-600">{warning}</p>}
+      </div>
     </div>
   )
 }
@@ -148,12 +317,23 @@ export function SettingsPage() {
         </Section>
 
         <Section title="Authentication">
-          <SettingRow
-            label="SAML SSO"
-            description="Authenticate users via your SAML 2.0 identity provider (Okta, Azure AD, Google Workspace). Requires SAML environment variables to be configured. Admins retain local login as a failsafe."
-          >
-            <Toggle checked={bool('saml_enabled')} onChange={(v) => setBool('saml_enabled', v)} />
-          </SettingRow>
+          <div>
+            <div className="border-b px-5 py-3">
+              <div className="text-sm font-medium text-gray-900">SAML SSO</div>
+              <div className="mt-0.5 text-sm text-gray-500">
+                Authenticate users via your SAML 2.0 identity provider (Okta, Azure AD, Google
+                Workspace). Upload your SP certificate and private key, then provide the IdP metadata
+                URL. Admins always retain local login as a failsafe.
+              </div>
+            </div>
+            <SAMLSection />
+            <SettingRow
+              label="Enable SAML login"
+              description="Once configured, activate SAML as the primary authentication method. Users without an account will be provisioned on first sign-in."
+            >
+              <Toggle checked={bool('saml_enabled')} onChange={(v) => setBool('saml_enabled', v)} />
+            </SettingRow>
+          </div>
           <SettingRow
             label="Multi-factor authentication"
             description="Prompt users to enroll in TOTP (Google Authenticator, Authy) on their next login. Once enrolled, a one-time code is required at each sign-in."

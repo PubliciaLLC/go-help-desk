@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -60,6 +61,10 @@ type Server struct {
 	apiKeyLookup     authmw.APIKeyAuthFunc
 	oauthClientStore OAuthClientLookup
 	authStore        AuthStoreIface
+
+	// samlMu guards samlHandler. The handler is nil when SAML is not configured.
+	samlMu      sync.RWMutex
+	samlHandler http.Handler
 }
 
 // New constructs a Server and registers all routes.
@@ -166,22 +171,51 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// samlConfigured returns true when the SAML cert/key/metadata are all set.
-func (s *Server) samlConfigured() bool {
-	return s.cfg.SAMLEnabled &&
-		s.cfg.SAMLCertFile != "" &&
-		s.cfg.SAMLKeyFile != "" &&
-		s.cfg.SAMLMetadataURL != ""
+// InitSAML reads SAML config from the database and initialises the SP
+// middleware if all three fields (cert, key, metadata URL) are present.
+// It is called once at startup; a non-fatal error is logged and ignored so
+// that the server starts even when SAML is not yet configured.
+func (s *Server) InitSAML(ctx context.Context) {
+	if err := s.reloadSAML(ctx); err != nil {
+		slog.Warn("SAML middleware not loaded at startup", "error", err)
+	}
 }
 
-// newSAMLMiddleware initialises the SAML SP middleware on demand.
-func (s *Server) newSAMLMiddleware() (http.Handler, error) {
-	return auth.NewSAMLMiddleware(auth.SAMLConfig{
+// reloadSAML reads the three SAML settings from the database, (re)initialises
+// the crewjam/saml middleware, and stores it for use by the request handlers.
+// Callers must hold no lock; this method acquires the write lock internally.
+func (s *Server) reloadSAML(ctx context.Context) error {
+	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
+	if metadataURL == "" || certPEM == "" || keyPEM == "" {
+		// Not yet configured — clear any previously loaded handler.
+		s.samlMu.Lock()
+		s.samlHandler = nil
+		s.samlMu.Unlock()
+		return nil
+	}
+
+	mw, err := auth.NewSAMLMiddleware(auth.SAMLConfig{
 		BaseURL:     s.cfg.BaseURL,
-		MetadataURL: s.cfg.SAMLMetadataURL,
-		CertFile:    s.cfg.SAMLCertFile,
-		KeyFile:     s.cfg.SAMLKeyFile,
+		MetadataURL: metadataURL,
+		CertPEM:     []byte(certPEM),
+		KeyPEM:      []byte(keyPEM),
 	})
+	if err != nil {
+		return err
+	}
+
+	s.samlMu.Lock()
+	s.samlHandler = mw
+	s.samlMu.Unlock()
+	slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
+	return nil
+}
+
+// samlHTTP returns the current SAML handler under a read lock, or nil.
+func (s *Server) samlHTTP() http.Handler {
+	s.samlMu.RLock()
+	defer s.samlMu.RUnlock()
+	return s.samlHandler
 }
 
 // Prevent unused import errors.

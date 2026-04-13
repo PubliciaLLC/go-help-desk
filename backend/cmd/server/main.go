@@ -156,6 +156,8 @@ func run() error {
 		authStore,
 	)
 
+	srv.InitSAML(ctx)
+
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
 	mcpSrv := mcp.New(ticketSvc)
 

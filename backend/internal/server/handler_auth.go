@@ -122,19 +122,34 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/auth/saml/login — redirects to the IdP.
+// GET /api/v1/auth/saml/login — initiates the IdP redirect.
 func (s *Server) handleSAMLLogin(w http.ResponseWriter, r *http.Request) {
-	Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML middleware not initialised")
+	h := s.samlHTTP()
+	if h == nil {
+		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // POST /api/v1/auth/saml/acs — assertion consumer service.
 func (s *Server) handleSAMLACS(w http.ResponseWriter, r *http.Request) {
-	Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML middleware not initialised")
+	h := s.samlHTTP()
+	if h == nil {
+		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
-// GET /api/v1/auth/saml/metadata — SP metadata XML.
+// GET /api/v1/auth/saml/metadata — SP metadata XML for IdP registration.
 func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
-	Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML middleware not initialised")
+	h := s.samlHTTP()
+	if h == nil {
+		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // writeSession persists session data to the cookie store.

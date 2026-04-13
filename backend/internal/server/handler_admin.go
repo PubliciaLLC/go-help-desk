@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -634,6 +635,76 @@ func (s *Server) handleDeleteStatus(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ── SAML ──────────────────────────────────────────────────────────────────────
+
+// GET /api/v1/admin/saml
+func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
+	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
+	configured := s.adminSvc.SAMLConfigured(r.Context())
+	JSON(w, http.StatusOK, map[string]any{
+		"configured":      configured,
+		"metadata_url":    metadataURL,
+		"cert_pem":        certPEM,
+		"sp_metadata_url": s.cfg.BaseURL + "/api/v1/auth/saml/metadata",
+	})
+}
+
+// PUT /api/v1/admin/saml
+// Accepts metadata_url, cert_pem, key_pem. Any field left empty retains the
+// existing value from the database, so callers never need to re-upload a key
+// they did not change. To clear all SAML config, send all three as empty strings.
+func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MetadataURL string `json:"metadata_url"`
+		CertPEM     string `json:"cert_pem"`
+		KeyPEM      string `json:"key_pem"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+
+	// Fill in blanks from the existing saved config so partial updates work.
+	existingURL, existingCert, existingKey := s.adminSvc.GetSAMLConfig(r.Context())
+	metadataURL := body.MetadataURL
+	if metadataURL == "" {
+		metadataURL = existingURL
+	}
+	certPEM := body.CertPEM
+	if certPEM == "" {
+		certPEM = existingCert
+	}
+	keyPEM := body.KeyPEM
+	if keyPEM == "" {
+		keyPEM = existingKey
+	}
+
+	// Validate the cert/key pair when either is present.
+	if certPEM != "" || keyPEM != "" {
+		if _, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM)); err != nil {
+			Error(w, http.StatusBadRequest, "invalid_cert_key",
+				"certificate and private key do not match or are invalid: "+err.Error())
+			return
+		}
+	}
+
+	if err := s.adminSvc.SetSAMLConfig(r.Context(), metadataURL, certPEM, keyPEM); err != nil {
+		handleError(w, err)
+		return
+	}
+
+	// Hot-reload the SAML middleware. A failure here is non-fatal: the config is
+	// saved and will be retried on next restart, but we report it to the caller.
+	if err := s.reloadSAML(r.Context()); err != nil {
+		JSON(w, http.StatusOK, map[string]any{
+			"warning": "SAML config saved but middleware could not be loaded: " + err.Error(),
+		})
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

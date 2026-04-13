@@ -85,6 +85,35 @@ func (s *Service) SAMLEnabled(ctx context.Context) bool {
 	return v
 }
 
+// GetSAMLConfig returns the three SAML SP fields stored in settings.
+// Missing keys are returned as empty strings (treated as unconfigured).
+func (s *Service) GetSAMLConfig(ctx context.Context) (metadataURL, certPEM, keyPEM string) {
+	metadataURL, _ = s.GetString(ctx, KeySAMLMetadataURL)
+	certPEM, _ = s.GetString(ctx, KeySAMLCertPEM)
+	keyPEM, _ = s.GetString(ctx, KeySAMLKeyPEM)
+	return
+}
+
+// SAMLConfigured returns true when all three SAML fields are non-empty.
+func (s *Service) SAMLConfigured(ctx context.Context) bool {
+	u, c, k := s.GetSAMLConfig(ctx)
+	return u != "" && c != "" && k != ""
+}
+
+// SetSAMLConfig persists the three SAML SP fields.
+func (s *Service) SetSAMLConfig(ctx context.Context, metadataURL, certPEM, keyPEM string) error {
+	if err := s.SetString(ctx, KeySAMLMetadataURL, metadataURL); err != nil {
+		return fmt.Errorf("saving saml_metadata_url: %w", err)
+	}
+	if err := s.SetString(ctx, KeySAMLCertPEM, certPEM); err != nil {
+		return fmt.Errorf("saving saml_cert_pem: %w", err)
+	}
+	if err := s.SetString(ctx, KeySAMLKeyPEM, keyPEM); err != nil {
+		return fmt.Errorf("saving saml_key_pem: %w", err)
+	}
+	return nil
+}
+
 // GuestSubmissionEnabled returns whether unauthenticated ticket submission is allowed.
 func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeyGuestSubmissionEnabled)

@@ -124,6 +124,29 @@ export async function deleteStatus(id: string): Promise<void> {
   await api.delete(`/admin/statuses/${id}`)
 }
 
+// ── SAML ─────────────────────────────────────────────────────────────────────
+
+export interface SAMLConfig {
+  configured: boolean
+  metadata_url: string
+  cert_pem: string
+  sp_metadata_url: string
+}
+
+export async function getSAMLConfig(): Promise<SAMLConfig> {
+  const res = await api.get<SAMLConfig>('/admin/saml')
+  return res.data
+}
+
+export async function saveSAMLConfig(input: {
+  metadata_url: string
+  cert_pem: string
+  key_pem: string
+}): Promise<{ warning?: string }> {
+  const res = await api.put<{ warning?: string }>('/admin/saml', input)
+  return res.data ?? {}
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export async function getSettings(): Promise<Record<string, unknown>> {

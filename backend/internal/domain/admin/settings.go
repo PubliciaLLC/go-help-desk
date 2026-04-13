@@ -5,13 +5,16 @@ import "context"
 // Well-known setting keys. The settings table uses JSONB values so any
 // JSON-serialisable type can be stored.
 const (
-	KeySAMLEnabled             = "saml_enabled"
-	KeyGuestSubmissionEnabled  = "guest_submission_enabled"
-	KeySLAEnabled              = "sla_enabled"
-	KeyMFAEnabled              = "mfa_enabled"
-	KeyMFAEnforcedRoles        = "mfa_enforced_roles"
-	KeyReopenWindowDays        = "reopen_window_days"
-	KeyReopenTargetStatusName  = "reopen_target_status_name"
+	KeySAMLEnabled            = "saml_enabled"
+	KeySAMLMetadataURL        = "saml_metadata_url"
+	KeySAMLCertPEM            = "saml_cert_pem"
+	KeySAMLKeyPEM             = "saml_key_pem"
+	KeyGuestSubmissionEnabled = "guest_submission_enabled"
+	KeySLAEnabled             = "sla_enabled"
+	KeyMFAEnabled             = "mfa_enabled"
+	KeyMFAEnforcedRoles       = "mfa_enforced_roles"
+	KeyReopenWindowDays       = "reopen_window_days"
+	KeyReopenTargetStatusName = "reopen_target_status_name"
 )
 
 // Store is the persistence interface for the key/value settings table.

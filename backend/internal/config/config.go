@@ -15,12 +15,6 @@ type Config struct {
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`
 	JWTSecret     string `envconfig:"JWT_SECRET" required:"true"`
 
-	// SAML (optional)
-	SAMLEnabled     bool   `envconfig:"SAML_ENABLED" default:"false"`
-	SAMLMetadataURL string `envconfig:"SAML_METADATA_URL"`
-	SAMLCertFile    string `envconfig:"SAML_CERT_FILE"`
-	SAMLKeyFile     string `envconfig:"SAML_KEY_FILE"`
-
 	// Email (optional — notifications disabled if not set)
 	SMTPHost     string `envconfig:"SMTP_HOST"`
 	SMTPPort     int    `envconfig:"SMTP_PORT" default:"587"`

@@ -15,12 +15,10 @@ func (s *Server) authRouter() *chi.Mux {
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 
-	// SAML routes are mounted dynamically only when SAML is configured.
-	if s.samlConfigured() {
-		r.Get("/saml/login", s.handleSAMLLogin)
-		r.Post("/saml/acs", s.handleSAMLACS)
-		r.Get("/saml/metadata", s.handleSAMLMetadata)
-	}
+	// SAML routes are always registered; each handler returns 503 when not configured.
+	r.Get("/saml/login", s.handleSAMLLogin)
+	r.Post("/saml/acs", s.handleSAMLACS)
+	r.Get("/saml/metadata", s.handleSAMLMetadata)
 
 	return r
 }
@@ -95,6 +93,11 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Route("/settings", func(r chi.Router) {
 		r.Get("/", s.handleGetSettings)
 		r.Patch("/", s.handleUpdateSettings)
+	})
+
+	r.Route("/saml", func(r chi.Router) {
+		r.Get("/", s.handleGetSAMLConfig)
+		r.Put("/", s.handleSaveSAMLConfig)
 	})
 
 	r.Route("/plugins", func(r chi.Router) {
