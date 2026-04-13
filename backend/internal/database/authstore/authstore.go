@@ -136,12 +136,12 @@ func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error
 
 // WebhookConfig is the persisted record for an outbound webhook.
 type WebhookConfig struct {
-	ID        uuid.UUID
-	URL       string
-	Events    []string
-	Secret    string
-	Enabled   bool
-	CreatedAt time.Time
+	ID        uuid.UUID `json:"id"`
+	URL       string    `json:"url"`
+	Events    []string  `json:"events"`
+	Secret    string    `json:"-"`
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {

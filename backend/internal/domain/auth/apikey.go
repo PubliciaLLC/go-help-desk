@@ -14,14 +14,14 @@ import (
 // APIKey is a long-lived bearer token for scripts and webhook senders.
 // The raw token is shown once at creation; only the hash is persisted.
 type APIKey struct {
-	ID         uuid.UUID
-	Name       string
-	HashedToken string
-	UserID     uuid.UUID
-	Scopes     []string
-	LastUsedAt *time.Time
-	ExpiresAt  *time.Time
-	CreatedAt  time.Time
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	HashedToken string     `json:"-"`
+	UserID      uuid.UUID  `json:"user_id"`
+	Scopes      []string   `json:"scopes"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // HashToken returns the SHA-256 hex digest of a raw token.

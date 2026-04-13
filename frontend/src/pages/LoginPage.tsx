@@ -22,8 +22,8 @@ export function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const user = await login(email, password)
-      if (user.mfa_enabled) {
+      const { user, mfa_needed } = await login(email, password)
+      if (mfa_needed) {
         setMFAPending(true)
       } else {
         setUser(user)

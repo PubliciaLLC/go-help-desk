@@ -39,11 +39,11 @@ const (
 // Status represents a ticket state. System statuses have special lifecycle
 // rules; custom statuses are fully configurable by admins.
 type Status struct {
-	ID        uuid.UUID
-	Name      string
-	Kind      StatusKind
-	SortOrder int
-	Color     string // hex colour for the UI, e.g. "#10b981"
+	ID        uuid.UUID  `json:"id"`
+	Name      string     `json:"name"`
+	Kind      StatusKind `json:"kind"`
+	SortOrder int        `json:"sort_order"`
+	Color     string     `json:"color"`
 }
 
 // LinkType describes the relationship between two tickets.
@@ -60,9 +60,9 @@ const (
 // Both tickets are identified by UUID; no embedding is done to keep the
 // type flat.
 type TicketLink struct {
-	SourceTicketID uuid.UUID
-	TargetTicketID uuid.UUID
-	LinkType       LinkType
+	SourceTicketID uuid.UUID `json:"source_id"`
+	TargetTicketID uuid.UUID `json:"target_id"`
+	LinkType       LinkType  `json:"link_type"`
 }
 
 // TrackingNumber is the human-readable identifier for a ticket, e.g.
@@ -72,36 +72,36 @@ type TrackingNumber string
 // Ticket is the central entity of the system. All business state lives here.
 // Optional foreign keys are represented as pointers to make "not set" explicit.
 type Ticket struct {
-	ID              uuid.UUID
-	TrackingNumber  TrackingNumber
-	Subject         string
-	Description     string
-	CategoryID      uuid.UUID
-	TypeID          *uuid.UUID
-	ItemID          *uuid.UUID
-	Priority        Priority
-	StatusID        uuid.UUID
-	AssigneeUserID  *uuid.UUID
-	AssigneeGroupID *uuid.UUID
-	ReporterUserID  *uuid.UUID // nil for guest-submitted tickets
-	GuestEmail      *string   // set for guest-submitted tickets
-	ResolutionNotes *string
-	ResolvedAt      *time.Time
-	ClosedAt        *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  TrackingNumber `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          *uuid.UUID     `json:"type_id,omitempty"`
+	ItemID          *uuid.UUID     `json:"item_id,omitempty"`
+	Priority        Priority       `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  *uuid.UUID     `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID *uuid.UUID     `json:"assignee_group_id,omitempty"`
+	ReporterUserID  *uuid.UUID     `json:"reporter_user_id,omitempty"`
+	GuestEmail      *string        `json:"guest_email,omitempty"`
+	ResolutionNotes *string        `json:"resolution_notes,omitempty"`
+	ResolvedAt      *time.Time     `json:"resolved_at,omitempty"`
+	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the
 // original reporter. Internal replies are visible to staff only.
 type Reply struct {
-	ID         uuid.UUID
-	TicketID   uuid.UUID
-	AuthorID   *uuid.UUID // nil for guest replies
-	GuestToken *string    // token from the tracking-number email, nil for auth'd replies
-	Body       string
-	Internal   bool // staff-only note
-	CreatedAt  time.Time
+	ID         uuid.UUID  `json:"id"`
+	TicketID   uuid.UUID  `json:"ticket_id"`
+	AuthorID   *uuid.UUID `json:"author_id,omitempty"`
+	GuestToken *string    `json:"-"`
+	Body       string     `json:"body"`
+	Internal   bool       `json:"internal"`
+	CreatedAt  time.Time  `json:"created_at"`
 }
 
 // Attachment stores file metadata. Bytes live on disk/object storage at StoragePath.

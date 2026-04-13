@@ -1,8 +1,8 @@
 import { api } from './client'
 import type { User } from './types'
 
-export async function login(email: string, password: string): Promise<User> {
-  const res = await api.post<User>('/auth/local/login', { email, password })
+export async function login(email: string, password: string): Promise<{ user: User; mfa_needed: boolean }> {
+  const res = await api.post<{ user: User; mfa_needed: boolean }>('/auth/local/login', { email, password })
   return res.data
 }
 

@@ -6,18 +6,18 @@ import (
 
 // Group is a named pool of staff members that can be assigned tickets.
 type Group struct {
-	ID          uuid.UUID
-	Name        string
-	Description string
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
 }
 
 // GroupScope defines which Category/Type combinations a group handles.
 // TypeID nil means the group is responsible for all Types under CategoryID.
 // Items are intentionally excluded — scope is Category+Type only.
 type GroupScope struct {
-	GroupID    uuid.UUID
-	CategoryID uuid.UUID
-	TypeID     *uuid.UUID // nil = all Types under CategoryID
+	GroupID    uuid.UUID  `json:"group_id"`
+	CategoryID uuid.UUID  `json:"category_id"`
+	TypeID     *uuid.UUID `json:"type_id,omitempty"` // nil = all Types under CategoryID
 }
 
 // IsInScope returns true if a ticket with the given CTI falls within this
