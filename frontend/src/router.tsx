@@ -11,6 +11,7 @@ import { TicketDetailPage } from '@/pages/TicketDetailPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
 import { CategoriesPage } from '@/pages/admin/CategoriesPage'
 import { StatusesPage } from '@/pages/admin/StatusesPage'
+import { RolesPage } from '@/pages/admin/RolesPage'
 import { SettingsPage } from '@/pages/admin/SettingsPage'
 
 async function requireAuth() {
@@ -88,6 +89,13 @@ const adminUsersRoute = createRoute({
   component: UsersPage,
 })
 
+const adminRolesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/roles',
+  beforeLoad: requireAdmin,
+  component: RolesPage,
+})
+
 const adminCategoriesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/categories',
@@ -130,6 +138,7 @@ export const router = createRouter({
     newTicketRoute,
     ticketDetailRoute,
     adminUsersRoute,
+    adminRolesRoute,
     adminCategoriesRoute,
     adminStatusesRoute,
     adminSettingsRoute,

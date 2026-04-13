@@ -263,9 +263,22 @@ export function SettingsPage() {
   function bool(key: string) { return Boolean(local[key]) }
   function num(key: string) { return Number(local[key] ?? 0) }
   function str(key: string) { return String(local[key] ?? '') }
+  function strArr(key: string): string[] {
+    const v = local[key]
+    if (Array.isArray(v)) return v as string[]
+    if (typeof v === 'string' && v) return v.split(',').map((s) => s.trim()).filter(Boolean)
+    return []
+  }
   function setBool(key: string, v: boolean) { setLocal((s) => ({ ...s, [key]: v })) }
   function setNum(key: string, v: number) { setLocal((s) => ({ ...s, [key]: v })) }
   function setStr(key: string, v: string) { setLocal((s) => ({ ...s, [key]: v })) }
+  function toggleStrArr(key: string, item: string, checked: boolean) {
+    setLocal((s) => {
+      const current = strArr(key)
+      const next = checked ? [...new Set([...current, item])] : current.filter((x) => x !== item)
+      return { ...s, [key]: next }
+    })
+  }
 
   if (isLoading) {
     return <Layout><div className="flex justify-center py-12"><Spinner /></div></Layout>
@@ -318,21 +331,20 @@ export function SettingsPage() {
 
         <Section title="Authentication">
           <div>
-            <div className="border-b px-5 py-3">
-              <div className="text-sm font-medium text-gray-900">SAML SSO</div>
-              <div className="mt-0.5 text-sm text-gray-500">
-                Authenticate users via your SAML 2.0 identity provider (Okta, Azure AD, Google
-                Workspace). Upload your SP certificate and private key, then provide the IdP metadata
-                URL. Admins always retain local login as a failsafe.
-              </div>
-            </div>
-            <SAMLSection />
             <SettingRow
               label="Enable SAML login"
-              description="Once configured, activate SAML as the primary authentication method. Users without an account will be provisioned on first sign-in."
+              description="Authenticate users via your SAML 2.0 identity provider (Okta, Azure AD, Google Workspace). Admins always retain local login as a failsafe."
             >
               <Toggle checked={bool('saml_enabled')} onChange={(v) => setBool('saml_enabled', v)} />
             </SettingRow>
+            {bool('saml_enabled') && (
+              <div className="border-t bg-gray-50">
+                <div className="px-5 pt-3 pb-0">
+                  <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SAML configuration</p>
+                </div>
+                <SAMLSection />
+              </div>
+            )}
           </div>
           <SettingRow
             label="Multi-factor authentication"
@@ -340,17 +352,26 @@ export function SettingsPage() {
           >
             <Toggle checked={bool('mfa_enabled')} onChange={(v) => setBool('mfa_enabled', v)} />
           </SettingRow>
-          <SettingRow
-            label="Enforce MFA for roles"
-            description="Comma-separated list of roles that must enroll in MFA (e.g. admin,staff). Leave blank to make MFA optional for all roles."
-          >
-            <Input
-              className="w-52"
-              placeholder="e.g. admin,staff"
-              value={str('mfa_enforced_roles')}
-              onChange={(e) => setStr('mfa_enforced_roles', e.target.value)}
-            />
-          </SettingRow>
+          {bool('mfa_enabled') && (
+            <SettingRow
+              label="Enforce MFA for roles"
+              description="Roles that must enroll in MFA. Users in enforced roles are prompted on next login."
+            >
+              <div className="flex gap-4">
+                {(['admin', 'staff', 'user'] as const).map((r) => (
+                  <label key={r} className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      checked={strArr('mfa_enforced_roles').includes(r)}
+                      onChange={(e) => toggleStrArr('mfa_enforced_roles', r, e.target.checked)}
+                    />
+                    <span className="text-sm capitalize text-gray-700">{r}</span>
+                  </label>
+                ))}
+              </div>
+            </SettingRow>
+          )}
         </Section>
 
         <Section title="Features">
