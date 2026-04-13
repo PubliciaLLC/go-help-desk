@@ -145,7 +145,9 @@ export function StatusesPage() {
                     <td className="px-4 py-3 text-gray-500">{s.sort_order}</td>
                     <td className="px-4 py-3 text-right">
                       {s.kind === 'system' ? (
-                        <LockIcon className="ml-auto h-3.5 w-3.5 text-gray-300" title="System status — cannot be deleted" />
+                        <span title="System status — cannot be deleted" className="flex justify-end">
+                          <LockIcon className="h-3.5 w-3.5 text-gray-300" />
+                        </span>
                       ) : (
                         <button
                           onClick={() => deleteMutation.mutate(s.id)}
