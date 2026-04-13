@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"log"
@@ -110,6 +111,7 @@ func run() error {
 	}
 
 	// ── Auth helpers ──────────────────────────────────────────────────────────
+	gob.Register(auth.SessionData{})
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {
