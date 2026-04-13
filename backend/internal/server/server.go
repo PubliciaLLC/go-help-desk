@@ -109,8 +109,12 @@ func (sr *statusRecorder) WriteHeader(code int) {
 }
 
 // requestLogger logs each request at INFO level once it completes.
+// It includes whether the session cookie was present on the request and
+// whether a Set-Cookie header was written on the response, to make
+// session/auth issues diagnosable without needing debug mode.
 func requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, cookieErr := r.Cookie(auth.SessionName)
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
@@ -119,6 +123,8 @@ func requestLogger(next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"ms", time.Since(start).Milliseconds(),
+			"session_cookie_in", cookieErr == nil,
+			"session_cookie_out", rec.Header().Get("Set-Cookie") != "",
 		)
 	})
 }

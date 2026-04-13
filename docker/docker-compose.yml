@@ -65,6 +65,7 @@ services:
       GUEST_SUBMISSION_ENABLED: ${GUEST_SUBMISSION_ENABLED:-false}
       SLA_ENABLED: ${SLA_ENABLED:-false}
       MFA_ENABLED: ${MFA_ENABLED:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - ./data/attachments:/data/attachments
     networks:
