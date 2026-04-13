@@ -51,18 +51,20 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL: postgres://helpdesk:helpdesk@db:5432/helpdesk?sslmode=disable
-      BASE_URL: http://localhost:8080
-      SESSION_SECRET: change-me-in-production
-      JWT_SECRET: change-me-in-production
+      BASE_URL: ${BASE_URL:-http://localhost:8080}
+      SESSION_SECRET: ${SESSION_SECRET}
+      JWT_SECRET: ${JWT_SECRET}
       HTTP_PORT: 8080
-      # Optional — uncomment to enable email notifications
-      # SMTP_HOST: smtp.example.com
-      # SMTP_PORT: 587
-      # SMTP_USER: user@example.com
-      # SMTP_PASS: secret
-      # SMTP_FROM: helpdesk@example.com
-      # Optional — uncomment to enable SLA tracking
-      # SLA_ENABLED: "true"
+      # Optional — set in .env to enable email notifications
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      # Optional — set in .env to enable features
+      GUEST_SUBMISSION_ENABLED: ${GUEST_SUBMISSION_ENABLED:-false}
+      SLA_ENABLED: ${SLA_ENABLED:-false}
+      MFA_ENABLED: ${MFA_ENABLED:-false}
     volumes:
       - ./data/attachments:/data/attachments
     networks:
