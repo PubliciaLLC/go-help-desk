@@ -122,6 +122,12 @@ func run() error {
 	// ── Auth helpers ──────────────────────────────────────────────────────────
 	gob.Register(auth.SessionData{})
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
+	sessionStore.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   86400 * 30,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {
 		key, err := authStore.GetByHash(ctx, hashed)

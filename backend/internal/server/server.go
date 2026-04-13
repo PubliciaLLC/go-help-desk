@@ -118,14 +118,18 @@ func requestLogger(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		start := time.Now()
 		next.ServeHTTP(rec, r)
+		setCookie := rec.Header().Get("Set-Cookie")
 		slog.Info("request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
 			"ms", time.Since(start).Milliseconds(),
 			"session_cookie_in", cookieErr == nil,
-			"session_cookie_out", rec.Header().Get("Set-Cookie") != "",
+			"session_cookie_out", setCookie != "",
 		)
+		if setCookie != "" {
+			slog.Debug("set-cookie header", "value", setCookie)
+		}
 	})
 }
 
