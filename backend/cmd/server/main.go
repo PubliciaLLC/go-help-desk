@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -55,6 +56,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	// ── Logger ────────────────────────────────────────────────────────────────
+	var logLevel slog.Level
+	if err := logLevel.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		log.Printf("warn: invalid LOG_LEVEL %q, defaulting to info", cfg.LogLevel)
+		logLevel = slog.LevelInfo
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
 	// ── Database ─────────────────────────────────────────────────────────────
 	// Run migrations before opening the pool so the schema is always current.
@@ -167,7 +176,7 @@ func run() error {
 		shutdownDone <- httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("open-help-desk listening on :%d", cfg.HTTPPort)
+	slog.Info("open-help-desk listening", "port", cfg.HTTPPort)
 	if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("http server: %w", err)
 	}

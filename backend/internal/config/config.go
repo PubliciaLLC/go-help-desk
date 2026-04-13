@@ -37,7 +37,8 @@ type Config struct {
 	AttachmentDir string `envconfig:"ATTACHMENT_DIR" default:"/data/attachments"`
 
 	// Environment
-	AppEnv string `envconfig:"APP_ENV" default:"production"`
+	AppEnv   string `envconfig:"APP_ENV" default:"production"`
+	LogLevel string `envconfig:"LOG_LEVEL" default:"info"`
 }
 
 // Load reads configuration from environment variables.

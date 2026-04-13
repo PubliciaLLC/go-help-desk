@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/ticketstore"
@@ -43,5 +44,6 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
+	slog.Error("internal error", "error", err)
 	Error(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 }
