@@ -31,6 +31,7 @@ type Store interface {
 
 	// Attachments
 	CreateAttachment(ctx context.Context, a Attachment) error
+	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 

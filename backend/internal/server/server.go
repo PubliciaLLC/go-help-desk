@@ -169,6 +169,9 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.Mount("/tickets", s.ticketRouter())
 		r.Mount("/groups", s.groupsRouter())
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/tags", s.handleListActiveTags)
+		// Public category/type listing for ticket creation (active only, no admin required).
+		r.Get("/categories", s.handleListPublicCategories)
+		r.Get("/categories/{id}/types", s.handleListPublicTypes)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})
@@ -178,6 +181,33 @@ func (s *Server) buildRouter() *chi.Mux {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleListPublicCategories returns only active categories.
+// Used by the ticket-creation form for regular users and guests.
+// No admin auth required — any authenticated user or guest can call this.
+func (s *Server) handleListPublicCategories(w http.ResponseWriter, r *http.Request) {
+	cats, err := s.categories.ListCategories(r.Context(), true) // active only
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, cats)
+}
+
+// handleListPublicTypes returns only active types for a category.
+func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
+	catID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "invalid_id", "invalid category id")
+		return
+	}
+	types, err := s.categories.ListTypes(r.Context(), catID, true) // active only
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, types)
 }
 
 // handleGetSiteConfig returns public-facing branding info and the app version.

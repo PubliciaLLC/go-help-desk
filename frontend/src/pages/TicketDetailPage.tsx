@@ -1,7 +1,16 @@
 import { useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getTicket, listReplies, addReply, resolveTicket, reopenTicket, updateTicket } from '@/api/tickets'
+import {
+  getTicket,
+  listReplies,
+  addReply,
+  resolveTicket,
+  reopenTicket,
+  updateTicket,
+  listAttachments,
+  attachmentDownloadUrl,
+} from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { listStatuses, listUsers } from '@/api/admin'
 import { extractError } from '@/api/client'
@@ -188,6 +197,12 @@ export function TicketDetailPage() {
     enabled: isStaffOrAdmin,
   })
 
+  const { data: attachments = [] } = useQuery({
+    queryKey: ['attachments', id],
+    queryFn: () => listAttachments(id),
+    enabled: !!ticket,
+  })
+
   const statusName = statuses.find((s) => s.id === ticket?.status_id)?.name ?? '…'
   const statusColor = statuses.find((s) => s.id === ticket?.status_id)?.color
 
@@ -371,6 +386,29 @@ export function TicketDetailPage() {
                 <TagInput ticketId={id} readonly={!isStaffOrAdmin} />
               </CardContent>
             </Card>
+
+            {attachments.length > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                    Attachments
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1">
+                  {attachments.map((a) => (
+                    <a
+                      key={a.id}
+                      href={attachmentDownloadUrl(id, a.id)}
+                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline truncate"
+                      download={a.filename}
+                    >
+                      <span className="shrink-0 text-gray-400">↓</span>
+                      <span className="truncate">{a.filename}</span>
+                    </a>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
 
             <Card>
               <CardHeader className="pb-2">

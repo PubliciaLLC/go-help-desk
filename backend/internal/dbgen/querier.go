@@ -51,6 +51,7 @@ type Querier interface {
 	// Category-specific policy takes precedence over a global one (category_id IS NULL).
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
+	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)

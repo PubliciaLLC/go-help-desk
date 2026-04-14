@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -8,6 +8,9 @@ export interface CreateTicketInput {
   type_id?: string
   item_id?: string
   priority?: string
+  guest_email?: string
+  guest_name?: string
+  guest_phone?: string
 }
 
 export async function listTickets(params?: { assignee_group_id?: string }): Promise<Ticket[]> {
@@ -93,4 +96,36 @@ export async function addTicketTag(ticketId: string, name: string): Promise<Tag>
 
 export async function removeTicketTag(ticketId: string, tagId: string): Promise<void> {
   await api.delete(`/tickets/${ticketId}/tags/${tagId}`)
+}
+
+// ── Public categories/types (no admin auth, active only) ──────────────────────
+
+export async function listPublicCategories(): Promise<Category[]> {
+  const res = await api.get<Category[]>('/categories')
+  return res.data
+}
+
+export async function listPublicTypes(categoryId: string): Promise<TicketType[]> {
+  const res = await api.get<TicketType[]>(`/categories/${categoryId}/types`)
+  return res.data
+}
+
+// ── Attachments ───────────────────────────────────────────────────────────────
+
+export async function listAttachments(ticketId: string): Promise<Attachment[]> {
+  const res = await api.get<Attachment[]>(`/tickets/${ticketId}/attachments`)
+  return res.data
+}
+
+export async function uploadAttachment(ticketId: string, file: File): Promise<Attachment> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await api.post<Attachment>(`/tickets/${ticketId}/attachments`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return res.data
+}
+
+export function attachmentDownloadUrl(ticketId: string, attachmentId: string): string {
+  return `/api/v1/tickets/${ticketId}/attachments/${attachmentId}`
 }

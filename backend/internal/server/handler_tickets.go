@@ -92,12 +92,11 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets
 func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	if a == nil {
-		// Check guest submission
-		if !s.adminSvc.GuestSubmissionEnabled(r.Context()) {
-			Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
-			return
-		}
+	isGuest := a == nil
+
+	if isGuest && !s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
 	}
 
 	var body struct {
@@ -107,7 +106,10 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		TypeID      *uuid.UUID `json:"type_id"`
 		ItemID      *uuid.UUID `json:"item_id"`
 		Priority    string     `json:"priority"`
-		GuestEmail  string     `json:"guest_email"` // used when unauthenticated
+		// Guest-only fields
+		GuestEmail string `json:"guest_email"`
+		GuestName  string `json:"guest_name"`
+		GuestPhone string `json:"guest_phone"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -123,6 +125,28 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Role-based field restrictions:
+	//   - Guest: category only, no type or item; name + email required
+	//   - User (authenticated non-staff): category + type only, no item
+	//   - Staff/Admin: full CTI, no restrictions
+	isStaffOrAdmin := !isGuest && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
+
+	if isGuest {
+		body.TypeID = nil
+		body.ItemID = nil
+		if strings.TrimSpace(body.GuestEmail) == "" {
+			Error(w, http.StatusBadRequest, "bad_request", "email is required")
+			return
+		}
+		if strings.TrimSpace(body.GuestName) == "" {
+			Error(w, http.StatusBadRequest, "bad_request", "name is required")
+			return
+		}
+	} else if !isStaffOrAdmin {
+		// Regular authenticated user: no item allowed
+		body.ItemID = nil
+	}
+
 	in := ticket.CreateInput{
 		Subject:     body.Subject,
 		Description: body.Description,
@@ -135,14 +159,13 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		in.Priority = ticket.PriorityMedium
 	}
 
-	if a != nil {
+	if !isGuest {
 		in.ReporterUserID = &a.UserID
 	} else {
-		if body.GuestEmail == "" {
-			Error(w, http.StatusBadRequest, "bad_request", "guest_email is required for unauthenticated submissions")
-			return
-		}
-		in.GuestEmail = &body.GuestEmail
+		email := body.GuestEmail
+		in.GuestEmail = &email
+		in.GuestName = strings.TrimSpace(body.GuestName)
+		in.GuestPhone = strings.TrimSpace(body.GuestPhone)
 	}
 
 	t, err := s.tickets.Create(r.Context(), in)

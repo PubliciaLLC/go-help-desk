@@ -38,6 +38,8 @@ func (s *Store) Create(ctx context.Context, t ticket.Ticket) error {
 		AssigneeGroupID: database.NullUUID(t.AssigneeGroupID),
 		ReporterUserID:  database.NullUUID(t.ReporterUserID),
 		GuestEmail:      database.NullString(t.GuestEmail),
+		GuestName:       t.GuestName,
+		GuestPhone:      t.GuestPhone,
 		CreatedAt:       t.CreatedAt,
 		UpdatedAt:       t.UpdatedAt,
 	})
@@ -184,6 +186,22 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 	})
 }
 
+func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Attachment, error) {
+	r, err := s.q.GetAttachmentByID(ctx, id)
+	if err != nil {
+		return ticket.Attachment{}, fmt.Errorf("getting attachment %s: %w", id, err)
+	}
+	return ticket.Attachment{
+		ID:          r.ID,
+		TicketID:    r.TicketID,
+		Filename:    r.Filename,
+		MimeType:    r.MimeType,
+		SizeBytes:   r.SizeBytes,
+		StoragePath: r.StoragePath,
+		CreatedAt:   r.CreatedAt,
+	}, nil
+}
+
 func (s *Store) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]ticket.Attachment, error) {
 	rows, err := s.q.ListAttachments(ctx, ticketID)
 	if err != nil {
@@ -302,6 +320,8 @@ func fromRow(r dbgen.Ticket) ticket.Ticket {
 		AssigneeGroupID: database.UUIDPtr(r.AssigneeGroupID),
 		ReporterUserID:  database.UUIDPtr(r.ReporterUserID),
 		GuestEmail:      database.StringPtr(r.GuestEmail),
+		GuestName:       r.GuestName,
+		GuestPhone:      r.GuestPhone,
 		ResolutionNotes: database.StringPtr(r.ResolutionNotes),
 		ResolvedAt:      database.TimePtr(r.ResolvedAt),
 		ClosedAt:        database.TimePtr(r.ClosedAt),

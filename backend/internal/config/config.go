@@ -30,6 +30,10 @@ type Config struct {
 	// Storage
 	AttachmentDir string `envconfig:"ATTACHMENT_DIR" default:"/data/attachments"`
 
+	// Antivirus — optional ClamAV daemon address (e.g. "tcp://localhost:3310").
+	// When empty, virus scanning is skipped.
+	ClamAVAddr string `envconfig:"CLAMAV_ADDR"`
+
 	// Environment
 	AppEnv   string `envconfig:"APP_ENV" default:"production"`
 	LogLevel string `envconfig:"LOG_LEVEL" default:"info"`

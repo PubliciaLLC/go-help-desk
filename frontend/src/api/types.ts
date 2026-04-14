@@ -73,11 +73,22 @@ export interface Ticket {
   assignee_group_id?: string
   reporter_user_id?: string
   guest_email?: string
+  guest_name?: string
+  guest_phone?: string
   resolution_notes?: string
   resolved_at?: string
   closed_at?: string
   created_at: string
   updated_at: string
+}
+
+export interface Attachment {
+  id: string
+  ticket_id: string
+  filename: string
+  mime_type: string
+  size_bytes: number
+  created_at: string
 }
 
 export interface Reply {

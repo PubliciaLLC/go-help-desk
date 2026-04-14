@@ -156,6 +156,8 @@ type Ticket struct {
 	ClosedAt        sql.NullTime   `json:"closed_at"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
 }
 
 type TicketLink struct {

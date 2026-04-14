@@ -43,6 +43,10 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Post("/{id}/tags", s.handleAddTicketTag)
 	r.Delete("/{id}/tags/{tagId}", s.handleRemoveTicketTag)
 
+	r.Get("/{id}/attachments", s.handleListAttachments)
+	r.Post("/{id}/attachments", s.handleUploadAttachment)
+	r.Get("/{id}/attachments/{attachId}", s.handleDownloadAttachment)
+
 	return r
 }
 

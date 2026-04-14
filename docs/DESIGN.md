@@ -170,9 +170,23 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 ### Guest Submission (Optional, Off by Default)
 
 - Toggle in admin settings
-- Unauthenticated users can submit a ticket and receive a **tracking number + email link**
-- The link provides access to **that single ticket only** — no visibility into any other ticket
+- Unauthenticated users can submit a ticket at `/submit` and receive a **tracking number**
+- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
+- The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
+
+### Ticket Submission by Role
+
+| Field | Guest | User (logged in) | Staff / Admin |
+|-------|-------|-----------------|---------------|
+| Name, email, phone | Required / optional | — (uses account) | — |
+| Category | Active only | Active only | All |
+| Type | — (not shown) | Active only | All |
+| Item | — | — (not shown) | All |
+| Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
+| Attachments | — | Yes | Yes |
+
+Attachment upload is available to all authenticated (non-guest) users. Accepted formats: PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download. Optional ClamAV virus scanning is configurable via the `CLAMAV_ADDR` environment variable — if the scanner is unavailable or unconfigured, uploads proceed normally with a logged warning.
 
 ---
 

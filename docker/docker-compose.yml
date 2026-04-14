@@ -1,6 +1,8 @@
 networks:
   backend:
     driver: bridge
+  antivirus:
+    driver: bridge  # separate from backend so clamav cannot reach the database
 
 services:
   db:
@@ -39,6 +41,20 @@ services:
     networks:
       - backend
 
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    volumes:
+      - ./data/clamav:/var/lib/clamav  # persist signature database across restarts
+    healthcheck:
+      test: ["CMD-SHELL", "clamd --ping 2>/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s  # freshclam downloads the full signature DB on first run (~300 MB)
+    networks:
+      - antivirus
+
   app:
     build:
       context: ..
@@ -55,6 +71,8 @@ services:
       SESSION_SECRET: ${SESSION_SECRET}
       JWT_SECRET: ${JWT_SECRET}
       HTTP_PORT: 8080
+      # ClamAV — wired to the internal antivirus network; non-fatal if unavailable
+      CLAMAV_ADDR: tcp://clamav:3310
       # Optional — set in .env to enable email notifications
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
@@ -70,3 +88,4 @@ services:
       - ./data/attachments:/data/attachments
     networks:
       - backend
+      - antivirus

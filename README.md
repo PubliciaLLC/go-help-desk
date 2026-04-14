@@ -30,7 +30,8 @@ Open Help Desk is an open-source ticket management system. Staff submit and trac
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
-- Guest ticket submission (optional)
+- Guest ticket submission (optional) — name, email, and optional phone captured; tracking number returned
+- File attachments (PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP; 25 MB max; images auto-recompressed; optional ClamAV virus scanning)
 
 ## Quick start
 
@@ -60,9 +61,12 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `SMTP_PASSWORD` | | — | |
 | `SMTP_FROM` | | — | |
 | `ATTACHMENT_DIR` | | `/data/attachments` | Attachment storage path |
+| `CLAMAV_ADDR` | | `tcp://clamav:3310`* | ClamAV daemon address. The Docker Compose setup runs ClamAV automatically and wires this up. For bare-metal / Kubernetes installs, set this to your own daemon address; leave it unset to disable scanning. |
 | `APP_ENV` | | `production` | Set to `development` for verbose logging |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, `error` |
 
+> \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
+>
 > **Note:** SAML, MFA, SLA, and guest-submission are toggled in the Admin UI — not environment variables. Environment variables that existed for these in older versions have been removed.
 
 ## API
@@ -89,6 +93,10 @@ The REST API is documented informally by the handler source at `backend/internal
 | `POST /api/v1/admin/tags/{id}/restore` | admin | Restore a deactivated tag |
 | `GET/POST /api/v1/tickets/{id}/tags` | staff / admin | List or add tags on a ticket |
 | `DELETE /api/v1/tickets/{id}/tags/{tagId}` | staff / admin | Remove a tag from a ticket |
+| `GET /api/v1/categories` | none | Active categories (for ticket creation) |
+| `GET /api/v1/categories/{id}/types` | none | Active types for a category |
+| `GET/POST /api/v1/tickets/{id}/attachments` | session / API key | List or upload attachments |
+| `GET /api/v1/tickets/{id}/attachments/{attachId}` | session / API key | Download an attachment |
 
 OAuth2 client credentials (`POST /api/v1/auth/oauth/token`) produce short-lived JWTs for machine-to-machine access.
 

@@ -85,6 +85,8 @@ type Ticket struct {
 	AssigneeGroupID *uuid.UUID     `json:"assignee_group_id,omitempty"`
 	ReporterUserID  *uuid.UUID     `json:"reporter_user_id,omitempty"`
 	GuestEmail      *string        `json:"guest_email,omitempty"`
+	GuestName       string         `json:"guest_name,omitempty"`
+	GuestPhone      string         `json:"guest_phone,omitempty"`
 	ResolutionNotes *string        `json:"resolution_notes,omitempty"`
 	ResolvedAt      *time.Time     `json:"resolved_at,omitempty"`
 	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
@@ -104,15 +106,16 @@ type Reply struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 
-// Attachment stores file metadata. Bytes live on disk/object storage at StoragePath.
+// Attachment stores file metadata. Bytes live on disk at StoragePath.
+// StoragePath is the obfuscated on-disk path; Filename is the original name.
 type Attachment struct {
-	ID          uuid.UUID
-	TicketID    uuid.UUID
-	Filename    string
-	MimeType    string
-	SizeBytes   int64
-	StoragePath string
-	CreatedAt   time.Time
+	ID          uuid.UUID `json:"id"`
+	TicketID    uuid.UUID `json:"ticket_id"`
+	Filename    string    `json:"filename"`
+	MimeType    string    `json:"mime_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	StoragePath string    `json:"-"` // never sent to clients
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // GenerateTrackingNumber formats the canonical tracking number for a ticket.

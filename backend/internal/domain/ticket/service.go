@@ -108,6 +108,8 @@ type CreateInput struct {
 	// Exactly one of ReporterUserID or GuestEmail must be set.
 	ReporterUserID *uuid.UUID
 	GuestEmail     *string
+	GuestName      string // required when GuestEmail is set
+	GuestPhone     string // optional
 }
 
 // Create opens a new ticket, fires the created event, and optionally attaches
@@ -138,6 +140,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		StatusID:       s.sys.newID,
 		ReporterUserID: in.ReporterUserID,
 		GuestEmail:     in.GuestEmail,
+		GuestName:      in.GuestName,
+		GuestPhone:     in.GuestPhone,
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
@@ -504,3 +508,26 @@ func ticketMap(t Ticket) map[string]any {
 
 // ErrNotFound is returned when a requested resource does not exist.
 var ErrNotFound = errors.New("not found")
+
+// ── Attachments ───────────────────────────────────────────────────────────────
+
+// CreateAttachment records attachment metadata after the file has been written to disk.
+func (s *Service) CreateAttachment(ctx context.Context, a Attachment) error {
+	return s.store.CreateAttachment(ctx, a)
+}
+
+// GetAttachment returns a single attachment by ID.
+func (s *Service) GetAttachment(ctx context.Context, id uuid.UUID) (Attachment, error) {
+	return s.store.GetAttachmentByID(ctx, id)
+}
+
+// ListAttachments returns all attachments for a ticket.
+func (s *Service) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error) {
+	return s.store.ListAttachments(ctx, ticketID)
+}
+
+// DeleteAttachment removes attachment metadata from the DB. Callers are
+// responsible for deleting the file on disk.
+func (s *Service) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
+	return s.store.DeleteAttachment(ctx, id)
+}

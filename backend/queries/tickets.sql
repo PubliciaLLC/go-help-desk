@@ -6,8 +6,9 @@ INSERT INTO tickets (
     id, tracking_number, subject, description,
     category_id, type_id, item_id, priority, status_id,
     assignee_user_id, assignee_group_id, reporter_user_id, guest_email,
+    guest_name, guest_phone,
     created_at, updated_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15);
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17);
 
 -- name: GetTicketByID :one
 SELECT * FROM tickets WHERE id = $1;
@@ -50,6 +51,9 @@ SELECT * FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC;
 -- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7);
+
+-- name: GetAttachmentByID :one
+SELECT * FROM attachments WHERE id = $1;
 
 -- name: ListAttachments :many
 SELECT * FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC;

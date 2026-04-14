@@ -16,6 +16,7 @@ import { StatusesPage } from '@/pages/admin/StatusesPage'
 import { RolesPage } from '@/pages/admin/RolesPage'
 import { SettingsPage } from '@/pages/admin/SettingsPage'
 import { TagsPage } from '@/pages/admin/TagsPage'
+import { GuestTicketPage } from '@/pages/GuestTicketPage'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -141,6 +142,13 @@ const adminTagsRoute = createRoute({
   component: TagsPage,
 })
 
+// ── Guest ─────────────────────────────────────────────────────────────────────
+const submitRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/submit',
+  component: GuestTicketPage,
+})
+
 // ── Index redirect ────────────────────────────────────────────────────────────
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -158,6 +166,7 @@ export const router = createRouter({
     loginRoute,
     setupRoute,
     dashboardRoute,
+    submitRoute,
     ticketsRoute,
     newTicketRoute,
     ticketDetailRoute,

@@ -1,10 +1,17 @@
 import { useState } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
-import { createTicket } from '@/api/tickets'
+import {
+  createTicket,
+  listPublicCategories,
+  listPublicTypes,
+  uploadAttachment,
+} from '@/api/tickets'
 import { listCategories, listTypes, listItems } from '@/api/admin'
 import { extractError } from '@/api/client'
+import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
+import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -16,30 +23,41 @@ const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
 
 export function NewTicketPage() {
   const navigate = useNavigate()
+  const { user } = useAuthStore()
+  const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [typeId, setTypeId] = useState('')
   const [itemId, setItemId] = useState('')
   const [priority, setPriority] = useState<'medium' | 'critical' | 'high' | 'low'>('medium')
+  const [files, setFiles] = useState<File[]>([])
+  const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
 
+  // Staff/admin use the admin endpoints (all categories/types/items, active or inactive).
+  // Regular users use the public endpoints (active only, no items).
   const { data: categories = [] } = useQuery({
-    queryKey: ['categories'],
-    queryFn: listCategories,
+    queryKey: isStaffOrAdmin ? ['admin-categories'] : ['public-categories'],
+    queryFn: isStaffOrAdmin ? listCategories : listPublicCategories,
   })
 
   const { data: types = [] } = useQuery({
-    queryKey: ['types', categoryId],
-    queryFn: () => listTypes(categoryId),
+    queryKey: isStaffOrAdmin
+      ? ['admin-types', categoryId]
+      : ['public-types', categoryId],
+    queryFn: () =>
+      isStaffOrAdmin ? listTypes(categoryId) : listPublicTypes(categoryId),
     enabled: !!categoryId,
   })
 
   const { data: items = [] } = useQuery({
-    queryKey: ['items', categoryId, typeId],
+    queryKey: ['admin-items', categoryId, typeId],
     queryFn: () => listItems(categoryId, typeId),
-    enabled: !!categoryId && !!typeId,
+    enabled: isStaffOrAdmin && !!categoryId && !!typeId,
   })
 
   async function handleSubmit(e: React.FormEvent) {
@@ -47,23 +65,58 @@ export function NewTicketPage() {
     setError('')
     if (!subject.trim()) { setError('Subject is required'); return }
     if (!categoryId) { setError('Category is required'); return }
-    setLoading(true)
+
+    setSubmitting(true)
     try {
       const t = await createTicket({
         subject,
         description,
         category_id: categoryId,
         type_id: typeId || undefined,
-        item_id: itemId || undefined,
-        priority,
+        item_id: isStaffOrAdmin ? (itemId || undefined) : undefined,
+        priority: isStaffOrAdmin ? priority : undefined,
       })
-      navigate({ to: '/tickets/$id', params: { id: t.id } })
+
+      if (files.length === 0) {
+        navigate({ to: '/tickets/$id', params: { id: t.id } })
+        return
+      }
+
+      // Upload attachments one by one.
+      setCreatedTicketId(t.id)
+      const initial: Record<string, UploadState> = {}
+      for (const f of files) initial[f.name] = { status: 'pending' }
+      setUploadStates(initial)
+
+      let allOk = true
+      for (const f of files) {
+        setUploadStates((prev) => ({ ...prev!, [f.name]: { status: 'uploading' } }))
+        try {
+          await uploadAttachment(t.id, f)
+          setUploadStates((prev) => ({ ...prev!, [f.name]: { status: 'done' } }))
+        } catch (err) {
+          allOk = false
+          setUploadStates((prev) => ({
+            ...prev!,
+            [f.name]: { status: 'error', error: extractError(err) },
+          }))
+        }
+      }
+
+      if (allOk) {
+        navigate({ to: '/tickets/$id', params: { id: t.id } })
+      }
+      // If some uploads failed, stay on page so the user sees errors.
+      // They can still navigate via the "View ticket" link shown below.
     } catch (err) {
       setError(extractError(err))
     } finally {
-      setLoading(false)
+      setSubmitting(false)
     }
   }
+
+  const isUploading = !!uploadStates
+  const uploadDone = isUploading && Object.values(uploadStates!).every((s) => s.status !== 'uploading')
 
   return (
     <Layout>
@@ -83,6 +136,7 @@ export function NewTicketPage() {
                   value={subject}
                   onChange={(e) => setSubject(e.target.value)}
                   placeholder="Short summary of the issue"
+                  disabled={isUploading}
                   required
                 />
               </div>
@@ -95,10 +149,11 @@ export function NewTicketPage() {
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Full details of the request or issue"
                   rows={5}
+                  disabled={isUploading}
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-4">
+              <div className={`grid gap-4 ${isStaffOrAdmin ? 'grid-cols-3' : 'grid-cols-2'}`}>
                 <div className="space-y-1">
                   <Label htmlFor="category">Category *</Label>
                   <Select
@@ -109,6 +164,7 @@ export function NewTicketPage() {
                       setTypeId('')
                       setItemId('')
                     }}
+                    disabled={isUploading}
                   >
                     <option value="">Select…</option>
                     {categories.map((c) => (
@@ -126,7 +182,7 @@ export function NewTicketPage() {
                       setTypeId(e.target.value)
                       setItemId('')
                     }}
-                    disabled={!categoryId || types.length === 0}
+                    disabled={isUploading || !categoryId || types.length === 0}
                   >
                     <option value="">Select…</option>
                     {types.map((t) => (
@@ -135,45 +191,84 @@ export function NewTicketPage() {
                   </Select>
                 </div>
 
-                <div className="space-y-1">
-                  <Label htmlFor="item">Item</Label>
+                {isStaffOrAdmin && (
+                  <div className="space-y-1">
+                    <Label htmlFor="item">Item</Label>
+                    <Select
+                      id="item"
+                      value={itemId}
+                      onChange={(e) => setItemId(e.target.value)}
+                      disabled={isUploading || !typeId || items.length === 0}
+                    >
+                      <option value="">Select…</option>
+                      {items.map((i) => (
+                        <option key={i.id} value={i.id}>{i.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+                )}
+              </div>
+
+              {isStaffOrAdmin && (
+                <div className="space-y-1 max-w-xs">
+                  <Label htmlFor="priority">Priority</Label>
                   <Select
-                    id="item"
-                    value={itemId}
-                    onChange={(e) => setItemId(e.target.value)}
-                    disabled={!typeId || items.length === 0}
+                    id="priority"
+                    value={priority}
+                    onChange={(e) => setPriority(e.target.value as typeof priority)}
+                    disabled={isUploading}
                   >
-                    <option value="">Select…</option>
-                    {items.map((i) => (
-                      <option key={i.id} value={i.id}>{i.name}</option>
+                    {PRIORITIES.map((p) => (
+                      <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
                     ))}
                   </Select>
                 </div>
-              </div>
+              )}
 
-              <div className="space-y-1 max-w-xs">
-                <Label htmlFor="priority">Priority</Label>
-                <Select
-                  id="priority"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value as typeof priority)}
-                >
-                  {PRIORITIES.map((p) => (
-                    <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
-                  ))}
-                </Select>
+              <div className="space-y-1">
+                <Label>Attachments</Label>
+                <AttachmentUpload
+                  files={files}
+                  onChange={setFiles}
+                  uploadStates={uploadStates}
+                  disabled={isUploading}
+                />
               </div>
 
               {error && <p className="text-sm text-red-600">{error}</p>}
 
-              <div className="flex gap-3">
-                <Button type="submit" disabled={loading}>
-                  {loading ? 'Submitting…' : 'Submit ticket'}
-                </Button>
-                <Button type="button" variant="outline" onClick={() => navigate({ to: '/tickets' })}>
-                  Cancel
-                </Button>
-              </div>
+              {uploadDone && createdTicketId && (
+                <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm space-y-1">
+                  <p className="text-yellow-800 font-medium">Some files failed to upload.</p>
+                  <button
+                    type="button"
+                    className="text-blue-600 underline hover:no-underline"
+                    onClick={() => navigate({ to: '/tickets/$id', params: { id: createdTicketId } })}
+                  >
+                    View ticket anyway
+                  </button>
+                </div>
+              )}
+
+              {!uploadDone && (
+                <div className="flex gap-3">
+                  <Button type="submit" disabled={submitting || isUploading}>
+                    {submitting
+                      ? 'Submitting…'
+                      : isUploading
+                      ? 'Uploading files…'
+                      : 'Submit ticket'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => navigate({ to: '/tickets' })}
+                    disabled={submitting || isUploading}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              )}
             </form>
           </CardContent>
         </Card>

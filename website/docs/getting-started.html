@@ -171,9 +171,11 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
   <tbody>
     <tr><td><code>HTTP_PORT</code></td><td><code>8080</code></td><td>TCP port the HTTP server listens on. Change this when running behind a reverse proxy that handles TLS.</td></tr>
     <tr><td><code>ATTACHMENT_DIR</code></td><td><code>/data/attachments</code></td><td>Filesystem path where uploaded files are stored. The directory and its parents are created on startup if they don't exist. Must be writable by the application user (<code>ohd</code> in Docker).</td></tr>
+    <tr><td><code>CLAMAV_ADDR</code></td><td><code>tcp://clamav:3310</code>*</td><td>Address of a ClamAV daemon for virus scanning. The Docker Compose setup runs a ClamAV container automatically and wires this up — you do not need to set it yourself. For bare-metal or Kubernetes installs, point this at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>). When unreachable or unset, scanning is skipped with a logged warning and uploads proceed normally.</td></tr>
     <tr><td><code>APP_ENV</code></td><td><code>production</code></td><td>Set to <code>development</code> to enable verbose request logging, relaxed CORS, and friendlier error messages in API responses.</td></tr>
   </tbody>
 </table>
+<p class="text-sm text-muted" style="font-size:0.85em;color:#6b7280;margin-top:0.25rem">* Default shown is for Docker Compose, where ClamAV runs as a sidecar on an internal network. Not applicable to bare-metal or Kubernetes installs.</p>
 
 <h3>Email (SMTP)</h3>
 <p>Email notifications are silently disabled when <code>SMTP_HOST</code> is not set. No restart is needed to toggle email; the app checks this value at startup.</p>
