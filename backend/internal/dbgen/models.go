@@ -128,6 +128,7 @@ type Status struct {
 	Kind      string    `json:"kind"`
 	SortOrder int32     `json:"sort_order"`
 	Color     string    `json:"color"`
+	Active    bool      `json:"active"`
 }
 
 type Tag struct {
@@ -175,6 +176,15 @@ type TicketReply struct {
 	Internal       bool           `json:"internal"`
 	CreatedAt      time.Time      `json:"created_at"`
 	NotifyCustomer bool           `json:"notify_customer"`
+}
+
+type TicketStatusHistory struct {
+	ID              uuid.UUID     `json:"id"`
+	TicketID        uuid.UUID     `json:"ticket_id"`
+	FromStatusID    uuid.NullUUID `json:"from_status_id"`
+	ToStatusID      uuid.UUID     `json:"to_status_id"`
+	ChangedByUserID uuid.NullUUID `json:"changed_by_user_id"`
+	CreatedAt       time.Time     `json:"created_at"`
 }
 
 type TicketTag struct {
