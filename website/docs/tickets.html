@@ -58,7 +58,7 @@
       <li><a href="#tickets-tags">Tags</a></li>
       <li><a href="#tickets-assignment">Assignment</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
-      <li><a href="#tickets-search">Search &amp; filtering</a></li>
+      <li><a href="#tickets-search">Search</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
@@ -339,28 +339,18 @@
 <p>Files are stored under <code>ATTACHMENT_DIR/tickets/&lt;ticketID&gt;/</code> with UUID-based filenames to prevent enumeration. The original filename is preserved in the database and shown in the UI and <code>Content-Disposition</code> headers on download.</p>
 
 
-<h2 id="tickets-search">Search &amp; filtering</h2>
+<h2 id="tickets-search">Search</h2>
 
-<h3>Quick search</h3>
-<p>The search bar at the top of the ticket list searches subject lines. Staff and admins can also enter a ticket ID directly to navigate to it immediately.</p>
-
-<h3>Filters</h3>
-<p>The ticket list can be filtered by:</p>
+<h3>Live search</h3>
+<p>The search bar at the top of the ticket list searches across <strong>tracking number</strong>, <strong>subject</strong>, and <strong>description</strong>. Results appear after you type at least 2 characters (with a short debounce). A spinner is shown while results load.</p>
 <ul>
-  <li><strong>Status</strong> — one or multiple statuses. Default view shows all non-Closed tickets.</li>
-  <li><strong>Priority</strong> — Critical, High, Medium, Low.</li>
-  <li><strong>Assignee</strong> — my tickets, unassigned, or a specific staff member.</li>
-  <li><strong>Group</strong> — tickets assigned to a specific group.</li>
-  <li><strong>Category / Type / Item</strong> — narrow to a specific CTI path.</li>
-  <li><strong>SLA status</strong> (if SLA is enabled) — within SLA, at risk, breached.</li>
-  <li><strong>Date range</strong> — created between two dates.</li>
+  <li>Tracking number searches use a <strong>prefix match</strong> — e.g. typing <code>OHD-2025-0</code> matches all tickets in that series.</li>
+  <li>Subject and description searches are <strong>case-insensitive substring</strong> matches.</li>
+  <li>Users only see results from their own tickets. Staff and admins see results from tickets assigned to them and their groups.</li>
 </ul>
 
-<h3>Sorting</h3>
-<p>Sort the ticket list by: newest, oldest, last updated, priority (high to low), or SLA deadline (soonest first). The default sort is last updated descending.</p>
-
-<h3>Saved views (staff and admin)</h3>
-<p>Staff can save any combination of filters and sort order as a named view. Saved views appear in the left sidebar under <em>My Views</em>. Admins can publish shared views visible to all staff.</p>
+<h3>Jump to ticket (staff and admin)</h3>
+<p>Staff and admins can submit the search form (press Enter or click <em>Jump to ticket</em>) to navigate directly to a ticket by its exact tracking number or UUID. If no match is found, an inline error is shown.</p>
 
 
 <div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">

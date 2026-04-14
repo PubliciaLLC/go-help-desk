@@ -107,6 +107,9 @@ type Querier interface {
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
+	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]Ticket, error)
+	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]Ticket, error)
+	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]Ticket, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error

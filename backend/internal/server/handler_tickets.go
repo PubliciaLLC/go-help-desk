@@ -21,6 +21,7 @@ import (
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	ctx := r.Context()
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	// Specific group filter (staff/admin only).
 	if gidStr := r.URL.Query().Get("assignee_group_id"); gidStr != "" {
@@ -33,7 +34,12 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "bad_request", "invalid assignee_group_id")
 			return
 		}
-		tickets, err := s.tickets.ListByAssigneeGroup(ctx, gid, 100, 0)
+		var tickets []ticket.Ticket
+		if q != "" {
+			tickets, err = s.tickets.SearchByAssigneeGroup(ctx, gid, q, 100, 0)
+		} else {
+			tickets, err = s.tickets.ListByAssigneeGroup(ctx, gid, 100, 0)
+		}
 		if err != nil {
 			handleError(w, err)
 			return
@@ -44,7 +50,15 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 
 	// Users only see their own reported tickets.
 	if a.Role == user.RoleUser {
-		tickets, err := s.tickets.ListByReporter(ctx, a.UserID, 100, 0)
+		var (
+			tickets []ticket.Ticket
+			err     error
+		)
+		if q != "" {
+			tickets, err = s.tickets.SearchByReporter(ctx, a.UserID, q, 100, 0)
+		} else {
+			tickets, err = s.tickets.ListByReporter(ctx, a.UserID, 100, 0)
+		}
 		if err != nil {
 			handleError(w, err)
 			return
@@ -56,7 +70,13 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	// Staff/admin: tickets assigned to them + tickets assigned to their groups.
 	var all []ticket.Ticket
 
-	mine, err := s.tickets.ListByAssigneeUser(ctx, a.UserID, 100, 0)
+	var err error
+	var mine []ticket.Ticket
+	if q != "" {
+		mine, err = s.tickets.SearchByAssigneeUser(ctx, a.UserID, q, 100, 0)
+	} else {
+		mine, err = s.tickets.ListByAssigneeUser(ctx, a.UserID, 100, 0)
+	}
 	if err != nil {
 		handleError(w, err)
 		return
@@ -73,7 +93,12 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		seen[t.ID] = true
 	}
 	for _, g := range groups {
-		gTickets, err := s.tickets.ListByAssigneeGroup(ctx, g.ID, 100, 0)
+		var gTickets []ticket.Ticket
+		if q != "" {
+			gTickets, err = s.tickets.SearchByAssigneeGroup(ctx, g.ID, q, 100, 0)
+		} else {
+			gTickets, err = s.tickets.ListByAssigneeGroup(ctx, g.ID, 100, 0)
+		}
 		if err != nil {
 			handleError(w, err)
 			return

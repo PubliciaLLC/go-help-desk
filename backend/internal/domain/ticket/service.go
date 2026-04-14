@@ -455,6 +455,21 @@ func (s *Service) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, li
 	return s.store.ListByAssigneeGroup(ctx, groupID, limit, offset)
 }
 
+// SearchByReporter filters the reporter's tickets by tracking number, subject, or description.
+func (s *Service) SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
+	return s.store.SearchByReporter(ctx, userID, q, limit, offset)
+}
+
+// SearchByAssigneeUser filters tickets assigned to the user by tracking number, subject, or description.
+func (s *Service) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
+	return s.store.SearchByAssigneeUser(ctx, userID, q, limit, offset)
+}
+
+// SearchByAssigneeGroup filters tickets assigned to the group by tracking number, subject, or description.
+func (s *Service) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
+	return s.store.SearchByAssigneeGroup(ctx, groupID, q, limit, offset)
+}
+
 // ListResolvedBefore is used by the auto-close scheduler.
 func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error) {
 	return s.store.ListResolvedBefore(ctx, before, limit)

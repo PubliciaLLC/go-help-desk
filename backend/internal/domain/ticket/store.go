@@ -22,6 +22,11 @@ type Store interface {
 	ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]Ticket, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 
+	// Search — ILIKE across tracking_number, subject, description
+	SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+	SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+	SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)
 

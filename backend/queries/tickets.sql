@@ -26,11 +26,29 @@ WHERE id = $1;
 -- name: ListTicketsByReporter :many
 SELECT * FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
+-- name: SearchTicketsByReporter :many
+SELECT * FROM tickets
+WHERE reporter_user_id = $1
+  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
+ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+
 -- name: ListTicketsByAssigneeUser :many
 SELECT * FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
+-- name: SearchTicketsByAssigneeUser :many
+SELECT * FROM tickets
+WHERE assignee_user_id = $1
+  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
+ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+
 -- name: ListTicketsByAssigneeGroup :many
 SELECT * FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+
+-- name: SearchTicketsByAssigneeGroup :many
+SELECT * FROM tickets
+WHERE assignee_group_id = $1
+  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
+ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByStatus :many
 SELECT * FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -77,6 +78,56 @@ func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 		ClosedAt:        database.NullTime(t.ClosedAt),
 		UpdatedAt:       time.Now(),
 	})
+}
+
+// searchPattern builds the ILIKE pattern for a user-supplied search term.
+// Tracking-number prefixes (e.g. "OHD-" or "OHD-2025-000") use a suffix
+// wildcard only; everything else is wrapped in %…% for substring matching.
+func searchPattern(q string) string {
+	upper := strings.ToUpper(strings.TrimSpace(q))
+	if len(upper) > 0 && upper[0] >= 'A' && upper[0] <= 'Z' && strings.Contains(upper, "-") {
+		return upper + "%"
+	}
+	return "%" + q + "%"
+}
+
+func (s *Store) SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.SearchTicketsByReporter(ctx, dbgen.SearchTicketsByReporterParams{
+		ReporterUserID: database.NullUUID(&userID),
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+		TrackingNumber: searchPattern(q),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching tickets by reporter: %w", err)
+	}
+	return fromRows(rows), nil
+}
+
+func (s *Store) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.SearchTicketsByAssigneeUser(ctx, dbgen.SearchTicketsByAssigneeUserParams{
+		AssigneeUserID: database.NullUUID(&userID),
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+		TrackingNumber: searchPattern(q),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching tickets by assignee user: %w", err)
+	}
+	return fromRows(rows), nil
+}
+
+func (s *Store) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.SearchTicketsByAssigneeGroup(ctx, dbgen.SearchTicketsByAssigneeGroupParams{
+		AssigneeGroupID: database.NullUUID(&groupID),
+		Limit:           int32(limit),
+		Offset:          int32(offset),
+		TrackingNumber:  searchPattern(q),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching tickets by assignee group: %w", err)
+	}
+	return fromRows(rows), nil
 }
 
 func (s *Store) ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {

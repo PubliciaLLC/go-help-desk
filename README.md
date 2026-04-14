@@ -24,6 +24,7 @@ Open Help Desk is an open-source ticket management system. Staff submit and trac
 - Group scoping tied to CTI categories (a group is only assigned tickets it owns)
 - Tags — free-form labels on tickets; staff create tags on first use (stored lowercase); admins can deactivate or restore tags
 - Linked tickets (related, parent/child, duplicate, caused-by)
+- Live ticket search — by tracking number (prefix), subject, or description keywords; staff/admin can jump directly to a ticket by tracking number or UUID
 - Email and webhook notifications
 - Optional SLA tracking
 - Configurable branding — site name and logo upload (PNG, SVG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI

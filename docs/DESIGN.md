@@ -75,7 +75,7 @@ Three roles: **Admin**, **Staff**, **User**
 | Role | Capabilities |
 |------|-------------|
 | **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
-| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search and open any ticket by ticket number. Assign tickets to any staff member or group. Add and remove tags on tickets. |
+| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Update their own tickets unless status is Resolved. Reopen a Resolved ticket within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
 
 ### User Management (Admin)
@@ -114,6 +114,16 @@ Free-form labels that staff can attach to any ticket. Rules:
 - **Admins** can restore a deactivated tag, making it usable again.
 - Autocomplete is available when adding a tag — as the user types, active tags matching the prefix are suggested.
 - Tags are a flat namespace — no hierarchy, no parent/child relationships.
+
+### Ticket Search
+
+The ticket list includes a live search bar with a 300 ms debounce:
+
+- Searches **tracking number** (prefix match — e.g. `OHD-2025-0` matches all tickets in that series), **subject**, and **description** (substring match).
+- Results appear after 2 characters are entered. Fetching is shown inline with a spinner.
+- **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
+- Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
+- Full-text search (Postgres FTS with ranking) is deferred to v3.
 
 ### Linked Tickets
 

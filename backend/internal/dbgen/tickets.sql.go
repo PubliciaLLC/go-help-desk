@@ -630,6 +630,195 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const searchTicketsByAssigneeGroup = `-- name: SearchTicketsByAssigneeGroup :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+WHERE assignee_group_id = $1
+  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
+ORDER BY created_at DESC LIMIT $2 OFFSET $3
+`
+
+type SearchTicketsByAssigneeGroupParams struct {
+	AssigneeGroupID uuid.NullUUID `json:"assignee_group_id"`
+	Limit           int32         `json:"limit"`
+	Offset          int32         `json:"offset"`
+	TrackingNumber  string        `json:"tracking_number"`
+}
+
+func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, searchTicketsByAssigneeGroup,
+		arg.AssigneeGroupID,
+		arg.Limit,
+		arg.Offset,
+		arg.TrackingNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchTicketsByAssigneeUser = `-- name: SearchTicketsByAssigneeUser :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+WHERE assignee_user_id = $1
+  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
+ORDER BY created_at DESC LIMIT $2 OFFSET $3
+`
+
+type SearchTicketsByAssigneeUserParams struct {
+	AssigneeUserID uuid.NullUUID `json:"assignee_user_id"`
+	Limit          int32         `json:"limit"`
+	Offset         int32         `json:"offset"`
+	TrackingNumber string        `json:"tracking_number"`
+}
+
+func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, searchTicketsByAssigneeUser,
+		arg.AssigneeUserID,
+		arg.Limit,
+		arg.Offset,
+		arg.TrackingNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchTicketsByReporter = `-- name: SearchTicketsByReporter :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+WHERE reporter_user_id = $1
+  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
+ORDER BY created_at DESC LIMIT $2 OFFSET $3
+`
+
+type SearchTicketsByReporterParams struct {
+	ReporterUserID uuid.NullUUID `json:"reporter_user_id"`
+	Limit          int32         `json:"limit"`
+	Offset         int32         `json:"offset"`
+	TrackingNumber string        `json:"tracking_number"`
+}
+
+func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, searchTicketsByReporter,
+		arg.ReporterUserID,
+		arg.Limit,
+		arg.Offset,
+		arg.TrackingNumber,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateTicket = `-- name: UpdateTicket :exec
 UPDATE tickets
 SET subject = $2, description = $3, type_id = $4, item_id = $5,
