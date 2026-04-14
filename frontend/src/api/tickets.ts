@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -72,4 +72,25 @@ export async function removeLink(
   linkType: LinkType
 ): Promise<void> {
   await api.delete(`/tickets/${ticketId}/links/${targetId}/${linkType}`)
+}
+
+// ── Tags ──────────────────────────────────────────────────────────────────────
+
+export async function searchTags(q: string): Promise<Tag[]> {
+  const res = await api.get<Tag[]>('/tags', { params: { q } })
+  return res.data
+}
+
+export async function listTicketTags(ticketId: string): Promise<Tag[]> {
+  const res = await api.get<Tag[]>(`/tickets/${ticketId}/tags`)
+  return res.data
+}
+
+export async function addTicketTag(ticketId: string, name: string): Promise<Tag> {
+  const res = await api.post<Tag>(`/tickets/${ticketId}/tags`, { name })
+  return res.data
+}
+
+export async function removeTicketTag(ticketId: string, tagId: string): Promise<void> {
+  await api.delete(`/tickets/${ticketId}/tags/${tagId}`)
 }

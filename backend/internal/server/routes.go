@@ -39,6 +39,10 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Delete("/{id}/links/{targetId}/{linkType}", s.handleRemoveLink)
 	r.Get("/{id}/links", s.handleListLinks)
 
+	r.Get("/{id}/tags", s.handleListTicketTags)
+	r.Post("/{id}/tags", s.handleAddTicketTag)
+	r.Delete("/{id}/tags/{tagId}", s.handleRemoveTicketTag)
+
 	return r
 }
 
@@ -52,6 +56,7 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/{id}", s.handleGetUser)
 		r.Patch("/{id}", s.handleUpdateUser)
 		r.Delete("/{id}", s.handleDeleteUser)
+		r.Post("/{id}/password", s.handleAdminResetPassword)
 	})
 
 	r.Route("/groups", func(r chi.Router) {
@@ -129,6 +134,12 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
+	})
+
+	r.Route("/tags", func(r chi.Router) {
+		r.Get("/", s.handleAdminListTags)
+		r.Delete("/{id}", s.handleAdminDeleteTag)
+		r.Post("/{id}/restore", s.handleAdminRestoreTag)
 	})
 
 	return r

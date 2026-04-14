@@ -130,6 +130,13 @@ type Status struct {
 	Color     string    `json:"color"`
 }
 
+type Tag struct {
+	ID        uuid.UUID    `json:"id"`
+	Name      string       `json:"name"`
+	CreatedAt time.Time    `json:"created_at"`
+	DeletedAt sql.NullTime `json:"deleted_at"`
+}
+
 type Ticket struct {
 	ID              uuid.UUID      `json:"id"`
 	TrackingNumber  string         `json:"tracking_number"`
@@ -165,6 +172,11 @@ type TicketReply struct {
 	Body       string         `json:"body"`
 	Internal   bool           `json:"internal"`
 	CreatedAt  time.Time      `json:"created_at"`
+}
+
+type TicketTag struct {
+	TicketID uuid.UUID `json:"ticket_id"`
+	TagID    uuid.UUID `json:"tag_id"`
 }
 
 type Type struct {

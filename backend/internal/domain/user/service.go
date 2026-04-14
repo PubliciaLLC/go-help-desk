@@ -196,3 +196,35 @@ func (s *Service) Update(ctx context.Context, u User) error {
 	u.UpdatedAt = time.Now()
 	return s.store.Update(ctx, u)
 }
+
+// GetByIDAdmin returns the user with the given ID, including disabled users.
+func (s *Service) GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) {
+	return s.store.GetByIDAdmin(ctx, id)
+}
+
+// ListAdmin returns all users including disabled ones.
+func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, error) {
+	return s.store.ListAdmin(ctx, limit, offset)
+}
+
+// Enable restores a soft-deleted user account.
+func (s *Service) Enable(ctx context.Context, id uuid.UUID) error {
+	return s.store.Restore(ctx, id)
+}
+
+// ResetMFA clears the user's TOTP secret and disables MFA.
+func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID) error {
+	return s.store.ClearMFA(ctx, id)
+}
+
+// AdminSetPassword hashes and stores a new password without requiring the old one.
+func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string) error {
+	if strings.TrimSpace(plain) == "" {
+		return fmt.Errorf("password is required")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+	return s.store.AdminSetPassword(ctx, id, string(hash))
+}

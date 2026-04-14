@@ -12,6 +12,22 @@ export interface User {
   updated_at: string
 }
 
+export type AuthType = 'local' | 'saml' | 'both'
+
+export interface AdminUser {
+  id: string
+  email: string
+  display_name: string
+  role: Role
+  disabled: boolean
+  auth_type: AuthType
+  has_password: boolean
+  mfa_enabled: boolean
+  created_at: string
+  updated_at: string
+  groups: Group[]
+}
+
 export interface Category {
   id: string
   name: string
@@ -83,6 +99,13 @@ export interface Group {
   id: string
   name: string
   description: string
+}
+
+export interface Tag {
+  id: string
+  name: string
+  created_at: string
+  deleted_at?: string
 }
 
 export interface APIKey {

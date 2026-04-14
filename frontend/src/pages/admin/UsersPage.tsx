@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listUsers, createUser, deleteUser } from '@/api/admin'
+import { useNavigate } from '@tanstack/react-router'
+import { listUsers, createUser } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -10,7 +11,7 @@ import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { PlusIcon, TrashIcon } from 'lucide-react'
+import { PlusIcon } from 'lucide-react'
 import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
@@ -23,6 +24,7 @@ function roleBadge(role: Role) {
 
 export function UsersPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [showCreate, setShowCreate] = useState(false)
   const [email, setEmail] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -32,7 +34,7 @@ export function UsersPage() {
 
   const { data: users = [], isLoading } = useQuery({
     queryKey: ['admin', 'users'],
-    queryFn: () => listUsers(100),
+    queryFn: () => listUsers(),
   })
 
   const createMutation = useMutation({
@@ -49,16 +51,14 @@ export function UsersPage() {
     onError: (err) => setFormError(extractError(err)),
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteUser(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'users'] }),
-  })
-
   return (
     <Layout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">Users</h1>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Users</h1>
+            <p className="mt-1 text-sm text-gray-500">Click a user to edit their profile, groups, and account settings.</p>
+          </div>
           <Button onClick={() => setShowCreate(!showCreate)}>
             <PlusIcon className="mr-2 h-4 w-4" />
             Add User
@@ -112,29 +112,31 @@ export function UsersPage() {
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Email</th>
                   <th className="px-4 py-3 text-left">Role</th>
+                  <th className="px-4 py-3 text-left">Login</th>
                   <th className="px-4 py-3 text-left">Joined</th>
-                  <th className="px-4 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {users.map((u) => (
-                  <tr key={u.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium">{u.display_name}</td>
+                  <tr
+                    key={u.id}
+                    className={`cursor-pointer hover:bg-blue-50 transition-colors ${u.disabled ? 'opacity-60' : ''}`}
+                    onClick={() => navigate({ to: '/admin/users/$id', params: { id: u.id } })}
+                  >
+                    <td className="px-4 py-3">
+                      <span className="font-medium text-gray-900">{u.display_name}</span>
+                      {u.disabled && (
+                        <Badge variant="secondary" className="ml-2 text-[10px]">Disabled</Badge>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-gray-600">{u.email}</td>
                     <td className="px-4 py-3">
                       <Badge variant={roleBadge(u.role) as never}>{u.role}</Badge>
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
-                    <td className="px-4 py-3 text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-gray-400 hover:text-red-600"
-                        onClick={() => deleteMutation.mutate(u.id)}
-                      >
-                        <TrashIcon className="h-4 w-4" />
-                      </Button>
+                    <td className="px-4 py-3 text-gray-500 text-xs">
+                      {u.auth_type === 'saml' ? 'SSO' : u.auth_type === 'both' ? 'Local + SSO' : 'Local'}
                     </td>
+                    <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                   </tr>
                 ))}
                 {users.length === 0 && (

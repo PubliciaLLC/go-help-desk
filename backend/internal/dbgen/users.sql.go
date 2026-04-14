@@ -12,6 +12,29 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const adminSetPassword = `-- name: AdminSetPassword :exec
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1
+`
+
+type AdminSetPasswordParams struct {
+	ID           uuid.UUID `json:"id"`
+	PasswordHash string    `json:"password_hash"`
+}
+
+func (q *Queries) AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error {
+	_, err := q.db.ExecContext(ctx, adminSetPassword, arg.ID, arg.PasswordHash)
+	return err
+}
+
+const clearMFA = `-- name: ClearMFA :exec
+UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE id = $1
+`
+
+func (q *Queries) ClearMFA(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, clearMFA, id)
+	return err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL
 `
@@ -103,6 +126,29 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getUserByIDAdmin = `-- name: GetUserByIDAdmin :one
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at FROM users WHERE id = $1
+`
+
+func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByIDAdmin, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Role,
+		&i.PasswordHash,
+		&i.MfaSecret,
+		&i.MfaEnabled,
+		&i.SamlSubject,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const getUserBySAMLSubject = `-- name: GetUserBySAMLSubject :one
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL
 `
@@ -168,6 +214,59 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const listUsersAdmin = `-- name: ListUsersAdmin :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type ListUsersAdminParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, listUsersAdmin, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const restoreUser = `-- name: RestoreUser :exec
+UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1
+`
+
+func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, restoreUser, id)
+	return err
 }
 
 const softDeleteUser = `-- name: SoftDeleteUser :exec

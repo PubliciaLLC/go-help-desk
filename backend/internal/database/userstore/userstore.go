@@ -73,8 +73,28 @@ func (s *Store) Update(ctx context.Context, u user.User) error {
 	})
 }
 
+func (s *Store) GetByIDAdmin(ctx context.Context, id uuid.UUID) (user.User, error) {
+	row, err := s.q.GetUserByIDAdmin(ctx, id)
+	if err != nil {
+		return user.User{}, wrapNotFound(err, "user", id.String())
+	}
+	return fromRow(row), nil
+}
+
 func (s *Store) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	return s.q.SoftDeleteUser(ctx, id)
+}
+
+func (s *Store) Restore(ctx context.Context, id uuid.UUID) error {
+	return s.q.RestoreUser(ctx, id)
+}
+
+func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
+	return s.q.ClearMFA(ctx, id)
+}
+
+func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
+	return s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
 }
 
 func (s *Store) List(ctx context.Context, limit, offset int) ([]user.User, error) {
@@ -84,6 +104,21 @@ func (s *Store) List(ctx context.Context, limit, offset int) ([]user.User, error
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
+func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, error) {
+	rows, err := s.q.ListUsersAdmin(ctx, dbgen.ListUsersAdminParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing users (admin): %w", err)
 	}
 	out := make([]user.User, len(rows))
 	for i, r := range rows {

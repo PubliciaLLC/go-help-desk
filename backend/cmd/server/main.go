@@ -23,6 +23,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/categorystore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/groupstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/slastore"
+	"github.com/open-help-desk/open-help-desk/backend/internal/database/tagstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/ticketstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/userstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/dbgen"
@@ -32,6 +33,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/group"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/plugin"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/sla"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/tag"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
 	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
@@ -92,9 +94,12 @@ func run() error {
 	authStore := authstore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
+	tagStore := tagstore.New(q)
+
 	userSvc := user.NewService(uStore)
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
+	tagSvc := tag.NewService(tagStore)
 	adminSvc := admin.NewService(aStore)
 
 	var slaSvc *sla.Service
@@ -149,6 +154,7 @@ func run() error {
 		ticketSvc,
 		categorySvc,
 		groupSvc,
+		tagSvc,
 		adminSvc,
 		pluginRegistry,
 		apiKeyLookup,

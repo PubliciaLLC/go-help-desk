@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -17,8 +17,13 @@ export async function getSiteConfig(): Promise<SiteConfig> {
 
 // ── Users ────────────────────────────────────────────────────────────────────
 
-export async function listUsers(limit = 50, offset = 0): Promise<User[]> {
-  const res = await api.get<User[]>('/admin/users', { params: { limit, offset } })
+export async function listUsers(limit = 200, offset = 0): Promise<AdminUser[]> {
+  const res = await api.get<AdminUser[]>('/admin/users', { params: { limit, offset } })
+  return res.data
+}
+
+export async function getUser(id: string): Promise<AdminUser> {
+  const res = await api.get<AdminUser>(`/admin/users/${id}`)
   return res.data
 }
 
@@ -32,9 +37,19 @@ export async function createUser(input: {
   return res.data
 }
 
-export async function updateUser(id: string, patch: Partial<Pick<User, 'email' | 'display_name' | 'role'>>): Promise<User> {
-  const res = await api.patch<User>(`/admin/users/${id}`, patch)
+export async function updateUser(id: string, patch: {
+  display_name?: string
+  email?: string
+  role?: Role
+  disabled?: boolean
+  reset_mfa?: boolean
+}): Promise<AdminUser> {
+  const res = await api.patch<AdminUser>(`/admin/users/${id}`, patch)
   return res.data
+}
+
+export async function adminResetPassword(id: string, newPassword: string): Promise<void> {
+  await api.post(`/admin/users/${id}/password`, { new_password: newPassword })
 }
 
 export async function deleteUser(id: string): Promise<void> {
@@ -233,6 +248,21 @@ export async function createAPIKey(input: {
 
 export async function deleteAPIKey(id: string): Promise<void> {
   await api.delete(`/admin/api-keys/${id}`)
+}
+
+// ── Tags (admin) ──────────────────────────────────────────────────────────────
+
+export async function listAllTags(): Promise<Tag[]> {
+  const res = await api.get<Tag[]>('/admin/tags')
+  return res.data
+}
+
+export async function deleteTag(id: string): Promise<void> {
+  await api.delete(`/admin/tags/${id}`)
+}
+
+export async function restoreTag(id: string): Promise<void> {
+  await api.post(`/admin/tags/${id}/restore`)
 }
 
 // ── Webhooks ─────────────────────────────────────────────────────────────────

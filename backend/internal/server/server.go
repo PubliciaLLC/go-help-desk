@@ -20,6 +20,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/category"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/group"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/plugin"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/tag"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
 	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
@@ -56,6 +57,7 @@ type Server struct {
 	tickets    *ticket.Service
 	categories *category.Service
 	groups     *group.Service
+	tags       *tag.Service
 	adminSvc   *admin.Service
 	plugins    plugin.Registry
 
@@ -76,6 +78,7 @@ func New(
 	tickets *ticket.Service,
 	categories *category.Service,
 	groups *group.Service,
+	tags *tag.Service,
 	adminSvc *admin.Service,
 	plugins plugin.Registry,
 	apiKeyLookup authmw.APIKeyAuthFunc,
@@ -89,6 +92,7 @@ func New(
 		tickets:          tickets,
 		categories:       categories,
 		groups:           groups,
+		tags:             tags,
 		adminSvc:         adminSvc,
 		plugins:          plugins,
 		apiKeyLookup:     apiKeyLookup,
@@ -164,6 +168,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.Mount("/auth", s.authRouter())
 		r.Mount("/tickets", s.ticketRouter())
 		r.Mount("/groups", s.groupsRouter())
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/tags", s.handleListActiveTags)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

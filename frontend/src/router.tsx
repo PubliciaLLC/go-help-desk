@@ -9,11 +9,13 @@ import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
 import { TicketDetailPage } from '@/pages/TicketDetailPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
+import { UserDetailPage } from '@/pages/admin/UserDetailPage'
 import { GroupsPage } from '@/pages/admin/GroupsPage'
 import { CategoriesPage } from '@/pages/admin/CategoriesPage'
 import { StatusesPage } from '@/pages/admin/StatusesPage'
 import { RolesPage } from '@/pages/admin/RolesPage'
 import { SettingsPage } from '@/pages/admin/SettingsPage'
+import { TagsPage } from '@/pages/admin/TagsPage'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -90,6 +92,13 @@ const adminUsersRoute = createRoute({
   component: UsersPage,
 })
 
+const adminUserDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/users/$id',
+  beforeLoad: requireAdmin,
+  component: UserDetailPage,
+})
+
 const adminGroupsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/groups',
@@ -125,6 +134,13 @@ const adminSettingsRoute = createRoute({
   component: SettingsPage,
 })
 
+const adminTagsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/tags',
+  beforeLoad: requireAdmin,
+  component: TagsPage,
+})
+
 // ── Index redirect ────────────────────────────────────────────────────────────
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -146,10 +162,12 @@ export const router = createRouter({
     newTicketRoute,
     ticketDetailRoute,
     adminUsersRoute,
+    adminUserDetailRoute,
     adminGroupsRoute,
     adminRolesRoute,
     adminCategoriesRoute,
     adminStatusesRoute,
+    adminTagsRoute,
     adminSettingsRoute,
   ]),
 })

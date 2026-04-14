@@ -25,3 +25,18 @@ SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 O
 
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL;
+
+-- name: GetUserByIDAdmin :one
+SELECT * FROM users WHERE id = $1;
+
+-- name: ListUsersAdmin :many
+SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: RestoreUser :exec
+UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
+
+-- name: ClearMFA :exec
+UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE id = $1;
+
+-- name: AdminSetPassword :exec
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;

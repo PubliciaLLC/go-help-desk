@@ -14,6 +14,9 @@ import (
 type Querier interface {
 	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
+	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
+	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
+	ClearMFA(ctx context.Context, id uuid.UUID) error
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error
@@ -27,6 +30,7 @@ type Querier interface {
 	CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error
 	CreateSLARecord(ctx context.Context, arg CreateSLARecordParams) error
 	CreateStatus(ctx context.Context, arg CreateStatusParams) error
+	CreateTag(ctx context.Context, name string) (Tag, error)
 	CreateTicket(ctx context.Context, arg CreateTicketParams) error
 	CreateTicketLink(ctx context.Context, arg CreateTicketLinkParams) error
 	CreateType(ctx context.Context, arg CreateTypeParams) error
@@ -57,14 +61,18 @@ type Querier interface {
 	GetSetting(ctx context.Context, key string) (json.RawMessage, error)
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
 	GetStatusByName(ctx context.Context, name string) (Status, error)
+	GetTagByName(ctx context.Context, name string) (Tag, error)
 	GetTicketByID(ctx context.Context, id uuid.UUID) (Ticket, error)
 	GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (Ticket, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
+	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
+	ListActiveTags(ctx context.Context) ([]Tag, error)
+	ListAllTags(ctx context.Context) ([]Tag, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
@@ -83,16 +91,23 @@ type Querier interface {
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)
+	ListTicketTags(ctx context.Context, ticketID uuid.UUID) ([]Tag, error)
 	ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]Ticket, error)
 	ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]Ticket, error)
 	ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]Ticket, error)
 	ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]Ticket, error)
 	ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
+	ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) ([]User, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error
+	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
+	RestoreTag(ctx context.Context, id uuid.UUID) error
+	RestoreUser(ctx context.Context, id uuid.UUID) error
+	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error

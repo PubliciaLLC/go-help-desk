@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getTicket, listReplies, addReply, resolveTicket, reopenTicket, updateTicket } from '@/api/tickets'
+import { TagInput } from '@/components/TagInput'
 import { listStatuses, listUsers } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -359,6 +360,17 @@ export function TicketDetailPage() {
                 </CardContent>
               </Card>
             )}
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  Tags
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <TagInput ticketId={id} readonly={!isStaffOrAdmin} />
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader className="pb-2">
