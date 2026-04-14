@@ -232,7 +232,11 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 // AddReply appends a reply to a ticket. If the actor is a user replying to a
 // Resolved ticket within the reopen window, the ticket is automatically
 // reopened to the configured target status.
-func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+//
+// notifyCustomer controls whether a ticket-update email is sent to the
+// reporter. It is forced false for internal notes. reporterEmail is the
+// recipient address; callers are responsible for looking it up.
+func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
 		return Reply{}, err
@@ -248,13 +252,20 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		return Reply{}, fmt.Errorf("cannot reply to ticket: %w", err)
 	}
 
+	// Internal notes are never sent to customers.
+	if internal {
+		notifyCustomer = false
+		reporterEmail = ""
+	}
+
 	reply := Reply{
-		ID:        uuid.New(),
-		TicketID:  ticketID,
-		AuthorID:  actor.UserID,
-		Body:      body,
-		Internal:  internal,
-		CreatedAt: time.Now(),
+		ID:             uuid.New(),
+		TicketID:       ticketID,
+		AuthorID:       actor.UserID,
+		Body:           body,
+		Internal:       internal,
+		NotifyCustomer: notifyCustomer,
+		CreatedAt:      time.Now(),
 	}
 	if err := s.store.CreateReply(ctx, reply); err != nil {
 		return Reply{}, fmt.Errorf("creating reply: %w", err)
@@ -279,10 +290,18 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		_ = s.sla.RecordFirstResponse(ctx, ticketID, reply.CreatedAt)
 	}
 
+	// Dispatch reply event. reporter_email is only populated when notifyCustomer
+	// is true; the email dispatcher skips sending when the address is empty.
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketReplied,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
+		Type:     notification.EventTicketReplied,
+		TicketID: t.ID,
+		ActorID:  actor.UserID,
+		Payload: map[string]any{
+			"reporter_email": reporterEmail, // used by dispatcher to set To address
+			"TrackingNumber": string(t.TrackingNumber),
+			"Subject":        t.Subject,
+			"ReplyBody":      body,
+		},
 		OccurredAt: time.Now(),
 	})
 

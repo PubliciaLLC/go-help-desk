@@ -157,7 +157,7 @@ func (s *Server) handleAddReply(_ context.Context, req mcpgo.CallToolRequest) (*
 	}
 
 	actor := ticket.Actor{UserID: actorID, Role: user.RoleStaff}
-	reply, err := s.tickets.AddReply(context.Background(), tid, body, false, actor, 7, uuid.Nil)
+	reply, err := s.tickets.AddReply(context.Background(), tid, body, false, true, "", actor, 7, uuid.Nil)
 	if err != nil {
 		return errResult(err.Error())
 	}

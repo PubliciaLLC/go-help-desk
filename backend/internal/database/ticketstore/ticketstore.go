@@ -144,13 +144,14 @@ func (s *Store) NextSeq(ctx context.Context) (int64, error) {
 
 func (s *Store) CreateReply(ctx context.Context, r ticket.Reply) error {
 	return s.q.CreateReply(ctx, dbgen.CreateReplyParams{
-		ID:         r.ID,
-		TicketID:   r.TicketID,
-		AuthorID:   database.NullUUID(r.AuthorID),
-		GuestToken: database.NullString(r.GuestToken),
-		Body:       r.Body,
-		Internal:   r.Internal,
-		CreatedAt:  r.CreatedAt,
+		ID:             r.ID,
+		TicketID:       r.TicketID,
+		AuthorID:       database.NullUUID(r.AuthorID),
+		GuestToken:     database.NullString(r.GuestToken),
+		Body:           r.Body,
+		Internal:       r.Internal,
+		NotifyCustomer: r.NotifyCustomer,
+		CreatedAt:      r.CreatedAt,
 	})
 }
 
@@ -162,13 +163,14 @@ func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.R
 	out := make([]ticket.Reply, len(rows))
 	for i, r := range rows {
 		out[i] = ticket.Reply{
-			ID:         r.ID,
-			TicketID:   r.TicketID,
-			AuthorID:   database.UUIDPtr(r.AuthorID),
-			GuestToken: database.StringPtr(r.GuestToken),
-			Body:       r.Body,
-			Internal:   r.Internal,
-			CreatedAt:  r.CreatedAt,
+			ID:             r.ID,
+			TicketID:       r.TicketID,
+			AuthorID:       database.UUIDPtr(r.AuthorID),
+			GuestToken:     database.StringPtr(r.GuestToken),
+			Body:           r.Body,
+			Internal:       r.Internal,
+			NotifyCustomer: r.NotifyCustomer,
+			CreatedAt:      r.CreatedAt,
 		}
 	}
 	return out, nil

@@ -51,8 +51,17 @@ export async function listReplies(ticketId: string): Promise<Reply[]> {
   return res.data
 }
 
-export async function addReply(ticketId: string, body: string, internal = false): Promise<Reply> {
-  const res = await api.post<Reply>(`/tickets/${ticketId}/replies`, { body, internal })
+export async function addReply(
+  ticketId: string,
+  body: string,
+  internal = false,
+  notifyCustomer = true
+): Promise<Reply> {
+  const res = await api.post<Reply>(`/tickets/${ticketId}/replies`, {
+    body,
+    internal,
+    notify_customer: notifyCustomer,
+  })
   return res.data
 }
 

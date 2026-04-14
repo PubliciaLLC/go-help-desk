@@ -14,6 +14,7 @@ interface AttachmentUploadProps {
   onChange: (files: File[]) => void
   uploadStates?: Record<string, UploadState>
   disabled?: boolean
+  maxFiles?: number
 }
 
 function formatBytes(bytes: number): string {
@@ -34,14 +35,17 @@ function statusIcon(state?: UploadState) {
   return <span className="text-xs text-gray-400 shrink-0">Queued</span>
 }
 
-export function AttachmentUpload({ files, onChange, uploadStates, disabled }: AttachmentUploadProps) {
+export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5 }: AttachmentUploadProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const isUploading = !!uploadStates
+  const atLimit = files.length >= maxFiles
 
   function handleChange(fl: FileList | null) {
     if (!fl) return
+    const remaining = maxFiles - files.length
     const toAdd: File[] = []
     for (const f of Array.from(fl)) {
+      if (toAdd.length >= remaining) break
       if (f.size > MAX_SIZE_BYTES) {
         alert(`"${f.name}" exceeds the 25 MB limit and was not added.`)
         continue
@@ -67,19 +71,21 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled }: At
           multiple
           className="hidden"
           onChange={(e) => handleChange(e.target.files)}
-          disabled={disabled || isUploading}
+          disabled={disabled || isUploading || atLimit}
         />
         <Button
           type="button"
           variant="outline"
           size="sm"
           onClick={() => inputRef.current?.click()}
-          disabled={disabled || isUploading}
+          disabled={disabled || isUploading || atLimit}
         >
           Add files
         </Button>
         <span className="text-xs text-gray-500">
-          PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP &middot; max 25 MB each
+          {atLimit
+            ? `${maxFiles} file limit reached`
+            : `PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP \u00b7 max 25\u00a0MB \u00b7 up to ${maxFiles} files`}
         </span>
       </div>
 

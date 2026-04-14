@@ -9,9 +9,11 @@ import {
   reopenTicket,
   updateTicket,
   listAttachments,
+  uploadAttachment,
   attachmentDownloadUrl,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
+import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { listStatuses, listUsers } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -165,6 +167,9 @@ export function TicketDetailPage() {
 
   const [replyBody, setReplyBody] = useState('')
   const [replyInternal, setReplyInternal] = useState(false)
+  const [replyNotify, setReplyNotify] = useState(true)
+  const [replyFiles, setReplyFiles] = useState<File[]>([])
+  const [replyUploadStates, setReplyUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [replyError, setReplyError] = useState('')
 
   const { data: ticket, isLoading, error } = useQuery({
@@ -207,12 +212,39 @@ export function TicketDetailPage() {
   const statusColor = statuses.find((s) => s.id === ticket?.status_id)?.color
 
   const replyMutation = useMutation({
-    mutationFn: () => addReply(id, replyBody, replyInternal),
-    onSuccess: () => {
+    mutationFn: () => addReply(id, replyBody, replyInternal, replyNotify),
+    onSuccess: async () => {
       setReplyBody('')
       setReplyError('')
       qc.invalidateQueries({ queryKey: ['replies', id] })
       qc.invalidateQueries({ queryKey: ['ticket', id] })
+
+      // Upload any attached files to the ticket.
+      if (replyFiles.length > 0) {
+        const initial: Record<string, UploadState> = {}
+        for (const f of replyFiles) initial[f.name] = { status: 'pending' }
+        setReplyUploadStates(initial)
+
+        for (const f of replyFiles) {
+          setReplyUploadStates((prev) => ({ ...prev!, [f.name]: { status: 'uploading' } }))
+          try {
+            await uploadAttachment(id, f)
+            setReplyUploadStates((prev) => ({ ...prev!, [f.name]: { status: 'done' } }))
+          } catch (err) {
+            setReplyUploadStates((prev) => ({
+              ...prev!,
+              [f.name]: { status: 'error', error: extractError(err) },
+            }))
+          }
+        }
+
+        qc.invalidateQueries({ queryKey: ['attachments', id] })
+        // Clear files after a short delay so the user can see the done states.
+        setTimeout(() => {
+          setReplyFiles([])
+          setReplyUploadStates(undefined)
+        }, 1500)
+      }
     },
     onError: (err) => setReplyError(extractError(err)),
   })
@@ -318,36 +350,78 @@ export function TicketDetailPage() {
               ))}
             </div>
 
-            {/* Reply form */}
+            {/* Reply / work log form */}
             {statusName !== 'Closed' && (
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-sm">Add reply</CardTitle>
+                  <CardTitle className="text-sm">
+                    {isStaffOrAdmin ? 'Add work log entry' : 'Add reply'}
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <Textarea
-                    placeholder="Type your reply…"
+                    placeholder={isStaffOrAdmin ? 'Describe the work performed or add a note…' : 'Type your reply…'}
                     rows={4}
                     value={replyBody}
                     onChange={(e) => setReplyBody(e.target.value)}
+                    disabled={!!replyUploadStates}
                   />
+
                   {isStaffOrAdmin && (
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={replyInternal}
-                        onChange={(e) => setReplyInternal(e.target.checked)}
-                        className="h-4 w-4 rounded border-gray-300"
+                    <>
+                      <div className="flex flex-wrap gap-4">
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={replyInternal}
+                            onChange={(e) => {
+                              setReplyInternal(e.target.checked)
+                              if (e.target.checked) setReplyNotify(false)
+                              else setReplyNotify(true)
+                            }}
+                            className="h-4 w-4 rounded border-gray-300"
+                            disabled={!!replyUploadStates}
+                          />
+                          Internal note (not visible to customer)
+                        </label>
+
+                        {!replyInternal && (
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={replyNotify}
+                              onChange={(e) => setReplyNotify(e.target.checked)}
+                              className="h-4 w-4 rounded border-gray-300"
+                              disabled={!!replyUploadStates}
+                            />
+                            Send ticket update email to customer
+                          </label>
+                        )}
+                      </div>
+
+                      <AttachmentUpload
+                        files={replyFiles}
+                        onChange={setReplyFiles}
+                        uploadStates={replyUploadStates}
+                        disabled={!!replyUploadStates}
+                        maxFiles={5}
                       />
-                      Internal note (not visible to user)
-                    </label>
+                    </>
                   )}
+
                   {replyError && <p className="text-sm text-red-600">{replyError}</p>}
+
                   <Button
                     onClick={() => replyMutation.mutate()}
-                    disabled={replyMutation.isPending || !replyBody.trim()}
+                    disabled={replyMutation.isPending || !!replyUploadStates || !replyBody.trim()}
                   >
-                    {replyMutation.isPending ? 'Sending…' : 'Send reply'}
+                    {replyMutation.isPending
+                      ? 'Saving…'
+                      : replyUploadStates
+                      ? 'Uploading files…'
+                      : isStaffOrAdmin
+                      ? 'Save entry'
+                      : 'Send reply'}
                   </Button>
                 </CardContent>
               </Card>

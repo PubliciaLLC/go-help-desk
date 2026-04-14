@@ -42,8 +42,8 @@ ORDER BY resolved_at ASC
 LIMIT $2;
 
 -- name: CreateReply :exec
-INSERT INTO ticket_replies (id, ticket_id, author_id, guest_token, body, internal, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO ticket_replies (id, ticket_id, author_id, guest_token, body, internal, notify_customer, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: ListReplies :many
 SELECT * FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC;

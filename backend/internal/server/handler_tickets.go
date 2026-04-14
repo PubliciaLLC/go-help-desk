@@ -257,8 +257,9 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Body     string `json:"body"`
-		Internal bool   `json:"internal"`
+		Body           string `json:"body"`
+		Internal       bool   `json:"internal"`
+		NotifyCustomer *bool  `json:"notify_customer"` // nil → defaults to true
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -273,6 +274,28 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	if body.Internal && a.Role == user.RoleUser {
 		Error(w, http.StatusForbidden, "forbidden", "only staff can post internal notes")
 		return
+	}
+
+	// notify_customer defaults to true; forced false for internal notes.
+	notifyCustomer := body.NotifyCustomer == nil || *body.NotifyCustomer
+	if body.Internal {
+		notifyCustomer = false
+	}
+
+	// Look up the reporter's email so the service can include it in the
+	// notification event payload. A lookup failure is non-fatal — we skip
+	// the email rather than rejecting the reply.
+	var reporterEmail string
+	if notifyCustomer {
+		if t, err := s.tickets.GetByID(r.Context(), id); err == nil {
+			if t.GuestEmail != nil {
+				reporterEmail = *t.GuestEmail
+			} else if t.ReporterUserID != nil {
+				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil {
+					reporterEmail = u.Email
+				}
+			}
+		}
 	}
 
 	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
@@ -293,7 +316,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
-	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, body.Internal, actor, reopenDays, reopenStatusID)
+	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, body.Internal, notifyCustomer, reporterEmail, actor, reopenDays, reopenStatusID)
 	if err != nil {
 		handleError(w, err)
 		return

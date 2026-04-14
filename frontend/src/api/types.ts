@@ -97,6 +97,7 @@ export interface Reply {
   author_id?: string
   body: string
   internal: boolean
+  notify_customer: boolean
   created_at: string
 }
 

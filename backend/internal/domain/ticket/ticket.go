@@ -96,14 +96,17 @@ type Ticket struct {
 
 // Reply is a message on a ticket thread, from either a staff member or the
 // original reporter. Internal replies are visible to staff only.
+// NotifyCustomer controls whether a ticket-update email is sent to the reporter;
+// it is always false for internal notes.
 type Reply struct {
-	ID         uuid.UUID  `json:"id"`
-	TicketID   uuid.UUID  `json:"ticket_id"`
-	AuthorID   *uuid.UUID `json:"author_id,omitempty"`
-	GuestToken *string    `json:"-"`
-	Body       string     `json:"body"`
-	Internal   bool       `json:"internal"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID             uuid.UUID  `json:"id"`
+	TicketID       uuid.UUID  `json:"ticket_id"`
+	AuthorID       *uuid.UUID `json:"author_id,omitempty"`
+	GuestToken     *string    `json:"-"`
+	Body           string     `json:"body"`
+	Internal       bool       `json:"internal"`
+	NotifyCustomer bool       `json:"notify_customer"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // Attachment stores file metadata. Bytes live on disk at StoragePath.

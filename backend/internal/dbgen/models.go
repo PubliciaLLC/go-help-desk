@@ -167,13 +167,14 @@ type TicketLink struct {
 }
 
 type TicketReply struct {
-	ID         uuid.UUID      `json:"id"`
-	TicketID   uuid.UUID      `json:"ticket_id"`
-	AuthorID   uuid.NullUUID  `json:"author_id"`
-	GuestToken sql.NullString `json:"guest_token"`
-	Body       string         `json:"body"`
-	Internal   bool           `json:"internal"`
-	CreatedAt  time.Time      `json:"created_at"`
+	ID             uuid.UUID      `json:"id"`
+	TicketID       uuid.UUID      `json:"ticket_id"`
+	AuthorID       uuid.NullUUID  `json:"author_id"`
+	GuestToken     sql.NullString `json:"guest_token"`
+	Body           string         `json:"body"`
+	Internal       bool           `json:"internal"`
+	CreatedAt      time.Time      `json:"created_at"`
+	NotifyCustomer bool           `json:"notify_customer"`
 }
 
 type TicketTag struct {
