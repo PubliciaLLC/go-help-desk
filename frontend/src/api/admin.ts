@@ -187,7 +187,7 @@ export async function createStatus(input: { name: string; sort_order?: number; c
   return res.data
 }
 
-export async function updateStatus(id: string, patch: { name?: string; sort_order?: number; color?: string }): Promise<Status> {
+export async function updateStatus(id: string, patch: { name?: string; sort_order?: number; color?: string; active?: boolean }): Promise<Status> {
   const res = await api.patch<Status>(`/admin/statuses/${id}`, patch)
   return res.data
 }

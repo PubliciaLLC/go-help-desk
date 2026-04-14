@@ -55,4 +55,5 @@ type StatusStore interface {
 	CreateStatus(ctx context.Context, s Status) error
 	UpdateStatus(ctx context.Context, s Status) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
+	CountByStatus(ctx context.Context, id uuid.UUID) (int64, error)
 }

@@ -102,6 +102,7 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 - **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window.
 - **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
 - Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
+- Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
 
 ### Tags
 

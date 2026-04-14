@@ -482,6 +482,7 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 
 // AddStatus creates a new custom status entry.
 func (s *Service) AddStatus(ctx context.Context, st Status) error {
+	st.Active = true
 	return s.statuses.CreateStatus(ctx, st)
 }
 
@@ -490,7 +491,13 @@ func (s *Service) SaveStatus(ctx context.Context, st Status) error {
 	return s.statuses.UpdateStatus(ctx, st)
 }
 
-// RemoveStatus deletes a custom status. System statuses cannot be deleted.
+// CountByStatus returns the number of tickets currently in the given status.
+func (s *Service) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) {
+	return s.statuses.CountByStatus(ctx, id)
+}
+
+// RemoveStatus hard-deletes a custom status. Blocked if the status is a
+// system status or if any tickets currently have this status.
 func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	st, err := s.getStatusByID(ctx, id)
 	if err != nil {
@@ -498,6 +505,13 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	}
 	if st.Kind != StatusKindCustom {
 		return fmt.Errorf("cannot delete system status %q", st.Name)
+	}
+	count, err := s.statuses.CountByStatus(ctx, id)
+	if err != nil {
+		return fmt.Errorf("counting tickets for status: %w", err)
+	}
+	if count > 0 {
+		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting", st.Name, count)
 	}
 	return s.statuses.DeleteStatus(ctx, id)
 }

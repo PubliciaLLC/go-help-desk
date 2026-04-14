@@ -349,11 +349,16 @@ func (s *Store) UpdateStatus(ctx context.Context, st ticket.Status) error {
 		Name:      st.Name,
 		SortOrder: int32(st.SortOrder),
 		Color:     st.Color,
+		Active:    st.Active,
 	})
 }
 
 func (s *Store) DeleteStatus(ctx context.Context, id uuid.UUID) error {
 	return s.q.DeleteStatus(ctx, id)
+}
+
+func (s *Store) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) {
+	return s.q.CountTicketsByStatus(ctx, id)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -398,6 +403,7 @@ func statusFromRow(r dbgen.Status) ticket.Status {
 		Kind:      ticket.StatusKind(r.Kind),
 		SortOrder: int(r.SortOrder),
 		Color:     r.Color,
+		Active:    r.Active,
 	}
 }
 

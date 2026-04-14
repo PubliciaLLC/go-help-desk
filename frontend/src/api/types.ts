@@ -57,6 +57,8 @@ export interface Status {
   kind: 'system' | 'custom'
   sort_order: number
   color: string
+  active: boolean
+  ticket_count: number
 }
 
 export interface Ticket {

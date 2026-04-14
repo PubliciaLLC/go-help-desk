@@ -17,6 +17,7 @@ type Querier interface {
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
 	ClearMFA(ctx context.Context, id uuid.UUID) error
+	CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error

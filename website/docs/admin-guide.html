@@ -298,7 +298,7 @@ Facilities
 <p>Manage statuses from <em>Admin → Statuses</em>. Statuses represent where a ticket is in its lifecycle.</p>
 
 <h3>System statuses</h3>
-<p>These are created automatically on first run and have special behavior. Their names and colors can be changed, but they cannot be deleted.</p>
+<p>These are created automatically on first run and have special behavior. Their names and colors can be changed, but they cannot be deactivated or deleted.</p>
 
 <table>
   <thead><tr><th>Status</th><th>Special behavior</th></tr></thead>
@@ -325,6 +325,10 @@ Facilities
   <li><strong>Color</strong> — hex color for the status badge.</li>
   <li><strong>Sort order</strong> — controls the order in status dropdowns.</li>
 </ul>
+
+<h3>Deactivating and deleting custom statuses</h3>
+<p>Custom statuses can be <strong>deactivated</strong> — they are removed from ticket-creation dropdowns but existing tickets retain the status, and the status continues to appear in filters and reports. Deactivated statuses can be <strong>reactivated</strong> at any time.</p>
+<p>A custom status can only be <strong>deleted</strong> permanently when zero tickets are in that status. The delete button appears only when the ticket count for that status is 0. Deleting is irreversible; deactivating is always the safer option.</p>
 
 <h3>Reopen window</h3>
 <p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>

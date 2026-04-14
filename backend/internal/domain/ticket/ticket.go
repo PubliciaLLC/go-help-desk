@@ -39,11 +39,13 @@ const (
 // Status represents a ticket state. System statuses have special lifecycle
 // rules; custom statuses are fully configurable by admins.
 type Status struct {
-	ID        uuid.UUID  `json:"id"`
-	Name      string     `json:"name"`
-	Kind      StatusKind `json:"kind"`
-	SortOrder int        `json:"sort_order"`
-	Color     string     `json:"color"`
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Kind        StatusKind `json:"kind"`
+	SortOrder   int        `json:"sort_order"`
+	Color       string     `json:"color"`
+	Active      bool       `json:"active"`
+	TicketCount int64      `json:"ticket_count"`
 }
 
 // LinkType describes the relationship between two tickets.

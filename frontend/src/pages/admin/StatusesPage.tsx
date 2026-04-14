@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listStatuses, createStatus, deleteStatus } from '@/api/admin'
+import { listStatuses, createStatus, updateStatus, deleteStatus } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
-import { PlusIcon, TrashIcon, LockIcon } from 'lucide-react'
+import { PlusIcon, LockIcon } from 'lucide-react'
 
 const DEFAULT_COLOR = '#6b7280'
 
@@ -37,6 +37,16 @@ export function StatusesPage() {
     onError: (err) => setFormError(extractError(err)),
   })
 
+  const deactivateMutation = useMutation({
+    mutationFn: (id: string) => updateStatus(id, { active: false }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+  })
+
+  const reactivateMutation = useMutation({
+    mutationFn: (id: string) => updateStatus(id, { active: true }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteStatus(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
@@ -51,7 +61,7 @@ export function StatusesPage() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Ticket Statuses</h1>
             <p className="mt-1 text-sm text-gray-500">
-              Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be removed.
+              Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be removed or deactivated.
             </p>
           </div>
           <Button onClick={() => setAddingStatus(true)} className="ml-6 shrink-0">
@@ -124,46 +134,81 @@ export function StatusesPage() {
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Type</th>
                   <th className="w-24 px-4 py-3 text-left">Sort order</th>
-                  <th className="w-14 px-4 py-3" />
+                  <th className="px-4 py-3 text-left">Tickets</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {sorted.map((s) => (
-                  <tr key={s.id} className="group hover:bg-gray-50">
+                  <tr key={s.id} className={`group hover:bg-gray-50 ${!s.active ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
                       <span
                         className="inline-block h-4 w-4 rounded-full border border-black/10 shadow-sm"
                         style={{ backgroundColor: s.color || DEFAULT_COLOR }}
                       />
                     </td>
-                    <td className="px-4 py-3 font-medium text-gray-900">{s.name}</td>
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      {s.name}
+                      {!s.active && (
+                        <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-normal text-gray-500">
+                          inactive
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <Badge variant={s.kind === 'system' ? 'secondary' : 'outline'}>
                         {s.kind}
                       </Badge>
                     </td>
                     <td className="px-4 py-3 text-gray-500">{s.sort_order}</td>
-                    <td className="px-4 py-3 text-right">
-                      {s.kind === 'system' ? (
-                        <span title="System status — cannot be deleted" className="flex justify-end">
-                          <LockIcon className="h-3.5 w-3.5 text-gray-300" />
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => deleteMutation.mutate(s.id)}
-                          disabled={deleteMutation.isPending}
-                          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-                          title="Delete status"
-                        >
-                          <TrashIcon className="h-4 w-4" />
-                        </button>
-                      )}
+                    <td className="px-4 py-3 text-gray-500">{s.ticket_count}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-2">
+                        {s.kind === 'system' ? (
+                          <span title="System status — cannot be modified" className="flex justify-end">
+                            <LockIcon className="h-3.5 w-3.5 text-gray-300" />
+                          </span>
+                        ) : s.active ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-yellow-700 border-yellow-300 hover:bg-yellow-50"
+                            onClick={() => deactivateMutation.mutate(s.id)}
+                            disabled={deactivateMutation.isPending}
+                          >
+                            Deactivate
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-green-700 border-green-300 hover:bg-green-50"
+                              onClick={() => reactivateMutation.mutate(s.id)}
+                              disabled={reactivateMutation.isPending}
+                            >
+                              Reactivate
+                            </Button>
+                            {s.ticket_count === 0 && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-red-600 border-red-200 hover:bg-red-50"
+                                onClick={() => deleteMutation.mutate(s.id)}
+                                disabled={deleteMutation.isPending}
+                              >
+                                Delete
+                              </Button>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
                 {sorted.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-400">
+                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-400">
                       No statuses configured.
                     </td>
                   </tr>

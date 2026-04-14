@@ -11,6 +11,17 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const countTicketsByStatus = `-- name: CountTicketsByStatus :one
+SELECT COUNT(*) FROM tickets WHERE status_id = $1
+`
+
+func (q *Queries) CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByStatus, statusID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createStatus = `-- name: CreateStatus :exec
 INSERT INTO statuses (id, name, kind, sort_order, color) VALUES ($1, $2, $3, $4, $5)
 `
@@ -44,7 +55,7 @@ func (q *Queries) DeleteStatus(ctx context.Context, id uuid.UUID) error {
 }
 
 const getStatus = `-- name: GetStatus :one
-SELECT id, name, kind, sort_order, color FROM statuses WHERE id = $1
+SELECT id, name, kind, sort_order, color, active FROM statuses WHERE id = $1
 `
 
 func (q *Queries) GetStatus(ctx context.Context, id uuid.UUID) (Status, error) {
@@ -56,12 +67,13 @@ func (q *Queries) GetStatus(ctx context.Context, id uuid.UUID) (Status, error) {
 		&i.Kind,
 		&i.SortOrder,
 		&i.Color,
+		&i.Active,
 	)
 	return i, err
 }
 
 const getStatusByName = `-- name: GetStatusByName :one
-SELECT id, name, kind, sort_order, color FROM statuses WHERE name = $1
+SELECT id, name, kind, sort_order, color, active FROM statuses WHERE name = $1
 `
 
 func (q *Queries) GetStatusByName(ctx context.Context, name string) (Status, error) {
@@ -73,12 +85,13 @@ func (q *Queries) GetStatusByName(ctx context.Context, name string) (Status, err
 		&i.Kind,
 		&i.SortOrder,
 		&i.Color,
+		&i.Active,
 	)
 	return i, err
 }
 
 const listStatuses = `-- name: ListStatuses :many
-SELECT id, name, kind, sort_order, color FROM statuses ORDER BY sort_order, name
+SELECT id, name, kind, sort_order, color, active FROM statuses ORDER BY sort_order, name
 `
 
 func (q *Queries) ListStatuses(ctx context.Context) ([]Status, error) {
@@ -96,6 +109,7 @@ func (q *Queries) ListStatuses(ctx context.Context) ([]Status, error) {
 			&i.Kind,
 			&i.SortOrder,
 			&i.Color,
+			&i.Active,
 		); err != nil {
 			return nil, err
 		}
@@ -111,7 +125,7 @@ func (q *Queries) ListStatuses(ctx context.Context) ([]Status, error) {
 }
 
 const updateStatus = `-- name: UpdateStatus :exec
-UPDATE statuses SET name = $2, sort_order = $3, color = $4 WHERE id = $1
+UPDATE statuses SET name = $2, sort_order = $3, color = $4, active = $5 WHERE id = $1
 `
 
 type UpdateStatusParams struct {
@@ -119,6 +133,7 @@ type UpdateStatusParams struct {
 	Name      string    `json:"name"`
 	SortOrder int32     `json:"sort_order"`
 	Color     string    `json:"color"`
+	Active    bool      `json:"active"`
 }
 
 func (q *Queries) UpdateStatus(ctx context.Context, arg UpdateStatusParams) error {
@@ -127,6 +142,7 @@ func (q *Queries) UpdateStatus(ctx context.Context, arg UpdateStatusParams) erro
 		arg.Name,
 		arg.SortOrder,
 		arg.Color,
+		arg.Active,
 	)
 	return err
 }

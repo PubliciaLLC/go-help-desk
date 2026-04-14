@@ -719,6 +719,13 @@ func (s *Server) handleListStatuses(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// Populate ticket counts so the admin UI can decide whether hard-delete is safe.
+	for i := range statuses {
+		count, err := s.tickets.CountByStatus(r.Context(), statuses[i].ID)
+		if err == nil {
+			statuses[i].TicketCount = count
+		}
+	}
 	JSON(w, http.StatusOK, statuses)
 }
 
@@ -756,6 +763,7 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		Name      *string `json:"name"`
 		SortOrder *int    `json:"sort_order"`
 		Color     *string `json:"color"`
+		Active    *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -785,6 +793,13 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Color != nil {
 		st.Color = *body.Color
+	}
+	if body.Active != nil {
+		if st.Kind == ticket.StatusKindSystem {
+			Error(w, http.StatusForbidden, "forbidden", "system statuses cannot be deactivated")
+			return
+		}
+		st.Active = *body.Active
 	}
 	if err := s.tickets.SaveStatus(r.Context(), st); err != nil {
 		handleError(w, err)
