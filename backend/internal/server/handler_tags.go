@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -10,6 +11,32 @@ import (
 )
 
 // ── Admin tag handlers ────────────────────────────────────────────────────────
+
+// handleAdminCreateTag creates a new tag by name (lowercased). Returns 409 if
+// a tag with that name already exists (active or deleted).
+func (s *Server) handleAdminCreateTag(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		Error(w, http.StatusBadRequest, "bad_request", "name is required")
+		return
+	}
+	t, err := s.tags.Resolve(r.Context(), body.Name)
+	if err != nil {
+		if errors.Is(err, tag.ErrDeleted) {
+			Error(w, http.StatusConflict, "tag_deleted", "a deactivated tag with this name already exists; restore it instead")
+			return
+		}
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusCreated, t)
+}
 
 // handleAdminListTags returns all tags (including deleted) for the admin panel.
 func (s *Server) handleAdminListTags(w http.ResponseWriter, r *http.Request) {

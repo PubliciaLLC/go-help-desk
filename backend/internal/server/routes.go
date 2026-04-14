@@ -142,6 +142,7 @@ func (s *Server) adminRouter() *chi.Mux {
 
 	r.Route("/tags", func(r chi.Router) {
 		r.Get("/", s.handleAdminListTags)
+		r.Post("/", s.handleAdminCreateTag)
 		r.Delete("/{id}", s.handleAdminDeleteTag)
 		r.Post("/{id}/restore", s.handleAdminRestoreTag)
 	})

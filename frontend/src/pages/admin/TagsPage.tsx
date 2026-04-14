@@ -1,17 +1,33 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listAllTags, deleteTag, restoreTag } from '@/api/admin'
+import { listAllTags, createTag, deleteTag, restoreTag } from '@/api/admin'
+import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
+import { PlusIcon } from 'lucide-react'
 import type { Tag } from '@/api/types'
 
 export function TagsPage() {
   const qc = useQueryClient()
+  const [newName, setNewName] = useState('')
+  const [createError, setCreateError] = useState('')
 
   const { data: tags = [], isLoading } = useQuery({
     queryKey: ['admin', 'tags'],
     queryFn: listAllTags,
+  })
+
+  const createMutation = useMutation({
+    mutationFn: () => createTag(newName.trim()),
+    onSuccess: () => {
+      setNewName('')
+      setCreateError('')
+      qc.invalidateQueries({ queryKey: ['admin', 'tags'] })
+    },
+    onError: (err) => setCreateError(extractError(err)),
   })
 
   const deleteMutation = useMutation({
@@ -31,12 +47,38 @@ export function TagsPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Tags</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Tags are created by staff when tagging tickets. Admins can deactivate inappropriate tags
-            or restore previously deactivated ones.
-          </p>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Tags</h1>
+            <p className="mt-1 text-sm text-gray-500">
+              Tags are created by staff when tagging tickets, or added here directly. Admins can deactivate
+              inappropriate tags or restore previously deactivated ones.
+            </p>
+          </div>
+        </div>
+
+        {/* Create tag form */}
+        <div className="rounded-lg border bg-white p-4">
+          <p className="mb-3 text-sm font-medium text-gray-700">Add tag</p>
+          <div className="flex items-center gap-3">
+            <Input
+              placeholder="Tag name (stored lowercase)"
+              value={newName}
+              onChange={(e) => { setNewName(e.target.value); setCreateError('') }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newName.trim()) createMutation.mutate()
+              }}
+              className="max-w-xs"
+            />
+            <Button
+              onClick={() => createMutation.mutate()}
+              disabled={!newName.trim() || createMutation.isPending}
+            >
+              <PlusIcon className="mr-2 h-4 w-4" />
+              {createMutation.isPending ? 'Adding…' : 'Add'}
+            </Button>
+          </div>
+          {createError && <p className="mt-2 text-sm text-red-600">{createError}</p>}
         </div>
 
         {isLoading ? (
@@ -94,7 +136,7 @@ export function TagsPage() {
                 {tags.length === 0 && (
                   <tr>
                     <td colSpan={4} className="px-4 py-8 text-center text-gray-400">
-                      No tags yet. Tags are created when staff tag tickets.
+                      No tags yet.
                     </td>
                   </tr>
                 )}

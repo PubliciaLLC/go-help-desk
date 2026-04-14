@@ -121,6 +121,11 @@ export async function createCategory(input: { name: string; sort_order?: number 
   return res.data
 }
 
+export async function updateCategory(id: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<Category> {
+  const res = await api.patch<Category>(`/admin/categories/${id}`, patch)
+  return res.data
+}
+
 export async function deleteCategory(id: string): Promise<void> {
   await api.delete(`/admin/categories/${id}`)
 }
@@ -132,6 +137,11 @@ export async function listTypes(categoryId: string): Promise<TicketType[]> {
 
 export async function createType(categoryId: string, input: { name: string; sort_order?: number }): Promise<TicketType> {
   const res = await api.post<TicketType>(`/admin/categories/${categoryId}/types`, input)
+  return res.data
+}
+
+export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number }): Promise<TicketType> {
+  const res = await api.patch<TicketType>(`/admin/categories/${categoryId}/types/${typeId}`, patch)
   return res.data
 }
 
@@ -153,6 +163,11 @@ export async function createItem(
     `/admin/categories/${categoryId}/types/${typeId}/items`,
     input
   )
+  return res.data
+}
+
+export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number }): Promise<TicketItem> {
+  const res = await api.patch<TicketItem>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`, patch)
   return res.data
 }
 
@@ -254,6 +269,11 @@ export async function deleteAPIKey(id: string): Promise<void> {
 
 export async function listAllTags(): Promise<Tag[]> {
   const res = await api.get<Tag[]>('/admin/tags')
+  return res.data
+}
+
+export async function createTag(name: string): Promise<Tag> {
+  const res = await api.post<Tag>('/admin/tags', { name })
   return res.data
 }
 
