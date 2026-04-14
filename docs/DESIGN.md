@@ -74,9 +74,21 @@ Three roles: **Admin**, **Staff**, **User**
 
 | Role | Capabilities |
 |------|-------------|
-| **Admin** | Full system access. Manage settings, users, groups, categories, plugins. Can always log in with local auth even when SAML is enabled (failsafe). |
-| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search and open any ticket by ticket number. Assign tickets to any staff member or group. |
+| **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
+| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search and open any ticket by ticket number. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Update their own tickets unless status is Resolved. Reopen a Resolved ticket within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+
+### User Management (Admin)
+
+Admins manage accounts from **Admin → Users**. The user list is clickable — clicking a user opens a detail page with:
+
+- **Profile** — edit display name, email address, and role. Changes take effect immediately.
+- **Account info** — member since date, login type (Local / SSO / Local + SSO), MFA enrollment status.
+- **MFA reset** — clears the TOTP secret so the user re-enrolls on next login. Only shown when the user has MFA enrolled.
+- **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
+- **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
+- **Groups** — view current group membership, add to groups, or remove from groups.
+- **Delete** — permanently removes the account. Tickets and replies the user created are preserved with a "removed user" attribution. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
 
 ### Ticket Lifecycle
 
@@ -90,6 +102,18 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 - **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window.
 - **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
 - Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
+
+### Tags
+
+Free-form labels that staff can attach to any ticket. Rules:
+
+- Tags are **case-insensitive** and always stored **lowercase**.
+- Any staff member or admin can add a tag to a ticket. **Creating a tag happens automatically on first use** — there is no separate "create tag" step.
+- If a staff member types the name of a **deactivated tag**, the system returns an error explaining that only an admin can restore it. Staff cannot recreate a deactivated tag under the same name.
+- **Admins** can deactivate (soft-delete) any tag from the Tags admin panel. Deactivated tags are hidden from autocomplete suggestions but remain on tickets that already have them (for historical accuracy).
+- **Admins** can restore a deactivated tag, making it usable again.
+- Autocomplete is available when adding a tag — as the user types, active tags matching the prefix are suggested.
+- Tags are a flat namespace — no hierarchy, no parent/child relationships.
 
 ### Linked Tickets
 

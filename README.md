@@ -19,8 +19,10 @@ Open Help Desk is an open-source ticket management system. Staff submit and trac
 - CTI ticket classification (Category → Type → Item)
 - Local accounts, TOTP MFA, and SAML 2.0 SSO
 - Role-based access (Admin / Staff / User)
+- Full user management — edit profile, role, group membership; disable/enable accounts; reset MFA and password; delete accounts
 - Groups — named pools of staff; tickets can be assigned to a group and any member can act on them
 - Group scoping tied to CTI categories (a group is only assigned tickets it owns)
+- Tags — free-form labels on tickets; staff create tags on first use (stored lowercase); admins can deactivate or restore tags
 - Linked tickets (related, parent/child, duplicate, caused-by)
 - Email and webhook notifications
 - Optional SLA tracking
@@ -79,8 +81,14 @@ The REST API is documented informally by the handler source at `backend/internal
 | `GET/POST /api/v1/tickets` | session / API key | List or create tickets |
 | `GET/PATCH /api/v1/tickets/{id}` | session / API key | Get or update a ticket |
 | `GET /api/v1/groups` | staff / admin | List groups (for ticket assignment) |
+| `GET /api/v1/tags?q=` | any auth | Active tags (autocomplete) |
 | `GET/POST /api/v1/admin/groups` | admin | Manage groups |
 | `GET/POST /api/v1/admin/groups/{id}/members` | admin | Manage group membership |
+| `GET /api/v1/admin/tags` | admin | All tags including deactivated |
+| `DELETE /api/v1/admin/tags/{id}` | admin | Deactivate a tag |
+| `POST /api/v1/admin/tags/{id}/restore` | admin | Restore a deactivated tag |
+| `GET/POST /api/v1/tickets/{id}/tags` | staff / admin | List or add tags on a ticket |
+| `DELETE /api/v1/tickets/{id}/tags/{tagId}` | staff / admin | Remove a tag from a ticket |
 
 OAuth2 client credentials (`POST /api/v1/auth/oauth/token`) produce short-lived JWTs for machine-to-machine access.
 

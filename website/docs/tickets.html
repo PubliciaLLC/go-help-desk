@@ -55,6 +55,7 @@
       <li><a href="#tickets-lifecycle">Ticket lifecycle</a></li>
       <li><a href="#tickets-replies">Replies &amp; notes</a></li>
       <li><a href="#tickets-links">Linked tickets</a></li>
+      <li><a href="#tickets-tags">Tags</a></li>
       <li><a href="#tickets-assignment">Assignment</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search &amp; filtering</a></li>
@@ -238,6 +239,31 @@
 
 <h3>Bulk operations on linked tickets</h3>
 <p>From a parent ticket, staff can resolve all child tickets at once using <em>Resolve all children</em>. Each child receives the same resolution notes as the parent. This is useful for closing out many individual duplicate or child tickets after resolving the root cause.</p>
+
+
+<h2 id="tickets-tags">Tags</h2>
+
+<p>Tags are free-form labels that staff can attach to any ticket. They appear in the ticket detail sidebar and are useful for grouping tickets by theme, campaign, affected system, or any other dimension that doesn't fit the formal Category/Type/Item hierarchy.</p>
+
+<h3>Adding a tag</h3>
+<p>In the <em>Tags</em> section of the ticket sidebar, type a tag name and press <kbd>Enter</kbd> — or pick a suggestion from the autocomplete dropdown. Tags are stored lowercase regardless of how they're typed.</p>
+<ul>
+  <li>If the tag already exists and is active, it is applied immediately.</li>
+  <li>If the tag is new, it is created automatically on first use.</li>
+  <li>If the tag exists but has been deactivated by an admin, an error is shown. Only an admin can restore a deactivated tag — it cannot be re-created by staff.</li>
+</ul>
+
+<h3>Removing a tag</h3>
+<p>Click the <em>×</em> on a tag pill to remove it from the ticket. This does not delete the tag globally — it only removes the association with this ticket. Staff and admins only.</p>
+
+<h3>Autocomplete</h3>
+<p>As you type, existing active tags that match the prefix are shown as suggestions. Select a suggestion to apply it, or press Enter to create a new tag with the text you've typed. Tags with no matching suggestions show a "Press Enter to create…" hint.</p>
+
+<h3>Tag visibility</h3>
+<p>Tags are visible to all users who can view the ticket, including the ticket submitter. Only staff and admins can add or remove tags.</p>
+
+<h3>Admin tag management</h3>
+<p>Admins can deactivate inappropriate tags or restore previously deactivated ones from <em>Admin → Tags</em>. See <a href="admin-guide.html#admin-tags">Tags</a> in the Admin Guide for details.</p>
 
 
 <h2 id="tickets-assignment">Assignment</h2>

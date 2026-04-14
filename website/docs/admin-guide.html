@@ -55,6 +55,7 @@
       <li><a href="#admin-cti">Categories, Types &amp; Items</a></li>
       <li><a href="#admin-users">Users &amp; roles</a></li>
       <li><a href="#admin-groups">Groups &amp; scope</a></li>
+      <li><a href="#admin-tags">Tags</a></li>
       <li><a href="#admin-statuses">Ticket statuses</a></li>
       <li><a href="#admin-sla">SLA policies</a></li>
       <li><a href="#admin-email-tpl">Email templates</a></li>
@@ -159,7 +160,7 @@ Facilities
 
 <h2 id="admin-users">Users &amp; roles</h2>
 
-<p>Manage accounts from <em>Admin → Users</em>. The page lists all accounts with their role, last login, and MFA status.</p>
+<p>Manage accounts from <em>Admin → Users</em>. The page lists all accounts with their role, login type, and join date. Click any row to open the user detail page.</p>
 
 <h3>Roles</h3>
 <table>
@@ -167,11 +168,11 @@ Facilities
   <tbody>
     <tr>
       <td><strong>Admin</strong></td>
-      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, SLA policies, email templates, webhooks, and plugins. Always retains local-auth access even when SAML is enabled.</td>
+      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, tags, SLA policies, email templates, webhooks, and plugins. Always retains local-auth access even when SAML is enabled.</td>
     </tr>
     <tr>
       <td><strong>Staff</strong></td>
-      <td>Can view, reply to, assign, and update tickets within their group scope. Can look up any ticket by ID regardless of scope. Can leave internal notes not visible to users. Can resolve and close tickets. Cannot access admin settings.</td>
+      <td>Can view, reply to, assign, and update tickets within their group scope. Can look up any ticket by ID regardless of scope. Can leave internal notes not visible to users. Can resolve and close tickets. Can add and remove tags on any ticket. Cannot access admin settings.</td>
     </tr>
     <tr>
       <td><strong>User</strong></td>
@@ -180,17 +181,28 @@ Facilities
   </tbody>
 </table>
 
-<h3>Changing a user's role</h3>
-<p>Click the user's name in the list and change the role dropdown. Role changes take effect on the user's next page load — their current session is re-evaluated on each request.</p>
+<h3>User detail page</h3>
+<p>Click any user in the list to open their detail page. From there you can:</p>
+<ul>
+  <li><strong>Edit profile</strong> — change display name, email address, and role. Disabled accounts must be re-enabled before editing profile fields.</li>
+  <li><strong>View account info</strong> — member since date, login type (Local / SSO / Local + SSO), and MFA enrollment status.</li>
+  <li><strong>Reset MFA</strong> — clears the user's TOTP secret. The user is prompted to re-enroll on next login. Only shown when the user has MFA active.</li>
+  <li><strong>Enable / Disable account</strong> — disabled accounts cannot log in. All tickets and history are preserved. Re-enable at any time.</li>
+  <li><strong>Reset password</strong> — set a new password directly from the admin panel. Only shown for accounts that have a local password (not SSO-only accounts).</li>
+  <li><strong>Manage group membership</strong> — add the user to or remove them from any group.</li>
+  <li><strong>Delete account</strong> — permanently removes the account. Tickets and replies are preserved with a "removed user" placeholder. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated.</li>
+</ul>
 
 <h3>Creating a user</h3>
-<p>Click <em>New user</em>. Enter name, email, and password. Select the role. The account is created immediately. If email is configured, you can optionally send a welcome email with a password-reset link instead of setting a password manually.</p>
+<p>Click <em>Add User</em> from the Users list. Enter email, display name, role, and an initial password. The account is created immediately and appears in the list.</p>
 
-<h3>Forcing a password reset</h3>
-<p>From a user's profile page, click <em>Reset password</em>. The user receives an email with a time-limited reset link (1 hour). Their current password remains valid until they use the link.</p>
-
-<h3>Disabling an account</h3>
-<p>Disabled accounts cannot log in and are not visible in assignment dropdowns. Disable rather than delete to preserve ticket history and attribution. From a user's profile: <em>Disable account</em>. Re-enable at any time.</p>
+<h3>Login type column</h3>
+<p>The <em>Login</em> column in the users list shows how the account authenticates:</p>
+<ul>
+  <li><strong>Local</strong> — the account uses a password set in Open Help Desk.</li>
+  <li><strong>SSO</strong> — the account was provisioned through SAML and has no local password.</li>
+  <li><strong>Local + SSO</strong> — the account can authenticate with either method (common when an admin account was created before SAML was enabled).</li>
+</ul>
 
 
 <h2 id="admin-groups">Groups &amp; scope</h2>
@@ -244,6 +256,41 @@ Facilities
 <p>Scope determines what a staff member sees in their <em>queue</em>. Assignment is separate — any staff member can be assigned any ticket, even if it's outside their queue scope. Once assigned, the ticket appears in the assignee's queue regardless of CTI.</p>
 
 <p>This is intentional: you should never be unable to escalate a ticket to a specialist because of routing rules.</p>
+
+
+<h2 id="admin-tags">Tags</h2>
+
+<p>Tags are free-form labels that staff attach to tickets to aid categorization, search, and filtering beyond the formal CTI hierarchy. They are managed from <em>Admin → Tags</em>.</p>
+
+<h3>How tags are created</h3>
+<p>Tags are created <em>on first use</em> — there is no separate "create tag" step. When a staff member adds a tag to a ticket and types a name that doesn't exist yet, the tag is created automatically. Tags are stored lowercase regardless of what was typed.</p>
+
+<h3>Autocomplete</h3>
+<p>As staff type in the tag field on a ticket, existing active tags matching the prefix are suggested. Staff can select a suggestion or press Enter to create and apply a new tag with whatever they've typed.</p>
+
+<h3>Deactivating a tag</h3>
+<p>If an inappropriate or misspelled tag is created, admins can deactivate it from <em>Admin → Tags</em> by clicking <em>Deactivate</em>. Deactivated tags:</p>
+<ul>
+  <li>No longer appear in autocomplete suggestions.</li>
+  <li>Cannot be re-created by staff — if someone types the exact name of a deactivated tag, they receive an error explaining that only an admin can restore it.</li>
+  <li>Remain visible on tickets that already carry them (historical record is preserved).</li>
+</ul>
+
+<h3>Restoring a tag</h3>
+<p>Admins can restore a deactivated tag by clicking <em>Restore</em> on the Tags admin page. The tag becomes active again and reappears in autocomplete.</p>
+
+<h3>Tag rules at a glance</h3>
+<table>
+  <thead><tr><th>Action</th><th>Who can do it</th></tr></thead>
+  <tbody>
+    <tr><td>Add a new tag (first use creates it)</td><td>Staff, Admin</td></tr>
+    <tr><td>Add an existing active tag</td><td>Staff, Admin</td></tr>
+    <tr><td>Remove a tag from a ticket</td><td>Staff, Admin</td></tr>
+    <tr><td>Deactivate a tag</td><td>Admin only</td></tr>
+    <tr><td>Restore a deactivated tag</td><td>Admin only</td></tr>
+    <tr><td>Re-create a deactivated tag name</td><td>Not allowed — restore instead</td></tr>
+  </tbody>
+</table>
 
 
 <h2 id="admin-statuses">Ticket statuses</h2>
