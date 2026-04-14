@@ -150,6 +150,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		return Ticket{}, fmt.Errorf("creating ticket: %w", err)
 	}
 
+	s.recordStatusChange(ctx, t.ID, nil, s.sys.newID, Actor{UserID: in.ReporterUserID})
 	s.writeAudit(ctx, in.ReporterUserID, "ticket", t.ID, "created", nil, ticketMap(t))
 
 	if s.sla != nil {
@@ -184,6 +185,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	}
 
 	before := ticketMap(t)
+	oldStatusID := t.StatusID
 	t.StatusID = newStatusID
 	t.UpdatedAt = time.Now()
 
@@ -191,6 +193,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		return Ticket{}, fmt.Errorf("updating ticket status: %w", err)
 	}
 
+	s.recordStatusChange(ctx, t.ID, &oldStatusID, newStatusID, actor)
 	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "status_changed", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketStatusChanged,
@@ -273,10 +276,12 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 
 	// Auto-reopen: user reply to a Resolved ticket within the window.
 	if actor.Role == user.RoleUser && currentStatus.Name == StatusNameResolved {
+		oldStatusID := t.StatusID
 		t.StatusID = reopenTargetStatusID
 		t.ResolvedAt = nil
 		t.UpdatedAt = time.Now()
 		_ = s.store.Update(ctx, t)
+		s.recordStatusChange(ctx, t.ID, &oldStatusID, reopenTargetStatusID, actor)
 		_ = s.dispatcher.Dispatch(ctx, notification.Event{
 			Type:       notification.EventTicketReopened,
 			TicketID:   t.ID,
@@ -318,6 +323,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		return Ticket{}, err
 	}
 	before := ticketMap(t)
+	oldStatusID := t.StatusID
 	now := time.Now()
 	t.StatusID = s.sys.resolvedID
 	t.ResolutionNotes = &notes
@@ -328,6 +334,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		return Ticket{}, fmt.Errorf("resolving ticket: %w", err)
 	}
 
+	s.recordStatusChange(ctx, t.ID, &oldStatusID, s.sys.resolvedID, actor)
 	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketResolved,
@@ -347,6 +354,7 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	oldStatusID := t.StatusID
 	now := time.Now()
 	t.StatusID = s.sys.closedID
 	t.ClosedAt = &now
@@ -356,6 +364,7 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID) error {
 		return fmt.Errorf("closing ticket: %w", err)
 	}
 
+	s.recordStatusChange(ctx, t.ID, &oldStatusID, s.sys.closedID, SystemActor)
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketClosed,
 		TicketID:   t.ID,
@@ -377,6 +386,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, fmt.Errorf("ticket is not closed")
 	}
 	before := ticketMap(t)
+	oldStatusID := t.StatusID
 	t.StatusID = targetStatusID
 	t.ClosedAt = nil
 	t.ResolvedAt = nil
@@ -386,6 +396,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, fmt.Errorf("reopening ticket: %w", err)
 	}
 
+	s.recordStatusChange(ctx, t.ID, &oldStatusID, targetStatusID, actor)
 	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketReopened,
@@ -394,6 +405,24 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		OccurredAt: time.Now(),
 	})
 	return t, nil
+}
+
+// recordStatusChange writes a status history entry. Non-fatal: errors are silently dropped
+// so that a history-write failure never blocks the main operation.
+func (s *Service) recordStatusChange(ctx context.Context, ticketID uuid.UUID, fromStatusID *uuid.UUID, toStatusID uuid.UUID, actor Actor) {
+	_ = s.store.CreateStatusHistoryEntry(ctx, StatusHistoryEntry{
+		ID:              uuid.New(),
+		TicketID:        ticketID,
+		FromStatusID:    fromStatusID,
+		ToStatusID:      toStatusID,
+		ChangedByUserID: actor.UserID,
+		CreatedAt:       time.Now(),
+	})
+}
+
+// ListStatusHistory returns the status transition history for a ticket.
+func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error) {
+	return s.store.ListStatusHistory(ctx, ticketID)
 }
 
 // AddLink creates a directed link between two tickets.

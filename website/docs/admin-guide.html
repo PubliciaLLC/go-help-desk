@@ -330,6 +330,9 @@ Facilities
 <p>Custom statuses can be <strong>deactivated</strong> — they are removed from ticket-creation dropdowns but existing tickets retain the status, and the status continues to appear in filters and reports. Deactivated statuses can be <strong>reactivated</strong> at any time.</p>
 <p>A custom status can only be <strong>deleted</strong> permanently when zero tickets are in that status. The delete button appears only when the ticket count for that status is 0. Deleting is irreversible; deactivating is always the safer option.</p>
 
+<h3>Status change timeline</h3>
+<p>Every status transition is automatically recorded on the ticket. The ticket detail page shows a chronological timeline that interleaves replies and status events. Status events show the old and new status (with their colors), who made the change, and the timestamp. The initial status on ticket creation is also recorded.</p>
+
 <h3>Reopen window</h3>
 <p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>
 

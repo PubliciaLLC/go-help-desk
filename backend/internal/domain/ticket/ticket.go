@@ -48,6 +48,21 @@ type Status struct {
 	TicketCount int64      `json:"ticket_count"`
 }
 
+// StatusHistoryEntry records a single status transition on a ticket.
+type StatusHistoryEntry struct {
+	ID              uuid.UUID  `json:"id"`
+	TicketID        uuid.UUID  `json:"ticket_id"`
+	FromStatusID    *uuid.UUID `json:"from_status_id"`
+	FromStatusName  string     `json:"from_status_name"`
+	FromStatusColor string     `json:"from_status_color"`
+	ToStatusID      uuid.UUID  `json:"to_status_id"`
+	ToStatusName    string     `json:"to_status_name"`
+	ToStatusColor   string     `json:"to_status_color"`
+	ChangedByUserID *uuid.UUID `json:"changed_by_user_id"`
+	ChangedByName   string     `json:"changed_by_name"`
+	CreatedAt       time.Time  `json:"created_at"`
+}
+
 // LinkType describes the relationship between two tickets.
 type LinkType string
 

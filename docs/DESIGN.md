@@ -103,6 +103,7 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 - **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
 - Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
 - Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
+- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
 
 ### Tags
 

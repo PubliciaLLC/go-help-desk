@@ -31,6 +31,7 @@ type Querier interface {
 	CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error
 	CreateSLARecord(ctx context.Context, arg CreateSLARecordParams) error
 	CreateStatus(ctx context.Context, arg CreateStatusParams) error
+	CreateStatusHistoryEntry(ctx context.Context, arg CreateStatusHistoryEntryParams) error
 	CreateTag(ctx context.Context, name string) (Tag, error)
 	CreateTicket(ctx context.Context, arg CreateTicketParams) error
 	CreateTicketLink(ctx context.Context, arg CreateTicketLinkParams) error
@@ -93,6 +94,7 @@ type Querier interface {
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)
+	ListTicketStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]ListTicketStatusHistoryRow, error)
 	ListTicketTags(ctx context.Context, ticketID uuid.UUID) ([]Tag, error)
 	ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]Ticket, error)
 	ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]Ticket, error)

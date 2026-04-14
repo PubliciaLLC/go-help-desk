@@ -51,6 +51,20 @@ export interface TicketItem {
   active: boolean
 }
 
+export interface StatusHistoryEntry {
+  id: string
+  ticket_id: string
+  from_status_id: string | null
+  from_status_name: string
+  from_status_color: string
+  to_status_id: string
+  to_status_name: string
+  to_status_color: string
+  changed_by_user_id: string | null
+  changed_by_name: string
+  created_at: string
+}
+
 export interface Status {
   id: string
   name: string

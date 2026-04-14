@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, StatusHistoryEntry } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -48,6 +48,11 @@ export async function reopenTicket(id: string): Promise<Ticket> {
 
 export async function listReplies(ticketId: string): Promise<Reply[]> {
   const res = await api.get<Reply[]>(`/tickets/${ticketId}/replies`)
+  return res.data
+}
+
+export async function listStatusHistory(ticketId: string): Promise<StatusHistoryEntry[]> {
+  const res = await api.get<StatusHistoryEntry[]>(`/tickets/${ticketId}/history`)
   return res.data
 }
 

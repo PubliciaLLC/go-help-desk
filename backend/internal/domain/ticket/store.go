@@ -44,6 +44,10 @@ type Store interface {
 	CreateLink(ctx context.Context, link TicketLink) error
 	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) error
 	ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLink, error)
+
+	// Status history
+	CreateStatusHistoryEntry(ctx context.Context, e StatusHistoryEntry) error
+	ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error)
 }
 
 // StatusStore manages ticket statuses. Method names use a "Status" suffix to

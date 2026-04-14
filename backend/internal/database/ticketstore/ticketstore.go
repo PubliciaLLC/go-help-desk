@@ -311,6 +311,41 @@ func (s *Store) ListLinks(ctx context.Context, ticketID uuid.UUID) ([]ticket.Tic
 	return out, nil
 }
 
+func (s *Store) CreateStatusHistoryEntry(ctx context.Context, e ticket.StatusHistoryEntry) error {
+	return s.q.CreateStatusHistoryEntry(ctx, dbgen.CreateStatusHistoryEntryParams{
+		ID:                e.ID,
+		TicketID:          e.TicketID,
+		FromStatusID:      database.NullUUID(e.FromStatusID),
+		ToStatusID:        e.ToStatusID,
+		ChangedByUserID:   database.NullUUID(e.ChangedByUserID),
+		CreatedAt:         e.CreatedAt,
+	})
+}
+
+func (s *Store) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]ticket.StatusHistoryEntry, error) {
+	rows, err := s.q.ListTicketStatusHistory(ctx, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("listing status history: %w", err)
+	}
+	out := make([]ticket.StatusHistoryEntry, len(rows))
+	for i, r := range rows {
+		out[i] = ticket.StatusHistoryEntry{
+			ID:              r.ID,
+			TicketID:        r.TicketID,
+			FromStatusID:    database.UUIDPtr(r.FromStatusID),
+			FromStatusName:  r.FromStatusName,
+			FromStatusColor: r.FromStatusColor,
+			ToStatusID:      r.ToStatusID,
+			ToStatusName:    r.ToStatusName,
+			ToStatusColor:   r.ToStatusColor,
+			ChangedByUserID: database.UUIDPtr(r.ChangedByUserID),
+			ChangedByName:   r.ChangedByName,
+			CreatedAt:       r.CreatedAt,
+		}
+	}
+	return out, nil
+}
+
 // ── ticket.StatusStore ───────────────────────────────────────────────────────
 
 func (s *Store) GetStatusByName(ctx context.Context, name string) (ticket.Status, error) {

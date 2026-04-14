@@ -466,6 +466,34 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// GET /api/v1/tickets/{id}/history
+func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	// Users may only view history for their own tickets.
+	if a != nil && a.Role == user.RoleUser {
+		t, err := s.tickets.GetByID(r.Context(), id)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if t.ReporterUserID == nil || *t.ReporterUserID != a.UserID {
+			Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+			return
+		}
+	}
+	history, err := s.tickets.ListStatusHistory(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, history)
+}
+
 // GET /api/v1/tickets/{id}/links
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))

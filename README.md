@@ -17,7 +17,7 @@ Open Help Desk is an open-source ticket management system. Staff submit and trac
 ## Features
 
 - CTI ticket classification (Category → Type → Item) with drag-to-reorder and inline rename in the admin UI
-- Customizable ticket statuses — deactivate to hide from workflows, permanently delete only when empty
+- Customizable ticket statuses — deactivate to hide from workflows, permanently delete only when empty; full status change timeline on each ticket
 - Local accounts, TOTP MFA, and SAML 2.0 SSO
 - Role-based access (Admin / Staff / User)
 - Full user management — edit profile, role, group membership; disable/enable accounts; reset MFA and password; delete accounts

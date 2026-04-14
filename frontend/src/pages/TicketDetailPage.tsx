@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getTicket,
   listReplies,
+  listStatusHistory,
   addReply,
   resolveTicket,
   reopenTicket,
@@ -25,7 +26,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
-import type { Group, User } from '@/api/types'
+import type { Group, User, StatusHistoryEntry } from '@/api/types'
 
 function priorityVariant(p: string) {
   if (p === 'critical') return 'destructive'
@@ -183,6 +184,21 @@ export function TicketDetailPage() {
     enabled: !!ticket,
   })
 
+  const { data: statusHistory = [] } = useQuery({
+    queryKey: ['statusHistory', id],
+    queryFn: () => listStatusHistory(id),
+    enabled: !!ticket,
+  })
+
+  type TimelineItem =
+    | { kind: 'reply'; ts: string; data: typeof replies[0] }
+    | { kind: 'status'; ts: string; data: StatusHistoryEntry }
+
+  const timeline: TimelineItem[] = [
+    ...replies.map((r) => ({ kind: 'reply' as const, ts: r.created_at, data: r })),
+    ...statusHistory.map((h) => ({ kind: 'status' as const, ts: h.created_at, data: h })),
+  ].sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime())
+
   const { data: statuses = [] } = useQuery({
     queryKey: ['statuses'],
     queryFn: listStatuses,
@@ -217,6 +233,7 @@ export function TicketDetailPage() {
       setReplyBody('')
       setReplyError('')
       qc.invalidateQueries({ queryKey: ['replies', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
       qc.invalidateQueries({ queryKey: ['ticket', id] })
 
       // Upload any attached files to the ticket.
@@ -251,12 +268,18 @@ export function TicketDetailPage() {
 
   const resolveMutation = useMutation({
     mutationFn: () => resolveTicket(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['ticket', id] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+    },
   })
 
   const reopenMutation = useMutation({
     mutationFn: () => reopenTicket(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['ticket', id] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+    },
   })
 
   if (isLoading) return <Layout><div className="flex justify-center py-12"><Spinner size="lg" /></div></Layout>
@@ -330,24 +353,63 @@ export function TicketDetailPage() {
               </CardContent>
             </Card>
 
-            {/* Thread */}
-            <div className="space-y-3">
-              <h2 className="text-base font-semibold text-gray-900">Replies ({replies.length})</h2>
-              {replies.map((r) => (
-                <div
-                  key={r.id}
-                  className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
-                >
-                  <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
-                    <span>{r.author_id ?? 'System'}</span>
-                    <span className="flex items-center gap-2">
-                      {r.internal && <span className="text-yellow-600 font-medium">Internal note</span>}
-                      {formatDate(r.created_at)}
+            {/* Timeline */}
+            <div className="space-y-2">
+              <h2 className="text-base font-semibold text-gray-900">Timeline</h2>
+              {timeline.length === 0 && (
+                <p className="text-sm text-gray-400">No activity yet.</p>
+              )}
+              {timeline.map((item) => {
+                if (item.kind === 'reply') {
+                  const r = item.data
+                  return (
+                    <div
+                      key={r.id}
+                      className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
+                    >
+                      <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
+                        <span>{r.author_id ?? 'Customer'}</span>
+                        <span className="flex items-center gap-2">
+                          {r.internal && <span className="text-yellow-600 font-medium">Internal note</span>}
+                          {formatDate(r.created_at)}
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap">{r.body}</p>
+                    </div>
+                  )
+                }
+                // Status history event
+                const h = item.data
+                return (
+                  <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-gray-400">
+                    <div className="flex-1 border-t border-gray-100" />
+                    <span className="shrink-0 text-center">
+                      {h.from_status_id ? (
+                        <>
+                          <span style={{ color: h.from_status_color || undefined }} className="font-medium">
+                            {h.from_status_name}
+                          </span>
+                          {' → '}
+                          <span style={{ color: h.to_status_color || undefined }} className="font-medium">
+                            {h.to_status_name}
+                          </span>
+                          {h.changed_by_name ? ` · ${h.changed_by_name}` : ' · System'}
+                        </>
+                      ) : (
+                        <>
+                          Ticket opened as{' '}
+                          <span style={{ color: h.to_status_color || undefined }} className="font-medium">
+                            {h.to_status_name}
+                          </span>
+                        </>
+                      )}
+                      {' · '}
+                      {formatDate(h.created_at)}
                     </span>
+                    <div className="flex-1 border-t border-gray-100" />
                   </div>
-                  <p className="whitespace-pre-wrap">{r.body}</p>
-                </div>
-              ))}
+                )
+              })}
             </div>
 
             {/* Reply / work log form */}

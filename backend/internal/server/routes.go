@@ -38,6 +38,7 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Post("/{id}/links", s.handleAddLink)
 	r.Delete("/{id}/links/{targetId}/{linkType}", s.handleRemoveLink)
 	r.Get("/{id}/links", s.handleListLinks)
+	r.Get("/{id}/history", s.handleListStatusHistory)
 
 	r.Get("/{id}/tags", s.handleListTicketTags)
 	r.Post("/{id}/tags", s.handleAddTicketTag)
