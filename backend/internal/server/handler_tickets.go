@@ -11,6 +11,84 @@ import (
 	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
 )
 
+// GET /api/v1/tickets
+// Returns tickets relevant to the current user:
+//   - admin/staff: tickets assigned to them + tickets assigned to any of their groups
+//   - user: tickets they reported
+//
+// Optional query param: assignee_group_id=<uuid> — returns tickets for a specific group
+// (requires staff or admin role).
+func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	ctx := r.Context()
+
+	// Specific group filter (staff/admin only).
+	if gidStr := r.URL.Query().Get("assignee_group_id"); gidStr != "" {
+		if a.Role == user.RoleUser {
+			Error(w, http.StatusForbidden, "forbidden", "users cannot list group tickets")
+			return
+		}
+		gid, err := uuid.Parse(gidStr)
+		if err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "invalid assignee_group_id")
+			return
+		}
+		tickets, err := s.tickets.ListByAssigneeGroup(ctx, gid, 100, 0)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, tickets)
+		return
+	}
+
+	// Users only see their own reported tickets.
+	if a.Role == user.RoleUser {
+		tickets, err := s.tickets.ListByReporter(ctx, a.UserID, 100, 0)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, tickets)
+		return
+	}
+
+	// Staff/admin: tickets assigned to them + tickets assigned to their groups.
+	var all []ticket.Ticket
+
+	mine, err := s.tickets.ListByAssigneeUser(ctx, a.UserID, 100, 0)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	all = append(all, mine...)
+
+	groups, err := s.groups.ListGroupsForUser(ctx, a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	seen := make(map[uuid.UUID]bool, len(mine))
+	for _, t := range mine {
+		seen[t.ID] = true
+	}
+	for _, g := range groups {
+		gTickets, err := s.tickets.ListByAssigneeGroup(ctx, g.ID, 100, 0)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		for _, t := range gTickets {
+			if !seen[t.ID] {
+				seen[t.ID] = true
+				all = append(all, t)
+			}
+		}
+	}
+
+	JSON(w, http.StatusOK, all)
+}
+
 // POST /api/v1/tickets
 func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)

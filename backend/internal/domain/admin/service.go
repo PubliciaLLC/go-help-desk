@@ -142,6 +142,21 @@ func (s *Service) ReopenTargetStatusName(ctx context.Context) string {
 	return v
 }
 
+// SiteName returns the configured site name, defaulting to "Open Help Desk".
+func (s *Service) SiteName(ctx context.Context) string {
+	v, err := s.GetString(ctx, KeySiteName)
+	if err != nil || v == "" {
+		return "Open Help Desk"
+	}
+	return v
+}
+
+// SiteLogoURL returns the configured logo URL (empty if not set).
+func (s *Service) SiteLogoURL(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeySiteLogoURL)
+	return v
+}
+
 // ListAll returns all settings as raw JSON map.
 func (s *Service) ListAll(ctx context.Context) (map[string][]byte, error) {
 	return s.store.List(ctx)

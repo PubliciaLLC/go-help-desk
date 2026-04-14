@@ -23,6 +23,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
 	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
+	"github.com/open-help-desk/open-help-desk/backend/internal/version"
 )
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -154,12 +155,14 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Get("/health", s.handleHealth)
 
 	r.Route("/api/v1", func(r chi.Router) {
-		// Setup endpoints require no auth and are only usable before any user exists.
+		// Public endpoints — no auth required.
+		r.Get("/site", s.handleGetSiteConfig)
 		r.Get("/setup/status", s.handleSetupStatus)
 		r.Post("/setup", s.handleSetup)
 
 		r.Mount("/auth", s.authRouter())
 		r.Mount("/tickets", s.ticketRouter())
+		r.Mount("/groups", s.groupsRouter())
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})
@@ -169,6 +172,16 @@ func (s *Server) buildRouter() *chi.Mux {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleGetSiteConfig returns public-facing branding info and the app version.
+// No authentication required — used by the SPA shell before login.
+func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
+	JSON(w, http.StatusOK, map[string]string{
+		"name":     s.adminSvc.SiteName(r.Context()),
+		"logo_url": s.adminSvc.SiteLogoURL(r.Context()),
+		"version":  version.Version,
+	})
 }
 
 // InitSAML reads SAML config from the database and initialises the SP

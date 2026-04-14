@@ -1,8 +1,10 @@
 import { Link, useRouterState } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
+import { getSiteConfig } from '@/api/admin'
 import { Button } from '@/components/ui/button'
-import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon } from 'lucide-react'
+import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface NavItemProps {
@@ -37,6 +39,16 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const { user, clear } = useAuthStore()
 
+  const { data: siteConfig } = useQuery({
+    queryKey: ['site-config'],
+    queryFn: getSiteConfig,
+    staleTime: 5 * 60 * 1000, // refresh at most every 5 min
+  })
+
+  const siteName = siteConfig?.name ?? 'Open Help Desk'
+  const logoURL = siteConfig?.logo_url ?? ''
+  const version = siteConfig?.version ?? ''
+
   async function handleLogout() {
     await logout().catch(() => {})
     clear()
@@ -47,11 +59,16 @@ export function Layout({ children }: LayoutProps) {
     <div className="flex h-screen bg-gray-50">
       {/* Sidebar */}
       <aside className="flex w-60 flex-col border-r bg-white">
+        {/* Branding */}
         <div className="flex h-14 items-center border-b px-4">
-          <span className="text-lg font-semibold text-gray-900">Open Help Desk</span>
+          {logoURL ? (
+            <img src={logoURL} alt={siteName} className="h-8 max-w-[160px] object-contain" />
+          ) : (
+            <span className="text-lg font-semibold text-gray-900">{siteName}</span>
+          )}
         </div>
 
-        <nav className="flex-1 space-y-1 p-3">
+        <nav className="flex-1 space-y-1 overflow-y-auto p-3">
           <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" />
           <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" />
           {(user?.role === 'admin' || user?.role === 'staff') && (
@@ -64,6 +81,7 @@ export function Layout({ children }: LayoutProps) {
           )}
           {user?.role === 'admin' && (
             <>
+              <NavItem to="/admin/groups" icon={<UsersRoundIcon className="h-4 w-4" />} label="Groups" />
               <NavItem to="/admin/roles" icon={<ShieldIcon className="h-4 w-4" />} label="Roles" />
               <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" />
               <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" />
@@ -72,12 +90,27 @@ export function Layout({ children }: LayoutProps) {
           )}
         </nav>
 
-        <div className="border-t p-3">
-          <div className="mb-2 px-3 text-xs text-gray-500 truncate">{user?.email}</div>
+        {/* User + footer */}
+        <div className="border-t p-3 space-y-2">
+          <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
           <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={handleLogout}>
             <LogOutIcon className="h-4 w-4" />
             Sign out
           </Button>
+          {version && (
+            <p className="px-3 text-[10px] text-gray-400">
+              Powered by{' '}
+              <a
+                href="https://github.com/open-help-desk/open-help-desk"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline decoration-dotted hover:decoration-solid"
+              >
+                Open Help Desk
+              </a>{' '}
+              v{version}
+            </p>
+          )}
         </div>
       </aside>
 

@@ -427,6 +427,11 @@ func (s *Service) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limi
 	return s.store.ListByAssigneeUser(ctx, userID, limit, offset)
 }
 
+// ListByAssigneeGroup returns tickets assigned to the given group.
+func (s *Service) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]Ticket, error) {
+	return s.store.ListByAssigneeGroup(ctx, groupID, limit, offset)
+}
+
 // ListResolvedBefore is used by the auto-close scheduler.
 func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error) {
 	return s.store.ListResolvedBefore(ctx, before, limit)

@@ -218,6 +218,28 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleListGroupMembers(w http.ResponseWriter, r *http.Request) {
+	groupID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
+		return
+	}
+	memberIDs, err := s.groups.ListMembers(r.Context(), groupID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	members := make([]user.User, 0, len(memberIDs))
+	for _, uid := range memberIDs {
+		u, err := s.users.GetByID(r.Context(), uid)
+		if err != nil {
+			continue // skip deleted users
+		}
+		members = append(members, u)
+	}
+	JSON(w, http.StatusOK, members)
+}
+
 func (s *Server) handleRemoveGroupMember(w http.ResponseWriter, r *http.Request) {
 	groupID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -234,6 +256,20 @@ func (s *Server) handleRemoveGroupMember(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListGroupScopes(w http.ResponseWriter, r *http.Request) {
+	groupID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
+		return
+	}
+	scopes, err := s.groups.ListScopes(r.Context(), groupID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, scopes)
 }
 
 func (s *Server) handleAddGroupScope(w http.ResponseWriter, r *http.Request) {

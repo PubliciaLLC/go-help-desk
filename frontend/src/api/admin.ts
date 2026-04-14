@@ -2,6 +2,19 @@ import { api } from './client'
 import type { User, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig } from './types'
 import type { Role } from './types'
 
+// ── Site config (public) ──────────────────────────────────────────────────────
+
+export interface SiteConfig {
+  name: string
+  logo_url: string
+  version: string
+}
+
+export async function getSiteConfig(): Promise<SiteConfig> {
+  const res = await api.get<SiteConfig>('/site')
+  return res.data
+}
+
 // ── Users ────────────────────────────────────────────────────────────────────
 
 export async function listUsers(limit = 50, offset = 0): Promise<User[]> {
@@ -40,8 +53,18 @@ export async function createGroup(input: { name: string; description?: string })
   return res.data
 }
 
+export async function updateGroup(id: string, patch: Partial<Pick<Group, 'name' | 'description'>>): Promise<Group> {
+  const res = await api.patch<Group>(`/admin/groups/${id}`, patch)
+  return res.data
+}
+
 export async function deleteGroup(id: string): Promise<void> {
   await api.delete(`/admin/groups/${id}`)
+}
+
+export async function listGroupMembers(groupId: string): Promise<User[]> {
+  const res = await api.get<User[]>(`/admin/groups/${groupId}/members`)
+  return res.data
 }
 
 export async function addGroupMember(groupId: string, userId: string): Promise<void> {
@@ -50,6 +73,25 @@ export async function addGroupMember(groupId: string, userId: string): Promise<v
 
 export async function removeGroupMember(groupId: string, userId: string): Promise<void> {
   await api.delete(`/admin/groups/${groupId}/members/${userId}`)
+}
+
+export interface GroupScope {
+  group_id: string
+  category_id: string
+  type_id?: string
+}
+
+export async function listGroupScopes(groupId: string): Promise<GroupScope[]> {
+  const res = await api.get<GroupScope[]>(`/admin/groups/${groupId}/scopes`)
+  return res.data
+}
+
+export async function addGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
+  await api.post(`/admin/groups/${groupId}/scopes`, input)
+}
+
+export async function removeGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
+  await api.delete(`/admin/groups/${groupId}/scopes`, { data: input })
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────

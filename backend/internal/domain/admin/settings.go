@@ -15,6 +15,8 @@ const (
 	KeyMFAEnforcedRoles       = "mfa_enforced_roles"
 	KeyReopenWindowDays       = "reopen_window_days"
 	KeyReopenTargetStatusName = "reopen_target_status_name"
+	KeySiteName               = "site_name"
+	KeySiteLogoURL            = "site_logo_url"
 )
 
 // Store is the persistence interface for the key/value settings table.

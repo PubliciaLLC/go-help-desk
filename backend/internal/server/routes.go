@@ -27,6 +27,7 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
 
+	r.Get("/", s.handleListTickets)
 	r.Post("/", s.handleCreateTicket)
 	r.Get("/{id}", s.handleGetTicket)
 	r.Patch("/{id}", s.handleUpdateTicket)
@@ -59,10 +60,12 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Get("/{id}", s.handleGetGroup)
 		r.Patch("/{id}", s.handleUpdateGroup)
 		r.Delete("/{id}", s.handleDeleteGroup)
+		r.Get("/{id}/members", s.handleListGroupMembers)
 		r.Post("/{id}/members", s.handleAddGroupMember)
 		r.Delete("/{id}/members/{userId}", s.handleRemoveGroupMember)
 		r.Post("/{id}/scopes", s.handleAddGroupScope)
 		r.Delete("/{id}/scopes", s.handleRemoveGroupScope)
+		r.Get("/{id}/scopes", s.handleListGroupScopes)
 	})
 
 	r.Route("/categories", func(r chi.Router) {
@@ -125,6 +128,17 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
 	})
+
+	return r
+}
+
+// groupsRouter exposes a read-only view of groups to all authenticated staff
+// and admins — needed when assigning tickets in the UI.
+func (s *Server) groupsRouter() *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+
+	r.Get("/", s.handleListGroups)
 
 	return r
 }

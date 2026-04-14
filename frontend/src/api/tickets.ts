@@ -10,6 +10,11 @@ export interface CreateTicketInput {
   priority?: string
 }
 
+export async function listTickets(params?: { assignee_group_id?: string }): Promise<Ticket[]> {
+  const res = await api.get<Ticket[]>('/tickets', { params })
+  return res.data
+}
+
 export async function createTicket(input: CreateTicketInput): Promise<Ticket> {
   const res = await api.post<Ticket>('/tickets', input)
   return res.data

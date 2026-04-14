@@ -9,6 +9,7 @@ import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
 import { TicketDetailPage } from '@/pages/TicketDetailPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
+import { GroupsPage } from '@/pages/admin/GroupsPage'
 import { CategoriesPage } from '@/pages/admin/CategoriesPage'
 import { StatusesPage } from '@/pages/admin/StatusesPage'
 import { RolesPage } from '@/pages/admin/RolesPage'
@@ -89,6 +90,13 @@ const adminUsersRoute = createRoute({
   component: UsersPage,
 })
 
+const adminGroupsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/groups',
+  beforeLoad: requireAdmin,
+  component: GroupsPage,
+})
+
 const adminRolesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/roles',
@@ -138,6 +146,7 @@ export const router = createRouter({
     newTicketRoute,
     ticketDetailRoute,
     adminUsersRoute,
+    adminGroupsRoute,
     adminRolesRoute,
     adminCategoriesRoute,
     adminStatusesRoute,

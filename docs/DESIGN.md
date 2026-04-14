@@ -110,6 +110,14 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 - **Items do not factor into scope** — staff in-scope for a Type see all Items under it
 - Scope is derived **exclusively from group membership** (no direct Category assignment to individual staff)
 - Solo admin scenario: assign all categories to a single group
+- Staff members can see all tickets assigned to any group they belong to, and can take any action on those tickets
+
+### Branding
+
+- **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Open Help Desk".
+- **Logo URL** — URL to a logo image (PNG or SVG). When set, the logo replaces the site name text in the sidebar.
+- Both are stored as database settings and managed via **Admin → Settings → Branding**.
+- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
 
 ---
 
@@ -148,6 +156,10 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 ### REST API
 
 Serves both the frontend SPA and external integrations.
+
+**Notable public endpoints (no auth):**
+- `GET /api/v1/site` — branding info and app version; used by the SPA shell before authentication
+- `GET /api/v1/setup/status` — whether first-run setup is needed
 
 ### MCP Interface
 
