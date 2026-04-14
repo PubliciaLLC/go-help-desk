@@ -4,6 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Admin Guide — Open Help Desk Docs</title>
+  <meta name="description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Open Help Desk." />
+  <link rel="canonical" href="https://openhelpsdesk.org/docs/admin-guide.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://openhelpsdesk.org/docs/admin-guide.html" />
+  <meta property="og:title" content="Admin Guide — Open Help Desk Docs" />
+  <meta property="og:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Open Help Desk." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Admin Guide — Open Help Desk Docs" />
+  <meta name="twitter:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Open Help Desk." />
   <link rel="stylesheet" href="../style.css" />
   <style>
     .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
@@ -501,17 +510,23 @@ function verifySignature(secret, body, header) {
 <table>
   <thead><tr><th>Setting</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><strong>Application name</strong></td><td>Shown in the browser title bar, the sidebar, and email subject lines. Default: "Open Help Desk".</td></tr>
-    <tr><td><strong>Logo</strong></td><td>PNG or SVG file, maximum 2 MB. Displayed in the sidebar header and in the email template header. Recommended size: 200×50px or similar landscape ratio.</td></tr>
-    <tr><td><strong>Primary color</strong></td><td>Hex color code used for buttons, links, active states, and status badges. Default: <code>#2563eb</code>.</td></tr>
-    <tr><td><strong>Support email</strong></td><td>Displayed in the footer of the application and as the reply-to address on outbound notifications. Should match or alias your <code>SMTP_FROM</code> address.</td></tr>
-    <tr><td><strong>Support URL</strong></td><td>Optional. A link to your organization's support portal or knowledge base, shown in email footers.</td></tr>
-    <tr><td><strong>Favicon</strong></td><td>ICO or PNG file for the browser tab icon.</td></tr>
+    <tr><td><strong>Site name</strong></td><td>Shown in the sidebar header and browser title when no logo is set. Default: "Open Help Desk".</td></tr>
+    <tr>
+      <td><strong>Logo</strong></td>
+      <td>
+        Upload a logo file from <em>Admin → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF, SVG. Maximum 2 MB.
+        <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
+          <li><strong>Target size: 320 × 64 px.</strong> Raster images (PNG, JPG, GIF) are proportionally scaled to fit within this bounding box and re-encoded as PNG. Images that already fit are kept at their original dimensions.</li>
+          <li><strong>SVG safety:</strong> SVGs are validated as well-formed XML and scanned for disallowed content — <code>&lt;script&gt;</code> tags, event handlers (<code>onclick</code>, etc.), <code>javascript:</code> URIs, <code>&lt;foreignObject&gt;</code>, and <code>expression()</code>. Malformed or unsafe SVGs are rejected.</li>
+        </ul>
+        When set, the logo replaces the site name text in the sidebar. The file is served from <code>GET /api/v1/logo</code> with a 5-minute public cache header.
+      </td>
+    </tr>
   </tbody>
 </table>
 
 <div class="callout callout-note">
-  <p>Branding is CSS/asset-level customization only. Layout changes, custom page sections, and additional UI components are out of scope for the built-in branding feature — use the <a href="plugins.html#plugin-ui">plugin UI panel</a> system for that.</p>
+  <p>Branding covers site name and logo only. Layout changes, custom page sections, and additional UI components are out of scope for the built-in branding feature — use the <a href="plugins.html#plugin-ui">plugin UI panel</a> system for that.</p>
 </div>
 
 

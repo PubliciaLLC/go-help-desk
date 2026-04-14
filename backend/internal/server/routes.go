@@ -96,6 +96,8 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Route("/settings", func(r chi.Router) {
 		r.Get("/", s.handleGetSettings)
 		r.Patch("/", s.handleUpdateSettings)
+		r.Post("/logo", s.handleUploadLogo)
+		r.Delete("/logo", s.handleDeleteLogo)
 	})
 
 	r.Route("/saml", func(r chi.Router) {

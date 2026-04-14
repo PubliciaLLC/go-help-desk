@@ -24,7 +24,7 @@ Open Help Desk is an open-source ticket management system. Staff submit and trac
 - Linked tickets (related, parent/child, duplicate, caused-by)
 - Email and webhook notifications
 - Optional SLA tracking
-- Configurable branding — site name and logo via the admin UI
+- Configurable branding — site name and logo upload (PNG, SVG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
@@ -70,6 +70,9 @@ The REST API is documented informally by the handler source at `backend/internal
 | Endpoint | Auth | Description |
 |---|---|---|
 | `GET /api/v1/site` | none | Public branding info and app version |
+| `GET /api/v1/logo` | none | Serve the uploaded logo file |
+| `POST /api/v1/admin/settings/logo` | admin | Upload a logo (multipart, field `logo`) |
+| `DELETE /api/v1/admin/settings/logo` | admin | Remove the logo |
 | `GET /api/v1/setup/status` | none | Whether first-run setup is needed |
 | `POST /api/v1/setup` | none (once) | Create the first admin account |
 | `POST /api/v1/auth/local/login` | none | Session login |

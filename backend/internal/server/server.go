@@ -157,6 +157,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Route("/api/v1", func(r chi.Router) {
 		// Public endpoints — no auth required.
 		r.Get("/site", s.handleGetSiteConfig)
+		r.Get("/logo", s.handleServeLogo)
 		r.Get("/setup/status", s.handleSetupStatus)
 		r.Post("/setup", s.handleSetup)
 

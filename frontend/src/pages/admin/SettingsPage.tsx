@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getSiteConfig } from '@/api/admin'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getSiteConfig, uploadLogo, deleteLogo } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -289,8 +289,48 @@ function BrandingPanel({
   error: string
   saved: boolean
 }) {
+  const qc = useQueryClient()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [logoError, setLogoError] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [logoKey, setLogoKey] = useState(0)
+
   const { data: siteConfig } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig })
-  const logoURL = str('site_logo_url')
+  const currentLogoURL = siteConfig?.logo_url ?? ''
+
+  async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setLogoError('')
+    setUploading(true)
+    try {
+      await uploadLogo(file)
+      setLogoKey((k) => k + 1)
+      qc.invalidateQueries({ queryKey: ['site-config'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+    } catch (err) {
+      setLogoError(extractError(err))
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  async function handleDeleteLogo() {
+    setLogoError('')
+    setDeleting(true)
+    try {
+      await deleteLogo()
+      setLogoKey((k) => k + 1)
+      qc.invalidateQueries({ queryKey: ['site-config'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+    } catch (err) {
+      setLogoError(extractError(err))
+    } finally {
+      setDeleting(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -306,37 +346,53 @@ function BrandingPanel({
             onChange={(e) => setStr('site_name', e.target.value)}
           />
         </SettingRow>
+
         <div className="px-5 py-4 space-y-3">
           <div>
-            <div className="text-sm font-medium text-gray-900">Logo URL</div>
+            <div className="text-sm font-medium text-gray-900">Logo</div>
             <div className="mt-0.5 text-sm text-gray-500">
-              Link to your logo image (PNG or SVG recommended, max height 32 px). When set, the logo
-              replaces the site name in the sidebar. Leave blank to show the text name instead.
+              Target size: <span className="font-medium">320 × 64 px</span> · PNG, SVG, JPG, or GIF · Max 2 MB.
+              Larger images are scaled proportionally to fit. The logo replaces the site name in the sidebar.
             </div>
           </div>
-          <Input
-            placeholder="https://example.com/logo.png"
-            value={logoURL}
-            onChange={(e) => setStr('site_logo_url', e.target.value)}
-            className="max-w-lg font-mono text-sm"
-          />
-          {logoURL && (
+
+          {currentLogoURL && (
             <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-400">Preview:</span>
               <img
-                src={logoURL}
-                alt="Logo preview"
+                src={`${currentLogoURL}?v=${logoKey}`}
+                alt="Current logo"
                 className="h-8 max-w-[200px] rounded border object-contain p-1"
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
               />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDeleteLogo}
+                disabled={deleting || uploading}
+              >
+                {deleting ? 'Removing…' : 'Remove logo'}
+              </Button>
             </div>
           )}
-          {!logoURL && siteConfig && (
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-400">Current display:</span>
-              <span className="text-sm font-semibold">{str('site_name') || siteConfig.name}</span>
-            </div>
-          )}
+
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || deleting}
+            >
+              {uploading ? 'Uploading…' : currentLogoURL ? 'Replace logo' : 'Upload logo'}
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".png,.jpg,.jpeg,.gif,.svg"
+              className="hidden"
+              onChange={handleFileChange}
+            />
+          </div>
+
+          {logoError && <p className="text-sm text-red-600">{logoError}</p>}
         </div>
       </Section>
 

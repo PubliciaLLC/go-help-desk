@@ -189,6 +189,21 @@ export async function saveSAMLConfig(input: {
   return res.data ?? {}
 }
 
+// ── Logo ─────────────────────────────────────────────────────────────────────
+
+export async function uploadLogo(file: File): Promise<{ url: string }> {
+  const form = new FormData()
+  form.append('logo', file)
+  const res = await api.post<{ url: string }>('/admin/settings/logo', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return res.data
+}
+
+export async function deleteLogo(): Promise<void> {
+  await api.delete('/admin/settings/logo')
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export async function getSettings(): Promise<Record<string, unknown>> {

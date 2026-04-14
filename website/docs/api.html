@@ -4,6 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>REST API — Open Help Desk Docs</title>
+  <meta name="description" content="Complete REST API reference for Open Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples." />
+  <link rel="canonical" href="https://openhelpsdesk.org/docs/api.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://openhelpsdesk.org/docs/api.html" />
+  <meta property="og:title" content="REST API — Open Help Desk Docs" />
+  <meta property="og:description" content="Complete REST API reference for Open Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="REST API — Open Help Desk Docs" />
+  <meta name="twitter:description" content="Complete REST API reference for Open Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples." />
   <link rel="stylesheet" href="../style.css" />
   <style>
     .tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-size:0.75rem; font-weight:700; font-family:var(--mono); margin-right:0.4rem; vertical-align:middle; }
@@ -542,6 +551,19 @@
     <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/admin/plugins/:id</code></td><td>Uninstall a plugin.</td></tr>
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/admin/settings</code></td><td>Get all settings as a flat key/value object.</td></tr>
     <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/admin/settings</code></td><td>Update settings. Body is a partial key/value object — only included keys are updated.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/admin/settings/logo</code></td><td>Upload a logo. Multipart form with a <code>logo</code> file field. Accepted: PNG, JPG, GIF, SVG (max 2 MB). Raster images are auto-scaled to fit within 320 × 64 px. SVGs are sanitized. Returns <code>{ "url": "/api/v1/logo" }</code>.</td></tr>
+    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/admin/settings/logo</code></td><td>Remove the logo. Clears the stored file and the <code>site_logo_url</code> setting. Returns HTTP 204.</td></tr>
+  </tbody>
+</table>
+
+<h3>Public endpoints</h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/site</code></td><td>Returns <code>{ "name", "logo_url", "version" }</code>. No authentication required. Used by the SPA shell before login to render the correct site name and logo.</td></tr>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/logo</code></td><td>Serves the uploaded logo file (PNG or SVG). No authentication required. Returns 404 if no logo has been uploaded. Cache-Control: <code>public, max-age=300</code>.</td></tr>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/setup/status</code></td><td>Returns <code>{ "needed": true|false }</code>. No authentication required. Used to detect first-run setup.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/setup</code></td><td>Create the first admin account. Only available when no users exist. Body: <code>{ "email", "display_name", "password" }</code>. Returns 409 once setup is complete.</td></tr>
   </tbody>
 </table>
 
