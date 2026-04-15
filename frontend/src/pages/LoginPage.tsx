@@ -57,7 +57,7 @@ export function LoginPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">
-            {mfaPending ? 'Two-factor authentication' : 'Sign in to Open Help Desk'}
+            {mfaPending ? 'Two-factor authentication' : 'Sign in to Go Help Desk'}
           </CardTitle>
         </CardHeader>
         <CardContent>

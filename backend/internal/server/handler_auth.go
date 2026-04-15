@@ -4,9 +4,9 @@ import (
 	"net/http"
 
 	"github.com/gorilla/sessions"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/auth"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
-	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // POST /api/v1/auth/local/login

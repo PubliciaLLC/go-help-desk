@@ -1,4 +1,4 @@
-module github.com/open-help-desk/open-help-desk/backend
+module github.com/publiciallc/go-help-desk/backend
 
 go 1.26.1
 

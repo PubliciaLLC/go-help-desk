@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // Store is the persistence interface for SLA policies and records.

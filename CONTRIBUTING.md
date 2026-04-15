@@ -1,4 +1,4 @@
-# Contributing to Open Help Desk
+# Contributing to Go Help Desk
 
 All contributions are welcome — bug reports, documentation improvements, and code changes.
 
@@ -9,7 +9,7 @@ All contributions are welcome — bug reports, documentation improvements, and c
 3. **Open an issue for non-trivial changes** before submitting a PR. This prevents wasted effort if the direction isn't right.
 4. **Tests are required.** Write a failing test that defines "done" before implementing anything. No untested code will be merged.
 
-Open Help Desk is licensed under the [GNU Affero General Public License v3.0](LICENSE). By contributing you agree that your contributions will be released under the same license.
+Go Help Desk is licensed under the [GNU Affero General Public License v3.0](LICENSE). By contributing you agree that your contributions will be released under the same license.
 
 ---
 

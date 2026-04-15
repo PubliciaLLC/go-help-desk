@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/stretchr/testify/require"
 )
 

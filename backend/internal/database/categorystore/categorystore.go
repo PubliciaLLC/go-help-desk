@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/dbgen"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 )
 
 // Store implements category.Store.

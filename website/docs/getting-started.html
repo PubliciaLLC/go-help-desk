@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Getting Started — Open Help Desk Docs</title>
-  <meta name="description" content="Deploy Open Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
-  <link rel="canonical" href="https://openhelpsdesk.org/docs/getting-started.html" />
+  <title>Getting Started — Go Help Desk Docs</title>
+  <meta name="description" content="Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/getting-started.html" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://openhelpsdesk.org/docs/getting-started.html" />
-  <meta property="og:title" content="Getting Started — Open Help Desk Docs" />
-  <meta property="og:description" content="Deploy Open Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/getting-started.html" />
+  <meta property="og:title" content="Getting Started — Go Help Desk Docs" />
+  <meta property="og:description" content="Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
   <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="Getting Started — Open Help Desk Docs" />
-  <meta name="twitter:description" content="Deploy Open Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
+  <meta name="twitter:title" content="Getting Started — Go Help Desk Docs" />
+  <meta name="twitter:description" content="Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
   <link rel="stylesheet" href="../style.css" />
   <style>
     .step { display:flex; gap:1rem; margin-bottom:1.5rem; }
@@ -29,12 +29,12 @@
   <div class="container nav-inner">
     <a href="../index.html" class="nav-logo" style="text-decoration:none;">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      Open Help Desk
+      Go Help Desk
     </a>
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
   </div>
 </nav>
@@ -85,9 +85,9 @@
 <main class="docs-content">
 
 <h1 class="docs-page-title" id="introduction">Getting Started</h1>
-<p class="docs-page-sub">Deploy Open Help Desk with Docker Compose in under five minutes.</p>
+<p class="docs-page-sub">Deploy Go Help Desk with Docker Compose in under five minutes.</p>
 
-<p>Open Help Desk is distributed as a single Go binary with the React frontend embedded — there is nothing to install or serve beyond the binary and a PostgreSQL database. The Docker Compose stack in <code>docker/</code> sets both up with a single command.</p>
+<p>Go Help Desk is distributed as a single Go binary with the React frontend embedded — there is nothing to install or serve beyond the binary and a PostgreSQL database. The Docker Compose stack in <code>docker/</code> sets both up with a single command.</p>
 
 <h3>Architecture overview</h3>
 <ul>
@@ -106,7 +106,7 @@
   <div class="step-num">1</div>
   <div class="step-body">
     <h4>Clone the repository</h4>
-    <pre><code>git clone https://github.com/PubliciaLLC/open-help-desk
+    <pre><code>git clone https://github.com/PubliciaLLC/go-help-desk
 cd open-help-desk/docker</code></pre>
   </div>
 </div>
@@ -186,7 +186,7 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
     <tr><td><code>SMTP_PORT</code></td><td><code>587</code></td><td>SMTP port. 587 for STARTTLS (recommended), 465 for implicit TLS (SMTPS), 25 for plain/relay.</td></tr>
     <tr><td><code>SMTP_USER</code></td><td>—</td><td>SMTP username for authentication.</td></tr>
     <tr><td><code>SMTP_PASSWORD</code></td><td>—</td><td>SMTP password. Use a secret manager or Docker secret in production — avoid committing this to <code>.env</code>.</td></tr>
-    <tr><td><code>SMTP_FROM</code></td><td>—</td><td>The <code>From</code> address for all outbound email. Example: <code>Open Help Desk &lt;helpdesk@example.com&gt;</code></td></tr>
+    <tr><td><code>SMTP_FROM</code></td><td>—</td><td>The <code>From</code> address for all outbound email. Example: <code>Go Help Desk Go Help Desk &lt;helpdesk@example.com&gt;lt;helpdesk@example.comGo Help Desk &lt;helpdesk@example.com&gt;gt;</code></td></tr>
   </tbody>
 </table>
 
@@ -278,8 +278,8 @@ docker compose up -d --build</code></pre>
 
 <footer>
   <div class="container footer-inner">
-    <span>Open Help Desk — <a href="https://github.com/PubliciaLLC/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
-    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></span>
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></span>
   </div>
 </footer>
 

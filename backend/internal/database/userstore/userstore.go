@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/database"
-	"github.com/open-help-desk/open-help-desk/backend/internal/dbgen"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Store implements user.Store.

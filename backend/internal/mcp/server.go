@@ -11,8 +11,8 @@ import (
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Server wraps the MCP server and wires up help desk tools.

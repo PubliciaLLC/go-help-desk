@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Plugin Development — Open Help Desk Docs</title>
-  <meta name="description" content="Build sandboxed WASM plugins to extend Open Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
-  <link rel="canonical" href="https://openhelpsdesk.org/docs/plugins.html" />
+  <title>Plugin Development — Go Help Desk Docs</title>
+  <meta name="description" content="Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/plugins.html" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://openhelpsdesk.org/docs/plugins.html" />
-  <meta property="og:title" content="Plugin Development — Open Help Desk Docs" />
-  <meta property="og:description" content="Build sandboxed WASM plugins to extend Open Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/plugins.html" />
+  <meta property="og:title" content="Plugin Development — Go Help Desk Docs" />
+  <meta property="og:description" content="Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
   <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="Plugin Development — Open Help Desk Docs" />
-  <meta name="twitter:description" content="Build sandboxed WASM plugins to extend Open Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
+  <meta name="twitter:title" content="Plugin Development — Go Help Desk Docs" />
+  <meta name="twitter:description" content="Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
   <link rel="stylesheet" href="../style.css" />
   <style>
     .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
@@ -27,12 +27,12 @@
   <div class="container nav-inner">
     <a href="../index.html" class="nav-logo" style="text-decoration:none;">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      Open Help Desk
+      Go Help Desk
     </a>
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
   </div>
 </nav>
@@ -87,7 +87,7 @@
 <h1 class="docs-page-title" id="plugin-overview">Plugin Development</h1>
 <p class="docs-page-sub">Build WASM plugins that react to ticket events, call external APIs, and add custom UI panels.</p>
 
-<p>Open Help Desk plugins are WebAssembly modules that run sandboxed inside the application process via <a href="https://wazero.io">wazero</a>. They communicate with the host through a defined set of imported and exported functions.</p>
+<p>Go Help Desk plugins are WebAssembly modules that run sandboxed inside the application process via <a href="https://wazero.io">wazero</a>. They communicate with the host through a defined set of imported and exported functions.</p>
 
 <p>Plugins can be written in any language that compiles to WASM with a C-compatible ABI. Well-supported options include:</p>
 <ul>
@@ -578,7 +578,7 @@ embed:
 	# into the ohd_manifest custom section</code></pre>
 
 <div class="callout callout-note">
-  <p>The <a href="https://github.com/PubliciaLLC/open-help-desk/tree/main/plugins/examples">examples directory</a> in the repository contains complete, buildable plugins including the Slack example above, a PagerDuty integration, and a JIRA issue linker.</p>
+  <p>The <a href="https://github.com/PubliciaLLC/go-help-desk/tree/main/plugins/examples">examples directory</a> in the repository contains complete, buildable plugins including the Slack example above, a PagerDuty integration, and a JIRA issue linker.</p>
 </div>
 
 
@@ -609,7 +609,7 @@ embed:
 <ul>
   <li><strong>Events</strong> — what events does it receive? A notification plugin only needs <code>ticket.created</code> and similar creation/status events. Be suspicious of a notification plugin that subscribes to <code>ticket.note_added</code> (internal notes).</li>
   <li><strong>Allowed hosts</strong> — what external services does it call? Verify that you recognize and trust every host listed.</li>
-  <li><strong>Source</strong> — where did the plugin come from? First-party plugins from the Open Help Desk organization are reviewed. Third-party plugins should ideally be open-source so you can inspect the source.</li>
+  <li><strong>Source</strong> — where did the plugin come from? First-party plugins from the Go Help Desk organization are reviewed. Third-party plugins should ideally be open-source so you can inspect the source.</li>
 </ul>
 
 
@@ -623,8 +623,8 @@ embed:
 
 <footer>
   <div class="container footer-inner">
-    <span>Open Help Desk — <a href="https://github.com/PubliciaLLC/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
-    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></span>
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></span>
   </div>
 </footer>
 

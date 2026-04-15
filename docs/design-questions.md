@@ -1,4 +1,4 @@
-# Open Help Desk — Design Questions
+# Go Help Desk — Design Questions
 
 ## Core Functionality
 

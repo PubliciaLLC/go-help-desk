@@ -7,7 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/customfield"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 )
 
 // ── Admin: field definitions ──────────────────────────────────────────────────

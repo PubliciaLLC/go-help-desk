@@ -2,8 +2,8 @@ package server
 
 import (
 	"github.com/go-chi/chi/v5"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
-	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 func (s *Server) authRouter() *chi.Mux {

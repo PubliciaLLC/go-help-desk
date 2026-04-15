@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Contributing — Open Help Desk Docs</title>
-  <meta name="description" content="How to contribute to Open Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
-  <link rel="canonical" href="https://openhelpsdesk.org/docs/contributing.html" />
+  <title>Contributing — Go Help Desk Docs</title>
+  <meta name="description" content="How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/contributing.html" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://openhelpsdesk.org/docs/contributing.html" />
-  <meta property="og:title" content="Contributing — Open Help Desk Docs" />
-  <meta property="og:description" content="How to contribute to Open Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/contributing.html" />
+  <meta property="og:title" content="Contributing — Go Help Desk Docs" />
+  <meta property="og:description" content="How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
   <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="Contributing — Open Help Desk Docs" />
-  <meta name="twitter:description" content="How to contribute to Open Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
+  <meta name="twitter:title" content="Contributing — Go Help Desk Docs" />
+  <meta name="twitter:description" content="How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
   <link rel="stylesheet" href="../style.css" />
   <style>
     .step { display:flex; gap:1rem; margin-bottom:1.5rem; }
@@ -26,12 +26,12 @@
   <div class="container nav-inner">
     <a href="../index.html" class="nav-logo" style="text-decoration:none;">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      Open Help Desk
+      Go Help Desk
     </a>
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
   </div>
 </nav>
@@ -83,20 +83,20 @@
 <main class="docs-content">
 
 <h1 class="docs-page-title" id="contributing">Contributing</h1>
-<p class="docs-page-sub">Set up a local development environment and contribute to Open Help Desk.</p>
+<p class="docs-page-sub">Set up a local development environment and contribute to Go Help Desk.</p>
 
 <p>All contributions are welcome — bug reports, documentation improvements, and code changes. This page covers the technical setup. For design questions and feature discussions, open a GitHub issue first.</p>
 
 <h3>Before writing code</h3>
 <ol>
-  <li><strong>Read <a href="https://github.com/PubliciaLLC/open-help-desk/blob/main/docs/DESIGN.md">DESIGN.md</a></strong>. It is the specification. Every feature and behavior described there is intentional. If something is ambiguous or you think the design is wrong, open an issue to discuss it — don't work around it.</li>
-  <li><strong>Check the <a href="https://github.com/PubliciaLLC/open-help-desk/issues">issue tracker</a></strong>. Your bug may already be filed, or your feature may already be planned or deliberately excluded.</li>
+  <li><strong>Read <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/docs/DESIGN.md">DESIGN.md</a></strong>. It is the specification. Every feature and behavior described there is intentional. If something is ambiguous or you think the design is wrong, open an issue to discuss it — don't work around it.</li>
+  <li><strong>Check the <a href="https://github.com/PubliciaLLC/go-help-desk/issues">issue tracker</a></strong>. Your bug may already be filed, or your feature may already be planned or deliberately excluded.</li>
   <li><strong>Open an issue for non-trivial changes</strong> before submitting a PR. This prevents wasted effort if the direction isn't right.</li>
   <li><strong>Tests are required</strong>. Write a failing test that defines "done" before implementing anything. No untested code will be merged.</li>
 </ol>
 
 <div class="callout callout-note">
-  <p>Open Help Desk is licensed under the <a href="https://github.com/PubliciaLLC/open-help-desk/blob/main/LICENSE">GNU Affero General Public License v3.0</a>. By contributing you agree that your contributions will be released under the same license.</p>
+  <p>Go Help Desk is licensed under the <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">GNU Affero General Public License v3.0</a>. By contributing you agree that your contributions will be released under the same license.</p>
 </div>
 
 
@@ -111,7 +111,7 @@
 </ul>
 
 <h3>Clone and set up</h3>
-<pre><code>git clone https://github.com/PubliciaLLC/open-help-desk
+<pre><code>git clone https://github.com/PubliciaLLC/go-help-desk
 cd open-help-desk</code></pre>
 
 <h3>Backend</h3>
@@ -356,8 +356,8 @@ func (s *Store) GetTags(ctx context.Context, ticketID uuid.UUID) ([]string, erro
 
 <footer>
   <div class="container footer-inner">
-    <span>Open Help Desk — <a href="https://github.com/PubliciaLLC/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
-    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></span>
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></span>
   </div>
 </footer>
 

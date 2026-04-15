@@ -38,7 +38,7 @@ export function SetupPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">Welcome to Open Help Desk</CardTitle>
+          <CardTitle className="text-xl">Welcome to Go Help Desk</CardTitle>
           <p className="text-sm text-gray-500 mt-1">
             Create your administrator account to get started.
           </p>

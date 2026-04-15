@@ -45,7 +45,7 @@ export function Layout({ children }: LayoutProps) {
     staleTime: 5 * 60 * 1000, // refresh at most every 5 min
   })
 
-  const siteName = siteConfig?.name ?? 'Open Help Desk'
+  const siteName = siteConfig?.name ?? 'Go Help Desk'
   const logoURL = siteConfig?.logo_url ?? ''
   const version = siteConfig?.version ?? ''
 
@@ -120,7 +120,7 @@ export function Layout({ children }: LayoutProps) {
             rel="noopener noreferrer"
             className="underline decoration-dotted hover:decoration-solid"
           >
-            Open Help Desk
+            Go Help Desk
           </a>{' '}
           v{version}
         </footer>

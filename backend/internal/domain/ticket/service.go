@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/audit"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/notification"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Actor is the identity performing an operation. Both authenticated users and

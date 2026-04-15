@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/open-help-desk/open-help-desk/backend/internal/database/ticketstore"
-	"github.com/open-help-desk/open-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 )
 
 // JSON writes v as JSON with the given status code.

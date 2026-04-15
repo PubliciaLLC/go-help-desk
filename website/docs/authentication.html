@@ -3,16 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Authentication — Open Help Desk Docs</title>
-  <meta name="description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Open Help Desk." />
-  <link rel="canonical" href="https://openhelpsdesk.org/docs/authentication.html" />
+  <title>Authentication — Go Help Desk Docs</title>
+  <meta name="description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/authentication.html" />
   <meta property="og:type" content="article" />
-  <meta property="og:url" content="https://openhelpsdesk.org/docs/authentication.html" />
-  <meta property="og:title" content="Authentication — Open Help Desk Docs" />
-  <meta property="og:description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Open Help Desk." />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/authentication.html" />
+  <meta property="og:title" content="Authentication — Go Help Desk Docs" />
+  <meta property="og:description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk." />
   <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="Authentication — Open Help Desk Docs" />
-  <meta name="twitter:description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Open Help Desk." />
+  <meta name="twitter:title" content="Authentication — Go Help Desk Docs" />
+  <meta name="twitter:description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk." />
   <link rel="stylesheet" href="../style.css" />
   <style>
     .step { display:flex; gap:1rem; margin-bottom:1.5rem; }
@@ -31,12 +31,12 @@
   <div class="container nav-inner">
     <a href="../index.html" class="nav-logo" style="text-decoration:none;">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      Open Help Desk
+      Go Help Desk
     </a>
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
   </div>
 </nav>
@@ -90,7 +90,7 @@
 <h1 class="docs-page-title" id="auth-overview">Authentication</h1>
 <p class="docs-page-sub">Local accounts, TOTP MFA, SAML 2.0 SSO, guest submission, and API keys.</p>
 
-<p>Open Help Desk supports four authentication paths. They can be combined — for example, SAML SSO for most users plus TOTP MFA for admin accounts, with API keys for scripted access.</p>
+<p>Go Help Desk supports four authentication paths. They can be combined — for example, SAML SSO for most users plus TOTP MFA for admin accounts, with API keys for scripted access.</p>
 
 <table>
   <thead><tr><th>Method</th><th>Who it's for</th><th>Enabled by default</th></tr></thead>
@@ -177,7 +177,7 @@
 
 <h2 id="auth-saml">SAML 2.0 SSO</h2>
 
-<p>Open Help Desk acts as a SAML 2.0 Service Provider (SP). It works with any standards-compliant Identity Provider.</p>
+<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP). It works with any standards-compliant Identity Provider.</p>
 
 <h3>General setup</h3>
 
@@ -189,7 +189,7 @@
     <pre><code>openssl req -x509 -newkey rsa:4096 \
   -keyout saml.key -out saml.crt \
   -days 3650 -nodes \
-  -subj "/CN=Open Help Desk"</code></pre>
+  -subj "/CN=Go Help Desk"</code></pre>
     <p>Store both files somewhere accessible to the container (e.g. a Docker volume or secret). Set the container paths in <code>SAML_CERT_FILE</code> and <code>SAML_KEY_FILE</code>.</p>
   </div>
 </div>
@@ -395,8 +395,8 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
 
 <footer>
   <div class="container footer-inner">
-    <span>Open Help Desk — <a href="https://github.com/PubliciaLLC/open-help-desk/blob/main/LICENSE">AGPL v3</a></span>
-    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/open-help-desk">GitHub</a></span>
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></span>
   </div>
 </footer>
 

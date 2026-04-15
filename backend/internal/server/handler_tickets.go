@@ -6,9 +6,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
-	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // GET /api/v1/tickets

@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/database"
-	"github.com/open-help-desk/open-help-desk/backend/internal/dbgen"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // GET /api/v1/setup/status

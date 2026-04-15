@@ -352,7 +352,7 @@ function BrandingPanel({
         >
           <Input
             className="w-56"
-            placeholder="Open Help Desk"
+            placeholder="Go Help Desk"
             value={str('site_name')}
             onChange={(e) => setStr('site_name', e.target.value)}
           />

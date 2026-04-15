@@ -10,8 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/open-help-desk/open-help-desk/backend/internal/database"
-	"github.com/open-help-desk/open-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 )
 
 // DB holds a test database connection and a rolled-back transaction per test.

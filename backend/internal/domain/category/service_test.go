@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/stretchr/testify/require"
 )
 

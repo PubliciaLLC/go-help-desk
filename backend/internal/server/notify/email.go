@@ -10,8 +10,8 @@ import (
 	"net/smtp"
 	"text/template"
 
-	"github.com/open-help-desk/open-help-desk/backend/internal/config"
-	"github.com/open-help-desk/open-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/config"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 //go:embed templates/*.tmpl

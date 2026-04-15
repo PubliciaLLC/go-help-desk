@@ -1,4 +1,4 @@
-# Open Help Desk
+# Go Help Desk
 
 A self-hosted help desk for teams that want full control. Single binary, batteries included.
 
@@ -8,7 +8,7 @@ A self-hosted help desk for teams that want full control. Single binary, batteri
 
 ## What it is
 
-Open Help Desk is an open-source ticket management system. Staff submit and track support requests. Support teams triage, respond, and resolve them. Everything runs on your infrastructure.
+Go Help Desk is an open-source ticket management system. Staff submit and track support requests. Support teams triage, respond, and resolve them. Everything runs on your infrastructure.
 
 - **No cloud required.** PostgreSQL + a single Go binary.
 - **No SaaS lock-in.** Your data stays where you put it.

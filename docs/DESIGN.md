@@ -1,4 +1,4 @@
-# Open Help Desk — Design Document
+# Go Help Desk — Design Document
 
 ## Overview
 
@@ -151,7 +151,7 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 
 ### Branding
 
-- **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Open Help Desk".
+- **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
 - **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF, SVG. Max 2 MB. Raster images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG; SVGs are validated as well-formed XML and scanned for disallowed content (scripts, event handlers, `javascript:` URIs). When set, the logo replaces the site name text in the sidebar.
 - Both settings are stored in the database and managed via **Admin → Settings → Branding**.
 - A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
