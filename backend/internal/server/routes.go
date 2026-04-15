@@ -131,6 +131,13 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Patch("/{id}", s.handleUpdateFieldDef)
 	})
 
+	r.Route("/sla/policies", func(r chi.Router) {
+		r.Get("/", s.handleListSLAPolicies)
+		r.Post("/", s.handleCreateSLAPolicy)
+		r.Patch("/{id}", s.handleUpdateSLAPolicy)
+		r.Delete("/{id}", s.handleDeleteSLAPolicy)
+	})
+
 	r.Route("/statuses", func(r chi.Router) {
 		r.Get("/", s.handleListStatuses)
 		r.Post("/", s.handleCreateStatus)

@@ -99,7 +99,8 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 ```
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
-- **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window.
+- **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window. Set to 0 to disable user-initiated reopening entirely.
+- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the first active custom status when unset.
 - **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
 - Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
 - Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
@@ -303,3 +304,41 @@ Admins can manage which groups handle each CTI node directly from the CTI editor
 - **Items do not have a group management section** — items do not factor into scope per the scope model.
 - The "Add group" dropdown shows active groups not already assigned at that node.
 - Adding or removing a group here is equivalent to using the Groups page; both update the same `group_scopes` table.
+
+---
+
+## SLA Tracking (v1)
+
+SLA tracking is an optional feature toggle available in **Admin → Settings → Features → SLA tracking**. It can also be pre-enabled at startup via the `SLA_ENABLED=true` environment variable.
+
+### SLA Policies
+
+When the SLA toggle is enabled, a **SLA Policies** management blade appears directly in the Features settings tab. Policies define the maximum time from ticket creation until a first response and until resolution. Each policy has:
+
+| Field | Description |
+|-------|-------------|
+| **Name** | Display label, e.g. "Critical — 1h response" |
+| **Priority** | `critical`, `high`, `medium`, or `low` — applies this policy to matching tickets |
+| **Category** | Optional. Restricts the policy to a specific category. Leave blank for "All categories". |
+| **Response target** | Minutes from ticket creation to first staff reply |
+| **Resolution target** | Minutes from ticket creation to ticket resolved |
+
+### Policy Matching
+
+When a ticket is created, the system selects an SLA policy by specificity:
+
+1. Priority + Category — most specific
+2. Priority only
+3. Category only
+4. A catch-all (no Priority, no Category)
+5. No SLA — if no policy matches
+
+### SLA Indicators
+
+The ticket queue shows a color-coded SLA indicator per ticket:
+
+- **Green** — within SLA
+- **Amber** — within 20% of the deadline
+- **Red** — SLA breached
+
+SLA timers are paused while a ticket is in a "Pending" status (waiting on the user) and resume when the ticket moves to any other status.

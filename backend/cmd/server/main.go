@@ -106,6 +106,12 @@ func run() error {
 	adminSvc := admin.NewService(aStore)
 	customFieldSvc := customfield.NewService(cfStore)
 
+	// slaPolicySvc is always created so the admin blade can manage policies
+	// regardless of whether SLA enforcement is active.
+	slaPolicySvc := sla.NewService(slStore)
+
+	// slaSvc is passed to the ticket service for enforcement; nil when disabled
+	// via the SLA_ENABLED env var (preserves existing behaviour).
 	var slaSvc *sla.Service
 	if cfg.SLAEnabled {
 		slaSvc = sla.NewService(slStore)
@@ -161,6 +167,7 @@ func run() error {
 		tagSvc,
 		adminSvc,
 		customFieldSvc,
+		slaPolicySvc,
 		pluginRegistry,
 		apiKeyLookup,
 		authStore,

@@ -198,3 +198,14 @@ export interface TicketFieldValue {
   value: string
   updated_at: string
 }
+
+// ── SLA ───────────────────────────────────────────────────────────────────────
+
+export interface SLAPolicy {
+  id: string
+  name: string
+  priority: Priority
+  category_id?: string
+  response_target_min: number
+  resolution_target_min: number
+}

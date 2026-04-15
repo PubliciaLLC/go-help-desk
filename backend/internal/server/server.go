@@ -21,6 +21,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/customfield"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/group"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/plugin"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/sla"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/tag"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
@@ -61,6 +62,7 @@ type Server struct {
 	tags         *tag.Service
 	adminSvc     *admin.Service
 	customFields *customfield.Service
+	slaPolicies  *sla.Service
 	plugins      plugin.Registry
 
 	apiKeyLookup     authmw.APIKeyAuthFunc
@@ -83,6 +85,7 @@ func New(
 	tags *tag.Service,
 	adminSvc *admin.Service,
 	customFields *customfield.Service,
+	slaPolicies *sla.Service,
 	plugins plugin.Registry,
 	apiKeyLookup authmw.APIKeyAuthFunc,
 	oauthClients OAuthClientLookup,
@@ -98,6 +101,7 @@ func New(
 		tags:             tags,
 		adminSvc:         adminSvc,
 		customFields:     customFields,
+		slaPolicies:      slaPolicies,
 		plugins:          plugins,
 		apiKeyLookup:     apiKeyLookup,
 		oauthClientStore: oauthClients,

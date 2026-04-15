@@ -1,9 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getSiteConfig, uploadLogo, deleteLogo } from '@/api/admin'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
+import type { SLAPolicy } from '@/api/types'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef } from 'react'
@@ -236,6 +238,10 @@ function GeneralPanel({
   error: string
   saved: boolean
 }) {
+  const { data: statuses = [] } = useQuery({ queryKey: ['statuses'], queryFn: listStatuses })
+  // Reopen target should be an active, non-system status (not Resolved/Closed).
+  const targetableStatuses = statuses.filter((s) => s.active && s.kind !== 'system')
+
   return (
     <div className="space-y-6">
       <Section title="Submissions">
@@ -263,13 +269,18 @@ function GeneralPanel({
         </SettingRow>
         <SettingRow
           label="Reopen target status"
-          description="The status a ticket is moved to when a user reopens it. Must match the exact name of an existing status."
+          description="The status a ticket is moved to when a user reopens it."
         >
-          <Input
+          <Select
             className="w-44"
             value={str('reopen_target_status_name')}
             onChange={(e) => setStr('reopen_target_status_name', e.target.value)}
-          />
+          >
+            <option value="">Select…</option>
+            {targetableStatuses.map((s) => (
+              <option key={s.id} value={s.name}>{s.name}</option>
+            ))}
+          </Select>
         </SettingRow>
       </Section>
 
@@ -470,6 +481,265 @@ function AuthPanel({
   )
 }
 
+// ── SLA policies blade ────────────────────────────────────────────────────────
+
+const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
+const PRIORITY_COLORS: Record<string, string> = {
+  critical: 'bg-red-100 text-red-700',
+  high: 'bg-orange-100 text-orange-700',
+  medium: 'bg-yellow-100 text-yellow-700',
+  low: 'bg-blue-100 text-blue-700',
+}
+
+function fmtMin(m: number) {
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  const rem = m % 60
+  return rem ? `${h}h ${rem}m` : `${h}h`
+}
+
+type PolicyForm = {
+  name: string
+  priority: string
+  category_id: string
+  response_target_min: number
+  resolution_target_min: number
+}
+
+const EMPTY_FORM: PolicyForm = {
+  name: '',
+  priority: 'medium',
+  category_id: '',
+  response_target_min: 480,
+  resolution_target_min: 2880,
+}
+
+function PolicyFormRow({
+  form, setForm, categories, onSave, onCancel, isPending,
+}: {
+  form: PolicyForm
+  setForm: React.Dispatch<React.SetStateAction<PolicyForm>>
+  categories: { id: string; name: string; active: boolean }[]
+  onSave: () => void
+  onCancel: () => void
+  isPending: boolean
+}) {
+  return (
+    <tr className="bg-blue-50">
+      <td className="px-3 py-2">
+        <Input
+          className="h-7 text-sm"
+          value={form.name}
+          onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+          placeholder="Policy name"
+        />
+      </td>
+      <td className="px-3 py-2">
+        <Select
+          className="h-7 text-sm"
+          value={form.priority}
+          onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
+        >
+          {PRIORITIES.map((p) => (
+            <option key={p} value={p} className="capitalize">{p}</option>
+          ))}
+        </Select>
+      </td>
+      <td className="px-3 py-2">
+        <Select
+          className="h-7 text-sm"
+          value={form.category_id}
+          onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
+        >
+          <option value="">All categories</option>
+          {categories.filter((c) => c.active).map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </Select>
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex items-center gap-1">
+          <Input
+            type="number" min={1} className="h-7 w-20 text-sm"
+            value={form.response_target_min}
+            onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+          />
+          <span className="text-xs text-gray-400">min</span>
+        </div>
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex items-center gap-1">
+          <Input
+            type="number" min={1} className="h-7 w-20 text-sm"
+            value={form.resolution_target_min}
+            onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+          />
+          <span className="text-xs text-gray-400">min</span>
+        </div>
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex gap-2">
+          <Button size="sm" onClick={onSave} disabled={isPending}>Save</Button>
+          <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function SLAPoliciesSection() {
+  const qc = useQueryClient()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [showAdd, setShowAdd] = useState(false)
+  const [form, setForm] = useState<PolicyForm>(EMPTY_FORM)
+  const [formError, setFormError] = useState('')
+
+  const { data: policies = [] } = useQuery({ queryKey: ['sla-policies'], queryFn: listSLAPolicies })
+  const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: listCategories })
+
+  function startEdit(p: SLAPolicy) {
+    setEditingId(p.id)
+    setShowAdd(false)
+    setFormError('')
+    setForm({
+      name: p.name,
+      priority: p.priority,
+      category_id: p.category_id ?? '',
+      response_target_min: p.response_target_min,
+      resolution_target_min: p.resolution_target_min,
+    })
+  }
+
+  function startAdd() {
+    setShowAdd(true)
+    setEditingId(null)
+    setFormError('')
+    setForm(EMPTY_FORM)
+  }
+
+  const createMutation = useMutation({
+    mutationFn: () => createSLAPolicy({
+      name: form.name,
+      priority: form.priority,
+      category_id: form.category_id || undefined,
+      response_target_min: form.response_target_min,
+      resolution_target_min: form.resolution_target_min,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sla-policies'] })
+      setShowAdd(false)
+      setForm(EMPTY_FORM)
+    },
+    onError: (err) => setFormError(extractError(err)),
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: (id: string) => updateSLAPolicy(id, {
+      name: form.name,
+      priority: form.priority,
+      category_id: form.category_id || undefined,
+      clear_category: !form.category_id,
+      response_target_min: form.response_target_min,
+      resolution_target_min: form.resolution_target_min,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sla-policies'] })
+      setEditingId(null)
+    },
+    onError: (err) => setFormError(extractError(err)),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteSLAPolicy(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['sla-policies'] }),
+  })
+
+  const showTable = policies.length > 0 || showAdd
+
+  return (
+    <div className="border-t bg-gray-50">
+      <div className="px-5 pt-3 pb-0">
+        <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SLA Policies</p>
+      </div>
+      <div className="px-5 py-4 space-y-3">
+        {showTable ? (
+          <div className="overflow-x-auto rounded border bg-white">
+            <table className="w-full text-sm">
+              <thead className="border-b bg-gray-50">
+                <tr className="text-left text-xs font-medium text-gray-500">
+                  <th className="px-3 py-2">Name</th>
+                  <th className="px-3 py-2">Priority</th>
+                  <th className="px-3 py-2">Category</th>
+                  <th className="px-3 py-2">Response</th>
+                  <th className="px-3 py-2">Resolution</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {policies.map((p) =>
+                  editingId === p.id ? (
+                    <PolicyFormRow
+                      key={p.id}
+                      form={form} setForm={setForm} categories={categories}
+                      onSave={() => updateMutation.mutate(p.id)}
+                      onCancel={() => setEditingId(null)}
+                      isPending={updateMutation.isPending}
+                    />
+                  ) : (
+                    <tr key={p.id} className="hover:bg-gray-50">
+                      <td className="px-3 py-2 font-medium">{p.name}</td>
+                      <td className="px-3 py-2">
+                        <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
+                          {p.priority}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {p.category_id
+                          ? (categories.find((c) => c.id === p.category_id)?.name ?? '—')
+                          : 'All categories'}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
+                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex gap-3">
+                          <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
+                          <button
+                            className="text-xs text-red-600 hover:underline disabled:opacity-40"
+                            onClick={() => deleteMutation.mutate(p.id)}
+                            disabled={deleteMutation.isPending}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                )}
+                {showAdd && (
+                  <PolicyFormRow
+                    form={form} setForm={setForm} categories={categories}
+                    onSave={() => createMutation.mutate()}
+                    onCancel={() => setShowAdd(false)}
+                    isPending={createMutation.isPending}
+                  />
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-sm text-gray-500">No SLA policies defined.</p>
+        )}
+        {formError && <p className="text-sm text-red-600">{formError}</p>}
+        {!showAdd && !editingId && (
+          <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Features panel ────────────────────────────────────────────────────────────
+
 function FeaturesPanel({
   bool, setBool,
   onSave, isPending, error, saved,
@@ -484,12 +754,15 @@ function FeaturesPanel({
   return (
     <div className="space-y-6">
       <Section title="SLA">
-        <SettingRow
-          label="SLA tracking"
-          description="Enable SLA response and resolution time targets configurable per priority and category. When enabled, tickets approaching or breaching their SLA target are highlighted."
-        >
-          <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
-        </SettingRow>
+        <div>
+          <SettingRow
+            label="SLA tracking"
+            description="Enable SLA response and resolution time targets configurable per priority and category. When enabled, tickets approaching or breaching their SLA target are highlighted."
+          >
+            <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
+          </SettingRow>
+          {bool('sla_enabled') && <SLAPoliciesSection />}
+        </div>
       </Section>
 
       <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />

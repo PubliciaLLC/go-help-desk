@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, FieldDef, Assignment, ScopeType } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, FieldDef, Assignment, ScopeType, SLAPolicy } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -445,4 +445,41 @@ export async function listGroupsForCategory(categoryId: string): Promise<Group[]
 export async function listGroupsForType(categoryId: string, typeId: string): Promise<Group[]> {
   const res = await api.get<Group[]>(`/admin/categories/${categoryId}/types/${typeId}/groups`)
   return res.data
+}
+
+// ── SLA Policies ──────────────────────────────────────────────────────────────
+
+export async function listSLAPolicies(): Promise<SLAPolicy[]> {
+  const res = await api.get<SLAPolicy[]>('/admin/sla/policies')
+  return res.data
+}
+
+export async function createSLAPolicy(input: {
+  name: string
+  priority: string
+  category_id?: string
+  response_target_min: number
+  resolution_target_min: number
+}): Promise<SLAPolicy> {
+  const res = await api.post<SLAPolicy>('/admin/sla/policies', input)
+  return res.data
+}
+
+export async function updateSLAPolicy(
+  id: string,
+  patch: {
+    name?: string
+    priority?: string
+    category_id?: string
+    clear_category?: boolean
+    response_target_min?: number
+    resolution_target_min?: number
+  }
+): Promise<SLAPolicy> {
+  const res = await api.patch<SLAPolicy>(`/admin/sla/policies/${id}`, patch)
+  return res.data
+}
+
+export async function deleteSLAPolicy(id: string): Promise<void> {
+  await api.delete(`/admin/sla/policies/${id}`)
 }

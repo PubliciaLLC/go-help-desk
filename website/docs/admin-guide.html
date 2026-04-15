@@ -373,22 +373,27 @@ Facilities
 <p>Every status transition is automatically recorded on the ticket. The ticket detail page shows a chronological timeline that interleaves replies and status events. Status events show the old and new status (with their colors), who made the change, and the timestamp. The initial status on ticket creation is also recorded.</p>
 
 <h3>Reopen window</h3>
-<p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>
+<p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>
+
+<h3>Reopen target status</h3>
+<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the first active custom status alphabetically.</p>
 
 
 <h2 id="admin-sla">SLA policies</h2>
 
-<p>SLA (Service Level Agreement) tracking is available when <code>SLA_ENABLED=true</code>. SLA policies define the maximum time that should pass before a ticket receives a first response and before it is resolved.</p>
+<p>SLA (Service Level Agreement) tracking is an optional feature. Enable it from <em>Admin → Settings → Features → SLA tracking</em>. It can also be pre-enabled at server startup by setting the <code>SLA_ENABLED=true</code> environment variable.</p>
+
+<p>Once the SLA tracking toggle is on, a <strong>SLA Policies</strong> management blade appears directly in the Features tab. Policies define the maximum time from ticket creation until a first response and until the ticket is resolved.</p>
 
 <h3>Policy fields</h3>
 <table>
   <thead><tr><th>Field</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><strong>Name</strong></td><td>Display name for the policy, e.g. "Critical — 1h response"</td></tr>
-    <tr><td><strong>Priority</strong></td><td>Optional. Apply this policy to tickets of this priority.</td></tr>
-    <tr><td><strong>Category</strong></td><td>Optional. Apply this policy to tickets in this category.</td></tr>
-    <tr><td><strong>Response time</strong></td><td>Maximum hours from ticket creation until a staff reply is added.</td></tr>
-    <tr><td><strong>Resolution time</strong></td><td>Maximum hours from ticket creation until the ticket is marked Resolved.</td></tr>
+    <tr><td><strong>Priority</strong></td><td>Apply this policy to tickets of this priority: <em>critical</em>, <em>high</em>, <em>medium</em>, or <em>low</em>.</td></tr>
+    <tr><td><strong>Category</strong></td><td>Optional. Restrict this policy to a specific category. Leave at "All categories" for a catch-all.</td></tr>
+    <tr><td><strong>Response target</strong></td><td>Minutes from ticket creation until a staff reply must be added.</td></tr>
+    <tr><td><strong>Resolution target</strong></td><td>Minutes from ticket creation until the ticket must be marked Resolved.</td></tr>
   </tbody>
 </table>
 

@@ -71,3 +71,47 @@ func (s *Service) EvaluateBreaches(ctx context.Context, t ticket.Ticket, now tim
 	}
 	return nil
 }
+
+// ── Policy CRUD ───────────────────────────────────────────────────────────────
+
+func (s *Service) CreatePolicy(ctx context.Context, p Policy) (Policy, error) {
+	if p.Name == "" {
+		return Policy{}, fmt.Errorf("policy name is required")
+	}
+	if p.ResponseTargetMin <= 0 {
+		return Policy{}, fmt.Errorf("response target must be greater than zero")
+	}
+	if p.ResolutionTargetMin <= 0 {
+		return Policy{}, fmt.Errorf("resolution target must be greater than zero")
+	}
+	p.ID = uuid.New()
+	if err := s.store.CreatePolicy(ctx, p); err != nil {
+		return Policy{}, fmt.Errorf("creating SLA policy: %w", err)
+	}
+	return p, nil
+}
+
+func (s *Service) GetPolicy(ctx context.Context, id uuid.UUID) (Policy, error) {
+	return s.store.GetPolicy(ctx, id)
+}
+
+func (s *Service) UpdatePolicy(ctx context.Context, p Policy) error {
+	if p.Name == "" {
+		return fmt.Errorf("policy name is required")
+	}
+	if p.ResponseTargetMin <= 0 {
+		return fmt.Errorf("response target must be greater than zero")
+	}
+	if p.ResolutionTargetMin <= 0 {
+		return fmt.Errorf("resolution target must be greater than zero")
+	}
+	return s.store.UpdatePolicy(ctx, p)
+}
+
+func (s *Service) DeletePolicy(ctx context.Context, id uuid.UUID) error {
+	return s.store.DeletePolicy(ctx, id)
+}
+
+func (s *Service) ListPolicies(ctx context.Context) ([]Policy, error) {
+	return s.store.ListPolicies(ctx)
+}

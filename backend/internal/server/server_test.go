@@ -18,6 +18,8 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/categorystore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/customfieldstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/groupstore"
+	"github.com/open-help-desk/open-help-desk/backend/internal/database/slastore"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/sla"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/tagstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/ticketstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/userstore"
@@ -153,6 +155,7 @@ func newHarness(t *testing.T) (*harness, func()) {
 		tagSvc,
 		adminSvc,
 		customFieldSvc,
+		sla.NewService(slastore.New(q)),
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,
@@ -774,6 +777,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		tagSvc,
 		adminSvc,
 		customFieldSvc,
+		sla.NewService(slastore.New(q)),
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,
