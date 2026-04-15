@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin Guide — Go Help Desk Docs</title>
+  <meta name="description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/admin-guide.html" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/admin-guide.html" />
+  <meta property="og:title" content="Admin Guide — Go Help Desk Docs" />
+  <meta property="og:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Admin Guide — Go Help Desk Docs" />
+  <meta name="twitter:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <link rel="stylesheet" href="../style.css" />
+  <style>
+    .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
+    .param-table td:nth-child(2) { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
+    .param-table td:nth-child(3) { font-size:0.875rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Getting Started</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul>
+      <li><a href="admin-guide.html" class="active">Overview</a></li>
+      <li><a href="#admin-cti">Categories, Types &amp; Items</a></li>
+      <li><a href="#admin-users">Users &amp; Roles</a></li>
+      <li><a href="#admin-groups">Groups &amp; Scope</a></li>
+      <li><a href="#admin-custom-fields">Custom Fields</a></li>
+      <li><a href="#admin-tags">Tags</a></li>
+      <li><a href="#admin-statuses">Ticket Statuses</a></li>
+      <li><a href="#admin-sla">SLA Policies</a></li>
+      <li><a href="#admin-email-tpl">Email Templates</a></li>
+      <li><a href="#admin-webhooks">Webhooks</a></li>
+      <li><a href="#admin-plugins">Installing Plugins</a></li>
+      <li><a href="#admin-branding">Branding</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="admin-overview">Admin Guide</h1>
+<p class="docs-page-sub">Configure and manage every aspect of your Go Help Desk installation.</p>
+
+<p>The admin panel is accessible from the sidebar when logged in as an Admin. All configuration in this guide is done through the admin panel unless a restart is required (only for environment variable changes).</p>
+
+
+<h2 id="admin-cti">Categories, Types &amp; Items</h2>
+
+<p>Ticket classification follows a three-level hierarchy: <strong>Category → Type → Item</strong>. This model, sometimes called CTI (Classification-Type-Item), is borrowed from ITSM tooling like BMC Remedy. It lets you route tickets consistently based on what kind of request they are.</p>
+
+<h3>Hierarchy rules</h3>
+<ul>
+  <li>Every ticket must have a Category. Without at least one Category, tickets cannot be created.</li>
+  <li>Types are optional. If a Category has no Types, the Type dropdown is hidden entirely on the ticket form.</li>
+  <li>Items are optional. If a Type has no Items, the Item dropdown is hidden.</li>
+  <li>Each level filters the next — selecting a Category only shows Types that belong to it; selecting a Type only shows Items under it.</li>
+</ul>
+
+<h3>Worked example</h3>
+<pre><code>Hardware
+  Laptop
+    Won't power on
+    Broken screen
+    Keyboard issue
+    Battery not charging
+  Desktop
+    Won't power on
+    Monitor issue
+  Printer
+    Not printing
+    Paper jam
+    Low ink
+
+Software
+  Microsoft 365
+    Outlook not loading
+    Teams audio issue
+    SharePoint access
+  VPN
+    Can't connect
+    Slow connection
+  Custom application
+
+Access Requests
+  New account
+    Active Directory
+    Email / Microsoft 365
+    VPN
+    Application access
+  Permission change
+  Account unlock
+
+Facilities
+  Building access
+  Equipment request
+  Ergonomics</code></pre>
+
+<h3>Managing the hierarchy</h3>
+<p>Navigate to <em>Admin → Categories</em>. The page shows a tree of all Categories with their Types and Items.</p>
+<ul>
+  <li><strong>Add Category</strong> — click <em>New Category</em>. Give it a name. It appears immediately in the ticket form.</li>
+  <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
+  <li><strong>Add Item</strong> — click <em>Add Item</em> next to a Type.</li>
+  <li><strong>Reorder</strong> — drag-and-drop entries to change the order they appear in the ticket form dropdowns.</li>
+  <li><strong>Delete</strong> — Categories and Types with existing tickets cannot be deleted. Archive them (hide from new tickets) instead.</li>
+</ul>
+
+<h3>Groups in the CTI editor</h3>
+<p>Each expanded Category or Type row shows a <strong>Groups</strong> subsection — the groups currently handling tickets at that node. You can add or remove groups directly from here without navigating to the Groups page. See <a href="#admin-groups">Groups &amp; scope</a> for how scope is calculated. Items do not have a group management section.</p>
+
+<h3>Custom fields in the CTI editor</h3>
+<p>Each expanded Category, Type, or Item row shows a <strong>Fields</strong> subsection where you assign custom fields to that node. See <a href="#admin-custom-fields">Custom fields</a> for the full explanation.</p>
+
+
+<h2 id="admin-users">Users &amp; roles</h2>
+
+<p>Manage accounts from <em>Admin → Users</em>. The page lists all accounts with their role, login type, and join date. Click any row to open the user detail page.</p>
+
+<h3>Roles</h3>
+<table>
+  <thead><tr><th>Role</th><th>Capabilities</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Admin</strong></td>
+      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, tags, SLA policies, email templates, webhooks, and plugins. Always retains local-auth access even when SAML is enabled.</td>
+    </tr>
+    <tr>
+      <td><strong>Staff</strong></td>
+      <td>Can view, reply to, assign, and update tickets within their group scope. Can look up any ticket by ID regardless of scope. Can leave internal notes not visible to users. Can resolve and close tickets. Can add and remove tags on any ticket. Cannot access admin settings.</td>
+    </tr>
+    <tr>
+      <td><strong>User</strong></td>
+      <td>Can submit tickets and view their own tickets. Can add replies while the ticket is open. Can reopen a Resolved ticket by replying within the configured reopen window. Cannot see other users' tickets.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>User detail page</h3>
+<p>Click any user in the list to open their detail page. From there you can:</p>
+<ul>
+  <li><strong>Edit profile</strong> — change display name, email address, and role. Disabled accounts must be re-enabled before editing profile fields.</li>
+  <li><strong>View account info</strong> — member since date, login type (Local / SSO / Local + SSO), and MFA enrollment status.</li>
+  <li><strong>Reset MFA</strong> — clears the user's TOTP secret. The user is prompted to re-enroll on next login. Only shown when the user has MFA active.</li>
+  <li><strong>Enable / Disable account</strong> — disabled accounts cannot log in. All tickets and history are preserved. Re-enable at any time.</li>
+  <li><strong>Reset password</strong> — set a new password directly from the admin panel. Only shown for accounts that have a local password (not SSO-only accounts).</li>
+  <li><strong>Manage group membership</strong> — add the user to or remove them from any group.</li>
+  <li><strong>Delete account</strong> — permanently removes the account. Tickets and replies are preserved with a "removed user" placeholder. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated.</li>
+</ul>
+
+<h3>Creating a user</h3>
+<p>Click <em>Add User</em> from the Users list. Enter email, display name, role, and an initial password. The account is created immediately and appears in the list.</p>
+
+<h3>Login type column</h3>
+<p>The <em>Login</em> column in the users list shows how the account authenticates:</p>
+<ul>
+  <li><strong>Local</strong> — the account uses a password set in Go Help Desk.</li>
+  <li><strong>SSO</strong> — the account was provisioned through SAML and has no local password.</li>
+  <li><strong>Local + SSO</strong> — the account can authenticate with either method (common when an admin account was created before SAML was enabled).</li>
+</ul>
+
+
+<h2 id="admin-groups">Groups &amp; scope</h2>
+
+<p>Staff visibility — which tickets a staff member sees in their queue — is controlled entirely by group membership. An admin always sees all tickets. A staff member not in any group sees no tickets (except by direct search by ID).</p>
+
+<h3>How scope is calculated</h3>
+<p>When a staff member loads their ticket queue, the system collects all CTI scope entries from all their groups, unions them, and returns tickets that match any of those entries.</p>
+
+<p>Scope entries are Category/Type pairs:</p>
+<ul>
+  <li><strong>Category only</strong> (Type = null) — the staff member sees all tickets in that Category, regardless of Type or Item.</li>
+  <li><strong>Category + Type</strong> — the staff member sees only tickets with that exact Category and Type. Tickets in the same Category with a different Type are not shown.</li>
+</ul>
+
+<p>Items never affect scope. A staff member scoped to <em>Hardware / Laptop</em> sees all laptop tickets regardless of which Item is selected.</p>
+
+<h3>Creating and configuring a group</h3>
+<ol>
+  <li>Go to <em>Admin → Groups → New group</em>.</li>
+  <li>Give the group a name (e.g. "Tier 1 Support", "Networking").</li>
+  <li>Under <em>Scope</em>, add one or more Category/Type pairs. Click <em>Add scope entry</em>, pick a Category, and optionally narrow to a Type.</li>
+  <li>Under <em>Members</em>, add staff accounts.</li>
+</ol>
+
+<h3>Common configurations</h3>
+
+<table>
+  <thead><tr><th>Setup</th><th>Configuration</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Single team, all tickets</strong></td>
+      <td>One group. Add all Categories (no Type). Add all staff as members.</td>
+    </tr>
+    <tr>
+      <td><strong>Separate teams by category</strong></td>
+      <td>One group per team. Each group scoped to the categories that team handles. Assign staff to the relevant group(s).</td>
+    </tr>
+    <tr>
+      <td><strong>Tiered support</strong></td>
+      <td>Tier 1 group scoped to all Categories. Tier 2 group scoped to specific Category/Type pairs for complex issues. Staff in Tier 2 also see escalated tickets because they can be assigned directly (assignment overrides scope visibility for the assignee).</td>
+    </tr>
+    <tr>
+      <td><strong>Cross-functional specialists</strong></td>
+      <td>Staff can belong to multiple groups. A networking specialist is in "Tier 1" (full scope) and "Networking specialists" (scoped to Software / VPN). They see all tickets from Tier 1 scope plus all VPN-specific tickets.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Assignment vs. scope</h3>
+<p>Scope determines what a staff member sees in their <em>queue</em>. Assignment is separate — any staff member can be assigned any ticket, even if it's outside their queue scope. Once assigned, the ticket appears in the assignee's queue regardless of CTI.</p>
+
+<p>This is intentional: you should never be unable to escalate a ticket to a specialist because of routing rules.</p>
+
+
+<h2 id="admin-custom-fields">Custom fields</h2>
+
+<p>Custom fields let admins attach structured data to tickets beyond the built-in fields (subject, description, priority, CTI). They are managed from <em>Admin → Custom Fields</em>.</p>
+
+<h3>Field definitions</h3>
+<p>A <em>field definition</em> is the global blueprint for a field. It has:</p>
+<ul>
+  <li><strong>Name</strong> — unique label shown on forms and the ticket detail page.</li>
+  <li><strong>Type</strong> — controls what input is rendered:
+    <ul>
+      <li><code>text</code> — single-line text input</li>
+      <li><code>textarea</code> — multi-line text input</li>
+      <li><code>number</code> — numeric input</li>
+      <li><code>select</code> — dropdown of predefined options (set on the field definition)</li>
+    </ul>
+  </li>
+  <li><strong>Options</strong> (select only) — comma-separated list of allowed values (e.g. "IT, HR, Finance").</li>
+  <li><strong>Sort order</strong> — controls display order within a CTI level.</li>
+  <li><strong>Active</strong> — inactive fields are hidden from new-ticket forms. Existing values are preserved for history. Field definitions are never hard-deleted.</li>
+</ul>
+
+<h3>Assigning fields to CTI nodes</h3>
+<p>Fields are assigned from <em>Admin → Categories</em>. Expand a Category, Type, or Item row — each has a <strong>Fields</strong> subsection where you can assign any active field definition. Per assignment you configure:</p>
+<ul>
+  <li><strong>Visible on new</strong> — whether the field appears on the new-ticket form when that CTI node is selected.</li>
+  <li><strong>Required on new</strong> — whether the field must be filled before the ticket can be submitted. Only applies when <em>visible on new</em> is also checked.</li>
+  <li><strong>Sort order</strong> — drag to reorder within the node.</li>
+</ul>
+
+<p>The fields available on a ticket are the <em>union</em> of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order.</p>
+
+<h3>Ticket detail page</h3>
+<p>Custom field values are displayed in the <strong>Custom Fields</strong> sidebar card on the ticket detail page. Staff and admins can click <em>Edit</em> to update any value at any time after the ticket is created. Regular users see values in read-only form.</p>
+
+
+<h2 id="admin-tags">Tags</h2>
+
+<p>Tags are free-form labels that staff attach to tickets to aid categorization, search, and filtering beyond the formal CTI hierarchy. They are managed from <em>Admin → Tags</em>.</p>
+
+<h3>How tags are created</h3>
+<p>Tags are created <em>on first use</em> — there is no separate "create tag" step. When a staff member adds a tag to a ticket and types a name that doesn't exist yet, the tag is created automatically. Tags are stored lowercase regardless of what was typed.</p>
+
+<h3>Autocomplete</h3>
+<p>As staff type in the tag field on a ticket, existing active tags matching the prefix are suggested. Staff can select a suggestion or press Enter to create and apply a new tag with whatever they've typed.</p>
+
+<h3>Deactivating a tag</h3>
+<p>If an inappropriate or misspelled tag is created, admins can deactivate it from <em>Admin → Tags</em> by clicking <em>Deactivate</em>. Deactivated tags:</p>
+<ul>
+  <li>No longer appear in autocomplete suggestions.</li>
+  <li>Cannot be re-created by staff — if someone types the exact name of a deactivated tag, they receive an error explaining that only an admin can restore it.</li>
+  <li>Remain visible on tickets that already carry them (historical record is preserved).</li>
+</ul>
+
+<h3>Restoring a tag</h3>
+<p>Admins can restore a deactivated tag by clicking <em>Restore</em> on the Tags admin page. The tag becomes active again and reappears in autocomplete.</p>
+
+<h3>Tag rules at a glance</h3>
+<table>
+  <thead><tr><th>Action</th><th>Who can do it</th></tr></thead>
+  <tbody>
+    <tr><td>Add a new tag (first use creates it)</td><td>Staff, Admin</td></tr>
+    <tr><td>Add an existing active tag</td><td>Staff, Admin</td></tr>
+    <tr><td>Remove a tag from a ticket</td><td>Staff, Admin</td></tr>
+    <tr><td>Deactivate a tag</td><td>Admin only</td></tr>
+    <tr><td>Restore a deactivated tag</td><td>Admin only</td></tr>
+    <tr><td>Re-create a deactivated tag name</td><td>Not allowed — restore instead</td></tr>
+  </tbody>
+</table>
+
+
+<h2 id="admin-statuses">Ticket statuses</h2>
+
+<p>Manage statuses from <em>Admin → Statuses</em>. Statuses represent where a ticket is in its lifecycle.</p>
+
+<h3>System statuses</h3>
+<p>These are created automatically on first run and have special behavior. Their names and colors can be changed, but they cannot be deactivated or deleted.</p>
+
+<table>
+  <thead><tr><th>Status</th><th>Special behavior</th></tr></thead>
+  <tbody>
+    <tr><td><strong>New</strong></td><td>The initial status assigned to every newly created ticket.</td></tr>
+    <tr><td><strong>Resolved</strong></td><td>Setting this status starts the reopen window timer. Users can reopen the ticket by replying within this window. When set, staff are prompted to enter optional resolution notes.</td></tr>
+    <tr><td><strong>Closed</strong></td><td>Automatically set by a background job when the reopen window expires. No further user-initiated updates are allowed. Staff and admins can still change the status manually.</td></tr>
+  </tbody>
+</table>
+
+<h3>Custom statuses</h3>
+<p>Create custom statuses to represent intermediate states meaningful to your workflow. Common additions:</p>
+<ul>
+  <li><strong>In Progress</strong> — being actively worked</li>
+  <li><strong>Pending</strong> — waiting on the user</li>
+  <li><strong>Awaiting Vendor</strong> — blocked on a third party</li>
+  <li><strong>On Hold</strong> — intentionally paused</li>
+  <li><strong>Escalated</strong> — passed to a specialist or manager</li>
+</ul>
+
+<p>Each custom status has:</p>
+<ul>
+  <li><strong>Name</strong> — shown in the ticket detail and list views.</li>
+  <li><strong>Color</strong> — hex color for the status badge.</li>
+  <li><strong>Sort order</strong> — controls the order in status dropdowns.</li>
+</ul>
+
+<h3>Deactivating and deleting custom statuses</h3>
+<p>Custom statuses can be <strong>deactivated</strong> — they are removed from ticket-creation dropdowns but existing tickets retain the status, and the status continues to appear in filters and reports. Deactivated statuses can be <strong>reactivated</strong> at any time.</p>
+<p>A custom status can only be <strong>deleted</strong> permanently when zero tickets are in that status. The delete button appears only when the ticket count for that status is 0. Deleting is irreversible; deactivating is always the safer option.</p>
+
+<h3>Status change timeline</h3>
+<p>Every status transition is automatically recorded on the ticket. The ticket detail page shows a chronological timeline that interleaves replies and status events. Status events show the old and new status (with their colors), who made the change, and the timestamp. The initial status on ticket creation is also recorded.</p>
+
+<h3>Reopen window</h3>
+<p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>
+
+<h3>Reopen target status</h3>
+<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the first active custom status alphabetically.</p>
+
+
+<h2 id="admin-sla">SLA policies</h2>
+
+<p>SLA (Service Level Agreement) tracking is an optional feature. Enable it from <em>Admin → Settings → Features → SLA tracking</em>. It can also be pre-enabled at server startup by setting the <code>SLA_ENABLED=true</code> environment variable.</p>
+
+<p>Once the SLA tracking toggle is on, a <strong>SLA Policies</strong> management blade appears directly in the Features tab. Policies define the maximum time from ticket creation until a first response and until the ticket is resolved.</p>
+
+<h3>Policy fields</h3>
+<table>
+  <thead><tr><th>Field</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Name</strong></td><td>Display name for the policy, e.g. "Critical — 1h response"</td></tr>
+    <tr><td><strong>Priority</strong></td><td>Apply this policy to tickets of this priority: <em>critical</em>, <em>high</em>, <em>medium</em>, or <em>low</em>.</td></tr>
+    <tr><td><strong>Category</strong></td><td>Optional. Restrict this policy to a specific category. Leave at "All categories" for a catch-all.</td></tr>
+    <tr><td><strong>Response target</strong></td><td>Minutes from ticket creation until a staff reply must be added.</td></tr>
+    <tr><td><strong>Resolution target</strong></td><td>Minutes from ticket creation until the ticket must be marked Resolved.</td></tr>
+  </tbody>
+</table>
+
+<h3>Policy matching</h3>
+<p>When a ticket is created, the system selects an SLA policy by matching in this order:</p>
+<ol>
+  <li>Priority + Category — most specific match</li>
+  <li>Priority only</li>
+  <li>Category only</li>
+  <li>A default policy (a policy with no Priority and no Category)</li>
+  <li>No SLA — if no match</li>
+</ol>
+
+<h3>SLA indicators in the ticket queue</h3>
+<p>The ticket list shows a visual indicator for each ticket's SLA status:</p>
+<ul>
+  <li><span style="color:var(--green);font-weight:600;">Green</span> — within SLA</li>
+  <li><span style="color:#f59e0b;font-weight:600;">Amber</span> — within 20% of the deadline</li>
+  <li><span style="color:#ef4444;font-weight:600;">Red</span> — SLA breached</li>
+</ul>
+<p>Staff can sort the ticket queue by SLA status to prioritize tickets at risk of breaching.</p>
+
+<h3>Pausing SLA timers</h3>
+<p>When a ticket is moved to the <em>Pending</em> status (waiting on the user), the SLA timer is paused. The timer resumes when the ticket moves out of Pending. This prevents SLA breaches for tickets that are legitimately waiting on a response from the submitter.</p>
+
+
+<h2 id="admin-email-tpl">Email templates</h2>
+
+<p>Email notification templates are edited from <em>Admin → Email → Templates</em>. Templates use Go's <code>text/template</code> syntax.</p>
+
+<h3>Available templates</h3>
+<table>
+  <thead><tr><th>Template</th><th>When sent</th><th>Recipients</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket_created</code></td><td>A ticket is submitted</td><td>Ticket submitter</td></tr>
+    <tr><td><code>ticket_assigned</code></td><td>A ticket is assigned to a staff member</td><td>Assigned staff member</td></tr>
+    <tr><td><code>reply_added</code></td><td>A public reply is added</td><td>All participants (submitter + staff who have replied)</td></tr>
+    <tr><td><code>ticket_resolved</code></td><td>Ticket status changes to Resolved</td><td>Ticket submitter</td></tr>
+    <tr><td><code>ticket_closed</code></td><td>Ticket auto-closes after the reopen window</td><td>Ticket submitter</td></tr>
+    <tr><td><code>guest_ticket_created</code></td><td>A guest submits a ticket</td><td>Guest (by email provided at submission)</td></tr>
+    <tr><td><code>guest_access_link</code></td><td>Guest requests a new access link</td><td>Guest (by provided email)</td></tr>
+  </tbody>
+</table>
+
+<h3>Template variables</h3>
+<pre><code>{{ .Ticket.ID }}               -- ticket UUID
+{{ .Ticket.Subject }}          -- ticket subject line
+{{ .Ticket.Description }}      -- ticket description body
+{{ .Ticket.Status }}           -- current status name
+{{ .Ticket.Priority }}         -- priority name
+{{ .Ticket.Category }}         -- category name
+{{ .Ticket.Type }}             -- type name (may be empty)
+{{ .Ticket.Item }}             -- item name (may be empty)
+{{ .Ticket.TrackingNumber }}   -- tracking number (guest access)
+{{ .Ticket.CreatedAt }}        -- creation timestamp (RFC 3339)
+
+{{ .Submitter.Name }}          -- submitter's full name
+{{ .Submitter.Email }}         -- submitter's email address
+
+{{ .Assignee.Name }}           -- assignee's name (in assigned template)
+{{ .Reply.Body }}              -- reply body (in reply_added template)
+{{ .Reply.Author.Name }}       -- reply author's name
+{{ .ResolutionNotes }}         -- resolution notes (in resolved template)
+
+{{ .TicketURL }}               -- full URL to view the ticket in the app
+{{ .AppName }}                 -- configured application name</code></pre>
+
+<h3>Template example</h3>
+<pre><code>Subject: [{{ .AppName }}] Reply on: {{ .Ticket.Subject }}
+
+Hi {{ .Submitter.Name }},
+
+{{ .Reply.Author.Name }} replied to your ticket:
+
+---
+{{ .Reply.Body }}
+---
+
+View the full ticket: {{ .TicketURL }}
+
+Ticket #{{ .Ticket.TrackingNumber }}
+</code></pre>
+
+<h3>Preview and test</h3>
+<p>Use the <em>Preview</em> button on any template page to see a rendered preview with sample data. Use <em>Send test</em> to deliver a test email to your own address.</p>
+
+
+<h2 id="admin-webhooks">Webhooks</h2>
+
+<p>Webhooks let you push ticket events to external systems in real time. Configure them from <em>Admin → Webhooks → New webhook</em>.</p>
+
+<h3>Configuration</h3>
+<table class="param-table">
+  <thead><tr><th>Field</th><th></th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>URL</code></td><td>required</td><td>The HTTPS endpoint that receives the POST requests.</td></tr>
+    <tr><td><code>Secret</code></td><td>recommended</td><td>A shared secret used to sign delivery payloads with HMAC-SHA256. Verify the signature server-side to reject spoofed requests.</td></tr>
+    <tr><td><code>Events</code></td><td>required</td><td>Select which events trigger this webhook. You can subscribe to all events or specific ones.</td></tr>
+    <tr><td><code>Enabled</code></td><td></td><td>Toggle deliveries on/off without deleting the configuration.</td></tr>
+  </tbody>
+</table>
+
+<h3>Events</h3>
+<table>
+  <thead><tr><th>Event</th><th>Triggered when</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket.created</code></td><td>A new ticket is submitted (any method)</td></tr>
+    <tr><td><code>ticket.assigned</code></td><td>The assignee or assigned group changes</td></tr>
+    <tr><td><code>ticket.status_changed</code></td><td>The ticket status changes to anything</td></tr>
+    <tr><td><code>ticket.reply_added</code></td><td>A public reply is added to a ticket</td></tr>
+    <tr><td><code>ticket.note_added</code></td><td>An internal note is added (staff-only)</td></tr>
+    <tr><td><code>ticket.resolved</code></td><td>Status changes to Resolved specifically</td></tr>
+    <tr><td><code>ticket.closed</code></td><td>Status changes to Closed (auto or manual)</td></tr>
+    <tr><td><code>ticket.reopened</code></td><td>A Resolved or Closed ticket is reopened</td></tr>
+  </tbody>
+</table>
+
+<h3>Payload format</h3>
+<pre><code>POST https://your-endpoint.example.com/webhook
+Content-Type: application/json
+X-OHD-Event: ticket.reply_added
+X-OHD-Delivery: 01JQXYZ...
+X-OHD-Signature: sha256=&lt;hmac-hex&gt;
+
+{
+  "event":       "ticket.reply_added",
+  "delivery_id": "01JQXYZ...",
+  "occurred_at": "2026-04-05T14:32:00Z",
+  "ticket": {
+    "id":       "01JQABC...",
+    "subject":  "Laptop screen flickering",
+    "status":   "In Progress",
+    "priority": "High",
+    "category": "Hardware",
+    "type":     "Laptop",
+    "item":     "Broken screen"
+  },
+  "actor": {
+    "id":   "01JQDEF...",
+    "name": "Alex Chen",
+    "role": "staff"
+  },
+  "data": {
+    "reply_id":    "01JQGHI...",
+    "body":        "I've ordered a replacement screen, it arrives Thursday.",
+    "is_internal": false
+  }
+}</code></pre>
+
+<h3>Verifying the signature</h3>
+<p>The <code>X-OHD-Signature</code> header is <code>sha256=&lt;hex&gt;</code> where the hex is an HMAC-SHA256 of the raw request body, keyed with your webhook secret.</p>
+<pre><code># Python
+import hmac, hashlib
+
+def verify_signature(secret: str, body: bytes, header: str) -> bool:
+    expected = "sha256=" + hmac.new(
+        secret.encode(), body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, header)
+
+# Node.js
+const crypto = require('crypto');
+function verifySignature(secret, body, header) {
+  const sig = 'sha256=' + crypto
+    .createHmac('sha256', secret)
+    .update(body)
+    .digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(header));
+}</code></pre>
+
+<h3>Retries and delivery history</h3>
+<p>If the target URL returns a non-2xx status or times out (5 second timeout), the delivery is retried with exponential backoff: 1s, 2s, 4s, 8s, 16s. After 5 total attempts, the delivery is marked failed.</p>
+
+<p>All deliveries (successful and failed) are logged and visible under <em>Admin → Webhooks → [webhook name] → Deliveries</em>. Each entry shows the event type, HTTP status, response body (truncated), and timing. You can manually re-trigger a failed delivery from this page.</p>
+
+
+<h2 id="admin-plugins">Installing plugins</h2>
+
+<p>Plugins extend Go Help Desk with custom behavior. They run as sandboxed WASM modules. Manage them from <em>Admin → Plugins</em>.</p>
+
+<h3>Installing from a file</h3>
+<ol>
+  <li>Click <em>Install plugin</em>.</li>
+  <li>Upload the <code>.wasm</code> file.</li>
+  <li>The system validates the plugin manifest embedded in the binary. If the manifest is missing or malformed, installation is rejected with a specific error.</li>
+  <li>After successful validation, the plugin is listed as installed but <em>disabled</em>. Review its declared permissions (network hosts, capabilities) before enabling.</li>
+  <li>Toggle the plugin to <em>Enabled</em>.</li>
+</ol>
+
+<h3>Installing from a URL</h3>
+<p>Click <em>Install from URL</em> and provide a direct URL to a <code>.wasm</code> file. The application downloads it, validates the manifest, and stores it locally. The URL is not called again after installation — it is not a live reference.</p>
+
+<h3>Plugin configuration</h3>
+<p>If a plugin declares a <code>config_schema</code> in its manifest, a configuration form appears on the plugin's detail page. Fill in the required fields (e.g. API keys, URLs). Configuration changes take effect immediately without a restart. Fields marked <code>"secret": true</code> are stored encrypted and are never returned in the admin UI after saving.</p>
+
+<h3>Enabling and disabling</h3>
+<p>Toggle a plugin on/off from the plugin list. Disabled plugins receive no events. The plugin binary remains installed and can be re-enabled at any time. No restart is required.</p>
+
+<h3>Uninstalling</h3>
+<p>Click <em>Uninstall</em> on the plugin's detail page. The WASM binary and all stored configuration are deleted. Custom fields or UI panels added by the plugin are removed from the ticket form. Ticket data that was set by the plugin (e.g. custom field values) is preserved in the database.</p>
+
+<h3>Error monitoring</h3>
+<p>The plugin list shows a count of errors per plugin over the last 24 hours. Click a plugin's name to see the error log. A plugin that errors on more than 50% of event deliveries over a 10-minute window is automatically disabled and an admin notification is generated. The threshold is configurable under <em>Admin → Settings → Plugin error threshold</em>.</p>
+
+<p>For details on building plugins, see <a href="plugins.html">Plugin Development</a>.</p>
+
+
+<h2 id="admin-branding">Branding</h2>
+
+<p>Customize the application's visual identity from <em>Admin → Settings → Branding</em>. Changes apply immediately with no restart required.</p>
+
+<table>
+  <thead><tr><th>Setting</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Site name</strong></td><td>Shown in the sidebar header and browser title when no logo is set. Default: "Go Help Desk".</td></tr>
+    <tr>
+      <td><strong>Logo</strong></td>
+      <td>
+        Upload a logo file from <em>Admin → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF, SVG. Maximum 2 MB.
+        <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
+          <li><strong>Target size: 320 × 64 px.</strong> Raster images (PNG, JPG, GIF) are proportionally scaled to fit within this bounding box and re-encoded as PNG. Images that already fit are kept at their original dimensions.</li>
+          <li><strong>SVG safety:</strong> SVGs are validated as well-formed XML and scanned for disallowed content — <code>&lt;script&gt;</code> tags, event handlers (<code>onclick</code>, etc.), <code>javascript:</code> URIs, <code>&lt;foreignObject&gt;</code>, and <code>expression()</code>. Malformed or unsafe SVGs are rejected.</li>
+        </ul>
+        When set, the logo replaces the site name text in the sidebar. The file is served from <code>GET /api/v1/logo</code> with a 5-minute public cache header.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-note">
+  <p>Branding covers site name and logo only. Layout changes, custom page sections, and additional UI components are out of scope for the built-in branding feature — use the <a href="plugins.html#plugin-ui">plugin UI panel</a> system for that.</p>
+</div>
+
+
+<div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="authentication.html" class="btn btn-outline">← Authentication</a>
+  <a href="tickets.html" class="btn btn-outline">Working with Tickets →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

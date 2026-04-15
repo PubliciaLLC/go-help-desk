@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documentation — Go Help Desk</title>
+  <meta name="description" content="Complete documentation for Go Help Desk — installation, configuration, API reference, plugin development, and more." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs.html" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs.html" />
+  <meta property="og:title" content="Documentation — Go Help Desk" />
+  <meta property="og:description" content="Complete documentation for Go Help Desk — installation, configuration, API reference, plugin development, and more." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Documentation — Go Help Desk" />
+  <meta name="twitter:description" content="Complete documentation for Go Help Desk — installation, configuration, API reference, plugin development, and more." />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .docs-home { max-width: 960px; margin: 0 auto; padding: 4rem 1.5rem; }
+    .docs-home-header { margin-bottom: 3rem; }
+    .docs-home-header h1 { font-size: 2.25rem; margin-bottom: 0.5rem; }
+    .docs-home-header p { font-size: 1.1rem; color: var(--muted); }
+    .doc-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+      margin-bottom: 3rem;
+    }
+    @media (max-width: 768px) { .doc-cards { grid-template-columns: 1fr; } }
+    .doc-card {
+      display: block;
+      padding: 1.5rem;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--bg);
+      text-decoration: none;
+      transition: box-shadow 0.15s, border-color 0.15s;
+    }
+    .doc-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.07); border-color: var(--blue); text-decoration: none; }
+    .doc-card-icon {
+      width: 38px; height: 38px; border-radius: 8px;
+      background: var(--blue-light); color: var(--blue);
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 0.9rem;
+    }
+    .doc-card h3 { font-size: 1rem; color: var(--ink); margin-bottom: 0.35rem; }
+    .doc-card p { font-size: 0.875rem; color: var(--muted); line-height: 1.5; margin: 0; }
+    .doc-card ul { list-style: none; margin: 0.75rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+    .doc-card ul li { font-size: 0.8rem; color: var(--blue); }
+    .doc-card ul li::before { content: "→ "; color: var(--muted); }
+    .quick-links { border-top: 1px solid var(--border); padding-top: 2rem; }
+    .quick-links h2 { font-size: 1.1rem; margin-bottom: 1rem; }
+    .quick-link-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; }
+    @media (max-width: 768px) { .quick-link-grid { grid-template-columns: repeat(2, 1fr); } }
+    .quick-link {
+      padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: 6px;
+      font-size: 0.85rem; color: var(--ink-2); text-decoration: none;
+    }
+    .quick-link:hover { background: var(--bg-2); border-color: var(--blue); color: var(--blue); text-decoration: none; }
+    .quick-link span { display: block; font-size: 0.75rem; color: var(--muted); margin-top: 0.1rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="index.html">Home</a></li>
+      <li><a href="docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk" class="btn btn-outline btn-sm">Star on GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-home">
+  <div class="docs-home-header">
+    <p class="section-label" style="margin-bottom:0.5rem;">Documentation</p>
+    <h1>Go Help Desk Docs</h1>
+    <p>Everything you need to deploy, configure, and extend Go Help Desk. Start with <a href="docs/getting-started.html">Getting Started</a> or jump to the section you need.</p>
+  </div>
+
+  <div class="doc-cards">
+
+    <a class="doc-card" href="docs/getting-started.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </div>
+      <h3>Getting Started</h3>
+      <p>Deploy with Docker Compose in minutes. Full configuration reference and first-run checklist.</p>
+      <ul>
+        <li>Docker Compose quick start</li>
+        <li>All environment variables</li>
+        <li>First-run setup order</li>
+        <li>Upgrading</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/authentication.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <h3>Authentication</h3>
+      <p>Local accounts, TOTP MFA, SAML 2.0 SSO with Okta, Azure AD and Google, guest submission, and API keys.</p>
+      <ul>
+        <li>Local accounts &amp; passwords</li>
+        <li>TOTP MFA enrollment</li>
+        <li>SAML 2.0 setup (Okta, Azure, Google)</li>
+        <li>API key management</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/admin-guide.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>
+      </div>
+      <h3>Admin Guide</h3>
+      <p>Configure categories, manage users and groups, define SLA policies, set up email, webhooks, and plugins.</p>
+      <ul>
+        <li>CTI category hierarchy</li>
+        <li>Groups &amp; staff scope</li>
+        <li>SLA policies</li>
+        <li>Email templates &amp; webhooks</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/tickets.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </div>
+      <h3>Working with Tickets</h3>
+      <p>Creating tickets, the full lifecycle, replies, internal notes, linked tickets, assignment, and attachments.</p>
+      <ul>
+        <li>CTI form &amp; required fields</li>
+        <li>Lifecycle &amp; status transitions</li>
+        <li>Linked ticket types</li>
+        <li>Replies vs. internal notes</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/api.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+      </div>
+      <h3>REST API</h3>
+      <p>Complete endpoint reference with request/response examples, authentication methods, error formats, and pagination.</p>
+      <ul>
+        <li>Auth (session, API key, OAuth2)</li>
+        <li>Tickets, replies, links</li>
+        <li>Admin endpoints</li>
+        <li>Errors &amp; pagination</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/mcp.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+      </div>
+      <h3>MCP Server</h3>
+      <p>Connect AI assistants to Go Help Desk as native tools. Configure Claude, VS Code, and other MCP clients.</p>
+      <ul>
+        <li>Available tools &amp; permissions</li>
+        <li>Connecting Claude</li>
+        <li>Connecting VS Code</li>
+        <li>Generic HTTP client config</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/plugins.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>
+      </div>
+      <h3>Plugin Development</h3>
+      <p>Build WASM plugins that react to ticket events, call external APIs, and add custom UI panels.</p>
+      <ul>
+        <li>Plugin manifest &amp; config schema</li>
+        <li>Event hooks &amp; payloads</li>
+        <li>Full host API reference</li>
+        <li>Working Slack example</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/contributing.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+      </div>
+      <h3>Contributing</h3>
+      <p>Set up a local dev environment, run integration tests, and follow the schema change workflow.</p>
+      <ul>
+        <li>Dev environment setup</li>
+        <li>Running tests</li>
+        <li>Schema change workflow</li>
+        <li>Code conventions</li>
+      </ul>
+    </a>
+
+  </div>
+
+  <div class="quick-links">
+    <h2>Common tasks</h2>
+    <div class="quick-link-grid">
+      <a class="quick-link" href="docs/getting-started.html#quick-start">
+        Deploy with Docker
+        <span>Quick start guide</span>
+      </a>
+      <a class="quick-link" href="docs/authentication.html#auth-saml">
+        Set up SAML SSO
+        <span>Okta, Azure, Google</span>
+      </a>
+      <a class="quick-link" href="docs/api.html#api-overview">
+        Use the REST API
+        <span>Auth &amp; endpoints</span>
+      </a>
+      <a class="quick-link" href="docs/mcp.html#mcp-connect">
+        Connect an AI assistant
+        <span>MCP configuration</span>
+      </a>
+      <a class="quick-link" href="docs/admin-guide.html#admin-cti">
+        Configure categories
+        <span>CTI hierarchy</span>
+      </a>
+      <a class="quick-link" href="docs/admin-guide.html#admin-webhooks">
+        Set up webhooks
+        <span>Events &amp; signing</span>
+      </a>
+      <a class="quick-link" href="docs/plugins.html#plugin-example">
+        Write a plugin
+        <span>Slack example in Go</span>
+      </a>
+      <a class="quick-link" href="docs/contributing.html#dev-setup">
+        Contribute code
+        <span>Dev environment</span>
+      </a>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex; gap:1.5rem;">
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk/issues">Issues</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

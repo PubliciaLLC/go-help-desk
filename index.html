@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Go Help Desk — Self-hosted support ticketing</title>
+  <meta name="description" content="Open-source, self-hosted help desk. Single binary. No cloud required. Deploy in minutes with Docker Compose." />
+  <link rel="canonical" href="https://gohelpdesk.org/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://gohelpdesk.org/" />
+  <meta property="og:title" content="Go Help Desk — Self-hosted support ticketing" />
+  <meta property="og:description" content="Open-source, self-hosted help desk. Single binary. No cloud required. Deploy in minutes with Docker Compose." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Go Help Desk — Self-hosted support ticketing" />
+  <meta name="twitter:description" content="Open-source, self-hosted help desk. Single binary. No cloud required. Deploy in minutes with Docker Compose." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ── Navigation ────────────────────────────────────────────────────────── -->
+<nav>
+  <div class="container nav-inner">
+    <a href="index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="docs.html">Docs</a></li>
+      <li><a href="/docs/api.html">API</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk" class="btn btn-outline btn-sm">Star on GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ── Hero ──────────────────────────────────────────────────────────────── -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-badge">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Open source &amp; self-hosted
+    </div>
+    <h1>Help desk software<br>you actually control</h1>
+    <p class="hero-sub">
+      A modern, open-source ticketing system for support teams.
+      Runs on your infrastructure. No SaaS fees, no data leaving your hands.
+    </p>
+    <div class="hero-cta">
+      <a href="docs.html#quick-start" class="btn btn-primary">Get started</a>
+      <a href="docs.html" class="btn btn-outline">Read the docs</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk" class="btn btn-outline">View on GitHub</a>
+    </div>
+    <div class="hero-code">
+      <div class="hero-code-header">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+      </div>
+      <pre style="border-radius:0 0 10px 10px; margin:0;"><code>git clone https://github.com/PubliciaLLC/go-help-desk
+cd open-help-desk/docker
+cp .env.example .env      <span style="color:#64748b"># set your secrets</span>
+docker compose up -d      <span style="color:#22c55e"># that's it</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── Features ──────────────────────────────────────────────────────────── -->
+<section id="features">
+  <div class="container">
+    <div class="section-header">
+      <p class="section-label">Features</p>
+      <h2 class="section-title">Everything a support team needs</h2>
+      <p class="section-sub">From basic ticketing to enterprise SSO — all in one binary.</p>
+    </div>
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        </div>
+        <h3>CTI Classification</h3>
+        <p>Organize tickets with a three-level Category → Type → Item cascade, inspired by Remedy. Each level filters the next.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+        </div>
+        <h3>Ticket Lifecycle</h3>
+        <p>Configurable statuses, a reopen window for resolved tickets, and automatic closure — so nothing falls through the cracks.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <h3>Roles &amp; Groups</h3>
+        <p>Admin, Staff, and User roles. Group-based staff scope tied to CTI categories — each team only sees what's theirs.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>SSO &amp; MFA</h3>
+        <p>Local accounts with TOTP MFA, and SAML 2.0 for Okta, Azure AD, Google Workspace, and any standard IdP. Admins always keep local-auth access.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        </div>
+        <h3>Linked Tickets</h3>
+        <p>Connect tickets as related, parent/child, caused-by, or duplicate-of — across any status, including closed.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        </div>
+        <h3>SLA Tracking</h3>
+        <p>Optional SLA targets per priority and category. Track response and resolution times against your commitments.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <h3>Email &amp; Webhooks</h3>
+        <p>Notify users and staff on ticket events via SMTP. Fire outbound webhooks for integration with your existing tooling.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        </div>
+        <h3>REST API &amp; MCP</h3>
+        <p>Full REST API with API key auth. Plus an MCP server so AI assistants can create and manage tickets as native tools.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        </div>
+        <h3>Plugin System</h3>
+        <p>Extend behavior with sandboxed WASM plugins. Hook into ticket events, add UI panels, and integrate external systems.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Tech stack ─────────────────────────────────────────────────────────── -->
+<section id="stack" style="background: var(--bg-2);">
+  <div class="container">
+    <div class="section-header">
+      <p class="section-label">Built on</p>
+      <h2 class="section-title">Boring tech, on purpose</h2>
+      <p class="section-sub">Chosen for correctness, performance, and longevity — not novelty.</p>
+    </div>
+    <div class="stack-grid">
+      <div class="stack-item">
+        <div class="label">Backend</div>
+        <div class="value">Go</div>
+      </div>
+      <div class="stack-item">
+        <div class="label">Frontend</div>
+        <div class="value">React + Vite</div>
+      </div>
+      <div class="stack-item">
+        <div class="label">Database</div>
+        <div class="value">PostgreSQL</div>
+      </div>
+      <div class="stack-item">
+        <div class="label">Deployment</div>
+        <div class="value">Docker</div>
+      </div>
+    </div>
+    <div style="margin-top: 2.5rem; display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; font-size: 0.9rem; color: var(--ink-2);">
+      <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
+        <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
+        <span>Single binary — frontend embedded via <code>go:embed</code></span>
+      </div>
+      <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
+        <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
+        <span>Automatic schema migrations on startup</span>
+      </div>
+      <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
+        <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
+        <span>Type-safe SQL with <code>sqlc</code> — no ORM magic</span>
+      </div>
+      <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
+        <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
+        <span>Graceful shutdown with connection draining</span>
+      </div>
+      <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
+        <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
+        <span>Non-root Docker image (~20 MB runtime layer)</span>
+      </div>
+      <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
+        <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
+        <span>Plugins sandboxed via WASM (wazero)</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Roadmap ────────────────────────────────────────────────────────────── -->
+<section id="roadmap">
+  <div class="container">
+    <div class="section-header">
+      <p class="section-label">Roadmap</p>
+      <h2 class="section-title">Where we're headed</h2>
+      <p class="section-sub">Versioned milestones with clear scope — no feature creep.</p>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem;">
+
+      <div style="padding: 1.5rem; border: 2px solid var(--blue); border-radius: 10px; background: var(--blue-light);">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v1 · Now</div>
+        <h4 style="margin-bottom: 0.75rem;">Core</h4>
+        <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
+          <li>✓ CTI ticketing</li>
+          <li>✓ SAML + MFA</li>
+          <li>✓ Linked tickets</li>
+          <li>✓ SLA tracking</li>
+          <li>✓ REST API + MCP</li>
+          <li>✓ Email + webhooks</li>
+          <li>✓ Plugins (WASM)</li>
+          <li>✓ Docker deploy</li>
+        </ul>
+      </div>
+
+      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v2</div>
+        <h4 style="margin-bottom: 0.75rem;">Productivity</h4>
+        <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
+          <li>Custom fields</li>
+          <li>Canned responses</li>
+        </ul>
+      </div>
+
+      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v3</div>
+        <h4 style="margin-bottom: 0.75rem;">Knowledge</h4>
+        <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
+          <li>Knowledge base</li>
+          <li>Full-text search</li>
+        </ul>
+      </div>
+
+      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v4</div>
+        <h4 style="margin-bottom: 0.75rem;">Enterprise</h4>
+        <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
+          <li>Multi-tenancy</li>
+          <li>Plugin registry</li>
+          <li>ITSM ticket types</li>
+          <li>Impact × Urgency matrix</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── CTA ────────────────────────────────────────────────────────────────── -->
+<section class="cta-section">
+  <div class="container">
+    <h2>Ready to take back control?</h2>
+    <p>Deploy in minutes. Your data, your server, your rules.</p>
+    <div class="btn-group">
+      <a href="docs.html#quick-start" class="btn btn-primary">Get started</a>
+      <a href="docs.html" class="btn btn-outline">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ─────────────────────────────────────────────────────────────── -->
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="LICENSE">AGPL v3</a></span>
+    <span style="display:flex; gap: 1.5rem;">
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk/issues">Issues</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>
