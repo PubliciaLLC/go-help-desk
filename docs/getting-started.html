@@ -107,7 +107,7 @@
   <div class="step-body">
     <h4>Clone the repository</h4>
     <pre><code>git clone https://github.com/PubliciaLLC/go-help-desk
-cd open-help-desk/docker</code></pre>
+cd go-help-desk/docker</code></pre>
   </div>
 </div>
 
@@ -129,7 +129,7 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
     <h4>Start the stack</h4>
     <pre><code>docker compose up -d</code></pre>
     <p>Docker pulls the images, builds the application (Go + React), and starts PostgreSQL. Migrations run automatically before the app begins serving traffic. Wait for:</p>
-    <pre><code>open-help-desk  | open-help-desk listening on :8080</code></pre>
+    <pre><code>go-help-desk  | go-help-desk listening on :8080</code></pre>
   </div>
 </div>
 
@@ -246,7 +246,7 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
 
 <h2 id="upgrading">Upgrading</h2>
 
-<pre><code>cd open-help-desk
+<pre><code>cd go-help-desk
 git pull
 cd docker
 docker compose up -d --build</code></pre>
