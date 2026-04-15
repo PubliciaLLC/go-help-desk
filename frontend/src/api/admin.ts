@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, FieldDef, Assignment, ScopeType } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -311,4 +311,138 @@ export async function updateWebhook(
 
 export async function deleteWebhook(id: string): Promise<void> {
   await api.delete(`/admin/webhooks/${id}`)
+}
+
+// ── Custom field definitions ──────────────────────────────────────────────────
+
+export async function listFieldDefs(): Promise<FieldDef[]> {
+  const res = await api.get<FieldDef[]>('/admin/custom-fields')
+  return res.data
+}
+
+export async function createFieldDef(input: {
+  name: string
+  field_type: string
+  options?: string[]
+  sort_order?: number
+}): Promise<FieldDef> {
+  const res = await api.post<FieldDef>('/admin/custom-fields', input)
+  return res.data
+}
+
+export async function updateFieldDef(
+  id: string,
+  patch: Partial<Pick<FieldDef, 'name' | 'field_type' | 'options' | 'sort_order' | 'active'>>
+): Promise<FieldDef> {
+  const res = await api.patch<FieldDef>(`/admin/custom-fields/${id}`, patch)
+  return res.data
+}
+
+// ── Custom field assignments (CTI-level) ──────────────────────────────────────
+
+export async function listAssignments(scopeType: ScopeType, scopeId: string): Promise<Assignment[]> {
+  const path = scopeType === 'category'
+    ? `/admin/categories/${scopeId}/fields`
+    : scopeType === 'type'
+    ? `/admin/categories/_/types/${scopeId}/fields`
+    : `/admin/categories/_/types/_/items/${scopeId}/fields`
+  const res = await api.get<Assignment[]>(path)
+  return res.data
+}
+
+// Scoped assignment helpers that use the full CTI path (preferred over listAssignments for types/items)
+export async function listCategoryAssignments(categoryId: string): Promise<Assignment[]> {
+  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/fields`)
+  return res.data
+}
+
+export async function listTypeAssignments(categoryId: string, typeId: string): Promise<Assignment[]> {
+  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/types/${typeId}/fields`)
+  return res.data
+}
+
+export async function listItemAssignments(categoryId: string, typeId: string, itemId: string): Promise<Assignment[]> {
+  const res = await api.get<Assignment[]>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields`)
+  return res.data
+}
+
+export async function createCategoryAssignment(
+  categoryId: string,
+  input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+): Promise<Assignment> {
+  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/fields`, input)
+  return res.data
+}
+
+export async function createTypeAssignment(
+  categoryId: string,
+  typeId: string,
+  input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+): Promise<Assignment> {
+  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/fields`, input)
+  return res.data
+}
+
+export async function createItemAssignment(
+  categoryId: string,
+  typeId: string,
+  itemId: string,
+  input: { field_def_id: string; sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+): Promise<Assignment> {
+  const res = await api.post<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields`, input)
+  return res.data
+}
+
+export async function updateCategoryAssignment(
+  categoryId: string,
+  assignmentId: string,
+  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+): Promise<Assignment> {
+  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/fields/${assignmentId}`, patch)
+  return res.data
+}
+
+export async function updateTypeAssignment(
+  categoryId: string,
+  typeId: string,
+  assignmentId: string,
+  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+): Promise<Assignment> {
+  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`, patch)
+  return res.data
+}
+
+export async function updateItemAssignment(
+  categoryId: string,
+  typeId: string,
+  itemId: string,
+  assignmentId: string,
+  patch: { sort_order?: number; visible_on_new?: boolean; required_on_new?: boolean }
+): Promise<Assignment> {
+  const res = await api.patch<Assignment>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`, patch)
+  return res.data
+}
+
+export async function deleteCategoryAssignment(categoryId: string, assignmentId: string): Promise<void> {
+  await api.delete(`/admin/categories/${categoryId}/fields/${assignmentId}`)
+}
+
+export async function deleteTypeAssignment(categoryId: string, typeId: string, assignmentId: string): Promise<void> {
+  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
+}
+
+export async function deleteItemAssignment(categoryId: string, typeId: string, itemId: string, assignmentId: string): Promise<void> {
+  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
+}
+
+// ── CTI group scope (read from CTI perspective) ───────────────────────────────
+
+export async function listGroupsForCategory(categoryId: string): Promise<Group[]> {
+  const res = await api.get<Group[]>(`/admin/categories/${categoryId}/groups`)
+  return res.data
+}
+
+export async function listGroupsForType(categoryId: string, typeId: string): Promise<Group[]> {
+  const res = await api.get<Group[]>(`/admin/categories/${categoryId}/types/${typeId}/groups`)
+  return res.data
 }

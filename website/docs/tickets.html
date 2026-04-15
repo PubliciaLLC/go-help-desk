@@ -57,6 +57,7 @@
       <li><a href="#tickets-links">Linked Tickets</a></li>
       <li><a href="#tickets-tags">Tags</a></li>
       <li><a href="#tickets-assignment">Assignment</a></li>
+      <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
       <li><a href="#tickets-search">Search</a></li>
     </ul>
@@ -299,6 +300,19 @@
 
 <h3>Assignment and scope</h3>
 <p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee — if you are assigned a ticket outside your scope, it appears in your queue. You can always find any ticket by its ID using the search bar, regardless of scope or assignment.</p>
+
+
+<h2 id="tickets-custom-fields">Custom fields</h2>
+
+<p>Admins can define additional fields (text, textarea, number, or select) and assign them to CTI nodes. When you create a ticket and select a Category, Type, or Item, any fields assigned at those levels with <em>visible on new</em> enabled will appear on the form. Required fields must be filled before submitting.</p>
+
+<p>After a ticket is created, custom field values appear in the <strong>Custom Fields</strong> sidebar card on the ticket detail page:</p>
+<ul>
+  <li><strong>Staff and admins</strong> can click <em>Edit</em> to update values at any time.</li>
+  <li><strong>Regular users</strong> see values in read-only form. If no values have been set, the card is not shown.</li>
+</ul>
+
+<p>Custom fields are configured by admins under <em>Admin → Custom Fields</em> and assigned to CTI nodes in <em>Admin → Categories</em>. See the <a href="admin-guide.html#admin-custom-fields">Admin Guide</a> for details.</p>
 
 
 <h2 id="tickets-attachments">Attachments</h2>

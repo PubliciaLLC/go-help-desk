@@ -127,3 +127,18 @@ func (s *Store) ListGroupsInScope(ctx context.Context, categoryID uuid.UUID, typ
 	}
 	return out, nil
 }
+
+func (s *Store) ListGroupsForExactScope(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) ([]group.Group, error) {
+	rows, err := s.q.ListGroupsForExactScope(ctx, dbgen.ListGroupsForExactScopeParams{
+		CategoryID: categoryID,
+		TypeID:     database.NullUUID(typeID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing groups for exact scope: %w", err)
+	}
+	out := make([]group.Group, len(rows))
+	for i, r := range rows {
+		out[i] = group.Group{ID: r.ID, Name: r.Name, Description: r.Description}
+	}
+	return out, nil
+}

@@ -157,6 +157,43 @@ func (q *Queries) ListGroups(ctx context.Context) ([]Group, error) {
 	return items, nil
 }
 
+const listGroupsForExactScope = `-- name: ListGroupsForExactScope :many
+SELECT DISTINCT g.id, g.name, g.description FROM groups g
+JOIN group_scopes gs ON g.id = gs.group_id
+WHERE gs.category_id = $1
+AND (gs.type_id = $2 OR (gs.type_id IS NULL AND $2::uuid IS NULL))
+ORDER BY g.name
+`
+
+type ListGroupsForExactScopeParams struct {
+	CategoryID uuid.UUID     `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+}
+
+// Returns only groups with exactly this scope (null type = category-level, non-null = type-specific).
+func (q *Queries) ListGroupsForExactScope(ctx context.Context, arg ListGroupsForExactScopeParams) ([]Group, error) {
+	rows, err := q.db.QueryContext(ctx, listGroupsForExactScope, arg.CategoryID, arg.TypeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Group
+	for rows.Next() {
+		var i Group
+		if err := rows.Scan(&i.ID, &i.Name, &i.Description); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGroupsForUser = `-- name: ListGroupsForUser :many
 SELECT g.id, g.name, g.description FROM groups g
 JOIN group_members gm ON g.id = gm.group_id

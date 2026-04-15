@@ -12,6 +12,8 @@ import {
   listAttachments,
   uploadAttachment,
   attachmentDownloadUrl,
+  listTicketCustomFields,
+  putTicketCustomFields,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
@@ -26,7 +28,9 @@ import { Spinner } from '@/components/ui/spinner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
-import type { Group, User, StatusHistoryEntry } from '@/api/types'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 
 function priorityVariant(p: string) {
   if (p === 'critical') return 'destructive'
@@ -156,6 +160,147 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
       )}
       {error && <p className="text-xs text-red-600">{error}</p>}
     </div>
+  )
+}
+
+// ── Custom fields panel ───────────────────────────────────────────────────────
+
+interface CustomFieldsPanelProps {
+  ticketId: string
+  isStaffOrAdmin: boolean
+}
+
+function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps) {
+  const qc = useQueryClient()
+  const { data: values = [] } = useQuery<TicketFieldValue[]>({
+    queryKey: ['customFields', ticketId],
+    queryFn: () => listTicketCustomFields(ticketId),
+  })
+
+  const [editValues, setEditValues] = useState<Record<string, string> | null>(null)
+  const [saveError, setSaveError] = useState('')
+
+  const saveMutation = useMutation({
+    mutationFn: () => putTicketCustomFields(ticketId, editValues!),
+    onSuccess: () => {
+      setEditValues(null)
+      setSaveError('')
+      qc.invalidateQueries({ queryKey: ['customFields', ticketId] })
+    },
+    onError: (err) => setSaveError(extractError(err)),
+  })
+
+  // Nothing to show if no values and not staff/admin (users only see populated values).
+  if (values.length === 0 && !isStaffOrAdmin) return null
+  if (values.length === 0) return null
+
+  const displayValues = editValues
+    ? values.map((v) => ({ ...v, value: editValues[v.field_def_id] ?? v.value }))
+    : values
+
+  function renderInput(v: TicketFieldValue) {
+    const current = editValues?.[v.field_def_id] ?? v.value
+    const onChange = (val: string) =>
+      setEditValues((prev) => ({ ...(prev ?? {}), [v.field_def_id]: val }))
+
+    switch (v.field_type) {
+      case 'textarea':
+        return (
+          <Textarea
+            value={current}
+            onChange={(e) => onChange(e.target.value)}
+            rows={2}
+            className="text-xs"
+          />
+        )
+      case 'number':
+        return (
+          <Input
+            type="number"
+            value={current}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-7 text-xs"
+          />
+        )
+      case 'select':
+        return (
+          <Select
+            value={current}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-7 text-xs"
+          >
+            <option value="">—</option>
+            {(v.options ?? []).map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </Select>
+        )
+      default:
+        return (
+          <Input
+            value={current}
+            onChange={(e) => onChange(e.target.value)}
+            className="h-7 text-xs"
+          />
+        )
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+            Custom Fields
+          </CardTitle>
+          {isStaffOrAdmin && !editValues && (
+            <button
+              className="text-xs text-blue-600 hover:underline"
+              onClick={() => {
+                const init: Record<string, string> = {}
+                for (const v of values) init[v.field_def_id] = v.value
+                setEditValues(init)
+              }}
+            >
+              Edit
+            </button>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {displayValues.map((v) => (
+          <div key={v.field_def_id} className="space-y-0.5">
+            <Label className="text-xs text-gray-500">{v.field_name}</Label>
+            {isStaffOrAdmin && editValues ? (
+              renderInput(v)
+            ) : (
+              <p className="text-sm">{v.value || <span className="text-gray-400">—</span>}</p>
+            )}
+          </div>
+        ))}
+        {isStaffOrAdmin && editValues && (
+          <div className="flex gap-2 pt-1">
+            <Button
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending}
+            >
+              {saveMutation.isPending ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => { setEditValues(null); setSaveError('') }}
+            >
+              Cancel
+            </Button>
+          </div>
+        )}
+        {saveError && <p className="text-xs text-red-600">{saveError}</p>}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -511,6 +656,8 @@ export function TicketDetailPage() {
                 </CardContent>
               </Card>
             )}
+
+            <CustomFieldsPanel ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
 
             <Card>
               <CardHeader className="pb-2">

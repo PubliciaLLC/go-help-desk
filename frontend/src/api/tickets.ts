@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, StatusHistoryEntry } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, StatusHistoryEntry, Assignment, TicketFieldValue } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -11,6 +11,7 @@ export interface CreateTicketInput {
   guest_email?: string
   guest_name?: string
   guest_phone?: string
+  custom_fields?: Record<string, string>
 }
 
 export async function listTickets(params?: { assignee_group_id?: string; q?: string }): Promise<Ticket[]> {
@@ -142,4 +143,27 @@ export async function uploadAttachment(ticketId: string, file: File): Promise<At
 
 export function attachmentDownloadUrl(ticketId: string, attachmentId: string): string {
   return `/api/v1/tickets/${ticketId}/attachments/${attachmentId}`
+}
+
+// ── Custom fields ─────────────────────────────────────────────────────────────
+
+export async function resolveFieldsForCTI(params: {
+  category_id: string
+  type_id?: string
+  item_id?: string
+}): Promise<Assignment[]> {
+  const res = await api.get<Assignment[]>('/tickets/fields', { params })
+  return res.data
+}
+
+export async function listTicketCustomFields(ticketId: string): Promise<TicketFieldValue[]> {
+  const res = await api.get<TicketFieldValue[]>(`/tickets/${ticketId}/custom-fields`)
+  return res.data
+}
+
+export async function putTicketCustomFields(
+  ticketId: string,
+  values: Record<string, string>
+): Promise<void> {
+  await api.put(`/tickets/${ticketId}/custom-fields`, values)
 }

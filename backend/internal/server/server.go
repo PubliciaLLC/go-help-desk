@@ -18,6 +18,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/admin"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/auth"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/category"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/customfield"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/group"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/plugin"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/tag"
@@ -53,13 +54,14 @@ type Server struct {
 	router   *chi.Mux
 	sessions sessions.Store
 
-	users      *user.Service
-	tickets    *ticket.Service
-	categories *category.Service
-	groups     *group.Service
-	tags       *tag.Service
-	adminSvc   *admin.Service
-	plugins    plugin.Registry
+	users        *user.Service
+	tickets      *ticket.Service
+	categories   *category.Service
+	groups       *group.Service
+	tags         *tag.Service
+	adminSvc     *admin.Service
+	customFields *customfield.Service
+	plugins      plugin.Registry
 
 	apiKeyLookup     authmw.APIKeyAuthFunc
 	oauthClientStore OAuthClientLookup
@@ -80,6 +82,7 @@ func New(
 	groups *group.Service,
 	tags *tag.Service,
 	adminSvc *admin.Service,
+	customFields *customfield.Service,
 	plugins plugin.Registry,
 	apiKeyLookup authmw.APIKeyAuthFunc,
 	oauthClients OAuthClientLookup,
@@ -94,6 +97,7 @@ func New(
 		groups:           groups,
 		tags:             tags,
 		adminSvc:         adminSvc,
+		customFields:     customFields,
 		plugins:          plugins,
 		apiKeyLookup:     apiKeyLookup,
 		oauthClientStore: oauthClients,

@@ -21,6 +21,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/auditstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/authstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/categorystore"
+	"github.com/open-help-desk/open-help-desk/backend/internal/database/customfieldstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/groupstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/slastore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/tagstore"
@@ -30,6 +31,7 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/admin"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/auth"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/category"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/customfield"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/group"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/plugin"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/sla"
@@ -92,6 +94,7 @@ func run() error {
 	auStore := auditstore.New(q)
 	slStore := slastore.New(q)
 	authStore := authstore.New(q)
+	cfStore := customfieldstore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
@@ -101,6 +104,7 @@ func run() error {
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
 	adminSvc := admin.NewService(aStore)
+	customFieldSvc := customfield.NewService(cfStore)
 
 	var slaSvc *sla.Service
 	if cfg.SLAEnabled {
@@ -156,6 +160,7 @@ func run() error {
 		groupSvc,
 		tagSvc,
 		adminSvc,
+		customFieldSvc,
 		pluginRegistry,
 		apiKeyLookup,
 		authStore,

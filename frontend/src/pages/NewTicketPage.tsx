@@ -5,6 +5,7 @@ import {
   createTicket,
   listPublicCategories,
   listPublicTypes,
+  resolveFieldsForCTI,
   uploadAttachment,
 } from '@/api/tickets'
 import { listCategories, listTypes, listItems } from '@/api/admin'
@@ -18,8 +19,64 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import type { Assignment } from '@/api/types'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
+
+function CustomFieldInput({
+  field,
+  value,
+  onChange,
+  disabled,
+}: {
+  field: Assignment
+  value: string
+  onChange: (v: string) => void
+  disabled?: boolean
+}) {
+  const def = field.field_def!
+  const id = `cf-${field.id}`
+  switch (def.field_type) {
+    case 'textarea':
+      return (
+        <Textarea
+          id={id}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          rows={3}
+        />
+      )
+    case 'number':
+      return (
+        <Input
+          id={id}
+          type="number"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+        />
+      )
+    case 'select':
+      return (
+        <Select id={id} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}>
+          <option value="">Select…</option>
+          {(def.options ?? []).map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </Select>
+      )
+    default:
+      return (
+        <Input
+          id={id}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+        />
+      )
+  }
+}
 
 export function NewTicketPage() {
   const navigate = useNavigate()
@@ -32,6 +89,7 @@ export function NewTicketPage() {
   const [typeId, setTypeId] = useState('')
   const [itemId, setItemId] = useState('')
   const [priority, setPriority] = useState<'medium' | 'critical' | 'high' | 'low'>('medium')
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [files, setFiles] = useState<File[]>([])
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [error, setError] = useState('')
@@ -60,11 +118,30 @@ export function NewTicketPage() {
     enabled: isStaffOrAdmin && !!categoryId && !!typeId,
   })
 
+  const { data: ctiFields = [] } = useQuery({
+    queryKey: ['ctiFields', categoryId, typeId, itemId],
+    queryFn: () => resolveFieldsForCTI({
+      category_id: categoryId,
+      type_id: typeId || undefined,
+      item_id: (isStaffOrAdmin && itemId) ? itemId : undefined,
+    }),
+    enabled: !!categoryId,
+  })
+  const visibleFields = ctiFields.filter((f) => f.visible_on_new)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     if (!subject.trim()) { setError('Subject is required'); return }
     if (!categoryId) { setError('Category is required'); return }
+
+    // Validate required custom fields.
+    for (const f of visibleFields) {
+      if (f.required_on_new && !customFieldValues[f.field_def_id]) {
+        setError(`${f.field_def?.name ?? 'A required field'} is required`)
+        return
+      }
+    }
 
     setSubmitting(true)
     try {
@@ -75,6 +152,7 @@ export function NewTicketPage() {
         type_id: typeId || undefined,
         item_id: isStaffOrAdmin ? (itemId || undefined) : undefined,
         priority: isStaffOrAdmin ? priority : undefined,
+        custom_fields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
       })
 
       if (files.length === 0) {
@@ -163,6 +241,7 @@ export function NewTicketPage() {
                       setCategoryId(e.target.value)
                       setTypeId('')
                       setItemId('')
+                      setCustomFieldValues({})
                     }}
                     disabled={isUploading}
                   >
@@ -181,6 +260,7 @@ export function NewTicketPage() {
                     onChange={(e) => {
                       setTypeId(e.target.value)
                       setItemId('')
+                      setCustomFieldValues({})
                     }}
                     disabled={isUploading || !categoryId || types.length === 0}
                   >
@@ -197,7 +277,7 @@ export function NewTicketPage() {
                     <Select
                       id="item"
                       value={itemId}
-                      onChange={(e) => setItemId(e.target.value)}
+                      onChange={(e) => { setItemId(e.target.value); setCustomFieldValues({}) }}
                       disabled={isUploading || !typeId || items.length === 0}
                     >
                       <option value="">Select…</option>
@@ -222,6 +302,28 @@ export function NewTicketPage() {
                       <option key={p} value={p}>{p.charAt(0).toUpperCase() + p.slice(1)}</option>
                     ))}
                   </Select>
+                </div>
+              )}
+
+              {visibleFields.length > 0 && (
+                <div className="space-y-4">
+                  <div className="border-t border-gray-100" />
+                  {visibleFields.map((f) => (
+                    <div key={f.id} className="space-y-1">
+                      <Label htmlFor={`cf-${f.id}`}>
+                        {f.field_def?.name}
+                        {f.required_on_new && <span className="ml-0.5 text-red-500"> *</span>}
+                      </Label>
+                      <CustomFieldInput
+                        field={f}
+                        value={customFieldValues[f.field_def_id] ?? ''}
+                        onChange={(v) =>
+                          setCustomFieldValues((prev) => ({ ...prev, [f.field_def_id]: v }))
+                        }
+                        disabled={isUploading}
+                      />
+                    </div>
+                  ))}
                 </div>
               )}
 

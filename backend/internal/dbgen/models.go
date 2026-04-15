@@ -52,6 +52,26 @@ type Category struct {
 	Active    bool      `json:"active"`
 }
 
+type CustomFieldAssignment struct {
+	ID            uuid.UUID `json:"id"`
+	FieldDefID    uuid.UUID `json:"field_def_id"`
+	ScopeType     string    `json:"scope_type"`
+	ScopeID       uuid.UUID `json:"scope_id"`
+	SortOrder     int32     `json:"sort_order"`
+	VisibleOnNew  bool      `json:"visible_on_new"`
+	RequiredOnNew bool      `json:"required_on_new"`
+}
+
+type CustomFieldDef struct {
+	ID        uuid.UUID             `json:"id"`
+	Name      string                `json:"name"`
+	FieldType string                `json:"field_type"`
+	Options   pqtype.NullRawMessage `json:"options"`
+	SortOrder int32                 `json:"sort_order"`
+	Active    bool                  `json:"active"`
+	CreatedAt time.Time             `json:"created_at"`
+}
+
 type Group struct {
 	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`
@@ -159,6 +179,13 @@ type Ticket struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	GuestName       string         `json:"guest_name"`
 	GuestPhone      string         `json:"guest_phone"`
+}
+
+type TicketCustomFieldValue struct {
+	TicketID   uuid.UUID `json:"ticket_id"`
+	FieldDefID uuid.UUID `json:"field_def_id"`
+	Value      string    `json:"value"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type TicketLink struct {

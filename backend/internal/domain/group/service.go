@@ -77,3 +77,9 @@ func (s *Service) ListScopes(ctx context.Context, groupID uuid.UUID) ([]GroupSco
 func (s *Service) GetGroupsForTicket(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) ([]Group, error) {
 	return s.store.ListGroupsInScope(ctx, categoryID, typeID)
 }
+
+// ListGroupsForExactScope returns groups assigned to exactly this scope node
+// (category-level when typeID is nil, type-specific otherwise).
+func (s *Service) ListGroupsForExactScope(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) ([]Group, error) {
+	return s.store.ListGroupsForExactScope(ctx, categoryID, typeID)
+}

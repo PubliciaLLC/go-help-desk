@@ -46,3 +46,11 @@ JOIN group_scopes gs ON g.id = gs.group_id
 WHERE gs.category_id = $1
 AND (gs.type_id IS NULL OR gs.type_id = $2)
 ORDER BY g.name;
+
+-- name: ListGroupsForExactScope :many
+-- Returns only groups with exactly this scope (null type = category-level, non-null = type-specific).
+SELECT DISTINCT g.* FROM groups g
+JOIN group_scopes gs ON g.id = gs.group_id
+WHERE gs.category_id = $1
+AND (gs.type_id = $2 OR (gs.type_id IS NULL AND $2::uuid IS NULL))
+ORDER BY g.name;

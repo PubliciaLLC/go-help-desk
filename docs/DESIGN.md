@@ -9,7 +9,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, canned responses |
+| **v2** | Custom fields, CTI-linked group management, canned responses |
 | **v3** | Knowledge base, full-text search (Postgres FTS) |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
@@ -259,3 +259,47 @@ Exposes help desk operations as an MCP server for AI tool integration.
 - **Email** — ticket creation, assignment, status changes, replies
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events
 - Additional channels (Slack, Teams, Discord) are plugin territory
+
+---
+
+## Custom Fields (v2)
+
+Admins can attach arbitrary structured data to tickets beyond the fixed fields (subject, description, priority, CTI).
+
+### Field Definitions
+
+Defined globally under **Admin → Custom Fields**. Each definition has:
+
+- **Name** (unique)
+- **Type**: `text`, `textarea`, `number`, `select`
+- **Options** (select only): list of allowed values
+- **Sort order**: controls display order
+- **Active flag**: field defs are never hard-deleted — only deactivated. Deactivated fields do not appear on new ticket forms but existing values are preserved for history.
+
+### Assignment to CTI Nodes
+
+Fields are assigned to CTI nodes (category, type, or item) from the CTI editor (**Admin → Categories**). Each assignment has:
+
+- **Visible on new**: whether the field appears on the new-ticket form
+- **Required on new**: whether the field must be filled before the form can be submitted
+- **Sort order**: display order within the node
+
+The fields available on a ticket are the union of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order within each level.
+
+### Values
+
+Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
+
+Guests see and can fill only category-level fields with `visible_on_new = true`. Regular authenticated users see category + type fields. Staff/admin see all levels.
+
+---
+
+## CTI-Linked Group Management (v2)
+
+Admins can manage which groups handle each CTI node directly from the CTI editor (**Admin → Categories**), without navigating to the Groups page.
+
+- Each expanded **Category** row shows a **Groups** subsection listing groups assigned at the category level (type_id = NULL in `group_scopes`).
+- Each expanded **Type** row shows a **Groups** subsection listing groups assigned to that specific category + type pair.
+- **Items do not have a group management section** — items do not factor into scope per the scope model.
+- The "Add group" dropdown shows active groups not already assigned at that node.
+- Adding or removing a group here is equivalent to using the Groups page; both update the same `group_scopes` table.

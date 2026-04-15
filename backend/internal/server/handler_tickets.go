@@ -135,6 +135,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		GuestEmail string `json:"guest_email"`
 		GuestName  string `json:"guest_name"`
 		GuestPhone string `json:"guest_phone"`
+		// Custom fields: map of fieldDefId → value
+		CustomFields map[string]string `json:"custom_fields"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -198,6 +200,19 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+
+	// Set any custom field values supplied on creation (best-effort; skip invalid IDs).
+	for fieldDefIDStr, value := range body.CustomFields {
+		if value == "" {
+			continue
+		}
+		fieldDefID, parseErr := uuid.Parse(fieldDefIDStr)
+		if parseErr != nil {
+			continue
+		}
+		_ = s.customFields.SetValue(r.Context(), t.ID, fieldDefID, value)
+	}
+
 	JSON(w, http.StatusCreated, t)
 }
 

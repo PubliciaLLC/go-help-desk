@@ -16,14 +16,18 @@ import (
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/auditstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/authstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/categorystore"
+	"github.com/open-help-desk/open-help-desk/backend/internal/database/customfieldstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/groupstore"
+	"github.com/open-help-desk/open-help-desk/backend/internal/database/tagstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/ticketstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/database/userstore"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/admin"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/auth"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/category"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/customfield"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/group"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/plugin"
+	"github.com/open-help-desk/open-help-desk/backend/internal/domain/tag"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/ticket"
 	"github.com/open-help-desk/open-help-desk/backend/internal/domain/user"
 	authmw "github.com/open-help-desk/open-help-desk/backend/internal/middleware"
@@ -59,12 +63,16 @@ func newHarness(t *testing.T) (*harness, func()) {
 	aStore := adminstore.New(q)
 	auStore := auditstore.New(q)
 	authSt := authstore.New(q)
+	cfStore := customfieldstore.New(q)
+	tagSt := tagstore.New(q)
 
 	// Services
 	userSvc := user.NewService(uStore)
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	adminSvc := admin.NewService(aStore)
+	tagSvc := tag.NewService(tagSt)
+	customFieldSvc := customfield.NewService(cfStore)
 	dispatcher := notify.NewMulti() // no-op in tests
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
@@ -142,7 +150,9 @@ func newHarness(t *testing.T) (*harness, func()) {
 		ticketSvc,
 		categorySvc,
 		groupSvc,
+		tagSvc,
 		adminSvc,
+		customFieldSvc,
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,
@@ -723,11 +733,15 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	aStore := adminstore.New(q)
 	auStore := auditstore.New(q)
 	authSt := authstore.New(q)
+	cfStore := customfieldstore.New(q)
+	tagSt := tagstore.New(q)
 
 	userSvc := user.NewService(uStore)
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	adminSvc := admin.NewService(aStore)
+	tagSvc := tag.NewService(tagSt)
+	customFieldSvc := customfield.NewService(cfStore)
 	dispatcher := notify.NewMulti()
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
@@ -757,7 +771,9 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		ticketSvc,
 		categorySvc,
 		groupSvc,
+		tagSvc,
 		adminSvc,
+		customFieldSvc,
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,

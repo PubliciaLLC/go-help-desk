@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { createTicket, listPublicCategories } from '@/api/tickets'
+import { createTicket, listPublicCategories, resolveFieldsForCTI } from '@/api/tickets'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,9 +8,46 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import type { Assignment } from '@/api/types'
 
 interface SuccessInfo {
   trackingNumber: string
+}
+
+function CustomFieldInput({
+  field,
+  value,
+  onChange,
+}: {
+  field: Assignment
+  value: string
+  onChange: (v: string) => void
+}) {
+  const def = field.field_def!
+  const id = `cf-${field.id}`
+  switch (def.field_type) {
+    case 'textarea':
+      return (
+        <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} rows={3} />
+      )
+    case 'number':
+      return (
+        <Input id={id} type="number" value={value} onChange={(e) => onChange(e.target.value)} />
+      )
+    case 'select':
+      return (
+        <Select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+          <option value="">Select…</option>
+          {(def.options ?? []).map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </Select>
+      )
+    default:
+      return (
+        <Input id={id} value={value} onChange={(e) => onChange(e.target.value)} />
+      )
+  }
 }
 
 export function GuestTicketPage() {
@@ -20,6 +57,7 @@ export function GuestTicketPage() {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
+  const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [success, setSuccess] = useState<SuccessInfo | null>(null)
@@ -29,6 +67,13 @@ export function GuestTicketPage() {
     queryFn: listPublicCategories,
   })
 
+  const { data: ctiFields = [] } = useQuery({
+    queryKey: ['ctiFields-guest', categoryId],
+    queryFn: () => resolveFieldsForCTI({ category_id: categoryId }),
+    enabled: !!categoryId,
+  })
+  const visibleFields = ctiFields.filter((f) => f.visible_on_new)
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
@@ -36,6 +81,13 @@ export function GuestTicketPage() {
     if (!categoryId) { setError('Category is required'); return }
     if (!name.trim()) { setError('Name is required'); return }
     if (!email.trim()) { setError('Email is required'); return }
+
+    for (const f of visibleFields) {
+      if (f.required_on_new && !customFieldValues[f.field_def_id]) {
+        setError(`${f.field_def?.name ?? 'A required field'} is required`)
+        return
+      }
+    }
 
     setLoading(true)
     try {
@@ -46,6 +98,7 @@ export function GuestTicketPage() {
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
+        custom_fields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
       })
       setSuccess({ trackingNumber: t.tracking_number })
     } catch (err) {
@@ -85,6 +138,7 @@ export function GuestTicketPage() {
                   setName('')
                   setEmail('')
                   setPhone('')
+                  setCustomFieldValues({})
                 }}
               >
                 Submit another ticket
@@ -175,7 +229,7 @@ export function GuestTicketPage() {
                 <Select
                   id="category"
                   value={categoryId}
-                  onChange={(e) => setCategoryId(e.target.value)}
+                  onChange={(e) => { setCategoryId(e.target.value); setCustomFieldValues({}) }}
                 >
                   <option value="">Select…</option>
                   {categories.map((c) => (
@@ -183,6 +237,27 @@ export function GuestTicketPage() {
                   ))}
                 </Select>
               </div>
+
+              {visibleFields.length > 0 && (
+                <div className="space-y-4">
+                  <div className="border-t border-gray-100" />
+                  {visibleFields.map((f) => (
+                    <div key={f.id} className="space-y-1">
+                      <Label htmlFor={`cf-${f.id}`}>
+                        {f.field_def?.name}
+                        {f.required_on_new && <span className="ml-0.5 text-red-500"> *</span>}
+                      </Label>
+                      <CustomFieldInput
+                        field={f}
+                        value={customFieldValues[f.field_def_id] ?? ''}
+                        onChange={(v) =>
+                          setCustomFieldValues((prev) => ({ ...prev, [f.field_def_id]: v }))
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {error && <p className="text-sm text-red-600">{error}</p>}
 

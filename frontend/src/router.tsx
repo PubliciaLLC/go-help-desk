@@ -16,6 +16,7 @@ import { StatusesPage } from '@/pages/admin/StatusesPage'
 import { RolesPage } from '@/pages/admin/RolesPage'
 import { SettingsPage } from '@/pages/admin/SettingsPage'
 import { TagsPage } from '@/pages/admin/TagsPage'
+import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 
 async function requireAuth() {
@@ -142,6 +143,13 @@ const adminTagsRoute = createRoute({
   component: TagsPage,
 })
 
+const adminCustomFieldsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/custom-fields',
+  beforeLoad: requireAdmin,
+  component: CustomFieldsPage,
+})
+
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const submitRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -177,6 +185,7 @@ export const router = createRouter({
     adminCategoriesRoute,
     adminStatusesRoute,
     adminTagsRoute,
+    adminCustomFieldsRoute,
     adminSettingsRoute,
   ]),
 })

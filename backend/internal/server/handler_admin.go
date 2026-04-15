@@ -450,6 +450,43 @@ func (s *Server) handleRemoveGroupScope(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleListGroupsForCategory returns groups with a category-level scope entry
+// (type_id IS NULL) — used by the CTI editor to show which groups handle this category.
+func (s *Server) handleListGroupsForCategory(w http.ResponseWriter, r *http.Request) {
+	catID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid category id")
+		return
+	}
+	groups, err := s.groups.ListGroupsForExactScope(r.Context(), catID, nil)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, groups)
+}
+
+// handleListGroupsForType returns groups with a type-specific scope entry
+// — used by the CTI editor to show which groups handle this category+type.
+func (s *Server) handleListGroupsForType(w http.ResponseWriter, r *http.Request) {
+	catID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid category id")
+		return
+	}
+	typeID, err := uuid.Parse(chi.URLParam(r, "typeId"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid type id")
+		return
+	}
+	groups, err := s.groups.ListGroupsForExactScope(r.Context(), catID, &typeID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, groups)
+}
+
 // ── Categories ───────────────────────────────────────────────────────────────
 
 func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {

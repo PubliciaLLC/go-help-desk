@@ -55,6 +55,7 @@
       <li><a href="#admin-cti">Categories, Types &amp; Items</a></li>
       <li><a href="#admin-users">Users &amp; Roles</a></li>
       <li><a href="#admin-groups">Groups &amp; Scope</a></li>
+      <li><a href="#admin-custom-fields">Custom Fields</a></li>
       <li><a href="#admin-tags">Tags</a></li>
       <li><a href="#admin-statuses">Ticket Statuses</a></li>
       <li><a href="#admin-sla">SLA Policies</a></li>
@@ -154,8 +155,11 @@ Facilities
   <li><strong>Delete</strong> — Categories and Types with existing tickets cannot be deleted. Archive them (hide from new tickets) instead.</li>
 </ul>
 
-<h3>How CTI affects staff scope</h3>
-<p>Groups are scoped to Category/Type pairs. A group assigned to <em>Hardware</em> (category only) sees all hardware tickets. A group assigned to <em>Hardware / Laptop</em> sees only laptop-type hardware tickets. See <a href="#admin-groups">Groups &amp; scope</a> for the full explanation.</p>
+<h3>Groups in the CTI editor</h3>
+<p>Each expanded Category or Type row shows a <strong>Groups</strong> subsection — the groups currently handling tickets at that node. You can add or remove groups directly from here without navigating to the Groups page. See <a href="#admin-groups">Groups &amp; scope</a> for how scope is calculated. Items do not have a group management section.</p>
+
+<h3>Custom fields in the CTI editor</h3>
+<p>Each expanded Category, Type, or Item row shows a <strong>Fields</strong> subsection where you assign custom fields to that node. See <a href="#admin-custom-fields">Custom fields</a> for the full explanation.</p>
 
 
 <h2 id="admin-users">Users &amp; roles</h2>
@@ -256,6 +260,41 @@ Facilities
 <p>Scope determines what a staff member sees in their <em>queue</em>. Assignment is separate — any staff member can be assigned any ticket, even if it's outside their queue scope. Once assigned, the ticket appears in the assignee's queue regardless of CTI.</p>
 
 <p>This is intentional: you should never be unable to escalate a ticket to a specialist because of routing rules.</p>
+
+
+<h2 id="admin-custom-fields">Custom fields</h2>
+
+<p>Custom fields let admins attach structured data to tickets beyond the built-in fields (subject, description, priority, CTI). They are managed from <em>Admin → Custom Fields</em>.</p>
+
+<h3>Field definitions</h3>
+<p>A <em>field definition</em> is the global blueprint for a field. It has:</p>
+<ul>
+  <li><strong>Name</strong> — unique label shown on forms and the ticket detail page.</li>
+  <li><strong>Type</strong> — controls what input is rendered:
+    <ul>
+      <li><code>text</code> — single-line text input</li>
+      <li><code>textarea</code> — multi-line text input</li>
+      <li><code>number</code> — numeric input</li>
+      <li><code>select</code> — dropdown of predefined options (set on the field definition)</li>
+    </ul>
+  </li>
+  <li><strong>Options</strong> (select only) — comma-separated list of allowed values (e.g. "IT, HR, Finance").</li>
+  <li><strong>Sort order</strong> — controls display order within a CTI level.</li>
+  <li><strong>Active</strong> — inactive fields are hidden from new-ticket forms. Existing values are preserved for history. Field definitions are never hard-deleted.</li>
+</ul>
+
+<h3>Assigning fields to CTI nodes</h3>
+<p>Fields are assigned from <em>Admin → Categories</em>. Expand a Category, Type, or Item row — each has a <strong>Fields</strong> subsection where you can assign any active field definition. Per assignment you configure:</p>
+<ul>
+  <li><strong>Visible on new</strong> — whether the field appears on the new-ticket form when that CTI node is selected.</li>
+  <li><strong>Required on new</strong> — whether the field must be filled before the ticket can be submitted. Only applies when <em>visible on new</em> is also checked.</li>
+  <li><strong>Sort order</strong> — drag to reorder within the node.</li>
+</ul>
+
+<p>The fields available on a ticket are the <em>union</em> of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order.</p>
+
+<h3>Ticket detail page</h3>
+<p>Custom field values are displayed in the <strong>Custom Fields</strong> sidebar card on the ticket detail page. Staff and admins can click <em>Edit</em> to update any value at any time after the ticket is created. Regular users see values in read-only form.</p>
 
 
 <h2 id="admin-tags">Tags</h2>

@@ -29,6 +29,8 @@ func (s *Server) ticketRouter() *chi.Mux {
 
 	r.Get("/", s.handleListTickets)
 	r.Post("/", s.handleCreateTicket)
+	// /tickets/fields must be registered before /{id} to avoid ambiguity
+	r.Get("/fields", s.handleResolveFieldsForCTI)
 	r.Get("/{id}", s.handleGetTicket)
 	r.Patch("/{id}", s.handleUpdateTicket)
 	r.Post("/{id}/replies", s.handleAddReply)
@@ -47,6 +49,9 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Get("/{id}/attachments", s.handleListAttachments)
 	r.Post("/{id}/attachments", s.handleUploadAttachment)
 	r.Get("/{id}/attachments/{attachId}", s.handleDownloadAttachment)
+
+	r.Get("/{id}/custom-fields", s.handleListTicketCustomFields)
+	r.Put("/{id}/custom-fields", s.handlePutTicketCustomFields)
 
 	return r
 }
@@ -85,15 +90,45 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Patch("/{id}", s.handleUpdateCategory)
 		r.Delete("/{id}", s.handleDeleteCategory)
 
+		// CTI-level group scope (read-only from CTI perspective; mutations use /admin/groups/{id}/scopes)
+		r.Get("/{id}/groups", s.handleListGroupsForCategory)
+
+		// Category-level custom field assignments
+		r.Get("/{id}/fields", s.handleListAssignments)
+		r.Post("/{id}/fields", s.handleCreateAssignment)
+		r.Patch("/{id}/fields/{assignmentId}", s.handleUpdateAssignment)
+		r.Delete("/{id}/fields/{assignmentId}", s.handleDeleteAssignment)
+
 		r.Get("/{id}/types", s.handleListTypes)
 		r.Post("/{id}/types", s.handleCreateType)
 		r.Patch("/{id}/types/{typeId}", s.handleUpdateType)
 		r.Delete("/{id}/types/{typeId}", s.handleDeleteType)
 
+		// Type-level group scope
+		r.Get("/{id}/types/{typeId}/groups", s.handleListGroupsForType)
+
+		// Type-level custom field assignments
+		r.Get("/{id}/types/{typeId}/fields", s.handleListAssignments)
+		r.Post("/{id}/types/{typeId}/fields", s.handleCreateAssignment)
+		r.Patch("/{id}/types/{typeId}/fields/{assignmentId}", s.handleUpdateAssignment)
+		r.Delete("/{id}/types/{typeId}/fields/{assignmentId}", s.handleDeleteAssignment)
+
 		r.Get("/{id}/types/{typeId}/items", s.handleListItems)
 		r.Post("/{id}/types/{typeId}/items", s.handleCreateItem)
 		r.Patch("/{id}/types/{typeId}/items/{itemId}", s.handleUpdateItem)
 		r.Delete("/{id}/types/{typeId}/items/{itemId}", s.handleDeleteItem)
+
+		// Item-level custom field assignments
+		r.Get("/{id}/types/{typeId}/items/{itemId}/fields", s.handleListAssignments)
+		r.Post("/{id}/types/{typeId}/items/{itemId}/fields", s.handleCreateAssignment)
+		r.Patch("/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}", s.handleUpdateAssignment)
+		r.Delete("/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}", s.handleDeleteAssignment)
+	})
+
+	r.Route("/custom-fields", func(r chi.Router) {
+		r.Get("/", s.handleListFieldDefs)
+		r.Post("/", s.handleCreateFieldDef)
+		r.Patch("/{id}", s.handleUpdateFieldDef)
 	})
 
 	r.Route("/statuses", func(r chi.Router) {

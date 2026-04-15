@@ -23,6 +23,10 @@ type Querier interface {
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error
 	CreateAuditEntry(ctx context.Context, arg CreateAuditEntryParams) error
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) error
+	// ── Assignments ───────────────────────────────────────────────────────────────
+	CreateCustomFieldAssignment(ctx context.Context, arg CreateCustomFieldAssignmentParams) (CustomFieldAssignment, error)
+	// ── Field definitions ─────────────────────────────────────────────────────────
+	CreateCustomFieldDef(ctx context.Context, arg CreateCustomFieldDefParams) (CustomFieldDef, error)
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateItem(ctx context.Context, arg CreateItemParams) error
 	CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error
@@ -41,6 +45,8 @@ type Querier interface {
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
+	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
+	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteGroup(ctx context.Context, id uuid.UUID) error
 	DeleteItem(ctx context.Context, id uuid.UUID) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
@@ -55,6 +61,8 @@ type Querier interface {
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
+	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
+	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
@@ -76,13 +84,18 @@ type Querier interface {
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)
+	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
+	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
+	ListCustomFieldValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]ListCustomFieldValuesForTicketRow, error)
 	ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	ListGroupMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 	ListGroupScopes(ctx context.Context, groupID uuid.UUID) ([]GroupScope, error)
 	ListGroups(ctx context.Context) ([]Group, error)
+	// Returns only groups with exactly this scope (null type = category-level, non-null = type-specific).
+	ListGroupsForExactScope(ctx context.Context, arg ListGroupsForExactScopeParams) ([]Group, error)
 	ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	ListGroupsInScope(ctx context.Context, arg ListGroupsInScopeParams) ([]Group, error)
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
@@ -118,6 +131,8 @@ type Querier interface {
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error
+	UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCustomFieldAssignmentParams) error
+	UpdateCustomFieldDef(ctx context.Context, arg UpdateCustomFieldDefParams) error
 	UpdateGroup(ctx context.Context, arg UpdateGroupParams) error
 	UpdateItem(ctx context.Context, arg UpdateItemParams) error
 	UpdatePlugin(ctx context.Context, arg UpdatePluginParams) error
@@ -128,6 +143,8 @@ type Querier interface {
 	UpdateType(ctx context.Context, arg UpdateTypeParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error
+	// ── Values ────────────────────────────────────────────────────────────────────
+	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -162,3 +162,39 @@ export interface Settings {
 export interface ApiError {
   error: { code: string; message: string }
 }
+
+// ── Custom fields ─────────────────────────────────────────────────────────────
+
+export type FieldType = 'text' | 'textarea' | 'number' | 'select'
+export type ScopeType = 'category' | 'type' | 'item'
+
+export interface FieldDef {
+  id: string
+  name: string
+  field_type: FieldType
+  options?: string[]
+  sort_order: number
+  active: boolean
+  created_at: string
+}
+
+export interface Assignment {
+  id: string
+  field_def_id: string
+  field_def?: FieldDef
+  scope_type: ScopeType
+  scope_id: string
+  sort_order: number
+  visible_on_new: boolean
+  required_on_new: boolean
+}
+
+export interface TicketFieldValue {
+  ticket_id: string
+  field_def_id: string
+  field_name: string
+  field_type: FieldType
+  options?: string[]
+  value: string
+  updated_at: string
+}

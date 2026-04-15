@@ -28,4 +28,8 @@ type Store interface {
 
 	// ListGroupsInScope returns all groups whose scope covers the given CTI.
 	ListGroupsInScope(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) ([]Group, error)
+
+	// ListGroupsForExactScope returns groups with exactly this scope entry
+	// (type_id=nil means category-level only; non-nil means that specific type).
+	ListGroupsForExactScope(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) ([]Group, error)
 }

@@ -23,6 +23,8 @@ Open Help Desk is an open-source ticket management system. Staff submit and trac
 - Full user management — edit profile, role, group membership; disable/enable accounts; reset MFA and password; delete accounts
 - Groups — named pools of staff; tickets can be assigned to a group and any member can act on them
 - Group scoping tied to CTI categories (a group is only assigned tickets it owns)
+- CTI-linked group management — assign groups directly from the CTI editor per category or type
+- Custom fields — admin-defined fields (text, textarea, number, select) assigned per CTI node; values stored normalized for filterability; editable by staff after creation
 - Tags — free-form labels on tickets; staff create tags on first use (stored lowercase); admins can deactivate or restore tags
 - Linked tickets (related, parent/child, duplicate, caused-by)
 - Live ticket search — by tracking number (prefix), subject, or description keywords; staff/admin can jump directly to a ticket by tracking number or UUID
