@@ -30,7 +30,7 @@ SELECT COUNT(*) FROM users WHERE deleted_at IS NULL;
 SELECT * FROM users WHERE id = $1;
 
 -- name: ListUsersAdmin :many
-SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
