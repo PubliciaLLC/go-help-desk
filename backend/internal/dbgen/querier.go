@@ -56,6 +56,8 @@ type Querier interface {
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
 	DeleteType(ctx context.Context, id uuid.UUID) error
 	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
+	DisableUser(ctx context.Context, id uuid.UUID) error
+	EnableUser(ctx context.Context, id uuid.UUID) error
 	// Category-specific policy takes precedence over a global one (category_id IS NULL).
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
@@ -140,6 +142,7 @@ type Querier interface {
 	UpdateSLARecord(ctx context.Context, arg UpdateSLARecordParams) error
 	UpdateStatus(ctx context.Context, arg UpdateStatusParams) error
 	UpdateTicket(ctx context.Context, arg UpdateTicketParams) error
+	UpdateTicketCTI(ctx context.Context, arg UpdateTicketCTIParams) error
 	UpdateType(ctx context.Context, arg UpdateTypeParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error

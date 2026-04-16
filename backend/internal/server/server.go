@@ -177,9 +177,10 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.Mount("/tickets", s.ticketRouter())
 		r.Mount("/groups", s.groupsRouter())
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/tags", s.handleListActiveTags)
-		// Public category/type listing for ticket creation (active only, no admin required).
+		// Public category/type/item listing (active only, no admin required).
 		r.Get("/categories", s.handleListPublicCategories)
 		r.Get("/categories/{id}/types", s.handleListPublicTypes)
+		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/statuses", s.handleListStatuses)
 		r.Mount("/admin", s.adminRouter())
@@ -218,6 +219,21 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	JSON(w, http.StatusOK, types)
+}
+
+// handleListPublicItems returns only active items for a type.
+func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
+	typeID, err := uuid.Parse(chi.URLParam(r, "typeId"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "invalid_id", "invalid type id")
+		return
+	}
+	items, err := s.categories.ListItems(r.Context(), typeID, true) // active only
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, items)
 }
 
 // handleGetSiteConfig returns public-facing branding info and the app version.

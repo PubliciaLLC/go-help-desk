@@ -29,13 +29,14 @@ type User struct {
 	MFASecret    string     `json:"-"`
 	MFAEnabled   bool       `json:"mfa_enabled"`
 	SAMLSubject  string     `json:"-"`
+	Disabled     bool       `json:"disabled"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 	DeletedAt    *time.Time `json:"-"`
 }
 
-// IsActive returns true when the user has not been soft-deleted.
-func (u User) IsActive() bool { return u.DeletedAt == nil }
+// IsActive returns true when the user is neither disabled nor soft-deleted.
+func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }
 
 // Validate returns an error if the user is structurally invalid.
 // It does not validate the password hash or MFA secret — those are set by

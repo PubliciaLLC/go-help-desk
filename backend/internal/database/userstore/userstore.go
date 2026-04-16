@@ -89,6 +89,14 @@ func (s *Store) Restore(ctx context.Context, id uuid.UUID) error {
 	return s.q.RestoreUser(ctx, id)
 }
 
+func (s *Store) Disable(ctx context.Context, id uuid.UUID) error {
+	return s.q.DisableUser(ctx, id)
+}
+
+func (s *Store) Enable(ctx context.Context, id uuid.UUID) error {
+	return s.q.EnableUser(ctx, id)
+}
+
 func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
 	return s.q.ClearMFA(ctx, id)
 }
@@ -142,6 +150,7 @@ func fromRow(r dbgen.User) user.User {
 		MFASecret:    r.MfaSecret,
 		MFAEnabled:   r.MfaEnabled,
 		SAMLSubject:  r.SamlSubject,
+		Disabled:     r.Disabled,
 		CreatedAt:    r.CreatedAt,
 		UpdatedAt:    r.UpdatedAt,
 		DeletedAt:    database.TimePtr(r.DeletedAt),

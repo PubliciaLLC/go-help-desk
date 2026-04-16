@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, StatusHistoryEntry, Assignment, TicketFieldValue } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, Assignment, TicketFieldValue } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -31,7 +31,14 @@ export async function getTicket(id: string): Promise<Ticket> {
 
 export async function updateTicket(
   id: string,
-  patch: { status_id?: string; assignee_user_id?: string; assignee_group_id?: string }
+  patch: {
+    status_id?: string
+    assignee_user_id?: string
+    assignee_group_id?: string
+    category_id?: string
+    type_id?: string | null
+    item_id?: string | null
+  }
 ): Promise<Ticket> {
   const res = await api.patch<Ticket>(`/tickets/${id}`, patch)
   return res.data
@@ -122,6 +129,11 @@ export async function listPublicCategories(): Promise<Category[]> {
 
 export async function listPublicTypes(categoryId: string): Promise<TicketType[]> {
   const res = await api.get<TicketType[]>(`/categories/${categoryId}/types`)
+  return res.data
+}
+
+export async function listPublicItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
+  const res = await api.get<TicketItem[]>(`/categories/${categoryId}/types/${typeId}/items`)
   return res.data
 }
 

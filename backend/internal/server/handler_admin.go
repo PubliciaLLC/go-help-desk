@@ -59,7 +59,7 @@ func toAdminSummary(u user.User) adminUserSummary {
 		Email:       u.Email,
 		DisplayName: u.DisplayName,
 		Role:        u.Role,
-		Disabled:    !u.IsActive(),
+		Disabled:    u.Disabled,
 		AuthType:    authTypeOf(u),
 		MFAEnabled:  u.MFAEnabled,
 		CreatedAt:   u.CreatedAt,
@@ -149,7 +149,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
-			if err := s.users.SoftDelete(r.Context(), id); err != nil {
+			if err := s.users.Disable(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
 			}

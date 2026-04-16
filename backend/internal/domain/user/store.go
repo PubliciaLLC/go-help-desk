@@ -17,6 +17,8 @@ type Store interface {
 	Update(ctx context.Context, u User) error
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error
+	Disable(ctx context.Context, id uuid.UUID) error
+	Enable(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, limit, offset int) ([]User, error)
 	ListAdmin(ctx context.Context, limit, offset int) ([]User, error)
 	Count(ctx context.Context) (int64, error)

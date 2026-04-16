@@ -73,7 +73,7 @@ export function Layout({ children }: LayoutProps) {
           <nav className="flex-1 space-y-1 overflow-y-auto p-3">
             <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" />
             <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" />
-            {(user?.role === 'admin' || user?.role === 'staff') && (
+            {user?.role === 'admin' && (
               <>
                 <div className="px-3 pt-4 pb-1">
                   <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Admin</span>

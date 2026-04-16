@@ -207,9 +207,14 @@ func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, err
 	return s.store.ListAdmin(ctx, limit, offset)
 }
 
-// Enable restores a soft-deleted user account.
+// Disable marks a user account as disabled without deleting it.
+func (s *Service) Disable(ctx context.Context, id uuid.UUID) error {
+	return s.store.Disable(ctx, id)
+}
+
+// Enable re-activates a disabled user account.
 func (s *Service) Enable(ctx context.Context, id uuid.UUID) error {
-	return s.store.Restore(ctx, id)
+	return s.store.Enable(ctx, id)
 }
 
 // ResetMFA clears the user's TOTP secret and disables MFA.

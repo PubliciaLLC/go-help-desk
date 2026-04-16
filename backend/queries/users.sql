@@ -20,11 +20,17 @@ WHERE id = $1 AND deleted_at IS NULL;
 -- name: SoftDeleteUser :exec
 UPDATE users SET deleted_at = now() WHERE id = $1;
 
+-- name: DisableUser :exec
+UPDATE users SET disabled = TRUE, updated_at = now() WHERE id = $1;
+
+-- name: EnableUser :exec
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1;
+
 -- name: ListUsers :many
-SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: CountUsers :one
-SELECT COUNT(*) FROM users WHERE deleted_at IS NULL;
+SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 
 -- name: GetUserByIDAdmin :one
 SELECT * FROM users WHERE id = $1;

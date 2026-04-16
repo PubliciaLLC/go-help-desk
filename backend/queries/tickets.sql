@@ -23,6 +23,11 @@ SET subject = $2, description = $3, type_id = $4, item_id = $5,
     resolution_notes = $10, resolved_at = $11, closed_at = $12, updated_at = $13
 WHERE id = $1;
 
+-- name: UpdateTicketCTI :exec
+UPDATE tickets
+SET category_id = $2, type_id = $3, item_id = $4, updated_at = $5
+WHERE id = $1;
+
 -- name: ListTicketsByReporter :many
 SELECT * FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 

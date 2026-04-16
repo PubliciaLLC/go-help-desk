@@ -14,6 +14,7 @@ type Store interface {
 	GetByID(ctx context.Context, id uuid.UUID) (Ticket, error)
 	GetByTrackingNumber(ctx context.Context, tn TrackingNumber) (Ticket, error)
 	Update(ctx context.Context, t Ticket) error
+	UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error
 
 	// Listings
 	ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)

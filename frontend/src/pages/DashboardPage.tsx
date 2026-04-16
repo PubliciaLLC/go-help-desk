@@ -36,17 +36,14 @@ export function DashboardPage() {
             <Spinner />
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            {statuses?.map((s) => (
-              <Card key={s.id}>
-                <CardHeader className="pb-2">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            {statuses?.filter((s) => s.active).map((s) => (
+              <Card key={s.id} className="border-l-4" style={{ borderLeftColor: s.color }}>
+                <CardHeader className="pb-1">
                   <CardTitle className="text-sm font-medium text-gray-500">{s.name}</CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div
-                    className="h-3 w-3 rounded-full"
-                    style={{ backgroundColor: s.color }}
-                  />
+                  <p className="text-3xl font-bold text-gray-900">{s.ticket_count}</p>
                 </CardContent>
               </Card>
             ))}

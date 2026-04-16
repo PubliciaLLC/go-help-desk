@@ -258,6 +258,9 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		StatusID        *uuid.UUID `json:"status_id"`
 		AssigneeUserID  *uuid.UUID `json:"assignee_user_id"`
 		AssigneeGroupID *uuid.UUID `json:"assignee_group_id"`
+		CategoryID      *uuid.UUID `json:"category_id"`
+		TypeID          *uuid.UUID `json:"type_id"`
+		ItemID          *uuid.UUID `json:"item_id"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -274,6 +277,16 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	if body.CategoryID != nil {
+		if a.Role == user.RoleUser {
+			Error(w, http.StatusForbidden, "forbidden", "only staff can reclassify tickets")
+			return
+		}
+		if _, err := s.tickets.UpdateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
 			handleError(w, err)
 			return
 		}

@@ -62,6 +62,16 @@ func (s *Store) GetByTrackingNumber(ctx context.Context, tn ticket.TrackingNumbe
 	return fromRow(row), nil
 }
 
+func (s *Store) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error {
+	return s.q.UpdateTicketCTI(ctx, dbgen.UpdateTicketCTIParams{
+		ID:         id,
+		CategoryID: categoryID,
+		TypeID:     database.NullUUID(typeID),
+		ItemID:     database.NullUUID(itemID),
+		UpdatedAt:  time.Now(),
+	})
+}
+
 func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 	return s.q.UpdateTicket(ctx, dbgen.UpdateTicketParams{
 		ID:              t.ID,

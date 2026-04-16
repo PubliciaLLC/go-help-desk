@@ -861,3 +861,28 @@ func (q *Queries) UpdateTicket(ctx context.Context, arg UpdateTicketParams) erro
 	)
 	return err
 }
+
+const updateTicketCTI = `-- name: UpdateTicketCTI :exec
+UPDATE tickets
+SET category_id = $2, type_id = $3, item_id = $4, updated_at = $5
+WHERE id = $1
+`
+
+type UpdateTicketCTIParams struct {
+	ID         uuid.UUID     `json:"id"`
+	CategoryID uuid.UUID     `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+	UpdatedAt  time.Time     `json:"updated_at"`
+}
+
+func (q *Queries) UpdateTicketCTI(ctx context.Context, arg UpdateTicketCTIParams) error {
+	_, err := q.db.ExecContext(ctx, updateTicketCTI,
+		arg.ID,
+		arg.CategoryID,
+		arg.TypeID,
+		arg.ItemID,
+		arg.UpdatedAt,
+	)
+	return err
+}

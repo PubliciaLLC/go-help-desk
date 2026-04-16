@@ -14,6 +14,9 @@ import {
   attachmentDownloadUrl,
   listTicketCustomFields,
   putTicketCustomFields,
+  listPublicCategories,
+  listPublicTypes,
+  listPublicItems,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
@@ -30,7 +33,7 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
+import type { Group, User, StatusHistoryEntry, TicketFieldValue, Category, TicketType, TicketItem } from '@/api/types'
 
 function priorityVariant(p: string) {
   if (p === 'critical') return 'destructive'
@@ -350,6 +353,57 @@ export function TicketDetailPage() {
   })
 
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+
+  // ── CTI state ────────────────────────────────────────────────────────────────
+  const [ctiEdit, setCtiEdit] = useState(false)
+  const [ctiCategoryId, setCtiCategoryId] = useState('')
+  const [ctiTypeId, setCtiTypeId] = useState('')
+  const [ctiItemId, setCtiItemId] = useState('')
+  const [ctiError, setCtiError] = useState('')
+
+  const { data: categories = [] } = useQuery<Category[]>({
+    queryKey: ['public-categories'],
+    queryFn: listPublicCategories,
+  })
+
+  const { data: ctiTypes = [] } = useQuery<TicketType[]>({
+    queryKey: ['public-types', ctiCategoryId || ticket?.category_id],
+    queryFn: () => listPublicTypes(ctiCategoryId || ticket!.category_id),
+    enabled: !!(ctiCategoryId || ticket?.category_id),
+  })
+
+  const activeCtiTypeId = ctiTypeId || ticket?.type_id || ''
+  const { data: ctiItems = [] } = useQuery<TicketItem[]>({
+    queryKey: ['public-items', ctiCategoryId || ticket?.category_id, activeCtiTypeId],
+    queryFn: () => listPublicItems(ctiCategoryId || ticket!.category_id, activeCtiTypeId),
+    enabled: !!activeCtiTypeId,
+  })
+
+  const ctiMutation = useMutation({
+    mutationFn: () => updateTicket(id, {
+      category_id: ctiCategoryId || ticket!.category_id,
+      type_id: ctiTypeId || null,
+      item_id: ctiItemId || null,
+    }),
+    onSuccess: () => {
+      setCtiEdit(false)
+      setCtiError('')
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+    },
+    onError: (err) => setCtiError(extractError(err)),
+  })
+
+  function startCtiEdit() {
+    setCtiCategoryId(ticket?.category_id ?? '')
+    setCtiTypeId(ticket?.type_id ?? '')
+    setCtiItemId(ticket?.item_id ?? '')
+    setCtiError('')
+    setCtiEdit(true)
+  }
+
+  const categoryName = categories.find((c) => c.id === ticket?.category_id)?.name
+  const typeName = ctiTypes.find((t) => t.id === ticket?.type_id)?.name
+  const itemName = ctiItems.find((i) => i.id === ticket?.item_id)?.name
 
   const { data: allUsers = [] } = useQuery({
     queryKey: ['users'],
@@ -692,6 +746,108 @@ export function TicketDetailPage() {
                 </CardContent>
               </Card>
             )}
+
+            <Card>
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                    Classification
+                  </CardTitle>
+                  {isStaffOrAdmin && !ctiEdit && (
+                    <button className="text-xs text-blue-600 hover:underline" onClick={startCtiEdit}>
+                      Edit
+                    </button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-sm">
+                {ctiEdit ? (
+                  <div className="space-y-2">
+                    <div className="space-y-0.5">
+                      <Label className="text-xs text-gray-500">Category</Label>
+                      <Select
+                        className="h-7 text-xs w-full"
+                        value={ctiCategoryId}
+                        onChange={(e) => { setCtiCategoryId(e.target.value); setCtiTypeId(''); setCtiItemId('') }}
+                      >
+                        <option value="">— select —</option>
+                        {categories.filter((c) => c.active).map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </Select>
+                    </div>
+                    {ctiTypes.length > 0 && (
+                      <div className="space-y-0.5">
+                        <Label className="text-xs text-gray-500">Type</Label>
+                        <Select
+                          className="h-7 text-xs w-full"
+                          value={ctiTypeId}
+                          onChange={(e) => { setCtiTypeId(e.target.value); setCtiItemId('') }}
+                        >
+                          <option value="">— none —</option>
+                          {ctiTypes.filter((t) => t.active).map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </Select>
+                      </div>
+                    )}
+                    {ctiItems.length > 0 && (
+                      <div className="space-y-0.5">
+                        <Label className="text-xs text-gray-500">Item</Label>
+                        <Select
+                          className="h-7 text-xs w-full"
+                          value={ctiItemId}
+                          onChange={(e) => setCtiItemId(e.target.value)}
+                        >
+                          <option value="">— none —</option>
+                          {ctiItems.filter((i) => i.active).map((i) => (
+                            <option key={i.id} value={i.id}>{i.name}</option>
+                          ))}
+                        </Select>
+                      </div>
+                    )}
+                    {ctiError && <p className="text-xs text-red-600">{ctiError}</p>}
+                    <div className="flex gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => ctiMutation.mutate()}
+                        disabled={ctiMutation.isPending || !ctiCategoryId}
+                      >
+                        {ctiMutation.isPending ? 'Saving…' : 'Save'}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-xs"
+                        onClick={() => { setCtiEdit(false); setCtiError('') }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Category</span>
+                      <span className="text-right text-xs font-medium">{categoryName ?? '—'}</span>
+                    </div>
+                    {ticket.type_id && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Type</span>
+                        <span className="text-right text-xs">{typeName ?? '—'}</span>
+                      </div>
+                    )}
+                    {ticket.item_id && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Item</span>
+                        <span className="text-right text-xs">{itemName ?? '—'}</span>
+                      </div>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader className="pb-2">

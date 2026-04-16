@@ -454,6 +454,15 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// UpdateCTI changes the category/type/item classification of a ticket.
+// Only staff and admin may call this; enforcement is at the handler layer.
+func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (Ticket, error) {
+	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	}
+	return s.store.GetByID(ctx, id)
+}
+
 // GetByTrackingNumber returns the ticket with the given tracking number.
 func (s *Service) GetByTrackingNumber(ctx context.Context, tn TrackingNumber) (Ticket, error) {
 	return s.store.GetByTrackingNumber(ctx, tn)
