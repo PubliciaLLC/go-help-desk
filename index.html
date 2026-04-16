@@ -102,41 +102,53 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
       <h2 class="section-title">See it in action</h2>
       <p class="section-sub">A clean, focused UI built for support teams who move fast.</p>
     </div>
-    <div class="screenshots-grid">
 
-      <figure class="screenshot-frame">
-        <div class="screenshot-chrome">
-          <span class="dot dot-red"></span>
-          <span class="dot dot-yellow"></span>
-          <span class="dot dot-green"></span>
-        </div>
-        <img src="screenshots/02-dashboard.png" alt="Dashboard showing ticket counts per status" loading="lazy" width="1280" height="800" />
-        <figcaption>Dashboard — real-time ticket counts per status</figcaption>
-      </figure>
-
-      <figure class="screenshot-frame">
-        <div class="screenshot-chrome">
-          <span class="dot dot-red"></span>
-          <span class="dot dot-yellow"></span>
-          <span class="dot dot-green"></span>
-        </div>
-        <img src="screenshots/03-ticket-list.png" alt="Ticket queue with search and status badges" loading="lazy" width="1280" height="800" />
-        <figcaption>Ticket queue — search, filter, track priority</figcaption>
-      </figure>
-
-      <figure class="screenshot-frame">
-        <div class="screenshot-chrome">
-          <span class="dot dot-red"></span>
-          <span class="dot dot-yellow"></span>
-          <span class="dot dot-green"></span>
-        </div>
-        <img src="screenshots/05-ticket-detail.png" alt="Ticket detail with timeline and CTI classification" loading="lazy" width="1280" height="800" />
-        <figcaption>Ticket detail — timeline, CTI, assignment</figcaption>
-      </figure>
-
+    <div class="scr-tabs" role="tablist">
+      <button class="scr-tab active" data-target="scr-dashboard" role="tab" aria-selected="true">Dashboard</button>
+      <button class="scr-tab" data-target="scr-tickets" role="tab" aria-selected="false">Ticket queue</button>
+      <button class="scr-tab" data-target="scr-detail" role="tab" aria-selected="false">Ticket detail</button>
     </div>
+
+    <div class="screenshot-frame">
+      <div class="screenshot-chrome">
+        <span class="dot dot-red"></span>
+        <span class="dot dot-yellow"></span>
+        <span class="dot dot-green"></span>
+        <span class="screenshot-url">gohelpdesk.org</span>
+      </div>
+      <div class="scr-panel active" id="scr-dashboard">
+        <img src="screenshots/02-dashboard.png" alt="Dashboard showing ticket counts per status" width="1280" height="800" />
+      </div>
+      <div class="scr-panel" id="scr-tickets">
+        <img src="screenshots/03-ticket-list.png" alt="Ticket queue with search and status badges" loading="lazy" width="1280" height="800" />
+      </div>
+      <div class="scr-panel" id="scr-detail">
+        <img src="screenshots/05-ticket-detail.png" alt="Ticket detail with timeline and CTI classification" loading="lazy" width="1280" height="800" />
+      </div>
+      <div class="screenshot-caption" id="scr-caption">Dashboard — real-time ticket counts per status</div>
+    </div>
+
   </div>
 </section>
+<script>
+(function() {
+  const captions = {
+    'scr-dashboard': 'Dashboard — real-time ticket counts per status',
+    'scr-tickets':   'Ticket queue — search, filter by status, track priority',
+    'scr-detail':    'Ticket detail — full timeline, CTI classification, assignee',
+  };
+  document.querySelectorAll('.scr-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.scr-tab').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
+      document.querySelectorAll('.scr-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      btn.setAttribute('aria-selected', 'true');
+      document.getElementById(btn.dataset.target).classList.add('active');
+      document.getElementById('scr-caption').textContent = captions[btn.dataset.target];
+    });
+  });
+})();
+</script>
 
 <!-- ── Features ──────────────────────────────────────────────────────────── -->
 <section id="features">
