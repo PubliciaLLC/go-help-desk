@@ -180,6 +180,8 @@ func (s *Server) buildRouter() *chi.Mux {
 		// Public category/type listing for ticket creation (active only, no admin required).
 		r.Get("/categories", s.handleListPublicCategories)
 		r.Get("/categories/{id}/types", s.handleListPublicTypes)
+		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/statuses", s.handleListStatuses)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

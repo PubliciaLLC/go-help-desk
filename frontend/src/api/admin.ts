@@ -178,7 +178,7 @@ export async function deleteItem(categoryId: string, typeId: string, itemId: str
 // ── Statuses ─────────────────────────────────────────────────────────────────
 
 export async function listStatuses(): Promise<Status[]> {
-  const res = await api.get<Status[]>('/admin/statuses')
+  const res = await api.get<Status[]>('/statuses')
   return res.data
 }
 
