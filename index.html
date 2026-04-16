@@ -103,49 +103,78 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
       <p class="section-sub">A clean, focused UI built for support teams who move fast.</p>
     </div>
 
-    <div class="scr-tabs" role="tablist">
-      <button class="scr-tab active" data-target="scr-dashboard" role="tab" aria-selected="true">Dashboard</button>
-      <button class="scr-tab" data-target="scr-tickets" role="tab" aria-selected="false">Ticket queue</button>
-      <button class="scr-tab" data-target="scr-detail" role="tab" aria-selected="false">Ticket detail</button>
+    <div class="scr-gallery">
+      <button class="scr-thumb" data-src="screenshots/02-dashboard.png" data-caption="Dashboard — real-time ticket counts per status">
+        <img src="screenshots/02-dashboard.png" alt="Dashboard" loading="lazy" />
+        <span>Dashboard</span>
+      </button>
+      <button class="scr-thumb" data-src="screenshots/03-ticket-list.png" data-caption="Ticket queue — search, filter, and sort open tickets">
+        <img src="screenshots/03-ticket-list.png" alt="Ticket queue" loading="lazy" />
+        <span>Ticket queue</span>
+      </button>
+      <button class="scr-thumb" data-src="screenshots/05-ticket-detail.png" data-caption="Ticket detail — full timeline, CTI classification, and assignee">
+        <img src="screenshots/05-ticket-detail.png" alt="Ticket detail" loading="lazy" />
+        <span>Ticket detail</span>
+      </button>
+      <button class="scr-thumb" data-src="screenshots/07-admin-users.png" data-caption="User management — admin panel with roles and group assignment">
+        <img src="screenshots/07-admin-users.png" alt="User management" loading="lazy" />
+        <span>User management</span>
+      </button>
     </div>
 
-    <div class="screenshot-frame">
-      <div class="screenshot-chrome">
-        <span class="dot dot-red"></span>
-        <span class="dot dot-yellow"></span>
-        <span class="dot dot-green"></span>
-        <span class="screenshot-url">gohelpdesk.org</span>
+    <!-- Lightbox -->
+    <div class="lb-overlay" id="lb-overlay" role="dialog" aria-modal="true" aria-label="Screenshot viewer" hidden>
+      <button class="lb-close" id="lb-close" aria-label="Close">&times;</button>
+      <div class="lb-row">
+        <button class="lb-arrow lb-prev" id="lb-prev" aria-label="Previous">&#8592;</button>
+        <div class="lb-stage">
+          <div class="lb-chrome">
+            <span class="dot dot-red"></span>
+            <span class="dot dot-yellow"></span>
+            <span class="dot dot-green"></span>
+            <span class="lb-url">gohelpdesk.org</span>
+          </div>
+          <img class="lb-img" id="lb-img" src="" alt="" />
+        </div>
+        <button class="lb-arrow lb-next" id="lb-next" aria-label="Next">&#8594;</button>
       </div>
-      <div class="scr-panel active" id="scr-dashboard">
-        <img src="screenshots/02-dashboard.png" alt="Dashboard showing ticket counts per status" width="1280" height="800" />
-      </div>
-      <div class="scr-panel" id="scr-tickets">
-        <img src="screenshots/03-ticket-list.png" alt="Ticket queue with search and status badges" loading="lazy" width="1280" height="800" />
-      </div>
-      <div class="scr-panel" id="scr-detail">
-        <img src="screenshots/05-ticket-detail.png" alt="Ticket detail with timeline and CTI classification" loading="lazy" width="1280" height="800" />
-      </div>
-      <div class="screenshot-caption" id="scr-caption">Dashboard — real-time ticket counts per status</div>
+      <p class="lb-caption" id="lb-caption"></p>
     </div>
 
   </div>
 </section>
 <script>
 (function() {
-  const captions = {
-    'scr-dashboard': 'Dashboard — real-time ticket counts per status',
-    'scr-tickets':   'Ticket queue — search, filter by status, track priority',
-    'scr-detail':    'Ticket detail — full timeline, CTI classification, assignee',
-  };
-  document.querySelectorAll('.scr-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.scr-tab').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected','false'); });
-      document.querySelectorAll('.scr-panel').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      btn.setAttribute('aria-selected', 'true');
-      document.getElementById(btn.dataset.target).classList.add('active');
-      document.getElementById('scr-caption').textContent = captions[btn.dataset.target];
-    });
+  const thumbs  = Array.from(document.querySelectorAll('.scr-thumb'));
+  const overlay = document.getElementById('lb-overlay');
+  const img     = document.getElementById('lb-img');
+  const caption = document.getElementById('lb-caption');
+  let current   = 0;
+
+  function open(idx) {
+    current = (idx + thumbs.length) % thumbs.length;
+    const t = thumbs[current];
+    img.src = t.dataset.src;
+    img.alt = t.querySelector('span').textContent;
+    caption.textContent = t.dataset.caption;
+    overlay.hidden = false;
+    document.body.style.overflow = 'hidden';
+  }
+  function close() {
+    overlay.hidden = true;
+    document.body.style.overflow = '';
+  }
+
+  thumbs.forEach((t, i) => t.addEventListener('click', () => open(i)));
+  document.getElementById('lb-close').addEventListener('click', close);
+  document.getElementById('lb-prev').addEventListener('click', e => { e.stopPropagation(); open(current - 1); });
+  document.getElementById('lb-next').addEventListener('click', e => { e.stopPropagation(); open(current + 1); });
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  document.addEventListener('keydown', e => {
+    if (overlay.hidden) return;
+    if (e.key === 'Escape')      close();
+    if (e.key === 'ArrowLeft')   open(current - 1);
+    if (e.key === 'ArrowRight')  open(current + 1);
   });
 })();
 </script>
