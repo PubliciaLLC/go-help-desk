@@ -11,9 +11,11 @@
   <meta property="og:url" content="https://gohelpdesk.org/" />
   <meta property="og:title" content="Go Help Desk — Self-hosted support ticketing" />
   <meta property="og:description" content="Open-source, self-hosted help desk. Single binary. No cloud required. Deploy in minutes with Docker Compose." />
-  <meta name="twitter:card" content="summary" />
+  <meta property="og:image" content="https://gohelpdesk.org/screenshots/02-dashboard.png" />
+  <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Go Help Desk — Self-hosted support ticketing" />
   <meta name="twitter:description" content="Open-source, self-hosted help desk. Single binary. No cloud required. Deploy in minutes with Docker Compose." />
+  <meta name="twitter:image" content="https://gohelpdesk.org/screenshots/02-dashboard.png" />
   <link rel="icon" type="image/svg+xml" href="favicon.svg" />
   <link rel="stylesheet" href="style.css" />
   <script type="application/ld+json">
@@ -88,6 +90,50 @@
 cd go-help-desk/docker
 cp .env.example .env      <span style="color:#64748b"># set your secrets</span>
 docker compose up -d      <span style="color:#22c55e"># that's it</span></code></pre>
+    </div>
+  </div>
+</section>
+
+<!-- ── Screenshots ───────────────────────────────────────────────────────── -->
+<section id="screenshots" style="background: var(--bg-2);">
+  <div class="container">
+    <div class="section-header">
+      <p class="section-label">Product</p>
+      <h2 class="section-title">See it in action</h2>
+      <p class="section-sub">A clean, focused UI built for support teams who move fast.</p>
+    </div>
+    <div class="screenshots-grid">
+
+      <figure class="screenshot-frame">
+        <div class="screenshot-chrome">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yellow"></span>
+          <span class="dot dot-green"></span>
+        </div>
+        <img src="screenshots/02-dashboard.png" alt="Dashboard showing ticket counts per status" loading="lazy" width="1280" height="800" />
+        <figcaption>Dashboard — real-time ticket counts per status</figcaption>
+      </figure>
+
+      <figure class="screenshot-frame">
+        <div class="screenshot-chrome">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yellow"></span>
+          <span class="dot dot-green"></span>
+        </div>
+        <img src="screenshots/03-ticket-list.png" alt="Ticket queue with search and status badges" loading="lazy" width="1280" height="800" />
+        <figcaption>Ticket queue — search, filter, track priority</figcaption>
+      </figure>
+
+      <figure class="screenshot-frame">
+        <div class="screenshot-chrome">
+          <span class="dot dot-red"></span>
+          <span class="dot dot-yellow"></span>
+          <span class="dot dot-green"></span>
+        </div>
+        <img src="screenshots/05-ticket-detail.png" alt="Ticket detail with timeline and CTI classification" loading="lazy" width="1280" height="800" />
+        <figcaption>Ticket detail — timeline, CTI, assignment</figcaption>
+      </figure>
+
     </div>
   </div>
 </section>

@@ -252,6 +252,46 @@ section + section { border-top: 1px solid var(--border); }
 .feature-card h3 { margin-bottom: 0.4rem; font-size: 1rem; }
 .feature-card p { font-size: 0.9rem; line-height: 1.55; }
 
+/* ── Screenshots ─────────────────────────────────────────────────────────── */
+.screenshots-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+@media (max-width: 900px) {
+  .screenshots-grid { grid-template-columns: 1fr; }
+}
+
+.screenshot-frame {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+}
+
+.screenshot-chrome {
+  background: #1e293b;
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.screenshot-frame img {
+  width: 100%;
+  display: block;
+}
+
+.screenshot-frame figcaption {
+  padding: 0.65rem 1rem;
+  font-size: 0.825rem;
+  color: var(--muted);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+
 /* ── Stack section ───────────────────────────────────────────────────────── */
 .stack-grid {
   display: grid;
