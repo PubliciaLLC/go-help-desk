@@ -112,7 +112,9 @@ func run() error {
 
 	// slaSvc is passed to the ticket service for enforcement; nil when disabled
 	// via the SLA_ENABLED env var (preserves existing behaviour).
-	var slaSvc *sla.Service
+	// Declared as the interface type so the zero value is a true nil interface,
+	// not a (*sla.Service)(nil) wrapped in an interface (which would pass != nil checks).
+	var slaSvc ticket.SLAService
 	if cfg.SLAEnabled {
 		slaSvc = sla.NewService(slStore)
 	}
