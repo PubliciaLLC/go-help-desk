@@ -96,7 +96,6 @@ func TestLoad_Defaults(t *testing.T) {
 	require.Equal(t, 587, cfg.SMTPPort)
 	require.Equal(t, "/data/attachments", cfg.AttachmentDir)
 	require.Equal(t, "production", cfg.AppEnv)
-	require.False(t, cfg.SAMLEnabled)
 	require.False(t, cfg.GuestSubmissionEnabled)
 	require.False(t, cfg.SLAEnabled)
 	require.False(t, cfg.MFAEnabled)

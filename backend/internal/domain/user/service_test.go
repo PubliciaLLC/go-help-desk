@@ -89,8 +89,58 @@ func (f *fakeUserStore) List(_ context.Context, _, _ int) ([]user.User, error) {
 	return out, nil
 }
 
+func (f *fakeUserStore) GetByIDAdmin(_ context.Context, id uuid.UUID) (user.User, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return user.User{}, errors.New("not found")
+	}
+	return u, nil
+}
+
+func (f *fakeUserStore) Restore(_ context.Context, id uuid.UUID) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	u.DeletedAt = nil
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) ListAdmin(_ context.Context, _, _ int) ([]user.User, error) {
+	out := make([]user.User, 0, len(f.byID))
+	for _, u := range f.byID {
+		out = append(out, u)
+	}
+	return out, nil
+}
+
 func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
+}
+
+func (f *fakeUserStore) ClearMFA(_ context.Context, id uuid.UUID) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	u.MFAEnabled = false
+	u.MFASecret = ""
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) AdminSetPassword(_ context.Context, id uuid.UUID, hash string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	u.PasswordHash = hash
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

@@ -113,6 +113,31 @@ func (f *fakeGroupStore) ListGroupsInScope(_ context.Context, categoryID uuid.UU
 	return out, nil
 }
 
+func (f *fakeGroupStore) ListGroupsForExactScope(_ context.Context, categoryID uuid.UUID, typeID *uuid.UUID) ([]group.Group, error) {
+	var out []group.Group
+	for gid, scopes := range f.scopes {
+		for _, sc := range scopes {
+			if sc.CategoryID == categoryID && ptrEqual(sc.TypeID, typeID) {
+				if g, ok := f.groups[gid]; ok {
+					out = append(out, g)
+				}
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func ptrEqual(a, b *uuid.UUID) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
 func uuidPtrEq(a, b *uuid.UUID) bool {
 	if a == nil && b == nil {
 		return true

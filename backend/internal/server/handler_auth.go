@@ -154,10 +154,10 @@ func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
 
 // writeSession persists session data to the cookie store.
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.SessionData) error {
-	session, err := s.sessions.Get(r, auth.SessionName)
-	if err != nil {
-		return err
-	}
+	// Ignore the decode error: CookieStore.Get always returns a usable session
+	// even when an existing cookie can't be decoded (e.g. after a module rename
+	// changes gob type paths). We're overwriting the session anyway.
+	session, _ := s.sessions.Get(r, auth.SessionName)
 	session.Values["session"] = sd
 	return session.Save(r, w)
 }
