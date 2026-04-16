@@ -261,6 +261,8 @@ section + section { border-top: 1px solid var(--border); }
   margin: 0 auto;
 }
 
+@media (max-width: 1100px) { .scr-gallery { grid-template-columns: 1fr; } }
+
 .scr-thumb {
   display: flex;
   flex-direction: column;
