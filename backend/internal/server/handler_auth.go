@@ -31,7 +31,15 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mfaPassed := !s.adminSvc.MFAEnabled(r.Context()) || !u.MFAEnabled
+	// MFA gate: three outcomes after a valid password.
+	//   - enrolled user & MFA enabled → must verify TOTP (mfa_needed)
+	//   - not enrolled & role is in enforced list → must enroll before access (mfa_enrollment_needed)
+	//   - otherwise → session is fully authenticated
+	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
+	mfaNeeded := mfaEnabled && u.MFAEnabled
+	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
+	mfaPassed := !mfaNeeded && !mfaEnrollmentNeeded
+
 	if err := s.writeSession(w, r, auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
@@ -42,8 +50,9 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":       u,
-		"mfa_needed": !mfaPassed,
+		"user":                  u,
+		"mfa_needed":            mfaNeeded,
+		"mfa_enrollment_needed": mfaEnrollmentNeeded,
 	})
 }
 

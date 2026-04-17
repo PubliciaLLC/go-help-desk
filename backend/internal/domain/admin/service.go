@@ -132,6 +132,35 @@ func (s *Service) MFAEnabled(ctx context.Context) bool {
 	return v
 }
 
+// MFAEnforcedRoles returns the roles (as lowercase strings) that must enroll
+// in MFA. Users in these roles without enrollment are forced to enroll before
+// they can use the system.
+func (s *Service) MFAEnforcedRoles(ctx context.Context) []string {
+	raw, err := s.store.Get(ctx, KeyMFAEnforcedRoles)
+	if err != nil {
+		return nil
+	}
+	var roles []string
+	if err := json.Unmarshal(raw, &roles); err != nil {
+		return nil
+	}
+	return roles
+}
+
+// MFARequiredFor returns true when MFA is globally enabled AND the given role
+// is in the enforced-roles list.
+func (s *Service) MFARequiredFor(ctx context.Context, role string) bool {
+	if !s.MFAEnabled(ctx) {
+		return false
+	}
+	for _, r := range s.MFAEnforcedRoles(ctx) {
+		if r == role {
+			return true
+		}
+	}
+	return false
+}
+
 // ReopenTargetStatusName returns the name of the status tickets are moved to
 // when reopened, defaulting to "New".
 func (s *Service) ReopenTargetStatusName(ctx context.Context) string {

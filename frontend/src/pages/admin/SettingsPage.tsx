@@ -450,14 +450,14 @@ function AuthPanel({
       <Section title="Multi-factor authentication">
         <SettingRow
           label="Enable MFA"
-          description="Prompt users to enroll in TOTP (Google Authenticator, Authy) on their next login. Once enrolled, a one-time code is required at each sign-in."
+          description="Allow users to opt in to TOTP (Google Authenticator, Authy, 1Password). Users can enable MFA from their profile; enrolled users are prompted for a one-time code at each sign-in."
         >
           <Toggle checked={bool('mfa_enabled')} onChange={(v) => setBool('mfa_enabled', v)} />
         </SettingRow>
         {bool('mfa_enabled') && (
           <SettingRow
-            label="Enforce MFA for roles"
-            description="Roles that must enroll in MFA. Users in enforced roles are prompted on next login."
+            label="Require MFA for roles"
+            description="Users in the selected roles must enroll in MFA to sign in. Unenrolled users are forced through setup on their next login; leave all unchecked to keep MFA opt-in."
           >
             <div className="flex gap-4">
               {(['admin', 'staff', 'user'] as const).map((r) => (

@@ -26,6 +26,7 @@ func (s *Server) authRouter() *chi.Mux {
 func (s *Server) ticketRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
+	r.Use(authmw.RequireMFA)
 
 	r.Get("/", s.handleListTickets)
 	r.Post("/", s.handleCreateTicket)
@@ -59,6 +60,7 @@ func (s *Server) ticketRouter() *chi.Mux {
 func (s *Server) adminRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin))
+	r.Use(authmw.RequireMFA)
 
 	r.Route("/users", func(r chi.Router) {
 		r.Get("/", s.handleListUsers)
@@ -198,6 +200,7 @@ func (s *Server) adminRouter() *chi.Mux {
 func (s *Server) groupsRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+	r.Use(authmw.RequireMFA)
 
 	r.Get("/", s.handleListGroups)
 
@@ -208,10 +211,16 @@ func (s *Server) meRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
 
-	r.Get("/", s.handleGetMe)
-	r.Patch("/password", s.handleChangePassword)
+	// MFA enrollment endpoints must remain reachable without a passed MFA
+	// challenge — otherwise a user forced to enroll cannot complete enrollment.
 	r.Get("/mfa/enroll", s.handleMFAEnrollStart)
 	r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireMFA)
+		r.Get("/", s.handleGetMe)
+		r.Patch("/password", s.handleChangePassword)
+	})
 
 	return r
 }

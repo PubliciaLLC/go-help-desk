@@ -75,3 +75,29 @@ func TestAdminService_GuestSubmissionEnabled_Default(t *testing.T) {
 	svc := admin.NewService(newFakeAdminStore())
 	require.False(t, svc.GuestSubmissionEnabled(context.Background()))
 }
+
+func TestAdminService_MFARequiredFor(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name         string
+		enabled      bool
+		enforcedRaw  string
+		role         string
+		wantRequired bool
+	}{
+		{"mfa disabled globally", false, `["admin","staff","user"]`, "admin", false},
+		{"mfa enabled, no roles enforced", true, `[]`, "admin", false},
+		{"mfa enabled, admin enforced, admin user", true, `["admin"]`, "admin", true},
+		{"mfa enabled, admin enforced, staff user", true, `["admin"]`, "staff", false},
+		{"mfa enabled, all roles enforced", true, `["admin","staff","user"]`, "user", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := admin.NewService(newFakeAdminStore())
+			require.NoError(t, svc.SetBool(ctx, admin.KeyMFAEnabled, tc.enabled))
+			require.NoError(t, svc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(tc.enforcedRaw)))
+			require.Equal(t, tc.wantRequired, svc.MFARequiredFor(ctx, tc.role))
+		})
+	}
+}

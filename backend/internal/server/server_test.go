@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/sessions"
 	"github.com/google/uuid"
+	"github.com/pquerna/otp/totp"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
@@ -48,6 +49,8 @@ type harness struct {
 	staffID  uuid.UUID
 	adminID  uuid.UUID
 	catID    uuid.UUID
+	adminSvc *admin.Service
+	userSvc  *user.Service
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -169,6 +172,8 @@ func newHarness(t *testing.T) (*harness, func()) {
 		staffID:  staffUser.ID,
 		adminID:  adminUser.ID,
 		catID:    cat.ID,
+		adminSvc: adminSvc,
+		userSvc:  userSvc,
 	}
 	cleanup := func() {
 		rollback()
@@ -986,4 +991,120 @@ func TestSetup_MissingFields(t *testing.T) {
 		// missing display_name and password
 	})
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// enrollMFA runs the normal enrollment flow end-to-end so the user ends up
+// with MFAEnabled=true in the DB.
+func enrollMFA(t *testing.T, ctx context.Context, userSvc *user.Service, id uuid.UUID) {
+	t.Helper()
+	secret, _, err := userSvc.EnrollMFA(ctx, id, "test")
+	require.NoError(t, err)
+	code, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+	require.NoError(t, userSvc.ConfirmMFAEnrollment(ctx, id, code))
+}
+
+// ── MFA Enable vs Require ─────────────────────────────────────────────────────
+
+func TestLocalLogin_MFADisabled_NoPromptsEvenIfEnrolled(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// User has MFA flag on but global MFA is disabled → no prompts.
+	enrollMFA(t, ctx, h.userSvc, h.staffID)
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "password",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	require.False(t, body["mfa_needed"].(bool))
+	require.False(t, body["mfa_enrollment_needed"].(bool))
+}
+
+func TestLocalLogin_MFAOptIn_NotEnrolled_Passes(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Global enabled, but role not in enforced list → opt-in; unenrolled passes.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "password",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	require.False(t, body["mfa_needed"].(bool))
+	require.False(t, body["mfa_enrollment_needed"].(bool))
+}
+
+func TestLocalLogin_MFARequired_NotEnrolled_DemandsEnrollment(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Global enabled AND staff role enforced → unenrolled staff must enroll.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+	require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(`["staff","admin"]`)))
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "password",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	require.False(t, body["mfa_needed"].(bool))
+	require.True(t, body["mfa_enrollment_needed"].(bool))
+}
+
+func TestLocalLogin_MFARequired_RoleNotEnforced_Passes(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Only admin role enforced → staff user is unaffected.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+	require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(`["admin"]`)))
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "password",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	require.False(t, body["mfa_needed"].(bool))
+	require.False(t, body["mfa_enrollment_needed"].(bool))
+}
+
+func TestLocalLogin_MFAEnrolled_DemandsVerification(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Global enabled and user enrolled → mfa_needed (verify flow).
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+	enrollMFA(t, ctx, h.userSvc, h.staffID)
+
+	resp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "password",
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	decodeJSON(t, resp, &body)
+	require.True(t, body["mfa_needed"].(bool))
+	require.False(t, body["mfa_enrollment_needed"].(bool))
 }
