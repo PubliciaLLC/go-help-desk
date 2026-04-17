@@ -390,6 +390,133 @@ func TestResolveTicket(t *testing.T) {
 	require.NotNil(t, resolved.ResolvedAt)
 }
 
+// ── List tickets: admin scopes + scoped dashboard counts ─────────────────────
+
+func TestListTickets_AdminScopes(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Three tickets: one created by staff (stays assigned to nobody),
+	// one created by admin (also unassigned), and one created by staff and
+	// then reassigned to admin via PATCH.
+	for _, subject := range []string{"staff ticket A", "admin ticket B"} {
+		var resp *http.Response
+		if subject == "admin ticket B" {
+			resp = h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+				"subject":     subject,
+				"description": "x",
+				"category_id": h.catID.String(),
+			})
+		} else {
+			resp = h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+				"subject":     subject,
+				"description": "x",
+				"category_id": h.catID.String(),
+			})
+		}
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+	}
+	assignResp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "reassigned to admin",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, assignResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, assignResp, &tk)
+	patch := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"assignee_user_id": h.adminID.String(),
+	})
+	require.Equal(t, http.StatusOK, patch.StatusCode)
+
+	t.Run("scope=all returns every ticket", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?scope=all", nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var tickets []ticket.Ticket
+		decodeJSON(t, resp, &tickets)
+		require.Len(t, tickets, 3)
+	})
+
+	t.Run("scope=unassigned excludes assigned tickets", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?scope=unassigned", nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var tickets []ticket.Ticket
+		decodeJSON(t, resp, &tickets)
+		require.Len(t, tickets, 2)
+		for _, tk := range tickets {
+			require.Nil(t, tk.AssigneeUserID)
+			require.Nil(t, tk.AssigneeGroupID)
+		}
+	})
+
+	t.Run("default scope returns only tickets assigned to the admin", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets", nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var tickets []ticket.Ticket
+		decodeJSON(t, resp, &tickets)
+		require.Len(t, tickets, 1)
+		require.NotNil(t, tickets[0].AssigneeUserID)
+		require.Equal(t, h.adminID, *tickets[0].AssigneeUserID)
+	})
+
+	t.Run("staff cannot use admin-only scopes", func(t *testing.T) {
+		resp := h.do(t, http.MethodGet, "/api/v1/tickets?scope=all", nil)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+		resp = h.do(t, http.MethodGet, "/api/v1/tickets?scope=unassigned", nil)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+}
+
+func TestListStatuses_DashboardCountsScopedByRole(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Create two unassigned tickets as staff, then assign one to staff.
+	var first ticket.Ticket
+	for i, subject := range []string{"alpha", "beta"} {
+		resp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject":     subject,
+			"description": "x",
+			"category_id": h.catID.String(),
+		})
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+		if i == 0 {
+			decodeJSON(t, resp, &first)
+		}
+	}
+	patch := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+first.ID.String(), map[string]any{
+		"assignee_user_id": h.staffID.String(),
+	})
+	require.Equal(t, http.StatusOK, patch.StatusCode)
+
+	// Admin sees the global count (both tickets).
+	adminResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/statuses", nil)
+	require.Equal(t, http.StatusOK, adminResp.StatusCode)
+	var adminStatuses []ticket.Status
+	decodeJSON(t, adminResp, &adminStatuses)
+	adminNew := findStatus(t, adminStatuses, ticket.StatusNameNew)
+	require.Equal(t, int64(2), adminNew.TicketCount)
+
+	// Staff sees only their assigned count (1).
+	staffResp := h.do(t, http.MethodGet, "/api/v1/statuses", nil)
+	require.Equal(t, http.StatusOK, staffResp.StatusCode)
+	var staffStatuses []ticket.Status
+	decodeJSON(t, staffResp, &staffStatuses)
+	staffNew := findStatus(t, staffStatuses, ticket.StatusNameNew)
+	require.Equal(t, int64(1), staffNew.TicketCount)
+}
+
+func findStatus(t *testing.T, statuses []ticket.Status, name string) ticket.Status {
+	t.Helper()
+	for _, s := range statuses {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("status %q not found", name)
+	return ticket.Status{}
+}
+
 // ── Auth: require role ────────────────────────────────────────────────────────
 
 func TestAdminRoute_RequiresAuth(t *testing.T) {

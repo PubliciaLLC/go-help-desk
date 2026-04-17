@@ -751,15 +751,43 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 // ── Statuses ─────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListStatuses(w http.ResponseWriter, r *http.Request) {
-	statuses, err := s.tickets.ListStatuses(r.Context())
+	ctx := r.Context()
+	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	// Populate ticket counts so the admin UI can decide whether hard-delete is safe.
+
+	// Ticket counts are scoped to the caller:
+	//   - admin: every ticket (also drives the admin statuses page hard-delete check)
+	//   - staff: tickets assigned to them or any of their groups
+	//   - user:  tickets they reported
+	a := authmw.GetActor(r)
+	var groupIDs []uuid.UUID
+	if a != nil && a.Role == user.RoleStaff {
+		groups, err := s.groups.ListGroupsForUser(ctx, a.UserID)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		groupIDs = make([]uuid.UUID, len(groups))
+		for i, g := range groups {
+			groupIDs[i] = g.ID
+		}
+	}
+
 	for i := range statuses {
-		count, err := s.tickets.CountByStatus(r.Context(), statuses[i].ID)
-		if err == nil {
+		var count int64
+		var cerr error
+		switch {
+		case a == nil || a.Role == user.RoleAdmin:
+			count, cerr = s.tickets.CountByStatus(ctx, statuses[i].ID)
+		case a.Role == user.RoleStaff:
+			count, cerr = s.tickets.CountByStatusForAssignee(ctx, statuses[i].ID, a.UserID, groupIDs)
+		default:
+			count, cerr = s.tickets.CountByStatusForReporter(ctx, statuses[i].ID, a.UserID)
+		}
+		if cerr == nil {
 			statuses[i].TicketCount = count
 		}
 	}

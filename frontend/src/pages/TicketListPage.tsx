@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { listTickets } from '@/api/tickets'
+import { listTickets, type TicketScope } from '@/api/tickets'
 import { listStatuses } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
@@ -18,14 +18,27 @@ function priorityVariant(p: string) {
   return 'secondary'
 }
 
+function emptyMessageFor(scope: TicketScope) {
+  switch (scope) {
+    case 'unassigned':
+      return 'No unassigned tickets.'
+    case 'all':
+      return 'No tickets in the system.'
+    default:
+      return 'No tickets are currently assigned to you or your groups.'
+  }
+}
+
 export function TicketListPage() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+  const isAdmin = user?.role === 'admin'
 
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [includeClosed, setIncludeClosed] = useState(false)
+  const [scope, setScope] = useState<TicketScope>('mine')
 
   // 300 ms debounce on the search box
   useEffect(() => {
@@ -38,10 +51,17 @@ export function TicketListPage() {
     queryFn: listStatuses,
   })
 
+  // Non-admins are always scoped to "mine" — the backend rejects other scopes.
+  const effectiveScope: TicketScope = isAdmin ? scope : 'mine'
+
   // Always fetch; pass search query to backend when present.
   const { data: allTickets = [], isFetching } = useQuery({
-    queryKey: ['tickets', { q: debouncedQuery || undefined }],
-    queryFn: () => listTickets({ q: debouncedQuery || undefined }),
+    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope }],
+    queryFn: () =>
+      listTickets({
+        q: debouncedQuery || undefined,
+        scope: effectiveScope,
+      }),
   })
 
   // IDs of statuses named "Closed" — filtered out unless the toggle is on.
@@ -72,8 +92,8 @@ export function TicketListPage() {
           </Link>
         </div>
 
-        {/* Toolbar: search + closed toggle */}
-        <div className="flex items-center gap-3">
+        {/* Toolbar: search + scope + closed toggle */}
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="relative flex-1 max-w-lg">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
@@ -83,6 +103,25 @@ export function TicketListPage() {
               onChange={e => setQuery(e.target.value)}
             />
           </div>
+          {isAdmin && (
+            <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-sm">
+              {(['mine', 'unassigned', 'all'] as const).map(s => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setScope(s)}
+                  className={
+                    'px-3 py-1.5 capitalize transition-colors ' +
+                    (scope === s
+                      ? 'bg-gray-900 text-white'
+                      : 'bg-white text-gray-700 hover:bg-gray-50')
+                  }
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer select-none whitespace-nowrap">
             <input
               type="checkbox"
@@ -122,7 +161,7 @@ export function TicketListPage() {
           <p className="text-sm text-gray-500 py-8 text-center">
             {query
               ? 'No tickets match your search.'
-              : 'No tickets are currently assigned to you or your groups.'}
+              : emptyMessageFor(effectiveScope)}
           </p>
         ) : (
           <div className="overflow-hidden rounded-md border border-gray-200">

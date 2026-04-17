@@ -21,12 +21,16 @@ type Store interface {
 	ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
 	ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]Ticket, error)
 	ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]Ticket, error)
+	ListAll(ctx context.Context, limit, offset int) ([]Ticket, error)
+	ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 
 	// Search — ILIKE across tracking_number, subject, description
 	SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
 	SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
 	SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+	SearchAll(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
+	SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
 
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)
@@ -61,4 +65,6 @@ type StatusStore interface {
 	UpdateStatus(ctx context.Context, s Status) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	CountByStatus(ctx context.Context, id uuid.UUID) (int64, error)
+	CountByStatusForReporter(ctx context.Context, statusID, userID uuid.UUID) (int64, error)
+	CountByStatusForAssignee(ctx context.Context, statusID, userID uuid.UUID, groupIDs []uuid.UUID) (int64, error)
 }

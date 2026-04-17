@@ -58,6 +58,25 @@ ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 -- name: ListTicketsByStatus :many
 SELECT * FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
 
+-- name: ListAllTickets :many
+SELECT * FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: SearchAllTickets :many
+SELECT * FROM tickets
+WHERE (tracking_number ILIKE $3 OR subject ILIKE $3 OR description ILIKE $3)
+ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: ListUnassignedTickets :many
+SELECT * FROM tickets
+WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
+ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: SearchUnassignedTickets :many
+SELECT * FROM tickets
+WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
+  AND (tracking_number ILIKE $3 OR subject ILIKE $3 OR description ILIKE $3)
+ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
 -- name: ListResolvedTicketsBefore :many
 SELECT * FROM tickets
 WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND closed_at IS NULL

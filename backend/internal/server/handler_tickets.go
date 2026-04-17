@@ -16,12 +16,15 @@ import (
 //   - admin/staff: tickets assigned to them + tickets assigned to any of their groups
 //   - user: tickets they reported
 //
-// Optional query param: assignee_group_id=<uuid> — returns tickets for a specific group
-// (requires staff or admin role).
+// Optional query params:
+//   - assignee_group_id=<uuid> — tickets for a specific group (staff/admin only).
+//   - scope=mine|unassigned|all — admin-only scopes. "unassigned" returns tickets
+//     with no assignee user or group. "all" returns every ticket. Defaults to "mine".
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	ctx := r.Context()
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 
 	// Specific group filter (staff/admin only).
 	if gidStr := r.URL.Query().Get("assignee_group_id"); gidStr != "" {
@@ -39,6 +42,38 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			tickets, err = s.tickets.SearchByAssigneeGroup(ctx, gid, q, 100, 0)
 		} else {
 			tickets, err = s.tickets.ListByAssigneeGroup(ctx, gid, 100, 0)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, tickets)
+		return
+	}
+
+	// Admin-only scopes: unassigned queue or everything.
+	if scope == "unassigned" || scope == "all" {
+		if a.Role != user.RoleAdmin {
+			Error(w, http.StatusForbidden, "forbidden", "only admins can use this scope")
+			return
+		}
+		var (
+			tickets []ticket.Ticket
+			err     error
+		)
+		switch scope {
+		case "unassigned":
+			if q != "" {
+				tickets, err = s.tickets.SearchUnassigned(ctx, q, 100, 0)
+			} else {
+				tickets, err = s.tickets.ListUnassigned(ctx, 100, 0)
+			}
+		case "all":
+			if q != "" {
+				tickets, err = s.tickets.SearchAll(ctx, q, 100, 0)
+			} else {
+				tickets, err = s.tickets.ListAll(ctx, 100, 0)
+			}
 		}
 		if err != nil {
 			handleError(w, err)
@@ -67,7 +102,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Staff/admin: tickets assigned to them + tickets assigned to their groups.
+	// Staff/admin (scope=mine): tickets assigned to them + tickets assigned to their groups.
 	var all []ticket.Ticket
 
 	var err error

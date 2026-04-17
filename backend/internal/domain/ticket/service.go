@@ -508,6 +508,26 @@ func (s *Service) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, 
 	return s.store.SearchByAssigneeGroup(ctx, groupID, q, limit, offset)
 }
 
+// ListAll returns every ticket, newest first. Intended for admin-scope views.
+func (s *Service) ListAll(ctx context.Context, limit, offset int) ([]Ticket, error) {
+	return s.store.ListAll(ctx, limit, offset)
+}
+
+// SearchAll filters every ticket by tracking number, subject, or description.
+func (s *Service) SearchAll(ctx context.Context, q string, limit, offset int) ([]Ticket, error) {
+	return s.store.SearchAll(ctx, q, limit, offset)
+}
+
+// ListUnassigned returns tickets with neither an assignee user nor an assignee group.
+func (s *Service) ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error) {
+	return s.store.ListUnassigned(ctx, limit, offset)
+}
+
+// SearchUnassigned filters unassigned tickets by tracking number, subject, or description.
+func (s *Service) SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]Ticket, error) {
+	return s.store.SearchUnassigned(ctx, q, limit, offset)
+}
+
 // ListResolvedBefore is used by the auto-close scheduler.
 func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error) {
 	return s.store.ListResolvedBefore(ctx, before, limit)
@@ -532,6 +552,17 @@ func (s *Service) SaveStatus(ctx context.Context, st Status) error {
 // CountByStatus returns the number of tickets currently in the given status.
 func (s *Service) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) {
 	return s.statuses.CountByStatus(ctx, id)
+}
+
+// CountByStatusForReporter counts tickets in the given status reported by a user.
+func (s *Service) CountByStatusForReporter(ctx context.Context, statusID, userID uuid.UUID) (int64, error) {
+	return s.statuses.CountByStatusForReporter(ctx, statusID, userID)
+}
+
+// CountByStatusForAssignee counts tickets in the given status assigned to a user
+// or to any of the supplied groups.
+func (s *Service) CountByStatusForAssignee(ctx context.Context, statusID, userID uuid.UUID, groupIDs []uuid.UUID) (int64, error) {
+	return s.statuses.CountByStatusForAssignee(ctx, statusID, userID, groupIDs)
 }
 
 // RemoveStatus hard-deletes a custom status. Blocked if the status is a

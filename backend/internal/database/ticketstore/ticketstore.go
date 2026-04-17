@@ -188,6 +188,52 @@ func (s *Store) ListByStatus(ctx context.Context, statusID uuid.UUID, limit, off
 	return fromRows(rows), nil
 }
 
+func (s *Store) ListAll(ctx context.Context, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.ListAllTickets(ctx, dbgen.ListAllTicketsParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing all tickets: %w", err)
+	}
+	return fromRows(rows), nil
+}
+
+func (s *Store) SearchAll(ctx context.Context, q string, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.SearchAllTickets(ctx, dbgen.SearchAllTicketsParams{
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+		TrackingNumber: searchPattern(q),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching all tickets: %w", err)
+	}
+	return fromRows(rows), nil
+}
+
+func (s *Store) ListUnassigned(ctx context.Context, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.ListUnassignedTickets(ctx, dbgen.ListUnassignedTicketsParams{
+		Limit:  int32(limit),
+		Offset: int32(offset),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing unassigned tickets: %w", err)
+	}
+	return fromRows(rows), nil
+}
+
+func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.SearchUnassignedTickets(ctx, dbgen.SearchUnassignedTicketsParams{
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+		TrackingNumber: searchPattern(q),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching unassigned tickets: %w", err)
+	}
+	return fromRows(rows), nil
+}
+
 func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListResolvedTicketsBefore(ctx, dbgen.ListResolvedTicketsBeforeParams{
 		ResolvedAt: sql.NullTime{Time: before, Valid: true},
@@ -404,6 +450,24 @@ func (s *Store) DeleteStatus(ctx context.Context, id uuid.UUID) error {
 
 func (s *Store) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) {
 	return s.q.CountTicketsByStatus(ctx, id)
+}
+
+func (s *Store) CountByStatusForReporter(ctx context.Context, statusID, userID uuid.UUID) (int64, error) {
+	return s.q.CountTicketsByStatusForReporter(ctx, dbgen.CountTicketsByStatusForReporterParams{
+		StatusID:       statusID,
+		ReporterUserID: database.NullUUID(&userID),
+	})
+}
+
+func (s *Store) CountByStatusForAssignee(ctx context.Context, statusID, userID uuid.UUID, groupIDs []uuid.UUID) (int64, error) {
+	if groupIDs == nil {
+		groupIDs = []uuid.UUID{}
+	}
+	return s.q.CountTicketsByStatusForAssignee(ctx, dbgen.CountTicketsByStatusForAssigneeParams{
+		StatusID:       statusID,
+		AssigneeUserID: database.NullUUID(&userID),
+		GroupIds:       groupIDs,
+	})
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────

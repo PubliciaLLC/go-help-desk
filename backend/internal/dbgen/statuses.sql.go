@@ -9,6 +9,7 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const countTicketsByStatus = `-- name: CountTicketsByStatus :one
@@ -17,6 +18,42 @@ SELECT COUNT(*) FROM tickets WHERE status_id = $1
 
 func (q *Queries) CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error) {
 	row := q.db.QueryRowContext(ctx, countTicketsByStatus, statusID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTicketsByStatusForAssignee = `-- name: CountTicketsByStatusForAssignee :one
+SELECT COUNT(*) FROM tickets
+WHERE status_id = $1
+  AND (assignee_user_id = $2 OR assignee_group_id = ANY($3::uuid[]))
+`
+
+type CountTicketsByStatusForAssigneeParams struct {
+	StatusID       uuid.UUID     `json:"status_id"`
+	AssigneeUserID uuid.NullUUID `json:"assignee_user_id"`
+	GroupIds       []uuid.UUID   `json:"group_ids"`
+}
+
+func (q *Queries) CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByStatusForAssignee, arg.StatusID, arg.AssigneeUserID, pq.Array(arg.GroupIds))
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTicketsByStatusForReporter = `-- name: CountTicketsByStatusForReporter :one
+SELECT COUNT(*) FROM tickets
+WHERE status_id = $1 AND reporter_user_id = $2
+`
+
+type CountTicketsByStatusForReporterParams struct {
+	StatusID       uuid.UUID     `json:"status_id"`
+	ReporterUserID uuid.NullUUID `json:"reporter_user_id"`
+}
+
+func (q *Queries) CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByStatusForReporter, arg.StatusID, arg.ReporterUserID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

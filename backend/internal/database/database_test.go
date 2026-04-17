@@ -296,6 +296,128 @@ func TestTicketStore_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, ticketstore.ErrNotFound)
 }
 
+// TestTicketStore_ScopedListsAndCounts covers the admin-scope list helpers
+// (ListAll / ListUnassigned and their Search variants) and the scoped status
+// counts used to drive per-role dashboard numbers.
+func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	gs := groupstore.New(q)
+	ts := ticketstore.New(q)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	reporter := user.User{ID: uuid.New(), Email: "r@ex.com", DisplayName: "R", Role: user.RoleUser, CreatedAt: now, UpdatedAt: now}
+	staff := user.User{ID: uuid.New(), Email: "s@ex.com", DisplayName: "S", Role: user.RoleStaff, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, us.Create(ctx, reporter))
+	require.NoError(t, us.Create(ctx, staff))
+
+	cat := category.Category{ID: uuid.New(), Name: "Gen", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	grp := group.Group{ID: uuid.New(), Name: "Infra"}
+	require.NoError(t, gs.Create(ctx, grp))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	mkTicket := func(subject string, assigneeUser *uuid.UUID, assigneeGroup *uuid.UUID) ticket.Ticket {
+		seq, err := ts.NextSeq(ctx)
+		require.NoError(t, err)
+		tk := ticket.Ticket{
+			ID:              uuid.New(),
+			TrackingNumber:  ticket.GenerateTrackingNumber(2024, seq),
+			Subject:         subject,
+			Description:     subject + " body",
+			CategoryID:      cat.ID,
+			Priority:        ticket.PriorityMedium,
+			StatusID:        newSt.ID,
+			ReporterUserID:  &reporter.ID,
+			AssigneeUserID:  assigneeUser,
+			AssigneeGroupID: assigneeGroup,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		require.NoError(t, ts.Create(ctx, tk))
+		return tk
+	}
+
+	mine := mkTicket("assigned to staff", &staff.ID, nil)
+	grpTicket := mkTicket("assigned to group", nil, &grp.ID)
+	_ = grpTicket
+	unassigned1 := mkTicket("unassigned alpha", nil, nil)
+	unassigned2 := mkTicket("unassigned beta", nil, nil)
+
+	t.Run("ListAll returns every ticket", func(t *testing.T) {
+		all, err := ts.ListAll(ctx, 100, 0)
+		require.NoError(t, err)
+		require.Len(t, all, 4)
+	})
+
+	t.Run("ListUnassigned returns only unassigned tickets", func(t *testing.T) {
+		got, err := ts.ListUnassigned(ctx, 100, 0)
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		ids := map[uuid.UUID]bool{}
+		for _, tk := range got {
+			ids[tk.ID] = true
+		}
+		require.True(t, ids[unassigned1.ID])
+		require.True(t, ids[unassigned2.ID])
+	})
+
+	t.Run("SearchAll filters by subject", func(t *testing.T) {
+		got, err := ts.SearchAll(ctx, "alpha", 100, 0)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.Equal(t, unassigned1.ID, got[0].ID)
+	})
+
+	t.Run("SearchUnassigned filters and excludes assigned", func(t *testing.T) {
+		got, err := ts.SearchUnassigned(ctx, "assigned", 100, 0)
+		require.NoError(t, err)
+		require.Len(t, got, 0)
+	})
+
+	t.Run("CountByStatusForAssignee counts user+group tickets", func(t *testing.T) {
+		count, err := ts.CountByStatusForAssignee(ctx, newSt.ID, staff.ID, []uuid.UUID{grp.ID})
+		require.NoError(t, err)
+		require.Equal(t, int64(2), count)
+
+		// Without the group: only direct assignment.
+		count, err = ts.CountByStatusForAssignee(ctx, newSt.ID, staff.ID, nil)
+		require.NoError(t, err)
+		require.Equal(t, int64(1), count)
+
+		// A user with nothing assigned sees zero.
+		count, err = ts.CountByStatusForAssignee(ctx, newSt.ID, uuid.New(), nil)
+		require.NoError(t, err)
+		require.Equal(t, int64(0), count)
+	})
+
+	t.Run("CountByStatusForReporter counts only reported tickets", func(t *testing.T) {
+		count, err := ts.CountByStatusForReporter(ctx, newSt.ID, reporter.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(4), count)
+
+		count, err = ts.CountByStatusForReporter(ctx, newSt.ID, staff.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(0), count)
+	})
+
+	// Sanity: unscoped global count still reflects every ticket.
+	total, err := ts.CountByStatus(ctx, newSt.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), total)
+	_ = mine
+}
+
 // ── Group store ──────────────────────────────────────────────────────────────
 
 func TestGroupStore(t *testing.T) {

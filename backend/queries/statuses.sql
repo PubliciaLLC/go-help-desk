@@ -18,3 +18,12 @@ SELECT * FROM statuses ORDER BY sort_order, name;
 
 -- name: CountTicketsByStatus :one
 SELECT COUNT(*) FROM tickets WHERE status_id = $1;
+
+-- name: CountTicketsByStatusForReporter :one
+SELECT COUNT(*) FROM tickets
+WHERE status_id = $1 AND reporter_user_id = $2;
+
+-- name: CountTicketsByStatusForAssignee :one
+SELECT COUNT(*) FROM tickets
+WHERE status_id = $1
+  AND (assignee_user_id = $2 OR assignee_group_id = ANY(sqlc.arg('group_ids')::uuid[]));

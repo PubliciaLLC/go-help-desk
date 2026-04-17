@@ -14,7 +14,13 @@ export interface CreateTicketInput {
   custom_fields?: Record<string, string>
 }
 
-export async function listTickets(params?: { assignee_group_id?: string; q?: string }): Promise<Ticket[]> {
+export type TicketScope = 'mine' | 'unassigned' | 'all'
+
+export async function listTickets(params?: {
+  assignee_group_id?: string
+  q?: string
+  scope?: TicketScope
+}): Promise<Ticket[]> {
   const res = await api.get<Ticket[]>('/tickets', { params })
   return res.data
 }

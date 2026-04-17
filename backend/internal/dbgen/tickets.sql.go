@@ -248,6 +248,59 @@ func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber 
 	return i, err
 }
 
+const listAllTickets = `-- name: ListAllTickets :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type ListAllTicketsParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, listAllTickets, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAttachments = `-- name: ListAttachments :many
 SELECT id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC
 `
@@ -619,6 +672,61 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 	return items, nil
 }
 
+const listUnassignedTickets = `-- name: ListUnassignedTickets :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
+ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type ListUnassignedTicketsParams struct {
+	Limit  int32 `json:"limit"`
+	Offset int32 `json:"offset"`
+}
+
+func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, listUnassignedTickets, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const nextTicketSeq = `-- name: NextTicketSeq :one
 SELECT nextval('ticket_seq')::bigint
 `
@@ -628,6 +736,62 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const searchAllTickets = `-- name: SearchAllTickets :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+WHERE (tracking_number ILIKE $3 OR subject ILIKE $3 OR description ILIKE $3)
+ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type SearchAllTicketsParams struct {
+	Limit          int32  `json:"limit"`
+	Offset         int32  `json:"offset"`
+	TrackingNumber string `json:"tracking_number"`
+}
+
+func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, searchAllTickets, arg.Limit, arg.Offset, arg.TrackingNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const searchTicketsByAssigneeGroup = `-- name: SearchTicketsByAssigneeGroup :many
@@ -777,6 +941,63 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 		arg.Offset,
 		arg.TrackingNumber,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Ticket
+	for rows.Next() {
+		var i Ticket
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchUnassignedTickets = `-- name: SearchUnassignedTickets :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
+WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
+  AND (tracking_number ILIKE $3 OR subject ILIKE $3 OR description ILIKE $3)
+ORDER BY created_at DESC LIMIT $1 OFFSET $2
+`
+
+type SearchUnassignedTicketsParams struct {
+	Limit          int32  `json:"limit"`
+	Offset         int32  `json:"offset"`
+	TrackingNumber string `json:"tracking_number"`
+}
+
+func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]Ticket, error) {
+	rows, err := q.db.QueryContext(ctx, searchUnassignedTickets, arg.Limit, arg.Offset, arg.TrackingNumber)
 	if err != nil {
 		return nil, err
 	}

@@ -18,6 +18,8 @@ type Querier interface {
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
 	ClearMFA(ctx context.Context, id uuid.UUID) error
 	CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error)
+	CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error)
+	CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error
@@ -86,6 +88,7 @@ type Querier interface {
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)
+	ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]Ticket, error)
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
@@ -116,6 +119,7 @@ type Querier interface {
 	ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]Ticket, error)
 	ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]Ticket, error)
 	ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, error)
+	ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]Ticket, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) ([]User, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
@@ -125,9 +129,11 @@ type Querier interface {
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
+	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]Ticket, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]Ticket, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]Ticket, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]Ticket, error)
+	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]Ticket, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
