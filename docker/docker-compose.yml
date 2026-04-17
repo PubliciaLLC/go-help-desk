@@ -47,7 +47,7 @@ services:
     volumes:
       - ./data/clamav:/var/lib/clamav  # persist signature database across restarts
     healthcheck:
-      test: ["CMD-SHELL", "clamd --ping 2>/dev/null || exit 1"]
+      test: ["CMD-SHELL", "clamdcheck.sh >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
