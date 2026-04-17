@@ -8,6 +8,7 @@ import {
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
@@ -393,32 +394,25 @@ export function UserDetailPage() {
             will show a removed user. This cannot be undone — disable the account instead if
             you may need to restore access.
           </p>
-          {confirmDelete ? (
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                className="bg-red-600 hover:bg-red-700 text-white"
-                onClick={() => deleteMutation.mutate()}
-                disabled={deleteMutation.isPending}
-              >
-                {deleteMutation.isPending ? 'Deleting…' : 'Yes, permanently delete'}
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setConfirmDelete(false)}>
-                Cancel
-              </Button>
-            </div>
-          ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              className="border-red-300 text-red-600 hover:bg-red-100"
-              onClick={() => setConfirmDelete(true)}
-            >
-              Delete user
-            </Button>
-          )}
+          <Button
+            size="sm"
+            variant="outline"
+            className="border-red-300 text-red-600 hover:bg-red-100"
+            onClick={() => setConfirmDelete(true)}
+          >
+            Delete user
+          </Button>
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title={`Permanently delete "${user?.display_name ?? 'user'}"?`}
+        description="Their tickets and replies are preserved but show as a removed user. This cannot be undone."
+        confirmLabel="Delete user"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
     </Layout>
   )
 }

@@ -4,6 +4,7 @@ import type { SLAPolicy } from '@/api/types'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
@@ -305,6 +306,7 @@ function BrandingPanel({
   const [logoError, setLogoError] = useState('')
   const [uploading, setUploading] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [confirmDeleteLogo, setConfirmDeleteLogo] = useState(false)
   const [logoKey, setLogoKey] = useState(0)
 
   const { data: siteConfig } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig })
@@ -336,6 +338,7 @@ function BrandingPanel({
       setLogoKey((k) => k + 1)
       qc.invalidateQueries({ queryKey: ['site-config'] })
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      setConfirmDeleteLogo(false)
     } catch (err) {
       setLogoError(extractError(err))
     } finally {
@@ -377,13 +380,22 @@ function BrandingPanel({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleDeleteLogo}
+                onClick={() => setConfirmDeleteLogo(true)}
                 disabled={deleting || uploading}
               >
                 {deleting ? 'Removing…' : 'Remove logo'}
               </Button>
             </div>
           )}
+          <ConfirmDialog
+            open={confirmDeleteLogo}
+            onOpenChange={setConfirmDeleteLogo}
+            title="Remove site logo?"
+            description="The default logo will be shown until you upload a new one."
+            confirmLabel="Remove logo"
+            isPending={deleting}
+            onConfirm={handleDeleteLogo}
+          />
 
           <div>
             <Button
@@ -590,6 +602,7 @@ function PolicyFormRow({
 function SLAPoliciesSection() {
   const qc = useQueryClient()
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<SLAPolicy | null>(null)
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState<PolicyForm>(EMPTY_FORM)
   const [formError, setFormError] = useState('')
@@ -651,7 +664,10 @@ function SLAPoliciesSection() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteSLAPolicy(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sla-policies'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sla-policies'] })
+      setPendingDelete(null)
+    },
   })
 
   const showTable = policies.length > 0 || showAdd
@@ -705,7 +721,7 @@ function SLAPoliciesSection() {
                           <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
                           <button
                             className="text-xs text-red-600 hover:underline disabled:opacity-40"
-                            onClick={() => deleteMutation.mutate(p.id)}
+                            onClick={() => setPendingDelete(p)}
                             disabled={deleteMutation.isPending}
                           >
                             Delete
@@ -734,6 +750,15 @@ function SLAPoliciesSection() {
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        title={`Delete SLA policy "${pendingDelete?.name ?? ''}"?`}
+        description="Tickets currently tracking against this policy will lose their SLA targets."
+        confirmLabel="Delete policy"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}
+      />
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { listAllTags, createTag, deleteTag, restoreTag } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
@@ -14,6 +15,7 @@ export function TagsPage() {
   const qc = useQueryClient()
   const [newName, setNewName] = useState('')
   const [createError, setCreateError] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<Tag | null>(null)
 
   const { data: tags = [], isLoading } = useQuery({
     queryKey: ['admin', 'tags'],
@@ -32,7 +34,10 @@ export function TagsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteTag(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'tags'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'tags'] })
+      setPendingDelete(null)
+    },
   })
 
   const restoreMutation = useMutation({
@@ -124,7 +129,7 @@ export function TagsPage() {
                           size="sm"
                           variant="outline"
                           className="text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() => deleteMutation.mutate(t.id)}
+                          onClick={() => setPendingDelete(t)}
                           disabled={deleteMutation.isPending}
                         >
                           Deactivate
@@ -145,6 +150,15 @@ export function TagsPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        title={`Deactivate tag "${pendingDelete?.name ?? ''}"?`}
+        description="The tag stays on tickets that already use it but can't be added to new tickets. You can restore it later."
+        confirmLabel="Deactivate"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}
+      />
     </Layout>
   )
 }

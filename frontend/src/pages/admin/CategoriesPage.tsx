@@ -23,6 +23,7 @@ import {
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import {
@@ -410,6 +411,7 @@ function SortableItemRow({
 }) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: item.id })
 
@@ -422,7 +424,10 @@ function SortableItemRow({
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteItem(categoryId, typeId, item.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })
+      setConfirmOpen(false)
+    },
   })
 
   return (
@@ -449,7 +454,7 @@ function SortableItemRow({
           className="text-sm text-gray-700"
         />
         <button
-          onClick={() => deleteMutation.mutate()}
+          onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
           className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
           title="Delete item"
@@ -462,6 +467,15 @@ function SortableItemRow({
           <FieldsSubsection scope={{ kind: 'item', categoryId, typeId, itemId: item.id }} />
         </div>
       )}
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Delete item "${item.name}"?`}
+        description="Tickets already classified with this item keep their classification but it can no longer be selected for new tickets."
+        confirmLabel="Delete item"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
     </div>
   )
 }
@@ -479,6 +493,7 @@ function SortableTypeRow({
   const [expanded, setExpanded] = useState(false)
   const [addingItem, setAddingItem] = useState(false)
   const [itemName, setItemName] = useState('')
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: type.id })
@@ -497,7 +512,10 @@ function SortableTypeRow({
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteType(categoryId, type.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })
+      setConfirmOpen(false)
+    },
   })
 
   const addItemMutation = useMutation({
@@ -549,7 +567,7 @@ function SortableTypeRow({
           className="text-sm font-medium text-gray-800"
         />
         <button
-          onClick={() => deleteMutation.mutate()}
+          onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
           className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
           title="Delete type"
@@ -557,6 +575,15 @@ function SortableTypeRow({
           <TrashIcon className="h-3.5 w-3.5" />
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Delete type "${type.name}"?`}
+        description="All items under this type will also be removed. Tickets already classified under them keep their classification."
+        confirmLabel="Delete type"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
 
       {expanded && (
         <div className="ml-8 border-l border-gray-100 pl-2 pb-1">
@@ -614,6 +641,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
   const [expanded, setExpanded] = useState(false)
   const [addingType, setAddingType] = useState(false)
   const [typeName, setTypeName] = useState('')
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: cat.id })
@@ -632,7 +660,10 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteCategory(cat.id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'categories'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'categories'] })
+      setConfirmOpen(false)
+    },
   })
 
   const addTypeMutation = useMutation({
@@ -685,7 +716,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
           <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-700">inactive</span>
         )}
         <button
-          onClick={() => deleteMutation.mutate()}
+          onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
           className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
           title="Delete category"
@@ -693,6 +724,15 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
           <TrashIcon className="h-4 w-4" />
         </button>
       </div>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Delete category "${cat.name}"?`}
+        description="All types and items under this category will also be removed. Tickets already classified keep their classification."
+        confirmLabel="Delete category"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => deleteMutation.mutate()}
+      />
 
       {expanded && (
         <div className="ml-11 border-l border-gray-100 pl-2 pb-2">

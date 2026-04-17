@@ -13,6 +13,7 @@ import { listUsers } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -223,6 +224,7 @@ export function GroupsPage() {
   const [newName, setNewName] = useState('')
   const [newDesc, setNewDesc] = useState('')
   const [formError, setFormError] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<Group | null>(null)
 
   const { data: groups = [], isLoading } = useQuery({
     queryKey: ['groups'],
@@ -247,7 +249,10 @@ export function GroupsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteGroup(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['groups'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['groups'] })
+      setPendingDelete(null)
+    },
   })
 
   return (
@@ -310,12 +315,21 @@ export function GroupsPage() {
                 key={g.id}
                 group={g}
                 allUsers={allUsers}
-                onDelete={() => deleteMutation.mutate(g.id)}
+                onDelete={() => setPendingDelete(g)}
               />
             ))}
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        title={`Delete group "${pendingDelete?.name ?? ''}"?`}
+        description="Members will be unassigned and tickets currently routed to this group will need to be reassigned."
+        confirmLabel="Delete group"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}
+      />
     </Layout>
   )
 }

@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { listStatuses, createStatus, updateStatus, deleteStatus } from '@/api/admin'
+import type { Status } from '@/api/types'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
@@ -14,6 +16,7 @@ const DEFAULT_COLOR = '#6b7280'
 export function StatusesPage() {
   const qc = useQueryClient()
   const [addingStatus, setAddingStatus] = useState(false)
+  const [pendingDelete, setPendingDelete] = useState<Status | null>(null)
   const [name, setName] = useState('')
   const [color, setColor] = useState(DEFAULT_COLOR)
   const [sortOrder, setSortOrder] = useState(10)
@@ -49,7 +52,10 @@ export function StatusesPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteStatus(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
+      setPendingDelete(null)
+    },
   })
 
   const sorted = [...statuses].sort((a, b) => a.sort_order - b.sort_order)
@@ -194,7 +200,7 @@ export function StatusesPage() {
                                 size="sm"
                                 variant="outline"
                                 className="text-red-600 border-red-200 hover:bg-red-50"
-                                onClick={() => deleteMutation.mutate(s.id)}
+                                onClick={() => setPendingDelete(s)}
                                 disabled={deleteMutation.isPending}
                               >
                                 Delete
@@ -218,6 +224,15 @@ export function StatusesPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        title={`Delete status "${pendingDelete?.name ?? ''}"?`}
+        description="This status has no tickets and will be permanently removed."
+        confirmLabel="Delete status"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}
+      />
     </Layout>
   )
 }
