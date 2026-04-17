@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/gob"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -28,6 +29,12 @@ import (
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
 )
+
+func init() {
+	// Session cookies store SessionData via gob; registering here rather than
+	// in cmd/server lets integration tests round-trip sessions too.
+	gob.Register(auth.SessionData{})
+}
 
 // OAuthClientLookup fetches an OAuth client by client ID.
 type OAuthClientLookup interface {
