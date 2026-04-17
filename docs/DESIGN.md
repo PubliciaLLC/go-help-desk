@@ -10,7 +10,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
 | **v2** | Custom fields, CTI-linked group management, canned responses |
-| **v3** | Knowledge base, full-text search (Postgres FTS) |
+| **v3** | Knowledge base, full-text search (Postgres FTS), custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
 ---
@@ -77,6 +77,8 @@ Three roles: **Admin**, **Staff**, **User**
 | **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
 | **Staff** | Create tickets. View/edit/assign tickets within their scope. Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Update their own tickets unless status is Resolved. Reopen a Resolved ticket within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+
+**Custom admin-defined roles (v3):** admins will be able to define additional roles and grant a curated set of permissions (e.g., "Tier 1 Agent" with ticket read/reply but no assignment rights). The three built-in roles remain as defaults and cannot be removed. Permissions are stored as discrete capability flags rather than hardcoded in code, with the built-in roles expressed as preset bundles so existing behavior is preserved.
 
 ### User Management (Admin)
 
