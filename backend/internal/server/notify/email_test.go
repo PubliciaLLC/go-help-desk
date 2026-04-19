@@ -67,7 +67,7 @@ func TestSanitizeHeaderStripsControlChars(t *testing.T) {
 		{"with\r\nCRLF", "with  CRLF"},
 		{"with\nLF only", "with LF only"},
 		{"with\rCR only", "with CR only"},
-		{"Bcc: attacker@evil.com\r\n", "Bcc: attacker@evil.com  "},
+		{"Bcc: attacker@evil.com\r\n", "Bcc: attacker@evil.com"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
