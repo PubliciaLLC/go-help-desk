@@ -24,7 +24,7 @@ type Server struct {
 // New creates a Server and registers all MCP tools.
 func New(tickets *ticket.Service) *Server {
 	s := &Server{
-		mcp:     mcpserver.NewMCPServer("open-help-desk", "1.0.0"),
+		mcp:     mcpserver.NewMCPServer("open-help-desk", "1.0.1"),
 		tickets: tickets,
 	}
 	s.registerTools()
