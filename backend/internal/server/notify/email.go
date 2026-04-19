@@ -45,7 +45,24 @@ func NewEmailDispatcher(cfg *config.Config) (*EmailDispatcher, error) {
 func sanitizeHeader(s string) string {
 	s = strings.ReplaceAll(s, "\r", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
-	return s
+	return strings.TrimSpace(s)
+}
+
+// sanitizePayload returns a shallow copy of payload where all string values are
+// header/body-safe normalized text (CR/LF removed, trimmed).
+func sanitizePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		if s, ok := v.(string); ok {
+			out[k] = sanitizeHeader(s)
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // Dispatch sends an email for supported event types. Unsupported events are
@@ -69,24 +86,25 @@ func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) 
 }
 
 func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, subject, to string, data any, ok bool) {
+	payload := sanitizePayload(event.Payload)
 	switch event.Type {
 	case notification.EventTicketCreated:
-		guestEmail, _ := event.Payload["guest_email"].(string)
-		tracking, _ := event.Payload["TrackingNumber"].(string)
-		subj, _ := event.Payload["Subject"].(string)
+		guestEmail, _ := payload["guest_email"].(string)
+		tracking, _ := payload["TrackingNumber"].(string)
+		subj, _ := payload["Subject"].(string)
 		if guestEmail == "" {
 			return "", "", "", nil, false
 		}
 		return "ticket_created.tmpl",
 			fmt.Sprintf("[%s] %s", tracking, subj),
-			guestEmail, event.Payload, true
+			guestEmail, payload, true
 	case notification.EventTicketReplied:
-		reporterEmail, _ := event.Payload["reporter_email"].(string)
-		tracking, _ := event.Payload["TrackingNumber"].(string)
-		subj, _ := event.Payload["Subject"].(string)
+		reporterEmail, _ := payload["reporter_email"].(string)
+		tracking, _ := payload["TrackingNumber"].(string)
+		subj, _ := payload["Subject"].(string)
 		return "ticket_replied.tmpl",
 			fmt.Sprintf("Re: [%s] %s", tracking, subj),
-			reporterEmail, event.Payload, true
+			reporterEmail, payload, true
 	}
 	return "", "", "", nil, false
 }
