@@ -7,7 +7,9 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"net/mail"
 	"net/smtp"
+	"strings"
 	"text/template"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
@@ -30,11 +32,21 @@ func NewEmailDispatcher(cfg *config.Config) (*EmailDispatcher, error) {
 	if !cfg.EmailEnabled() {
 		return &EmailDispatcher{cfg: cfg}, nil
 	}
-	tmpl, err := template.ParseFS(templateFS, "templates/*.tmpl")
+	tmpl, err := template.New("").Funcs(template.FuncMap{
+		"header": sanitizeHeader,
+	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
 		return nil, fmt.Errorf("parsing email templates: %w", err)
 	}
 	return &EmailDispatcher{cfg: cfg, templates: tmpl}, nil
+}
+
+// sanitizeHeader strips CR and LF so user-controlled values interpolated into
+// email headers cannot inject additional headers.
+func sanitizeHeader(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
 }
 
 // Dispatch sends an email for supported event types. Unsupported events are
@@ -76,11 +88,19 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 }
 
 func (d *EmailDispatcher) send(to string, body []byte) error {
+	toAddr, err := mail.ParseAddress(to)
+	if err != nil {
+		return fmt.Errorf("invalid recipient address: %w", err)
+	}
+	fromAddr, err := mail.ParseAddress(d.cfg.SMTPFrom)
+	if err != nil {
+		return fmt.Errorf("invalid sender address: %w", err)
+	}
 	addr := fmt.Sprintf("%s:%d", d.cfg.SMTPHost, d.cfg.SMTPPort)
 	var auth smtp.Auth
 	if d.cfg.SMTPUser != "" {
 		auth = smtp.PlainAuth("", d.cfg.SMTPUser, d.cfg.SMTPPassword, d.cfg.SMTPHost)
 	}
-	msg := append([]byte(fmt.Sprintf("From: %s\r\nTo: %s\r\n", d.cfg.SMTPFrom, to)), body...)
-	return smtp.SendMail(addr, auth, d.cfg.SMTPFrom, []string{to}, msg)
+	msg := append([]byte(fmt.Sprintf("From: %s\r\nTo: %s\r\n", fromAddr.String(), toAddr.String())), body...)
+	return smtp.SendMail(addr, auth, fromAddr.Address, []string{toAddr.Address}, msg)
 }
