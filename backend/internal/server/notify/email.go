@@ -90,6 +90,9 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	switch event.Type {
 	case notification.EventTicketCreated:
 		guestEmail, _ := payload["guest_email"].(string)
+		if guestEmail == "" {
+			guestEmail, _ = payload["GuestEmail"].(string)
+		}
 		tracking, _ := payload["TrackingNumber"].(string)
 		subj, _ := payload["Subject"].(string)
 		if guestEmail == "" {
@@ -100,6 +103,9 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 			guestEmail, payload, true
 	case notification.EventTicketReplied:
 		reporterEmail, _ := payload["reporter_email"].(string)
+		if reporterEmail == "" {
+			reporterEmail, _ = payload["ReporterEmail"].(string)
+		}
 		tracking, _ := payload["TrackingNumber"].(string)
 		subj, _ := payload["Subject"].(string)
 		return "ticket_replied.tmpl",
