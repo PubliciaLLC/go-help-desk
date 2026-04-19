@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 func TestSendRejectsHeaderInjection(t *testing.T) {
@@ -76,5 +77,61 @@ func TestSanitizeHeaderStripsControlChars(t *testing.T) {
 				t.Errorf("sanitizeHeader(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEventToEmailTicketCreatedAcceptsPascalCaseGuestEmail(t *testing.T) {
+	d := &EmailDispatcher{}
+	templateName, subject, to, data, ok := d.eventToEmail(notification.Event{
+		Type: notification.EventTicketCreated,
+		Payload: map[string]any{
+			"GuestEmail":     "guest@example.com",
+			"TrackingNumber": "HD-123",
+			"Subject":        "Need help",
+		},
+	})
+
+	if !ok {
+		t.Fatalf("expected event to map to email")
+	}
+	if templateName != "ticket_created.tmpl" {
+		t.Fatalf("unexpected template: %q", templateName)
+	}
+	if subject != "[HD-123] Need help" {
+		t.Fatalf("unexpected subject: %q", subject)
+	}
+	if to != "guest@example.com" {
+		t.Fatalf("unexpected recipient: %q", to)
+	}
+	if data == nil {
+		t.Fatalf("expected template data")
+	}
+}
+
+func TestEventToEmailTicketRepliedAcceptsPascalCaseReporterEmail(t *testing.T) {
+	d := &EmailDispatcher{}
+	templateName, subject, to, data, ok := d.eventToEmail(notification.Event{
+		Type: notification.EventTicketReplied,
+		Payload: map[string]any{
+			"ReporterEmail":  "reporter@example.com",
+			"TrackingNumber": "HD-456",
+			"Subject":        "Update",
+		},
+	})
+
+	if !ok {
+		t.Fatalf("expected event to map to email")
+	}
+	if templateName != "ticket_replied.tmpl" {
+		t.Fatalf("unexpected template: %q", templateName)
+	}
+	if subject != "Re: [HD-456] Update" {
+		t.Fatalf("unexpected subject: %q", subject)
+	}
+	if to != "reporter@example.com" {
+		t.Fatalf("unexpected recipient: %q", to)
+	}
+	if data == nil {
+		t.Fatalf("expected template data")
 	}
 }
