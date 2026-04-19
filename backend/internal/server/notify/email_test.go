@@ -47,7 +47,7 @@ func TestSendRejectsHeaderInjection(t *testing.T) {
 				SMTPPort: 25,
 				SMTPFrom: tc.from,
 			}}
-			err := d.send(tc.to, []byte("Subject: hi\r\n\r\nbody"))
+			err := d.send(tc.to, "test subject", []byte("body"))
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			}
