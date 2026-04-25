@@ -135,3 +135,30 @@ func TestEventToEmailTicketRepliedAcceptsPascalCaseReporterEmail(t *testing.T) {
 		t.Fatalf("expected template data")
 	}
 }
+
+func TestEventToEmailTicketRepliedMissingReporterEmailStillMaps(t *testing.T) {
+	d := &EmailDispatcher{}
+	templateName, subject, to, data, ok := d.eventToEmail(notification.Event{
+		Type: notification.EventTicketReplied,
+		Payload: map[string]any{
+			"TrackingNumber": "HD-789",
+			"Subject":        "No recipient",
+		},
+	})
+
+	if !ok {
+		t.Fatalf("expected event to map to email even when ReporterEmail is missing")
+	}
+	if templateName != "ticket_replied.tmpl" {
+		t.Fatalf("unexpected template: %q", templateName)
+	}
+	if subject != "Re: [HD-789] No recipient" {
+		t.Fatalf("unexpected subject: %q", subject)
+	}
+	if to != "" {
+		t.Fatalf("expected empty recipient when ReporterEmail is missing, got: %q", to)
+	}
+	if data == nil {
+		t.Fatalf("expected template data")
+	}
+}
