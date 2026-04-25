@@ -161,10 +161,10 @@ func (s *Server) handleAddReply(_ context.Context, req mcpgo.CallToolRequest) (*
 	isInternal := false
 	notifyRequester := true
 	attachmentsJSON := ""
-	sourceChannelID := 7
+	reopenWindowDays := 7
 	correlationID := uuid.Nil
 
-	reply, err := s.tickets.AddReply(context.Background(), tid, body, isInternal, notifyRequester, attachmentsJSON, actor, sourceChannelID, correlationID)
+	reply, err := s.tickets.AddReply(context.Background(), tid, body, isInternal, notifyRequester, attachmentsJSON, actor, reopenWindowDays, correlationID)
 	if err != nil {
 		return errResult(err.Error())
 	}
