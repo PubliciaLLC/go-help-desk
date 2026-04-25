@@ -10,34 +10,46 @@ import (
 
 func TestSendRejectsHeaderInjection(t *testing.T) {
 	cases := []struct {
-		name    string
-		to      string
-		from    string
-		wantErr string
+		name      string
+		to        string
+		from      string
+		wantErr   string
+		wantError bool
 	}{
 		{
-			name:    "CRLF in recipient",
-			to:      "victim@example.com\r\nBcc: attacker@evil.com",
-			from:    "noreply@example.com",
-			wantErr: "invalid recipient address",
+			name:      "CRLF in recipient",
+			to:        "victim@example.com\r\nBcc: attacker@evil.com",
+			from:      "noreply@example.com",
+			wantErr:   "invalid recipient address",
+			wantError: true,
 		},
 		{
-			name:    "LF in recipient",
-			to:      "victim@example.com\nBcc: attacker@evil.com",
-			from:    "noreply@example.com",
-			wantErr: "invalid recipient address",
+			name:      "LF in recipient",
+			to:        "victim@example.com\nBcc: attacker@evil.com",
+			from:      "noreply@example.com",
+			wantErr:   "invalid recipient address",
+			wantError: true,
 		},
 		{
-			name:    "malformed recipient",
-			to:      "not-an-email",
-			from:    "noreply@example.com",
-			wantErr: "invalid recipient address",
+			name:      "malformed recipient",
+			to:        "not-an-email",
+			from:      "noreply@example.com",
+			wantErr:   "invalid recipient address",
+			wantError: true,
 		},
 		{
-			name:    "CRLF in sender config",
-			to:      "user@example.com",
-			from:    "noreply@example.com\r\nBcc: attacker@evil.com",
-			wantErr: "invalid sender address",
+			name:      "CRLF in sender config",
+			to:        "user@example.com",
+			from:      "noreply@example.com\r\nBcc: attacker@evil.com",
+			wantErr:   "invalid sender address",
+			wantError: true,
+		},
+		{
+			name:      "valid recipient and sender",
+			to:        "user@example.com",
+			from:      "noreply@example.com",
+			wantErr:   "",
+			wantError: false,
 		},
 	}
 
@@ -49,6 +61,12 @@ func TestSendRejectsHeaderInjection(t *testing.T) {
 				SMTPFrom: tc.from,
 			}}
 			err := d.send(tc.to, "test subject", []byte("body"))
+			if !tc.wantError {
+				if err != nil {
+					t.Fatalf("expected no error for valid addresses, got %v", err)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
 			}
