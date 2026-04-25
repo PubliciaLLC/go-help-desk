@@ -13,6 +13,7 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/version"
 )
 
 // Server wraps the MCP server and wires up help desk tools.
@@ -24,7 +25,7 @@ type Server struct {
 // New creates a Server and registers all MCP tools.
 func New(tickets *ticket.Service) *Server {
 	s := &Server{
-		mcp:     mcpserver.NewMCPServer("open-help-desk", "1.0.1"),
+		mcp:     mcpserver.NewMCPServer("open-help-desk", version.Version),
 		tickets: tickets,
 	}
 	s.registerTools()
@@ -157,7 +158,13 @@ func (s *Server) handleAddReply(_ context.Context, req mcpgo.CallToolRequest) (*
 	}
 
 	actor := ticket.Actor{UserID: actorID, Role: user.RoleStaff}
-	reply, err := s.tickets.AddReply(context.Background(), tid, body, false, true, "", actor, 7, uuid.Nil)
+	isInternal := false
+	notifyRequester := true
+	attachmentsJSON := ""
+	reopenWindowDays := 7
+	correlationID := uuid.Nil
+
+	reply, err := s.tickets.AddReply(context.Background(), tid, body, isInternal, notifyRequester, attachmentsJSON, actor, reopenWindowDays, correlationID)
 	if err != nil {
 		return errResult(err.Error())
 	}
