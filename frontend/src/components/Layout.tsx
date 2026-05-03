@@ -115,7 +115,7 @@ export function Layout({ children }: LayoutProps) {
         <footer className="border-t bg-white px-6 py-2 text-center text-[11px] text-gray-400">
           Powered by{' '}
           <a
-            href="https://github.com/open-help-desk/open-help-desk"
+            href="https://github.com/PubliciaLLC/go-help-desk"
             target="_blank"
             rel="noopener noreferrer"
             className="underline decoration-dotted hover:decoration-solid"
