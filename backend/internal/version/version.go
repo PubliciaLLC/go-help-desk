@@ -6,4 +6,4 @@ package version
 
 // Version is the application version. Defaults to "0.1.0-dev" and is
 // overridden by the CI release build via ldflags.
-var Version = "1.0.0"
+var Version = "1.0.1"
