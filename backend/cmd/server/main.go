@@ -204,7 +204,7 @@ func run() error {
 		shutdownDone <- httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	slog.Info("open-help-desk listening", "port", cfg.HTTPPort)
+	slog.Info("go-help-desk listening", "port", cfg.HTTPPort)
 	if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("http server: %w", err)
 	}

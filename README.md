@@ -50,8 +50,8 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 ## Quick start
 
 ```sh
-git clone https://github.com/open-help-desk/open-help-desk
-cd open-help-desk/docker
+git clone https://github.com/PubliciaLLC/go-help-desk
+cd go-help-desk/docker
 cp .env.example .env   # set SESSION_SECRET, JWT_SECRET, BASE_URL
 docker compose up -d
 ```
@@ -148,7 +148,7 @@ Schema changes: edit `queries/*.sql`, add a migration under `internal/database/m
 To override the version string at build time:
 
 ```sh
-go build -ldflags "-X github.com/open-help-desk/open-help-desk/backend/internal/version.Version=1.0.0" ./cmd/server
+go build -ldflags "-X github.com/publiciallc/go-help-desk/backend/internal/version.Version=1.0.0" ./cmd/server
 ```
 
 ## License
