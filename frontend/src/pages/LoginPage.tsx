@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm } from '@/api/auth'
+import { useNavigate, Link } from '@tanstack/react-router'
+import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -21,6 +21,11 @@ export function LoginPage() {
   const [enrollQRDataURL, setEnrollQRDataURL] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [signupEnabled, setSignupEnabled] = useState(false)
+
+  useEffect(() => {
+    getSignupStatus().then(({ enabled }) => setSignupEnabled(enabled)).catch(() => {})
+  }, [])
 
   async function completeLogin() {
     const user = await getMe()
@@ -128,6 +133,14 @@ export function LoginPage() {
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Signing in…' : 'Sign in'}
               </Button>
+              {signupEnabled && (
+                <p className="text-center text-sm text-gray-500">
+                  Don't have an account?{' '}
+                  <Link to="/signup" className="text-blue-600 hover:underline">
+                    Create one
+                  </Link>
+                </p>
+              )}
             </form>
           )}
 

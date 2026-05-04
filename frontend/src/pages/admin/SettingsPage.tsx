@@ -426,18 +426,23 @@ function BrandingPanel({
 
 function AuthPanel({
   bool, strArr,
-  setBool, toggleStrArr,
+  setBool, toggleStrArr, setStrArr,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
   strArr: (k: string) => string[]
   setBool: (k: string, v: boolean) => void
   toggleStrArr: (k: string, item: string, checked: boolean) => void
+  setStrArr: (k: string, v: string[]) => void
   onSave: () => void
   isPending: boolean
   error: string
   saved: boolean
 }) {
+  const [confirmOpenReg, setConfirmOpenReg] = useState(false)
+
+  const domainsLocked = strArr('allowed_email_domains').length > 0
+
   return (
     <div className="space-y-6">
       <Section title="SAML">
@@ -485,6 +490,61 @@ function AuthPanel({
               ))}
             </div>
           </SettingRow>
+        )}
+      </Section>
+
+      <Section title="Registration">
+        <SettingRow
+          label="Allow self-service signup"
+          description="Let users create their own accounts without an admin invitation. Requires email verification."
+        >
+          <Toggle checked={bool('self_signup_enabled')} onChange={(v) => setBool('self_signup_enabled', v)} />
+        </SettingRow>
+        {bool('self_signup_enabled') && (
+          <>
+            <div className="border-t px-5 py-4 space-y-2">
+              <div className="text-sm font-medium text-gray-900">Allowed email domains</div>
+              <div className="text-sm text-gray-500">
+                One domain per line (e.g. <span className="font-mono">company.com</span>). Leave empty and enable open registration to allow any email.
+              </div>
+              <textarea
+                rows={3}
+                className="w-full max-w-xs rounded border border-gray-300 p-2 font-mono text-sm"
+                placeholder={'company.com\nexample.org'}
+                value={strArr('allowed_email_domains').join('\n')}
+                onChange={(e) =>
+                  setStrArr(
+                    'allowed_email_domains',
+                    e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),
+                  )
+                }
+              />
+            </div>
+            <SettingRow
+              label="Allow open registration"
+              description={
+                domainsLocked
+                  ? 'Clear the domain list above to enable open registration.'
+                  : 'Anyone can sign up regardless of email domain.'
+              }
+            >
+              <Toggle
+                checked={bool('open_registration_enabled')}
+                onChange={(v) => {
+                  if (!v) { setBool('open_registration_enabled', false); return }
+                  setConfirmOpenReg(true)
+                }}
+              />
+            </SettingRow>
+            <ConfirmDialog
+              open={confirmOpenReg}
+              onOpenChange={setConfirmOpenReg}
+              title="Allow open registration?"
+              description="Anyone with any email address will be able to create an account on this instance. Make sure this is intentional."
+              confirmLabel="Enable open registration"
+              onConfirm={() => { setBool('open_registration_enabled', true); setConfirmOpenReg(false) }}
+            />
+          </>
         )}
       </Section>
 
@@ -837,6 +897,7 @@ export function SettingsPage() {
   function setBool(key: string, v: boolean) { setLocal((s) => ({ ...s, [key]: v })) }
   function setNum(key: string, v: number) { setLocal((s) => ({ ...s, [key]: v })) }
   function setStr(key: string, v: string) { setLocal((s) => ({ ...s, [key]: v })) }
+  function setStrArr(key: string, v: string[]) { setLocal((s) => ({ ...s, [key]: v })) }
   function toggleStrArr(key: string, item: string, checked: boolean) {
     setLocal((s) => {
       const current = strArr(key)
@@ -847,7 +908,7 @@ export function SettingsPage() {
 
   const panelProps = {
     bool, num, str, strArr,
-    setBool, setNum, setStr, toggleStrArr,
+    setBool, setNum, setStr, setStrArr, toggleStrArr,
     onSave: () => saveMutation.mutate(),
     isPending: saveMutation.isPending,
     error: saveError,

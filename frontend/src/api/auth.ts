@@ -37,3 +37,23 @@ export async function enrollMFAStart(): Promise<{ secret: string; qr_url: string
 export async function enrollMFAConfirm(code: string): Promise<void> {
   await api.post('/me/mfa/enroll/confirm', { code })
 }
+
+export interface SignupStatus {
+  enabled: boolean
+  open_registration: boolean
+  saml_enabled: boolean
+}
+
+export async function getSignupStatus(): Promise<SignupStatus> {
+  const res = await api.get<SignupStatus>('/auth/signup/status')
+  return res.data
+}
+
+export async function signup(email: string, displayName: string, password: string): Promise<void> {
+  await api.post('/auth/signup', { email, display_name: displayName, password })
+}
+
+export async function verifyEmail(token: string): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>('/auth/verify-email', { token })
+  return res.data
+}

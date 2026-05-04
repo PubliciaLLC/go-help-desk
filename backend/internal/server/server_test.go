@@ -163,6 +163,7 @@ func newHarness(t *testing.T) (*harness, func()) {
 		apiKeyLookup,
 		authSt,
 		authSt,
+		nil, // registration service not needed in integration tests
 	)
 
 	h := &harness{
@@ -914,6 +915,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		apiKeyLookup,
 		authSt,
 		authSt,
+		nil, // registration service not needed in integration tests
 	)
 
 	h := &harness{srv: srv}

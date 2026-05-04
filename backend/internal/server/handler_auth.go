@@ -2,7 +2,10 @@ package server
 
 import (
 	"net/http"
+	"net/url"
+	"strings"
 
+	"github.com/crewjam/saml/samlsp"
 	"github.com/gorilla/sessions"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -132,33 +135,125 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/v1/auth/saml/login — initiates the IdP redirect.
+// We clone the request and rewrite the URL to the complete endpoint so that
+// crewjam uses /saml/complete as the RelayState, ensuring the browser lands
+// there after the ACS round-trip.
 func (s *Server) handleSAMLLogin(w http.ResponseWriter, r *http.Request) {
-	h := s.samlHTTP()
-	if h == nil {
+	mw := s.samlHTTP()
+	if mw == nil {
 		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
 		return
 	}
-	h.ServeHTTP(w, r)
+	r2 := r.Clone(r.Context())
+	r2.URL = &url.URL{
+		Scheme: func() string {
+			if r.TLS != nil {
+				return "https"
+			}
+			return "http"
+		}(),
+		Host: r.Host,
+		Path: "/api/v1/auth/saml/complete",
+	}
+	mw.ServeHTTP(w, r2)
 }
 
 // POST /api/v1/auth/saml/acs — assertion consumer service.
 func (s *Server) handleSAMLACS(w http.ResponseWriter, r *http.Request) {
-	h := s.samlHTTP()
-	if h == nil {
+	mw := s.samlHTTP()
+	if mw == nil {
 		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
 		return
 	}
-	h.ServeHTTP(w, r)
+	mw.ServeHTTP(w, r)
 }
 
 // GET /api/v1/auth/saml/metadata — SP metadata XML for IdP registration.
 func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
-	h := s.samlHTTP()
-	if h == nil {
+	mw := s.samlHTTP()
+	if mw == nil {
 		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
 		return
 	}
-	h.ServeHTTP(w, r)
+	mw.ServeHTTP(w, r)
+}
+
+// GET /api/v1/auth/saml/complete — post-ACS landing page.
+// crewjam redirects here after a successful assertion. RequireAccount injects
+// the SAML session into the context; we then convert it to an app session.
+func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
+	mw := s.samlHTTP()
+	if mw == nil {
+		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
+		return
+	}
+	mw.RequireAccount(http.HandlerFunc(s.handleSAMLSession)).ServeHTTP(w, r)
+}
+
+// handleSAMLSession is the inner handler called by RequireAccount once the
+// SAML session is validated. It extracts user attributes, upserts the user
+// record, and writes the gorilla app session.
+func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
+	session := samlsp.SessionFromContext(r.Context())
+	if session == nil {
+		Error(w, http.StatusUnauthorized, "saml_session_missing", "no SAML session")
+		return
+	}
+
+	claims, ok := session.(samlsp.JWTSessionClaims)
+	if !ok {
+		Error(w, http.StatusInternalServerError, "saml_session_invalid", "unexpected SAML session type")
+		return
+	}
+
+	nameID := claims.Subject
+	email := firstNonEmpty(
+		claims.Attributes.Get("email"),
+		claims.Attributes.Get("mail"),
+		claims.Attributes.Get("urn:oid:0.9.2342.19200300.100.1.3"),
+		nameID, // fall back to NameID when it is an email address
+	)
+	displayName := firstNonEmpty(
+		claims.Attributes.Get("displayName"),
+		claims.Attributes.Get("cn"),
+		claims.Attributes.Get("name"),
+		strings.Join([]string{
+			claims.Attributes.Get("givenName"),
+			claims.Attributes.Get("sn"),
+		}, " "),
+		email,
+	)
+
+	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
+	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)
+	if err != nil {
+		if err == user.ErrDomainNotAllowed {
+			http.Redirect(w, r, "/login?error=domain_not_allowed", http.StatusSeeOther)
+			return
+		}
+		handleError(w, err)
+		return
+	}
+
+	if err := s.writeSession(w, r, auth.SessionData{
+		UserID:    u.ID,
+		Role:      u.Role,
+		MFAPassed: true, // SAML authentication counts as MFA
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// firstNonEmpty returns the first non-blank string from the arguments.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 // writeSession persists session data to the cookie store.
