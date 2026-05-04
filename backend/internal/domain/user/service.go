@@ -21,11 +21,12 @@ func NewService(store Store) *Service { return &Service{store: store} }
 
 // CreateUserInput is the data needed to create a new user.
 type CreateUserInput struct {
-	Email       string
-	DisplayName string
-	Role        Role
-	Password    string // plain text; empty if SAML-only
-	SAMLSubject string // empty if local-only
+	Email        string
+	DisplayName  string
+	Role         Role
+	Password     string // plain text; hashed by Create; empty if SAML-only or pre-hashed
+	PasswordHash string // pre-computed bcrypt hash; used only when Password is empty
+	SAMLSubject  string // empty if local-only
 }
 
 // Create validates and persists a new user, hashing the password if provided.
@@ -42,12 +43,15 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 	if err := u.Validate(); err != nil {
 		return User{}, fmt.Errorf("invalid user: %w", err)
 	}
-	if in.Password != "" {
+	switch {
+	case in.Password != "":
 		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 		if err != nil {
 			return User{}, fmt.Errorf("hashing password: %w", err)
 		}
 		u.PasswordHash = string(hash)
+	case in.PasswordHash != "":
+		u.PasswordHash = in.PasswordHash
 	}
 	if err := s.store.Create(ctx, u); err != nil {
 		return User{}, fmt.Errorf("creating user: %w", err)
@@ -140,13 +144,36 @@ func (s *Service) VerifyMFACode(ctx context.Context, userID uuid.UUID, code stri
 	return nil
 }
 
+// ErrDomainNotAllowed is returned when an email's domain is not in the allowlist.
+var ErrDomainNotAllowed = fmt.Errorf("email domain not allowed")
+
+// isEmailDomainAllowed returns true when the email domain matches one of the
+// allowed domains, or when the allowed list is empty (unrestricted).
+func isEmailDomainAllowed(email string, allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	parts := strings.SplitN(strings.ToLower(strings.TrimSpace(email)), "@", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return false
+	}
+	domain := parts[1]
+	for _, d := range allowed {
+		if strings.ToLower(strings.TrimSpace(d)) == domain {
+			return true
+		}
+	}
+	return false
+}
+
 // UpsertSAMLUser creates or updates a user record based on a SAML assertion.
 // If a user with the given SAML subject already exists, their email and
-// display name are updated. If not, a new user with the User role is created.
-func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string) (User, error) {
+// display name are updated. If not, a new user with the User role is created,
+// provided the email domain is in allowedDomains (or the list is empty).
+func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	u, err := s.store.GetBySAMLSubject(ctx, samlSubject)
 	if err == nil {
-		// Existing user — sync profile.
+		// Existing user — sync profile (domain restriction does not apply to existing users).
 		u.Email = strings.ToLower(strings.TrimSpace(email))
 		u.DisplayName = strings.TrimSpace(displayName)
 		u.UpdatedAt = time.Now()
@@ -155,7 +182,10 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 		}
 		return u, nil
 	}
-	// Not found — create.
+	// New user — enforce domain restriction before creating.
+	if !isEmailDomainAllowed(email, allowedDomains) {
+		return User{}, ErrDomainNotAllowed
+	}
 	return s.Create(ctx, CreateUserInput{
 		Email:       email,
 		DisplayName: displayName,

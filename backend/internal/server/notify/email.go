@@ -115,6 +115,22 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	return "", "", "", nil, false
 }
 
+// SendVerificationEmail sends a transactional email containing the account
+// verification link. It implements registration.Mailer.
+func (d *EmailDispatcher) SendVerificationEmail(to, token, baseURL string) error {
+	if !d.cfg.EmailEnabled() {
+		return nil
+	}
+	verifyURL := baseURL + "/verify-email?token=" + token
+	var buf bytes.Buffer
+	if err := d.templates.ExecuteTemplate(&buf, "email_verification.tmpl", map[string]string{
+		"VerifyURL": verifyURL,
+	}); err != nil {
+		return fmt.Errorf("rendering verification email: %w", err)
+	}
+	return d.send(to, "Verify your email address", buf.Bytes())
+}
+
 // send builds a MIME message with sanitized headers and quoted-printable-encoded
 // body, then hands it to smtp.SendMail. All user-controlled input passes through
 // validation (mail.ParseAddress) or encoding (quoted-printable / sanitizeHeader)

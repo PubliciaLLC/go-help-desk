@@ -23,6 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
@@ -34,6 +35,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -95,6 +97,7 @@ func run() error {
 	slStore := slastore.New(q)
 	authStore := authstore.New(q)
 	cfStore := customfieldstore.New(q)
+	regStore := registrationstore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
@@ -126,6 +129,9 @@ func run() error {
 	}
 	webhookDisp := notify.NewWebhookDispatcher(authStore)
 	dispatcher := notify.NewMulti(emailDisp, webhookDisp)
+
+	// ── Registration service ──────────────────────────────────────────────────
+	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, cfg.BaseURL)
 
 	// ── Plugin registry ───────────────────────────────────────────────────────
 	pluginRegistry := plugin.NewRegistry()
@@ -174,6 +180,7 @@ func run() error {
 		apiKeyLookup,
 		authStore,
 		authStore,
+		registrationSvc,
 	)
 
 	srv.InitSAML(ctx)

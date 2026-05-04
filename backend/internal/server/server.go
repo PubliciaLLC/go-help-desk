@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/crewjam/saml/samlsp"
 	"github.com/gorilla/sessions"
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
@@ -22,6 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -64,6 +66,7 @@ type Server struct {
 
 	users        *user.Service
 	tickets      *ticket.Service
+	registration *registration.Service
 	categories   *category.Service
 	groups       *group.Service
 	tags         *tag.Service
@@ -78,7 +81,7 @@ type Server struct {
 
 	// samlMu guards samlHandler. The handler is nil when SAML is not configured.
 	samlMu      sync.RWMutex
-	samlHandler http.Handler
+	samlHandler *samlsp.Middleware
 }
 
 // New constructs a Server and registers all routes.
@@ -97,12 +100,14 @@ func New(
 	apiKeyLookup authmw.APIKeyAuthFunc,
 	oauthClients OAuthClientLookup,
 	authStore AuthStoreIface,
+	registrationSvc *registration.Service,
 ) *Server {
 	s := &Server{
 		cfg:              cfg,
 		sessions:         sessionStore,
 		users:            users,
 		tickets:          tickets,
+		registration:     registrationSvc,
 		categories:       categories,
 		groups:           groups,
 		tags:             tags,
@@ -293,8 +298,8 @@ func (s *Server) reloadSAML(ctx context.Context) error {
 	return nil
 }
 
-// samlHTTP returns the current SAML handler under a read lock, or nil.
-func (s *Server) samlHTTP() http.Handler {
+// samlHTTP returns the current SAML middleware under a read lock, or nil.
+func (s *Server) samlHTTP() *samlsp.Middleware {
 	s.samlMu.RLock()
 	defer s.samlMu.RUnlock()
 	return s.samlHandler

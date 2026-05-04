@@ -17,6 +17,11 @@ const (
 	KeyReopenTargetStatusName = "reopen_target_status_name"
 	KeySiteName               = "site_name"
 	KeySiteLogoURL            = "site_logo_url"
+
+	// Registration settings.
+	KeyAllowedEmailDomains     = "allowed_email_domains"     // []string — empty = unrestricted for SAML JIT
+	KeySelfSignupEnabled       = "self_signup_enabled"        // bool
+	KeyOpenRegistrationEnabled = "open_registration_enabled"  // bool — allow signup with no domain restriction
 )
 
 // Store is the persistence interface for the key/value settings table.

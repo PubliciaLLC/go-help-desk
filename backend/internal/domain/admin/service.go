@@ -186,6 +186,31 @@ func (s *Service) SiteLogoURL(ctx context.Context) string {
 	return v
 }
 
+// AllowedEmailDomains returns the list of permitted email domains. Empty means unrestricted.
+func (s *Service) AllowedEmailDomains(ctx context.Context) []string {
+	raw, err := s.store.Get(ctx, KeyAllowedEmailDomains)
+	if err != nil {
+		return nil
+	}
+	var domains []string
+	if err := json.Unmarshal(raw, &domains); err != nil {
+		return nil
+	}
+	return domains
+}
+
+// SelfSignupEnabled returns whether the self-service signup page is enabled.
+func (s *Service) SelfSignupEnabled(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeySelfSignupEnabled)
+	return v
+}
+
+// OpenRegistrationEnabled returns whether signup is allowed without a domain restriction.
+func (s *Service) OpenRegistrationEnabled(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyOpenRegistrationEnabled)
+	return v
+}
+
 // ListAll returns all settings as raw JSON map.
 func (s *Service) ListAll(ctx context.Context) (map[string][]byte, error) {
 	return s.store.List(ctx)

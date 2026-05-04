@@ -19,6 +19,12 @@ func (s *Server) authRouter() *chi.Mux {
 	r.Get("/saml/login", s.handleSAMLLogin)
 	r.Post("/saml/acs", s.handleSAMLACS)
 	r.Get("/saml/metadata", s.handleSAMLMetadata)
+	r.Get("/saml/complete", s.handleSAMLComplete)
+
+	// Self-service signup (enabled/disabled via admin settings).
+	r.Get("/signup/status", s.handleSignupStatus)
+	r.Post("/signup", s.handleSignup)
+	r.Post("/verify-email", s.handleVerifyEmail)
 
 	return r
 }
