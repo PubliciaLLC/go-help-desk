@@ -17,6 +17,7 @@ import { RolesPage } from '@/pages/admin/RolesPage'
 import { SettingsPage } from '@/pages/admin/SettingsPage'
 import { TagsPage } from '@/pages/admin/TagsPage'
 import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
+import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
@@ -152,6 +153,13 @@ const adminCustomFieldsRoute = createRoute({
   component: CustomFieldsPage,
 })
 
+const adminAPIKeysRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/api-keys',
+  beforeLoad: requireAdmin,
+  component: APIKeysPage,
+})
+
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const submitRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -202,6 +210,7 @@ export const router = createRouter({
     adminStatusesRoute,
     adminTagsRoute,
     adminCustomFieldsRoute,
+    adminAPIKeysRoute,
     adminSettingsRoute,
   ]),
 })
