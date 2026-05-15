@@ -5,13 +5,21 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"reflect"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 )
 
 // JSON writes v as JSON with the given status code.
+// Nil slices are coerced to empty slices so the client always receives [] not null.
 func JSON(w http.ResponseWriter, status int, v any) {
+	if v != nil {
+		rv := reflect.ValueOf(v)
+		if rv.Kind() == reflect.Slice && rv.IsNil() {
+			v = reflect.MakeSlice(rv.Type(), 0, 0).Interface()
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
