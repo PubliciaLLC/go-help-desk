@@ -53,7 +53,7 @@ export function DashboardPage() {
         )}
 
         <div className="flex gap-4">
-          <Link to="/tickets">
+          <Link to="/tickets" search={{}}>
             <Button variant="outline">View all tickets</Button>
           </Link>
         </div>
