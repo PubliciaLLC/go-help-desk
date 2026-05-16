@@ -465,6 +465,14 @@ export function TicketDetailPage() {
     onError: (err) => setReplyError(extractError(err)),
   })
 
+  const statusMutation = useMutation({
+    mutationFn: (statusId: string) => updateTicket(id, { status_id: statusId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+    },
+  })
+
   const resolveMutation = useMutation({
     mutationFn: () => resolveTicket(id),
     onSuccess: () => {
@@ -707,6 +715,31 @@ export function TicketDetailPage() {
                     groups={groups}
                     onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
                   />
+                </CardContent>
+              </Card>
+            )}
+
+            {isStaffOrAdmin && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                    Status
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Select
+                    className="h-8 text-xs w-full"
+                    value={ticket.status_id}
+                    onChange={(e) => statusMutation.mutate(e.target.value)}
+                    disabled={statusMutation.isPending}
+                  >
+                    {statuses.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </Select>
+                  {statusMutation.isError && (
+                    <p className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
+                  )}
                 </CardContent>
               </Card>
             )}
