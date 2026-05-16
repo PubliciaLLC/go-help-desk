@@ -547,14 +547,14 @@ export function TicketDetailPage() {
 
         <div className="grid grid-cols-3 gap-6">
           {/* Main column */}
-          <div className="col-span-2 space-y-6">
+          <div className="col-span-2 space-y-6 min-w-0">
             {/* Description */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm">
+                <p className="whitespace-pre-wrap text-sm break-all">
                   {ticket.description || <span className="text-gray-400">No description provided.</span>}
                 </p>
               </CardContent>
