@@ -39,7 +39,7 @@ export function TicketListPage() {
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [includeClosed, setIncludeClosed] = useState(false)
-  const [scope, setScope] = useState<TicketScope>('mine')
+  const [scope, setScope] = useState<TicketScope>('all')
 
   // 300 ms debounce on the search box
   useEffect(() => {
