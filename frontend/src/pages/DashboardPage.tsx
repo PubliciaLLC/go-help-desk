@@ -38,14 +38,16 @@ export function DashboardPage() {
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {statuses?.filter((s) => s.active).map((s) => (
-              <Card key={s.id} className="border-l-4" style={{ borderLeftColor: s.color }}>
-                <CardHeader className="pb-1">
-                  <CardTitle className="text-sm font-medium text-gray-500">{s.name}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-3xl font-bold text-gray-900">{s.ticket_count}</p>
-                </CardContent>
-              </Card>
+              <Link key={s.id} to="/tickets" search={{ status: s.id }} className="block group">
+                <Card className="border-l-4 transition-shadow group-hover:shadow-md cursor-pointer" style={{ borderLeftColor: s.color }}>
+                  <CardHeader className="pb-1">
+                    <CardTitle className="text-sm font-medium text-gray-500">{s.name}</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-3xl font-bold text-gray-900">{s.ticket_count}</p>
+                  </CardContent>
+                </Card>
+              </Link>
             ))}
           </div>
         )}

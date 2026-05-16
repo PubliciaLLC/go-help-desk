@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { listTickets, type TicketScope } from '@/api/tickets'
 import { listStatuses } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
@@ -31,6 +31,7 @@ function emptyMessageFor(scope: TicketScope) {
 
 export function TicketListPage() {
   const navigate = useNavigate()
+  const { status: statusFilter } = useSearch({ from: '/tickets' })
   const { user } = useAuthStore()
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
@@ -70,10 +71,11 @@ export function TicketListPage() {
     [statuses],
   )
 
-  const tickets = useMemo(
-    () => includeClosed ? allTickets : allTickets.filter(t => !closedIds.has(t.status_id)),
-    [allTickets, includeClosed, closedIds],
-  )
+  const tickets = useMemo(() => {
+    let list = includeClosed ? allTickets : allTickets.filter(t => !closedIds.has(t.status_id))
+    if (statusFilter) list = list.filter(t => t.status_id === statusFilter)
+    return list
+  }, [allTickets, includeClosed, closedIds, statusFilter])
 
   function statusFor(id: string) {
     return statuses.find(s => s.id === id)
@@ -151,6 +153,26 @@ export function TicketListPage() {
             </Button>
           )}
         </div>
+
+        {/* Active status filter chip */}
+        {statusFilter && (() => {
+          const s = statuses.find(st => st.id === statusFilter)
+          return s ? (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-500">Filtering by status:</span>
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
+                style={{ borderColor: s.color, color: s.color }}
+              >
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: s.color }} />
+                {s.name}
+              </span>
+              <Link to="/tickets" className="text-xs text-gray-400 hover:text-gray-600">
+                Clear ×
+              </Link>
+            </div>
+          ) : null
+        })()}
 
         {/* Results */}
         {isFetching && allTickets.length === 0 ? (
