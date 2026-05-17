@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { listTickets, type TicketScope } from '@/api/tickets'
+import { listTickets, updateTicket, type TicketScope } from '@/api/tickets'
 import { listStatuses } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
@@ -31,6 +31,7 @@ function emptyMessageFor(scope: TicketScope) {
 
 export function TicketListPage() {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const { status: statusFilter } = useSearch({ from: '/tickets' })
   const { user } = useAuthStore()
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
@@ -40,6 +41,8 @@ export function TicketListPage() {
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [includeClosed, setIncludeClosed] = useState(false)
   const [scope, setScope] = useState<TicketScope>('all')
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkStatusId, setBulkStatusId] = useState('')
 
   // 300 ms debounce on the search box
   useEffect(() => {
@@ -80,6 +83,36 @@ export function TicketListPage() {
   function statusFor(id: string) {
     return statuses.find(s => s.id === id)
   }
+
+  const allSelected = tickets.length > 0 && tickets.every(t => selectedIds.has(t.id))
+  const someSelected = selectedIds.size > 0
+
+  function toggleAll() {
+    if (allSelected) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(tickets.map(t => t.id)))
+    }
+  }
+
+  function toggleOne(id: string) {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  const bulkMutation = useMutation({
+    mutationFn: async (statusId: string) => {
+      await Promise.all([...selectedIds].map(id => updateTicket(id, { status_id: statusId })))
+    },
+    onSuccess: () => {
+      setSelectedIds(new Set())
+      setBulkStatusId('')
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
 
   return (
     <Layout>
@@ -174,6 +207,37 @@ export function TicketListPage() {
           ) : null
         })()}
 
+        {/* Bulk action bar */}
+        {someSelected && isStaffOrAdmin && (
+          <div className="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
+            <span className="text-blue-700 font-medium">{selectedIds.size} selected</span>
+            <select
+              className="rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+              value={bulkStatusId}
+              onChange={e => setBulkStatusId(e.target.value)}
+            >
+              <option value="">Change status…</option>
+              {statuses.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              disabled={!bulkStatusId || bulkMutation.isPending}
+              onClick={() => bulkMutation.mutate(bulkStatusId)}
+            >
+              Apply
+            </Button>
+            <button
+              type="button"
+              className="ml-auto text-xs text-gray-500 hover:text-gray-700"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear selection
+            </button>
+          </div>
+        )}
+
         {/* Results */}
         {isFetching && allTickets.length === 0 ? (
           <div className="flex items-center gap-2 text-sm text-gray-500">
@@ -190,6 +254,16 @@ export function TicketListPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
                 <tr>
+                  {isStaffOrAdmin && (
+                    <th className="w-8 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300"
+                        checked={allSelected}
+                        onChange={toggleAll}
+                      />
+                    </th>
+                  )}
                   <th className="px-4 py-2 text-left">Ticket</th>
                   <th className="px-4 py-2 text-left">Subject</th>
                   <th className="px-4 py-2 text-left">Status</th>
@@ -202,9 +276,19 @@ export function TicketListPage() {
                   return (
                     <tr
                       key={t.id}
-                      className="cursor-pointer hover:bg-gray-50"
+                      className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(t.id) ? 'bg-blue-50' : ''}`}
                       onClick={() => navigate({ to: '/tickets/$id', params: { id: t.id } })}
                     >
+                      {isStaffOrAdmin && (
+                        <td className="w-8 px-3 py-2" onClick={e => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-gray-300"
+                            checked={selectedIds.has(t.id)}
+                            onChange={() => toggleOne(t.id)}
+                          />
+                        </td>
+                      )}
                       <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-500">
                         {t.tracking_number}
                       </td>

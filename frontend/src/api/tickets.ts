@@ -60,6 +60,11 @@ export async function reopenTicket(id: string): Promise<Ticket> {
   return res.data
 }
 
+export async function closeTicket(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/close`, {})
+  return res.data
+}
+
 export async function listReplies(ticketId: string): Promise<Reply[]> {
   const res = await api.get<Reply[]>(`/tickets/${ticketId}/replies`)
   return res.data

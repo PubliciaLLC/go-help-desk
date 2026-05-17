@@ -8,6 +8,7 @@ import {
   addReply,
   resolveTicket,
   reopenTicket,
+  closeTicket,
   updateTicket,
   listAttachments,
   uploadAttachment,
@@ -353,6 +354,7 @@ export function TicketDetailPage() {
   })
 
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+  const isAdmin = user?.role === 'admin'
 
   // ── CTI state ────────────────────────────────────────────────────────────────
   const [ctiEdit, setCtiEdit] = useState(false)
@@ -492,11 +494,21 @@ export function TicketDetailPage() {
     },
   })
 
+  const closeMutation = useMutation({
+    mutationFn: () => closeTicket(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+
   if (isLoading) return <Layout><div className="flex justify-center py-12"><Spinner size="lg" /></div></Layout>
   if (error || !ticket) return <Layout><p className="text-red-600">Ticket not found.</p></Layout>
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
   const canReopen = isStaffOrAdmin && (statusName === 'Resolved' || statusName === 'Closed')
+  const canClose = isAdmin && statusName === 'Resolved'
 
   return (
     <Layout>
@@ -533,6 +545,16 @@ export function TicketDetailPage() {
                 disabled={resolveMutation.isPending}
               >
                 Mark Resolved
+              </Button>
+            )}
+            {canClose && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => closeMutation.mutate()}
+                disabled={closeMutation.isPending}
+              >
+                Close Ticket
               </Button>
             )}
             {canReopen && (
