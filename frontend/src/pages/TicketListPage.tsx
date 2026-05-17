@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 import { listTickets, updateTicket, type TicketScope } from '@/api/tickets'
-import { listStatuses } from '@/api/admin'
+import { listStatuses, listUsers } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -32,7 +32,7 @@ function emptyMessageFor(scope: TicketScope) {
 export function TicketListPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  const { status: statusFilter } = useSearch({ from: '/tickets' })
+  const { status: statusFilter, reporter: reporterFilter } = useSearch({ from: '/tickets' })
   const { user } = useAuthStore()
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
@@ -55,16 +55,23 @@ export function TicketListPage() {
     queryFn: listStatuses,
   })
 
+  const { data: users = [] } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => listUsers(),
+    enabled: isAdmin,
+  })
+
   // Non-admins are always scoped to "mine" — the backend rejects other scopes.
   const effectiveScope: TicketScope = isAdmin ? scope : 'mine'
 
   // Always fetch; pass search query to backend when present.
   const { data: allTickets = [], isFetching } = useQuery({
-    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope }],
+    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope, reporter: reporterFilter }],
     queryFn: () =>
       listTickets({
         q: debouncedQuery || undefined,
-        scope: effectiveScope,
+        scope: reporterFilter ? undefined : effectiveScope,
+        reporter_id: reporterFilter,
       }),
   })
 
@@ -205,6 +212,22 @@ export function TicketListPage() {
               </Link>
             </div>
           ) : null
+        })()}
+
+        {/* Reporter (client) filter chip */}
+        {reporterFilter && (() => {
+          const u = users.find(u => u.id === reporterFilter)
+          return (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-gray-500">Filtering by client:</span>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-300 bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-700">
+                {u?.display_name ?? reporterFilter}
+              </span>
+              <Link to="/tickets" search={{ status: undefined, reporter: undefined }} className="text-xs text-gray-400 hover:text-gray-600">
+                Clear ×
+              </Link>
+            </div>
+          )
         })()}
 
         {/* Bulk action bar */}

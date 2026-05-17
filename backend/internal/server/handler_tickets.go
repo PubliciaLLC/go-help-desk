@@ -26,6 +26,31 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 
+	// Admin-only: filter all tickets by reporter user ID.
+	if ridStr := r.URL.Query().Get("reporter_id"); ridStr != "" {
+		if a.Role != user.RoleAdmin {
+			Error(w, http.StatusForbidden, "forbidden", "only admins can filter by reporter")
+			return
+		}
+		rid, err := uuid.Parse(ridStr)
+		if err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "invalid reporter_id")
+			return
+		}
+		var tickets []ticket.Ticket
+		if q != "" {
+			tickets, err = s.tickets.SearchByReporter(ctx, rid, q, 100, 0)
+		} else {
+			tickets, err = s.tickets.ListByReporter(ctx, rid, 100, 0)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, tickets)
+		return
+	}
+
 	// Specific group filter (staff/admin only).
 	if gidStr := r.URL.Query().Get("assignee_group_id"); gidStr != "" {
 		if a.Role == user.RoleUser {

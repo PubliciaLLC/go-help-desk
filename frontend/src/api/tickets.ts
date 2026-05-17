@@ -20,6 +20,7 @@ export async function listTickets(params?: {
   assignee_group_id?: string
   q?: string
   scope?: TicketScope
+  reporter_id?: string
 }): Promise<Ticket[]> {
   const res = await api.get<Ticket[]>('/tickets', { params })
   return res.data ?? []
