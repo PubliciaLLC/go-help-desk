@@ -160,7 +160,8 @@
   <tbody>
     <tr><td>Any status → any status</td><td>Staff, Admin</td><td>No restrictions except Closed (see below).</td></tr>
     <tr><td>Any → Resolved</td><td>Staff, Admin</td><td>Optionally captures resolution notes. Starts the reopen window timer.</td></tr>
-    <tr><td>Resolved → Closed</td><td>System (automatic)</td><td>Triggered when the reopen window expires. A background job runs every hour to check.</td></tr>
+    <tr><td>Resolved → Closed (automatic)</td><td>System</td><td>Triggered when the reopen window expires. A background job runs every hour to check.</td></tr>
+    <tr><td>Resolved → Closed (manual)</td><td>Admin only</td><td>Closes a ticket immediately, bypassing the reopen window. Use the <em>Close Ticket</em> button on the ticket detail page or <code>POST /api/tickets/:id/close</code>.</td></tr>
     <tr><td>Resolved → Reopened (via reply)</td><td>User</td><td>Only within the reopen window. Automatically transitions the ticket back to New.</td></tr>
     <tr><td>Closed → any</td><td>Staff, Admin only</td><td>Users cannot interact with Closed tickets.</td></tr>
     <tr><td>Resolved or Closed → Reopened (manual)</td><td>Staff, Admin</td><td>Bypasses the reopen window restriction.</td></tr>
