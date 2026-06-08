@@ -128,7 +128,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Staff/admin (scope=mine): tickets assigned to them + tickets assigned to their groups.
-	var all []ticket.Ticket
+	all := make([]ticket.Ticket, 0)
 
 	var err error
 	var mine []ticket.Ticket
@@ -261,15 +261,12 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-assign to the first active admin or staff user (non-fatal).
-	if users, err := s.users.List(r.Context(), 50, 0); err == nil {
-		for _, u := range users {
-			if u.Role == user.RoleAdmin || u.Role == user.RoleStaff {
-				uid := u.ID
-				_, _ = s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor)
-				break
-			}
-		}
+	// Auto-assign: group takes priority; if users are configured, round-robin; otherwise leave unassigned.
+	if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
+		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, gid, ticket.SystemActor)
+	} else if uids := s.adminSvc.AutoAssignUserIDs(r.Context()); len(uids) > 0 {
+		uid := uids[s.rrIdx.Add(1)%uint64(len(uids))]
+		_, _ = s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor)
 	}
 
 	// Set any custom field values supplied on creation (best-effort; skip invalid IDs).

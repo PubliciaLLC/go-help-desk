@@ -1046,12 +1046,12 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	rawBase, _, err := auth.GenerateToken()
+	raw, _, err := auth.GenerateToken()
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	raw := "GHD_" + rawBase
+	raw = "GHD_" + raw
 	hashed := auth.HashToken(raw)
 	key := auth.APIKey{
 		ID:          uuid.New(),
