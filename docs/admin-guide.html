@@ -69,6 +69,7 @@
       <li><a href="#admin-cti">Categories, Types &amp; Items</a></li>
       <li><a href="#admin-users">Users &amp; Roles</a></li>
       <li><a href="#admin-groups">Groups &amp; Scope</a></li>
+      <li><a href="#admin-auto-assign">Auto-assignment</a></li>
       <li><a href="#admin-custom-fields">Custom Fields</a></li>
       <li><a href="#admin-tags">Tags</a></li>
       <li><a href="#admin-statuses">Ticket Statuses</a></li>
@@ -274,6 +275,32 @@ Facilities
 <p>Scope determines what a staff member sees in their <em>queue</em>. Assignment is separate — any staff member can be assigned any ticket, even if it's outside their queue scope. Once assigned, the ticket appears in the assignee's queue regardless of CTI.</p>
 
 <p>This is intentional: you should never be unable to escalate a ticket to a specialist because of routing rules.</p>
+
+
+<h2 id="admin-auto-assign">Auto-assignment</h2>
+
+<p>When a ticket is created, Go Help Desk can automatically assign it without any manual intervention. Assignment follows a three-tier priority chain:</p>
+
+<ol>
+  <li><strong>CTI-scoped group</strong> — if the ticket's category or type matches a group's scope, the ticket is assigned to that group. This is the preferred path: configure group scopes under <em>Admin → Groups</em> and routing happens automatically based on what the ticket is about.</li>
+  <li><strong>Global group fallback</strong> — if no scoped group matches, the ticket is assigned to the group set in <code>auto_assign_group_id</code> (Admin → Settings → Routing). Useful for a single catch-all team.</li>
+  <li><strong>Round-robin users</strong> — if no group fallback is configured, the ticket is assigned to the next user in the list set in <code>auto_assign_user_ids</code> (Admin → Settings → Routing). The system cycles through the list in order.</li>
+  <li><strong>Unassigned</strong> — if none of the above apply, the ticket is left unassigned and visible to all staff with scope for that CTI.</li>
+</ol>
+
+<div class="callout callout-note">
+  <p>The round-robin counter is in-memory and resets on server restart. For high-availability deployments with multiple instances, use group-based routing instead — CTI scopes and the global group fallback are stateless.</p>
+</div>
+
+<h3>Configuring auto-assignment</h3>
+<p>CTI-scoped groups are configured per category/type from <em>Admin → Categories</em> (expand a row and use the <strong>Groups</strong> subsection). The global fallback settings are under <em>Admin → Settings → Routing</em>:</p>
+<table>
+  <thead><tr><th>Setting</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>auto_assign_group_id</code></td><td>UUID of the fallback group. Tickets are assigned here when no CTI-scoped group matches.</td></tr>
+    <tr><td><code>auto_assign_user_ids</code></td><td>Ordered list of staff user UUIDs. Tickets cycle through this list in round-robin order when no group is configured.</td></tr>
+  </tbody>
+</table>
 
 
 <h2 id="admin-custom-fields">Custom fields</h2>
