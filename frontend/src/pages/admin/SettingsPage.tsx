@@ -440,6 +440,9 @@ function AuthPanel({
   saved: boolean
 }) {
   const [confirmOpenReg, setConfirmOpenReg] = useState(false)
+  const domainsFromParent = strArr('allowed_email_domains').join('\n')
+  const [domainsText, setDomainsText] = useState(domainsFromParent)
+  useEffect(() => { setDomainsText(domainsFromParent) }, [domainsFromParent])
 
   const domainsLocked = strArr('allowed_email_domains').length > 0
 
@@ -511,11 +514,12 @@ function AuthPanel({
                 rows={3}
                 className="w-full max-w-xs rounded border border-gray-300 p-2 font-mono text-sm"
                 placeholder={'company.com\nexample.org'}
-                value={strArr('allowed_email_domains').join('\n')}
-                onChange={(e) =>
+                value={domainsText}
+                onChange={(e) => setDomainsText(e.target.value)}
+                onBlur={() =>
                   setStrArr(
                     'allowed_email_domains',
-                    e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),
+                    domainsText.split('\n').map((s) => s.trim()).filter(Boolean),
                   )
                 }
               />

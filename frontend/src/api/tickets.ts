@@ -22,7 +22,7 @@ export async function listTickets(params?: {
   scope?: TicketScope
 }): Promise<Ticket[]> {
   const res = await api.get<Ticket[]>('/tickets', { params })
-  return res.data
+  return res.data ?? []
 }
 
 export async function createTicket(input: CreateTicketInput): Promise<Ticket> {

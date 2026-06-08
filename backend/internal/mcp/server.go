@@ -34,7 +34,7 @@ func New(tickets *ticket.Service) *Server {
 
 // Handler returns the SSE HTTP handler for MCP clients.
 func (s *Server) Handler() *mcpserver.SSEServer {
-	return mcpserver.NewSSEServer(s.mcp, mcpserver.WithBaseURL("/mcp"))
+	return mcpserver.NewSSEServer(s.mcp, mcpserver.WithStaticBasePath("/mcp"))
 }
 
 func (s *Server) registerTools() {
