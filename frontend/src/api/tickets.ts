@@ -20,6 +20,7 @@ export async function listTickets(params?: {
   assignee_group_id?: string
   q?: string
   scope?: TicketScope
+  reporter_id?: string
 }): Promise<Ticket[]> {
   const res = await api.get<Ticket[]>('/tickets', { params })
   return res.data ?? []
@@ -57,6 +58,11 @@ export async function resolveTicket(id: string, notes?: string): Promise<Ticket>
 
 export async function reopenTicket(id: string): Promise<Ticket> {
   const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+  return res.data
+}
+
+export async function closeTicket(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/close`, {})
   return res.data
 }
 

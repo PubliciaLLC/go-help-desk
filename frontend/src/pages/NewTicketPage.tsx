@@ -364,7 +364,7 @@ export function NewTicketPage() {
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() => navigate({ to: '/tickets' })}
+                    onClick={() => navigate({ to: '/tickets', search: { status: undefined } })}
                     disabled={submitting || isUploading}
                   >
                     Cancel

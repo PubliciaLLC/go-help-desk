@@ -72,6 +72,10 @@ const ticketsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/tickets',
   beforeLoad: requireAuth,
+  validateSearch: (search: Record<string, unknown>) => ({
+    status: typeof search.status === 'string' ? search.status : undefined,
+    reporter: typeof search.reporter === 'string' ? search.reporter : undefined,
+  }),
   component: TicketListPage,
 })
 

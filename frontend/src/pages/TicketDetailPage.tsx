@@ -8,6 +8,7 @@ import {
   addReply,
   resolveTicket,
   reopenTicket,
+  closeTicket,
   updateTicket,
   listAttachments,
   uploadAttachment,
@@ -353,6 +354,7 @@ export function TicketDetailPage() {
   })
 
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+  const isAdmin = user?.role === 'admin'
 
   // ── CTI state ────────────────────────────────────────────────────────────────
   const [ctiEdit, setCtiEdit] = useState(false)
@@ -465,11 +467,21 @@ export function TicketDetailPage() {
     onError: (err) => setReplyError(extractError(err)),
   })
 
+  const statusMutation = useMutation({
+    mutationFn: (statusId: string) => updateTicket(id, { status_id: statusId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+
   const resolveMutation = useMutation({
     mutationFn: () => resolveTicket(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
 
@@ -478,6 +490,16 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+  })
+
+  const closeMutation = useMutation({
+    mutationFn: () => closeTicket(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
 
@@ -486,6 +508,7 @@ export function TicketDetailPage() {
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
   const canReopen = isStaffOrAdmin && (statusName === 'Resolved' || statusName === 'Closed')
+  const canClose = isAdmin && statusName === 'Resolved'
 
   return (
     <Layout>
@@ -524,6 +547,16 @@ export function TicketDetailPage() {
                 Mark Resolved
               </Button>
             )}
+            {canClose && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => closeMutation.mutate()}
+                disabled={closeMutation.isPending}
+              >
+                Close Ticket
+              </Button>
+            )}
             {canReopen && (
               <Button
                 variant="outline"
@@ -539,14 +572,14 @@ export function TicketDetailPage() {
 
         <div className="grid grid-cols-3 gap-6">
           {/* Main column */}
-          <div className="col-span-2 space-y-6">
+          <div className="col-span-2 space-y-6 min-w-0">
             {/* Description */}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm">
+                <p className="whitespace-pre-wrap text-sm break-all">
                   {ticket.description || <span className="text-gray-400">No description provided.</span>}
                 </p>
               </CardContent>
@@ -707,6 +740,31 @@ export function TicketDetailPage() {
                     groups={groups}
                     onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
                   />
+                </CardContent>
+              </Card>
+            )}
+
+            {isStaffOrAdmin && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                    Status
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Select
+                    className="h-8 text-xs w-full"
+                    value={ticket.status_id}
+                    onChange={(e) => statusMutation.mutate(e.target.value)}
+                    disabled={statusMutation.isPending}
+                  >
+                    {statuses.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </Select>
+                  {statusMutation.isError && (
+                    <p className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
+                  )}
                 </CardContent>
               </Card>
             )}

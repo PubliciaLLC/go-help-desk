@@ -26,6 +26,31 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
 
+	// Admin-only: filter all tickets by reporter user ID.
+	if ridStr := r.URL.Query().Get("reporter_id"); ridStr != "" {
+		if a.Role != user.RoleAdmin {
+			Error(w, http.StatusForbidden, "forbidden", "only admins can filter by reporter")
+			return
+		}
+		rid, err := uuid.Parse(ridStr)
+		if err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "invalid reporter_id")
+			return
+		}
+		var tickets []ticket.Ticket
+		if q != "" {
+			tickets, err = s.tickets.SearchByReporter(ctx, rid, q, 100, 0)
+		} else {
+			tickets, err = s.tickets.ListByReporter(ctx, rid, 100, 0)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, tickets)
+		return
+	}
+
 	// Specific group filter (staff/admin only).
 	if gidStr := r.URL.Query().Get("assignee_group_id"); gidStr != "" {
 		if a.Role == user.RoleUser {
@@ -234,6 +259,17 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleError(w, err)
 		return
+	}
+
+	// Auto-assign to the first active admin or staff user (non-fatal).
+	if users, err := s.users.List(r.Context(), 50, 0); err == nil {
+		for _, u := range users {
+			if u.Role == user.RoleAdmin || u.Role == user.RoleStaff {
+				uid := u.ID
+				_, _ = s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor)
+				break
+			}
+		}
 	}
 
 	// Set any custom field values supplied on creation (best-effort; skip invalid IDs).
@@ -478,6 +514,30 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	t, err := s.tickets.Reopen(r.Context(), id, targetID, actor)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, t)
+}
+
+// POST /api/v1/tickets/{id}/close
+func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	if a.Role != user.RoleAdmin {
+		Error(w, http.StatusForbidden, "forbidden", "only admins can close tickets")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	if err := s.tickets.Close(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
+	t, err := s.tickets.GetByID(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return

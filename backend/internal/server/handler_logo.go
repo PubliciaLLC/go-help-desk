@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -224,7 +225,7 @@ func (s *Server) handleUploadLogo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logoURL := "/api/v1/logo"
+	logoURL := fmt.Sprintf("/api/v1/logo?v=%d", time.Now().Unix())
 	if err := s.adminSvc.SetString(r.Context(), "site_logo_url", logoURL); err != nil {
 		Error(w, http.StatusInternalServerError, "settings_error", "saving logo URL to settings")
 		return

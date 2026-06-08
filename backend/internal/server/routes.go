@@ -44,6 +44,7 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Get("/{id}/replies", s.handleListReplies)
 	r.Post("/{id}/resolve", s.handleResolveTicket)
 	r.Post("/{id}/reopen", s.handleReopenTicket)
+	r.Post("/{id}/close", s.handleCloseTicket)
 	r.Post("/{id}/links", s.handleAddLink)
 	r.Delete("/{id}/links/{targetId}/{linkType}", s.handleRemoveLink)
 	r.Get("/{id}/links", s.handleListLinks)
