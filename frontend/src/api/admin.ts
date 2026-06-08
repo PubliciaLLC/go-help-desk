@@ -256,8 +256,8 @@ export async function createAPIKey(input: {
   name: string
   scopes?: string[]
   expires_at?: string
-}): Promise<APIKey & { raw_token: string }> {
-  const res = await api.post<APIKey & { raw_token: string }>('/admin/api-keys', input)
+}): Promise<{ id: string; name: string; token: string }> {
+  const res = await api.post<{ id: string; name: string; token: string }>('/admin/api-keys', input)
   return res.data
 }
 

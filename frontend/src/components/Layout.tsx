@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { getSiteConfig } from '@/api/admin'
 import { Button } from '@/components/ui/button'
-import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon } from 'lucide-react'
+import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface NavItemProps {
@@ -89,6 +89,7 @@ export function Layout({ children }: LayoutProps) {
                 <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" />
                 <NavItem to="/admin/tags" icon={<TagIcon className="h-4 w-4" />} label="Tags" />
                 <NavItem to="/admin/custom-fields" icon={<SlidersIcon className="h-4 w-4" />} label="Custom Fields" />
+                <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" />
                 <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" />
               </>
             )}
