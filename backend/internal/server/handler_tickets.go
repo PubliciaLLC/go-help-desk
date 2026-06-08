@@ -261,8 +261,11 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-assign: group takes priority; if users are configured, round-robin; otherwise leave unassigned.
-	if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
+	// Auto-assign: CTI-scoped group first, then global group, then round-robin users, else unassigned.
+	if matched, _ := s.groups.GetGroupsForTicket(r.Context(), t.CategoryID, t.TypeID); len(matched) > 0 {
+		gid := matched[0].ID
+		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, &gid, ticket.SystemActor)
+	} else if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
 		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, gid, ticket.SystemActor)
 	} else if uids := s.adminSvc.AutoAssignUserIDs(r.Context()); len(uids) > 0 {
 		uid := uids[s.rrIdx.Add(1)%uint64(len(uids))]
