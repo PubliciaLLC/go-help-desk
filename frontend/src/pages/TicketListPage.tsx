@@ -40,7 +40,7 @@ export function TicketListPage() {
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
   const [includeClosed, setIncludeClosed] = useState(false)
-  const [scope, setScope] = useState<TicketScope>('all')
+  const [scope, setScope] = useState<TicketScope>('mine')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkStatusId, setBulkStatusId] = useState('')
 

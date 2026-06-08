@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"github.com/google/uuid"
 )
 
 // Service provides typed access to the settings table.
@@ -219,4 +221,36 @@ func (s *Service) ListAll(ctx context.Context) (map[string][]byte, error) {
 // SetRaw persists a raw JSON value for the given key.
 func (s *Service) SetRaw(ctx context.Context, key string, value []byte) error {
 	return s.store.Set(ctx, key, value)
+}
+
+// AutoAssignGroupID returns the configured auto-assign group, or nil if not set.
+func (s *Service) AutoAssignGroupID(ctx context.Context) *uuid.UUID {
+	v, err := s.GetString(ctx, KeyAutoAssignGroupID)
+	if err != nil || v == "" {
+		return nil
+	}
+	id, err := uuid.Parse(v)
+	if err != nil {
+		return nil
+	}
+	return &id
+}
+
+// AutoAssignUserIDs returns the configured round-robin user list, or nil if not set.
+func (s *Service) AutoAssignUserIDs(ctx context.Context) []uuid.UUID {
+	raw, err := s.store.Get(ctx, KeyAutoAssignUserIDs)
+	if err != nil {
+		return nil
+	}
+	var strs []string
+	if err := json.Unmarshal(raw, &strs); err != nil {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(strs))
+	for _, str := range strs {
+		if id, err := uuid.Parse(str); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }

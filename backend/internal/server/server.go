@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -82,6 +83,9 @@ type Server struct {
 	// samlMu guards samlHandler. The handler is nil when SAML is not configured.
 	samlMu      sync.RWMutex
 	samlHandler *samlsp.Middleware
+
+	// rrIdx is the round-robin counter for auto-assigning tickets to users.
+	rrIdx atomic.Uint64
 }
 
 // New constructs a Server and registers all routes.
