@@ -309,6 +309,50 @@ Admins can manage which groups handle each CTI node directly from the CTI editor
 
 ---
 
+## Canned Responses (v2)
+
+Staff insert reusable reply templates into ticket replies with one click, so common acknowledgements, fixes, and closure messages don't have to be retyped.
+
+### Definitions
+
+Defined globally under **Admin → Canned Responses**. Each canned response has:
+
+- **Name**: short label shown in the picker
+- **Body**: plain text, inserted verbatim into the reply
+- **Scope**: one of `global` (every ticket), `category` (any ticket in that category), or `category + type` (only tickets matching that category and type)
+- **Sort order**: controls display order in the picker
+
+Scope is stored as a nullable `category_id` plus a nullable `type_id`, following the same "category, optionally narrowed by type" model as `group_scopes`. A `type_id` is set only when `category_id` is also set (enforced by a CHECK constraint); both NULL means global. Item-level scoping is not supported, matching the group-scope model.
+
+Canned responses are hard-deleted, not deactivated: the body is copied into the reply at insert time, so removing a template never affects replies that already used it. Deleting a category or type cascades to the responses scoped to it.
+
+### Storage
+
+Stored in a single `canned_responses` table (`id`, `name`, `body`, nullable `category_id`, nullable `type_id`, `sort_order`, `created_at`). There is no per-ticket linkage — once inserted, the text is part of the reply like any other typed content.
+
+### Use in the reply composer
+
+When composing a reply, staff see an **Insert canned response** control that opens a searchable picker. The picker lists the responses available for that ticket — global responses, responses scoped to the ticket's category, and responses scoped to the ticket's category and type:
+
+```
+category_id IS NULL
+  OR (category_id = <ticket category> AND (type_id IS NULL OR type_id = <ticket type>))
+```
+
+Selecting a response splices its body into the reply textarea at the cursor position (appended to the end when empty). The inserted text is fully editable before the reply is sent.
+
+### Permissions
+
+Only admins create, edit, and delete canned responses; all staff and admins can insert them when replying. Allowing non-admin roles to manage templates — and assigning that capability per user or per group — depends on the custom-role work and is deferred to v3.
+
+### Deferred
+
+- Per-user / per-group "manage canned responses" capability → v3, with custom admin-defined roles.
+- Variable substitution (e.g. `{{customer_name}}`), rich-text bodies, and usage analytics → a later version.
+- Item-level scoping → not planned, mirroring the group-scope model.
+
+---
+
 ## SLA Tracking (v1)
 
 SLA tracking is an optional feature toggle available in **Admin → Settings → Features → SLA tracking**. It can also be pre-enabled at startup via the `SLA_ENABLED=true` environment variable.
