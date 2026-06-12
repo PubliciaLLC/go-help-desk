@@ -45,6 +45,16 @@ type AuditLog struct {
 	CreatedAt  time.Time             `json:"created_at"`
 }
 
+type CannedResponse struct {
+	ID         uuid.UUID     `json:"id"`
+	Name       string        `json:"name"`
+	Body       string        `json:"body"`
+	CategoryID uuid.NullUUID `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	SortOrder  int32         `json:"sort_order"`
+	CreatedAt  time.Time     `json:"created_at"`
+}
+
 type Category struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`

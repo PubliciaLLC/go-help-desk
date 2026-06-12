@@ -24,6 +24,7 @@ type Querier interface {
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error
 	CreateAuditEntry(ctx context.Context, arg CreateAuditEntryParams) error
+	CreateCannedResponse(ctx context.Context, arg CreateCannedResponseParams) (CannedResponse, error)
 	CreateCategory(ctx context.Context, arg CreateCategoryParams) error
 	// ── Assignments ───────────────────────────────────────────────────────────────
 	CreateCustomFieldAssignment(ctx context.Context, arg CreateCustomFieldAssignmentParams) (CustomFieldAssignment, error)
@@ -46,6 +47,7 @@ type Querier interface {
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
+	DeleteCannedResponse(ctx context.Context, id uuid.UUID) error
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
@@ -65,6 +67,7 @@ type Querier interface {
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
+	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
@@ -94,6 +97,7 @@ type Querier interface {
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
+	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
 	ListCustomFieldValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]ListCustomFieldValuesForTicketRow, error)
@@ -140,6 +144,7 @@ type Querier interface {
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
+	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error
 	UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCustomFieldAssignmentParams) error
 	UpdateCustomFieldDef(ctx context.Context, arg UpdateCustomFieldDefParams) error
