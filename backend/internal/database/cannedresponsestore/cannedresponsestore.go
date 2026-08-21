@@ -3,6 +3,8 @@ package cannedresponsestore
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -34,24 +36,33 @@ func (s *Store) Create(ctx context.Context, cr cannedresponse.CannedResponse) er
 func (s *Store) Get(ctx context.Context, id uuid.UUID) (cannedresponse.CannedResponse, error) {
 	row, err := s.q.GetCannedResponse(ctx, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return cannedresponse.CannedResponse{}, fmt.Errorf("%w: %s", cannedresponse.ErrNotFound, id)
+		}
 		return cannedresponse.CannedResponse{}, fmt.Errorf("getting canned response %s: %w", id, err)
 	}
 	return fromRow(row), nil
 }
 
 func (s *Store) Update(ctx context.Context, cr cannedresponse.CannedResponse) error {
-	return s.q.UpdateCannedResponse(ctx, dbgen.UpdateCannedResponseParams{
+	if err := s.q.UpdateCannedResponse(ctx, dbgen.UpdateCannedResponseParams{
 		ID:         cr.ID,
 		Name:       cr.Name,
 		Body:       cr.Body,
 		CategoryID: nullUUID(cr.CategoryID),
 		TypeID:     nullUUID(cr.TypeID),
 		SortOrder:  int32(cr.SortOrder),
-	})
+	}); err != nil {
+		return fmt.Errorf("updating canned response %s: %w", cr.ID, err)
+	}
+	return nil
 }
 
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteCannedResponse(ctx, id)
+	if err := s.q.DeleteCannedResponse(ctx, id); err != nil {
+		return fmt.Errorf("deleting canned response %s: %w", id, err)
+	}
+	return nil
 }
 
 func (s *Store) List(ctx context.Context) ([]cannedresponse.CannedResponse, error) {

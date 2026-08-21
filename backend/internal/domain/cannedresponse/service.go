@@ -2,12 +2,22 @@ package cannedresponse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/google/uuid"
 )
+
+// ErrValidation wraps input-validation failures from Create/Update, so
+// callers (the HTTP handler) can tell them apart from persistence errors and
+// map them to 400 instead of 500.
+var ErrValidation = errors.New("validation failed")
+
+// ErrNotFound is returned when a requested canned response does not exist.
+// The Postgres store wraps sql.ErrNoRows with this sentinel.
+var ErrNotFound = errors.New("canned response not found")
 
 // Service manages canned responses.
 type Service struct{ store Store }
@@ -20,20 +30,21 @@ func NewService(store Store) *Service { return &Service{store: store} }
 // the database layer.
 func validateScope(categoryID, typeID *uuid.UUID) error {
 	if typeID != nil && categoryID == nil {
-		return fmt.Errorf("type scope requires a category")
+		return fmt.Errorf("type scope requires a category: %w", ErrValidation)
 	}
 	return nil
 }
 
-// Create validates and persists a new canned response.
+// Create validates and persists a new canned response, returning the
+// as-persisted record (including the database-assigned created_at).
 func (s *Service) Create(ctx context.Context, name, body string, categoryID, typeID *uuid.UUID, sortOrder int) (CannedResponse, error) {
 	name = strings.TrimSpace(name)
 	body = strings.TrimSpace(body)
 	if name == "" {
-		return CannedResponse{}, fmt.Errorf("name is required")
+		return CannedResponse{}, fmt.Errorf("name is required: %w", ErrValidation)
 	}
 	if body == "" {
-		return CannedResponse{}, fmt.Errorf("body is required")
+		return CannedResponse{}, fmt.Errorf("body is required: %w", ErrValidation)
 	}
 	if err := validateScope(categoryID, typeID); err != nil {
 		return CannedResponse{}, err
@@ -49,23 +60,37 @@ func (s *Service) Create(ctx context.Context, name, body string, categoryID, typ
 	if err := s.store.Create(ctx, cr); err != nil {
 		return CannedResponse{}, fmt.Errorf("creating canned response: %w", err)
 	}
-	return cr, nil
+	created, err := s.store.Get(ctx, cr.ID)
+	if err != nil {
+		return CannedResponse{}, fmt.Errorf("reloading canned response after create: %w", err)
+	}
+	return created, nil
 }
 
-// Update validates and persists changes to an existing canned response.
-func (s *Service) Update(ctx context.Context, cr CannedResponse) error {
+// Update validates and persists changes to an existing canned response,
+// returning the as-persisted record. Returns ErrNotFound if id does not
+// exist — an update to a nonexistent row succeeds silently at the SQL level,
+// so existence is confirmed by reloading the row afterward.
+func (s *Service) Update(ctx context.Context, cr CannedResponse) (CannedResponse, error) {
 	cr.Name = strings.TrimSpace(cr.Name)
 	cr.Body = strings.TrimSpace(cr.Body)
 	if cr.Name == "" {
-		return fmt.Errorf("name is required")
+		return CannedResponse{}, fmt.Errorf("name is required: %w", ErrValidation)
 	}
 	if cr.Body == "" {
-		return fmt.Errorf("body is required")
+		return CannedResponse{}, fmt.Errorf("body is required: %w", ErrValidation)
 	}
 	if err := validateScope(cr.CategoryID, cr.TypeID); err != nil {
-		return err
+		return CannedResponse{}, err
 	}
-	return s.store.Update(ctx, cr)
+	if err := s.store.Update(ctx, cr); err != nil {
+		return CannedResponse{}, fmt.Errorf("updating canned response: %w", err)
+	}
+	updated, err := s.store.Get(ctx, cr.ID)
+	if err != nil {
+		return CannedResponse{}, fmt.Errorf("reloading canned response after update: %w", err)
+	}
+	return updated, nil
 }
 
 // Delete removes a canned response.

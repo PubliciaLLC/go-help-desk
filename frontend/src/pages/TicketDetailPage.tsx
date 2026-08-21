@@ -316,11 +316,15 @@ interface CannedResponsePickerProps {
   responses: CannedResponse[]
   onSelect: (body: string) => void
   onClose: () => void
+  // Ref to the wrapper that contains BOTH the trigger button and this picker.
+  // Using the trigger's own container (rather than a ref scoped to just the
+  // picker) keeps a click on the trigger from counting as "outside" — the
+  // trigger's onClick toggle is the only thing that should open/close it.
+  containerRef: React.RefObject<HTMLDivElement | null>
 }
 
-function CannedResponsePicker({ responses, onSelect, onClose }: CannedResponsePickerProps) {
+function CannedResponsePicker({ responses, onSelect, onClose, containerRef }: CannedResponsePickerProps) {
   const [filter, setFilter] = useState('')
-  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     function handlePointerDown(e: MouseEvent) {
@@ -337,17 +341,14 @@ function CannedResponsePicker({ responses, onSelect, onClose }: CannedResponsePi
       document.removeEventListener('mousedown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
-  }, [onClose])
+  }, [onClose, containerRef])
 
   const filtered = filter.trim()
     ? responses.filter((r) => r.name.toLowerCase().includes(filter.trim().toLowerCase()))
     : responses
 
   return (
-    <div
-      ref={containerRef}
-      className="absolute z-10 mt-1 w-80 rounded-md border border-gray-200 bg-white shadow-lg"
-    >
+    <div className="absolute z-10 mt-1 w-80 rounded-md border border-gray-200 bg-white shadow-lg">
       <div className="border-b border-gray-100 p-2">
         <Input
           autoFocus
@@ -395,6 +396,7 @@ export function TicketDetailPage() {
   const [replyError, setReplyError] = useState('')
   const [cannedPickerOpen, setCannedPickerOpen] = useState(false)
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const cannedPickerContainerRef = useRef<HTMLDivElement>(null)
 
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
@@ -465,6 +467,8 @@ export function TicketDetailPage() {
       setCtiEdit(false)
       setCtiError('')
       qc.invalidateQueries({ queryKey: ['ticket', id] })
+      // Recategorizing changes which canned responses are in scope.
+      qc.invalidateQueries({ queryKey: ['ticket-canned-responses', id] })
     },
     onError: (err) => setCtiError(extractError(err)),
   })
@@ -748,7 +752,7 @@ export function TicketDetailPage() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {isStaffOrAdmin && (
-                    <div className="relative inline-block">
+                    <div className="relative inline-block" ref={cannedPickerContainerRef}>
                       <Button
                         type="button"
                         variant="outline"
@@ -765,6 +769,7 @@ export function TicketDetailPage() {
                           responses={cannedResponses}
                           onSelect={insertCannedResponse}
                           onClose={() => setCannedPickerOpen(false)}
+                          containerRef={cannedPickerContainerRef}
                         />
                       )}
                     </div>

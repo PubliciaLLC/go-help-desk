@@ -107,7 +107,8 @@ func TestService_Update(t *testing.T) {
 	require.NoError(t, err)
 
 	cr.Name = "Acknowledgement"
-	require.NoError(t, svc.Update(context.Background(), cr))
+	_, err = svc.Update(context.Background(), cr)
+	require.NoError(t, err)
 
 	got, err := svc.Get(context.Background(), cr.ID)
 	require.NoError(t, err)
@@ -120,12 +121,24 @@ func TestService_Update_Invalid(t *testing.T) {
 	require.NoError(t, err)
 
 	cr.Body = "   "
-	require.Error(t, svc.Update(context.Background(), cr))
+	_, err = svc.Update(context.Background(), cr)
+	require.Error(t, err)
 
 	cr.Body = "ok"
 	cr.CategoryID = nil
 	cr.TypeID = ptr(uuid.New())
-	require.Error(t, svc.Update(context.Background(), cr))
+	_, err = svc.Update(context.Background(), cr)
+	require.Error(t, err)
+}
+
+func TestService_Update_NotFound(t *testing.T) {
+	svc := cannedresponse.NewService(newFakeStore())
+	_, err := svc.Update(context.Background(), cannedresponse.CannedResponse{
+		ID:   uuid.New(),
+		Name: "Ack",
+		Body: "body",
+	})
+	require.Error(t, err)
 }
 
 // ── Availability filtering (the picker rule) ────────────────────────────────

@@ -1144,6 +1144,7 @@ func TestAdminCreateCannedResponse(t *testing.T) {
 	require.Nil(t, cr.CategoryID)
 	require.Nil(t, cr.TypeID)
 	require.Equal(t, 1, cr.SortOrder)
+	require.False(t, cr.CreatedAt.IsZero(), "created_at should be the DB-assigned timestamp, not a zero value")
 }
 
 func TestAdminCreateCannedResponse_TypeRequiresCategory(t *testing.T) {
@@ -1203,11 +1204,27 @@ func TestAdminUpdateCannedResponse(t *testing.T) {
 	require.Equal(t, "Updated", updated.Name)
 	require.Equal(t, "Updated body", updated.Body)
 	require.Equal(t, 5, updated.SortOrder)
+	require.Equal(t, created.CreatedAt, updated.CreatedAt, "created_at must be preserved, not zeroed, across an update")
 
 	// Confirm the change persisted.
 	got, err := h.cannedResponses.Get(context.Background(), created.ID)
 	require.NoError(t, err)
 	require.Equal(t, "Updated", got.Name)
+}
+
+// TestAdminUpdateCannedResponse_NotFound guards against a real bug: an UPDATE
+// whose WHERE clause matches no row succeeds silently at the SQL level, so
+// without an existence check a PATCH to a nonexistent id previously returned
+// 200 with a fabricated response body instead of 404.
+func TestAdminUpdateCannedResponse_NotFound(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/canned-responses/"+uuid.New().String(), map[string]any{
+		"name": "Ghost",
+		"body": "Body",
+	})
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestAdminDeleteCannedResponse(t *testing.T) {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -38,7 +39,11 @@ func (s *Server) handleAdminCreateCannedResponse(w http.ResponseWriter, r *http.
 	}
 	cr, err := s.cannedResponses.Create(r.Context(), body.Name, body.Body, body.CategoryID, body.TypeID, body.SortOrder)
 	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		if errors.Is(err, cannedresponse.ErrValidation) {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		handleError(w, err)
 		return
 	}
 	JSON(w, http.StatusCreated, cr)
@@ -64,11 +69,16 @@ func (s *Server) handleAdminUpdateCannedResponse(w http.ResponseWriter, r *http.
 		TypeID:     body.TypeID,
 		SortOrder:  body.SortOrder,
 	}
-	if err := s.cannedResponses.Update(r.Context(), cr); err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+	updated, err := s.cannedResponses.Update(r.Context(), cr)
+	if err != nil {
+		if errors.Is(err, cannedresponse.ErrValidation) {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, cr)
+	JSON(w, http.StatusOK, updated)
 }
 
 // handleAdminDeleteCannedResponse deletes a canned response.
