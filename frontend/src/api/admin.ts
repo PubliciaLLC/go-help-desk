@@ -288,7 +288,7 @@ export async function restoreTag(id: string): Promise<void> {
 // ── Canned responses (admin) ──────────────────────────────────────────────────
 
 export async function listCannedResponses(): Promise<CannedResponse[]> {
-  const res = await api.get<CannedResponse[]>('/admin/canned-responses/')
+  const res = await api.get<CannedResponse[]>('/admin/canned-responses')
   return res.data
 }
 
@@ -299,7 +299,7 @@ export async function createCannedResponse(input: {
   type_id?: string | null
   sort_order?: number
 }): Promise<CannedResponse> {
-  const res = await api.post<CannedResponse>('/admin/canned-responses/', input)
+  const res = await api.post<CannedResponse>('/admin/canned-responses', input)
   return res.data
 }
 
