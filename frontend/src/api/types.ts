@@ -136,6 +136,16 @@ export interface Tag {
   deleted_at?: string
 }
 
+export interface CannedResponse {
+  id: string
+  name: string
+  body: string
+  category_id?: string
+  type_id?: string
+  sort_order: number
+  created_at: string
+}
+
 export interface APIKey {
   id: string
   name: string
