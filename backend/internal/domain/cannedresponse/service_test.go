@@ -3,6 +3,7 @@ package cannedresponse_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -89,6 +90,12 @@ func TestService_Create(t *testing.T) {
 			require.NotEqual(t, uuid.Nil, cr.ID)
 		})
 	}
+}
+
+func TestService_Create_SortOrderOutOfRange(t *testing.T) {
+	svc := cannedresponse.NewService(newFakeStore())
+	_, err := svc.Create(context.Background(), "Ack", "body", nil, nil, math.MaxInt32+1)
+	require.Error(t, err)
 }
 
 func TestService_Create_TrimsWhitespace(t *testing.T) {

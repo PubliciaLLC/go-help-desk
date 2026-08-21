@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -35,6 +36,15 @@ func validateScope(categoryID, typeID *uuid.UUID) error {
 	return nil
 }
 
+// validateSortOrder rejects values that don't fit in the database's int32
+// column, so an out-of-range value is a 400 rather than a silent wraparound.
+func validateSortOrder(sortOrder int) error {
+	if sortOrder < math.MinInt32 || sortOrder > math.MaxInt32 {
+		return fmt.Errorf("sort_order out of range: %w", ErrValidation)
+	}
+	return nil
+}
+
 // Create validates and persists a new canned response, returning the
 // as-persisted record (including the database-assigned created_at).
 func (s *Service) Create(ctx context.Context, name, body string, categoryID, typeID *uuid.UUID, sortOrder int) (CannedResponse, error) {
@@ -47,6 +57,9 @@ func (s *Service) Create(ctx context.Context, name, body string, categoryID, typ
 		return CannedResponse{}, fmt.Errorf("body is required: %w", ErrValidation)
 	}
 	if err := validateScope(categoryID, typeID); err != nil {
+		return CannedResponse{}, err
+	}
+	if err := validateSortOrder(sortOrder); err != nil {
 		return CannedResponse{}, err
 	}
 	cr := CannedResponse{
@@ -81,6 +94,9 @@ func (s *Service) Update(ctx context.Context, cr CannedResponse) (CannedResponse
 		return CannedResponse{}, fmt.Errorf("body is required: %w", ErrValidation)
 	}
 	if err := validateScope(cr.CategoryID, cr.TypeID); err != nil {
+		return CannedResponse{}, err
+	}
+	if err := validateSortOrder(cr.SortOrder); err != nil {
 		return CannedResponse{}, err
 	}
 	if err := s.store.Update(ctx, cr); err != nil {
