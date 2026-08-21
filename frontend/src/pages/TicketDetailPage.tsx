@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -18,6 +18,7 @@ import {
   listPublicCategories,
   listPublicTypes,
   listPublicItems,
+  listTicketCannedResponses,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
@@ -34,7 +35,8 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Group, User, StatusHistoryEntry, TicketFieldValue, Category, TicketType, TicketItem } from '@/api/types'
+import { MessageSquareTextIcon } from 'lucide-react'
+import type { Group, User, StatusHistoryEntry, TicketFieldValue, Category, TicketType, TicketItem, CannedResponse } from '@/api/types'
 
 function priorityVariant(p: string) {
   if (p === 'critical') return 'destructive'
@@ -308,6 +310,76 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
   )
 }
 
+// ── Canned response picker ─────────────────────────────────────────────────────
+
+interface CannedResponsePickerProps {
+  responses: CannedResponse[]
+  onSelect: (body: string) => void
+  onClose: () => void
+}
+
+function CannedResponsePicker({ responses, onSelect, onClose }: CannedResponsePickerProps) {
+  const [filter, setFilter] = useState('')
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handlePointerDown(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        onClose()
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose])
+
+  const filtered = filter.trim()
+    ? responses.filter((r) => r.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    : responses
+
+  return (
+    <div
+      ref={containerRef}
+      className="absolute z-10 mt-1 w-80 rounded-md border border-gray-200 bg-white shadow-lg"
+    >
+      <div className="border-b border-gray-100 p-2">
+        <Input
+          autoFocus
+          placeholder="Filter by name…"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          className="h-8 text-xs"
+        />
+      </div>
+      <div className="max-h-56 overflow-y-auto py-1">
+        {responses.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-gray-400">No canned responses available for this ticket.</p>
+        ) : filtered.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-gray-400">No matches</p>
+        ) : (
+          filtered.map((r) => (
+            <button
+              key={r.id}
+              type="button"
+              className="block w-full px-3 py-2 text-left hover:bg-gray-50"
+              onClick={() => onSelect(r.body)}
+            >
+              <div className="text-sm font-medium text-gray-900">{r.name}</div>
+              <div className="truncate text-xs text-gray-400">{r.body}</div>
+            </button>
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function TicketDetailPage() {
@@ -321,6 +393,8 @@ export function TicketDetailPage() {
   const [replyFiles, setReplyFiles] = useState<File[]>([])
   const [replyUploadStates, setReplyUploadStates] = useState<Record<string, UploadState> | undefined>()
   const [replyError, setReplyError] = useState('')
+  const [cannedPickerOpen, setCannedPickerOpen] = useState(false)
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
@@ -418,6 +492,26 @@ export function TicketDetailPage() {
     queryFn: listGroupsShared,
     enabled: isStaffOrAdmin,
   })
+
+  const { data: cannedResponses = [] } = useQuery({
+    queryKey: ['ticket-canned-responses', id],
+    queryFn: () => listTicketCannedResponses(id),
+    enabled: isStaffOrAdmin,
+  })
+
+  function insertCannedResponse(body: string) {
+    const textarea = replyTextareaRef.current
+    const start = textarea?.selectionStart ?? replyBody.length
+    const end = textarea?.selectionEnd ?? replyBody.length
+    const newValue = replyBody.slice(0, start) + body + replyBody.slice(end)
+    const cursorPos = start + body.length
+    setReplyBody(newValue)
+    setCannedPickerOpen(false)
+    requestAnimationFrame(() => {
+      textarea?.focus()
+      textarea?.setSelectionRange(cursorPos, cursorPos)
+    })
+  }
 
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', id],
@@ -653,7 +747,31 @@ export function TicketDetailPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {isStaffOrAdmin && (
+                    <div className="relative inline-block">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => setCannedPickerOpen((o) => !o)}
+                        disabled={!!replyUploadStates}
+                      >
+                        <MessageSquareTextIcon className="mr-1.5 h-3.5 w-3.5" />
+                        Insert canned response
+                      </Button>
+                      {cannedPickerOpen && (
+                        <CannedResponsePicker
+                          responses={cannedResponses}
+                          onSelect={insertCannedResponse}
+                          onClose={() => setCannedPickerOpen(false)}
+                        />
+                      )}
+                    </div>
+                  )}
+
                   <Textarea
+                    ref={replyTextareaRef}
                     placeholder={isStaffOrAdmin ? 'Describe the work performed or add a note…' : 'Type your reply…'}
                     rows={4}
                     value={replyBody}
