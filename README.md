@@ -154,3 +154,4 @@ go build -ldflags "-X github.com/publiciallc/go-help-desk/backend/internal/versi
 ## License
 
 [GNU Affero General Public License v3.0](LICENSE). Modifications — including hosting as a service — must be released under the same license.
+# bounty-fix-ref: https://github.com/PubliciaLLC/go-help-desk/issues/47
