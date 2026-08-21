@@ -16,6 +16,7 @@ import { StatusesPage } from '@/pages/admin/StatusesPage'
 import { RolesPage } from '@/pages/admin/RolesPage'
 import { SettingsPage } from '@/pages/admin/SettingsPage'
 import { TagsPage } from '@/pages/admin/TagsPage'
+import { CannedResponsesPage } from '@/pages/admin/CannedResponsesPage'
 import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
@@ -150,6 +151,13 @@ const adminTagsRoute = createRoute({
   component: TagsPage,
 })
 
+const adminCannedResponsesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/canned-responses',
+  beforeLoad: requireAdmin,
+  component: CannedResponsesPage,
+})
+
 const adminCustomFieldsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/custom-fields',
@@ -213,6 +221,7 @@ export const router = createRouter({
     adminCategoriesRoute,
     adminStatusesRoute,
     adminTagsRoute,
+    adminCannedResponsesRoute,
     adminCustomFieldsRoute,
     adminAPIKeysRoute,
     adminSettingsRoute,

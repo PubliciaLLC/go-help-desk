@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, FieldDef, Assignment, ScopeType, SLAPolicy } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -283,6 +283,39 @@ export async function deleteTag(id: string): Promise<void> {
 
 export async function restoreTag(id: string): Promise<void> {
   await api.post(`/admin/tags/${id}/restore`)
+}
+
+// ── Canned responses (admin) ──────────────────────────────────────────────────
+
+export async function listCannedResponses(): Promise<CannedResponse[]> {
+  const res = await api.get<CannedResponse[]>('/admin/canned-responses/')
+  return res.data
+}
+
+export async function createCannedResponse(input: {
+  name: string
+  body: string
+  category_id?: string | null
+  type_id?: string | null
+  sort_order?: number
+}): Promise<CannedResponse> {
+  const res = await api.post<CannedResponse>('/admin/canned-responses/', input)
+  return res.data
+}
+
+export async function updateCannedResponse(id: string, patch: {
+  name: string
+  body: string
+  category_id?: string | null
+  type_id?: string | null
+  sort_order?: number
+}): Promise<CannedResponse> {
+  const res = await api.patch<CannedResponse>(`/admin/canned-responses/${id}`, patch)
+  return res.data
+}
+
+export async function deleteCannedResponse(id: string): Promise<void> {
+  await api.delete(`/admin/canned-responses/${id}`)
 }
 
 // ── Webhooks ─────────────────────────────────────────────────────────────────
