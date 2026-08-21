@@ -48,6 +48,7 @@ type harness struct {
 	srv             *server.Server
 	apiKey          string // raw token for the seeded staff user
 	adminKey        string // raw token for the seeded admin user
+	userKey         string // raw token for the seeded reporting (RoleUser) user
 	staffID         uuid.UUID
 	adminID         uuid.UUID
 	catID           uuid.UUID
@@ -131,6 +132,27 @@ func newHarness(t *testing.T) (*harness, func()) {
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, adminAPIKey))
 
+	// Seed a reporting (RoleUser) user + API key.
+	reportingUser, err := userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "user@test.local",
+		DisplayName: "Reporting User",
+		Role:        user.RoleUser,
+		Password:    "password",
+	})
+	require.NoError(t, err)
+
+	userRawToken, userHashedToken, err := auth.GenerateToken()
+	require.NoError(t, err)
+	userAPIKey := auth.APIKey{
+		ID:          uuid.New(),
+		Name:        "user-test-key",
+		HashedToken: userHashedToken,
+		UserID:      reportingUser.ID,
+		Scopes:      []string{"*"},
+		CreatedAt:   time.Now(),
+	}
+	require.NoError(t, authSt.CreateAPIKey(ctx, userAPIKey))
+
 	// Seed a category.
 	cat, err := categorySvc.CreateCategory(ctx, "General", 1)
 	require.NoError(t, err)
@@ -177,6 +199,7 @@ func newHarness(t *testing.T) (*harness, func()) {
 		srv:             srv,
 		apiKey:          rawToken,
 		adminKey:        adminRawToken,
+		userKey:         userRawToken,
 		staffID:         staffUser.ID,
 		adminID:         adminUser.ID,
 		catID:           cat.ID,
@@ -218,6 +241,23 @@ func (h *harness) doAsAdmin(t *testing.T, method, path string, body any) *http.R
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Authorization", "ApiKey "+h.adminKey)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+// doAsUser sends a request authenticated as the seeded reporting (RoleUser) user.
+func (h *harness) doAsUser(t *testing.T, method, path string, body any) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Authorization", "ApiKey "+h.userKey)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -1301,4 +1341,83 @@ func TestListTicketCannedResponses_ScopeFiltering(t *testing.T) {
 	require.Len(t, crs, 2)
 	require.True(t, gotIDs[global.ID])
 	require.True(t, gotIDs[matching.ID])
+}
+
+// TestListTicketCannedResponses_UserForbidden confirms the reporting user
+// (RoleUser) cannot reach the staff/admin-only picker endpoint — the one
+// route within ticketRouter that narrows below its top-level role check.
+func TestListTicketCannedResponses_UserForbidden(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "User forbidden test",
+		"description": "Details",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, createResp, &tk)
+
+	resp := h.doAsUser(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// TestListTicketCannedResponses_TypeScopeFiltering covers the category+type
+// scope level at the HTTP layer (TestListTicketCannedResponses_ScopeFiltering
+// above only covers global vs. category-only).
+func TestListTicketCannedResponses_TypeScopeFiltering(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	typeA, err := h.categorySvc.CreateType(ctx, h.catID, "Type A", 1)
+	require.NoError(t, err)
+	typeB, err := h.categorySvc.CreateType(ctx, h.catID, "Type B", 2)
+	require.NoError(t, err)
+
+	// Scoped to the ticket's category AND type A — should be available for a
+	// type-A ticket, excluded for a type-B ticket.
+	typeAScoped, err := h.cannedResponses.Create(ctx, "Type A only", "Body", &h.catID, &typeA.ID, 0)
+	require.NoError(t, err)
+
+	// Create a ticket in category h.catID, type A.
+	createResp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "Type scope filter test",
+		"description": "Details",
+		"category_id": h.catID.String(),
+		"type_id":     typeA.ID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tkA ticket.Ticket
+	decodeJSON(t, createResp, &tkA)
+
+	respA := h.do(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tkA.ID), nil)
+	require.Equal(t, http.StatusOK, respA.StatusCode)
+	var crsA []cannedresponse.CannedResponse
+	decodeJSON(t, respA, &crsA)
+	idsA := make(map[uuid.UUID]bool)
+	for _, cr := range crsA {
+		idsA[cr.ID] = true
+	}
+	require.True(t, idsA[typeAScoped.ID], "type-A-scoped response should appear for a type-A ticket")
+
+	// A second ticket in the same category but type B should NOT see it.
+	createRespB := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "Type scope filter test B",
+		"description": "Details",
+		"category_id": h.catID.String(),
+		"type_id":     typeB.ID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createRespB.StatusCode)
+	var tkB ticket.Ticket
+	decodeJSON(t, createRespB, &tkB)
+
+	respB := h.do(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tkB.ID), nil)
+	require.Equal(t, http.StatusOK, respB.StatusCode)
+	var crsB []cannedresponse.CannedResponse
+	decodeJSON(t, respB, &crsB)
+	for _, cr := range crsB {
+		require.NotEqual(t, typeAScoped.ID, cr.ID, "type-A-scoped response must not appear for a type-B ticket")
+	}
 }
