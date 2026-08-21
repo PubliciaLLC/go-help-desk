@@ -20,6 +20,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
@@ -31,6 +32,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
@@ -40,8 +42,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/ui"
@@ -98,6 +100,7 @@ func run() error {
 	authStore := authstore.New(q)
 	cfStore := customfieldstore.New(q)
 	regStore := registrationstore.New(q)
+	crStore := cannedresponsestore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
@@ -108,6 +111,7 @@ func run() error {
 	tagSvc := tag.NewService(tagStore)
 	adminSvc := admin.NewService(aStore)
 	customFieldSvc := customfield.NewService(cfStore)
+	cannedResponseSvc := cannedresponse.NewService(crStore)
 
 	// slaPolicySvc is always created so the admin blade can manage policies
 	// regardless of whether SLA enforcement is active.
@@ -181,6 +185,7 @@ func run() error {
 		authStore,
 		authStore,
 		registrationSvc,
+		cannedResponseSvc,
 	)
 
 	srv.InitSAML(ctx)
@@ -218,4 +223,3 @@ func run() error {
 
 	return <-shutdownDone
 }
-

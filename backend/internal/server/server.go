@@ -11,15 +11,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/crewjam/saml/samlsp"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
-	"github.com/crewjam/saml/samlsp"
 	"github.com/gorilla/sessions"
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
@@ -65,16 +66,17 @@ type Server struct {
 	router   *chi.Mux
 	sessions sessions.Store
 
-	users        *user.Service
-	tickets      *ticket.Service
-	registration *registration.Service
-	categories   *category.Service
-	groups       *group.Service
-	tags         *tag.Service
-	adminSvc     *admin.Service
-	customFields *customfield.Service
-	slaPolicies  *sla.Service
-	plugins      plugin.Registry
+	users           *user.Service
+	tickets         *ticket.Service
+	registration    *registration.Service
+	categories      *category.Service
+	groups          *group.Service
+	tags            *tag.Service
+	adminSvc        *admin.Service
+	customFields    *customfield.Service
+	slaPolicies     *sla.Service
+	plugins         plugin.Registry
+	cannedResponses *cannedresponse.Service
 
 	apiKeyLookup     authmw.APIKeyAuthFunc
 	oauthClientStore OAuthClientLookup
@@ -105,6 +107,7 @@ func New(
 	oauthClients OAuthClientLookup,
 	authStore AuthStoreIface,
 	registrationSvc *registration.Service,
+	cannedResponses *cannedresponse.Service,
 ) *Server {
 	s := &Server{
 		cfg:              cfg,
@@ -122,6 +125,7 @@ func New(
 		apiKeyLookup:     apiKeyLookup,
 		oauthClientStore: oauthClients,
 		authStore:        authStore,
+		cannedResponses:  cannedResponses,
 	}
 	s.router = s.buildRouter()
 	return s

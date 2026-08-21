@@ -54,6 +54,9 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Post("/{id}/tags", s.handleAddTicketTag)
 	r.Delete("/{id}/tags/{tagId}", s.handleRemoveTicketTag)
 
+	// Canned responses are for staff/admin composing replies, not the reporting user.
+	r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).Get("/{id}/canned-responses", s.handleListTicketCannedResponses)
+
 	r.Get("/{id}/attachments", s.handleListAttachments)
 	r.Post("/{id}/attachments", s.handleUploadAttachment)
 	r.Get("/{id}/attachments/{attachId}", s.handleDownloadAttachment)
@@ -197,6 +200,13 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleAdminCreateTag)
 		r.Delete("/{id}", s.handleAdminDeleteTag)
 		r.Post("/{id}/restore", s.handleAdminRestoreTag)
+	})
+
+	r.Route("/canned-responses", func(r chi.Router) {
+		r.Get("/", s.handleAdminListCannedResponses)
+		r.Post("/", s.handleAdminCreateCannedResponse)
+		r.Patch("/{id}", s.handleAdminUpdateCannedResponse)
+		r.Delete("/{id}", s.handleAdminDeleteCannedResponse)
 	})
 
 	return r
