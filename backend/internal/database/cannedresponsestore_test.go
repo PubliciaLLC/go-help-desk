@@ -103,6 +103,36 @@ func TestCannedResponseStore_ScopeCheckConstraint(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestCannedResponseStore_TypeCategoryMismatch guards against a real gap: a
+// type_id from a DIFFERENT category than the given category_id previously
+// satisfied both single-column FKs and the scope CHECK constraint, silently
+// producing a response no ticket could ever match.
+func TestCannedResponseStore_TypeCategoryMismatch(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	cs := categorystore.New(q)
+	ctx := context.Background()
+	catA := category.Category{ID: uuid.New(), Name: "CatA", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catA))
+	catB := category.Category{ID: uuid.New(), Name: "CatB", SortOrder: 2, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catB))
+	typeOfB := category.Type{ID: uuid.New(), CategoryID: catB.ID, Name: "TypeOfB", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateType(ctx, typeOfB))
+
+	s := cannedresponsestore.New(q)
+	err := s.Create(ctx, cannedresponse.CannedResponse{
+		ID:         uuid.New(),
+		Name:       "Mismatched",
+		Body:       "x",
+		CategoryID: ptr(catA.ID),
+		TypeID:     ptr(typeOfB.ID), // belongs to catB, not catA
+	})
+	require.Error(t, err)
+}
+
 func TestCannedResponseStore_CascadeOnCategoryDelete(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()

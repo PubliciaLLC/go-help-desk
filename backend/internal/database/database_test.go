@@ -231,6 +231,45 @@ func TestTicketStore_CreateAndGet(t *testing.T) {
 	require.Equal(t, tk.ID, gotByTN.ID)
 }
 
+// TestTicketStore_TypeCategoryMismatch guards against a type_id from a
+// DIFFERENT category than the ticket's category_id — previously accepted by
+// the single-column FKs alone.
+func TestTicketStore_TypeCategoryMismatch(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	catA := category.Category{ID: uuid.New(), Name: "TicketCatA", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catA))
+	catB := category.Category{ID: uuid.New(), Name: "TicketCatB", SortOrder: 2, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catB))
+	typeOfB := category.Type{ID: uuid.New(), CategoryID: catB.ID, Name: "TypeOfB", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateType(ctx, typeOfB))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(2024, 2),
+		Subject:        "Mismatched CTI",
+		Description:    "Should be rejected",
+		CategoryID:     catA.ID,
+		TypeID:         &typeOfB.ID, // belongs to catB, not catA
+		Priority:       ticket.PriorityMedium,
+		StatusID:       newSt.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.Error(t, ts.Create(ctx, tk))
+}
+
 func TestTicketStore_Reply(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
@@ -504,6 +543,33 @@ func TestGroupStore(t *testing.T) {
 	// Delete.
 	require.NoError(t, gs.Delete(ctx, g.ID))
 	_, err = gs.GetByID(ctx, g.ID)
+	require.Error(t, err)
+}
+
+// TestGroupStore_ScopeTypeCategoryMismatch guards against a type_id from a
+// DIFFERENT category than the scope's category_id — a state the FKs alone
+// didn't reject, silently producing a scope no ticket could ever match.
+func TestGroupStore_ScopeTypeCategoryMismatch(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	gs := groupstore.New(q)
+	cs := categorystore.New(q)
+
+	g := group.Group{ID: uuid.New(), Name: "Mismatch Test", Description: ""}
+	require.NoError(t, gs.Create(ctx, g))
+
+	catA := category.Category{ID: uuid.New(), Name: "ScopeCatA", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catA))
+	catB := category.Category{ID: uuid.New(), Name: "ScopeCatB", SortOrder: 2, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, catB))
+	typeOfB := category.Type{ID: uuid.New(), CategoryID: catB.ID, Name: "TypeOfB", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateType(ctx, typeOfB))
+
+	err := gs.AddScope(ctx, group.GroupScope{GroupID: g.ID, CategoryID: catA.ID, TypeID: &typeOfB.ID})
 	require.Error(t, err)
 }
 
