@@ -23,6 +23,8 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 | ![Ticket detail](https://raw.githubusercontent.com/PubliciaLLC/go-help-desk/gh-pages/screenshots/05-ticket-detail.png) | ![Admin categories](https://raw.githubusercontent.com/PubliciaLLC/go-help-desk/gh-pages/screenshots/06-admin-categories.png) |
 | **Staff ticket list** | **Admin — settings** |
 | ![Staff ticket list](https://raw.githubusercontent.com/PubliciaLLC/go-help-desk/gh-pages/screenshots/09-staff-ticket-list.png) | ![Admin settings](https://raw.githubusercontent.com/PubliciaLLC/go-help-desk/gh-pages/screenshots/08-admin-settings.png) |
+| **Admin — canned responses** | **Reply composer — insert picker** |
+| ![Canned responses admin](https://raw.githubusercontent.com/PubliciaLLC/go-help-desk/gh-pages/screenshots/10-canned-responses-admin.png) | ![Canned response picker](https://raw.githubusercontent.com/PubliciaLLC/go-help-desk/gh-pages/screenshots/11-canned-response-picker.png) |
 
 ## Features
 
@@ -36,6 +38,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - CTI-linked group management — assign groups directly from the CTI editor per category or type
 - Custom fields — admin-defined fields (text, textarea, number, select) assigned per CTI node; values stored normalized for filterability; editable by staff after creation
 - Tags — free-form labels on tickets; staff create tags on first use (stored lowercase); admins can deactivate or restore tags
+- Canned responses — reusable reply templates scoped globally, by category, or by category and type; staff insert them into replies with one click
 - Linked tickets (related, parent/child, duplicate, caused-by)
 - Live ticket search — by tracking number (prefix), subject, or description keywords; staff/admin can jump directly to a ticket by tracking number or UUID
 - Email and webhook notifications
