@@ -313,6 +313,11 @@
   <p>Soft-delete a reply. The reply is removed from normal views but preserved in the audit log. Users can only delete their own replies within 15 minutes. Staff and admins can delete any reply.</p>
 </div>
 
+<div class="endpoint">
+  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/tickets/:id/canned-responses</div>
+  <p>List the canned responses in scope for this ticket — global templates, plus any scoped to the ticket's category, or category and type. Requires Staff or Admin role; returns 403 for a User or guest, since only staff compose replies with canned responses.</p>
+</div>
+
 
 <h2 id="api-links">Ticket links</h2>
 
@@ -548,6 +553,17 @@
     <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/admin/types/:id/items</code></td><td>Create an item under a type.</td></tr>
     <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/admin/items/:id</code></td><td>Update an item.</td></tr>
     <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/admin/items/:id</code></td><td>Delete an item.</td></tr>
+  </tbody>
+</table>
+
+<h3>Canned responses</h3>
+<table>
+  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/admin/canned-responses</code></td><td>List all canned responses.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/admin/canned-responses</code></td><td>Create one. Body: <code>{ "name", "body", "category_id": null, "type_id": null, "sort_order": 0 }</code>. Both scope fields are optional; <code>type_id</code> requires <code>category_id</code> to also be set.</td></tr>
+    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/admin/canned-responses/:id</code></td><td>Update name, body, scope, or sort order. Replaces the full record — send all fields.</td></tr>
+    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/admin/canned-responses/:id</code></td><td>Permanently delete. There's no soft-delete — the body was already copied into any replies that used it.</td></tr>
   </tbody>
 </table>
 

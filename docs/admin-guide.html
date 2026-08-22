@@ -72,6 +72,7 @@
       <li><a href="#admin-auto-assign">Auto-assignment</a></li>
       <li><a href="#admin-custom-fields">Custom Fields</a></li>
       <li><a href="#admin-tags">Tags</a></li>
+      <li><a href="#admin-canned-responses">Canned Responses</a></li>
       <li><a href="#admin-statuses">Ticket Statuses</a></li>
       <li><a href="#admin-sla">SLA Policies</a></li>
       <li><a href="#admin-email-tpl">Email Templates</a></li>
@@ -372,6 +373,25 @@ Facilities
   </tbody>
 </table>
 
+
+<h2 id="admin-canned-responses">Canned responses</h2>
+
+<p>Canned responses are reusable reply templates staff insert into ticket replies with one click, so common acknowledgements, fixes, and closure messages don't have to be retyped. They're managed from <em>Admin → Canned Responses</em>.</p>
+
+<h3>Scope</h3>
+<p>Each canned response has a name, a body, and a scope:</p>
+<ul>
+  <li><strong>Global</strong> — leave both Category and Type blank. Available on every ticket.</li>
+  <li><strong>Category-scoped</strong> — set a Category, leave Type blank. Available on any ticket in that category.</li>
+  <li><strong>Category + Type-scoped</strong> — set both. Available only on tickets matching that exact category and type.</li>
+</ul>
+<p>A response can't be scoped to a type without also naming its category — the Type field stays disabled until a Category is chosen.</p>
+
+<h3>Using them in a reply</h3>
+<p>When composing a reply, staff and admins see an <em>Insert canned response</em> button above the reply box. It opens a searchable picker showing only the responses in scope for that ticket (global, plus any matching its category and type). Selecting one splices the body into the reply at the cursor position — the inserted text is fully editable before sending.</p>
+
+<h3>Editing and deleting</h3>
+<p>Only admins can create, edit, or delete canned responses. Deleting one is permanent (there's no deactivate/restore step like Tags) — since the body is copied into a reply at the moment it's inserted, removing the template afterward never changes replies that already used it. Deleting a category or type cascades to any canned responses scoped to it.</p>
 
 <h2 id="admin-statuses">Ticket statuses</h2>
 

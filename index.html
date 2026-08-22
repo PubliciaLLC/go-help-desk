@@ -125,6 +125,14 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         <img src="screenshots/07-admin-users.png" alt="User management" loading="lazy" />
         <span>User management</span>
       </button>
+      <button class="scr-thumb" data-src="screenshots/10-canned-responses-admin.png" data-caption="Canned responses — reusable reply templates scoped globally, by category, or by category and type">
+        <img src="screenshots/10-canned-responses-admin.png" alt="Canned responses admin" loading="lazy" />
+        <span>Canned responses</span>
+      </button>
+      <button class="scr-thumb" data-src="screenshots/11-canned-response-picker.png" data-caption="Insert a canned response into a reply with one click, filtered to what's in scope for the ticket">
+        <img src="screenshots/11-canned-response-picker.png" alt="Canned response picker in the reply composer" loading="lazy" />
+        <span>Reply composer</span>
+      </button>
     </div>
 
     <!-- Lightbox -->
@@ -266,6 +274,14 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         <p>Extend behavior with sandboxed WASM plugins. Hook into ticket events, add UI panels, and integrate external systems.</p>
       </div>
 
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </div>
+        <h3>Canned Responses</h3>
+        <p>Reusable reply templates scoped globally, by category, or by category and type — inserted into any reply with one click.</p>
+      </div>
+
     </div>
   </div>
 </section>
@@ -335,8 +351,8 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
     </div>
     <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem;">
 
-      <div style="padding: 1.5rem; border: 2px solid var(--blue); border-radius: 10px; background: var(--blue-light);">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v1 · Now</div>
+      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v1 · Shipped</div>
         <h4 style="margin-bottom: 0.75rem;">Core</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
           <li>✓ CTI ticketing</li>
@@ -351,12 +367,12 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         </ul>
       </div>
 
-      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v2</div>
+      <div style="padding: 1.5rem; border: 2px solid var(--blue); border-radius: 10px; background: var(--blue-light);">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v2 · Now</div>
         <h4 style="margin-bottom: 0.75rem;">Productivity</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
+          <li>✓ Canned responses</li>
           <li>Reporting</li>
-          <li>Canned responses</li>
         </ul>
       </div>
 
