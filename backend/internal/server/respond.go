@@ -8,6 +8,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 )
 
 // JSON writes v as JSON with the given status code.
@@ -40,7 +41,7 @@ func DecodeJSON(r *http.Request, dst any) error {
 
 // handleError maps common sentinel errors to HTTP status codes.
 func handleError(w http.ResponseWriter, err error) {
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) {
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}

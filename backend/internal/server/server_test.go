@@ -10,31 +10,33 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/sessions"
 	"github.com/google/uuid"
+	"github.com/gorilla/sessions"
 	"github.com/pquerna/otp/totp"
+	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/cannedresponsestore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
-	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
@@ -43,14 +45,17 @@ import (
 
 // harness is a test server wired against a real (rolled-back) DB transaction.
 type harness struct {
-	srv      *server.Server
-	apiKey   string // raw token for the seeded staff user
-	adminKey string // raw token for the seeded admin user
-	staffID  uuid.UUID
-	adminID  uuid.UUID
-	catID    uuid.UUID
-	adminSvc *admin.Service
-	userSvc  *user.Service
+	srv             *server.Server
+	apiKey          string // raw token for the seeded staff user
+	adminKey        string // raw token for the seeded admin user
+	userKey         string // raw token for the seeded reporting (RoleUser) user
+	staffID         uuid.UUID
+	adminID         uuid.UUID
+	catID           uuid.UUID
+	adminSvc        *admin.Service
+	userSvc         *user.Service
+	categorySvc     *category.Service
+	cannedResponses *cannedresponse.Service
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -70,6 +75,7 @@ func newHarness(t *testing.T) (*harness, func()) {
 	authSt := authstore.New(q)
 	cfStore := customfieldstore.New(q)
 	tagSt := tagstore.New(q)
+	crStore := cannedresponsestore.New(q)
 
 	// Services
 	userSvc := user.NewService(uStore)
@@ -78,6 +84,7 @@ func newHarness(t *testing.T) (*harness, func()) {
 	adminSvc := admin.NewService(aStore)
 	tagSvc := tag.NewService(tagSt)
 	customFieldSvc := customfield.NewService(cfStore)
+	cannedResponseSvc := cannedresponse.NewService(crStore)
 	dispatcher := notify.NewMulti() // no-op in tests
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
@@ -125,6 +132,27 @@ func newHarness(t *testing.T) (*harness, func()) {
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, adminAPIKey))
 
+	// Seed a reporting (RoleUser) user + API key.
+	reportingUser, err := userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "user@test.local",
+		DisplayName: "Reporting User",
+		Role:        user.RoleUser,
+		Password:    "password",
+	})
+	require.NoError(t, err)
+
+	userRawToken, userHashedToken, err := auth.GenerateToken()
+	require.NoError(t, err)
+	userAPIKey := auth.APIKey{
+		ID:          uuid.New(),
+		Name:        "user-test-key",
+		HashedToken: userHashedToken,
+		UserID:      reportingUser.ID,
+		Scopes:      []string{"*"},
+		CreatedAt:   time.Now(),
+	}
+	require.NoError(t, authSt.CreateAPIKey(ctx, userAPIKey))
+
 	// Seed a category.
 	cat, err := categorySvc.CreateCategory(ctx, "General", 1)
 	require.NoError(t, err)
@@ -164,17 +192,21 @@ func newHarness(t *testing.T) (*harness, func()) {
 		authSt,
 		authSt,
 		nil, // registration service not needed in integration tests
+		cannedResponseSvc,
 	)
 
 	h := &harness{
-		srv:      srv,
-		apiKey:   rawToken,
-		adminKey: adminRawToken,
-		staffID:  staffUser.ID,
-		adminID:  adminUser.ID,
-		catID:    cat.ID,
-		adminSvc: adminSvc,
-		userSvc:  userSvc,
+		srv:             srv,
+		apiKey:          rawToken,
+		adminKey:        adminRawToken,
+		userKey:         userRawToken,
+		staffID:         staffUser.ID,
+		adminID:         adminUser.ID,
+		catID:           cat.ID,
+		adminSvc:        adminSvc,
+		userSvc:         userSvc,
+		categorySvc:     categorySvc,
+		cannedResponses: cannedResponseSvc,
 	}
 	cleanup := func() {
 		rollback()
@@ -209,6 +241,23 @@ func (h *harness) doAsAdmin(t *testing.T, method, path string, body any) *http.R
 	}
 	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Authorization", "ApiKey "+h.adminKey)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+// doAsUser sends a request authenticated as the seeded reporting (RoleUser) user.
+func (h *harness) doAsUser(t *testing.T, method, path string, body any) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	req.Header.Set("Authorization", "ApiKey "+h.userKey)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -871,6 +920,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	authSt := authstore.New(q)
 	cfStore := customfieldstore.New(q)
 	tagSt := tagstore.New(q)
+	crStore := cannedresponsestore.New(q)
 
 	userSvc := user.NewService(uStore)
 	categorySvc := category.NewService(cStore)
@@ -878,6 +928,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	adminSvc := admin.NewService(aStore)
 	tagSvc := tag.NewService(tagSt)
 	customFieldSvc := customfield.NewService(cfStore)
+	cannedResponseSvc := cannedresponse.NewService(crStore)
 	dispatcher := notify.NewMulti()
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
@@ -916,6 +967,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		authSt,
 		authSt,
 		nil, // registration service not needed in integration tests
+		cannedResponseSvc,
 	)
 
 	h := &harness{srv: srv}
@@ -1109,4 +1161,263 @@ func TestLocalLogin_MFAEnrolled_DemandsVerification(t *testing.T) {
 	decodeJSON(t, resp, &body)
 	require.True(t, body["mfa_needed"].(bool))
 	require.False(t, body["mfa_enrollment_needed"].(bool))
+}
+
+// ── Canned responses ─────────────────────────────────────────────────────────
+
+func TestAdminCreateCannedResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/canned-responses", map[string]any{
+		"name":       "Greeting",
+		"body":       "Hello, thanks for reaching out.",
+		"sort_order": 1,
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var cr cannedresponse.CannedResponse
+	decodeJSON(t, resp, &cr)
+	require.NotEqual(t, uuid.Nil, cr.ID)
+	require.Equal(t, "Greeting", cr.Name)
+	require.Equal(t, "Hello, thanks for reaching out.", cr.Body)
+	require.Nil(t, cr.CategoryID)
+	require.Nil(t, cr.TypeID)
+	require.Equal(t, 1, cr.SortOrder)
+	require.False(t, cr.CreatedAt.IsZero(), "created_at should be the DB-assigned timestamp, not a zero value")
+}
+
+func TestAdminCreateCannedResponse_TypeRequiresCategory(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/canned-responses", map[string]any{
+		"name":    "Bad scope",
+		"body":    "This should fail.",
+		"type_id": uuid.New().String(),
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestAdminListCannedResponses(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	for _, name := range []string{"First", "Second"} {
+		resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/canned-responses", map[string]any{
+			"name": name,
+			"body": "Body for " + name,
+		})
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+	}
+
+	resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/canned-responses", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var crs []cannedresponse.CannedResponse
+	decodeJSON(t, resp, &crs)
+	require.Len(t, crs, 2)
+}
+
+func TestAdminUpdateCannedResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/canned-responses", map[string]any{
+		"name": "Original",
+		"body": "Original body",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created cannedresponse.CannedResponse
+	decodeJSON(t, createResp, &created)
+
+	updateResp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/canned-responses/"+created.ID.String(), map[string]any{
+		"name":       "Updated",
+		"body":       "Updated body",
+		"sort_order": 5,
+	})
+	require.Equal(t, http.StatusOK, updateResp.StatusCode)
+
+	var updated cannedresponse.CannedResponse
+	decodeJSON(t, updateResp, &updated)
+	require.Equal(t, created.ID, updated.ID)
+	require.Equal(t, "Updated", updated.Name)
+	require.Equal(t, "Updated body", updated.Body)
+	require.Equal(t, 5, updated.SortOrder)
+	require.Equal(t, created.CreatedAt, updated.CreatedAt, "created_at must be preserved, not zeroed, across an update")
+
+	// Confirm the change persisted.
+	got, err := h.cannedResponses.Get(context.Background(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "Updated", got.Name)
+}
+
+// TestAdminUpdateCannedResponse_NotFound guards against a real bug: an UPDATE
+// whose WHERE clause matches no row succeeds silently at the SQL level, so
+// without an existence check a PATCH to a nonexistent id previously returned
+// 200 with a fabricated response body instead of 404.
+func TestAdminUpdateCannedResponse_NotFound(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/canned-responses/"+uuid.New().String(), map[string]any{
+		"name": "Ghost",
+		"body": "Body",
+	})
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestAdminDeleteCannedResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/canned-responses", map[string]any{
+		"name": "To delete",
+		"body": "Body",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created cannedresponse.CannedResponse
+	decodeJSON(t, createResp, &created)
+
+	deleteResp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/canned-responses/"+created.ID.String(), nil)
+	require.Equal(t, http.StatusNoContent, deleteResp.StatusCode)
+
+	_, err := h.cannedResponses.Get(context.Background(), created.ID)
+	require.Error(t, err)
+}
+
+func TestCannedResponses_StaffForbidden(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// The harness API key belongs to a staff user — admin routes should 403.
+	resp := h.do(t, http.MethodPost, "/api/v1/admin/canned-responses", map[string]any{
+		"name": "Nope",
+		"body": "Should not be allowed",
+	})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+func TestListTicketCannedResponses_ScopeFiltering(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// A second category, distinct from the ticket's category.
+	otherCat, err := h.categorySvc.CreateCategory(ctx, "Other", 2)
+	require.NoError(t, err)
+
+	// Global response — should always be available.
+	global, err := h.cannedResponses.Create(ctx, "Global", "Global body", nil, nil, 0)
+	require.NoError(t, err)
+
+	// Scoped to the ticket's category — should be available.
+	matching, err := h.cannedResponses.Create(ctx, "Matching category", "Matching body", &h.catID, nil, 0)
+	require.NoError(t, err)
+
+	// Scoped to a different category — should NOT be available.
+	_, err = h.cannedResponses.Create(ctx, "Other category", "Other body", &otherCat.ID, nil, 0)
+	require.NoError(t, err)
+
+	// Create a ticket in h.catID.
+	createResp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "Scope filter test",
+		"description": "Details",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, createResp, &tk)
+
+	resp := h.do(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var crs []cannedresponse.CannedResponse
+	decodeJSON(t, resp, &crs)
+	gotIDs := make(map[uuid.UUID]bool)
+	for _, cr := range crs {
+		gotIDs[cr.ID] = true
+	}
+	require.Len(t, crs, 2)
+	require.True(t, gotIDs[global.ID])
+	require.True(t, gotIDs[matching.ID])
+}
+
+// TestListTicketCannedResponses_UserForbidden confirms the reporting user
+// (RoleUser) cannot reach the staff/admin-only picker endpoint — the one
+// route within ticketRouter that narrows below its top-level role check.
+func TestListTicketCannedResponses_UserForbidden(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "User forbidden test",
+		"description": "Details",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, createResp, &tk)
+
+	resp := h.doAsUser(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// TestListTicketCannedResponses_TypeScopeFiltering covers the category+type
+// scope level at the HTTP layer (TestListTicketCannedResponses_ScopeFiltering
+// above only covers global vs. category-only).
+func TestListTicketCannedResponses_TypeScopeFiltering(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	typeA, err := h.categorySvc.CreateType(ctx, h.catID, "Type A", 1)
+	require.NoError(t, err)
+	typeB, err := h.categorySvc.CreateType(ctx, h.catID, "Type B", 2)
+	require.NoError(t, err)
+
+	// Scoped to the ticket's category AND type A — should be available for a
+	// type-A ticket, excluded for a type-B ticket.
+	typeAScoped, err := h.cannedResponses.Create(ctx, "Type A only", "Body", &h.catID, &typeA.ID, 0)
+	require.NoError(t, err)
+
+	// Create a ticket in category h.catID, type A.
+	createResp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "Type scope filter test",
+		"description": "Details",
+		"category_id": h.catID.String(),
+		"type_id":     typeA.ID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tkA ticket.Ticket
+	decodeJSON(t, createResp, &tkA)
+
+	respA := h.do(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tkA.ID), nil)
+	require.Equal(t, http.StatusOK, respA.StatusCode)
+	var crsA []cannedresponse.CannedResponse
+	decodeJSON(t, respA, &crsA)
+	idsA := make(map[uuid.UUID]bool)
+	for _, cr := range crsA {
+		idsA[cr.ID] = true
+	}
+	require.True(t, idsA[typeAScoped.ID], "type-A-scoped response should appear for a type-A ticket")
+
+	// A second ticket in the same category but type B should NOT see it.
+	createRespB := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "Type scope filter test B",
+		"description": "Details",
+		"category_id": h.catID.String(),
+		"type_id":     typeB.ID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createRespB.StatusCode)
+	var tkB ticket.Ticket
+	decodeJSON(t, createRespB, &tkB)
+
+	respB := h.do(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tkB.ID), nil)
+	require.Equal(t, http.StatusOK, respB.StatusCode)
+	var crsB []cannedresponse.CannedResponse
+	decodeJSON(t, respB, &crsB)
+	for _, cr := range crsB {
+		require.NotEqual(t, typeAScoped.ID, cr.ID, "type-A-scoped response must not appear for a type-B ticket")
+	}
 }

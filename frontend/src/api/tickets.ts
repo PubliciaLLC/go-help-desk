@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, Assignment, TicketFieldValue } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, Assignment, TicketFieldValue, CannedResponse } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -190,4 +190,11 @@ export async function putTicketCustomFields(
   values: Record<string, string>
 ): Promise<void> {
   await api.put(`/tickets/${ticketId}/custom-fields`, values)
+}
+
+// ── Canned responses ──────────────────────────────────────────────────────────
+
+export async function listTicketCannedResponses(ticketId: string): Promise<CannedResponse[]> {
+  const res = await api.get<CannedResponse[]>(`/tickets/${ticketId}/canned-responses`)
+  return res.data
 }
