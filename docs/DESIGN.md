@@ -9,8 +9,8 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses |
-| **v3** | Knowledge base, full-text search (Postgres FTS), custom admin-defined roles |
+| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS) |
+| **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
 ---
@@ -128,7 +128,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results appear after 2 characters are entered. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
-- Full-text search (Postgres FTS with ranking) is deferred to v3.
+- Full-text search (Postgres FTS with ranking) is planned for v2, as the next feature after canned responses.
 
 ### Linked Tickets
 
