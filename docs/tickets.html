@@ -375,10 +375,10 @@
 <h2 id="tickets-search">Search</h2>
 
 <h3>Live search</h3>
-<p>The search bar at the top of the ticket list searches across <strong>tracking number</strong>, <strong>subject</strong>, and <strong>description</strong>. Results appear after you type at least 2 characters (with a short debounce). A spinner is shown while results load.</p>
+<p>The search bar at the top of the ticket list searches across <strong>tracking number</strong>, <strong>subject</strong>, and <strong>description</strong>, the latter two powered by Postgres full-text search and ranked by relevance. Results appear after you type at least 2 characters (with a short debounce). A spinner is shown while results load.</p>
 <ul>
   <li>Tracking number searches use a <strong>prefix match</strong> — e.g. typing <code>OHD-2025-0</code> matches all tickets in that series.</li>
-  <li>Subject and description searches are <strong>case-insensitive substring</strong> matches.</li>
+  <li>Subject and description searches tokenize your query into words and <strong>prefix-match each one</strong> — e.g. <code>print jam</code> matches a ticket containing a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
   <li>Users only see results from their own tickets. Staff and admins see results from tickets assigned to them and their groups.</li>
 </ul>
 
