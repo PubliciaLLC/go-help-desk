@@ -124,11 +124,15 @@ Free-form labels that staff can attach to any ticket. Rules:
 
 The ticket list includes a live search bar with a 300 ms debounce:
 
-- Searches **tracking number** (prefix match — e.g. `OHD-2025-0` matches all tickets in that series), **subject**, and **description** (substring match).
+- Searches **tracking number** (prefix match — e.g. `OHD-2025-0` matches all tickets in that series), plus **subject** and **description** via Postgres full-text search (`tsvector`/`tsquery`), ranked by relevance.
+- The query is tokenized into words and each word is prefix-matched (e.g. `print jam` requires a word starting with "print" **and** a word starting with "jam", in any order) — this is what keeps "search as you type" working on partial words, not just whole ones.
+- Subject is weighted higher than description, so a match in the subject line ranks above one buried in a long description.
+- Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
 - Results appear after 2 characters are entered. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
-- Full-text search (Postgres FTS with ranking) is planned for v2, as the next feature after canned responses.
+- Reply bodies are not indexed in v2 — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
+- Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
 
 ### Linked Tickets
 

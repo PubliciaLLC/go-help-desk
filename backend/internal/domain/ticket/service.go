@@ -96,6 +96,17 @@ func (s *Service) LoadSystemStatuses(ctx context.Context) error {
 	return nil
 }
 
+// MaxSubjectLength and MaxDescriptionLength bound the two fields that feed
+// tickets.search_vector (see migration 000014). Postgres's tsvector has a
+// hard ~1 MB limit ("string is too long for tsvector"); both caps keep any
+// realistic combination of subject+description far under that regardless of
+// multi-byte UTF-8 expansion, while remaining far larger than any legitimate
+// ticket needs (a one-line summary, and a detailed multi-paragraph report).
+const (
+	MaxSubjectLength     = 500
+	MaxDescriptionLength = 50_000
+)
+
 // CreateInput is the data needed to open a new ticket.
 type CreateInput struct {
 	Subject     string
@@ -116,10 +127,16 @@ type CreateInput struct {
 // an SLA policy.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	if strings.TrimSpace(in.Subject) == "" {
-		return Ticket{}, fmt.Errorf("subject is required")
+		return Ticket{}, fmt.Errorf("subject is required: %w", ErrValidation)
+	}
+	if len(in.Subject) > MaxSubjectLength {
+		return Ticket{}, fmt.Errorf("subject must be %d characters or fewer: %w", MaxSubjectLength, ErrValidation)
+	}
+	if len(in.Description) > MaxDescriptionLength {
+		return Ticket{}, fmt.Errorf("description must be %d characters or fewer: %w", MaxDescriptionLength, ErrValidation)
 	}
 	if in.ReporterUserID == nil && (in.GuestEmail == nil || *in.GuestEmail == "") {
-		return Ticket{}, fmt.Errorf("reporter user or guest email is required")
+		return Ticket{}, fmt.Errorf("reporter user or guest email is required: %w", ErrValidation)
 	}
 
 	seq, err := s.store.NextSeq(ctx)
@@ -625,6 +642,11 @@ func ticketMap(t Ticket) map[string]any {
 
 // ErrNotFound is returned when a requested resource does not exist.
 var ErrNotFound = errors.New("not found")
+
+// ErrValidation wraps input-validation failures from Create, so callers
+// (the HTTP handler) can map them to 400 instead of the 500 handleError
+// falls back to for an unrecognized error.
+var ErrValidation = errors.New("validation failed")
 
 // ── Attachments ───────────────────────────────────────────────────────────────
 
