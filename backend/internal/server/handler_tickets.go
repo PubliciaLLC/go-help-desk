@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -257,6 +258,10 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 
 	t, err := s.tickets.Create(r.Context(), in)
 	if err != nil {
+		if errors.Is(err, ticket.ErrValidation) {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 		handleError(w, err)
 		return
 	}

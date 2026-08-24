@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -325,6 +326,34 @@ func TestCreateTicket_MissingSubject(t *testing.T) {
 
 	resp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
 		"description": "No subject",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+// TestCreateTicket_DescriptionTooLong guards against the description
+// exceeding tickets.search_vector's underlying tsvector size limit (~1MB) —
+// and confirms the resulting validation error surfaces as 400, not 500
+// (ticket.ErrValidation must reach the handler's error-mapping check).
+func TestCreateTicket_DescriptionTooLong(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "Printer broken",
+		"description": strings.Repeat("a", ticket.MaxDescriptionLength+1),
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestCreateTicket_SubjectTooLong(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     strings.Repeat("a", ticket.MaxSubjectLength+1),
+		"description": "Body",
 		"category_id": h.catID.String(),
 	})
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode)

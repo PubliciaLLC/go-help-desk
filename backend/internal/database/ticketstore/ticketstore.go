@@ -52,7 +52,7 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (ticket.Ticket, error
 	if err != nil {
 		return ticket.Ticket{}, wrapNotFound(err, "ticket", id.String())
 	}
-	return fromRow(row), nil
+	return fromRow(ticketRow(row)), nil
 }
 
 func (s *Store) GetByTrackingNumber(ctx context.Context, tn ticket.TrackingNumber) (ticket.Ticket, error) {
@@ -60,7 +60,7 @@ func (s *Store) GetByTrackingNumber(ctx context.Context, tn ticket.TrackingNumbe
 	if err != nil {
 		return ticket.Ticket{}, wrapNotFound(err, "ticket", string(tn))
 	}
-	return fromRow(row), nil
+	return fromRow(ticketRow(row)), nil
 }
 
 func (s *Store) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error {
@@ -155,7 +155,11 @@ func (s *Store) SearchByReporter(ctx context.Context, userID uuid.UUID, q string
 	if err != nil {
 		return nil, fmt.Errorf("searching tickets by reporter: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
@@ -169,7 +173,11 @@ func (s *Store) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q st
 	if err != nil {
 		return nil, fmt.Errorf("searching tickets by assignee user: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
@@ -183,7 +191,11 @@ func (s *Store) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q 
 	if err != nil {
 		return nil, fmt.Errorf("searching tickets by assignee group: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
@@ -195,7 +207,11 @@ func (s *Store) ListByReporter(ctx context.Context, userID uuid.UUID, limit, off
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by reporter: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
@@ -207,7 +223,11 @@ func (s *Store) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit,
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by assignee user: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
@@ -219,7 +239,11 @@ func (s *Store) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limi
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by assignee group: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
@@ -231,7 +255,11 @@ func (s *Store) ListByStatus(ctx context.Context, statusID uuid.UUID, limit, off
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by status: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListAll(ctx context.Context, limit, offset int) ([]ticket.Ticket, error) {
@@ -242,7 +270,11 @@ func (s *Store) ListAll(ctx context.Context, limit, offset int) ([]ticket.Ticket
 	if err != nil {
 		return nil, fmt.Errorf("listing all tickets: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) SearchAll(ctx context.Context, q string, limit, offset int) ([]ticket.Ticket, error) {
@@ -255,7 +287,11 @@ func (s *Store) SearchAll(ctx context.Context, q string, limit, offset int) ([]t
 	if err != nil {
 		return nil, fmt.Errorf("searching all tickets: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListUnassigned(ctx context.Context, limit, offset int) ([]ticket.Ticket, error) {
@@ -266,7 +302,11 @@ func (s *Store) ListUnassigned(ctx context.Context, limit, offset int) ([]ticket
 	if err != nil {
 		return nil, fmt.Errorf("listing unassigned tickets: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]ticket.Ticket, error) {
@@ -279,7 +319,11 @@ func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset in
 	if err != nil {
 		return nil, fmt.Errorf("searching unassigned tickets: %w", err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
@@ -290,7 +334,11 @@ func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, limit 
 	if err != nil {
 		return nil, fmt.Errorf("listing resolved tickets before %v: %w", before, err)
 	}
-	return fromRows(rows), nil
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
 }
 
 func (s *Store) NextSeq(ctx context.Context) (int64, error) {
@@ -520,7 +568,44 @@ func (s *Store) CountByStatusForAssignee(ctx context.Context, statusID, userID u
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-func fromRow(r dbgen.Ticket) ticket.Ticket {
+// ticketRow mirrors every ticket read query's column list (the full tickets
+// table minus the generated search_vector column, which is only ever
+// referenced inside a WHERE/ORDER BY predicate, never fetched — selecting it
+// on every ticket read would drag a tsvector comparable in size to the
+// ticket's own text across the wire for no reason).
+//
+// Each query below explicitly lists these same columns rather than
+// SELECT *, so sqlc generates a distinct Go struct per query (e.g.
+// dbgen.ListAllTicketsRow, dbgen.SearchAllTicketsRow, ...) instead of
+// reusing dbgen.Ticket. All of them share this exact field name/type/order,
+// so a plain Go type conversion (ticketRow(row)) safely reinterprets any of
+// them as a ticketRow — see the Go spec on struct conversion (identical
+// underlying types, tags ignored). That lets fromRow's mapping logic live
+// in exactly one place instead of being duplicated per query.
+type ticketRow struct {
+	ID              uuid.UUID
+	TrackingNumber  string
+	Subject         string
+	Description     string
+	CategoryID      uuid.UUID
+	TypeID          uuid.NullUUID
+	ItemID          uuid.NullUUID
+	Priority        string
+	StatusID        uuid.UUID
+	AssigneeUserID  uuid.NullUUID
+	AssigneeGroupID uuid.NullUUID
+	ReporterUserID  uuid.NullUUID
+	GuestEmail      sql.NullString
+	ResolutionNotes sql.NullString
+	ResolvedAt      sql.NullTime
+	ClosedAt        sql.NullTime
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	GuestName       string
+	GuestPhone      string
+}
+
+func fromRow(r ticketRow) ticket.Ticket {
 	return ticket.Ticket{
 		ID:              r.ID,
 		TrackingNumber:  ticket.TrackingNumber(r.TrackingNumber),
@@ -543,14 +628,6 @@ func fromRow(r dbgen.Ticket) ticket.Ticket {
 		CreatedAt:       r.CreatedAt,
 		UpdatedAt:       r.UpdatedAt,
 	}
-}
-
-func fromRows(rows []dbgen.Ticket) []ticket.Ticket {
-	out := make([]ticket.Ticket, len(rows))
-	for i, r := range rows {
-		out[i] = fromRow(r)
-	}
-	return out
 }
 
 func statusFromRow(r dbgen.Status) ticket.Status {

@@ -185,12 +185,35 @@ func (q *Queries) GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachme
 }
 
 const getTicketByID = `-- name: GetTicketByID :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets WHERE id = $1
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE id = $1
 `
 
-func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
+type GetTicketByIDRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByIDRow, error) {
 	row := q.db.QueryRowContext(ctx, getTicketByID, id)
-	var i Ticket
+	var i GetTicketByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.TrackingNumber,
@@ -212,18 +235,40 @@ func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (Ticket, erro
 		&i.UpdatedAt,
 		&i.GuestName,
 		&i.GuestPhone,
-		&i.SearchVector,
 	)
 	return i, err
 }
 
 const getTicketByTrackingNumber = `-- name: GetTicketByTrackingNumber :one
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets WHERE tracking_number = $1
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE tracking_number = $1
 `
 
-func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (Ticket, error) {
+type GetTicketByTrackingNumberRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (GetTicketByTrackingNumberRow, error) {
 	row := q.db.QueryRowContext(ctx, getTicketByTrackingNumber, trackingNumber)
-	var i Ticket
+	var i GetTicketByTrackingNumberRow
 	err := row.Scan(
 		&i.ID,
 		&i.TrackingNumber,
@@ -245,13 +290,12 @@ func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber 
 		&i.UpdatedAt,
 		&i.GuestName,
 		&i.GuestPhone,
-		&i.SearchVector,
 	)
 	return i, err
 }
 
 const listAllTickets = `-- name: ListAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListAllTicketsParams struct {
@@ -259,15 +303,38 @@ type ListAllTicketsParams struct {
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]Ticket, error) {
+type ListAllTicketsRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]ListAllTicketsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAllTickets, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListAllTicketsRow
 	for rows.Next() {
-		var i Ticket
+		var i ListAllTicketsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -289,7 +356,6 @@ func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) 
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -376,7 +442,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]Ticket
 }
 
 const listResolvedTicketsBefore = `-- name: ListResolvedTicketsBefore :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND closed_at IS NULL
 ORDER BY resolved_at ASC
 LIMIT $2
@@ -387,15 +453,38 @@ type ListResolvedTicketsBeforeParams struct {
 	Limit      int32        `json:"limit"`
 }
 
-func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]Ticket, error) {
+type ListResolvedTicketsBeforeRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error) {
 	rows, err := q.db.QueryContext(ctx, listResolvedTicketsBefore, arg.ResolvedAt, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListResolvedTicketsBeforeRow
 	for rows.Next() {
-		var i Ticket
+		var i ListResolvedTicketsBeforeRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -417,7 +506,6 @@ func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolve
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -461,7 +549,7 @@ func (q *Queries) ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID)
 }
 
 const listTicketsByAssigneeGroup = `-- name: ListTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByAssigneeGroupParams struct {
@@ -470,15 +558,38 @@ type ListTicketsByAssigneeGroupParams struct {
 	Offset          int32         `json:"offset"`
 }
 
-func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]Ticket, error) {
+type ListTicketsByAssigneeGroupRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicketsByAssigneeGroupParams) ([]ListTicketsByAssigneeGroupRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTicketsByAssigneeGroup, arg.AssigneeGroupID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListTicketsByAssigneeGroupRow
 	for rows.Next() {
-		var i Ticket
+		var i ListTicketsByAssigneeGroupRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -500,7 +611,6 @@ func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicket
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -516,7 +626,7 @@ func (q *Queries) ListTicketsByAssigneeGroup(ctx context.Context, arg ListTicket
 }
 
 const listTicketsByAssigneeUser = `-- name: ListTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByAssigneeUserParams struct {
@@ -525,15 +635,38 @@ type ListTicketsByAssigneeUserParams struct {
 	Offset         int32         `json:"offset"`
 }
 
-func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]Ticket, error) {
+type ListTicketsByAssigneeUserRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTicketsByAssigneeUser, arg.AssigneeUserID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListTicketsByAssigneeUserRow
 	for rows.Next() {
-		var i Ticket
+		var i ListTicketsByAssigneeUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -555,7 +688,6 @@ func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTickets
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -571,7 +703,7 @@ func (q *Queries) ListTicketsByAssigneeUser(ctx context.Context, arg ListTickets
 }
 
 const listTicketsByReporter = `-- name: ListTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByReporterParams struct {
@@ -580,15 +712,38 @@ type ListTicketsByReporterParams struct {
 	Offset         int32         `json:"offset"`
 }
 
-func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]Ticket, error) {
+type ListTicketsByReporterRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTicketsByReporter, arg.ReporterUserID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListTicketsByReporterRow
 	for rows.Next() {
-		var i Ticket
+		var i ListTicketsByReporterRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -610,7 +765,6 @@ func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByRe
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -626,7 +780,7 @@ func (q *Queries) ListTicketsByReporter(ctx context.Context, arg ListTicketsByRe
 }
 
 const listTicketsByStatus = `-- name: ListTicketsByStatus :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3
 `
 
 type ListTicketsByStatusParams struct {
@@ -635,15 +789,38 @@ type ListTicketsByStatusParams struct {
 	Offset   int32     `json:"offset"`
 }
 
-func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]Ticket, error) {
+type ListTicketsByStatusRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error) {
 	rows, err := q.db.QueryContext(ctx, listTicketsByStatus, arg.StatusID, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListTicketsByStatusRow
 	for rows.Next() {
-		var i Ticket
+		var i ListTicketsByStatusRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -665,7 +842,6 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -681,7 +857,7 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 }
 
 const listUnassignedTickets = `-- name: ListUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
 ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -691,15 +867,38 @@ type ListUnassignedTicketsParams struct {
 	Offset int32 `json:"offset"`
 }
 
-func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]Ticket, error) {
+type ListUnassignedTicketsRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]ListUnassignedTicketsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listUnassignedTickets, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []ListUnassignedTicketsRow
 	for rows.Next() {
-		var i Ticket
+		var i ListUnassignedTicketsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -721,7 +920,6 @@ func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedT
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -748,7 +946,7 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 }
 
 const searchAllTickets = `-- name: SearchAllTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE (
     tracking_number ILIKE $3
     OR (CASE WHEN $4::text <> '' THEN search_vector @@ to_tsquery('english', $4::text) ELSE false END)
@@ -766,7 +964,30 @@ type SearchAllTicketsParams struct {
 	SearchQuery    string `json:"search_query"`
 }
 
-func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]Ticket, error) {
+type SearchAllTicketsRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchAllTickets,
 		arg.Limit,
 		arg.Offset,
@@ -777,9 +998,9 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []SearchAllTicketsRow
 	for rows.Next() {
-		var i Ticket
+		var i SearchAllTicketsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -801,7 +1022,6 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -817,7 +1037,7 @@ func (q *Queries) SearchAllTickets(ctx context.Context, arg SearchAllTicketsPara
 }
 
 const searchTicketsByAssigneeGroup = `-- name: SearchTicketsByAssigneeGroup :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE assignee_group_id = $1
   AND (
     tracking_number ILIKE $4
@@ -837,7 +1057,30 @@ type SearchTicketsByAssigneeGroupParams struct {
 	SearchQuery     string        `json:"search_query"`
 }
 
-func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]Ticket, error) {
+type SearchTicketsByAssigneeGroupRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchTicketsByAssigneeGroup,
 		arg.AssigneeGroupID,
 		arg.Limit,
@@ -849,9 +1092,9 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []SearchTicketsByAssigneeGroupRow
 	for rows.Next() {
-		var i Ticket
+		var i SearchTicketsByAssigneeGroupRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -873,7 +1116,6 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -889,7 +1131,7 @@ func (q *Queries) SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTi
 }
 
 const searchTicketsByAssigneeUser = `-- name: SearchTicketsByAssigneeUser :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE assignee_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -909,7 +1151,30 @@ type SearchTicketsByAssigneeUserParams struct {
 	SearchQuery    string        `json:"search_query"`
 }
 
-func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]Ticket, error) {
+type SearchTicketsByAssigneeUserRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchTicketsByAssigneeUser,
 		arg.AssigneeUserID,
 		arg.Limit,
@@ -921,9 +1186,9 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []SearchTicketsByAssigneeUserRow
 	for rows.Next() {
-		var i Ticket
+		var i SearchTicketsByAssigneeUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -945,7 +1210,6 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -961,7 +1225,7 @@ func (q *Queries) SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTic
 }
 
 const searchTicketsByReporter = `-- name: SearchTicketsByReporter :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE reporter_user_id = $1
   AND (
     tracking_number ILIKE $4
@@ -981,7 +1245,30 @@ type SearchTicketsByReporterParams struct {
 	SearchQuery    string        `json:"search_query"`
 }
 
-func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]Ticket, error) {
+type SearchTicketsByReporterRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchTicketsByReporter,
 		arg.ReporterUserID,
 		arg.Limit,
@@ -993,9 +1280,9 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []SearchTicketsByReporterRow
 	for rows.Next() {
-		var i Ticket
+		var i SearchTicketsByReporterRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -1017,7 +1304,6 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
@@ -1033,7 +1319,7 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 }
 
 const searchUnassignedTickets = `-- name: SearchUnassignedTickets :many
-SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
   AND (
     tracking_number ILIKE $3
@@ -1052,7 +1338,30 @@ type SearchUnassignedTicketsParams struct {
 	SearchQuery    string `json:"search_query"`
 }
 
-func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]Ticket, error) {
+type SearchUnassignedTicketsRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error) {
 	rows, err := q.db.QueryContext(ctx, searchUnassignedTickets,
 		arg.Limit,
 		arg.Offset,
@@ -1063,9 +1372,9 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ticket
+	var items []SearchUnassignedTicketsRow
 	for rows.Next() {
-		var i Ticket
+		var i SearchUnassignedTicketsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,
@@ -1087,7 +1396,6 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 			&i.UpdatedAt,
 			&i.GuestName,
 			&i.GuestPhone,
-			&i.SearchVector,
 		); err != nil {
 			return nil, err
 		}
