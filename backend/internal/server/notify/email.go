@@ -135,14 +135,27 @@ func (d *EmailDispatcher) SendVerificationEmail(to, token, baseURL string) error
 // body, then hands it to smtp.SendMail. All user-controlled input passes through
 // validation (mail.ParseAddress) or encoding (quoted-printable / sanitizeHeader)
 // before reaching the SMTP sink.
-func (d *EmailDispatcher) send(to, subject string, body []byte) error {
-	toAddr, err := mail.ParseAddress(to)
+// validateSendAddresses parses and validates the recipient and sender
+// addresses, rejecting header-injection attempts (a CRLF/LF-bearing address
+// would otherwise let an attacker smuggle extra SMTP headers, e.g. a forged
+// Bcc, into the message). Pulled out of send() so this pure validation logic
+// is testable without an actual SMTP server to send through.
+func validateSendAddresses(to, from string) (toAddr, fromAddr *mail.Address, err error) {
+	toAddr, err = mail.ParseAddress(to)
 	if err != nil {
-		return fmt.Errorf("invalid recipient address: %w", err)
+		return nil, nil, fmt.Errorf("invalid recipient address: %w", err)
 	}
-	fromAddr, err := mail.ParseAddress(d.cfg.SMTPFrom)
+	fromAddr, err = mail.ParseAddress(from)
 	if err != nil {
-		return fmt.Errorf("invalid sender address: %w", err)
+		return nil, nil, fmt.Errorf("invalid sender address: %w", err)
+	}
+	return toAddr, fromAddr, nil
+}
+
+func (d *EmailDispatcher) send(to, subject string, body []byte) error {
+	toAddr, fromAddr, err := validateSendAddresses(to, d.cfg.SMTPFrom)
+	if err != nil {
+		return err
 	}
 
 	var msg bytes.Buffer

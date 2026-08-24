@@ -767,8 +767,10 @@ func TestCreateStatus_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
+	// "In Progress" collides with a seeded default status of that name
+	// (migration 000001) — use a name no default status has.
 	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
-		"name":       "In Progress",
+		"name":       "Escalated",
 		"sort_order": 10,
 		"color":      "#ff9900",
 	})
@@ -776,15 +778,17 @@ func TestCreateStatus_AsAdmin(t *testing.T) {
 
 	var st map[string]any
 	decodeJSON(t, resp, &st)
-	require.Equal(t, "In Progress", st["name"])
+	require.Equal(t, "Escalated", st["name"])
 }
 
 func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
+	// "Pending" collides with a seeded default status of that name
+	// (migration 000001) — use a name no default status has.
 	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
-		"name":       "Pending",
+		"name":       "Awaiting Vendor",
 		"sort_order": 11,
 		"color":      "#aabbcc",
 	})

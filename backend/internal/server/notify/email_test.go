@@ -8,6 +8,11 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
+// TestSendRejectsHeaderInjection covers validateSendAddresses directly
+// (rather than the full send(), which reaches out over the network to an
+// actual SMTP server) — it's the address-parsing/header-injection defense
+// that's under test here, not mail delivery, so this needs no SMTP listener
+// to run and passes the same in CI as on a dev machine.
 func TestSendRejectsHeaderInjection(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -55,15 +60,13 @@ func TestSendRejectsHeaderInjection(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			d := &EmailDispatcher{cfg: &config.Config{
-				SMTPHost: "localhost",
-				SMTPPort: 25,
-				SMTPFrom: tc.from,
-			}}
-			err := d.send(tc.to, "test subject", []byte("body"))
+			toAddr, fromAddr, err := validateSendAddresses(tc.to, tc.from)
 			if !tc.wantError {
 				if err != nil {
 					t.Fatalf("expected no error for valid addresses, got %v", err)
+				}
+				if toAddr == nil || fromAddr == nil {
+					t.Fatal("expected parsed addresses to be returned alongside a nil error")
 				}
 				return
 			}
@@ -74,6 +77,25 @@ func TestSendRejectsHeaderInjection(t *testing.T) {
 				t.Fatalf("expected error to contain %q, got %q", tc.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+// TestSend_DialFailureIsNotMisreportedAsInvalidAddress confirms send() with
+// genuinely valid addresses fails on the network dial (there's no SMTP
+// server here), not on address validation — i.e. that validateSendAddresses
+// really is wired into send() and not bypassed.
+func TestSend_DialFailureIsNotMisreportedAsInvalidAddress(t *testing.T) {
+	d := &EmailDispatcher{cfg: &config.Config{
+		SMTPHost: "localhost",
+		SMTPPort: 1, // nothing listens on port 1; dial fails fast
+		SMTPFrom: "noreply@example.com",
+	}}
+	err := d.send("user@example.com", "test subject", []byte("body"))
+	if err == nil {
+		t.Fatal("expected a dial error with nothing listening on the configured port")
+	}
+	if strings.Contains(err.Error(), "invalid recipient address") || strings.Contains(err.Error(), "invalid sender address") {
+		t.Fatalf("valid addresses should never fail validation, got %q", err.Error())
 	}
 }
 

@@ -390,8 +390,11 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 	mine := mkTicket("assigned to staff", &staff.ID, nil)
 	grpTicket := mkTicket("assigned to group", nil, &grp.ID)
 	_ = grpTicket
-	unassigned1 := mkTicket("unassigned alpha", nil, nil)
-	unassigned2 := mkTicket("unassigned beta", nil, nil)
+	// Deliberately not "unassigned alpha/beta": "unassigned" contains
+	// "assigned" as a substring, which would make the ILIKE-based search
+	// below match these unassigned tickets against the term "assigned" too.
+	unassigned1 := mkTicket("no owner alpha", nil, nil)
+	unassigned2 := mkTicket("no owner beta", nil, nil)
 
 	t.Run("ListAll returns every ticket", func(t *testing.T) {
 		all, err := ts.ListAll(ctx, 100, 0)
