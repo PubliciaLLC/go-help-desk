@@ -34,8 +34,14 @@ SELECT * FROM tickets WHERE reporter_user_id = $1 ORDER BY created_at DESC LIMIT
 -- name: SearchTicketsByReporter :many
 SELECT * FROM tickets
 WHERE reporter_user_id = $1
-  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
-ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+  AND (
+    tracking_number ILIKE $4
+    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByAssigneeUser :many
 SELECT * FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
@@ -43,8 +49,14 @@ SELECT * FROM tickets WHERE assignee_user_id = $1 ORDER BY created_at DESC LIMIT
 -- name: SearchTicketsByAssigneeUser :many
 SELECT * FROM tickets
 WHERE assignee_user_id = $1
-  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
-ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+  AND (
+    tracking_number ILIKE $4
+    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByAssigneeGroup :many
 SELECT * FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
@@ -52,8 +64,14 @@ SELECT * FROM tickets WHERE assignee_group_id = $1 ORDER BY created_at DESC LIMI
 -- name: SearchTicketsByAssigneeGroup :many
 SELECT * FROM tickets
 WHERE assignee_group_id = $1
-  AND (tracking_number ILIKE $4 OR subject ILIKE $4 OR description ILIKE $4)
-ORDER BY created_at DESC LIMIT $2 OFFSET $3;
+  AND (
+    tracking_number ILIKE $4
+    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $2 OFFSET $3;
 
 -- name: ListTicketsByStatus :many
 SELECT * FROM tickets WHERE status_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3;
@@ -63,8 +81,14 @@ SELECT * FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: SearchAllTickets :many
 SELECT * FROM tickets
-WHERE (tracking_number ILIKE $3 OR subject ILIKE $3 OR description ILIKE $3)
-ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+WHERE (
+    tracking_number ILIKE $3
+    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $1 OFFSET $2;
 
 -- name: ListUnassignedTickets :many
 SELECT * FROM tickets
@@ -74,8 +98,14 @@ ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 -- name: SearchUnassignedTickets :many
 SELECT * FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
-  AND (tracking_number ILIKE $3 OR subject ILIKE $3 OR description ILIKE $3)
-ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+  AND (
+    tracking_number ILIKE $3
+    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $1 OFFSET $2;
 
 -- name: ListResolvedTicketsBefore :many
 SELECT * FROM tickets

@@ -199,6 +199,7 @@ type Ticket struct {
 	UpdatedAt       time.Time      `json:"updated_at"`
 	GuestName       string         `json:"guest_name"`
 	GuestPhone      string         `json:"guest_phone"`
+	SearchVector    interface{}    `json:"search_vector"`
 }
 
 type TicketCustomFieldValue struct {

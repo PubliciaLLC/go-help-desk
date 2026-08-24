@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -101,12 +102,34 @@ func searchPattern(q string) string {
 	return "%" + q + "%"
 }
 
+var searchTokenPattern = regexp.MustCompile(`[A-Za-z0-9]+`)
+
+// buildSearchTSQuery converts free-text user input into a Postgres tsquery
+// string that prefix-matches every word, ANDed together — e.g. "print jam"
+// becomes "print:* & jam:*", which is what makes "search as you type" work
+// on partial words instead of only whole ones. Returns "" when q has no
+// indexable tokens (e.g. pure punctuation); callers pass that straight
+// through as the search_query param, and the query guards on it being
+// non-empty before ever calling to_tsquery (an empty tsquery string is a
+// syntax error in Postgres, not a "match nothing" query).
+func buildSearchTSQuery(q string) string {
+	tokens := searchTokenPattern.FindAllString(q, -1)
+	if len(tokens) == 0 {
+		return ""
+	}
+	for i, t := range tokens {
+		tokens[i] = strings.ToLower(t) + ":*"
+	}
+	return strings.Join(tokens, " & ")
+}
+
 func (s *Store) SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchTicketsByReporter(ctx, dbgen.SearchTicketsByReporterParams{
 		ReporterUserID: database.NullUUID(&userID),
 		Limit:          int32(limit),
 		Offset:         int32(offset),
 		TrackingNumber: searchPattern(q),
+		SearchQuery:    buildSearchTSQuery(q),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("searching tickets by reporter: %w", err)
@@ -120,6 +143,7 @@ func (s *Store) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q st
 		Limit:          int32(limit),
 		Offset:         int32(offset),
 		TrackingNumber: searchPattern(q),
+		SearchQuery:    buildSearchTSQuery(q),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("searching tickets by assignee user: %w", err)
@@ -133,6 +157,7 @@ func (s *Store) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q 
 		Limit:           int32(limit),
 		Offset:          int32(offset),
 		TrackingNumber:  searchPattern(q),
+		SearchQuery:     buildSearchTSQuery(q),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("searching tickets by assignee group: %w", err)
@@ -204,6 +229,7 @@ func (s *Store) SearchAll(ctx context.Context, q string, limit, offset int) ([]t
 		Limit:          int32(limit),
 		Offset:         int32(offset),
 		TrackingNumber: searchPattern(q),
+		SearchQuery:    buildSearchTSQuery(q),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("searching all tickets: %w", err)
@@ -227,6 +253,7 @@ func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset in
 		Limit:          int32(limit),
 		Offset:         int32(offset),
 		TrackingNumber: searchPattern(q),
+		SearchQuery:    buildSearchTSQuery(q),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("searching unassigned tickets: %w", err)

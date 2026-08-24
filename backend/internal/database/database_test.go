@@ -457,6 +457,99 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 	_ = mine
 }
 
+// TestTicketStore_FullTextSearch covers the Postgres FTS behavior added for
+// v2: prefix matching on partial words, AND-matching multiple words, ranking
+// a subject match above a description-only match, and excluding tickets that
+// don't match at all.
+func TestTicketStore_FullTextSearch(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	reporter := user.User{ID: uuid.New(), Email: "fts-reporter@ex.com", DisplayName: "R", Role: user.RoleUser, CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, us.Create(ctx, reporter))
+
+	cat := category.Category{ID: uuid.New(), Name: "FTS", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	mkTicket := func(subject, description string) ticket.Ticket {
+		seq, err := ts.NextSeq(ctx)
+		require.NoError(t, err)
+		tk := ticket.Ticket{
+			ID:             uuid.New(),
+			TrackingNumber: ticket.GenerateTrackingNumber(2024, seq),
+			Subject:        subject,
+			Description:    description,
+			CategoryID:     cat.ID,
+			Priority:       ticket.PriorityMedium,
+			StatusID:       newSt.ID,
+			ReporterUserID: &reporter.ID,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		require.NoError(t, ts.Create(ctx, tk))
+		return tk
+	}
+
+	subjectMatch := mkTicket("Printer is jammed again", "Please send someone to fix it.")
+	descriptionMatch := mkTicket("Office equipment issue", "The printer in room 4 is jammed.")
+	unrelated := mkTicket("VPN login failing", "Cannot authenticate with the VPN client.")
+
+	t.Run("prefix matching on a partial word", func(t *testing.T) {
+		got, err := ts.SearchAll(ctx, "print", 100, 0)
+		require.NoError(t, err)
+		ids := map[uuid.UUID]bool{}
+		for _, tk := range got {
+			ids[tk.ID] = true
+		}
+		require.True(t, ids[subjectMatch.ID])
+		require.True(t, ids[descriptionMatch.ID])
+		require.False(t, ids[unrelated.ID])
+	})
+
+	t.Run("multi-word query ANDs terms across subject and description", func(t *testing.T) {
+		got, err := ts.SearchAll(ctx, "print jam", 100, 0)
+		require.NoError(t, err)
+		ids := map[uuid.UUID]bool{}
+		for _, tk := range got {
+			ids[tk.ID] = true
+		}
+		require.True(t, ids[subjectMatch.ID])
+		require.True(t, ids[descriptionMatch.ID])
+		require.False(t, ids[unrelated.ID])
+
+		// A word that appears in neither ticket excludes both.
+		got, err = ts.SearchAll(ctx, "print rebooted", 100, 0)
+		require.NoError(t, err)
+		require.Len(t, got, 0)
+	})
+
+	t.Run("subject match ranks above description-only match", func(t *testing.T) {
+		got, err := ts.SearchAll(ctx, "printer", 100, 0)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, len(got), 2)
+		require.Equal(t, subjectMatch.ID, got[0].ID, "the ticket with the term in its subject should rank first")
+	})
+
+	t.Run("unrelated ticket never matches", func(t *testing.T) {
+		got, err := ts.SearchAll(ctx, "printer", 100, 0)
+		require.NoError(t, err)
+		for _, tk := range got {
+			require.NotEqual(t, unrelated.ID, tk.ID)
+		}
+	})
+}
+
 // ── Group store ──────────────────────────────────────────────────────────────
 
 func TestGroupStore(t *testing.T) {
