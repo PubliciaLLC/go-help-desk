@@ -40,7 +40,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Tags — free-form labels on tickets; staff create tags on first use (stored lowercase); admins can deactivate or restore tags
 - Canned responses — reusable reply templates scoped globally, by category, or by category and type; staff insert them into replies with one click
 - Linked tickets (related, parent/child, duplicate, caused-by)
-- Live ticket search — by tracking number (prefix), subject, or description keywords; staff/admin can jump directly to a ticket by tracking number or UUID
+- Live ticket search — tracking number (prefix), plus relevance-ranked full-text search across subject and description (Postgres FTS, word-prefix matched as you type); staff/admin can jump directly to a ticket by tracking number or UUID
 - Email and webhook notifications
 - Optional SLA tracking
 - Configurable branding — site name and logo upload (PNG, SVG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI
