@@ -751,7 +751,7 @@ const searchAllTickets = `-- name: SearchAllTickets :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, search_vector FROM tickets
 WHERE (
     tracking_number ILIKE $3
-    OR ($4::text <> '' AND search_vector @@ to_tsquery('english', $4::text))
+    OR (CASE WHEN $4::text <> '' THEN search_vector @@ to_tsquery('english', $4::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN $4::text <> '' THEN ts_rank(search_vector, to_tsquery('english', $4::text)) ELSE 0 END DESC,
@@ -821,7 +821,7 @@ SELECT id, tracking_number, subject, description, category_id, type_id, item_id,
 WHERE assignee_group_id = $1
   AND (
     tracking_number ILIKE $4
-    OR ($5::text <> '' AND search_vector @@ to_tsquery('english', $5::text))
+    OR (CASE WHEN $5::text <> '' THEN search_vector @@ to_tsquery('english', $5::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN $5::text <> '' THEN ts_rank(search_vector, to_tsquery('english', $5::text)) ELSE 0 END DESC,
@@ -893,7 +893,7 @@ SELECT id, tracking_number, subject, description, category_id, type_id, item_id,
 WHERE assignee_user_id = $1
   AND (
     tracking_number ILIKE $4
-    OR ($5::text <> '' AND search_vector @@ to_tsquery('english', $5::text))
+    OR (CASE WHEN $5::text <> '' THEN search_vector @@ to_tsquery('english', $5::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN $5::text <> '' THEN ts_rank(search_vector, to_tsquery('english', $5::text)) ELSE 0 END DESC,
@@ -965,7 +965,7 @@ SELECT id, tracking_number, subject, description, category_id, type_id, item_id,
 WHERE reporter_user_id = $1
   AND (
     tracking_number ILIKE $4
-    OR ($5::text <> '' AND search_vector @@ to_tsquery('english', $5::text))
+    OR (CASE WHEN $5::text <> '' THEN search_vector @@ to_tsquery('english', $5::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN $5::text <> '' THEN ts_rank(search_vector, to_tsquery('english', $5::text)) ELSE 0 END DESC,
@@ -1037,7 +1037,7 @@ SELECT id, tracking_number, subject, description, category_id, type_id, item_id,
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
   AND (
     tracking_number ILIKE $3
-    OR ($4::text <> '' AND search_vector @@ to_tsquery('english', $4::text))
+    OR (CASE WHEN $4::text <> '' THEN search_vector @@ to_tsquery('english', $4::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN $4::text <> '' THEN ts_rank(search_vector, to_tsquery('english', $4::text)) ELSE 0 END DESC,

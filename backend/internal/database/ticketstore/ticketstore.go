@@ -102,7 +102,21 @@ func searchPattern(q string) string {
 	return "%" + q + "%"
 }
 
-var searchTokenPattern = regexp.MustCompile(`[A-Za-z0-9]+`)
+// searchTokenPattern matches whole words in any script (Unicode letters and
+// digits), not just ASCII — a plain [A-Za-z0-9]+ would silently drop every
+// non-Latin search term (Cyrillic, CJK, Hebrew, Arabic, ...), regressing
+// behind the substring search this replaced.
+var searchTokenPattern = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
+// maxSearchTokens and maxSearchTokenRunes bound the tsquery built from user
+// input. Without a cap, a long unbroken string (a pasted log line, a JWT) or
+// a huge word count can exceed Postgres's tsquery operand/size limits and
+// turn a search request into a 500 instead of a search. Both limits are far
+// beyond anything a real search phrase needs.
+const (
+	maxSearchTokens     = 10
+	maxSearchTokenRunes = 64
+)
 
 // buildSearchTSQuery converts free-text user input into a Postgres tsquery
 // string that prefix-matches every word, ANDed together — e.g. "print jam"
@@ -117,8 +131,15 @@ func buildSearchTSQuery(q string) string {
 	if len(tokens) == 0 {
 		return ""
 	}
+	if len(tokens) > maxSearchTokens {
+		tokens = tokens[:maxSearchTokens]
+	}
 	for i, t := range tokens {
-		tokens[i] = strings.ToLower(t) + ":*"
+		t = strings.ToLower(t)
+		if runes := []rune(t); len(runes) > maxSearchTokenRunes {
+			t = string(runes[:maxSearchTokenRunes])
+		}
+		tokens[i] = t + ":*"
 	}
 	return strings.Join(tokens, " & ")
 }
@@ -396,12 +417,12 @@ func (s *Store) ListLinks(ctx context.Context, ticketID uuid.UUID) ([]ticket.Tic
 
 func (s *Store) CreateStatusHistoryEntry(ctx context.Context, e ticket.StatusHistoryEntry) error {
 	return s.q.CreateStatusHistoryEntry(ctx, dbgen.CreateStatusHistoryEntryParams{
-		ID:                e.ID,
-		TicketID:          e.TicketID,
-		FromStatusID:      database.NullUUID(e.FromStatusID),
-		ToStatusID:        e.ToStatusID,
-		ChangedByUserID:   database.NullUUID(e.ChangedByUserID),
-		CreatedAt:         e.CreatedAt,
+		ID:              e.ID,
+		TicketID:        e.TicketID,
+		FromStatusID:    database.NullUUID(e.FromStatusID),
+		ToStatusID:      e.ToStatusID,
+		ChangedByUserID: database.NullUUID(e.ChangedByUserID),
+		CreatedAt:       e.CreatedAt,
 	})
 }
 

@@ -36,7 +36,7 @@ SELECT * FROM tickets
 WHERE reporter_user_id = $1
   AND (
     tracking_number ILIKE $4
-    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+    OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
@@ -51,7 +51,7 @@ SELECT * FROM tickets
 WHERE assignee_user_id = $1
   AND (
     tracking_number ILIKE $4
-    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+    OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
@@ -66,7 +66,7 @@ SELECT * FROM tickets
 WHERE assignee_group_id = $1
   AND (
     tracking_number ILIKE $4
-    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+    OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
@@ -83,7 +83,7 @@ SELECT * FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 SELECT * FROM tickets
 WHERE (
     tracking_number ILIKE $3
-    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+    OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
@@ -100,7 +100,7 @@ SELECT * FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
   AND (
     tracking_number ILIKE $3
-    OR (sqlc.arg(search_query)::text <> '' AND search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text))
+    OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
