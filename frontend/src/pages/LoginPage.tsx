@@ -32,7 +32,17 @@ export function LoginPage() {
     getSignupStatus().then(({ enabled }) => setSignupEnabled(enabled)).catch(() => {})
 
     getAuthProviders()
-      .then((data) => setProviders(data))
+      .then((data) => {
+        const enabled = Object.fromEntries(
+          data.providers.map((provider) => [provider.name, provider.enabled])
+        )
+
+        setProviders({
+          password: enabled.local ?? false,
+          saml: enabled.saml ?? false,
+          oidc: enabled.oidc ?? false,
+        })
+      })
       .catch(() => {})
   }, [])
 

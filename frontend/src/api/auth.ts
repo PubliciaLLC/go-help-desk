@@ -59,10 +59,13 @@ export async function verifyEmail(token: string): Promise<LoginResponse> {
 }
 
 
+export interface AuthProvider {
+  name: string
+  enabled: boolean
+}
+
 export interface AuthProviders {
-  password: boolean
-  saml: boolean
-  oidc: boolean
+  providers: AuthProvider[]
 }
 
 export async function getAuthProviders(): Promise<AuthProviders> {
