@@ -886,6 +886,75 @@ func (s *Server) handleDeleteStatus(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ── OIDC ──────────────────────────────────────────────────────────────────────
+
+// GET /api/v1/admin/oidc
+//
+// Returns the persisted OIDC configuration.
+// The client secret is intentionally never returned to the browser.
+func (s *Server) handleGetOIDCConfig(w http.ResponseWriter, r *http.Request) {
+	cfg := s.adminSvc.GetOIDCConfig(r.Context())
+
+	JSON(w, http.StatusOK, map[string]any{
+		"enabled":       cfg.Enabled,
+		"issuer_url":    cfg.IssuerURL,
+		"client_id":     cfg.ClientID,
+		"client_secret": "",
+		"redirect_url":  cfg.RedirectURL,
+		"configured":    s.adminSvc.OIDCConfigured(r.Context()),
+	})
+}
+
+// PUT /api/v1/admin/oidc
+//
+// A blank client_secret preserves the existing database value.
+func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled      bool   `json:"enabled"`
+		IssuerURL    string `json:"issuer_url"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+	}
+
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+
+	ctx := r.Context()
+
+	existing := s.adminSvc.GetOIDCConfig(ctx)
+
+	clientSecret := body.ClientSecret
+
+	if clientSecret == "" {
+		clientSecret = existing.ClientSecret
+	}
+
+	redirectURL := existing.RedirectURL
+
+	if redirectURL == "" {
+		redirectURL = s.cfg.BaseURL + "/api/v1/auth/oidc/callback"
+	}
+
+	cfg := auth.OIDCConfig{
+		Enabled:      body.Enabled,
+		IssuerURL:    body.IssuerURL,
+		ClientID:     body.ClientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+	}
+
+	if err := s.adminSvc.SetOIDCConfig(ctx, cfg); err != nil {
+		handleError(w, err)
+		return
+	}
+
+	JSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+	})
+}
+
 // ── SAML ──────────────────────────────────────────────────────────────────────
 
 // GET /api/v1/admin/saml

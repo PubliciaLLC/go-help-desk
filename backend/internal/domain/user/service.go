@@ -27,6 +27,7 @@ type CreateUserInput struct {
 	Password     string // plain text; hashed by Create; empty if SAML-only or pre-hashed
 	PasswordHash string // pre-computed bcrypt hash; used only when Password is empty
 	SAMLSubject  string // empty if local-only
+	OIDCSubject  string // empty if not OIDC
 }
 
 // Create validates and persists a new user, hashing the password if provided.
@@ -37,6 +38,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 		DisplayName: strings.TrimSpace(in.DisplayName),
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
+		OIDCSubject: in.OIDCSubject,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
@@ -170,6 +172,110 @@ func isEmailDomainAllowed(email string, allowed []string) bool {
 // If a user with the given SAML subject already exists, their email and
 // display name are updated. If not, a new user with the User role is created,
 // provided the email domain is in allowedDomains (or the list is empty).
+
+// UpsertFederatedUser creates or updates a user from an external identity provider.
+//
+// providerSubject is the stable identifier from the IdP:
+// - SAML NameID
+// - OIDC sub claim
+//
+// This is intentionally provider-neutral so additional identity providers
+// can share the same user lifecycle.
+func (s *Service) UpsertFederatedUser(
+	ctx context.Context,
+	providerSubject string,
+	email string,
+	displayName string,
+	allowedDomains []string,
+) (User, error) {
+
+	return s.UpsertSAMLUser(
+		ctx,
+		providerSubject,
+		email,
+		displayName,
+		allowedDomains,
+	)
+}
+
+// UpsertOIDCUser creates or updates a user record based on an OIDC identity.
+//
+// OIDC providers identify users using the immutable "sub" claim.
+// Email is used only as a secondary lookup key.
+func (s *Service) UpsertOIDCUser(
+	ctx context.Context,
+	oidcSubject string,
+	email string,
+	displayName string,
+) (User, error) {
+
+	u, err := s.store.GetByOIDCSubject(
+		ctx,
+		oidcSubject,
+	)
+
+	if err == nil {
+
+		u.Email = strings.ToLower(strings.TrimSpace(email))
+
+		if displayName != "" {
+			u.DisplayName = displayName
+		}
+
+		u.UpdatedAt = time.Now()
+
+		if err := s.store.Update(ctx, u); err != nil {
+			return User{}, err
+		}
+
+		return u, nil
+	}
+
+	if email != "" {
+
+		u, err = s.store.GetByEmail(
+			ctx,
+			strings.ToLower(strings.TrimSpace(email)),
+		)
+
+		if err == nil {
+
+			u.OIDCSubject = oidcSubject
+			u.UpdatedAt = time.Now()
+
+			if displayName != "" {
+				u.DisplayName = displayName
+			}
+
+			if err := s.store.Update(ctx, u); err != nil {
+				return User{}, err
+			}
+
+			return u, nil
+		}
+	}
+
+	u = User{
+		ID:          uuid.New(),
+		Email:       strings.ToLower(strings.TrimSpace(email)),
+		DisplayName: strings.TrimSpace(displayName),
+		Role:        RoleStaff,
+		OIDCSubject: oidcSubject,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := u.Validate(); err != nil {
+		return User{}, err
+	}
+
+	if err := s.store.Create(ctx, u); err != nil {
+		return User{}, err
+	}
+
+	return u, nil
+}
+
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	u, err := s.store.GetBySAMLSubject(ctx, samlSubject)
 	if err == nil {

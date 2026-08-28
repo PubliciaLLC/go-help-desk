@@ -12,6 +12,10 @@ type SessionData struct {
 	UserID    uuid.UUID
 	Role      user.Role
 	MFAPassed bool
+
+	// OIDCState stores the temporary OAuth2 state value used during login.
+	// It is cleared after callback validation.
+	OIDCState string
 }
 
 const SessionName = "ohd_session"

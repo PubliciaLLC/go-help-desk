@@ -86,6 +86,9 @@ type Server struct {
 	samlMu      sync.RWMutex
 	samlHandler *samlsp.Middleware
 
+	// oidcProvider contains the configured OpenID Connect provider.
+	oidcProvider *auth.OIDCProvider
+
 	// rrIdx is the round-robin counter for auto-assigning tickets to users.
 	rrIdx atomic.Uint64
 }
@@ -270,6 +273,47 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 // middleware if all three fields (cert, key, metadata URL) are present.
 // It is called once at startup; a non-fatal error is logged and ignored so
 // that the server starts even when SAML is not yet configured.
+
+// InitOIDC initializes the OpenID Connect provider.
+// OIDC is optional; startup continues when it is not configured.
+func (s *Server) InitOIDC(ctx context.Context) {
+
+	cfg := s.adminSvc.GetOIDCConfig(ctx)
+
+	if !cfg.Enabled {
+		s.oidcProvider = nil
+		return
+	}
+
+	if cfg.IssuerURL == "" ||
+		cfg.ClientID == "" ||
+		cfg.ClientSecret == "" {
+
+		slog.Warn("OIDC enabled but configuration incomplete")
+		s.oidcProvider = nil
+		return
+	}
+
+	if cfg.RedirectURL == "" {
+		cfg.RedirectURL = s.cfg.BaseURL + "/api/v1/auth/oidc/callback"
+	}
+
+	provider, err := auth.NewOIDCProvider(
+		ctx,
+		cfg,
+	)
+
+	if err != nil {
+		slog.Warn("OIDC provider not loaded", "error", err)
+		s.oidcProvider = nil
+		return
+	}
+
+	s.oidcProvider = provider
+
+	slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
+}
+
 func (s *Server) InitSAML(ctx context.Context) {
 	if err := s.reloadSAML(ctx); err != nil {
 		slog.Warn("SAML middleware not loaded at startup", "error", err)

@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/pquerna/otp/totp"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,6 +17,7 @@ type fakeUserStore struct {
 	byID    map[uuid.UUID]user.User
 	byEmail map[string]user.User
 	bySAML  map[string]user.User
+	byOIDC  map[string]user.User
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -24,6 +25,7 @@ func newFakeUserStore() *fakeUserStore {
 		byID:    make(map[uuid.UUID]user.User),
 		byEmail: make(map[string]user.User),
 		bySAML:  make(map[string]user.User),
+		byOIDC:  make(map[string]user.User),
 	}
 }
 
@@ -32,6 +34,9 @@ func (f *fakeUserStore) Create(_ context.Context, u user.User) error {
 	f.byEmail[u.Email] = u
 	if u.SAMLSubject != "" {
 		f.bySAML[u.SAMLSubject] = u
+	}
+	if u.OIDCSubject != "" {
+		f.byOIDC[u.OIDCSubject] = u
 	}
 	return nil
 }
@@ -60,11 +65,22 @@ func (f *fakeUserStore) GetBySAMLSubject(_ context.Context, subject string) (use
 	return u, nil
 }
 
+func (f *fakeUserStore) GetByOIDCSubject(_ context.Context, subject string) (user.User, error) {
+	u, ok := f.byOIDC[subject]
+	if !ok {
+		return user.User{}, errors.New("not found")
+	}
+	return u, nil
+}
+
 func (f *fakeUserStore) Update(_ context.Context, u user.User) error {
 	f.byID[u.ID] = u
 	f.byEmail[u.Email] = u
 	if u.SAMLSubject != "" {
 		f.bySAML[u.SAMLSubject] = u
+	}
+	if u.OIDCSubject != "" {
+		f.byOIDC[u.OIDCSubject] = u
 	}
 	return nil
 }

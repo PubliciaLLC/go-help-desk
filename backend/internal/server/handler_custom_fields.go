@@ -26,10 +26,10 @@ func (s *Server) handleListFieldDefs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateFieldDef(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name      string            `json:"name"`
+		Name      string                `json:"name"`
 		FieldType customfield.FieldType `json:"field_type"`
-		Options   []string          `json:"options"`
-		SortOrder int               `json:"sort_order"`
+		Options   []string              `json:"options"`
+		SortOrder int                   `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -55,11 +55,11 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      *string            `json:"name"`
+		Name      *string                `json:"name"`
 		FieldType *customfield.FieldType `json:"field_type"`
-		Options   []string           `json:"options"`
-		SortOrder *int               `json:"sort_order"`
-		Active    *bool              `json:"active"`
+		Options   []string               `json:"options"`
+		SortOrder *int                   `json:"sort_order"`
+		Active    *bool                  `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")

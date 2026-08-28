@@ -1,12 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/crewjam/saml/samlsp"
 	"github.com/gorilla/sessions"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -264,4 +266,40 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	session, _ := s.sessions.Get(r, auth.SessionName)
 	session.Values["session"] = sd
 	return session.Save(r, w)
+}
+
+// handleAuthProviders returns available authentication providers.
+func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	type Provider struct {
+		Name    string `json:"name"`
+		Enabled bool   `json:"enabled"`
+	}
+
+	response := struct {
+		Providers []Provider `json:"providers"`
+	}{
+		Providers: []Provider{
+			{
+				Name:    "local",
+				Enabled: true,
+			},
+			{
+				Name: "saml",
+				Enabled: s.adminSvc.SAMLEnabled(ctx) &&
+					s.adminSvc.SAMLConfigured(ctx),
+			},
+			{
+				Name: "oidc",
+				Enabled: func() bool {
+					v, _ := s.adminSvc.GetBool(ctx, admin.KeyOIDCEnabled)
+					return v
+				}(),
+			},
+		},
+	}
+
+	json.NewEncoder(w).Encode(response)
 }

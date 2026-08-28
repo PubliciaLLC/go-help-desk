@@ -24,7 +24,9 @@ require (
 require (
 	github.com/beevik/etree v1.6.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
+	github.com/coreos/go-oidc/v3 v3.20.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
@@ -38,6 +40,7 @@ require (
 	github.com/russellhaering/goxmldsig v1.6.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

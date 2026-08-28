@@ -24,9 +24,9 @@ import (
 )
 
 const (
-	attachMaxBytes    = 25 << 20 // 25 MB
-	attachSubdir      = "tickets"
-	jpegQuality       = 85
+	attachMaxBytes = 25 << 20 // 25 MB
+	attachSubdir   = "tickets"
+	jpegQuality    = 85
 )
 
 // allowedExt maps lowercase extensions to the MIME type we store.
