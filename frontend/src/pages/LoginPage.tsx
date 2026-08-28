@@ -126,28 +126,6 @@ export function LoginPage() {
         <CardContent>
           {step === 'credentials' && (
             <>
-              {providers.oidc && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full mb-2"
-                  onClick={() => window.location.href = '/api/v1/auth/oidc/login'}
-                >
-                  Sign in with OIDC
-                </Button>
-              )}
-
-              {providers.saml && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="w-full mb-4"
-                  onClick={() => window.location.href = '/api/v1/auth/saml/login'}
-                >
-                  Sign in with SAML SSO
-                </Button>
-              )}
-
               <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-1">
                 <Label htmlFor="email">Email</Label>
@@ -185,6 +163,15 @@ export function LoginPage() {
               )}
 
             </form>
+	    {providers.oidc && (
+              <Button
+                type="button"
+                className="w-full mt-3 bg-green-600 text-white hover:bg-green-700"
+                onClick={() => window.location.href = '/api/v1/auth/oidc/login'}
+               >
+                Sign in with OIDC
+               </Button>
+             )}
             </>
           )}
 
