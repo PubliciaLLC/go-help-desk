@@ -14,6 +14,7 @@ type Store interface {
 	GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetByEmail(ctx context.Context, email string) (User, error)
 	GetBySAMLSubject(ctx context.Context, subject string) (User, error)
+	GetByOIDCSubject(ctx context.Context, subject string) (User, error)
 	Update(ctx context.Context, u User) error
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 	Restore(ctx context.Context, id uuid.UUID) error

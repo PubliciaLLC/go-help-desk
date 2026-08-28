@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus } from '@/api/auth'
+import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus, getAuthProviders } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -22,9 +22,28 @@ export function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
+  const [providers, setProviders] = useState({
+    password: true,
+    saml: false,
+    oidc: false,
+  })
 
   useEffect(() => {
     getSignupStatus().then(({ enabled }) => setSignupEnabled(enabled)).catch(() => {})
+
+    getAuthProviders()
+      .then((data) => {
+        const enabled = Object.fromEntries(
+          data.providers.map((provider) => [provider.name, provider.enabled])
+        )
+
+        setProviders({
+          password: enabled.local ?? false,
+          saml: enabled.saml ?? false,
+          oidc: enabled.oidc ?? false,
+        })
+      })
+      .catch(() => {})
   }, [])
 
   async function completeLogin() {
@@ -106,7 +125,8 @@ export function LoginPage() {
         </CardHeader>
         <CardContent>
           {step === 'credentials' && (
-            <form onSubmit={handleLogin} className="space-y-4">
+            <>
+              <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-1">
                 <Label htmlFor="email">Email</Label>
                 <Input
@@ -141,7 +161,18 @@ export function LoginPage() {
                   </Link>
                 </p>
               )}
+
             </form>
+	    {providers.oidc && (
+              <Button
+                type="button"
+                className="w-full mt-3 bg-green-600 text-white hover:bg-green-700"
+                onClick={() => window.location.href = '/api/v1/auth/oidc/login'}
+               >
+                Sign in with OIDC
+               </Button>
+             )}
+            </>
           )}
 
           {step === 'verify' && (
