@@ -174,6 +174,11 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Put("/", s.handleSaveSAMLConfig)
 	})
 
+	r.Route("/oidc", func(r chi.Router) {
+		r.Get("/", s.handleGetOIDCConfig)
+		r.Put("/", s.handleSaveOIDCConfig)
+	})
+
 	r.Route("/plugins", func(r chi.Router) {
 		r.Get("/", s.handleListPlugins)
 		r.Post("/", s.handleInstallPlugin)
