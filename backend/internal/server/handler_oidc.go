@@ -5,14 +5,16 @@ import (
 	"net/http"
 	"strings"
 
-	"golang.org/x/oauth2"
-
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
 func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 
-	if s.oidcProvider == nil {
+	s.oidcMu.RLock()
+	provider := s.oidcProvider
+	s.oidcMu.RUnlock()
+
+	if provider == nil {
 		Error(w,
 			http.StatusServiceUnavailable,
 			"oidc_not_configured",
@@ -33,17 +35,18 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	url := s.oidcProvider.Config.AuthCodeURL(
-		state,
-		oauth2.AccessTypeOffline,
-	)
+	url := provider.AuthorizationURL(state)
 
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
-	if s.oidcProvider == nil {
+	s.oidcMu.RLock()
+	provider := s.oidcProvider
+	s.oidcMu.RUnlock()
+
+	if provider == nil {
 		Error(w,
 			http.StatusServiceUnavailable,
 			"oidc_not_configured",
@@ -92,7 +95,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.oidcProvider.Config.Exchange(
+	token, err := provider.Exchange(
 		r.Context(),
 		code,
 	)
@@ -112,7 +115,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idToken, err := s.oidcProvider.Verifier.Verify(
+	idToken, err := provider.VerifyIDToken(
 		r.Context(),
 		rawIDToken,
 	)

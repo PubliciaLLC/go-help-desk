@@ -189,7 +189,9 @@ func run() error {
 	)
 
 	srv.InitSAML(ctx)
-	srv.InitOIDC(ctx)
+	if err := srv.InitOIDC(ctx); err != nil {
+		slog.Warn("OIDC initialization failed at startup", "error", err)
+	}
 
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
 	mcpSrv := mcp.New(ticketSvc)

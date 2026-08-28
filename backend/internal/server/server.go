@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"encoding/gob"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -85,6 +86,10 @@ type Server struct {
 	// samlMu guards samlHandler. The handler is nil when SAML is not configured.
 	samlMu      sync.RWMutex
 	samlHandler *samlsp.Middleware
+
+	// oidcMu guards oidcProvider because OIDC configuration can be
+	// reloaded at runtime from the admin settings UI.
+	oidcMu sync.RWMutex
 
 	// oidcProvider contains the configured OpenID Connect provider.
 	oidcProvider *auth.OIDCProvider
@@ -276,42 +281,48 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 
 // InitOIDC initializes the OpenID Connect provider.
 // OIDC is optional; startup continues when it is not configured.
-func (s *Server) InitOIDC(ctx context.Context) {
-
+func (s *Server) InitOIDC(ctx context.Context) error {
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
 
+	// OIDC is explicitly disabled. Clear the active provider.
 	if !cfg.Enabled {
+		s.oidcMu.Lock()
 		s.oidcProvider = nil
-		return
+		s.oidcMu.Unlock()
+		return nil
 	}
 
+	// Enabled but incomplete configuration is invalid.
 	if cfg.IssuerURL == "" ||
 		cfg.ClientID == "" ||
 		cfg.ClientSecret == "" {
-
-		slog.Warn("OIDC enabled but configuration incomplete")
-		s.oidcProvider = nil
-		return
+		err := fmt.Errorf("OIDC configuration is incomplete")
+		slog.Warn("OIDC provider not loaded", "error", err)
+		return err
 	}
 
 	if cfg.RedirectURL == "" {
-		cfg.RedirectURL = s.cfg.BaseURL + "/api/v1/auth/oidc/callback"
+		cfg.RedirectURL = s.cfg.BaseURL +
+			"/api/v1/auth/oidc/callback"
 	}
 
-	provider, err := auth.NewOIDCProvider(
-		ctx,
-		cfg,
-	)
-
+	// Discover and initialize the new provider BEFORE replacing the
+	// currently active provider. If discovery fails, leave the existing
+	// provider untouched so a bad admin change cannot take OIDC offline.
+	provider, err := auth.NewOIDCProvider(ctx, cfg)
 	if err != nil {
-		slog.Warn("OIDC provider not loaded", "error", err)
-		s.oidcProvider = nil
-		return
+		slog.Warn("OIDC provider reload failed; keeping existing provider",
+			"error", err)
+		return fmt.Errorf("OIDC provider initialization failed: %w", err)
 	}
 
+	// Swap only after successful initialization.
+	s.oidcMu.Lock()
 	s.oidcProvider = provider
+	s.oidcMu.Unlock()
 
 	slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
+	return nil
 }
 
 func (s *Server) InitSAML(ctx context.Context) {

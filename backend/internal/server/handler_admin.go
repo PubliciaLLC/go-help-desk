@@ -950,6 +950,14 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reload the in-memory OIDC provider immediately after persisting.
+	// InitOIDC is fail-safe: on discovery/initialization failure it leaves
+	// the currently active provider untouched and reports the error here.
+	if err := s.InitOIDC(ctx); err != nil {
+		handleError(w, err)
+		return
+	}
+
 	JSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 	})
