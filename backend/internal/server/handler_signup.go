@@ -13,9 +13,9 @@ import (
 func (s *Server) handleSignupStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	JSON(w, http.StatusOK, map[string]any{
-		"enabled":          s.adminSvc.SelfSignupEnabled(ctx),
+		"enabled":           s.adminSvc.SelfSignupEnabled(ctx),
 		"open_registration": s.adminSvc.OpenRegistrationEnabled(ctx),
-		"saml_enabled":     s.adminSvc.SAMLEnabled(ctx),
+		"saml_enabled":      s.adminSvc.SAMLEnabled(ctx),
 	})
 }
 
@@ -101,4 +101,3 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		"mfa_enrollment_needed": mfaEnrollmentNeeded,
 	})
 }
-

@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
@@ -206,6 +206,126 @@ function SAMLSection() {
         {saved && !warning && <p className="text-sm text-green-600">SAML config saved.</p>}
         {warning && <p className="text-sm text-amber-600">{warning}</p>}
       </div>
+    </div>
+  )
+}
+
+
+// ── OIDC section ─────────────────────────────────────────────────────────────
+
+function OIDCSection() {
+  const qc = useQueryClient()
+
+  const [issuerURL, setIssuerURL] = useState('')
+  const [clientID, setClientID] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [redirectURL, setRedirectURL] = useState('')
+  const [enabled, setEnabled] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  const { data: oidc, isLoading } = useQuery({
+    queryKey: ['admin', 'oidc'],
+    queryFn: getOIDCConfig,
+  })
+
+  useEffect(() => {
+    if (oidc) {
+      setIssuerURL(oidc.issuer_url)
+      setClientID(oidc.client_id)
+      setClientSecret(oidc.client_secret)
+      setRedirectURL(oidc.redirect_url)
+      setEnabled(oidc.enabled)
+    }
+  }, [oidc])
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      saveOIDCConfig({
+        enabled,
+        issuer_url: issuerURL,
+        client_id: clientID,
+        client_secret: clientSecret,
+        redirect_url: redirectURL,
+      }),
+    onSuccess: () => {
+      setSaved(true)
+      qc.invalidateQueries({queryKey:['admin','oidc']})
+      setTimeout(() => setSaved(false), 3000)
+    },
+  })
+
+  if (isLoading)
+    return <div className="py-4 text-center text-sm text-gray-400">Loading…</div>
+
+  return (
+    <div className="space-y-4 px-5 py-4">
+
+      <div className="flex items-center gap-3">
+        <Toggle checked={enabled} onChange={setEnabled}/>
+        <span className="text-sm font-medium text-gray-700">
+          Enable OIDC login
+        </span>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700">
+          Issuer URL
+        </label>
+        <Input
+          value={issuerURL}
+          onChange={e => setIssuerURL(e.target.value)}
+          className="max-w-lg font-mono text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700">
+          Client ID
+        </label>
+        <Input
+          value={clientID}
+          onChange={e => setClientID(e.target.value)}
+          className="max-w-lg font-mono text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700">
+          Client Secret
+        </label>
+        <Input
+          type="password"
+          value={clientSecret}
+          onChange={e => setClientSecret(e.target.value)}
+          className="max-w-lg font-mono text-sm"
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-700">
+          Redirect URL
+        </label>
+        <Input
+          value={redirectURL}
+          onChange={e => setRedirectURL(e.target.value)}
+          className="max-w-lg font-mono text-sm"
+        />
+      </div>
+
+      <Button
+        size="sm"
+        onClick={() => saveMutation.mutate()}
+        disabled={saveMutation.isPending}
+      >
+        {saveMutation.isPending ? 'Saving…' : 'Save OIDC config'}
+      </Button>
+
+      {saved &&
+        <p className="text-sm text-green-600">
+          OIDC config saved.
+        </p>
+      }
+
     </div>
   )
 }
@@ -465,6 +585,10 @@ function AuthPanel({
             </div>
           )}
         </div>
+      </Section>
+
+      <Section title="OIDC / OpenID Connect">
+        <OIDCSection />
       </Section>
 
       <Section title="Multi-factor authentication">

@@ -48,7 +48,7 @@ export function DashboardPage() {
         ) : (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
             {statuses?.filter((s) => s.active).map((s) => (
-              <Link key={s.id} to="/tickets" search={{ status: s.id }} className="block group">
+              <Link key={s.id} to="/tickets" search={{ status: s.id, reporter: undefined }} className="block group">
                 <Card className="border-l-4 transition-shadow group-hover:shadow-md cursor-pointer" style={{ borderLeftColor: s.color }}>
                   <CardHeader className="pb-1">
                     <CardTitle className="text-sm font-medium text-gray-500">{s.name}</CardTitle>
@@ -63,7 +63,7 @@ export function DashboardPage() {
         )}
 
         <div className="flex gap-4">
-          <Link to="/tickets" search={{ status: undefined }}>
+          <Link to="/tickets" search={{ status: undefined, reporter: undefined }}>
             <Button variant="outline">View all tickets</Button>
           </Link>
         </div>

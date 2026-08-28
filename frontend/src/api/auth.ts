@@ -57,3 +57,16 @@ export async function verifyEmail(token: string): Promise<LoginResponse> {
   const res = await api.post<LoginResponse>('/auth/verify-email', { token })
   return res.data
 }
+
+
+export interface AuthProviders {
+  password: boolean
+  saml: boolean
+  oidc: boolean
+}
+
+export async function getAuthProviders(): Promise<AuthProviders> {
+  const res = await api.get<AuthProviders>('/auth/providers')
+  return res.data
+}
+

@@ -29,6 +29,7 @@ type User struct {
 	MFASecret    string     `json:"-"`
 	MFAEnabled   bool       `json:"mfa_enabled"`
 	SAMLSubject  string     `json:"-"`
+	OIDCSubject  string     `json:"-"`
 	Disabled     bool       `json:"disabled"`
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`

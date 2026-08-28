@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus } from '@/api/auth'
+import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus, getAuthProviders } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -22,9 +22,18 @@ export function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
+  const [providers, setProviders] = useState({
+    password: true,
+    saml: false,
+    oidc: false,
+  })
 
   useEffect(() => {
     getSignupStatus().then(({ enabled }) => setSignupEnabled(enabled)).catch(() => {})
+
+    getAuthProviders()
+      .then((data) => setProviders(data))
+      .catch(() => {})
   }, [])
 
   async function completeLogin() {
@@ -106,7 +115,30 @@ export function LoginPage() {
         </CardHeader>
         <CardContent>
           {step === 'credentials' && (
-            <form onSubmit={handleLogin} className="space-y-4">
+            <>
+              {providers.oidc && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full mb-2"
+                  onClick={() => window.location.href = '/api/v1/auth/oidc/login'}
+                >
+                  Sign in with OIDC
+                </Button>
+              )}
+
+              {providers.saml && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full mb-4"
+                  onClick={() => window.location.href = '/api/v1/auth/saml/login'}
+                >
+                  Sign in with SAML SSO
+                </Button>
+              )}
+
+              <form onSubmit={handleLogin} className="space-y-4">
               <div className="space-y-1">
                 <Label htmlFor="email">Email</Label>
                 <Input
@@ -141,7 +173,9 @@ export function LoginPage() {
                   </Link>
                 </p>
               )}
+
             </form>
+            </>
           )}
 
           {step === 'verify' && (

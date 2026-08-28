@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/google/uuid"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 )
 
 // Service provides typed access to the settings table.
@@ -96,10 +98,68 @@ func (s *Service) GetSAMLConfig(ctx context.Context) (metadataURL, certPEM, keyP
 	return
 }
 
+// GetOIDCConfig returns the OIDC configuration stored in settings.
+func (s *Service) GetOIDCConfig(ctx context.Context) auth.OIDCConfig {
+
+	enabled, _ := s.GetBool(ctx, KeyOIDCEnabled)
+
+	issuerURL, _ := s.GetString(ctx, KeyOIDCIssuerURL)
+	clientID, _ := s.GetString(ctx, KeyOIDCClientID)
+	clientSecret, _ := s.GetString(ctx, KeyOIDCClientSecret)
+	redirectURL, _ := s.GetString(ctx, KeyOIDCRedirectURL)
+
+	return auth.OIDCConfig{
+		Enabled:      enabled,
+		IssuerURL:    issuerURL,
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+	}
+}
+
 // SAMLConfigured returns true when all three SAML fields are non-empty.
 func (s *Service) SAMLConfigured(ctx context.Context) bool {
 	u, c, k := s.GetSAMLConfig(ctx)
 	return u != "" && c != "" && k != ""
+}
+
+// OIDCConfigured returns true when required OIDC settings exist.
+func (s *Service) OIDCConfigured(ctx context.Context) bool {
+
+	cfg := s.GetOIDCConfig(ctx)
+
+	return cfg.IssuerURL != "" &&
+		cfg.ClientID != "" &&
+		cfg.ClientSecret != ""
+}
+
+// SetOIDCConfig persists OIDC provider configuration.
+func (s *Service) SetOIDCConfig(
+	ctx context.Context,
+	cfg auth.OIDCConfig,
+) error {
+
+	if err := s.SetBool(ctx, KeyOIDCEnabled, cfg.Enabled); err != nil {
+		return fmt.Errorf("saving oidc_enabled: %w", err)
+	}
+
+	if err := s.SetString(ctx, KeyOIDCIssuerURL, cfg.IssuerURL); err != nil {
+		return fmt.Errorf("saving oidc_issuer_url: %w", err)
+	}
+
+	if err := s.SetString(ctx, KeyOIDCClientID, cfg.ClientID); err != nil {
+		return fmt.Errorf("saving oidc_client_id: %w", err)
+	}
+
+	if err := s.SetString(ctx, KeyOIDCClientSecret, cfg.ClientSecret); err != nil {
+		return fmt.Errorf("saving oidc_client_secret: %w", err)
+	}
+
+	if err := s.SetString(ctx, KeyOIDCRedirectURL, cfg.RedirectURL); err != nil {
+		return fmt.Errorf("saving oidc_redirect_url: %w", err)
+	}
+
+	return nil
 }
 
 // SetSAMLConfig persists the three SAML SP fields.

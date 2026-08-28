@@ -219,6 +219,32 @@ export async function saveSAMLConfig(input: {
   return res.data ?? {}
 }
 
+
+// ── OIDC ─────────────────────────────────────────────────────────────────────
+
+export interface OIDCConfig {
+  enabled: boolean
+  issuer_url: string
+  client_id: string
+  client_secret: string
+  redirect_url: string
+  configured: boolean
+}
+
+export async function getOIDCConfig(): Promise<OIDCConfig> {
+  const res = await api.get<OIDCConfig>('/admin/oidc')
+  return res.data
+}
+
+export async function saveOIDCConfig(input: {
+  enabled: boolean
+  issuer_url: string
+  client_id: string
+  client_secret: string
+}): Promise<void> {
+  await api.put('/admin/oidc', input)
+}
+
 // ── Logo ─────────────────────────────────────────────────────────────────────
 
 export async function uploadLogo(file: File): Promise<{ url: string }> {

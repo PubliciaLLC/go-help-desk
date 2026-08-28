@@ -14,12 +14,17 @@ func (s *Server) authRouter() *chi.Mux {
 	r.Post("/local/mfa/verify", s.handleMFAVerify)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
+	r.Get("/providers", s.handleAuthProviders)
 
 	// SAML routes are always registered; each handler returns 503 when not configured.
 	r.Get("/saml/login", s.handleSAMLLogin)
+
+	r.Get("/oidc/login", s.handleOIDCLogin)
 	r.Post("/saml/acs", s.handleSAMLACS)
 	r.Get("/saml/metadata", s.handleSAMLMetadata)
 	r.Get("/saml/complete", s.handleSAMLComplete)
+
+	r.Get("/oidc/callback", s.handleOIDCCallback)
 
 	// Self-service signup (enabled/disabled via admin settings).
 	r.Get("/signup/status", s.handleSignupStatus)

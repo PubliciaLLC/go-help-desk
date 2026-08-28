@@ -189,6 +189,7 @@ func run() error {
 	)
 
 	srv.InitSAML(ctx)
+	srv.InitOIDC(ctx)
 
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
 	mcpSrv := mcp.New(ticketSvc)

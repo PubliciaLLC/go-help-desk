@@ -30,6 +30,7 @@ func (s *Store) Create(ctx context.Context, u user.User) error {
 		MfaSecret:    u.MFASecret,
 		MfaEnabled:   u.MFAEnabled,
 		SamlSubject:  u.SAMLSubject,
+		OidcSubject:  u.OIDCSubject,
 		CreatedAt:    u.CreatedAt,
 		UpdatedAt:    u.UpdatedAt,
 	})
@@ -59,6 +60,17 @@ func (s *Store) GetBySAMLSubject(ctx context.Context, subject string) (user.User
 	return fromRow(row), nil
 }
 
+func (s *Store) GetByOIDCSubject(ctx context.Context, subject string) (user.User, error) {
+
+	row, err := s.q.GetUserByOIDCSubject(ctx, subject)
+
+	if err != nil {
+		return user.User{}, wrapNotFound(err, "user by OIDC subject", subject)
+	}
+
+	return fromRow(row), nil
+}
+
 func (s *Store) Update(ctx context.Context, u user.User) error {
 	return s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
 		ID:           u.ID,
@@ -69,6 +81,7 @@ func (s *Store) Update(ctx context.Context, u user.User) error {
 		MfaSecret:    u.MFASecret,
 		MfaEnabled:   u.MFAEnabled,
 		SamlSubject:  u.SAMLSubject,
+		OidcSubject:  u.OIDCSubject,
 		UpdatedAt:    time.Now(),
 	})
 }
@@ -150,6 +163,7 @@ func fromRow(r dbgen.User) user.User {
 		MFASecret:    r.MfaSecret,
 		MFAEnabled:   r.MfaEnabled,
 		SAMLSubject:  r.SamlSubject,
+		OIDCSubject:  r.OidcSubject,
 		Disabled:     r.Disabled,
 		CreatedAt:    r.CreatedAt,
 		UpdatedAt:    r.UpdatedAt,

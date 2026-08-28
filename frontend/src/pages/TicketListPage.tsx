@@ -207,7 +207,7 @@ export function TicketListPage() {
                 <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: s.color }} />
                 {s.name}
               </span>
-              <Link to="/tickets" search={{ status: undefined }} className="text-xs text-gray-400 hover:text-gray-600">
+              <Link to="/tickets" search={{ status: undefined, reporter: undefined }} className="text-xs text-gray-400 hover:text-gray-600">
                 Clear ×
               </Link>
             </div>
