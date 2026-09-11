@@ -1,0 +1,49 @@
+name: PR test guard
+
+# Flags pull requests that add or change Go code without tests.
+#
+# This exists because CLAUDE.md requires a test before an implementation, and
+# that rule was previously enforced only by whoever happened to read the diff.
+# PR #55 (OIDC authentication) added 1,118 lines across 37 files with zero new
+# tests, and four security defects shipped inside that untested code. This
+# workflow is the mechanical backstop.
+#
+# What it cannot do: tell a real test from a line that only makes a fake satisfy
+# a new interface. It checks that a test plausibly exists, not that it asserts
+# anything useful. Reviewers still have to read the tests.
+#
+# Uses `pull_request`, so fork PRs run with a read-only token and no secrets.
+# Findings surface as annotations on the Files-changed tab plus a job summary,
+# which needs no write permission — deliberately avoiding the
+# `pull_request_target` + PR-comment pattern, which would expose a writable
+# token to contributor code.
+
+on:
+  pull_request:
+
+concurrency:
+  group: test-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Tests accompany code changes
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The guard diffs against the base branch, so it needs real history.
+          fetch-depth: 0
+
+      - name: Check that changed Go code has tests
+        run: |
+          base="origin/${{ github.base_ref }}"
+          git rev-parse --verify --quiet "$base" >/dev/null || {
+            echo "::error::Cannot resolve base ref '$base'."
+            exit 1
+          }
+          scripts/check-test-coverage.sh "$base" HEAD
