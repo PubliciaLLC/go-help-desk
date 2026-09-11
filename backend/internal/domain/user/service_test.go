@@ -19,7 +19,7 @@ import (
 // already do this (userstore.ErrNotFound), but internal/domain must not import
 // internal/database, so the fix is a domain-level sentinel (e.g. user.ErrNotFound)
 // that the stores wrap. When that lands, point this var at it.
-var errFakeNotFound = errors.New("not found")
+var errFakeNotFound = user.ErrNotFound
 
 // fakeUserStore is an in-memory implementation of user.Store for unit tests.
 type fakeUserStore struct {

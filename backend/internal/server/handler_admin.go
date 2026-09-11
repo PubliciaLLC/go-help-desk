@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
@@ -1035,15 +1036,26 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
+// secretSettingKeys are write-only over the API: they are accepted by
+// PATCH /admin/settings but never returned by the settings dump. The dedicated
+// endpoints blank them for the same reason (see handleGetOIDCConfig).
+var secretSettingKeys = map[string]struct{}{
+	admin.KeyOIDCClientSecret: {},
+	admin.KeySAMLKeyPEM:       {},
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	all, err := s.adminSvc.ListAll(r.Context())
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	// Convert raw bytes to JSON-parseable map.
+	// Convert raw bytes to JSON-parseable map, omitting secrets.
 	out := make(map[string]json.RawMessage, len(all))
 	for k, v := range all {
+		if _, secret := secretSettingKeys[k]; secret {
+			continue
+		}
 		out[k] = json.RawMessage(v)
 	}
 	JSON(w, http.StatusOK, out)
