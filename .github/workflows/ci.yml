@@ -196,3 +196,28 @@ jobs:
             exit 1
           fi
           echo "All ${#files[@]} changed Go file(s) are gofmt-clean."
+
+  image:
+    name: Docker image (build)
+    runs-on: ubuntu-latest
+
+    # Builds the runtime image the way docker-compose does: context at the repo
+    # root, Dockerfile at backend/Dockerfile. Nothing else in CI exercises the
+    # Dockerfile, which is how PR #55 shipped a `COPY certs/*` for a directory
+    # that does not exist in the repo — every `docker build` failed from that
+    # merge until it was reverted, and no check noticed.
+    #
+    # Build only; the image is not pushed anywhere.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
