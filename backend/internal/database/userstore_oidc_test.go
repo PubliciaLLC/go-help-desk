@@ -33,8 +33,8 @@ func oidcUser(email, subject string) user.User {
 // is a `:one` query — with duplicates present it silently returns whichever row
 // Postgres hands back first, so a login can land on the wrong account.
 //
-// The index must be UNIQUE and partial (WHERE oidc_subject != ''), mirroring
-// the SAML one, because '' is the "not federated" sentinel shared by every
+// The index must be UNIQUE and partial (excluding the empty string), mirroring
+// the SAML one, because the empty string is the "not federated" sentinel shared by every
 // local account.
 func TestUserStore_OIDCSubjectIsUnique(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
@@ -53,7 +53,7 @@ func TestUserStore_OIDCSubjectIsUnique(t *testing.T) {
 }
 
 // TestUserStore_OIDCSubjectAllowsManyEmpty is the other half of the constraint:
-// every local-only account stores '', so the unique index must be partial.
+// every local-only account stores the empty string, so the unique index must be partial.
 func TestUserStore_OIDCSubjectAllowsManyEmpty(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
@@ -95,7 +95,7 @@ func TestGetUserByOIDCSubject_ExcludesSoftDeleted(t *testing.T) {
 }
 
 // TestGetUserByOIDCSubject_EmptySubjectNeverMatches guards the sentinel: looking
-// up '' must not return one of the many local accounts that store it.
+// up the empty string must not return one of the many local accounts that store it.
 func TestGetUserByOIDCSubject_EmptySubjectNeverMatches(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
