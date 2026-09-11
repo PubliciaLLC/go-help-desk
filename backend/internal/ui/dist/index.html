@@ -1,0 +1,12 @@
+<!doctype html>
+<!--
+  Placeholder so that internal/ui's //go:embed dist directive resolves in a
+  fresh checkout. Without a file here, `go build ./...` and `go test ./...`
+  fail with "pattern dist: no matching files found" before any test runs.
+
+  The real SPA overwrites this directory: the Docker build copies
+  frontend/dist into it, and CI restores it from the frontend job's artifact.
+  .gitignore ignores everything in this directory except this file.
+-->
+<title>Go Help Desk</title>
+<p>Frontend not built. Run <code>npm run build</code> in <code>frontend/</code>, or use the Docker build.</p>

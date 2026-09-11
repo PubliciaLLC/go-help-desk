@@ -83,6 +83,28 @@ go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./
 TEST_DATABASE_URL="..." go test ./... -race -count=1
 ```
 
+### Test-coverage guard
+
+CI fails a pull request that adds or changes Go code without tests. Run the same
+check locally before you push:
+
+```sh
+scripts/check-test-coverage.sh            # defaults to origin/main...HEAD
+scripts/check-test-coverage.sh main HEAD  # or name the refs explicitly
+```
+
+It reports two levels:
+
+- **Blocking** — a change lands in a package with no tests at all, or adds a new
+  `.go` file with no test accompanying it.
+- **Warning** — a package with existing tests was changed but no test changed
+  with it. Not fatal, but if the change alters behaviour, a test should move too.
+
+Generated and wiring-only paths are exempt; the list is at the top of the
+script. Note that the guard only checks a test *exists* — it cannot tell a real
+assertion from a line that makes a fake satisfy a new interface. It is a floor,
+not a substitute for reading the tests.
+
 ---
 
 ## Schema changes

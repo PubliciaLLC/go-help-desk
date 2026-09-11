@@ -100,12 +100,21 @@ function SAMLSection() {
     queryFn: getSAMLConfig,
   })
 
+  /* The effects below seed local form state from a react-query result. That is
+     the cascading-render pattern react-hooks/set-state-in-effect warns about
+     (https://react.dev/learn/you-might-not-need-an-effect). Suppressed here,
+     not refactored: switching the lint gate on should not also change how the
+     admin forms behave. TODO: derive the state, or remount the form with a key.
+     eslint-disable-next-line is not enough — the rule reports at each setState
+     call, so the whole effect is wrapped. */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (saml) {
       setMetadataURL(saml.metadata_url)
       setCertPEM(saml.cert_pem)
     }
   }, [saml])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   function readFile(file: File, setter: (v: string) => void) {
     const reader = new FileReader()
@@ -228,6 +237,9 @@ function OIDCSection() {
     queryFn: getOIDCConfig,
   })
 
+  /* Same pattern as the SAML effect above — see the note there. Suppressed, not
+     refactored, so enabling the lint gate does not change admin form behaviour. */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (oidc) {
       setIssuerURL(oidc.issuer_url ?? '')
@@ -236,6 +248,7 @@ function OIDCSection() {
       setEnabled(oidc.enabled ?? false)
     }
   }, [oidc])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -1055,9 +1068,18 @@ export function SettingsPage() {
     queryFn: getSettings,
   })
 
+  /* The effects below seed local form state from a react-query result. That is
+     the cascading-render pattern react-hooks/set-state-in-effect warns about
+     (https://react.dev/learn/you-might-not-need-an-effect). Suppressed here,
+     not refactored: switching the lint gate on should not also change how the
+     admin forms behave. TODO: derive the state, or remount the form with a key.
+     eslint-disable-next-line is not enough — the rule reports at each setState
+     call, so the whole effect is wrapped. */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (settings) setLocal(settings)
   }, [settings])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
     mutationFn: () => updateSettings(local),

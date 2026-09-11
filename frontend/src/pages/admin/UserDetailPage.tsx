@@ -73,6 +73,14 @@ export function UserDetailPage() {
     queryFn: listGroups,
   })
 
+  /* The effects below seed local form state from a react-query result. That is
+     the cascading-render pattern react-hooks/set-state-in-effect warns about
+     (https://react.dev/learn/you-might-not-need-an-effect). Suppressed here,
+     not refactored: switching the lint gate on should not also change how the
+     admin forms behave. TODO: derive the state, or remount the form with a key.
+     eslint-disable-next-line is not enough — the rule reports at each setState
+     call, so the whole effect is wrapped. */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (user) {
       setDisplayName(user.display_name)
@@ -80,6 +88,7 @@ export function UserDetailPage() {
       setRole(user.role)
     }
   }, [user])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['admin', 'users', id] })
