@@ -26,18 +26,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /app ./cmd/server
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.23.5
 
+# ca-certificates is required: the server makes outbound HTTPS calls to the
+# identity provider for OIDC discovery and JWKS, and a scratch Alpine image has
+# no root store for Go's TLS stack to verify against.
 RUN apk add --no-cache \
     ca-certificates \
     openssl \
     curl
-
-# For Alpine-based images
-RUN apk update && apk upgrade --no-cache
-
-# Install EDTN CA chain into the runtime trust store
-COPY certs/* /usr/local/share/ca-certificates/
-
-RUN update-ca-certificates
 
 RUN addgroup -S ohd && adduser -S ohd -G ohd
 
