@@ -172,7 +172,9 @@ func fromRow(r dbgen.User) user.User {
 }
 
 // ErrNotFound is returned by Get* methods when the record does not exist.
-var ErrNotFound = errors.New("not found")
+// It wraps user.ErrNotFound so that domain code — which cannot import this
+// package — can distinguish a missing row from a store failure.
+var ErrNotFound = fmt.Errorf("user store: %w", user.ErrNotFound)
 
 func wrapNotFound(err error, kind, id string) error {
 	if errors.Is(err, sql.ErrNoRows) {

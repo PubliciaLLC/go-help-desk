@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -57,7 +58,11 @@ func NewOIDCProvider(
 	)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf(
+			"OIDC discovery for issuer %q: %w",
+			cfg.IssuerURL,
+			err,
+		)
 	}
 
 	verifier := provider.Verifier(

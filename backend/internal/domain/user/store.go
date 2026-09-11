@@ -2,9 +2,16 @@ package user
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 )
+
+// ErrNotFound is the sentinel every Store wraps when a lookup finds no row.
+// It lives here, not in the store package, because internal/domain must not
+// import internal/database: the service needs to tell "no such record" apart
+// from "the store failed", and this is the only shared vocabulary for it.
+var ErrNotFound = errors.New("not found")
 
 // Store is the persistence interface for users.
 // Implementations live in internal/database/userstore.

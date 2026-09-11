@@ -2,6 +2,7 @@ package user
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -146,12 +147,32 @@ func (s *Service) VerifyMFACode(ctx context.Context, userID uuid.UUID, code stri
 	return nil
 }
 
-// ErrDomainNotAllowed is returned when an email's domain is not in the allowlist.
-var ErrDomainNotAllowed = fmt.Errorf("email domain not allowed")
+// Federated-login refusals. They are sentinels so that the HTTP boundary can
+// map them to status codes instead of reporting an internal error.
+var (
+	// ErrDomainNotAllowed is returned when an email's domain is not in the allowlist.
+	ErrDomainNotAllowed = errors.New("email domain not allowed")
 
-// isEmailDomainAllowed returns true when the email domain matches one of the
+	// ErrUserDisabled is returned when the matched account may not authenticate.
+	ErrUserDisabled = errors.New("user account is disabled")
+
+	// ErrAccountLinkRefused is returned when an external identity asks to adopt
+	// an existing local account that must not be handed over.
+	ErrAccountLinkRefused = errors.New("refusing to link external identity to an existing account")
+
+	// ErrSubjectRequired is returned when an external identity arrives without a
+	// stable subject claim, which is malformed: the subject is the only
+	// immutable key a federated account can be bound to.
+	ErrSubjectRequired = errors.New("a federated subject is required")
+
+	// ErrEmailRequired is returned when a federated identity carries no usable
+	// email address, so no account can be provisioned for it.
+	ErrEmailRequired = errors.New("a usable email address is required")
+)
+
+// IsEmailDomainAllowed returns true when the email domain matches one of the
 // allowed domains, or when the allowed list is empty (unrestricted).
-func isEmailDomainAllowed(email string, allowed []string) bool {
+func IsEmailDomainAllowed(email string, allowed []string) bool {
 	if len(allowed) == 0 {
 		return true
 	}
@@ -198,88 +219,119 @@ func (s *Service) UpsertFederatedUser(
 	)
 }
 
-// UpsertOIDCUser creates or updates a user record based on an OIDC identity.
+// UpsertOIDCUser creates or updates a user record from an OIDC identity.
 //
-// OIDC providers identify users using the immutable "sub" claim.
-// Email is used only as a secondary lookup key.
+// The "sub" claim is the primary key: it is immutable and scoped to the
+// provider. Email is only a secondary lookup key, used to adopt an account that
+// already exists locally the first time its owner logs in through the IdP — and
+// only when that account is safe to adopt (see canAdoptByEmail).
+//
+// Callers must pass an empty email when the IdP has not verified it: an
+// unverified address is not evidence of who owns it. An empty email is never
+// used to look anything up, and never overwrites a stored address.
+//
+// The signature carries no allowed-domain list: the caller enforces that policy
+// (see IsEmailDomainAllowed), because for OIDC it applies to the whole login,
+// not only to just-in-time provisioning.
 func (s *Service) UpsertOIDCUser(
 	ctx context.Context,
 	oidcSubject string,
 	email string,
 	displayName string,
 ) (User, error) {
+	oidcSubject = strings.TrimSpace(oidcSubject)
+	email = strings.ToLower(strings.TrimSpace(email))
+	displayName = strings.TrimSpace(displayName)
 
-	u, err := s.store.GetByOIDCSubject(
-		ctx,
-		oidcSubject,
-	)
+	// An identity with no subject cannot be bound to an account. The subject
+	// lookup would miss (the query ignores empty subjects), so without this
+	// guard every such login would re-run the email-adoption path and store a
+	// user whose OIDCSubject is empty — leaving the "already bound to another
+	// subject" check permanently disarmed for that account.
+	if oidcSubject == "" {
+		return User{}, ErrSubjectRequired
+	}
 
-	if err == nil {
-
-		u.Email = strings.ToLower(strings.TrimSpace(email))
-
+	u, err := s.store.GetByOIDCSubject(ctx, oidcSubject)
+	switch {
+	case err == nil:
+		// Known identity — sync the profile from the claims we were given.
+		if !u.IsActive() {
+			return User{}, ErrUserDisabled
+		}
+		if email != "" {
+			u.Email = email
+		}
 		if displayName != "" {
 			u.DisplayName = displayName
 		}
-
 		u.UpdatedAt = time.Now()
-
 		if err := s.store.Update(ctx, u); err != nil {
-			return User{}, err
+			return User{}, fmt.Errorf("updating OIDC user: %w", err)
 		}
-
 		return u, nil
+	case !errors.Is(err, ErrNotFound):
+		// A store failure is not a missing row: falling through here would
+		// create a second account for an identity that already has one.
+		return User{}, fmt.Errorf("looking up user by OIDC subject: %w", err)
 	}
 
 	if email != "" {
-
-		u, err = s.store.GetByEmail(
-			ctx,
-			strings.ToLower(strings.TrimSpace(email)),
-		)
-
-		if err == nil {
-
+		u, err := s.store.GetByEmail(ctx, email)
+		switch {
+		case err == nil:
+			if err := canAdoptByEmail(u, oidcSubject); err != nil {
+				return User{}, err
+			}
 			u.OIDCSubject = oidcSubject
-			u.UpdatedAt = time.Now()
-
 			if displayName != "" {
 				u.DisplayName = displayName
 			}
-
+			u.UpdatedAt = time.Now()
 			if err := s.store.Update(ctx, u); err != nil {
-				return User{}, err
+				return User{}, fmt.Errorf("linking OIDC subject to user: %w", err)
 			}
-
 			return u, nil
+		case !errors.Is(err, ErrNotFound):
+			return User{}, fmt.Errorf("looking up user by email: %w", err)
 		}
+		return s.Create(ctx, CreateUserInput{
+			Email:       email,
+			DisplayName: displayName,
+			Role:        RoleUser,
+			OIDCSubject: oidcSubject,
+		})
 	}
 
-	u = User{
-		ID:          uuid.New(),
-		Email:       strings.ToLower(strings.TrimSpace(email)),
-		DisplayName: strings.TrimSpace(displayName),
-		Role:        RoleStaff,
-		OIDCSubject: oidcSubject,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
+	// No subject match and no address to provision from.
+	return User{}, ErrEmailRequired
+}
 
-	if err := u.Validate(); err != nil {
-		return User{}, err
+// canAdoptByEmail reports whether an unknown OIDC subject may take over the
+// local account found by email address. Adopting an account hands it to
+// whoever the IdP says owns that address, so it is allowed only for an active,
+// unprivileged account that is not already federated.
+func canAdoptByEmail(u User, oidcSubject string) error {
+	switch {
+	case !u.IsActive():
+		return ErrUserDisabled
+	case u.Role == RoleAdmin:
+		return fmt.Errorf("%w: the account is an administrator", ErrAccountLinkRefused)
+	case u.SAMLSubject != "":
+		return fmt.Errorf("%w: the account already federates via SAML", ErrAccountLinkRefused)
+	case u.OIDCSubject != "" && u.OIDCSubject != oidcSubject:
+		return fmt.Errorf("%w: the account is bound to another OIDC subject", ErrAccountLinkRefused)
 	}
-
-	if err := s.store.Create(ctx, u); err != nil {
-		return User{}, err
-	}
-
-	return u, nil
+	return nil
 }
 
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	u, err := s.store.GetBySAMLSubject(ctx, samlSubject)
 	if err == nil {
 		// Existing user — sync profile (domain restriction does not apply to existing users).
+		if !u.IsActive() {
+			return User{}, ErrUserDisabled
+		}
 		u.Email = strings.ToLower(strings.TrimSpace(email))
 		u.DisplayName = strings.TrimSpace(displayName)
 		u.UpdatedAt = time.Now()
@@ -289,7 +341,7 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 		return u, nil
 	}
 	// New user — enforce domain restriction before creating.
-	if !isEmailDomainAllowed(email, allowedDomains) {
+	if !IsEmailDomainAllowed(email, allowedDomains) {
 		return User{}, ErrDomainNotAllowed
 	}
 	return s.Create(ctx, CreateUserInput{

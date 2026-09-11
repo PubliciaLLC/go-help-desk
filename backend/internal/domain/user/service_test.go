@@ -12,12 +12,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// errFakeNotFound is what the fake returns when a lookup finds no row.
+//
+// NOTE for whoever fixes the federated-login defects: the service layer needs a
+// way to tell "no such row" apart from "the database blew up". The real stores
+// already do this (userstore.ErrNotFound), but internal/domain must not import
+// internal/database, so the fix is a domain-level sentinel (e.g. user.ErrNotFound)
+// that the stores wrap. When that lands, point this var at it.
+var errFakeNotFound = user.ErrNotFound
+
 // fakeUserStore is an in-memory implementation of user.Store for unit tests.
 type fakeUserStore struct {
 	byID    map[uuid.UUID]user.User
 	byEmail map[string]user.User
 	bySAML  map[string]user.User
 	byOIDC  map[string]user.User
+
+	// Call counters, so tests can assert that a rejected login neither
+	// created nor mutated a user record.
+	creates int
+	updates int
+
+	// Injectable getter failures, to simulate a transient database error.
+	errGetByOIDC  error
+	errGetByEmail error
+	errGetBySAML  error
+}
+
+// seed inserts a user directly, without touching the call counters.
+func (f *fakeUserStore) seed(u user.User) {
+	f.byID[u.ID] = u
+	f.byEmail[u.Email] = u
+	if u.SAMLSubject != "" {
+		f.bySAML[u.SAMLSubject] = u
+	}
+	if u.OIDCSubject != "" {
+		f.byOIDC[u.OIDCSubject] = u
+	}
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -30,6 +61,7 @@ func newFakeUserStore() *fakeUserStore {
 }
 
 func (f *fakeUserStore) Create(_ context.Context, u user.User) error {
+	f.creates++
 	f.byID[u.ID] = u
 	f.byEmail[u.Email] = u
 	if u.SAMLSubject != "" {
@@ -50,30 +82,40 @@ func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (user.User, err
 }
 
 func (f *fakeUserStore) GetByEmail(_ context.Context, email string) (user.User, error) {
+	if f.errGetByEmail != nil {
+		return user.User{}, f.errGetByEmail
+	}
 	u, ok := f.byEmail[email]
 	if !ok {
-		return user.User{}, errors.New("not found")
+		return user.User{}, errFakeNotFound
 	}
 	return u, nil
 }
 
 func (f *fakeUserStore) GetBySAMLSubject(_ context.Context, subject string) (user.User, error) {
+	if f.errGetBySAML != nil {
+		return user.User{}, f.errGetBySAML
+	}
 	u, ok := f.bySAML[subject]
 	if !ok {
-		return user.User{}, errors.New("not found")
+		return user.User{}, errFakeNotFound
 	}
 	return u, nil
 }
 
 func (f *fakeUserStore) GetByOIDCSubject(_ context.Context, subject string) (user.User, error) {
+	if f.errGetByOIDC != nil {
+		return user.User{}, f.errGetByOIDC
+	}
 	u, ok := f.byOIDC[subject]
 	if !ok {
-		return user.User{}, errors.New("not found")
+		return user.User{}, errFakeNotFound
 	}
 	return u, nil
 }
 
 func (f *fakeUserStore) Update(_ context.Context, u user.User) error {
+	f.updates++
 	f.byID[u.ID] = u
 	f.byEmail[u.Email] = u
 	if u.SAMLSubject != "" {
