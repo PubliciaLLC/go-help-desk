@@ -16,6 +16,14 @@ type SessionData struct {
 	// OIDCState stores the temporary OAuth2 state value used during login.
 	// It is cleared after callback validation.
 	OIDCState string
+
+	// OIDCNonce is the nonce sent with the authorization request. The callback
+	// requires the ID token to echo it back.
+	OIDCNonce string
+
+	// OIDCCodeVerifier is the PKCE code_verifier whose challenge was sent with
+	// the authorization request. It is presented at token exchange.
+	OIDCCodeVerifier string
 }
 
 const SessionName = "ohd_session"

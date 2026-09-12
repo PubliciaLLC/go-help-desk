@@ -34,7 +34,7 @@ Start the backend server:
 ```sh
 DATABASE_URL="postgres://localhost:5432/helpdesk_dev?sslmode=disable" \
 BASE_URL="http://localhost:8080" \
-SESSION_SECRET="dev-session-secret-change-me" \
+SESSION_SECRET="dev-session-secret-change-me-32c" \
 JWT_SECRET="dev-jwt-secret-change-me" \
 APP_ENV=development \
 go run ./cmd/server

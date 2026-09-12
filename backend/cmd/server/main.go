@@ -148,7 +148,13 @@ func run() error {
 
 	// ── Auth helpers ──────────────────────────────────────────────────────────
 	gob.Register(auth.SessionData{})
-	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
+	// Two derived keys, not one raw secret: the second encrypts the cookie, so
+	// session contents are no longer readable by whoever holds it.
+	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
+	if err != nil {
+		return fmt.Errorf("deriving session keys: %w", err)
+	}
+	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
 	sessionStore.Options = &sessions.Options{
 		Path:     "/",
 		MaxAge:   86400 * 30,
