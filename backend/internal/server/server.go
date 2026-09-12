@@ -34,6 +34,34 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
 )
 
+// Server holds its domain services as concrete types, not interfaces, and does
+// so deliberately.
+//
+// Inverting them was raised as an architecture finding (#73) on the grounds
+// that the HTTP tests cannot run without Postgres. That is true, but the cost
+// and the benefit were both measured before deciding:
+//
+//   - The handlers call 140 distinct methods across the eleven services, so
+//     the change is ~140 interface declarations plus ~140 fake methods to get
+//     a database-free harness.
+//   - The pain it was meant to relieve is gone. The suite took 209s in CI
+//     when the finding was written; it takes ~15s now, and the cause was
+//     bcrypt at production cost (#68), not the coupling. Locally it is 5s
+//     against an ephemeral container that takes 15s to start (#67).
+//   - CLAUDE.md is explicit: "Do not mock the DB. Mocks hide the bugs that
+//     matter most." These tests earn that rule — they have caught a missing
+//     claim producing a 500, unique-index behaviour, and foreign-key
+//     violations that service-level fakes would have sailed past.
+//
+// The three fields below that ARE interfaces — OAuthClientLookup,
+// AuthStoreIface, APIKeyAuthFunc — exist for a different reason: they are
+// narrow contracts consumed across a package boundary, not seams introduced
+// for testing. That is the distinction, and it is why eleven concrete services
+// sitting beside three interfaces is not an unfinished refactor.
+//
+// Revisit if the services grow behaviour worth testing at the HTTP layer
+// without a database, or if the integration suite becomes slow again.
+
 // ProtectMCP wraps an MCP handler in exactly the middleware chain that guards
 // /api/, then restricts it to staff and administrators.
 //
