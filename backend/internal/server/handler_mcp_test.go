@@ -16,9 +16,10 @@ import (
 // unauthenticated caller could read any ticket by tracking number and post
 // replies while naming any user as the author.
 //
-// ProtectMCP applies the same chain as /api/ and narrows the surface to staff
-// and admins. The sentinel handler below stands in for the MCP server: what
-// matters is whether the request reaches it at all.
+// ProtectMCP applies the same chain as /api/. It authenticates every caller and
+// refuses anyone who is not a signed-in user; what a given role may then DO is
+// decided per tool in internal/mcp, not here. The sentinel handler below stands
+// in for the MCP server: what matters is whether the request reaches it at all.
 func TestProtectMCP(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -40,12 +41,17 @@ func TestProtectMCP(t *testing.T) {
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			// The HTTP API lets a RoleUser read their own tickets by scoping
-			// each handler. MCP does no such scoping, so a RoleUser must not
-			// reach it at all rather than reach it unscoped.
-			name:       "a reporting user is refused",
+			// Reporting users reach MCP so they can read their own tickets.
+			// The transport admits them; it does not decide what they may do.
+			// Every tool gates its own writes on staff and filters its own
+			// reads through the Authorizer — see internal/mcp's
+			// TestWriteTools_RefuseReportingUsers and
+			// TestBuildListFilter_CallerCannotWidenVisibility, which are the
+			// checks that make widening here safe.
+			name:       "a reporting user is admitted, and gated per tool",
 			authHeader: "ApiKey " + h.userKey,
-			wantStatus: http.StatusForbidden,
+			wantStatus: http.StatusOK,
+			wantReach:  true,
 		},
 		{
 			name:       "staff are allowed through",

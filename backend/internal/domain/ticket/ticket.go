@@ -20,6 +20,17 @@ const (
 	PriorityLow      Priority = "low"
 )
 
+// Valid reports whether p is one of the four levels. The database enforces the
+// same set with a CHECK constraint; this lets a caller reject a bad value with
+// a useful message instead of a constraint violation.
+func (p Priority) Valid() bool {
+	switch p {
+	case PriorityCritical, PriorityHigh, PriorityMedium, PriorityLow:
+		return true
+	}
+	return false
+}
+
 // StatusKind distinguishes the three system statuses from admin-defined ones.
 // Resolved and Closed have hardcoded lifecycle semantics; New is the starting
 // point. Everything else is Custom.

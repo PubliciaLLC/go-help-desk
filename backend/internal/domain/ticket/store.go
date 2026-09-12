@@ -58,6 +58,7 @@ type Store interface {
 	// and silently skips rows.
 	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
 	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+	ListFiltered(ctx context.Context, f Filter) ([]Ticket, error)
 
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)

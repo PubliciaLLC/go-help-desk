@@ -125,6 +125,21 @@ type Querier interface {
 	ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error)
 	ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error)
 	ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error)
+	// The MCP list surface: one query carrying every optional filter plus the
+	// visibility rule, rather than the caller choosing among the eight
+	// single-purpose list/search queries above and then filtering in Go.
+	//
+	// Visibility is three cases, not a patchable special case:
+	//   unrestricted   — an admin, or staff while scope enforcement is off
+	//   reporter_only  — a reporting user, who sees only tickets they reported
+	//   otherwise      — the DESIGN.md staff scope (same predicate as
+	//                    ListTicketsVisibleToStaff)
+	//
+	// Every other filter is NULL-means-absent, so one prepared statement serves
+	// all combinations. Filtering and paginating in the same statement is what
+	// keeps pages full: a page fetched and then filtered returns short pages and
+	// skips rows.
+	ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error)
 	// Every ticket a staff member may see under DESIGN.md's scope model: reported
 	// by them, assigned to them, assigned to one of their groups, or falling in a
 	// Category/Type their groups cover. A NULL group_scopes.type_id is a
