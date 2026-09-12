@@ -37,13 +37,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { MessageSquareTextIcon } from 'lucide-react'
 import type { Group, User, StatusHistoryEntry, TicketFieldValue, Category, TicketType, TicketItem, CannedResponse } from '@/api/types'
-
-function priorityVariant(p: string) {
-  if (p === 'critical') return 'destructive'
-  if (p === 'high') return 'warning'
-  if (p === 'medium') return 'default'
-  return 'secondary'
-}
+import { priorityVariant } from '@/lib/format'
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString()
