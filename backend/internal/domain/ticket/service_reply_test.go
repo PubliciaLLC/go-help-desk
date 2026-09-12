@@ -18,6 +18,7 @@ import (
 type harness struct {
 	svc        *ticket.Service
 	store      *fakeStore
+	statuses   *fakeStatusStore
 	dispatcher *fakeDispatcher
 	auditStore *fakeAuditStore
 	sla        *fakeSLA
@@ -34,14 +35,18 @@ func newHarness(t *testing.T) *harness {
 	resolvedSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameResolved, Kind: ticket.StatusKindSystem, Active: true}
 	closedSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameClosed, Kind: ticket.StatusKindSystem, Active: true}
 
-	statuses := &fakeStatusStore{byName: map[string]ticket.Status{
-		ticket.StatusNameNew:      newSt,
-		ticket.StatusNameResolved: resolvedSt,
-		ticket.StatusNameClosed:   closedSt,
-	}}
+	statuses := &fakeStatusStore{
+		byName: map[string]ticket.Status{
+			ticket.StatusNameNew:      newSt,
+			ticket.StatusNameResolved: resolvedSt,
+			ticket.StatusNameClosed:   closedSt,
+		},
+		counts: make(map[uuid.UUID]int64),
+	}
 
 	h := &harness{
 		store:          newFakeStore(),
+		statuses:       statuses,
 		dispatcher:     &fakeDispatcher{},
 		auditStore:     &fakeAuditStore{},
 		sla:            &fakeSLA{},
@@ -202,4 +207,49 @@ func TestAddReply_InternalNoteNeverNotifiesCustomer(t *testing.T) {
 	require.True(t, reply.Internal)
 	require.False(t, reply.NotifyCustomer,
 		"an internal note must never be flagged for customer notification")
+}
+
+// statusNamed returns a seeded status by name, failing loudly on a typo rather
+// than silently returning a zero Status.
+func (h *harness) statusNamed(name string) ticket.Status {
+	st, ok := h.statuses.byName[name]
+	if !ok {
+		panic("no seeded status named " + name)
+	}
+	return st
+}
+
+// seedOpen plants a ticket in New.
+func (h *harness) seedOpen() ticket.Ticket {
+	reporter := uuid.New()
+	t := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: "HD-000100",
+		Subject:        "Open ticket",
+		ReporterUserID: &reporter,
+		StatusID:       h.newStatus.ID,
+		CreatedAt:      time.Now().Add(-2 * time.Hour),
+		UpdatedAt:      time.Now().Add(-2 * time.Hour),
+	}
+	h.store.seed(t)
+	return t
+}
+
+// seedClosed plants a ticket in Closed, with the timestamps a real close leaves.
+func (h *harness) seedClosed() ticket.Ticket {
+	reporter := uuid.New()
+	closedAt := time.Now().Add(-time.Hour)
+	t := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: "HD-000101",
+		Subject:        "Closed ticket",
+		ReporterUserID: &reporter,
+		StatusID:       h.closedStatus.ID,
+		ResolvedAt:     &closedAt,
+		ClosedAt:       &closedAt,
+		CreatedAt:      time.Now().Add(-4 * time.Hour),
+		UpdatedAt:      closedAt,
+	}
+	h.store.seed(t)
+	return t
 }
