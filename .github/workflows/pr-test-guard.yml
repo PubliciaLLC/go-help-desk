@@ -1,12 +1,18 @@
 name: PR test guard
 
-# Flags pull requests that add or change Go code without tests.
+# Flags pull requests that add or change Go or TypeScript code without tests.
 #
 # This exists because CLAUDE.md requires a test before an implementation, and
 # that rule was previously enforced only by whoever happened to read the diff.
 # PR #55 (OIDC authentication) added 1,118 lines across 37 files with zero new
 # tests, and four security defects shipped inside that untested code. This
 # workflow is the mechanical backstop.
+#
+# Go and TypeScript are held to deliberately different standards: an untested Go
+# package blocks, an untested TypeScript directory only warns. The frontend had
+# no tests at all until #81, so blocking there would fail every frontend PR on
+# day one — and a check that always fails gets switched off. See
+# needs_test_to_exist in scripts/check-test-coverage.sh.
 #
 # What it cannot do: tell a real test from a line that only makes a fake satisfy
 # a new interface. It checks that a test plausibly exists, not that it asserts
@@ -39,7 +45,7 @@ jobs:
           # The guard diffs against the base branch, so it needs real history.
           fetch-depth: 0
 
-      - name: Check that changed Go code has tests
+      - name: Check that changed code has tests
         run: |
           base="origin/${{ github.base_ref }}"
           git rev-parse --verify --quiet "$base" >/dev/null || {
