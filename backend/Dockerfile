@@ -26,13 +26,14 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /app ./cmd/server
 # ── Stage 3: Runtime ──────────────────────────────────────────────────────────
 FROM alpine:3.23.5
 
-# ca-certificates is required: the server makes outbound HTTPS calls to the
-# identity provider for OIDC discovery and JWKS, and a scratch Alpine image has
+# ca-certificates only, and it is required: the server makes outbound HTTPS
+# calls to the identity provider for OIDC discovery and JWKS, and Alpine ships
 # no root store for Go's TLS stack to verify against.
-RUN apk add --no-cache \
-    ca-certificates \
-    openssl \
-    curl
+#
+# Nothing else belongs here. The binary is CGO_ENABLED=0 and never shells out,
+# so any other package is reachable by an attacker who gets execution in this
+# container without being reachable by the application.
+RUN apk add --no-cache ca-certificates
 
 RUN addgroup -S ohd && adduser -S ohd -G ohd
 
