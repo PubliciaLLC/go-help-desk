@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/gob"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -182,6 +183,9 @@ func newHarness(t *testing.T) (*harness, func()) {
 	// store rather than a signed-only one production never uses.
 	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
 	require.NoError(t, err)
+	// Session cookies carry SessionData as gob. cmd/server registers it the
+	// same way; there is no init() doing it behind anyone's back.
+	gob.Register(auth.SessionData{})
 	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
 
 	srv := server.New(
@@ -995,6 +999,9 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	// store rather than a signed-only one production never uses.
 	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
 	require.NoError(t, err)
+	// Session cookies carry SessionData as gob. cmd/server registers it the
+	// same way; there is no init() doing it behind anyone's back.
+	gob.Register(auth.SessionData{})
 	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
 
 	srv := server.New(
