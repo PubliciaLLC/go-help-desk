@@ -649,9 +649,6 @@ func ticketMap(t Ticket) map[string]any {
 	}
 }
 
-// ErrNotFound is returned when a requested resource does not exist.
-var ErrNotFound = errors.New("not found")
-
 // ErrValidation wraps input-validation failures from Create, so callers
 // (the HTTP handler) can map them to 400 instead of the 500 handleError
 // falls back to for an unrecognized error.

@@ -11,9 +11,6 @@ import (
 // ErrDeleted is returned when a staff member tries to use a soft-deleted tag.
 var ErrDeleted = errors.New("tag has been deleted and can only be restored by an admin")
 
-// ErrNotFound is returned when a tag lookup by name or ID yields no result.
-var ErrNotFound = errors.New("tag not found")
-
 // Service encapsulates tag business logic.
 type Service struct {
 	store Store
