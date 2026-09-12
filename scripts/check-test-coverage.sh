@@ -143,6 +143,27 @@ added_lines() {
   git diff --numstat "${BASE_REF}...${HEAD_REF}" -- "$f" | awk '{print $1; exit}'
 }
 
+# is_whitespace_only reports whether a change to a file survives `git diff -w`.
+#
+# A diff that ignoring-whitespace erases entirely is indentation, alignment or
+# trailing-comment columns — gofmt's output. It cannot change behaviour, so
+# demanding a test for it is noise, and worse, it makes formatting a file more
+# expensive than leaving it unformatted.
+#
+# This is checked before the untested-package rule below, which otherwise fires
+# on any change to a package with no tests, including a purely cosmetic one. A
+# reformat of such a package was previously blocked with no way to comply short
+# of writing tests for code the change never touched.
+#
+# Narrow on purpose: `-w` ignores whitespace only. Reordering imports, renaming
+# anything, or moving a line past a non-blank neighbour all survive it and are
+# checked normally — verified against a real one-line addition, which the guard
+# still blocks.
+is_whitespace_only() {
+  local f="$1"
+  [[ -z "$(git diff -w "${BASE_REF}...${HEAD_REF}" -- "$f")" ]]
+}
+
 declare -a code_files=()
 for f in "${changed[@]}"; do
   [[ -n "$f" ]] || continue
@@ -150,6 +171,7 @@ for f in "${changed[@]}"; do
   # "-" is git's marker for a binary file; treat it as non-zero and check it.
   added="$(added_lines "$f")"
   [[ "$added" == "0" ]] && continue
+  is_whitespace_only "$f" && continue
   code_files+=("$f")
 done
 
