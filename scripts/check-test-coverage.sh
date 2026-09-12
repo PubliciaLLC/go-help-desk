@@ -78,10 +78,26 @@ mapfile -t changed < <(
     grep -v '_test\.go$' || true
 )
 
+# added_lines reports how many lines a change ADDS to a file. A file that only
+# loses lines is a pure deletion, even though git records it as "M" rather than
+# "D" — removing dead code from a still-live file looks like a modification.
+#
+# Such a change adds no behaviour, so demanding a test for it is noise. Worse,
+# it makes deleting dead code more expensive than leaving it, which is exactly
+# backwards: this guard exists to raise the cost of untested code, not to
+# protect code nobody calls.
+added_lines() {
+  local f="$1"
+  git diff --numstat "${BASE_REF}...${HEAD_REF}" -- "$f" | awk '{print $1; exit}'
+}
+
 declare -a code_files=()
 for f in "${changed[@]}"; do
   [[ -n "$f" ]] || continue
   is_exempt "$f" && continue
+  # "-" is git's marker for a binary file; treat it as non-zero and check it.
+  added="$(added_lines "$f")"
+  [[ "$added" == "0" ]] && continue
   code_files+=("$f")
 done
 
