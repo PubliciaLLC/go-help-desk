@@ -171,7 +171,46 @@ has_sibling_test() {
   git cat-file -e "${HEAD_REF}:${sibling}" 2>/dev/null
 }
 
+# pkg_decls lists a package's top-level declarations at a given ref, sorted.
+# Test files are excluded: they are the thing being demanded, not evidence.
+pkg_decls() {
+  local ref="$1" pkg="$2" f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ "$f" == *_test.go ]] && continue
+    git show "${ref}:${pkg}/${f}" 2>/dev/null | grep -E '^(func|type|var|const) ' || true
+  done < <(git ls-tree --name-only "$ref" "${pkg}/" 2>/dev/null | xargs -n1 basename 2>/dev/null) | sort
+}
+
+# pkg_is_pure_reorganisation reports whether a package gained files without
+# gaining behaviour — the shape of splitting an oversized file.
+#
+# Git cannot answer this. An 8-way split leaves every new file far below the
+# rename-similarity threshold, and lowering that threshold invents matches
+# between unrelated handlers (handler_tags.go -> handler_admin_credentials.go
+# at 18%). So the claim is verified rather than trusted, by comparing what the
+# package declares.
+#
+# The test is "declares nothing NEW", not "declares exactly the same". A split
+# that also removes something — dead code, a blank `var _` propping up an
+# import — is still a reorganisation, and removals need no test anyway. What
+# must not slip through is an ADDED declaration.
+#
+# Deliberately narrow: it exempts only the new-file rule. A change that moves
+# code and adds a function has that function in the added set and is checked
+# normally, and modified files are never exempted by it.
+pkg_is_pure_reorganisation() {
+  local pkg="$1"
+  local before after added
+  before="$(pkg_decls "$BASE_REF" "$pkg")"
+  after="$(pkg_decls "$HEAD_REF" "$pkg")"
+  [[ -n "$before" ]] || return 1
+  added="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))"
+  [[ -z "$added" ]]
+}
+
 declare -A reported_pkg=()
+declare -A reorg_pkg=()
 
 for f in "${code_files[@]}"; do
   pkg="$(dirname "$f")"
@@ -189,7 +228,18 @@ for f in "${code_files[@]}"; do
 
   if [[ -n "${is_new_file[$f]:-}" ]]; then
     # New source file in a tested package: require a test signal for it
-    # specifically, not just that the package was tested before.
+    # specifically, not just that the package was tested before — unless the
+    # package merely redistributed code it already had, which declares nothing
+    # new and so has nothing new to test. Computed once per package.
+    if [[ -z "${reorg_pkg[$pkg]:-}" ]]; then
+      if pkg_is_pure_reorganisation "$pkg"; then
+        reorg_pkg["$pkg"]=1
+      else
+        reorg_pkg["$pkg"]=0
+      fi
+    fi
+    [[ "${reorg_pkg[$pkg]}" == "1" ]] && continue
+
     if ! has_sibling_test "$f" && ! pkg_test_was_changed "$pkg"; then
       annotate error "$f" \
         "New file with no tests: neither ${f%.go}_test.go exists nor does this change touch any test in ${pkg}."
