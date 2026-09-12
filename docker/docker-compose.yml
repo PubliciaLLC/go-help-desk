@@ -68,8 +68,17 @@ services:
     environment:
       DATABASE_URL: postgres://helpdesk:helpdesk@db:5432/helpdesk?sslmode=disable
       BASE_URL: ${BASE_URL:-http://localhost:8080}
-      SESSION_SECRET: ${SESSION_SECRET}
-      JWT_SECRET: ${JWT_SECRET}
+      # ${VAR:?msg} makes compose refuse to start and print msg. Plain
+      # ${VAR} substitutes an empty string with only a warning, so a fresh
+      # clone with no .env started the app, failed the 32-character minimum,
+      # and — because this service restarts unless stopped — crash-looped with
+      # the reason buried in container logs. Fail before anything starts.
+      #
+      # Deliberately NOT given a default. A working out-of-the-box secret is a
+      # shared secret, and every deployment that forgot to change it would be
+      # forgeable by anyone who read this file.
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in docker/.env (min 32 chars) — copy docker/.env.example}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in docker/.env — copy docker/.env.example}
       HTTP_PORT: 8080
       # ClamAV — wired to the internal antivirus network; non-fatal if unavailable
       CLAMAV_ADDR: tcp://clamav:3310

@@ -162,6 +162,11 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Delete("/{id}", s.handleDeleteStatus)
 	})
 
+	// Admin-only, and deliberately not on the public /api/v1/site payload:
+	// telling anonymous visitors that this instance signs sessions with a
+	// publicly known key is an invitation, not a warning.
+	r.Get("/security-warnings", s.handleGetSecurityWarnings)
+
 	r.Route("/settings", func(r chi.Router) {
 		r.Get("/", s.handleGetSettings)
 		r.Patch("/", s.handleUpdateSettings)

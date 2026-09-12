@@ -85,6 +85,18 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
+	// A copied .env.example starts cleanly and is entirely forgeable: the
+	// example SESSION_SECRET is 47 characters, so the 32-character minimum
+	// does not catch it. Refusing to boot would be hostile to anyone kicking
+	// the tyres, so this is loud instead — at ERROR, repeated, and surfaced to
+	// administrators in the UI via /api/v1/admin/security-warnings.
+	if insecure := cfg.InsecureSecrets(); len(insecure) > 0 {
+		slog.Error("INSECURE CONFIGURATION: example secrets are in use",
+			"secrets", insecure,
+			"impact", "anyone can forge sessions or API tokens for this instance",
+			"fix", "generate real values with: openssl rand -base64 32")
+	}
+
 	// ── Database ─────────────────────────────────────────────────────────────
 	// Run migrations before opening the pool so the schema is always current.
 	if err := database.Migrate(ctx, database.MigrateURL(cfg.DatabaseURL)); err != nil {
