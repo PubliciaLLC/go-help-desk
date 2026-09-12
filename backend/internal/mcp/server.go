@@ -3,9 +3,14 @@
 //
 // This package does NOT authenticate anything itself. The handler it returns
 // must be wrapped by Server.ProtectMCP in internal/server, which applies the
-// same middleware chain as /api/ and restricts the surface to staff and
-// administrators. Mounting Handler() bare leaves every tool reachable with no
-// credentials.
+// same middleware chain as /api/. Mounting Handler() bare leaves every tool
+// reachable with no credentials.
+//
+// ProtectMCP authenticates but does not authorise: every signed-in role reaches
+// these tools, including RoleUser. Authorisation is each tool's own job — write
+// tools gate on requireStaff, and reads go through the Authorizer supplied by
+// the server, which is the same rule the REST API applies rather than a second
+// copy of it. A nil Authorizer denies rather than permits.
 //
 // Every tool takes the acting identity from the authenticated request, never
 // from its arguments. An earlier version accepted actor_user_id and

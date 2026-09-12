@@ -63,7 +63,7 @@ import (
 // without a database, or if the integration suite becomes slow again.
 
 // ProtectMCP wraps an MCP handler in exactly the middleware chain that guards
-// /api/, then restricts it to staff and administrators.
+// /api/, so every MCP call is authenticated.
 //
 // The MCP handler is mounted on the root ServeMux beside /api/ rather than
 // inside this router, so it never passed through the chain below. It was
@@ -72,10 +72,16 @@ import (
 // author. The package comment claimed it "uses the same auth methods (API key,
 // bearer token) as the REST API", which is presumably why nobody checked.
 //
-// Staff and admin only. The HTTP API lets a RoleUser read their own tickets by
-// scoping each handler, and duplicating that scoping here is how the two
-// surfaces drifted apart in the first place. MCP is an agent integration for
-// staff, so the narrower rule is both safer and simpler.
+// It authenticates; it does not authorise. Every signed-in role is admitted,
+// including RoleUser, and what a caller may then DO is decided per tool in
+// internal/mcp: write tools require staff, and reads are filtered through the
+// Authorizer this Server implements.
+//
+// That split is deliberate. This surface was originally narrowed to staff and
+// admin because duplicating the REST API's per-handler scoping here is how the
+// two drifted apart in the first place. Nothing is duplicated now — internal/mcp
+// consumes CanViewTicket and TicketVisibility rather than reimplementing them,
+// so there is one rule with two callers instead of two rules.
 //
 // RequireMFA is included for parity with ticketRouter — MCP must not be a way
 // to bypass a TOTP challenge. Machine credentials are unaffected: the API-key
