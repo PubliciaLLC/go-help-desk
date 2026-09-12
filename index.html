@@ -69,6 +69,21 @@
 </nav>
 
 <!-- ── Hero ──────────────────────────────────────────────────────────────── -->
+<!-- Security notice. Remove once v1.1.1 has been out long enough that
+     operators on affected versions have had a fair chance to upgrade. -->
+<div style="background:#7f1d1d;color:#fff;padding:.75rem 0;font-size:.9rem;">
+  <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
+    <strong>Security update:</strong>
+    <span style="flex:1;min-width:16rem;">
+      v1.1.1 closes an unauthenticated read/write path in the MCP server that affects every earlier release.
+      If <code style="background:rgba(255,255,255,.15);padding:.1rem .3rem;border-radius:3px;">/mcp/</code>
+      is reachable on your instance, upgrade now.
+    </span>
+    <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm"
+       style="color:#fff;text-decoration:underline;white-space:nowrap;">Read the advisory →</a>
+  </div>
+</div>
+
 <section class="hero">
   <div class="container">
     <div class="hero-badge">

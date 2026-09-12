@@ -124,149 +124,64 @@
 
 <h2 id="mcp-tools">Available tools</h2>
 
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>list_tickets</code>
-    <span>List open tickets with optional filters</span>
-    <span class="role-badge role-any">any role</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Returns a list of tickets the authenticated user has permission to view. Scope rules apply — a Staff user only sees tickets within their group scope.</p>
-    <h4 style="margin-top:0.5rem;margin-bottom:0.35rem;font-size:0.875rem;">Parameters</h4>
-    <table class="param-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>status</code></td><td>string (optional)</td><td>Filter by status name, e.g. <code>"New"</code> or <code>"In Progress"</code>.</td></tr>
-        <tr><td><code>priority</code></td><td>string (optional)</td><td><code>"Critical"</code>, <code>"High"</code>, <code>"Medium"</code>, or <code>"Low"</code>.</td></tr>
-        <tr><td><code>assignee_id</code></td><td>string (optional)</td><td>Filter to a specific assignee's tickets.</td></tr>
-        <tr><td><code>category</code></td><td>string (optional)</td><td>Filter by category name (case-insensitive).</td></tr>
-        <tr><td><code>q</code></td><td>string (optional)</td><td>Text search across subject and description.</td></tr>
-        <tr><td><code>limit</code></td><td>int (optional)</td><td>Maximum results to return (default: 20, max: 100).</td></tr>
-      </tbody>
-    </table>
-    <h4 style="margin-top:0.75rem;margin-bottom:0.35rem;font-size:0.875rem;">Example</h4>
-    <pre><code>list_tickets(status="New", priority="High", limit=10)</code></pre>
-  </div>
-</div>
+<p>Five tools, all requiring a Staff or Admin account. Identifiers are UUIDs.</p>
 
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>get_ticket</code>
-    <span>Retrieve a ticket with its full reply thread</span>
-    <span class="role-badge role-any">any role</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Returns the complete ticket including all replies (public and, for Staff/Admin, internal notes), linked tickets, and metadata.</p>
-    <table class="param-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
+<h3><code>get_ticket</code></h3>
+<p>Get a ticket by its UUID or tracking number.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>id</code></td><td>string (required)</td><td>Ticket UUID, or tracking number such as <code>OHD-2026-000001</code>.</td></tr>
+  </tbody>
+</table>
 
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>create_ticket</code>
-    <span>Submit a new support ticket</span>
-    <span class="role-badge role-any">any role</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Creates a ticket on behalf of the authenticated user. The ticket is attributed to the API key's owner as the submitter.</p>
-    <table class="param-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>subject</code></td><td>string (required)</td><td>Short summary, max 255 characters.</td></tr>
-        <tr><td><code>description</code></td><td>string (required)</td><td>Full detail of the request. Markdown supported.</td></tr>
-        <tr><td><code>category_id</code></td><td>string (required)</td><td>Category ULID. Use <code>list_categories</code> to get available IDs.</td></tr>
-        <tr><td><code>type_id</code></td><td>string (optional)</td><td>Type ULID.</td></tr>
-        <tr><td><code>item_id</code></td><td>string (optional)</td><td>Item ULID.</td></tr>
-        <tr><td><code>priority</code></td><td>string (optional)</td><td>Default: <code>"Medium"</code>.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
+<h3><code>list_tickets</code></h3>
+<p>List tickets assigned to a user.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>assignee_user_id</code></td><td>string (required)</td><td>Assignee user UUID.</td></tr>
+    <tr><td><code>limit</code></td><td>number (optional)</td><td>Maximum results. Default 20.</td></tr>
+    <tr><td><code>offset</code></td><td>number (optional)</td><td>Pagination offset.</td></tr>
+  </tbody>
+</table>
+<p>This lists by assignee only. It does not filter by status, priority, category or free text — use the REST API for those.</p>
 
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>reply_to_ticket</code>
-    <span>Add a public reply or internal note</span>
-    <span class="role-badge role-any">any role</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Adds a reply to a ticket's thread. Internal notes (<code>is_internal: true</code>) require Staff or Admin role — attempting to post an internal note as a User returns an error.</p>
-    <p>If the ticket is Resolved and within the reopen window, submitting a reply as a User automatically reopens the ticket.</p>
-    <table class="param-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID to reply to.</td></tr>
-        <tr><td><code>body</code></td><td>string (required)</td><td>Reply content. Markdown supported.</td></tr>
-        <tr><td><code>is_internal</code></td><td>bool (optional)</td><td>Default: <code>false</code>. If <code>true</code>, posts as an internal note visible only to Staff and Admins.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
+<h3><code>create_ticket</code></h3>
+<p>Open a new ticket.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>subject</code></td><td>string (required)</td><td>Short summary.</td></tr>
+    <tr><td><code>category_id</code></td><td>string (required)</td><td>Category UUID.</td></tr>
+    <tr><td><code>description</code></td><td>string (optional)</td><td>Full description.</td></tr>
+    <tr><td><code>priority</code></td><td>string (optional)</td><td><code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>. Default <code>medium</code>.</td></tr>
+    <tr><td><code>reporter_user_id</code></td><td>string (optional)</td><td>Who the ticket is <em>for</em>. Defaults to the authenticated caller.</td></tr>
+  </tbody>
+</table>
 
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>update_ticket_status</code>
-    <span>Change a ticket's status</span>
-    <span class="role-badge role-staff">staff / admin</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Transitions the ticket to a new status. Use <code>list_statuses</code> to get available status IDs.</p>
-    <table class="param-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID.</td></tr>
-        <tr><td><code>status_id</code></td><td>string (required)</td><td>The target status ULID.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
+<h3><code>add_reply</code></h3>
+<p>Add a reply to a ticket, authored by the authenticated caller.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID.</td></tr>
+    <tr><td><code>body</code></td><td>string (required)</td><td>Reply body.</td></tr>
+  </tbody>
+</table>
+<p>Replies posted through MCP are public and notify the reporter. There is no internal-note option here; use the REST API or the web UI for internal notes.</p>
 
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>assign_ticket</code>
-    <span>Assign a ticket to a staff member or group</span>
-    <span class="role-badge role-staff">staff / admin</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Assigns a ticket. Provide either <code>assignee_id</code> (a staff user) or <code>group_id</code> (a group), not both. Pass <code>null</code> to both to unassign.</p>
-    <table class="param-table">
-      <thead><tr><th>Name</th><th>Type</th><th>Description</th></tr></thead>
-      <tbody>
-        <tr><td><code>ticket_id</code></td><td>string (required)</td><td>The ticket ULID.</td></tr>
-        <tr><td><code>assignee_id</code></td><td>string (optional)</td><td>Staff user ULID to assign to.</td></tr>
-        <tr><td><code>group_id</code></td><td>string (optional)</td><td>Group ULID to assign to.</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>list_categories</code>
-    <span>List available ticket categories</span>
-    <span class="role-badge role-any">any role</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Returns all categories. Useful for getting category IDs before calling <code>create_ticket</code>.</p>
-  </div>
-</div>
-
-<div class="tool-card">
-  <div class="tool-card-header">
-    <code>list_statuses</code>
-    <span>List all ticket statuses</span>
-    <span class="role-badge role-any">any role</span>
-  </div>
-  <div class="tool-card-body">
-    <p>Returns all statuses with their IDs and names. Useful for getting status IDs before calling <code>update_ticket_status</code>.</p>
-  </div>
-</div>
-
+<h3><code>assign_ticket</code></h3>
+<p>Assign a ticket to a user or a group, performed as the authenticated caller.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID.</td></tr>
+    <tr><td><code>assignee_user_id</code></td><td>string (optional)</td><td>User UUID to assign to.</td></tr>
+    <tr><td><code>assignee_group_id</code></td><td>string (optional)</td><td>Group UUID to assign to.</td></tr>
+  </tbody>
+</table>
+<p>Omitting both clears the assignment.</p>
 
 <h2 id="mcp-connect">Connecting clients</h2>
 
@@ -326,14 +241,19 @@
 
 <h2 id="mcp-auth">Authentication</h2>
 
-<p>The MCP server uses the same authentication mechanisms as the REST API:</p>
+<div class="callout callout-warn">
+  <p><strong>Fixed in v1.1.1 — upgrade before exposing <code>/mcp/</code>.</strong> In v1.0.0, v1.0.1 and v1.1.0 the MCP server required <em>no authentication at all</em>: anyone who could reach the port could read and write any ticket. See <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm">GHSA-2x4f-j4jv-m2cm</a>.</p>
+</div>
+
+<p>Since v1.1.1 the MCP server sits behind the same authentication middleware as the REST API, and accepts any of:</p>
 
 <ul>
-  <li><strong>API key</strong> (recommended for long-lived client configs) — <code>Authorization: Bearer ohd_sk_...</code></li>
-  <li><strong>OAuth2 JWT</strong> (recommended for server-to-server) — obtain a token from <code>POST /api/auth/token</code>, include as <code>Authorization: Bearer &lt;jwt&gt;</code>. Tokens expire after 1 hour; your client must handle token refresh.</li>
+  <li><strong>API key</strong> (recommended for long-lived client configs) — <code>Authorization: ApiKey ohd_sk_...</code></li>
+  <li><strong>OAuth2 JWT</strong> (recommended for server-to-server) — obtain a token from <code>POST /api/v1/auth/oauth/token</code> and send it as <code>Authorization: Bearer &lt;jwt&gt;</code>.</li>
+  <li><strong>Session cookie</strong> — works, but is only useful from a browser context.</li>
 </ul>
 
-<p>Session cookies are not accepted by the MCP server — they require a browser context.</p>
+<p>Unauthenticated requests receive <code>401</code>. Requests from an account without the required role receive <code>403</code>.</p>
 
 <div class="callout callout-note">
   <p><strong>One API key per integration</strong> — create a dedicated API key for each AI assistant or integration that connects to the MCP server. This lets you revoke a single client's access without affecting others, and gives you a named audit trail in logs.</p>
@@ -342,24 +262,30 @@
 
 <h2 id="mcp-permissions">Permissions</h2>
 
-<p>Every MCP tool call is subject to the same permission system as the REST API. The permissions granted depend on the role of the account whose credentials are used.</p>
+<p><strong>The MCP server is restricted to Staff and Admin accounts.</strong> A reporting user receives <code>403</code> and cannot reach any tool, regardless of which ticket they are asking about.</p>
+
+<p>That is deliberately stricter than the REST API, which lets a reporting user read their own tickets by applying a scope check in each handler. Duplicating those checks in a second surface is how the two drifted apart in the first place, so the MCP surface takes the narrower rule instead.</p>
 
 <table>
-  <thead><tr><th>Tool</th><th>Minimum role</th><th>Scope applied?</th></tr></thead>
+  <thead><tr><th>Tool</th><th>Required role</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td><code>list_tickets</code></td><td>Any</td><td>Yes — Users see only their own tickets; Staff see their group scope.</td></tr>
-    <tr><td><code>get_ticket</code></td><td>Any</td><td>Yes — Users can only get their own tickets.</td></tr>
-    <tr><td><code>create_ticket</code></td><td>Any</td><td>N/A — ticket is attributed to the key owner.</td></tr>
-    <tr><td><code>reply_to_ticket</code> (public)</td><td>Any</td><td>Yes — Users can only reply to their own tickets.</td></tr>
-    <tr><td><code>reply_to_ticket</code> (internal)</td><td>Staff / Admin</td><td>Yes</td></tr>
-    <tr><td><code>update_ticket_status</code></td><td>Staff / Admin</td><td>Yes</td></tr>
-    <tr><td><code>assign_ticket</code></td><td>Staff / Admin</td><td>No — any Staff member can assign to any user or group.</td></tr>
-    <tr><td><code>list_categories</code></td><td>Any</td><td>N/A</td></tr>
-    <tr><td><code>list_statuses</code></td><td>Any</td><td>N/A</td></tr>
+    <tr><td><code>get_ticket</code></td><td>Staff / Admin</td><td>Any ticket, by UUID or tracking number.</td></tr>
+    <tr><td><code>list_tickets</code></td><td>Staff / Admin</td><td>Lists by assignee.</td></tr>
+    <tr><td><code>create_ticket</code></td><td>Staff / Admin</td><td>Reporter defaults to the authenticated caller.</td></tr>
+    <tr><td><code>add_reply</code></td><td>Staff / Admin</td><td>Authored by the authenticated caller.</td></tr>
+    <tr><td><code>assign_ticket</code></td><td>Staff / Admin</td><td>Performed as the authenticated caller.</td></tr>
   </tbody>
 </table>
 
-<p>If a tool call fails a permission check, the MCP server returns a structured error response and does not execute the operation. The AI assistant receives a description of the error and can inform the user.</p>
+<div class="callout callout-note">
+  <p><strong>No per-group scoping.</strong> A Staff account can reach any ticket through these tools, not only tickets in its own groups. This matches what the REST API allows a Staff account to do when fetching a ticket directly. If you need per-group restriction, do not grant MCP access to accounts that should not see every ticket.</p>
+</div>
+
+<p><strong>Identity comes from the request, never from a tool argument.</strong> Before v1.1.1, <code>add_reply</code> and <code>assign_ticket</code> accepted <code>author_user_id</code> and <code>actor_user_id</code> parameters — a caller named itself and the server believed it. Those parameters no longer exist. The one identity field that remains, <code>reporter_user_id</code> on <code>create_ticket</code>, names the <em>subject</em> of a ticket rather than the caller, because staff legitimately open tickets on someone's behalf.</p>
+
+<p>MFA is enforced for parity with the ticket API, so MCP cannot be used to sidestep a TOTP challenge. API keys and bearer tokens are unaffected.</p>
+
+<p>If a tool call fails a permission check, the MCP server returns a structured error and does not execute the operation. The assistant receives a description of the error and can inform the user.</p>
 
 
 <div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
