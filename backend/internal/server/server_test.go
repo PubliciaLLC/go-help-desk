@@ -175,7 +175,11 @@ func newHarness(t *testing.T) (*harness, func()) {
 		SessionSecret: "test-session-secret-32-bytes-long!",
 		JWTSecret:     "test-jwt-secret",
 	}
-	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
+	// Derived exactly as main.go does, so tests exercise the encrypted cookie
+	// store rather than a signed-only one production never uses.
+	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
+	require.NoError(t, err)
+	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
 
 	srv := server.New(
 		cfg,
@@ -982,7 +986,11 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		SessionSecret: "test-session-secret-32-bytes-long!",
 		JWTSecret:     "test-jwt-secret",
 	}
-	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
+	// Derived exactly as main.go does, so tests exercise the encrypted cookie
+	// store rather than a signed-only one production never uses.
+	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
+	require.NoError(t, err)
+	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
 
 	srv := server.New(
 		cfg,

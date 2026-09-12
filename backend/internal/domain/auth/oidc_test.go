@@ -17,6 +17,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 // ── Fake identity provider ───────────────────────────────────────────────────
@@ -270,8 +271,8 @@ func TestAuthorizationURL(t *testing.T) {
 	p, err := auth.NewOIDCProvider(context.Background(), idp.config("http://app.test/api/v1/auth/oidc/callback"))
 	require.NoError(t, err)
 
-	raw := p.AuthorizationURL("state-abc-123")
-	u, err := url.Parse(raw)
+	req := p.AuthorizationURL("state-abc-123")
+	u, err := url.Parse(req.URL)
 	require.NoError(t, err)
 	q := u.Query()
 
@@ -287,32 +288,53 @@ func TestAuthorizationURL(t *testing.T) {
 	require.Contains(t, scopes, "email")
 }
 
-// TestAuthorizationURL_NoNonceOrPKCE records defect 9 as it stands today: the
-// authorization request carries neither a nonce nor a PKCE challenge, and it
-// asks for offline access (a refresh token) that the callback then throws away.
-//
-// This test PASSES against the current code on purpose — it is a tripwire, not
-// an endorsement. When nonce + PKCE land, INVERT every assertion below: nonce
-// and code_challenge (with code_challenge_method=S256) must be present, and
-// access_type=offline must be dropped unless the refresh token is actually
-// stored and used. The test failing is the signal that the fix arrived.
-func TestAuthorizationURL_NoNonceOrPKCE(t *testing.T) {
+// TestAuthorizationURL_SendsNonceAndPKCE is the inverted form of the tripwire
+// that used to record defect 9. It previously asserted that nonce, PKCE and a
+// pointless offline-access request were all present-or-absent as shipped; the
+// assertions below are its opposite, and this test failing means the hardening
+// has been backed out.
+func TestAuthorizationURL_SendsNonceAndPKCE(t *testing.T) {
 	idp := newFakeIDP(t)
 	p, err := auth.NewOIDCProvider(context.Background(), idp.config("http://app.test/callback"))
 	require.NoError(t, err)
 
-	u, err := url.Parse(p.AuthorizationURL("state-abc-123"))
+	req := p.AuthorizationURL("state-abc-123")
+	u, err := url.Parse(req.URL)
 	require.NoError(t, err)
 	q := u.Query()
 
-	require.Empty(t, q.Get("nonce"),
-		"INVERT ME once a nonce is sent: replay protection for the ID token is missing")
-	require.Empty(t, q.Get("code_challenge"),
-		"INVERT ME once PKCE lands: no code_challenge is sent")
-	require.Empty(t, q.Get("code_challenge_method"),
-		"INVERT ME once PKCE lands: no code_challenge_method is sent")
-	require.Equal(t, "offline", q.Get("access_type"),
-		"INVERT ME: offline access is requested but the refresh token is discarded")
+	require.NotEmpty(t, req.Nonce, "a nonce must be generated for the caller to store")
+	require.Equal(t, req.Nonce, q.Get("nonce"),
+		"the nonce sent to the IdP must be the one handed back to the caller")
+
+	require.NotEmpty(t, req.Verifier, "a PKCE verifier must be generated for the caller to store")
+	require.Equal(t, "S256", q.Get("code_challenge_method"),
+		"plain PKCE is not acceptable; the challenge must be S256")
+	require.Equal(t, oauth2.S256ChallengeFromVerifier(req.Verifier), q.Get("code_challenge"),
+		"the challenge must be the S256 hash of the verifier handed back to the caller")
+
+	// The verifier itself must never appear in the front-channel redirect: the
+	// whole point is that only the client can present it at exchange time.
+	require.NotContains(t, req.URL, req.Verifier,
+		"the PKCE verifier must not leak into the authorization URL")
+
+	require.Empty(t, q.Get("access_type"),
+		"offline access must not be requested: no refresh token is stored or used")
+}
+
+// TestAuthorizationURL_IsUniquePerCall guards against a nonce or verifier that
+// is constant across logins, which would defeat both mechanisms while leaving
+// every other assertion in this file passing.
+func TestAuthorizationURL_IsUniquePerCall(t *testing.T) {
+	idp := newFakeIDP(t)
+	p, err := auth.NewOIDCProvider(context.Background(), idp.config("http://app.test/callback"))
+	require.NoError(t, err)
+
+	a := p.AuthorizationURL("state-1")
+	b := p.AuthorizationURL("state-2")
+
+	require.NotEqual(t, a.Nonce, b.Nonce, "nonce must be fresh per authorization request")
+	require.NotEqual(t, a.Verifier, b.Verifier, "PKCE verifier must be fresh per authorization request")
 }
 
 // ── ID token verification ────────────────────────────────────────────────────
@@ -376,9 +398,10 @@ func TestVerifyIDToken(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			tc.claims.Nonce = "nonce-for-this-login"
 			raw := idp.mint(t, tc.claims)
 
-			tok, err := p.VerifyIDToken(context.Background(), raw)
+			tok, err := p.VerifyIDToken(context.Background(), raw, "nonce-for-this-login")
 			if tc.wantErr {
 				require.Error(t, err)
 				return
@@ -394,7 +417,7 @@ func TestVerifyIDToken_GarbageToken(t *testing.T) {
 	p, err := auth.NewOIDCProvider(context.Background(), idp.config("http://app.test/callback"))
 	require.NoError(t, err)
 
-	_, err = p.VerifyIDToken(context.Background(), "not.a.jwt")
+	_, err = p.VerifyIDToken(context.Background(), "not.a.jwt", "any-nonce")
 	require.Error(t, err)
 }
 
@@ -411,8 +434,9 @@ func TestDecodeClaims(t *testing.T) {
 			Email:         "claims@example.com",
 			EmailVerified: verified,
 			Name:          "Claims User",
+			Nonce:         "claims-nonce",
 		})
-		tok, err := p.VerifyIDToken(context.Background(), raw)
+		tok, err := p.VerifyIDToken(context.Background(), raw, "claims-nonce")
 		require.NoError(t, err)
 
 		claims, err := auth.DecodeClaims(tok)
@@ -433,7 +457,7 @@ func TestExchange(t *testing.T) {
 
 	idp.stage(idp.mint(t, idpClaims{Subject: "sub-x", Email: "x@example.com", EmailVerified: true}))
 
-	tok, err := p.Exchange(context.Background(), "the-code")
+	tok, err := p.Exchange(context.Background(), "the-code", "the-verifier")
 	require.NoError(t, err)
 	require.Equal(t, "test-access-token", tok.AccessToken)
 
@@ -446,8 +470,8 @@ func TestExchange(t *testing.T) {
 	require.Equal(t, "authorization_code", form.Get("grant_type"))
 	require.Equal(t, "the-code", form.Get("code"))
 
-	// Defect 9 again, from the exchange side: no PKCE verifier is sent.
-	// INVERT this assertion when PKCE lands.
-	require.Empty(t, form.Get("code_verifier"),
-		"INVERT ME once PKCE lands: no code_verifier is sent on exchange")
+	// Inverted form of the exchange-side tripwire for defect 9: the verifier
+	// must reach the token endpoint, or PKCE proves nothing.
+	require.Equal(t, "the-verifier", form.Get("code_verifier"),
+		"the PKCE code_verifier must be sent on exchange")
 }

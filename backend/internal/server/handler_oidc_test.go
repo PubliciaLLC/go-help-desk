@@ -20,6 +20,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 )
 
 // ── Fake identity provider ───────────────────────────────────────────────────
@@ -37,6 +38,7 @@ type fakeOIDCClaims struct {
 	Issuer        string        // defaults to the IdP's own URL
 	Expiry        time.Duration // relative to now; defaults to +1h
 	SignWithWrong bool          // sign with a key absent from the JWKS
+	Nonce         string        // echoed into the id_token; the callback requires it to match
 }
 
 type fakeOIDC struct {
@@ -50,6 +52,10 @@ type fakeOIDC struct {
 	clientSecret string
 
 	staged string // ID token returned by the token endpoint
+
+	// tokenRequests records the posted form of every call to /token, so a test
+	// can assert on what was actually sent on the back channel.
+	tokenRequests []url.Values
 }
 
 func newFakeOIDC(t *testing.T) *fakeOIDC {
@@ -95,6 +101,9 @@ func newFakeOIDC(t *testing.T) *fakeOIDC {
 		})
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err == nil {
+			idp.tokenRequests = append(idp.tokenRequests, r.PostForm)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token": "srv-access-token",
@@ -137,6 +146,11 @@ func (i *fakeOIDC) mint(t *testing.T, c fakeOIDCClaims) string {
 		"email_verified": c.EmailVerified,
 		"name":           c.Name,
 	})
+	// Omitted entirely when unset, so a test can mint a token carrying no nonce
+	// at all and confirm the callback refuses it.
+	if c.Nonce != "" {
+		tok.Claims.(jwt.MapClaims)["nonce"] = c.Nonce
+	}
 	tok.Header["kid"] = i.keyID
 
 	signing := i.key
@@ -208,17 +222,27 @@ func (h *harness) rawPostJSON(t *testing.T, path string, body any, cookies []*ht
 // handed to the IdP plus the session cookies the server set.
 func (oh *oidcHarness) startOIDCLogin(t *testing.T, cookies []*http.Cookie) (string, []*http.Cookie) {
 	t.Helper()
+	state, _, out := oh.startOIDCLoginFull(t, cookies)
+	return state, out
+}
+
+// startOIDCLoginFull additionally returns the nonce the server sent to the IdP,
+// which a caller must echo back in the id_token for the callback to accept it.
+func (oh *oidcHarness) startOIDCLoginFull(t *testing.T, cookies []*http.Cookie) (state, nonce string, out []*http.Cookie) {
+	t.Helper()
 	resp := oh.rawGet(t, "/api/v1/auth/oidc/login", cookies)
 	require.Equal(t, http.StatusFound, resp.StatusCode)
 
 	loc, err := url.Parse(resp.Header.Get("Location"))
 	require.NoError(t, err)
-	state := loc.Query().Get("state")
+	state = loc.Query().Get("state")
 	require.NotEmpty(t, state, "login must send a state parameter")
+	nonce = loc.Query().Get("nonce")
+	require.NotEmpty(t, nonce, "login must send a nonce parameter")
 
-	out := resp.Cookies()
+	out = resp.Cookies()
 	require.NotEmpty(t, out, "login must set the session cookie holding the state")
-	return state, out
+	return state, nonce, out
 }
 
 // callback drives GET /auth/oidc/callback with the given query parameters.
@@ -231,7 +255,12 @@ func (oh *oidcHarness) callback(t *testing.T, q url.Values, cookies []*http.Cook
 // and returns the callback response.
 func (oh *oidcHarness) login(t *testing.T, claims fakeOIDCClaims) *http.Response {
 	t.Helper()
-	state, cookies := oh.startOIDCLogin(t, nil)
+	state, nonce, cookies := oh.startOIDCLoginFull(t, nil)
+	// A conforming IdP echoes the nonce it was given; tests that want the
+	// non-conforming case set claims.Nonce themselves and call the pieces.
+	if claims.Nonce == "" {
+		claims.Nonce = nonce
+	}
 	oh.idp.staged = oh.idp.mint(t, claims)
 	return oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
 }
@@ -654,6 +683,115 @@ func TestOIDCCallback_DisabledUserGetsNoSession(t *testing.T) {
 	if _, authed := whoami(t, oh.harness, resp.Cookies()); authed {
 		t.Fatal("a disabled account must not end up with an authenticated session")
 	}
+}
+
+// TestOIDCCallback_WrongNonceIsRejected covers the attack the nonce exists to
+// stop: an ID token that is genuinely signed by the IdP, in date, and for the
+// right audience, but was minted for a different login. Every other check in
+// the callback passes it.
+func TestOIDCCallback_WrongNonceIsRejected(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	state, _, cookies := oh.startOIDCLoginFull(t, nil)
+
+	// Valid in every respect except that it answers a different authorization
+	// request than the one this session started.
+	oh.idp.staged = oh.idp.mint(t, fakeOIDCClaims{
+		Subject:       "attacker-sub",
+		Email:         "attacker@test.local",
+		EmailVerified: true,
+		Nonce:         "nonce-from-some-other-login",
+	})
+
+	resp := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, "invalid_id_token", errorCode(t, resp))
+
+	_, ok := whoami(t, oh.harness, resp.Cookies())
+	require.False(t, ok, "a token minted for another login must not create a session")
+}
+
+// TestOIDCCallback_MissingNonceIsRejected is the degenerate case: an IdP that
+// drops the nonce claim entirely must not be treated as a match. Comparing a
+// stored nonce against an absent one has to fail, or the check is decorative.
+func TestOIDCCallback_MissingNonceIsRejected(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	state, _, cookies := oh.startOIDCLoginFull(t, nil)
+
+	// Nonce deliberately left empty, so mint omits the claim altogether.
+	oh.idp.staged = oh.idp.mint(t, fakeOIDCClaims{
+		Subject:       "no-nonce-sub",
+		Email:         "nononce@test.local",
+		EmailVerified: true,
+	})
+
+	resp := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, "invalid_id_token", errorCode(t, resp))
+
+	_, ok := whoami(t, oh.harness, resp.Cookies())
+	require.False(t, ok, "an id_token with no nonce must not create a session")
+}
+
+// TestOIDCLogin_SendsPKCEChallenge checks the front-channel half of PKCE from
+// the handler's side, and that the verifier itself never appears in the
+// redirect — only its S256 hash may travel over the front channel.
+func TestOIDCLogin_SendsPKCEChallenge(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	resp := oh.rawGet(t, "/api/v1/auth/oidc/login", nil)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+	q := loc.Query()
+
+	require.NotEmpty(t, q.Get("code_challenge"), "PKCE challenge must be sent")
+	require.Equal(t, "S256", q.Get("code_challenge_method"), "plain PKCE is not acceptable")
+	require.Empty(t, q.Get("code_verifier"), "the verifier must never travel the front channel")
+}
+
+// TestOIDCCallback_SendsCodeVerifierOnExchange is the back-channel half: the
+// verifier stored at login must reach the token endpoint, and must be the
+// preimage of the challenge sent earlier. Without this the challenge is theatre.
+func TestOIDCCallback_SendsCodeVerifierOnExchange(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	resp := oh.rawGet(t, "/api/v1/auth/oidc/login", nil)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	loc, err := url.Parse(resp.Header.Get("Location"))
+	require.NoError(t, err)
+
+	state := loc.Query().Get("state")
+	nonce := loc.Query().Get("nonce")
+	challenge := loc.Query().Get("code_challenge")
+	cookies := resp.Cookies()
+
+	oh.idp.staged = oh.idp.mint(t, fakeOIDCClaims{
+		Subject:       "pkce-sub",
+		Email:         "pkce@test.local",
+		EmailVerified: true,
+		Name:          "PKCE User",
+		Nonce:         nonce,
+	})
+
+	cb := oh.callback(t, url.Values{"state": {state}, "code": {"the-code"}}, cookies)
+	require.Equal(t, http.StatusSeeOther, cb.StatusCode)
+
+	require.NotEmpty(t, oh.idp.tokenRequests, "the token endpoint must have been called")
+	form := oh.idp.tokenRequests[len(oh.idp.tokenRequests)-1]
+
+	verifier := form.Get("code_verifier")
+	require.NotEmpty(t, verifier, "the PKCE verifier must be sent on exchange")
+	require.Equal(t, challenge, oauth2.S256ChallengeFromVerifier(verifier),
+		"the verifier sent at exchange must be the preimage of the challenge sent at login")
 }
 
 func TestOIDCCallback_HappyPathCreatesSession(t *testing.T) {

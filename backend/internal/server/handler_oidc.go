@@ -35,16 +35,18 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	// a usable session, and an undecodable cookie simply carries no data.
 	session, _ := s.sessions.Get(r, auth.SessionName)
 	sd, _ := session.Values["session"].(auth.SessionData)
+	req := provider.AuthorizationURL(state)
+
 	sd.OIDCState = state
+	sd.OIDCNonce = req.Nonce
+	sd.OIDCCodeVerifier = req.Verifier
 
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
 
-	url := provider.AuthorizationURL(state)
-
-	http.Redirect(w, r, url, http.StatusFound)
+	http.Redirect(w, r, req.URL, http.StatusFound)
 }
 
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
@@ -92,6 +94,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// behind by a failed callback cannot be completed later with another code.
 	fail := func(status int, code, message string) {
 		sd.OIDCState = ""
+		sd.OIDCNonce = ""
+		sd.OIDCCodeVerifier = ""
 		if err := s.writeSession(w, r, sd); err != nil {
 			slog.Error("clearing spent OIDC state", "error", err)
 		}
@@ -129,6 +133,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	token, err := provider.Exchange(
 		r.Context(),
 		code,
+		sd.OIDCCodeVerifier,
 	)
 
 	if err != nil {
@@ -148,9 +153,15 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	idToken, err := provider.VerifyIDToken(
 		r.Context(),
 		rawIDToken,
+		sd.OIDCNonce,
 	)
 
 	if err != nil {
+		// A nonce mismatch is logged distinctly: unlike a malformed or expired
+		// token it means a token valid for something else was presented here.
+		if errors.Is(err, auth.ErrNonceMismatch) {
+			slog.Warn("OIDC id token nonce mismatch")
+		}
 		fail(http.StatusUnauthorized,
 			"invalid_id_token",
 			"OIDC token validation failed")
@@ -222,6 +233,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	sd.Role = u.Role
 	sd.MFAPassed = true
 	sd.OIDCState = ""
+	sd.OIDCNonce = ""
+	sd.OIDCCodeVerifier = ""
 
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
