@@ -7,11 +7,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { useSiteBranding } from '@/hooks/useSiteBranding'
 
 type Step = 'credentials' | 'verify' | 'enroll'
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const { name: siteName } = useSiteBranding()
   const { setUser } = useAuthStore()
   const [step, setStep] = useState<Step>('credentials')
   const [email, setEmail] = useState('')
@@ -112,10 +114,12 @@ export function LoginPage() {
     }
   }
 
+  // Previously hardcoded "Sign in to Go Help Desk", so a branded instance
+  // showed its own name everywhere except the first screen anyone sees (#56).
   const title =
     step === 'verify' ? 'Two-factor authentication'
     : step === 'enroll' ? 'Set up two-factor authentication'
-    : 'Sign in to Go Help Desk'
+    : `Sign in to ${siteName}`
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
