@@ -5,7 +5,7 @@ import { addReply, listTickets, updateTicket } from './tickets'
 // tickets.ts is mostly thin wrappers, and those are deliberately not tested —
 // asserting that `api.get` gets called proves nothing. What is covered here is
 // the small amount of real behaviour: the empty-list guard, the camelCase to
-// snake_case payload mapping, and the null-versus-undefined distinction that
+// snake_case payload mapping, and the explicit-null handling that
 // decides whether a field is cleared or left alone.
 
 beforeEach(() => {
@@ -70,8 +70,9 @@ describe('addReply', () => {
 })
 
 describe('updateTicket', () => {
-  // type_id and item_id are `string | null`: null clears the field, undefined
-  // leaves it alone. If the client dropped nulls, clearing a ticket's type
+  // type_id and item_id are `string | null`, and an explicit null must survive
+  // serialisation so a field can be cleared. If the client dropped nulls,
+  // clearing a ticket's type
   // would appear to work and silently do nothing.
   it('preserves an explicit null so a field can be cleared', async () => {
     const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: {} })
@@ -80,6 +81,12 @@ describe('updateTicket', () => {
     const [, payload] = patch.mock.calls[0]
     expect(payload).toHaveProperty('type_id', null)
     expect(payload).toHaveProperty('item_id', null)
+    // NOTE: this pins the CLIENT only. The server decodes these into
+    // *uuid.UUID, where JSON null and an absent key are indistinguishable —
+    // both arrive as nil — so "omitted leaves it alone" is NOT a guarantee the
+    // API provides today. The panel always sends all three keys, so nothing is
+    // broken; do not build on the omitted-means-keep reading without fixing
+    // the server first. See issue #107.
   })
 
   it('sends only the fields it was given', async () => {

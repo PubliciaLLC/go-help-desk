@@ -119,16 +119,55 @@ describe('reporting users', () => {
 })
 
 describe('attachments', () => {
-  // Attachments belong to the ticket, not the reply, so they are uploaded only
-  // after the reply is created. Uploading first would orphan files whenever the
-  // reply itself failed to save.
+  // Attachments belong to the ticket, not the reply, so they upload only AFTER
+  // the reply is created — uploading first orphans files whenever the reply
+  // fails to save.
+  //
+  // An earlier version of these tests never attached a file, which made both
+  // assertions vacuous: with no files, uploadAttachment could not have been
+  // called by ANY implementation, including one with the ordering inverted.
+  // attachFile is what makes them mean something.
+  async function attachFile(user: ReturnType<typeof userEvent.setup>, name = 'trace.txt') {
+    // The input is visually hidden and driven by a button, so it is addressed
+    // directly rather than through the label.
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    expect(input).not.toBeNull()
+    await user.upload(input, new File(['log contents'], name, { type: 'text/plain' }))
+    // Confirm the component actually took the file; if this regresses, the
+    // ordering assertions below would quietly go vacuous again.
+    expect(await screen.findByText(name)).toBeDefined()
+  }
+
+  it('uploads only after the reply is created', async () => {
+    const order: string[] = []
+    vi.spyOn(ticketsApi, 'addReply').mockImplementation(async () => {
+      order.push('reply')
+      return {} as never
+    })
+    const upload = vi.spyOn(ticketsApi, 'uploadAttachment').mockImplementation(async () => {
+      order.push('upload')
+      return {} as never
+    })
+
+    const user = userEvent.setup()
+    renderComposer()
+    await user.type(screen.getByRole('textbox'), 'with a file')
+    await attachFile(user)
+    await user.click(screen.getByRole('button', { name: 'Save entry' }))
+
+    await waitFor(() => expect(upload).toHaveBeenCalled())
+    expect(order).toEqual(['reply', 'upload'])
+    expect(upload).toHaveBeenCalledWith('tkt-1', expect.any(File))
+  })
+
   it('does not upload when the reply fails', async () => {
     const upload = vi.spyOn(ticketsApi, 'uploadAttachment').mockResolvedValue({} as never)
     vi.spyOn(ticketsApi, 'addReply').mockRejectedValue(new Error('nope'))
+
     const user = userEvent.setup()
     renderComposer()
-
     await user.type(screen.getByRole('textbox'), 'with a file')
+    await attachFile(user)
     await user.click(screen.getByRole('button', { name: 'Save entry' }))
 
     await screen.findByText(/nope/i)
