@@ -3,6 +3,7 @@ package ticket
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -138,10 +139,52 @@ type Attachment struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// DefaultTrackingPrefix is used when an instance has not set one.
+//
+// It is GHD because the project is Go Help Desk; it was OHD until the rename.
+// An instance that was running before the default changed keeps its existing
+// OHD- tickets and starts minting GHD- ones, which is harmless — lookup is an
+// exact string match, so every ticket stays findable — but an operator who
+// wants one consistent series should set the prefix back to OHD.
+const DefaultTrackingPrefix = "GHD"
+
+// maxTrackingPrefixLen bounds the prefix. Tracking numbers are quoted in
+// emails, webhooks and customer correspondence, and are searched by prefix.
+const maxTrackingPrefixLen = 8
+
+// trackingPrefixPattern is what a prefix may contain. Uppercase letters and
+// digits only: a prefix with a hyphen would make "GHD-X-2026-000001" ambiguous
+// to split, and lowercase would make tracking numbers inconsistent with every
+// one already issued.
+var trackingPrefixPattern = regexp.MustCompile(`^[A-Z0-9]{1,8}$`)
+
+// ErrInvalidTrackingPrefix reports a prefix that cannot be used.
+var ErrInvalidTrackingPrefix = errors.New("tracking prefix must be 1-8 uppercase letters or digits")
+
+// ValidateTrackingPrefix reports whether a prefix is usable.
+//
+// This is enforced where the setting is saved rather than where a ticket is
+// created. A bad prefix accepted into settings would not fail loudly — it would
+// quietly mint malformed tracking numbers that are then in customers' inboxes
+// and impossible to recall.
+func ValidateTrackingPrefix(prefix string) error {
+	if !trackingPrefixPattern.MatchString(prefix) {
+		return fmt.Errorf("%q: %w", prefix, ErrInvalidTrackingPrefix)
+	}
+	return nil
+}
+
 // GenerateTrackingNumber formats the canonical tracking number for a ticket.
 // seq must be the globally-unique monotonic sequence value from the database.
-func GenerateTrackingNumber(year int, seq int64) TrackingNumber {
-	return TrackingNumber(fmt.Sprintf("OHD-%d-%06d", year, seq))
+//
+// An empty or invalid prefix falls back to the default rather than producing a
+// malformed number: this runs at ticket creation, where refusing would mean a
+// customer cannot open a ticket because of an admin's typo.
+func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
+	if ValidateTrackingPrefix(prefix) != nil {
+		prefix = DefaultTrackingPrefix
+	}
+	return TrackingNumber(fmt.Sprintf("%s-%d-%06d", prefix, year, seq))
 }
 
 // Errors returned by rule functions.

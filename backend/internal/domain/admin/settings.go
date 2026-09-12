@@ -29,6 +29,12 @@ const (
 	KeySelfSignupEnabled       = "self_signup_enabled"       // bool
 	KeyOpenRegistrationEnabled = "open_registration_enabled" // bool — allow signup with no domain restriction
 
+	// Tracking-number prefix, e.g. the GHD in GHD-2026-000001. Uppercase
+	// letters and digits, 1-8 characters. Changing it affects only tickets
+	// created afterwards; existing tracking numbers are never rewritten,
+	// because they are already in customers' inboxes.
+	KeyTicketPrefix = "ticket_prefix" // string
+
 	// Ticket visibility. Off by default: every release before this let any
 	// staff member see every ticket, and switching that on silently during an
 	// upgrade would hide tickets people are working on.

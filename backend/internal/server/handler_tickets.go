@@ -280,6 +280,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		in.GuestPhone = strings.TrimSpace(body.GuestPhone)
 	}
 
+	in.TrackingPrefix = s.adminSvc.TicketPrefix(r.Context())
+
 	t, err := s.tickets.Create(r.Context(), in)
 	if err != nil {
 		if errors.Is(err, ticket.ErrValidation) {

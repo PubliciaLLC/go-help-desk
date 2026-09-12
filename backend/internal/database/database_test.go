@@ -209,7 +209,7 @@ func TestTicketStore_CreateAndGet(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	tk := ticket.Ticket{
 		ID:             uuid.New(),
-		TrackingNumber: ticket.GenerateTrackingNumber(2024, 1),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 1),
 		Subject:        "Printer broken",
 		Description:    "It won't print",
 		CategoryID:     cat.ID,
@@ -257,7 +257,7 @@ func TestTicketStore_TypeCategoryMismatch(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	tk := ticket.Ticket{
 		ID:             uuid.New(),
-		TrackingNumber: ticket.GenerateTrackingNumber(2024, 2),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 2),
 		Subject:        "Mismatched CTI",
 		Description:    "Should be rejected",
 		CategoryID:     catA.ID,
@@ -296,7 +296,7 @@ func TestTicketStore_Reply(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	tk := ticket.Ticket{
 		ID:             uuid.New(),
-		TrackingNumber: ticket.GenerateTrackingNumber(2024, 2),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, 2),
 		Subject:        "No internet",
 		Description:    "Cannot connect",
 		CategoryID:     cat.ID,
@@ -371,7 +371,7 @@ func TestTicketStore_ScopedListsAndCounts(t *testing.T) {
 		require.NoError(t, err)
 		tk := ticket.Ticket{
 			ID:              uuid.New(),
-			TrackingNumber:  ticket.GenerateTrackingNumber(2024, seq),
+			TrackingNumber:  ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, seq),
 			Subject:         subject,
 			Description:     subject + " body",
 			CategoryID:      cat.ID,
@@ -490,7 +490,7 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 		require.NoError(t, err)
 		tk := ticket.Ticket{
 			ID:             uuid.New(),
-			TrackingNumber: ticket.GenerateTrackingNumber(2024, seq),
+			TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2024, seq),
 			Subject:        subject,
 			Description:    description,
 			CategoryID:     cat.ID,
@@ -796,7 +796,7 @@ func TestSLAStore_Records(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	tk := ticket.Ticket{
 		ID:             uuid.New(),
-		TrackingNumber: ticket.GenerateTrackingNumber(2025, 99),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 99),
 		Subject:        "SLA test ticket",
 		CategoryID:     cat.ID,
 		Priority:       ticket.PriorityHigh,

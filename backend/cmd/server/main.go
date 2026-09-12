@@ -233,7 +233,7 @@ func run() error {
 	}
 
 	// ── MCP server (mounted under /mcp) ───────────────────────────────────────
-	mcpSrv := mcp.New(ticketSvc)
+	mcpSrv := mcp.New(ticketSvc, adminSvc.TicketPrefix)
 
 	mux := http.NewServeMux()
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
