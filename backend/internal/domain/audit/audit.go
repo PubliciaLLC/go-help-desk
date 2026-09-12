@@ -10,8 +10,8 @@ import (
 // Entry records a single mutation on any entity in the system.
 type Entry struct {
 	ID         uuid.UUID
-	ActorID    *uuid.UUID     // nil for system-generated actions
-	EntityType string         // "ticket", "user", "group", etc.
+	ActorID    *uuid.UUID // nil for system-generated actions
+	EntityType string     // "ticket", "user", "group", etc.
 	EntityID   uuid.UUID
 	Action     string         // "created", "status_changed", "assigned", etc.
 	Before     map[string]any // nil for create actions

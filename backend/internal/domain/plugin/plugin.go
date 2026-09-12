@@ -18,7 +18,7 @@ const (
 
 // Manifest describes a plugin's identity and capabilities.
 type Manifest struct {
-	ID          string   // reverse-DNS identifier, e.g. "com.example.slack-notifier"
+	ID          string // reverse-DNS identifier, e.g. "com.example.slack-notifier"
 	Name        string
 	Version     string
 	Description string
@@ -31,7 +31,7 @@ type Manifest struct {
 type Plugin struct {
 	Manifest    Manifest
 	Enabled     bool
-	WASMPath    string    // path to .wasm file on disk; empty for native plugins
+	WASMPath    string // path to .wasm file on disk; empty for native plugins
 	InstalledAt time.Time
 }
 

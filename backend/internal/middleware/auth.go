@@ -25,7 +25,7 @@ type Actor struct {
 	UserID    uuid.UUID
 	Role      user.Role
 	MFAPassed bool
-	ClientID  string   // non-empty for OAuth2 bearer token requests
+	ClientID  string // non-empty for OAuth2 bearer token requests
 	Scopes    []string
 }
 
