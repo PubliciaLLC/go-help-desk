@@ -91,7 +91,9 @@ func newHarness(t *testing.T) (*harness, func()) {
 	customFieldSvc := customfield.NewService(cfStore)
 	cannedResponseSvc := cannedresponse.NewService(crStore)
 	dispatcher := notify.NewMulti() // no-op in tests
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
+	// Joins the harness transaction rather than beginning a second one; see
+	// testutil.JoiningTxRunner for why a real runner cannot work here.
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	// Seed an admin user.
@@ -976,7 +978,9 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	customFieldSvc := customfield.NewService(cfStore)
 	cannedResponseSvc := cannedresponse.NewService(crStore)
 	dispatcher := notify.NewMulti()
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, nil)
+	// Joins the harness transaction rather than beginning a second one; see
+	// testutil.JoiningTxRunner for why a real runner cannot work here.
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {

@@ -28,6 +28,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
@@ -141,7 +142,10 @@ func run() error {
 	pluginRegistry := plugin.NewRegistry()
 
 	// ── Ticket service ────────────────────────────────────────────────────────
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, slaSvc)
+	// txRunner groups each composite ticket write — the ticket row, its status
+	// history, its audit entry — into a single transaction.
+	txRunner := txrunner.New(sqlDB)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
 	if err := ticketSvc.LoadSystemStatuses(ctx); err != nil {
 		return fmt.Errorf("loading system statuses: %w", err)
 	}

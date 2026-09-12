@@ -21,6 +21,7 @@ type harness struct {
 	statuses   *fakeStatusStore
 	dispatcher *fakeDispatcher
 	auditStore *fakeAuditStore
+	atomic     *fakeAtomic
 	sla        *fakeSLA
 
 	newStatus      ticket.Status
@@ -54,7 +55,8 @@ func newHarness(t *testing.T) *harness {
 		resolvedStatus: resolvedSt,
 		closedStatus:   closedSt,
 	}
-	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.sla)
+	h.atomic = &fakeAtomic{store: h.store, audit: h.auditStore}
+	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)
 	require.NoError(t, h.svc.LoadSystemStatuses(context.Background()))
 	return h
 }

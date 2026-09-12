@@ -42,6 +42,7 @@ type Service struct {
 	statuses   StatusStore
 	dispatcher notification.Dispatcher
 	auditStore audit.Store
+	atomic     Atomic     // groups a composite operation's writes into one transaction
 	sla        SLAService // may be nil when SLA is disabled
 
 	// cached at startup
@@ -60,6 +61,7 @@ func NewService(
 	statuses StatusStore,
 	dispatcher notification.Dispatcher,
 	auditStore audit.Store,
+	atomic Atomic, // required: composite writes must be one transaction
 	sla SLAService, // nil when SLA feature is disabled
 ) *Service {
 	return &Service{
@@ -67,6 +69,7 @@ func NewService(
 		statuses:   statuses,
 		dispatcher: dispatcher,
 		auditStore: auditStore,
+		atomic:     atomic,
 		sla:        sla,
 	}
 }
@@ -163,13 +166,25 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		UpdatedAt:      now,
 	}
 
-	if err := s.store.Create(ctx, t); err != nil {
-		return Ticket{}, fmt.Errorf("creating ticket: %w", err)
+	// The ticket, its opening status-history row and its audit entry commit
+	// together or not at all.
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		if err := st.Create(ctx, t); err != nil {
+			return fmt.Errorf("creating ticket: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, nil, s.sys.newID, Actor{UserID: in.ReporterUserID})); err != nil {
+			return fmt.Errorf("recording opening status: %w", err)
+		}
+		if err := au.Create(ctx, auditEntry(in.ReporterUserID, "ticket", t.ID, "created", nil, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing ticket creation: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Ticket{}, err
 	}
 
-	s.recordStatusChange(ctx, t.ID, nil, s.sys.newID, Actor{UserID: in.ReporterUserID})
-	s.writeAudit(ctx, in.ReporterUserID, "ticket", t.ID, "created", nil, ticketMap(t))
-
+	// Everything below runs only after the commit. Dispatching inside the
+	// transaction would announce a ticket that a rollback then discarded.
 	if s.sla != nil {
 		_ = s.sla.AttachPolicy(ctx, t) // SLA failure is non-fatal
 	}
@@ -206,12 +221,21 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	t.StatusID = newStatusID
 	t.UpdatedAt = time.Now()
 
-	if err := s.store.Update(ctx, t); err != nil {
-		return Ticket{}, fmt.Errorf("updating ticket status: %w", err)
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("updating ticket status: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, newStatusID, actor)); err != nil {
+			return fmt.Errorf("recording status change: %w", err)
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "status_changed", before, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing status change: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Ticket{}, err
 	}
 
-	s.recordStatusChange(ctx, t.ID, &oldStatusID, newStatusID, actor)
-	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "status_changed", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketStatusChanged,
 		TicketID:   t.ID,
@@ -234,11 +258,18 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 	t.AssigneeGroupID = assigneeGroupID
 	t.UpdatedAt = time.Now()
 
-	if err := s.store.Update(ctx, t); err != nil {
-		return Ticket{}, fmt.Errorf("assigning ticket: %w", err)
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("assigning ticket: %w", err)
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "assigned", before, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing assignment: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Ticket{}, err
 	}
 
-	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "assigned", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketAssigned,
 		TicketID:   t.ID,
@@ -287,24 +318,39 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		NotifyCustomer: notifyCustomer,
 		CreatedAt:      time.Now(),
 	}
-	if err := s.store.CreateReply(ctx, reply); err != nil {
-		return Reply{}, fmt.Errorf("creating reply: %w", err)
-	}
-
 	// Auto-reopen: user reply to a Resolved ticket within the window.
-	if actor.Role == user.RoleUser && currentStatus.Name == StatusNameResolved {
-		oldStatusID := t.StatusID
+	reopened := actor.Role == user.RoleUser && currentStatus.Name == StatusNameResolved
+	oldStatusID := t.StatusID
+	if reopened {
 		t.StatusID = reopenTargetStatusID
 		t.ResolvedAt = nil
 		t.UpdatedAt = time.Now()
-		// Announcing the reopen is conditional on having persisted it. This
-		// write used to be discarded, so a failure left the ticket Resolved
-		// while a history entry and a "reopened" email went out describing a
-		// transition that never happened.
-		if err := s.store.Update(ctx, t); err != nil {
-			return Reply{}, fmt.Errorf("reopening ticket: %w", err)
+	}
+
+	// The reply and, when it triggers one, the reopen commit together. Before
+	// this the reply could persist while the reopen failed, leaving the ticket
+	// Resolved with a user reply sitting under it.
+	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		if err := st.CreateReply(ctx, reply); err != nil {
+			return fmt.Errorf("creating reply: %w", err)
 		}
-		s.recordStatusChange(ctx, t.ID, &oldStatusID, reopenTargetStatusID, actor)
+		if !reopened {
+			return nil
+		}
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("reopening ticket: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, reopenTargetStatusID, actor)); err != nil {
+			return fmt.Errorf("recording reopen: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Reply{}, err
+	}
+
+	// Announced only after the commit, so a rollback cannot send a "reopened"
+	// email for a transition that did not happen.
+	if reopened {
 		_ = s.dispatcher.Dispatch(ctx, notification.Event{
 			Type:       notification.EventTicketReopened,
 			TicketID:   t.ID,
@@ -356,12 +402,21 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	t.ResolvedAt = &now
 	t.UpdatedAt = now
 
-	if err := s.store.Update(ctx, t); err != nil {
-		return Ticket{}, fmt.Errorf("resolving ticket: %w", err)
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("resolving ticket: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
+			return fmt.Errorf("recording resolution: %w", err)
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing resolution: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Ticket{}, err
 	}
 
-	s.recordStatusChange(ctx, t.ID, &oldStatusID, s.sys.resolvedID, actor)
-	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketResolved,
 		TicketID:   t.ID,
@@ -386,11 +441,18 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID) error {
 	t.ClosedAt = &now
 	t.UpdatedAt = now
 
-	if err := s.store.Update(ctx, t); err != nil {
-		return fmt.Errorf("closing ticket: %w", err)
+	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("closing ticket: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.closedID, SystemActor)); err != nil {
+			return fmt.Errorf("recording close: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 
-	s.recordStatusChange(ctx, t.ID, &oldStatusID, s.sys.closedID, SystemActor)
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketClosed,
 		TicketID:   t.ID,
@@ -418,12 +480,21 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 	t.ResolvedAt = nil
 	t.UpdatedAt = time.Now()
 
-	if err := s.store.Update(ctx, t); err != nil {
-		return Ticket{}, fmt.Errorf("reopening ticket: %w", err)
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("reopening ticket: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, targetStatusID, actor)); err != nil {
+			return fmt.Errorf("recording reopen: %w", err)
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing reopen: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return Ticket{}, err
 	}
 
-	s.recordStatusChange(ctx, t.ID, &oldStatusID, targetStatusID, actor)
-	s.writeAudit(ctx, actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketReopened,
 		TicketID:   t.ID,
@@ -433,17 +504,16 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 	return t, nil
 }
 
-// recordStatusChange writes a status history entry. Non-fatal: errors are silently dropped
-// so that a history-write failure never blocks the main operation.
-func (s *Service) recordStatusChange(ctx context.Context, ticketID uuid.UUID, fromStatusID *uuid.UUID, toStatusID uuid.UUID, actor Actor) {
-	_ = s.store.CreateStatusHistoryEntry(ctx, StatusHistoryEntry{
+// statusHistoryEntry builds the history row for a transition.
+func statusHistoryEntry(ticketID uuid.UUID, fromStatusID *uuid.UUID, toStatusID uuid.UUID, actor Actor) StatusHistoryEntry {
+	return StatusHistoryEntry{
 		ID:              uuid.New(),
 		TicketID:        ticketID,
 		FromStatusID:    fromStatusID,
 		ToStatusID:      toStatusID,
 		ChangedByUserID: actor.UserID,
 		CreatedAt:       time.Now(),
-	})
+	}
 }
 
 // ListStatusHistory returns the status transition history for a ticket.
@@ -625,9 +695,12 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 	return Status{}, fmt.Errorf("status %s not found", id)
 }
 
-// writeAudit logs an audit entry, swallowing errors (audit failure is non-fatal).
-func (s *Service) writeAudit(ctx context.Context, actorID *uuid.UUID, entityType string, entityID uuid.UUID, action string, before, after map[string]any) {
-	_ = s.auditStore.Create(ctx, audit.Entry{
+// auditEntry builds an audit row. Callers write it through the transaction's
+// audit store so it commits with the change it describes; it used to be written
+// separately with its error discarded, which meant the trail could lose entries
+// silently.
+func auditEntry(actorID *uuid.UUID, entityType string, entityID uuid.UUID, action string, before, after map[string]any) audit.Entry {
+	return audit.Entry{
 		ID:         uuid.New(),
 		ActorID:    actorID,
 		EntityType: entityType,
@@ -636,7 +709,7 @@ func (s *Service) writeAudit(ctx context.Context, actorID *uuid.UUID, entityType
 		Before:     before,
 		After:      after,
 		CreatedAt:  time.Now(),
-	})
+	}
 }
 
 // ticketMap produces a shallow map representation of a ticket for audit logs.

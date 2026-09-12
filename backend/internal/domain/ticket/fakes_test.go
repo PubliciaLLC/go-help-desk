@@ -307,3 +307,56 @@ func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ uuid.UUID, _ time.Tim
 	f.firstResponses++
 	return nil
 }
+
+// ── transactions ─────────────────────────────────────────────────────────────
+
+// fakeAtomic implements ticket.Atomic with real rollback semantics: it
+// snapshots the stores before running fn and restores them if fn fails.
+//
+// A double that simply called fn would test nothing about atomicity — every
+// assertion that a failure leaves no trace would pass whether the production
+// code used a transaction or not. Undoing the writes is what makes those
+// assertions mean something.
+type fakeAtomic struct {
+	store *fakeStore
+	audit *fakeAuditStore
+
+	commits    int
+	rollbacks  int
+	errBeginTx error
+}
+
+func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) error) error {
+	if a.errBeginTx != nil {
+		return a.errBeginTx
+	}
+
+	// Snapshot. The maps are shallow-copied and the slices cloned, which is
+	// enough because the service replaces whole records rather than mutating
+	// them in place.
+	tickets := make(map[uuid.UUID]ticket.Ticket, len(a.store.tickets))
+	for k, v := range a.store.tickets {
+		tickets[k] = v
+	}
+	replies := make(map[uuid.UUID][]ticket.Reply, len(a.store.replies))
+	for k, v := range a.store.replies {
+		replies[k] = append([]ticket.Reply(nil), v...)
+	}
+	history := append([]ticket.StatusHistoryEntry(nil), a.store.history...)
+	entries := append([]audit.Entry(nil), a.audit.entries...)
+	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
+
+	if err := fn(a.store, a.audit); err != nil {
+		a.store.tickets = tickets
+		a.store.replies = replies
+		a.store.history = history
+		a.audit.entries = entries
+		a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates =
+			counters[0], counters[1], counters[2], counters[3]
+		a.rollbacks++
+		return err
+	}
+
+	a.commits++
+	return nil
+}
