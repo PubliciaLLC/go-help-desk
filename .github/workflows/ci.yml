@@ -28,7 +28,7 @@ permissions:
 
 jobs:
   frontend:
-    name: Frontend (lint, build)
+    name: Frontend (lint, test, build)
     runs-on: ubuntu-latest
 
     defaults:
@@ -49,6 +49,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm test
 
       - name: Build (runs tsc -b, so this is also the type-check)
         run: npm run build
