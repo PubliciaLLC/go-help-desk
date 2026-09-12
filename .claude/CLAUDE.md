@@ -31,6 +31,24 @@ If you're writing an `if` to handle an edge case, ask whether a different data s
 
 Not the cleanest generalization. Not the most extensible framework. The simplest thing that works for the problem we have right now. We will refactor when the next real requirement arrives.
 
+### Recorded architecture decisions
+
+Some shapes in this codebase look unfinished and are not. Before "fixing" one,
+check whether it is listed here.
+
+- **`server.Server` holds concrete `*Service` pointers, not interfaces.**
+  Deliberate; see the comment above `ProtectMCP` in `internal/server/server.go`
+  for the measurements. Short version: the handlers touch 140 service methods,
+  so inverting means ~280 method signatures, and the test-speed problem it was
+  meant to solve was bcrypt cost, not coupling. The three fields that *are*
+  interfaces are narrow contracts crossing a package boundary, which is a
+  different thing.
+- **`ticket.Service.Close` does not call `CanTransitionStatus`.** The
+  auto-close scheduler has no actor; authorisation belongs to the caller. A
+  test pins this so it does not get "fixed".
+- **`ticket.Atomic` takes both a `Store` and an `audit.Store`.** An audit entry
+  committed apart from the change it describes is not an audit trail.
+
 ### No breaking changes
 
 When extending a feature, existing behavior must not change. Tests that pass before your change must still pass after it. If something must be removed, deprecate with an explicit comment explaining why, then remove in a separate commit.
