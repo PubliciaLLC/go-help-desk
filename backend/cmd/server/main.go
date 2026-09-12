@@ -5,7 +5,6 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -52,7 +51,17 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("fatal: %v", err)
+		// Not log.Fatalf. run() installs a slog JSON handler as the default,
+		// which also routes the stdlib log package — and Go's stdlib-log
+		// bridge emits at INFO. A container that refuses to start was
+		// therefore reporting the reason at level INFO, where log-based
+		// alerting does not look for it.
+		//
+		// slog.Error works on both sides of that setup: before run() has
+		// configured a handler it writes text to stderr, afterwards JSON to
+		// stdout. Either way the level is right.
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -69,7 +78,9 @@ func run() error {
 	// ── Logger ────────────────────────────────────────────────────────────────
 	var logLevel slog.Level
 	if err := logLevel.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
-		log.Printf("warn: invalid LOG_LEVEL %q, defaulting to info", cfg.LogLevel)
+		// Before SetDefault below, so this goes to slog's default handler
+		// (text, stderr) — which is fine, and keeps the level honest.
+		slog.Warn("invalid LOG_LEVEL, defaulting to info", "value", cfg.LogLevel)
 		logLevel = slog.LevelInfo
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))

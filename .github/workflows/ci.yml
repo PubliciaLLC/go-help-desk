@@ -201,7 +201,7 @@ jobs:
           echo "All ${#files[@]} changed Go file(s) are gofmt-clean."
 
   image:
-    name: Docker image (build)
+    name: Docker image (build + run)
     runs-on: ubuntu-latest
 
     # Builds the runtime image the way docker-compose does: context at the repo
@@ -222,5 +222,126 @@ jobs:
           context: .
           file: backend/Dockerfile
           push: false
+          # load so the smoke test below can actually run the thing. Without
+          # it buildx leaves the image in its own cache and `docker run` fails.
+          load: true
+          tags: ghd:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Building an image proves it compiles, not that it starts. Issue #43 was
+      # a build failure; the class of problem it belongs to — a container that
+      # builds and then dies, or starts and serves nothing — was invisible to
+      # CI until here.
+      - name: Start Postgres for the smoke test
+        run: |
+          docker network create ghd-ci
+          docker run -d --name ghd-ci-db --network ghd-ci \
+            -e POSTGRES_DB=helpdesk -e POSTGRES_USER=helpdesk -e POSTGRES_PASSWORD=helpdesk \
+            postgres:17-alpine
+          for i in $(seq 1 60); do
+            docker exec ghd-ci-db pg_isready -U helpdesk >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+      - name: Run the image and smoke-test it
+        run: |
+          set -euo pipefail
+
+          docker run -d --name ghd-ci-app --network ghd-ci -p 8088:8080 \
+            -e DATABASE_URL="postgres://helpdesk:helpdesk@ghd-ci-db:5432/helpdesk?sslmode=disable" \
+            -e BASE_URL="http://localhost:8088" \
+            -e SESSION_SECRET="ci-smoke-test-session-secret-32-chars" \
+            -e JWT_SECRET="ci-smoke-test-jwt-secret-32-characters" \
+            ghd:ci
+
+          # Wait for it to serve, and fail with logs rather than a bare timeout.
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8088/health >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' ghd-ci-app)" != "true" ]; then
+              echo "::error::the container exited before serving"
+              docker logs ghd-ci-app
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "${ready:-0}" != "1" ]; then
+            echo "::error::/health never responded"
+            docker logs ghd-ci-app
+            exit 1
+          fi
+
+          check() { # path, expected status, description
+            actual="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:8088$1")"
+            if [ "$actual" != "$2" ]; then
+              echo "::error::$3: GET $1 returned $actual, expected $2"
+              docker logs ghd-ci-app
+              exit 1
+            fi
+            echo "ok  $1 -> $actual  ($3)"
+          }
+
+          check /health          200 "health endpoint"
+          check /api/v1/site     200 "public site config"
+          check /                200 "SPA shell"
+
+          # Regression guard on the fix in #80, asserted against the artifact
+          # that actually ships. /mcp/ was mounted outside the auth chain and
+          # served every tool to anyone who could reach the port.
+          check /mcp/sse         401 "MCP must reject unauthenticated callers"
+
+          # The embedded SPA must be the real build, not the placeholder that
+          # exists so //go:embed resolves in a fresh checkout.
+          #
+          # Fetch to a file first. Piping curl into grep passes when curl
+          # FAILS — grep finds nothing in an empty stream and the check reads
+          # as success — so a dead server would have looked like a good SPA.
+          curl -fsS --max-time 5 http://127.0.0.1:8088/ -o /tmp/spa.html || {
+            echo "::error::could not fetch the SPA shell"
+            docker logs ghd-ci-app
+            exit 1
+          }
+          if grep -q "Frontend not built" /tmp/spa.html; then
+            echo "::error::the image embeds the placeholder, not the built SPA"
+            exit 1
+          fi
+          grep -qi "<div id=\"root\"" /tmp/spa.html || {
+            echo "::error::the SPA shell has no mount point; embedded assets look wrong"
+            head -40 /tmp/spa.html
+            exit 1
+          }
+          echo "ok  /  serves the built SPA"
+
+      # A misconfigured instance must fail loudly at startup rather than come
+      # up half-working. SESSION_SECRET under 32 characters is the likeliest
+      # upgrade failure, since the pre-1.1.1 example value was 24.
+      - name: Reject a short SESSION_SECRET
+        run: |
+          set -uo pipefail
+          out="$(docker run --rm --network ghd-ci \
+            -e DATABASE_URL="postgres://helpdesk:helpdesk@ghd-ci-db:5432/helpdesk?sslmode=disable" \
+            -e BASE_URL="http://localhost:8088" \
+            -e SESSION_SECRET="too-short" \
+            -e JWT_SECRET="ci-smoke-test-jwt-secret-32-characters" \
+            ghd:ci 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "SESSION_SECRET must be at least 32 characters" || {
+            echo "::error::a short SESSION_SECRET did not produce the documented error"
+            exit 1
+          }
+          echo "$out" | grep -q '"level":"ERROR"' || {
+            echo "::error::a fatal startup failure was not logged at ERROR level"
+            exit 1
+          }
+
+      - name: Container logs
+        if: always()
+        run: docker logs ghd-ci-app 2>&1 | tail -40 || true
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f ghd-ci-app ghd-ci-db >/dev/null 2>&1 || true
+          docker network rm ghd-ci >/dev/null 2>&1 || true
