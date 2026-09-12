@@ -297,7 +297,13 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		t.StatusID = reopenTargetStatusID
 		t.ResolvedAt = nil
 		t.UpdatedAt = time.Now()
-		_ = s.store.Update(ctx, t)
+		// Announcing the reopen is conditional on having persisted it. This
+		// write used to be discarded, so a failure left the ticket Resolved
+		// while a history entry and a "reopened" email went out describing a
+		// transition that never happened.
+		if err := s.store.Update(ctx, t); err != nil {
+			return Reply{}, fmt.Errorf("reopening ticket: %w", err)
+		}
 		s.recordStatusChange(ctx, t.ID, &oldStatusID, reopenTargetStatusID, actor)
 		_ = s.dispatcher.Dispatch(ctx, notification.Event{
 			Type:       notification.EventTicketReopened,
@@ -307,7 +313,10 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		})
 	}
 
-	// Record first staff response for SLA.
+	// Record first staff response for SLA. Deliberately best-effort: the reply
+	// is already persisted and this is a metric, not the user's intent, so an
+	// SLA outage must not fail a reply that succeeded. Unlike the reopen above,
+	// nothing is announced on the strength of this write.
 	if s.sla != nil && actor.Role != user.RoleUser {
 		_ = s.sla.RecordFirstResponse(ctx, ticketID, reply.CreatedAt)
 	}
