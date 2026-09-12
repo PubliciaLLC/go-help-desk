@@ -75,6 +75,7 @@ func TestCanUserUpdate(t *testing.T) {
 	statusCustom := ticket.Status{Name: "In Progress", Kind: ticket.StatusKindCustom}
 
 	myID := uuid.New()
+	someoneElseID := uuid.New()
 	myTicket := ticket.Ticket{ID: uuid.New(), ReporterUserID: &myID}
 
 	cases := []struct {
@@ -93,15 +94,46 @@ func TestCanUserUpdate(t *testing.T) {
 		{name: "staff/new", t: myTicket, u: user.User{Role: user.RoleStaff}, status: statusNew, reopenWindowDays: 7, wantErr: false},
 		{name: "staff/closed", t: myTicket, u: user.User{Role: user.RoleStaff}, status: statusClosed, reopenWindowDays: 7, wantErr: false},
 
+		// Users — ownership. Previously unenforced: the doc comment promised
+		// "allowed only on their own tickets" while the function compared
+		// nothing, and one reporting user could reply on another's ticket.
+		{
+			name:             "user/not the reporter",
+			t:                ticket.Ticket{ReporterUserID: &someoneElseID},
+			u:                user.User{ID: myID, Role: user.RoleUser},
+			status:           statusNew,
+			reopenWindowDays: 7,
+			wantErr:          true,
+		},
+		{
+			// A guest ticket has no reporter user, so no signed-in reporting
+			// user owns it.
+			name:             "user/guest ticket has no owner",
+			t:                ticket.Ticket{ReporterUserID: nil},
+			u:                user.User{ID: myID, Role: user.RoleUser},
+			status:           statusNew,
+			reopenWindowDays: 7,
+			wantErr:          true,
+		},
+		{
+			// Staff authority does not depend on ownership.
+			name:             "staff/not the reporter",
+			t:                ticket.Ticket{ReporterUserID: &someoneElseID},
+			u:                user.User{ID: myID, Role: user.RoleStaff},
+			status:           statusNew,
+			reopenWindowDays: 7,
+			wantErr:          false,
+		},
+
 		// Users — open statuses
-		{name: "user/new", t: myTicket, u: user.User{Role: user.RoleUser}, status: statusNew, reopenWindowDays: 7, wantErr: false},
-		{name: "user/custom", t: myTicket, u: user.User{Role: user.RoleUser}, status: statusCustom, reopenWindowDays: 7, wantErr: false},
+		{name: "user/new", t: myTicket, u: user.User{ID: myID, Role: user.RoleUser}, status: statusNew, reopenWindowDays: 7, wantErr: false},
+		{name: "user/custom", t: myTicket, u: user.User{ID: myID, Role: user.RoleUser}, status: statusCustom, reopenWindowDays: 7, wantErr: false},
 
 		// Users — Resolved within window
 		{
 			name:             "user/resolved/within window",
 			t:                ticket.Ticket{ReporterUserID: &myID, ResolvedAt: &recentlyResolved},
-			u:                user.User{Role: user.RoleUser},
+			u:                user.User{ID: myID, Role: user.RoleUser},
 			status:           statusResolved,
 			reopenWindowDays: 7,
 			wantErr:          false,
@@ -110,13 +142,13 @@ func TestCanUserUpdate(t *testing.T) {
 		{
 			name:             "user/resolved/outside window",
 			t:                ticket.Ticket{ReporterUserID: &myID, ResolvedAt: &longAgoResolved},
-			u:                user.User{Role: user.RoleUser},
+			u:                user.User{ID: myID, Role: user.RoleUser},
 			status:           statusResolved,
 			reopenWindowDays: 7,
 			wantErr:          true,
 		},
 		// Users — Closed
-		{name: "user/closed", t: myTicket, u: user.User{Role: user.RoleUser}, status: statusClosed, reopenWindowDays: 7, wantErr: true},
+		{name: "user/closed", t: myTicket, u: user.User{ID: myID, Role: user.RoleUser}, status: statusClosed, reopenWindowDays: 7, wantErr: true},
 	}
 
 	for _, tc := range cases {

@@ -351,6 +351,31 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, t)
 }
 
+// requireTicketVisible answers whether the caller may act on this ticket,
+// writing the refusal itself and reporting false when it has.
+//
+// It exists because visibility was enforced on the read handlers and silently
+// omitted on the write handlers. Any handler that touches a ticket by id must
+// call it; a write that is not permitted to read its own target is never
+// correct.
+func (s *Server) requireTicketVisible(w http.ResponseWriter, r *http.Request, id uuid.UUID) bool {
+	t, err := s.tickets.GetByID(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return false
+	}
+	ok, err := s.canViewTicket(r, t)
+	if err != nil {
+		handleError(w, err)
+		return false
+	}
+	if !ok {
+		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return false
+	}
+	return true
+}
+
 // PATCH /api/v1/tickets/{id}
 func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
@@ -370,6 +395,13 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+
+	// Gate BEFORE any mutation. The read handler checked visibility and the
+	// write handlers did not, so a reporting user could reassign or
+	// recategorise a ticket it was not even allowed to fetch.
+	if !s.requireTicketVisible(w, r, id) {
 		return
 	}
 
@@ -432,6 +464,14 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	// Internal replies are staff/admin only.
 	if body.Internal && a.Role == user.RoleUser {
 		Error(w, http.StatusForbidden, "forbidden", "only staff can post internal notes")
+		return
+	}
+
+	// Same gate as the read path. Without it a reporting user could post into
+	// any ticket by UUID — including one it could not read — and the reply is
+	// mailed to the real reporter, so it was a write into someone else's
+	// correspondence.
+	if !s.requireTicketVisible(w, r, id) {
 		return
 	}
 

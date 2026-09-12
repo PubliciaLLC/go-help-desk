@@ -60,6 +60,8 @@ type harness struct {
 	userSvc         *user.Service
 	categorySvc     *category.Service
 	cannedResponses *cannedresponse.Service
+	ticketSvc       *ticket.Service
+	userID          uuid.UUID // the seeded reporting (RoleUser) user
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -181,6 +183,12 @@ func newHarness(t *testing.T) (*harness, func()) {
 	cfg := &config.Config{
 		SessionSecret: "test-session-secret-32-bytes-long!",
 		JWTSecret:     "test-jwt-secret",
+		// Production requires BASE_URL, and TOTP enrolment uses it as the
+		// issuer — without it EnrollMFA fails with "Issuer must be set", which
+		// is a harness gap rather than a behaviour worth testing. http:// on
+		// purpose: an https base URL would set Secure on the session cookie,
+		// which httptest's plaintext requests would then drop.
+		BaseURL: "http://localhost:8080",
 	}
 	// Derived exactly as main.go does, so tests exercise the encrypted cookie
 	// store rather than a signed-only one production never uses.
@@ -223,6 +231,8 @@ func newHarness(t *testing.T) (*harness, func()) {
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
 		cannedResponses: cannedResponseSvc,
+		ticketSvc:       ticketSvc,
+		userID:          reportingUser.ID,
 	}
 	cleanup := func() {
 		rollback()
@@ -1110,7 +1120,9 @@ func TestSetup_MissingFields(t *testing.T) {
 // with MFAEnabled=true in the DB.
 func enrollMFA(t *testing.T, ctx context.Context, userSvc *user.Service, id uuid.UUID) {
 	t.Helper()
-	secret, _, err := userSvc.EnrollMFA(ctx, id, "test")
+	// false: this helper performs FIRST enrolment, which needs no prior
+	// challenge. Re-enrolment is guarded — see user.ErrMFAAlreadyEnrolled.
+	secret, _, err := userSvc.EnrollMFA(ctx, id, "test", false)
 	require.NoError(t, err)
 	code, err := totp.GenerateCode(secret, time.Now())
 	require.NoError(t, err)

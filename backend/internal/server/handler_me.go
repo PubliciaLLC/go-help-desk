@@ -2,11 +2,13 @@ package server
 
 import (
 	"encoding/base64"
+	"errors"
 	"net/http"
 
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
@@ -45,8 +47,18 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/me/mfa/enroll
 func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	secret, qrURL, err := s.users.EnrollMFA(r.Context(), a.UserID, s.cfg.BaseURL)
+	// This route sits outside RequireMFA so a user compelled to enrol can
+	// finish. That makes it reachable with a session that has NOT passed the
+	// MFA challenge, so re-enrolment of an already-protected account is only
+	// permitted once that challenge has been satisfied — otherwise a password
+	// alone would be enough to replace the victim's authenticator.
+	secret, qrURL, err := s.users.EnrollMFA(r.Context(), a.UserID, s.cfg.BaseURL, a.MFAPassed)
 	if err != nil {
+		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {
+			Error(w, http.StatusForbidden, "mfa_already_enrolled",
+				"MFA is already enabled. Verify with your current authenticator before enrolling a new one, or ask an administrator to reset it.")
+			return
+		}
 		handleError(w, err)
 		return
 	}

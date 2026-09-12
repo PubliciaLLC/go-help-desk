@@ -130,10 +130,40 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 
 // EnrollMFA generates a TOTP secret for the user, stores it (unenrolled until
 // confirmed), and returns the secret and a data URL for a QR code.
-func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string) (secret, qrDataURL string, err error) {
+// ErrMFAAlreadyEnrolled is returned when a caller tries to re-enrol an account
+// that already has MFA active, without having proved they still control the
+// current authenticator.
+//
+// This is the guard on a full MFA bypass. Enrolment overwrites the stored TOTP
+// secret and hands the new one back, while MFAEnabled stays true — so an
+// attacker holding only the victim's PASSWORD could log in with an
+// MFA-unverified session, re-enrol, and verify with a code of their own
+// making. The enrolment route is deliberately outside RequireMFA so a user
+// compelled to enrol can finish; that is correct, and this is where the
+// difference between "has not enrolled yet" and "is already protected" has to
+// be enforced.
+var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account")
+
+// EnrollMFA generates a new TOTP secret for a user and stores it.
+//
+// allowReenroll must be true to re-enrol an account that already has MFA
+// active, and the caller may only pass true once it has established that the
+// request comes from someone who already satisfied the existing MFA challenge.
+// It is a parameter rather than something derived here because internal/domain
+// has no access to the request's session state.
+//
+// Rotating to a new authenticator while still holding the old one therefore
+// stays self-service; an account whose authenticator is lost needs an
+// administrator reset, which is the only safe answer — a user who cannot
+// produce a current code is indistinguishable from an attacker who never had
+// one.
+func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string, allowReenroll bool) (secret, qrDataURL string, err error) {
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return "", "", err
+	}
+	if u.MFAEnabled && !allowReenroll {
+		return "", "", ErrMFAAlreadyEnrolled
 	}
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      issuer,

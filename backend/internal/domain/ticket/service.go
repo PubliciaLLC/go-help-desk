@@ -307,7 +307,13 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		return Reply{}, err
 	}
 
+	// The ID matters as much as the Role: CanUserUpdate compares the ticket's
+	// reporter against it. Passing a User carrying only a Role is what left the
+	// ownership rule unimplementable, and therefore unimplemented.
 	u := user.User{Role: actor.Role}
+	if actor.UserID != nil {
+		u.ID = *actor.UserID
+	}
 	if err := CanUserUpdate(t, u, currentStatus, reopenWindowDays); err != nil {
 		return Reply{}, fmt.Errorf("cannot reply to ticket: %w", err)
 	}
