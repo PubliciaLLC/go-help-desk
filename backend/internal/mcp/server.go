@@ -80,7 +80,7 @@ func (s *Server) Handler() *mcpserver.SSEServer {
 func (s *Server) registerTools() {
 	s.mcp.AddTool(mcpgo.NewTool(
 		"get_ticket",
-		mcpgo.WithDescription("Get a ticket by its UUID or tracking number (e.g. OHD-2024-000001)"),
+		mcpgo.WithDescription("Get a ticket by its UUID or tracking number (e.g. OHD-2026-000001)"),
 		mcpgo.WithString("id", mcpgo.Required(), mcpgo.Description("Ticket UUID or tracking number")),
 	), s.handleGetTicket)
 

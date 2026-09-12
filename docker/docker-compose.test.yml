@@ -16,7 +16,7 @@
 # cache. Running them inside a container instead means rebuilding the image on
 # every edit, which is the slow path.
 
-name: ohd-test
+name: ghd-test
 
 services:
   testdb:

@@ -33,7 +33,7 @@ die() { printf '%s\n' "$*" >&2; exit 1; }
 
 # Records that this script — not the developer — started the colima VM, so
 # teardown knows whether stopping it would interrupt someone else's work.
-colima_marker="${TMPDIR:-/tmp}/ohd-test-db-started-colima"
+colima_marker="${TMPDIR:-/tmp}/ghd-test-db-started-colima"
 
 compose() {
   if docker compose version >/dev/null 2>&1; then

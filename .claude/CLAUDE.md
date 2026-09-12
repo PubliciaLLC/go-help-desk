@@ -1,4 +1,4 @@
-# CLAUDE.md — Open Help Desk
+# CLAUDE.md — Go Help Desk
 
 ## Source of Truth
 
