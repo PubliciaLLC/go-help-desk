@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // Service provides typed access to the settings table.
@@ -183,6 +184,16 @@ func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 }
 
 // SLAEnabled returns whether SLA tracking is active.
+// TicketPrefix returns the configured tracking-number prefix, falling back to
+// the default when unset or invalid.
+func (s *Service) TicketPrefix(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyTicketPrefix)
+	if ticket.ValidateTrackingPrefix(v) != nil {
+		return ticket.DefaultTrackingPrefix
+	}
+	return v
+}
+
 // TicketScopeEnforced reports whether staff ticket visibility is limited to
 // their group scope.
 //

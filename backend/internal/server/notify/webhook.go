@@ -57,6 +57,18 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	return nil
 }
 
+// Signature headers on outbound webhooks. Both carry the same HMAC-SHA256
+// value while consumers migrate.
+const (
+	// SignatureHeader is the header to verify.
+	SignatureHeader = "X-GHD-Signature"
+
+	// LegacySignatureHeader predates the rename from Open Help Desk. Kept so
+	// existing consumers keep validating; remove in a future release once
+	// they have moved to SignatureHeader.
+	LegacySignatureHeader = "X-OHD-Signature"
+)
+
 func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, hook.URL, bytes.NewReader(payload))
 	if err != nil {
@@ -65,7 +77,20 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	req.Header.Set("Content-Type", "application/json")
 	if hook.Secret != "" {
 		sig := hmacSHA256(hook.Secret, payload)
-		req.Header.Set("X-OHD-Signature", "sha256="+sig)
+
+		// Both headers, same signature, during the rename.
+		//
+		// A consumer verifying X-OHD-Signature does not fail loudly when the
+		// header disappears — it keeps receiving webhooks and starts rejecting
+		// every one of them as unsigned. There is no error on this side and no
+		// obvious cause on theirs, so sending only the new name would be a
+		// silent breakage discovered days later.
+		//
+		// SignatureHeader is the one to verify. LegacySignatureHeader is
+		// deprecated and should be removed once consumers have moved; it is a
+		// duplicate of the same value, not a second scheme.
+		req.Header.Set(SignatureHeader, "sha256="+sig)
+		req.Header.Set(LegacySignatureHeader, "sha256="+sig)
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {

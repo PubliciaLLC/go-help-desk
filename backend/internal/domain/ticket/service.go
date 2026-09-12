@@ -124,6 +124,15 @@ type CreateInput struct {
 	GuestEmail     *string
 	GuestName      string // required when GuestEmail is set
 	GuestPhone     string // optional
+
+	// TrackingPrefix is the instance's configured tracking-number prefix.
+	// Empty falls back to DefaultTrackingPrefix, so a caller that does not
+	// care — a test, a script — still produces well-formed numbers.
+	//
+	// Passed in rather than read here because internal/domain must not reach
+	// into settings; this follows the same shape as reopenWindowDays on
+	// AddReply.
+	TrackingPrefix string
 }
 
 // Create opens a new ticket, fires the created event, and optionally attaches
@@ -150,7 +159,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	now := time.Now()
 	t := Ticket{
 		ID:             uuid.New(),
-		TrackingNumber: GenerateTrackingNumber(now.Year(), seq),
+		TrackingNumber: GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
 		Subject:        strings.TrimSpace(in.Subject),
 		Description:    in.Description,
 		CategoryID:     in.CategoryID,

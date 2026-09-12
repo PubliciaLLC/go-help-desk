@@ -12,23 +12,61 @@ import (
 
 func TestGenerateTrackingNumber(t *testing.T) {
 	cases := []struct {
-		year int
-		seq  int64
-		want ticket.TrackingNumber
+		name   string
+		prefix string
+		year   int
+		seq    int64
+		want   ticket.TrackingNumber
 	}{
-		{2024, 1, "OHD-2024-000001"},
-		{2024, 999999, "OHD-2024-999999"},
-		{2025, 42, "OHD-2025-000042"},
+		{name: "default prefix", prefix: "GHD", year: 2026, seq: 1, want: "GHD-2026-000001"},
+		{name: "sequence is zero-padded to six", prefix: "GHD", year: 2026, seq: 42, want: "GHD-2026-000042"},
+		{name: "six digits is not truncated", prefix: "GHD", year: 2026, seq: 999999, want: "GHD-2026-999999"},
+		{name: "beyond six digits keeps growing", prefix: "GHD", year: 2026, seq: 1000000, want: "GHD-2026-1000000"},
+
+		// An instance that predates the rename sets this back, so its series
+		// stays consistent with tracking numbers already in customers' inboxes.
+		{name: "a configured prefix is used", prefix: "OHD", year: 2025, seq: 7, want: "OHD-2025-000007"},
+		{name: "digits are allowed", prefix: "IT2", year: 2026, seq: 3, want: "IT2-2026-000003"},
+		{name: "eight characters is the limit", prefix: "ABCDEFGH", year: 2026, seq: 3, want: "ABCDEFGH-2026-000003"},
+
+		// Falling back rather than refusing: this runs when a customer is
+		// opening a ticket, and an admin's typo must not stop them.
+		{name: "empty falls back to the default", prefix: "", year: 2026, seq: 5, want: "GHD-2026-000005"},
+		{name: "lowercase falls back", prefix: "ghd", year: 2026, seq: 5, want: "GHD-2026-000005"},
+		{name: "a hyphen falls back", prefix: "GH-D", year: 2026, seq: 5, want: "GHD-2026-000005"},
+		{name: "too long falls back", prefix: "ABCDEFGHI", year: 2026, seq: 5, want: "GHD-2026-000005"},
 	}
 	for _, tc := range cases {
-		got := ticket.GenerateTrackingNumber(tc.year, tc.seq)
-		require.Equal(t, tc.want, got)
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, ticket.GenerateTrackingNumber(tc.prefix, tc.year, tc.seq))
+		})
 	}
+}
+
+func TestValidateTrackingPrefix(t *testing.T) {
+	for _, ok := range []string{"GHD", "OHD", "A", "IT2", "ABCDEFGH", "12345678"} {
+		require.NoError(t, ticket.ValidateTrackingPrefix(ok), "%q should be accepted", ok)
+	}
+
+	// A hyphen is rejected because it is the field separator: "GH-D-2026-000001"
+	// cannot be split back into prefix, year and sequence unambiguously.
+	for _, bad := range []string{"", " ", "ghd", "GH D", "GH-D", "GHD!", "ABCDEFGHI", "GHD\n"} {
+		require.ErrorIs(t, ticket.ValidateTrackingPrefix(bad), ticket.ErrInvalidTrackingPrefix,
+			"%q should be rejected", bad)
+	}
+}
+
+// TestDefaultTrackingPrefix pins the value itself. Changing it changes what
+// every new instance mints, which is a product decision rather than a tidy-up.
+func TestDefaultTrackingPrefix(t *testing.T) {
+	require.Equal(t, "GHD", ticket.DefaultTrackingPrefix)
+	require.NoError(t, ticket.ValidateTrackingPrefix(ticket.DefaultTrackingPrefix),
+		"the default must itself be valid, or every fallback produces a malformed number")
 }
 
 func TestCanUserUpdate(t *testing.T) {
 	now := time.Now()
-	recentlyResolved := now.Add(-24 * time.Hour)    // within any reasonable window
+	recentlyResolved := now.Add(-24 * time.Hour)     // within any reasonable window
 	longAgoResolved := now.Add(-30 * 24 * time.Hour) // outside a 7-day window
 
 	statusNew := ticket.Status{Name: ticket.StatusNameNew, Kind: ticket.StatusKindSystem}

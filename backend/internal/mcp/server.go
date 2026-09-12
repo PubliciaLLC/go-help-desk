@@ -46,13 +46,25 @@ func actorFrom(ctx context.Context) *authmw.Actor {
 type Server struct {
 	mcp     *mcpserver.MCPServer
 	tickets *ticket.Service
+
+	// prefix returns the instance's tracking-number prefix. A function rather
+	// than the admin service itself: this package needs one string, and taking
+	// the whole service to get it would couple an integration surface to
+	// settings management.
+	prefix func(context.Context) string
 }
 
 // New creates a Server and registers all MCP tools.
-func New(tickets *ticket.Service) *Server {
+func New(tickets *ticket.Service, prefix func(context.Context) string) *Server {
+	if prefix == nil {
+		// Tests and any caller that does not care still mint well-formed
+		// numbers rather than an empty prefix.
+		prefix = func(context.Context) string { return ticket.DefaultTrackingPrefix }
+	}
 	s := &Server{
 		mcp:     mcpserver.NewMCPServer("go-help-desk", version.Version),
 		tickets: tickets,
+		prefix:  prefix,
 	}
 	s.registerTools()
 	return s
@@ -182,6 +194,8 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 		reporter := actor.UserID
 		in.ReporterUserID = &reporter
 	}
+
+	in.TrackingPrefix = s.prefix(ctx)
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {

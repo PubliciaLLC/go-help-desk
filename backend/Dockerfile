@@ -35,14 +35,24 @@ FROM alpine:3.23.5
 # container without being reachable by the application.
 RUN apk add --no-cache ca-certificates
 
-RUN addgroup -S ohd && adduser -S ohd -G ohd
+# uid and gid are pinned, not left to allocation order.
+#
+# The user was named ohd before the rename to Go Help Desk, and got uid 100 /
+# gid 101 as the first free system ids. docker-compose bind-mounts
+# ./data/attachments to /data, so those numbers are baked into file ownership
+# on every existing deployment — a rename that shifted them would leave the
+# attachments directory unwritable, and only once someone uploaded a file.
+#
+# Pinning also means a future edit that adds another user above this one cannot
+# silently move them.
+RUN addgroup -S -g 101 ghd && adduser -S -u 100 -G ghd ghd
 
 WORKDIR /app
 COPY --from=gobuilder /app /app/server
 
-RUN mkdir -p /data/attachments && chown -R ohd:ohd /data
+RUN mkdir -p /data/attachments && chown -R ghd:ghd /data
 
-USER ohd
+USER ghd
 
 EXPOSE 8080
 
