@@ -22,5 +22,8 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
     restoreMocks: true,
+    // Unmounts each test's DOM. Without it component tests leak into one
+    // another — see src/test/setup.ts.
+    setupFiles: ['./src/test/setup.ts'],
   },
 })
