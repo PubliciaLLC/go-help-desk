@@ -27,3 +27,12 @@ WHERE status_id = $1 AND reporter_user_id = $2;
 SELECT COUNT(*) FROM tickets
 WHERE status_id = $1
   AND (assignee_user_id = $2 OR assignee_group_id = ANY(sqlc.arg('group_ids')::uuid[]));
+
+-- name: CountStatusHistoryByStatus :one
+-- Rows in ticket_status_history that reference a status, in either direction.
+-- ticket_status_history has foreign keys to statuses with no ON DELETE action,
+-- so a status with zero CURRENT tickets can still be undeletable because a past
+-- transition mentions it. Counting first turns a raw foreign-key 500 into an
+-- explanation the administrator can act on.
+SELECT COUNT(*) FROM ticket_status_history
+WHERE to_status_id = $1 OR from_status_id = $1;

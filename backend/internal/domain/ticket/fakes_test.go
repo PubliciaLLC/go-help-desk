@@ -224,7 +224,8 @@ func (f *fakeStore) DeleteAttachment(context.Context, uuid.UUID) error { return 
 // ── status store ─────────────────────────────────────────────────────────────
 
 type fakeStatusStore struct {
-	byName map[string]ticket.Status
+	historyByStatus map[uuid.UUID]int64
+	byName          map[string]ticket.Status
 
 	// counts[statusID] is how many tickets sit on that status, so a test can
 	// make RemoveStatus see a status that is in use.
@@ -254,6 +255,11 @@ func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error { r
 func (f *fakeStatusStore) DeleteStatus(context.Context, uuid.UUID) error {
 	f.deletes++
 	return nil
+}
+
+// historyByStatus lets a test say a status is referenced by past transitions.
+func (f *fakeStatusStore) CountStatusHistoryByStatus(_ context.Context, id uuid.UUID) (int64, error) {
+	return f.historyByStatus[id], nil
 }
 
 func (f *fakeStatusStore) CountByStatus(_ context.Context, id uuid.UUID) (int64, error) {

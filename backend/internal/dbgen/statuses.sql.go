@@ -12,6 +12,23 @@ import (
 	"github.com/lib/pq"
 )
 
+const countStatusHistoryByStatus = `-- name: CountStatusHistoryByStatus :one
+SELECT COUNT(*) FROM ticket_status_history
+WHERE to_status_id = $1 OR from_status_id = $1
+`
+
+// Rows in ticket_status_history that reference a status, in either direction.
+// ticket_status_history has foreign keys to statuses with no ON DELETE action,
+// so a status with zero CURRENT tickets can still be undeletable because a past
+// transition mentions it. Counting first turns a raw foreign-key 500 into an
+// explanation the administrator can act on.
+func (q *Queries) CountStatusHistoryByStatus(ctx context.Context, toStatusID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countStatusHistoryByStatus, toStatusID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countTicketsByStatus = `-- name: CountTicketsByStatus :one
 SELECT COUNT(*) FROM tickets WHERE status_id = $1
 `

@@ -222,6 +222,32 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 
 // UpdateStatus changes the ticket status after verifying the actor has
 // permission to make that transition.
+// applyStatusTimestamps keeps resolved_at and closed_at consistent with the
+// status a ticket is being moved to.
+//
+// Pure and taking the cached system statuses explicitly so the rule lives in
+// one place rather than being re-derived at each of the four call sites that
+// change a status.
+func applyStatusTimestamps(t *Ticket, newStatusID uuid.UUID, sys *systemStatuses, now time.Time) {
+	switch newStatusID {
+	case sys.resolvedID:
+		// Preserve an existing timestamp: re-resolving an already-resolved
+		// ticket must not silently extend the reopen window.
+		if t.ResolvedAt == nil {
+			t.ResolvedAt = &now
+		}
+		t.ClosedAt = nil
+	case sys.closedID:
+		if t.ClosedAt == nil {
+			t.ClosedAt = &now
+		}
+	default:
+		// Any other status means the ticket is open again.
+		t.ResolvedAt = nil
+		t.ClosedAt = nil
+	}
+}
+
 func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.UUID, actor Actor) (Ticket, error) {
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
@@ -239,8 +265,22 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 
 	before := ticketMap(t)
 	oldStatusID := t.StatusID
+	now := time.Now()
 	t.StatusID = newStatusID
-	t.UpdatedAt = time.Now()
+	t.UpdatedAt = now
+
+	// resolved_at and closed_at are maintained here as well as in
+	// Resolve/Close/Reopen, because this is a second door into the same three
+	// states and it used to set StatusID alone.
+	//
+	// A ticket moved to Resolved this way had a NULL resolved_at, and
+	// CanUserUpdate reads that as "resolved but no timestamp — treat as
+	// permanently resolved", so the reporter was refused inside an open reopen
+	// window. It was also invisible to ListResolvedBefore and so would never
+	// auto-close. Moving OFF Resolved without clearing the timestamp is the
+	// mirror image: once the auto-close scheduler is wired, a ticket being
+	// actively worked would be closed underneath whoever was working it.
+	applyStatusTimestamps(&t, newStatusID, s.sys, now)
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		if err := st.Update(ctx, t); err != nil {
@@ -349,6 +389,14 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 	reopened := actor.Role == user.RoleUser && currentStatus.Name == StatusNameResolved
 	oldStatusID := t.StatusID
 	if reopened {
+		// An unresolvable configured status arrives here as uuid.Nil. Left
+		// alone it reached the status_id foreign key, rolled the transaction
+		// back, and took the user's reply with it — reported as a 500 on a
+		// perfectly ordinary reply. Refusing up front at least fails before
+		// the write and says what is actually wrong.
+		if reopenTargetStatusID == uuid.Nil {
+			return Reply{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
+		}
 		t.StatusID = reopenTargetStatusID
 		t.ResolvedAt = nil
 		t.UpdatedAt = time.Now()
@@ -457,23 +505,47 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 // Close transitions a ticket to Closed. Used by the auto-close scheduler and
 // admin overrides. It does NOT call CanTransitionStatus — the caller decides
 // whether this is authorised.
-func (s *Service) Close(ctx context.Context, ticketID uuid.UUID) error {
+// Close closes a ticket.
+//
+// It deliberately does NOT consult CanTransitionStatus: the auto-close
+// scheduler has no actor, and the authorisation decision belongs to the
+// caller. That is a recorded architecture decision and is pinned by
+// TestClose_BypassesTransitionRules.
+//
+// actor is used for attribution only — the status-history row and the audit
+// entry — and never for authorisation, so the recorded decision is unchanged.
+// The scheduler passes SystemActor; handleCloseTicket passes the administrator
+// who pressed the button. Previously SystemActor was hardcoded, so a manual
+// close showed as "System" in the timeline and wrote no audit entry at all,
+// while DESIGN.md requires history to name whoever made the change.
+func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
 		return err
 	}
+	if t.StatusID == s.sys.closedID {
+		// Already closed. Without this, re-closing appends a duplicate
+		// Closed→Closed history row and re-fires the notification.
+		return nil
+	}
+	before := ticketMap(t)
 	oldStatusID := t.StatusID
 	now := time.Now()
 	t.StatusID = s.sys.closedID
 	t.ClosedAt = &now
 	t.UpdatedAt = now
 
-	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("closing ticket: %w", err)
 		}
-		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.closedID, SystemActor)); err != nil {
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.closedID, actor)); err != nil {
 			return fmt.Errorf("recording close: %w", err)
+		}
+		// Every other lifecycle operation audits; Close did not, so a manual
+		// close left no trace in the audit log.
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "closed", before, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing close: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -483,6 +555,7 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID) error {
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketClosed,
 		TicketID:   t.ID,
+		ActorID:    actor.UserID,
 		OccurredAt: now,
 	})
 	return nil
@@ -499,6 +572,12 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 	}
 	if t.StatusID != s.sys.closedID {
 		return Ticket{}, fmt.Errorf("ticket is not closed")
+	}
+	// Same guard as AddReply's auto-reopen: an unresolvable configured status
+	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
+	// mid-transaction.
+	if targetStatusID == uuid.Nil {
+		return Ticket{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
 	}
 	before := ticketMap(t)
 	oldStatusID := t.StatusID
@@ -704,6 +783,18 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	}
 	if count > 0 {
 		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting", st.Name, count)
+	}
+	// Zero current tickets is not enough: ticket_status_history references
+	// statuses with no ON DELETE action, so any past transition through this
+	// status makes the DELETE fail on a foreign key. That surfaced as a raw
+	// 500 and contradicted the "deactivate instead" guidance above, which
+	// implies a zero-count status is deletable.
+	histCount, err := s.statuses.CountStatusHistoryByStatus(ctx, id)
+	if err != nil {
+		return fmt.Errorf("counting status history: %w", err)
+	}
+	if histCount > 0 {
+		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead", st.Name, histCount)
 	}
 	return s.statuses.DeleteStatus(ctx, id)
 }

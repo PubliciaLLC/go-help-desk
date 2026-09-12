@@ -93,6 +93,10 @@ type StatusStore interface {
 	UpdateStatus(ctx context.Context, s Status) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	CountByStatus(ctx context.Context, id uuid.UUID) (int64, error)
+	// CountStatusHistoryByStatus counts past transitions mentioning a status.
+	// ticket_status_history has no ON DELETE action, so history alone can make
+	// a status undeletable.
+	CountStatusHistoryByStatus(ctx context.Context, id uuid.UUID) (int64, error)
 	CountByStatusForReporter(ctx context.Context, statusID, userID uuid.UUID) (int64, error)
 	CountByStatusForAssignee(ctx context.Context, statusID, userID uuid.UUID, groupIDs []uuid.UUID) (int64, error)
 }

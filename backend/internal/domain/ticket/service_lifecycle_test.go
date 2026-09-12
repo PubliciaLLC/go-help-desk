@@ -234,7 +234,7 @@ func TestClose_BypassesTransitionRules(t *testing.T) {
 	h := newHarness(t)
 	seeded := h.seedOpen()
 
-	require.NoError(t, h.svc.Close(context.Background(), seeded.ID))
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
 
 	stored, err := h.store.GetByID(context.Background(), seeded.ID)
 	require.NoError(t, err)
@@ -382,3 +382,207 @@ func TestLoadSystemStatuses_FailsLoudlyWhenMissing(t *testing.T) {
 }
 
 var _ = time.Now
+
+// staffID is the acting agent for the lifecycle tests below.
+var staffID = uuid.New()
+
+// historyFor returns the status-history rows the fake store recorded for one
+// ticket; the fake keeps a single flat slice across all tickets.
+func historyFor(h *harness, ticketID uuid.UUID) []ticket.StatusHistoryEntry {
+	var out []ticket.StatusHistoryEntry
+	for _, e := range h.store.history {
+		if e.TicketID == ticketID {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// UpdateStatus is a second door into Resolved and Closed, and it used to set
+// StatusID alone. A ticket resolved through it had a NULL resolved_at, which
+// CanUserUpdate reads as "resolved but no timestamp — permanently resolved",
+// so the reporter was refused inside an open reopen window; it was also
+// invisible to ListResolvedBefore and would never auto-close.
+func TestUpdateStatus_MaintainsResolvedAndClosedTimestamps(t *testing.T) {
+	t.Run("moving to Resolved stamps resolved_at", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.ResolvedAt, "a ticket resolved this way must carry a timestamp")
+		require.Nil(t, stored.ClosedAt)
+	})
+
+	t.Run("moving to Closed stamps closed_at", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.closedStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleAdmin})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.ClosedAt)
+	})
+
+	// The mirror image, and the one with teeth: once the auto-close scheduler
+	// is wired, a stale resolved_at on an actively-worked ticket means
+	// ListResolvedBefore closes it underneath whoever is working it.
+	t.Run("moving off Resolved clears resolved_at", func(t *testing.T) {
+		h := newHarness(t)
+		reporter := uuid.New()
+		seeded := h.seedResolved(reporter)
+		require.NotNil(t, seeded.ResolvedAt, "precondition: the ticket is resolved")
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.newStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.ResolvedAt, "a reopened ticket must not look resolved to the scheduler")
+		require.Nil(t, stored.ClosedAt)
+	})
+
+	// Re-resolving must not silently extend the reopen window.
+	t.Run("re-resolving preserves the original timestamp", func(t *testing.T) {
+		h := newHarness(t)
+		reporter := uuid.New()
+		seeded := h.seedResolved(reporter)
+		original := *seeded.ResolvedAt
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.ResolvedAt)
+		require.True(t, stored.ResolvedAt.Equal(original),
+			"re-resolving must not restart the reopen window")
+	})
+}
+
+// Close is reached by the scheduler AND by an administrator pressing the
+// button. It hardcoded SystemActor and wrote no audit entry, so a manual close
+// showed as "System" in the timeline with nothing in the audit log, while
+// DESIGN.md requires history to name whoever made the change.
+func TestClose_AttributesAndAuditsTheActor(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+	admin := uuid.New()
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID,
+		ticket.Actor{UserID: &admin, Role: user.RoleAdmin}))
+
+	entries := historyFor(h, seeded.ID)
+	require.NotEmpty(t, entries, "the close must be recorded in status history")
+	last := entries[len(entries)-1]
+	require.NotNil(t, last.ChangedByUserID, "a manual close must not be attributed to System")
+	require.Equal(t, admin, *last.ChangedByUserID)
+
+	require.NotEmpty(t, h.auditStore.entries, "closing must write an audit entry")
+	require.Equal(t, "closed", h.auditStore.entries[len(h.auditStore.entries)-1].Action)
+}
+
+// The scheduler still has no actor, and must still be able to close.
+func TestClose_SystemActorStillWorks(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+
+	entries := historyFor(h, seeded.ID)
+	require.NotEmpty(t, entries)
+	require.Nil(t, entries[len(entries)-1].ChangedByUserID, "the scheduler has no user")
+}
+
+// Re-closing appended a duplicate Closed->Closed history row and re-fired the
+// notification.
+func TestClose_IsIdempotent(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+	before := len(historyFor(h, seeded.ID))
+	countClosed := func() int {
+		n := 0
+		for _, e := range h.dispatcher.types() {
+			if e == notification.EventTicketClosed {
+				n++
+			}
+		}
+		return n
+	}
+	firedBefore := countClosed()
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+
+	require.Len(t, historyFor(h, seeded.ID), before, "no duplicate history row")
+	require.Equal(t, firedBefore, countClosed(), "no second close notification")
+}
+
+// An unresolvable configured reopen target arrived as uuid.Nil, reached the
+// status_id foreign key mid-transaction, and took the user's reply with it —
+// surfacing as a 500 on an ordinary reply.
+func TestReopenPaths_RejectAnUnusableTargetBeforeWriting(t *testing.T) {
+	t.Run("AddReply auto-reopen", func(t *testing.T) {
+		h := newHarness(t)
+		reporter := uuid.New()
+		seeded := h.seedResolved(reporter)
+
+		_, err := h.svc.AddReply(context.Background(), seeded.ID,
+			"It is broken again", false, true, "reporter@example.com",
+			ticket.Actor{UserID: &reporter, Role: user.RoleUser},
+			30, uuid.Nil)
+
+		require.ErrorIs(t, err, ticket.ErrValidation)
+		require.Empty(t, h.store.replies[seeded.ID], "the reply must not be written either")
+	})
+
+	t.Run("manual Reopen", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+		require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+
+		_, err := h.svc.Reopen(context.Background(), seeded.ID, uuid.Nil,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.ErrorIs(t, err, ticket.ErrValidation)
+	})
+}
+
+// A custom status with zero CURRENT tickets can still be referenced by past
+// transitions, and ticket_status_history has no ON DELETE action — so the
+// DELETE failed on a foreign key and surfaced as a raw 500, contradicting the
+// "deactivate instead of deleting" guidance, which implies a zero-count status
+// is deletable.
+func TestRemoveStatus_RefusesWhenHistoryReferencesIt(t *testing.T) {
+	h := newHarness(t)
+	custom := ticket.Status{ID: uuid.New(), Name: "In Progress", Kind: ticket.StatusKindCustom}
+	h.statuses.byName[custom.Name] = custom
+
+	// No current tickets, but one past transition through it.
+	h.statuses.historyByStatus = map[uuid.UUID]int64{custom.ID: 3}
+
+	err := h.svc.RemoveStatus(context.Background(), custom.ID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "past ticket transition",
+		"the refusal must explain why, not fail on a foreign key")
+	require.Contains(t, err.Error(), "deactivate")
+	require.Zero(t, h.statuses.deletes, "nothing may be deleted")
+}
+
+func TestRemoveStatus_DeletesWhenNothingReferencesIt(t *testing.T) {
+	h := newHarness(t)
+	custom := ticket.Status{ID: uuid.New(), Name: "Awaiting Parts", Kind: ticket.StatusKindCustom}
+	h.statuses.byName[custom.Name] = custom
+
+	require.NoError(t, h.svc.RemoveStatus(context.Background(), custom.ID))
+	require.Equal(t, 1, h.statuses.deletes)
+}

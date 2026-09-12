@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -520,12 +521,31 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// Resolve the configured reopen target, falling back to the New system
+	// status when it does not resolve.
+	//
+	// It can fail to resolve: the setting takes any string, and a custom status
+	// can be deleted while still configured here. Passing uuid.Nil through hit
+	// the status_id foreign key mid-transaction and took the reply with it, so
+	// a customer replying to their own resolved ticket got a 500 because an
+	// administrator had mistyped a setting. The fallback keeps the customer
+	// working; the misconfiguration is an admin problem and is logged here.
 	var reopenStatusID uuid.UUID
 	for _, st := range statuses {
 		if st.Name == reopenStatusName {
 			reopenStatusID = st.ID
 			break
 		}
+	}
+	if reopenStatusID == uuid.Nil {
+		for _, st := range statuses {
+			if st.Name == ticket.StatusNameNew {
+				reopenStatusID = st.ID
+				break
+			}
+		}
+		slog.WarnContext(r.Context(), "configured reopen target status does not exist; falling back to New",
+			"configured", reopenStatusName)
 	}
 
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
@@ -622,7 +642,9 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
 		return
 	}
-	if err := s.tickets.Close(r.Context(), id); err != nil {
+	// The admin who pressed the button, not SystemActor: the authorisation
+	// check above is this handler's job, and the actor is for attribution.
+	if err := s.tickets.Close(r.Context(), id, ticket.Actor{UserID: &a.UserID, Role: a.Role}); err != nil {
 		handleError(w, err)
 		return
 	}
