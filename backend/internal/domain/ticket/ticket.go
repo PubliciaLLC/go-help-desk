@@ -95,7 +95,7 @@ type TicketLink struct {
 }
 
 // TrackingNumber is the human-readable identifier for a ticket, e.g.
-// "OHD-2024-000001". It is unique across all tickets and never reused.
+// "GHD-2024-000001". It is unique across all tickets and never reused.
 type TrackingNumber string
 
 // Ticket is the central entity of the system. All business state lives here.

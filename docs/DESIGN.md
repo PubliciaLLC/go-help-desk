@@ -124,7 +124,7 @@ Free-form labels that staff can attach to any ticket. Rules:
 
 The ticket list includes a live search bar with a 300 ms debounce:
 
-- Searches **tracking number** (prefix match — e.g. `OHD-2025-0` matches all tickets in that series), plus **subject** and **description** via Postgres full-text search (`tsvector`/`tsquery`), ranked by relevance.
+- Searches **tracking number** (prefix match — e.g. `GHD-2025-0` matches all tickets in that series), plus **subject** and **description** via Postgres full-text search (`tsvector`/`tsquery`), ranked by relevance.
 - The query is tokenized into words and each word is prefix-matched (e.g. `print jam` requires a word starting with "print" **and** a word starting with "jam", in any order) — this is what keeps "search as you type" working on partial words, not just whole ones.
 - Subject is weighted higher than description, so a match in the subject line ranks above one buried in a long description.
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
