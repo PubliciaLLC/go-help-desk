@@ -15,10 +15,46 @@ import (
 // Service orchestrates user-related business operations.
 type Service struct {
 	store Store
+
+	// hashCost is the bcrypt cost for password hashing. Always
+	// bcrypt.DefaultCost in production; see WithBcryptCost.
+	hashCost int
 }
 
 // NewService returns a Service backed by the given Store.
-func NewService(store Store) *Service { return &Service{store: store} }
+func NewService(store Store, opts ...Option) *Service {
+	s := &Service{store: store, hashCost: bcrypt.DefaultCost}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// Option configures a Service at construction.
+type Option func(*Service)
+
+// WithBcryptCost overrides the bcrypt cost used when hashing passwords.
+//
+// THIS EXISTS FOR TESTS AND MUST NOT BE USED IN PRODUCTION WIRING. The cost is
+// a security parameter: it is what makes an offline attack on a stolen password
+// hash expensive, and lowering it weakens every password in the database.
+//
+// In a test suite it is pure latency and nothing else. The server integration
+// tests build ~80 harnesses, each creating several users, and under -race a
+// single hash at the default cost takes about a second: the suite spent 140 of
+// its 152 seconds hashing passwords nobody asserts anything about.
+//
+// Costs below bcrypt.MinCost are raised to it, since bcrypt rejects them.
+// cmd/server never calls this, and TestNewService_DefaultsToDefaultCost fails
+// if the default ever changes.
+func WithBcryptCost(cost int) Option {
+	return func(s *Service) {
+		if cost < bcrypt.MinCost {
+			cost = bcrypt.MinCost
+		}
+		s.hashCost = cost
+	}
+}
 
 // CreateUserInput is the data needed to create a new user.
 type CreateUserInput struct {
@@ -48,7 +84,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 	}
 	switch {
 	case in.Password != "":
-		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
+		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.hashCost)
 		if err != nil {
 			return User{}, fmt.Errorf("hashing password: %w", err)
 		}
@@ -68,7 +104,7 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	if err != nil {
 		return err
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
 	}
@@ -443,7 +479,7 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	if strings.TrimSpace(plain) == "" {
 		return fmt.Errorf("password is required")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
 	}
