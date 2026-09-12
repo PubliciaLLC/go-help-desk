@@ -204,7 +204,10 @@ func run() error {
 	mcpSrv := mcp.New(ticketSvc)
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp/", mcpSrv.Handler())
+	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
+	// mux sits outside srv's middleware chain. Mounted directly, every MCP tool
+	// was reachable with no credentials.
+	mux.Handle("/mcp/", srv.ProtectMCP(mcpSrv.Handler()))
 	mux.Handle("/api/", srv)
 	mux.Handle("/health", srv)
 	mux.Handle("/", server.NewSPAHandler(ui.FS()))

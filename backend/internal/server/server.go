@@ -41,6 +41,38 @@ func init() {
 	gob.Register(auth.SessionData{})
 }
 
+// ProtectMCP wraps an MCP handler in exactly the middleware chain that guards
+// /api/, then restricts it to staff and administrators.
+//
+// The MCP handler is mounted on the root ServeMux beside /api/ rather than
+// inside this router, so it never passed through the chain below. It was
+// reachable with no credentials at all: an unauthenticated caller could read
+// any ticket by tracking number and post replies while naming any user as the
+// author. The package comment claimed it "uses the same auth methods (API key,
+// bearer token) as the REST API", which is presumably why nobody checked.
+//
+// Staff and admin only. The HTTP API lets a RoleUser read their own tickets by
+// scoping each handler, and duplicating that scoping here is how the two
+// surfaces drifted apart in the first place. MCP is an agent integration for
+// staff, so the narrower rule is both safer and simpler.
+//
+// RequireMFA is included for parity with ticketRouter — MCP must not be a way
+// to bypass a TOTP challenge. Machine credentials are unaffected: the API-key
+// and bearer paths set MFAPassed on the actor they attach.
+func (s *Server) ProtectMCP(next http.Handler) http.Handler {
+	// Order matches ticketRouter's r.Use sequence: RequireRole before
+	// RequireMFA. Reversed, a caller with no credentials at all is told
+	// "MFA verification required" (403) instead of "authentication required"
+	// (401), which is both wrong and a confusing thing to debug.
+	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff)(
+		authmw.RequireMFA(next),
+	)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret)(chain)
+	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
+	chain = authmw.SessionAuth(s.sessions)(chain)
+	return chain
+}
+
 // OAuthClientLookup fetches an OAuth client by client ID.
 type OAuthClientLookup interface {
 	GetByClientID(ctx context.Context, clientID string) (auth.OAuthClient, error)
