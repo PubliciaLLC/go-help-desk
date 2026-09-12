@@ -344,7 +344,7 @@ func (s *Server) reloadSAML(ctx context.Context) error {
 		return nil
 	}
 
-	mw, err := auth.NewSAMLMiddleware(auth.SAMLConfig{
+	mw, err := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
 		BaseURL:     s.cfg.BaseURL,
 		MetadataURL: metadataURL,
 		CertPEM:     []byte(certPEM),

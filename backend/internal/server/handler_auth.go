@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -229,7 +230,7 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
 	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)
 	if err != nil {
-		if err == user.ErrDomainNotAllowed {
+		if errors.Is(err, user.ErrDomainNotAllowed) {
 			http.Redirect(w, r, "/login?error=domain_not_allowed", http.StatusSeeOther)
 			return
 		}

@@ -326,20 +326,48 @@ func canAdoptByEmail(u User, oidcSubject string) error {
 }
 
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
+	samlSubject = strings.TrimSpace(samlSubject)
+	email = strings.ToLower(strings.TrimSpace(email))
+	displayName = strings.TrimSpace(displayName)
+
+	// An assertion with no NameID cannot be bound to an account. The subject
+	// lookup would miss — the unique index on saml_subject is partial and
+	// ignores the empty sentinel every local account carries — so without this
+	// guard each such login falls to the create path and mints another
+	// empty-subject account.
+	if samlSubject == "" {
+		return User{}, ErrSubjectRequired
+	}
+
 	u, err := s.store.GetBySAMLSubject(ctx, samlSubject)
-	if err == nil {
-		// Existing user — sync profile (domain restriction does not apply to existing users).
+	switch {
+	case err == nil:
+		// Known identity — sync the profile from the attributes we were given.
+		// The domain restriction deliberately does not apply to existing users,
+		// matching the behaviour this path has always had.
 		if !u.IsActive() {
 			return User{}, ErrUserDisabled
 		}
-		u.Email = strings.ToLower(strings.TrimSpace(email))
-		u.DisplayName = strings.TrimSpace(displayName)
+		// Synced only when present. An IdP that stops releasing an attribute
+		// must not blank what is already stored: the email column is unique, so
+		// the second user that happened to could not log in at all.
+		if email != "" {
+			u.Email = email
+		}
+		if displayName != "" {
+			u.DisplayName = displayName
+		}
 		u.UpdatedAt = time.Now()
 		if err := s.store.Update(ctx, u); err != nil {
 			return User{}, fmt.Errorf("updating SAML user: %w", err)
 		}
 		return u, nil
+	case !errors.Is(err, ErrNotFound):
+		// A store failure is not a missing row: falling through here would
+		// create a second account for an identity that already has one.
+		return User{}, fmt.Errorf("looking up user by SAML subject: %w", err)
 	}
+
 	// New user — enforce domain restriction before creating.
 	if !IsEmailDomainAllowed(email, allowedDomains) {
 		return User{}, ErrDomainNotAllowed
