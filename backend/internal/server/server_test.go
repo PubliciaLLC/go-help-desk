@@ -42,6 +42,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // harness is a test server wired against a real (rolled-back) DB transaction.
@@ -79,7 +80,9 @@ func newHarness(t *testing.T) (*harness, func()) {
 	crStore := cannedresponsestore.New(q)
 
 	// Services
-	userSvc := user.NewService(uStore)
+	// bcrypt at the production cost dominates this suite's runtime — ~140s of
+	// 152s under -race, hashing passwords no assertion depends on.
+	userSvc := user.NewService(uStore, user.WithBcryptCost(bcrypt.MinCost))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	adminSvc := admin.NewService(aStore)
@@ -959,7 +962,9 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 	tagSt := tagstore.New(q)
 	crStore := cannedresponsestore.New(q)
 
-	userSvc := user.NewService(uStore)
+	// bcrypt at the production cost dominates this suite's runtime — ~140s of
+	// 152s under -race, hashing passwords no assertion depends on.
+	userSvc := user.NewService(uStore, user.WithBcryptCost(bcrypt.MinCost))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	adminSvc := admin.NewService(aStore)

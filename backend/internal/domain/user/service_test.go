@@ -10,6 +10,7 @@ import (
 	"github.com/pquerna/otp/totp"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // errFakeNotFound is what the fake returns when a lookup finds no row.
@@ -349,4 +350,50 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 	got, err := svc.GetByID(context.Background(), u.ID)
 	require.NoError(t, err)
 	require.True(t, got.MFAEnabled)
+}
+
+// TestNewService_DefaultsToDefaultCost is the guard on WithBcryptCost.
+//
+// The option exists so the test suite can hash cheaply; the danger is that it
+// leaks into production wiring, or that someone "simplifies" the default. Both
+// would silently weaken every password in the database — nothing else in the
+// system would notice, and no test would fail. This one does.
+func TestNewService_DefaultsToDefaultCost(t *testing.T) {
+	store := newFakeUserStore()
+	svc := user.NewService(store) // no options: exactly how cmd/server builds it
+
+	created, err := svc.Create(context.Background(), user.CreateUserInput{
+		Email:       "cost@example.com",
+		DisplayName: "Cost Check",
+		Role:        user.RoleUser,
+		Password:    "a-real-password",
+	})
+	require.NoError(t, err)
+
+	stored := store.byID[created.ID]
+	require.NotEmpty(t, stored.PasswordHash, "a password user must have a hash")
+
+	cost, err := bcrypt.Cost([]byte(stored.PasswordHash))
+	require.NoError(t, err)
+	require.Equal(t, bcrypt.DefaultCost, cost,
+		"the default construction must hash at bcrypt.DefaultCost; lowering it weakens every stored password")
+}
+
+// TestWithBcryptCost_FloorsAtMinCost keeps the option from producing hashes
+// bcrypt itself rejects.
+func TestWithBcryptCost_FloorsAtMinCost(t *testing.T) {
+	store := newFakeUserStore()
+	svc := user.NewService(store, user.WithBcryptCost(1)) // below bcrypt.MinCost
+
+	created, err := svc.Create(context.Background(), user.CreateUserInput{
+		Email:       "floor@example.com",
+		DisplayName: "Floor Check",
+		Role:        user.RoleUser,
+		Password:    "a-real-password",
+	})
+	require.NoError(t, err)
+
+	cost, err := bcrypt.Cost([]byte(store.byID[created.ID].PasswordHash))
+	require.NoError(t, err)
+	require.Equal(t, bcrypt.MinCost, cost)
 }
