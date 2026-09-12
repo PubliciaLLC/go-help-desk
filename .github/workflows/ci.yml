@@ -66,20 +66,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: frontend
 
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_DB: helpdesk
-          POSTGRES_USER: helpdesk
-          POSTGRES_PASSWORD: helpdesk
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U helpdesk"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+    # No `services:` block. The test database comes from
+    # docker/docker-compose.test.yml, the same file developers run locally, so
+    # the two cannot drift and a test run can never reach the dev database.
+    # A service container could not express that file anyway: GitHub Actions
+    # provides no way to override a service's command, and its settings are
+    # command flags.
 
     steps:
       - uses: actions/checkout@v4
@@ -122,12 +114,20 @@ jobs:
         working-directory: backend
         # Integration tests skip themselves when TEST_DATABASE_URL is unset, so
         # this step exercises pure logic only — and fails fast if that breaks.
-        run: go test -race ./...
+        # Deliberately without -race: the integration step below runs the same
+        # packages with it. The race detector costs roughly 8x on this suite
+        # (16.9s vs 142.4s for internal/server), so running it twice doubled the
+        # job for no extra coverage. What this step uniquely proves is that the
+        # suite passes with no database configured.
+        run: go test ./...
+
+      - name: Start test database
+        run: docker compose -f docker/docker-compose.test.yml up -d --wait
 
       - name: Integration tests (Postgres)
         working-directory: backend
         env:
-          TEST_DATABASE_URL: postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable
+          TEST_DATABASE_URL: postgres://helpdesk:helpdesk@127.0.0.1:5433/helpdesk_test?sslmode=disable
         run: go test -race ./...
 
       - name: Coverage report
@@ -135,7 +135,7 @@ jobs:
         # Advisory only: surfaces per-package coverage so a reviewer can see
         # whether a change moved the needle. Never gates the build.
         env:
-          TEST_DATABASE_URL: postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable
+          TEST_DATABASE_URL: postgres://helpdesk:helpdesk@127.0.0.1:5433/helpdesk_test?sslmode=disable
         run: |
           if go test -coverprofile=coverage.out ./... >/dev/null 2>&1 && [ -f coverage.out ]; then
             {

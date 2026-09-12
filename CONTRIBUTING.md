@@ -40,6 +40,35 @@ APP_ENV=development \
 go run ./cmd/server
 ```
 
+### Integration tests (Postgres)
+
+Integration tests skip themselves when `TEST_DATABASE_URL` is unset, so the unit
+tests above need nothing installed. To run the full suite you need a throwaway
+Postgres:
+
+```sh
+./scripts/test-db.sh once            # start db, run everything, tear it all down
+./scripts/test-db.sh test ./internal/server/ -run OIDC   # iterate on one package
+./scripts/test-db.sh up              # leave it running while you work
+./scripts/test-db.sh down            # stop it
+```
+
+The database is ephemeral: it lives in a tmpfs, listens on **5433** so it can
+never be confused with the dev stack on 5432, and runs with `fsync=off`. Nothing
+persists between runs and nothing needs seeding — `testutil.NewDB` applies the
+migrations on first connect and each test rolls back its own transaction.
+
+On macOS the script will start [colima](https://colima.run) if no container
+runtime is responding, and stop it again on teardown, so no VM idles between
+runs:
+
+```sh
+brew install colima
+```
+
+Do **not** run `brew services start colima` — that restarts the VM at every
+login, which is what this setup exists to avoid.
+
 ### Frontend
 
 ```sh

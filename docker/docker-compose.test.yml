@@ -1,0 +1,61 @@
+# Ephemeral Postgres for running the test suite from the host.
+#
+# Deliberately separate from docker-compose.yml, which runs the dev stack. That
+# one keeps its database on `restart: unless-stopped` with a bind-mounted data
+# directory, and points its `test` profile at the same `helpdesk` database dev
+# uses — so running the suite migrates the database you are developing against.
+#
+# This file is the opposite on every count: nothing persists, nothing restarts,
+# nothing is shared with dev, and it holds one service.
+#
+#   scripts/test-db.sh up      start it
+#   scripts/test-db.sh test    start it and run the full suite
+#   scripts/test-db.sh down    stop it, discarding everything
+#
+# Tests run on the host against it, using the local Go toolchain and build
+# cache. Running them inside a container instead means rebuilding the image on
+# every edit, which is the slow path.
+
+name: ohd-test
+
+services:
+  testdb:
+    image: postgres:17-alpine
+
+    environment:
+      POSTGRES_DB: helpdesk_test
+      POSTGRES_USER: helpdesk
+      POSTGRES_PASSWORD: helpdesk
+      # The data directory is thrown away on every stop, so skip the work of
+      # making initdb's writes durable.
+      POSTGRES_INITDB_ARGS: "--no-sync"
+
+    # 5433, not 5432: the dev stack may already hold 5432, and a test run must
+    # never silently connect to the development database.
+    ports:
+      - "127.0.0.1:5433:5432"
+
+    # No bind mount and no named volume — the data directory lives in RAM. It
+    # is faster than the SSD and leaves nothing behind on the machine.
+    tmpfs:
+      - /var/lib/postgresql/data
+
+    # Durability settings exist to survive a crash. This database is discarded
+    # on purpose, so they buy nothing. Measured worth on this suite: ~2%
+    # (17.3s untuned vs 16.9s tuned) — kept because it is free and correct for
+    # a throwaway database, NOT because it is a speed-up. The suite's real cost
+    # is -race, which is roughly 8x.
+    command: >
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c max_connections=200
+
+    # No restart policy: it runs when asked and stays stopped otherwise.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U helpdesk -d helpdesk_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+      start_period: 2s
