@@ -56,6 +56,7 @@ type harness struct {
 	adminID         uuid.UUID
 	catID           uuid.UUID
 	adminSvc        *admin.Service
+	groupSvc        *group.Service
 	userSvc         *user.Service
 	categorySvc     *category.Service
 	cannedResponses *cannedresponse.Service
@@ -218,6 +219,7 @@ func newHarness(t *testing.T) (*harness, func()) {
 		adminID:         adminUser.ID,
 		catID:           cat.ID,
 		adminSvc:        adminSvc,
+		groupSvc:        groupSvc,
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
 		cannedResponses: cannedResponseSvc,

@@ -29,6 +29,11 @@ const (
 	KeySelfSignupEnabled       = "self_signup_enabled"       // bool
 	KeyOpenRegistrationEnabled = "open_registration_enabled" // bool — allow signup with no domain restriction
 
+	// Ticket visibility. Off by default: every release before this let any
+	// staff member see every ticket, and switching that on silently during an
+	// upgrade would hide tickets people are working on.
+	KeyTicketScopeEnforced = "ticket_scope_enforced" // bool
+
 	// Auto-assign settings. Group takes priority over users; if neither is set, tickets stay unassigned.
 	KeyAutoAssignGroupID = "auto_assign_group_id" // string UUID — assign new tickets to this group
 	KeyAutoAssignUserIDs = "auto_assign_user_ids" // []string UUIDs — round-robin among these users

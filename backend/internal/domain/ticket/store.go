@@ -49,6 +49,16 @@ type Store interface {
 	SearchAll(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
 	SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
 
+	// Scope-aware listing. Returns the tickets a staff member may see under
+	// DESIGN.md's model — reported by them, assigned to them, assigned to one
+	// of their groups, or within a Category/Type their groups cover.
+	//
+	// This has to be a query rather than a filter over another listing,
+	// because callers paginate: filtering a fetched page returns short pages
+	// and silently skips rows.
+	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
+	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)
 

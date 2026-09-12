@@ -144,3 +144,52 @@ WHERE source_ticket_id = $1 AND target_ticket_id = $2 AND link_type = $3;
 -- name: ListTicketLinks :many
 SELECT * FROM ticket_links
 WHERE source_ticket_id = $1 OR target_ticket_id = $1;
+
+-- name: ListTicketsVisibleToStaff :many
+-- Every ticket a staff member may see under DESIGN.md's scope model: reported
+-- by them, assigned to them, assigned to one of their groups, or falling in a
+-- Category/Type their groups cover. A NULL group_scopes.type_id is a
+-- category-level scope covering every type beneath it; items never factor in.
+--
+-- Filtering happens here rather than in Go because the caller paginates: a page
+-- fetched and then filtered returns short pages and skips rows.
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+WHERE
+  t.reporter_user_id = $1
+  OR t.assignee_user_id = $1
+  OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $1)
+  OR EXISTS (
+    SELECT 1 FROM group_scopes gs
+    JOIN group_members gm ON gm.group_id = gs.group_id
+    WHERE gm.user_id = $1
+      AND gs.category_id = t.category_id
+      AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+  )
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3;
+
+-- name: SearchTicketsVisibleToStaff :many
+-- Search variant of ListTicketsVisibleToStaff, matching the predicate and
+-- ranking used by the other ticket searches.
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+WHERE
+  (
+    t.reporter_user_id = $1
+    OR t.assignee_user_id = $1
+    OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $1)
+    OR EXISTS (
+      SELECT 1 FROM group_scopes gs
+      JOIN group_members gm ON gm.group_id = gs.group_id
+      WHERE gm.user_id = $1
+        AND gs.category_id = t.category_id
+        AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+    )
+  )
+  AND (
+    tracking_number ILIKE $4
+    OR (CASE WHEN sqlc.arg(search_query)::text <> '' THEN search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text) ELSE false END)
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $2 OFFSET $3;

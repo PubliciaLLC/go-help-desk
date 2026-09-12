@@ -125,6 +125,14 @@ type Querier interface {
 	ListTicketsByAssigneeUser(ctx context.Context, arg ListTicketsByAssigneeUserParams) ([]ListTicketsByAssigneeUserRow, error)
 	ListTicketsByReporter(ctx context.Context, arg ListTicketsByReporterParams) ([]ListTicketsByReporterRow, error)
 	ListTicketsByStatus(ctx context.Context, arg ListTicketsByStatusParams) ([]ListTicketsByStatusRow, error)
+	// Every ticket a staff member may see under DESIGN.md's scope model: reported
+	// by them, assigned to them, assigned to one of their groups, or falling in a
+	// Category/Type their groups cover. A NULL group_scopes.type_id is a
+	// category-level scope covering every type beneath it; items never factor in.
+	//
+	// Filtering happens here rather than in Go because the caller paginates: a page
+	// fetched and then filtered returns short pages and skips rows.
+	ListTicketsVisibleToStaff(ctx context.Context, arg ListTicketsVisibleToStaffParams) ([]ListTicketsVisibleToStaffRow, error)
 	ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, error)
 	ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]ListUnassignedTicketsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
@@ -140,6 +148,9 @@ type Querier interface {
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)
+	// Search variant of ListTicketsVisibleToStaff, matching the predicate and
+	// ranking used by the other ticket searches.
+	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error

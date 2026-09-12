@@ -214,6 +214,44 @@ func (s *Store) ListByReporter(ctx context.Context, userID uuid.UUID, limit, off
 	return out, nil
 }
 
+// ListVisibleToStaff returns the tickets a staff member may see under the
+// scope model: reported by them, assigned to them, assigned to one of their
+// groups, or within a Category/Type their groups cover.
+func (s *Store) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.ListTicketsVisibleToStaff(ctx, dbgen.ListTicketsVisibleToStaffParams{
+		ReporterUserID: database.NullUUID(&userID),
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing tickets visible to staff: %w", err)
+	}
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
+}
+
+// SearchVisibleToStaff is ListVisibleToStaff with the shared search predicate.
+func (s *Store) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
+	rows, err := s.q.SearchTicketsVisibleToStaff(ctx, dbgen.SearchTicketsVisibleToStaffParams{
+		ReporterUserID: database.NullUUID(&userID),
+		Limit:          int32(limit),
+		Offset:         int32(offset),
+		TrackingNumber: searchPattern(q),
+		SearchQuery:    buildSearchTSQuery(q),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching tickets visible to staff: %w", err)
+	}
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
+}
+
 func (s *Store) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListTicketsByAssigneeUser(ctx, dbgen.ListTicketsByAssigneeUserParams{
 		AssigneeUserID: database.NullUUID(&userID),

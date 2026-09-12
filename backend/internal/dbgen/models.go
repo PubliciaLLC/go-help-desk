@@ -260,8 +260,8 @@ type User struct {
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
 	DeletedAt    sql.NullTime `json:"deleted_at"`
-	OidcSubject  string       `json:"oidc_subject"`
 	Disabled     bool         `json:"disabled"`
+	OidcSubject  string       `json:"oidc_subject"`
 }
 
 type WebhookConfig struct {

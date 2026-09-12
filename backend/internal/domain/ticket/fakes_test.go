@@ -197,6 +197,17 @@ func (f *fakeStore) SearchAll(context.Context, string, int, int) ([]ticket.Ticke
 func (f *fakeStore) SearchUnassigned(context.Context, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
+
+// Scope-aware listing is exercised against real Postgres in the server suite,
+// where the SQL predicate is the thing under test. A Go reimplementation here
+// would assert that the fake matches itself.
+func (f *fakeStore) ListVisibleToStaff(context.Context, uuid.UUID, int, int) ([]ticket.Ticket, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
+	return nil, nil
+}
 func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error { return nil }
 func (f *fakeStore) GetAttachmentByID(context.Context, uuid.UUID) (ticket.Attachment, error) {
 	return ticket.Attachment{}, errNotFound
