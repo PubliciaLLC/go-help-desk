@@ -1,27 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getTicket,
   listReplies,
   listStatusHistory,
-  addReply,
   resolveTicket,
   reopenTicket,
   closeTicket,
   updateTicket,
   listAttachments,
-  uploadAttachment,
   attachmentDownloadUrl,
   listTicketCustomFields,
   putTicketCustomFields,
-  listPublicCategories,
-  listPublicTypes,
-  listPublicItems,
-  listTicketCannedResponses,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
-import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
+import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
+import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { listStatuses, listUsers } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -35,8 +30,7 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { MessageSquareTextIcon } from 'lucide-react'
-import type { Group, User, StatusHistoryEntry, TicketFieldValue, Category, TicketType, TicketItem, CannedResponse } from '@/api/types'
+import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
 
 function formatDate(iso: string) {
@@ -306,91 +300,11 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
 
 // ── Canned response picker ─────────────────────────────────────────────────────
 
-interface CannedResponsePickerProps {
-  responses: CannedResponse[]
-  onSelect: (body: string) => void
-  onClose: () => void
-  // Ref to the wrapper that contains BOTH the trigger button and this picker.
-  // Using the trigger's own container (rather than a ref scoped to just the
-  // picker) keeps a click on the trigger from counting as "outside" — the
-  // trigger's onClick toggle is the only thing that should open/close it.
-  containerRef: React.RefObject<HTMLDivElement | null>
-}
-
-function CannedResponsePicker({ responses, onSelect, onClose, containerRef }: CannedResponsePickerProps) {
-  const [filter, setFilter] = useState('')
-
-  useEffect(() => {
-    function handlePointerDown(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        onClose()
-      }
-    }
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [onClose, containerRef])
-
-  const filtered = filter.trim()
-    ? responses.filter((r) => r.name.toLowerCase().includes(filter.trim().toLowerCase()))
-    : responses
-
-  return (
-    <div className="absolute z-10 mt-1 w-80 rounded-md border border-gray-200 bg-white shadow-lg">
-      <div className="border-b border-gray-100 p-2">
-        <Input
-          autoFocus
-          placeholder="Filter by name…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="h-8 text-xs"
-        />
-      </div>
-      <div className="max-h-56 overflow-y-auto py-1">
-        {responses.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-gray-400">No canned responses available for this ticket.</p>
-        ) : filtered.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-gray-400">No matches</p>
-        ) : (
-          filtered.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              className="block w-full px-3 py-2 text-left hover:bg-gray-50"
-              onClick={() => onSelect(r.body)}
-            >
-              <div className="text-sm font-medium text-gray-900">{r.name}</div>
-              <div className="truncate text-xs text-gray-400">{r.body}</div>
-            </button>
-          ))
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Page ──────────────────────────────────────────────────────────────────────
-
 export function TicketDetailPage() {
   const { id } = useParams({ from: '/tickets/$id' })
   const { user } = useAuthStore()
   const qc = useQueryClient()
 
-  const [replyBody, setReplyBody] = useState('')
-  const [replyInternal, setReplyInternal] = useState(false)
-  const [replyNotify, setReplyNotify] = useState(true)
-  const [replyFiles, setReplyFiles] = useState<File[]>([])
-  const [replyUploadStates, setReplyUploadStates] = useState<Record<string, UploadState> | undefined>()
-  const [replyError, setReplyError] = useState('')
-  const [cannedPickerOpen, setCannedPickerOpen] = useState(false)
-  const replyTextareaRef = useRef<HTMLTextAreaElement>(null)
-  const cannedPickerContainerRef = useRef<HTMLDivElement>(null)
 
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
@@ -426,59 +340,6 @@ export function TicketDetailPage() {
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
 
-  // ── CTI state ────────────────────────────────────────────────────────────────
-  const [ctiEdit, setCtiEdit] = useState(false)
-  const [ctiCategoryId, setCtiCategoryId] = useState('')
-  const [ctiTypeId, setCtiTypeId] = useState('')
-  const [ctiItemId, setCtiItemId] = useState('')
-  const [ctiError, setCtiError] = useState('')
-
-  const { data: categories = [] } = useQuery<Category[]>({
-    queryKey: ['public-categories'],
-    queryFn: listPublicCategories,
-  })
-
-  const { data: ctiTypes = [] } = useQuery<TicketType[]>({
-    queryKey: ['public-types', ctiCategoryId || ticket?.category_id],
-    queryFn: () => listPublicTypes(ctiCategoryId || ticket!.category_id),
-    enabled: !!(ctiCategoryId || ticket?.category_id),
-  })
-
-  const activeCtiTypeId = ctiTypeId || ticket?.type_id || ''
-  const { data: ctiItems = [] } = useQuery<TicketItem[]>({
-    queryKey: ['public-items', ctiCategoryId || ticket?.category_id, activeCtiTypeId],
-    queryFn: () => listPublicItems(ctiCategoryId || ticket!.category_id, activeCtiTypeId),
-    enabled: !!activeCtiTypeId,
-  })
-
-  const ctiMutation = useMutation({
-    mutationFn: () => updateTicket(id, {
-      category_id: ctiCategoryId || ticket!.category_id,
-      type_id: ctiTypeId || null,
-      item_id: ctiItemId || null,
-    }),
-    onSuccess: () => {
-      setCtiEdit(false)
-      setCtiError('')
-      qc.invalidateQueries({ queryKey: ['ticket', id] })
-      // Recategorizing changes which canned responses are in scope.
-      qc.invalidateQueries({ queryKey: ['ticket-canned-responses', id] })
-    },
-    onError: (err) => setCtiError(extractError(err)),
-  })
-
-  function startCtiEdit() {
-    setCtiCategoryId(ticket?.category_id ?? '')
-    setCtiTypeId(ticket?.type_id ?? '')
-    setCtiItemId(ticket?.item_id ?? '')
-    setCtiError('')
-    setCtiEdit(true)
-  }
-
-  const categoryName = categories.find((c) => c.id === ticket?.category_id)?.name
-  const typeName = ctiTypes.find((t) => t.id === ticket?.type_id)?.name
-  const itemName = ctiItems.find((i) => i.id === ticket?.item_id)?.name
-
   const { data: allUsers = [] } = useQuery({
     queryKey: ['users'],
     queryFn: () => listUsers(),
@@ -491,26 +352,6 @@ export function TicketDetailPage() {
     enabled: isStaffOrAdmin,
   })
 
-  const { data: cannedResponses = [] } = useQuery({
-    queryKey: ['ticket-canned-responses', id],
-    queryFn: () => listTicketCannedResponses(id),
-    enabled: isStaffOrAdmin,
-  })
-
-  function insertCannedResponse(body: string) {
-    const textarea = replyTextareaRef.current
-    const start = textarea?.selectionStart ?? replyBody.length
-    const end = textarea?.selectionEnd ?? replyBody.length
-    const newValue = replyBody.slice(0, start) + body + replyBody.slice(end)
-    const cursorPos = start + body.length
-    setReplyBody(newValue)
-    setCannedPickerOpen(false)
-    requestAnimationFrame(() => {
-      textarea?.focus()
-      textarea?.setSelectionRange(cursorPos, cursorPos)
-    })
-  }
-
   const { data: attachments = [] } = useQuery({
     queryKey: ['attachments', id],
     queryFn: () => listAttachments(id),
@@ -519,45 +360,6 @@ export function TicketDetailPage() {
 
   const statusName = statuses.find((s) => s.id === ticket?.status_id)?.name ?? '…'
   const statusColor = statuses.find((s) => s.id === ticket?.status_id)?.color
-
-  const replyMutation = useMutation({
-    mutationFn: () => addReply(id, replyBody, replyInternal, replyNotify),
-    onSuccess: async () => {
-      setReplyBody('')
-      setReplyError('')
-      qc.invalidateQueries({ queryKey: ['replies', id] })
-      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
-      qc.invalidateQueries({ queryKey: ['ticket', id] })
-
-      // Upload any attached files to the ticket.
-      if (replyFiles.length > 0) {
-        const initial: Record<string, UploadState> = {}
-        for (const f of replyFiles) initial[f.name] = { status: 'pending' }
-        setReplyUploadStates(initial)
-
-        for (const f of replyFiles) {
-          setReplyUploadStates((prev) => ({ ...prev!, [f.name]: { status: 'uploading' } }))
-          try {
-            await uploadAttachment(id, f)
-            setReplyUploadStates((prev) => ({ ...prev!, [f.name]: { status: 'done' } }))
-          } catch (err) {
-            setReplyUploadStates((prev) => ({
-              ...prev!,
-              [f.name]: { status: 'error', error: extractError(err) },
-            }))
-          }
-        }
-
-        qc.invalidateQueries({ queryKey: ['attachments', id] })
-        // Clear files after a short delay so the user can see the done states.
-        setTimeout(() => {
-          setReplyFiles([])
-          setReplyUploadStates(undefined)
-        }, 1500)
-      }
-    },
-    onError: (err) => setReplyError(extractError(err)),
-  })
 
   const statusMutation = useMutation({
     mutationFn: (statusId: string) => updateTicket(id, { status_id: statusId }),
@@ -738,104 +540,7 @@ export function TicketDetailPage() {
 
             {/* Reply / work log form */}
             {statusName !== 'Closed' && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm">
-                    {isStaffOrAdmin ? 'Add work log entry' : 'Add reply'}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {isStaffOrAdmin && (
-                    <div className="relative inline-block" ref={cannedPickerContainerRef}>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 text-xs"
-                        onClick={() => setCannedPickerOpen((o) => !o)}
-                        disabled={!!replyUploadStates}
-                      >
-                        <MessageSquareTextIcon className="mr-1.5 h-3.5 w-3.5" />
-                        Insert canned response
-                      </Button>
-                      {cannedPickerOpen && (
-                        <CannedResponsePicker
-                          responses={cannedResponses}
-                          onSelect={insertCannedResponse}
-                          onClose={() => setCannedPickerOpen(false)}
-                          containerRef={cannedPickerContainerRef}
-                        />
-                      )}
-                    </div>
-                  )}
-
-                  <Textarea
-                    ref={replyTextareaRef}
-                    placeholder={isStaffOrAdmin ? 'Describe the work performed or add a note…' : 'Type your reply…'}
-                    rows={4}
-                    value={replyBody}
-                    onChange={(e) => setReplyBody(e.target.value)}
-                    disabled={!!replyUploadStates}
-                  />
-
-                  {isStaffOrAdmin && (
-                    <>
-                      <div className="flex flex-wrap gap-4">
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={replyInternal}
-                            onChange={(e) => {
-                              setReplyInternal(e.target.checked)
-                              if (e.target.checked) setReplyNotify(false)
-                              else setReplyNotify(true)
-                            }}
-                            className="h-4 w-4 rounded border-gray-300"
-                            disabled={!!replyUploadStates}
-                          />
-                          Internal note (not visible to customer)
-                        </label>
-
-                        {!replyInternal && (
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="checkbox"
-                              checked={replyNotify}
-                              onChange={(e) => setReplyNotify(e.target.checked)}
-                              className="h-4 w-4 rounded border-gray-300"
-                              disabled={!!replyUploadStates}
-                            />
-                            Send ticket update email to customer
-                          </label>
-                        )}
-                      </div>
-
-                      <AttachmentUpload
-                        files={replyFiles}
-                        onChange={setReplyFiles}
-                        uploadStates={replyUploadStates}
-                        disabled={!!replyUploadStates}
-                        maxFiles={5}
-                      />
-                    </>
-                  )}
-
-                  {replyError && <p className="text-sm text-red-600">{replyError}</p>}
-
-                  <Button
-                    onClick={() => replyMutation.mutate()}
-                    disabled={replyMutation.isPending || !!replyUploadStates || !replyBody.trim()}
-                  >
-                    {replyMutation.isPending
-                      ? 'Saving…'
-                      : replyUploadStates
-                      ? 'Uploading files…'
-                      : isStaffOrAdmin
-                      ? 'Save entry'
-                      : 'Send reply'}
-                  </Button>
-                </CardContent>
-              </Card>
+              <ReplyComposer ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
             )}
           </div>
 
@@ -922,107 +627,13 @@ export function TicketDetailPage() {
               </Card>
             )}
 
-            <Card>
-              <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
-                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
-                    Classification
-                  </CardTitle>
-                  {isStaffOrAdmin && !ctiEdit && (
-                    <button className="text-xs text-blue-600 hover:underline" onClick={startCtiEdit}>
-                      Edit
-                    </button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                {ctiEdit ? (
-                  <div className="space-y-2">
-                    <div className="space-y-0.5">
-                      <Label className="text-xs text-gray-500">Category</Label>
-                      <Select
-                        className="h-7 text-xs w-full"
-                        value={ctiCategoryId}
-                        onChange={(e) => { setCtiCategoryId(e.target.value); setCtiTypeId(''); setCtiItemId('') }}
-                      >
-                        <option value="">— select —</option>
-                        {categories.filter((c) => c.active).map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
-                      </Select>
-                    </div>
-                    {ctiTypes.length > 0 && (
-                      <div className="space-y-0.5">
-                        <Label className="text-xs text-gray-500">Type</Label>
-                        <Select
-                          className="h-7 text-xs w-full"
-                          value={ctiTypeId}
-                          onChange={(e) => { setCtiTypeId(e.target.value); setCtiItemId('') }}
-                        >
-                          <option value="">— none —</option>
-                          {ctiTypes.filter((t) => t.active).map((t) => (
-                            <option key={t.id} value={t.id}>{t.name}</option>
-                          ))}
-                        </Select>
-                      </div>
-                    )}
-                    {ctiItems.length > 0 && (
-                      <div className="space-y-0.5">
-                        <Label className="text-xs text-gray-500">Item</Label>
-                        <Select
-                          className="h-7 text-xs w-full"
-                          value={ctiItemId}
-                          onChange={(e) => setCtiItemId(e.target.value)}
-                        >
-                          <option value="">— none —</option>
-                          {ctiItems.filter((i) => i.active).map((i) => (
-                            <option key={i.id} value={i.id}>{i.name}</option>
-                          ))}
-                        </Select>
-                      </div>
-                    )}
-                    {ctiError && <p className="text-xs text-red-600">{ctiError}</p>}
-                    <div className="flex gap-2 pt-1">
-                      <Button
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => ctiMutation.mutate()}
-                        disabled={ctiMutation.isPending || !ctiCategoryId}
-                      >
-                        {ctiMutation.isPending ? 'Saving…' : 'Save'}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-7 text-xs"
-                        onClick={() => { setCtiEdit(false); setCtiError('') }}
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Category</span>
-                      <span className="text-right text-xs font-medium">{categoryName ?? '—'}</span>
-                    </div>
-                    {ticket.type_id && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Type</span>
-                        <span className="text-right text-xs">{typeName ?? '—'}</span>
-                      </div>
-                    )}
-                    {ticket.item_id && (
-                      <div className="flex justify-between">
-                        <span className="text-gray-500">Item</span>
-                        <span className="text-right text-xs">{itemName ?? '—'}</span>
-                      </div>
-                    )}
-                  </>
-                )}
-              </CardContent>
-            </Card>
+            <ClassificationPanel
+              ticketId={id}
+              categoryId={ticket.category_id}
+              typeId={ticket.type_id}
+              itemId={ticket.item_id}
+              canEdit={isStaffOrAdmin}
+            />
 
             <Card>
               <CardHeader className="pb-2">
