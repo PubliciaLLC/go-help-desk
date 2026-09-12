@@ -66,3 +66,10 @@ uploads/
 
 # ── Air (live reload) ─────────────────────────────────────────────────────────
 backend/.air.toml
+
+# Agent worktrees and scratch state. These are real git checkouts living inside
+# the repo, so `git add -A` picks them up as embedded repositories and commits
+# a gitlink stub — a pointer to a commit nobody else can resolve. Ignoring them
+# is the only reliable guard; it happened once already.
+.claude/worktrees/
+.claire/
