@@ -10,13 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, SearchIcon } from 'lucide-react'
-
-function priorityVariant(p: string) {
-  if (p === 'critical') return 'destructive'
-  if (p === 'high') return 'warning'
-  if (p === 'medium') return 'default'
-  return 'secondary'
-}
+import { priorityVariant } from '@/lib/format'
 
 function emptyMessageFor(scope: TicketScope) {
   switch (scope) {

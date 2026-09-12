@@ -10,6 +10,7 @@ import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef } from 'react'
+import { fmtMin } from '@/lib/format'
 
 // ── Shared primitives ─────────────────────────────────────────────────────────
 
@@ -760,13 +761,6 @@ const PRIORITY_COLORS: Record<string, string> = {
   high: 'bg-orange-100 text-orange-700',
   medium: 'bg-yellow-100 text-yellow-700',
   low: 'bg-blue-100 text-blue-700',
-}
-
-function fmtMin(m: number) {
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  const rem = m % 60
-  return rem ? `${h}h ${rem}m` : `${h}h`
 }
 
 type PolicyForm = {
