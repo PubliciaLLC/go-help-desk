@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
@@ -85,4 +86,41 @@ func TestSecureCookies(t *testing.T) {
 			require.Equal(t, tc.want, auth.SecureCookies(tc.baseURL))
 		})
 	}
+}
+
+// TestDeriveSessionKeys_GoldenValues pins the exact bytes derived from a known
+// secret.
+//
+// The HKDF labels are part of the key, so editing one — or the hash, or the key
+// length — silently rotates the session keys and logs out every user of every
+// deployed instance. That is a migration decision, never a refactor, and it
+// must not be possible to make it by accident. If this test fails, the change
+// under it ends every live session: either revert it, or ship it deliberately
+// as a release that announces the forced re-login.
+//
+// The rename from "ohd session …" to "ghd session …" was exactly such a
+// deliberate change, and these values are from after it.
+func TestDeriveSessionKeys_GoldenValues(t *testing.T) {
+	const (
+		wantHash  = "0d4bf428ac89efcf4cbeee0d9c33f74df9993e211747bf028b39a7fce330cbb6"
+		wantBlock = "d4dc2a6a84185fc9a9fdc893b99812ad331433640e551399dd6da9669ee82133"
+	)
+
+	hashKey, blockKey, err := auth.DeriveSessionKeys(goodSecret)
+	require.NoError(t, err)
+
+	require.Equal(t, wantHash, hex.EncodeToString(hashKey),
+		"session hmac key changed — this logs out every user; see the doc comment")
+	require.Equal(t, wantBlock, hex.EncodeToString(blockKey),
+		"session encryption key changed — this logs out every user; see the doc comment")
+}
+
+// The cookie name is pinned for the same reason as the keys: renaming it logs
+// everyone out, because the browser keeps sending the old name.
+func TestSessionName(t *testing.T) {
+	require.Equal(t, "ghd_session", auth.SessionName,
+		"renaming the session cookie logs out every user; do it deliberately")
+	require.Equal(t, "ohd_session", auth.LegacySessionName,
+		"the legacy name must stay accurate — it is what gets expired")
+	require.NotEqual(t, auth.SessionName, auth.LegacySessionName)
 }

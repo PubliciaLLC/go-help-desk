@@ -15,10 +15,15 @@ import (
 // The labels are what make the two keys independent: HKDF guarantees that
 // output derived under different info strings cannot be used to recover the
 // other, so the encryption key is not simply the signing key by another name.
-// Changing a label rotates that key and invalidates every live session.
+//
+// A label is part of the key. Changing one rotates that key and logs out every
+// live session — which is why TestDeriveSessionKeys_GoldenValues pins the
+// derived bytes: an accidental edit here must fail a test, not quietly end
+// everyone's session. The rename from "ohd" was a deliberate, one-time
+// instance of exactly that cost.
 const (
-	sessionHashKeyLabel  = "ohd session hmac v1"
-	sessionBlockKeyLabel = "ohd session encrypt v1"
+	sessionHashKeyLabel  = "ghd session hmac v1"
+	sessionBlockKeyLabel = "ghd session encrypt v1"
 
 	// 32 bytes selects AES-256 in gorilla/securecookie.
 	sessionKeyLen = 32

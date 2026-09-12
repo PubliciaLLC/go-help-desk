@@ -92,7 +92,7 @@ func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 }
 
 // searchPattern builds the ILIKE pattern for a user-supplied search term.
-// Tracking-number prefixes (e.g. "OHD-" or "OHD-2025-000") use a suffix
+// Tracking-number prefixes (e.g. "GHD-" or "GHD-2025-000") use a suffix
 // wildcard only; everything else is wrapped in %…% for substring matching.
 func searchPattern(q string) string {
 	upper := strings.ToUpper(strings.TrimSpace(q))
