@@ -238,10 +238,19 @@ WHERE
   AND (sqlc.narg(priority)::text IS NULL OR t.priority = sqlc.narg(priority)::text)
   AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
   AND (sqlc.narg(assignee_user_id)::uuid IS NULL OR t.assignee_user_id = sqlc.narg(assignee_user_id)::uuid)
+  -- `searching` says whether the caller asked for a search at all, which is
+  -- NOT the same as search_query being empty. A term like "???" contains no
+  -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
+  -- alone made the whole clause vanish and returned every visible ticket as
+  -- though each one matched. A search that tokenises to nothing must match on
+  -- the tracking number or not at all.
   AND (
-    sqlc.arg(search_query)::text = ''
+    NOT sqlc.arg(searching)::bool
     OR t.tracking_number ILIKE sqlc.arg(tracking_pattern)::text
-    OR t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
+    OR (
+      sqlc.arg(search_query)::text <> ''
+      AND t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
+    )
   )
 ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,

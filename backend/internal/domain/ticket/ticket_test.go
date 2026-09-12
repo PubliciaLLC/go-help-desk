@@ -1,6 +1,7 @@
 package ticket_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -197,6 +198,45 @@ func TestCanTransitionStatus(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+// Priority reaching the database unvalidated failed the CHECK constraint after
+// NextSeq had already consumed a tracking number, so a typo cost a 500 and a
+// permanent gap in the sequence. Empty is not a typo — it is "unspecified", and
+// both callers were defaulting it to medium themselves.
+func TestCreate_PriorityValidation(t *testing.T) {
+	cases := []struct {
+		name     string
+		priority ticket.Priority
+		wantErr  bool
+		want     ticket.Priority
+	}{
+		{name: "empty defaults to medium", priority: "", want: ticket.PriorityMedium},
+		{name: "critical", priority: ticket.PriorityCritical, want: ticket.PriorityCritical},
+		{name: "low", priority: ticket.PriorityLow, want: ticket.PriorityLow},
+		{name: "unknown word", priority: "urgent", wantErr: true},
+		{name: "wrong case", priority: "HIGH", wantErr: true},
+		{name: "whitespace", priority: " high", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			reporter := uuid.New()
+			got, err := h.svc.Create(context.Background(), ticket.CreateInput{
+				Subject:        "Printer offline",
+				CategoryID:     uuid.New(),
+				Priority:       tc.priority,
+				ReporterUserID: &reporter,
+			})
+			if tc.wantErr {
+				require.ErrorIs(t, err, ticket.ErrValidation)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got.Priority)
 		})
 	}
 }
