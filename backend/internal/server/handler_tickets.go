@@ -394,10 +394,10 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		// null and an omitted key both arrive as nil — so there is no way to
 		// say "set this to nobody" with them alone. Same shape as
 		// clear_category on SLA policies.
-		ClearAssignee bool `json:"clear_assignee"`
-		CategoryID      *uuid.UUID `json:"category_id"`
-		TypeID          *uuid.UUID `json:"type_id"`
-		ItemID          *uuid.UUID `json:"item_id"`
+		ClearAssignee bool       `json:"clear_assignee"`
+		CategoryID    *uuid.UUID `json:"category_id"`
+		TypeID        *uuid.UUID `json:"type_id"`
+		ItemID        *uuid.UUID `json:"item_id"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
