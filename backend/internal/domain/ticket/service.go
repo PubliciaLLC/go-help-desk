@@ -53,6 +53,7 @@ type Service struct {
 type SLAService interface {
 	AttachPolicy(ctx context.Context, t Ticket) error
 	RecordFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time) error
+	RecordResolved(ctx context.Context, ticketID uuid.UUID, at time.Time) error
 }
 
 // NewService constructs a Service. Call LoadSystemStatuses before use.
@@ -490,6 +491,14 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		return nil
 	}); err != nil {
 		return Ticket{}, err
+	}
+
+	// After the commit, like the dispatch below: an SLA record stamped for a
+	// resolution that then rolled back would be worse than a missing one.
+	// Non-fatal for the same reason AttachPolicy is — SLA reporting must not
+	// fail the resolution itself.
+	if s.sla != nil {
+		_ = s.sla.RecordResolved(ctx, t.ID, now)
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{

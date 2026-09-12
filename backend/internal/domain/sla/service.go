@@ -2,6 +2,7 @@ package sla
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,8 +36,14 @@ func (s *Service) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 // It is a no-op when already recorded.
 func (s *Service) RecordFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time) error {
 	record, err := s.store.GetRecord(ctx, ticketID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
 	if err != nil {
-		return nil // no SLA record for this ticket
+		// Previously every error was treated as "no record". A transient
+		// database failure therefore lost the first-response timestamp
+		// permanently, and the ticket later looked like a genuine breach.
+		return fmt.Errorf("getting SLA record: %w", err)
 	}
 	if record.FirstResponseAt != nil {
 		return nil // already recorded
@@ -45,12 +52,36 @@ func (s *Service) RecordFirstResponse(ctx context.Context, ticketID uuid.UUID, a
 	return s.store.UpdateRecord(ctx, record)
 }
 
+// RecordResolved stamps when a ticket was resolved, so resolution breaches are
+// judged against the time it was actually resolved.
+//
+// Nothing wrote this field. IsResolutionBreached therefore saw a NULL
+// ResolvedAt on every ticket and would have reported each one as breached the
+// moment its deadline passed, however promptly it had been resolved.
+func (s *Service) RecordResolved(ctx context.Context, ticketID uuid.UUID, at time.Time) error {
+	record, err := s.store.GetRecord(ctx, ticketID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
+	if err != nil {
+		return fmt.Errorf("getting SLA record: %w", err)
+	}
+	if record.ResolvedAt != nil {
+		return nil // already recorded
+	}
+	record.ResolvedAt = &at
+	return s.store.UpdateRecord(ctx, record)
+}
+
 // EvaluateBreaches checks whether a ticket has breached its SLA targets and
 // stamps the breach timestamps if so. Called on a schedule.
 func (s *Service) EvaluateBreaches(ctx context.Context, t ticket.Ticket, now time.Time) error {
 	record, err := s.store.GetRecord(ctx, t.ID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
 	if err != nil {
-		return nil // no SLA record
+		return fmt.Errorf("getting SLA record: %w", err)
 	}
 	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
 	if err != nil {

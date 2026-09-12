@@ -316,10 +316,19 @@ func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, i
 
 type fakeSLA struct {
 	firstResponses int
+	resolutions    int
 	err            error
 }
 
 func (f *fakeSLA) AttachPolicy(context.Context, ticket.Ticket) error { return nil }
+
+func (f *fakeSLA) RecordResolved(_ context.Context, _ uuid.UUID, _ time.Time) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.resolutions++
+	return nil
+}
 
 func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ uuid.UUID, _ time.Time) error {
 	if f.err != nil {
