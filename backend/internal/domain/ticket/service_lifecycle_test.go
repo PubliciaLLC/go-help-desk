@@ -372,7 +372,7 @@ func TestLoadSystemStatuses_FailsLoudlyWhenMissing(t *testing.T) {
 			h := newHarness(t)
 			delete(h.statuses.byName, missing)
 
-			svc := ticket.NewService(h.store, h.statuses, h.dispatcher, h.auditStore, h.sla)
+			svc := ticket.NewService(h.store, h.statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)
 			err := svc.LoadSystemStatuses(context.Background())
 
 			require.Error(t, err)

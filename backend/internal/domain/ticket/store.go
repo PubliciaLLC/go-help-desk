@@ -5,7 +5,24 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
+
+// Atomic runs a set of writes against stores bound to a single transaction,
+// committing when fn returns nil and rolling back otherwise.
+//
+// The ticket service's composite operations each write to several tables —
+// the ticket row, its status history, the audit log — and before this they were
+// independent statements. A failure partway through left the database
+// half-applied, and because the history and audit writes discarded their
+// errors, invisibly so: the audit trail could lose entries with no trace.
+//
+// fn receives both stores because atomicity has to span them. An audit entry
+// committed separately from the change it describes is not an audit trail.
+type Atomic interface {
+	InTx(ctx context.Context, fn func(Store, audit.Store) error) error
+}
 
 // Store is the persistence interface for tickets and their sub-resources.
 type Store interface {
