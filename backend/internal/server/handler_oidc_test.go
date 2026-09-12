@@ -778,6 +778,7 @@ func TestOIDCCallback_SendsCodeVerifierOnExchange(t *testing.T) {
 		Subject:       "pkce-sub",
 		Email:         "pkce@test.local",
 		EmailVerified: true,
+		Name:          "PKCE User",
 		Nonce:         nonce,
 	})
 
