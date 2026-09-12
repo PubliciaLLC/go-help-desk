@@ -9,9 +9,16 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/crewjam/saml/samlsp"
 )
+
+// metadataFetchTimeout bounds the IdP metadata fetch. It runs while SAML is
+// being (re)configured, and http.DefaultClient has no timeout at all — an IdP
+// that accepts the connection and then stalls would otherwise hang the reload
+// indefinitely, with the admin UI simply never returning.
+const metadataFetchTimeout = 15 * time.Second
 
 // SAMLConfig holds the parameters needed to initialise a SAML service provider.
 type SAMLConfig struct {
@@ -27,9 +34,11 @@ type SAMLConfig struct {
 // NewSAMLMiddleware constructs a crewjam/saml middleware for the given config.
 // CertPEM and KeyPEM are the raw PEM bytes — no files on disk are required.
 //
+// ctx bounds the IdP metadata fetch; see metadataFetchTimeout.
+//
 // The SP metadata will be served at {BaseURL}/api/v1/auth/saml/metadata and
 // the assertion consumer service at {BaseURL}/api/v1/auth/saml/acs.
-func NewSAMLMiddleware(cfg SAMLConfig) (*samlsp.Middleware, error) {
+func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware, error) {
 	keyPair, err := tls.X509KeyPair(cfg.CertPEM, cfg.KeyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("parsing SAML certificate/key pair: %w", err)
@@ -52,7 +61,12 @@ func NewSAMLMiddleware(cfg SAMLConfig) (*samlsp.Middleware, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing IdP metadata URL: %w", err)
 	}
-	idpMeta, err := samlsp.FetchMetadata(context.Background(), http.DefaultClient, *metadataURL)
+	// The caller's context is honoured rather than discarded, so a shutdown or
+	// a cancelled admin request stops the fetch instead of outliving it.
+	fetchCtx, cancel := context.WithTimeout(ctx, metadataFetchTimeout)
+	defer cancel()
+
+	idpMeta, err := samlsp.FetchMetadata(fetchCtx, &http.Client{Timeout: metadataFetchTimeout}, *metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", cfg.MetadataURL, err)
 	}
