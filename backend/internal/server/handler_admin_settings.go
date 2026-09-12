@@ -53,3 +53,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// securityWarnings is what an administrator needs to know about how this
+// instance is configured, as opposed to what it contains.
+type securityWarnings struct {
+	// InsecureSecrets names environment variables still set to a value this
+	// project ships as an example. Names only — never the values.
+	InsecureSecrets []string `json:"insecure_secrets"`
+}
+
+// handleGetSecurityWarnings reports configuration problems that cannot be
+// fixed from the UI but that an administrator must know about.
+//
+// Admin-only, and deliberately not part of the public /api/v1/site payload.
+// Telling an anonymous visitor that this instance signs sessions with a
+// publicly known key is not a warning, it is an invitation.
+func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
+	JSON(w, http.StatusOK, securityWarnings{
+		InsecureSecrets: s.cfg.InsecureSecrets(),
+	})
+}

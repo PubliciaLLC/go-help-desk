@@ -542,3 +542,16 @@ export async function updateSLAPolicy(
 export async function deleteSLAPolicy(id: string): Promise<void> {
   await api.delete(`/admin/sla/policies/${id}`)
 }
+
+// ── Security warnings ────────────────────────────────────────────────────────
+
+export interface SecurityWarnings {
+  /** Names of env vars still set to a shipped example value. Names only. */
+  insecure_secrets: string[]
+}
+
+/** Admin-only. Not on the public /site payload, by design. */
+export async function getSecurityWarnings(): Promise<SecurityWarnings> {
+  const res = await api.get<SecurityWarnings>('/admin/security-warnings')
+  return res.data
+}

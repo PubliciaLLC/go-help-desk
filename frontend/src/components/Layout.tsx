@@ -3,6 +3,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
+import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -55,6 +56,9 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <div className="flex h-screen flex-col bg-gray-50">
+      {/* Above everything, including the sidebar: an instance signing sessions
+          with a published key is not a detail to scroll past. */}
+      <InsecureConfigBanner isAdmin={user?.role === 'admin'} />
       {/* Body row: sidebar + main */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar */}

@@ -336,6 +336,123 @@ jobs:
             exit 1
           }
 
+      # Starting is not running. A container can serve one request and then die
+      # on a background goroutine, a nil map, a closed pool — so the image is
+      # held under load for 30 seconds and exercised rather than left idle.
+      #
+      # This is the only place anything drives the shipped artifact end to end:
+      # real migrations, real auth, real ticket write, against the binary and
+      # the embedded SPA that actually ship.
+      - name: Exercise the running container for 30 seconds
+        run: |
+          set -euo pipefail
+          B=http://127.0.0.1:8088
+
+          fail() { echo "::error::$1"; docker logs ghd-ci-app; exit 1; }
+          status() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$B$1"; }
+
+          # ── a real flow, not just liveness ──────────────────────────────────
+          # First-run setup is open only until a user exists, so this also
+          # proves migrations ran and the schema is usable.
+          setup=$(curl -s --max-time 10 -X POST "$B/api/v1/setup" \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.test","display_name":"CI Admin","password":"ci-smoke-password-1"}')
+          echo "$setup" | grep -q '"role":"admin"' || fail "first-run setup did not create an admin: $setup"
+
+          # Setup must then be closed.
+          [ "$(status /api/v1/setup/status)" = "200" ] || fail "setup status endpoint unavailable"
+          curl -s --max-time 5 "$B/api/v1/setup/status" | grep -q '"needed":false' \
+            || fail "setup stayed open after an admin existed"
+
+          # Log in and keep the session.
+          code=$(curl -s -o /tmp/login.json -w '%{http_code}' --max-time 10 \
+            -c /tmp/ci-cookies.txt -X POST "$B/api/v1/auth/local/login" \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"ci@example.test","password":"ci-smoke-password-1"}')
+          [ "$code" = "200" ] || fail "login returned $code: $(cat /tmp/login.json)"
+
+          # Write something. Exercises the transaction path from #86.
+          cat=$(curl -s --max-time 10 -b /tmp/ci-cookies.txt -X POST "$B/api/v1/admin/categories" \
+            -H 'Content-Type: application/json' -d '{"name":"CI Smoke"}')
+          cat_id=$(echo "$cat" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+          [ -n "$cat_id" ] || fail "could not create a category: $cat"
+
+          ticket=$(curl -s --max-time 10 -b /tmp/ci-cookies.txt -X POST "$B/api/v1/tickets" \
+            -H 'Content-Type: application/json' \
+            -d "{\"subject\":\"CI smoke ticket\",\"description\":\"created by CI\",\"category_id\":\"$cat_id\",\"priority\":\"low\"}")
+          tn=$(echo "$ticket" | sed -n 's/.*"tracking_number":"\([^"]*\)".*/\1/p')
+          [ -n "$tn" ] || fail "could not create a ticket: $ticket"
+          echo "ok  created $tn through the shipped image"
+
+          # Read it back, which proves the write committed rather than merely
+          # returning 200.
+          tid=$(echo "$ticket" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+          curl -s --max-time 10 -b /tmp/ci-cookies.txt "$B/api/v1/tickets/$tid" \
+            | grep -q "CI smoke ticket" || fail "the ticket did not read back"
+
+          # The admin-only warnings endpoint must answer. CI's own secrets
+          # contain no placeholder marker, so the list comes back empty here;
+          # the populated case is asserted in the example-env step below.
+          curl -s --max-time 5 -b /tmp/ci-cookies.txt "$B/api/v1/admin/security-warnings" \
+            | grep -q "insecure_secrets" || fail "security-warnings endpoint missing"
+
+          # ── hold it under load for the rest of the window ──────────────────
+          for i in $(seq 1 30); do
+            st="$(docker inspect -f '{{.State.Status}}' ghd-ci-app)"
+            [ "$st" = "running" ] || {
+              docker inspect -f 'exit={{.State.ExitCode}} oom={{.State.OOMKilled}}' ghd-ci-app
+              fail "container left the running state after ${i}s (now: $st)"
+            }
+            [ "$(status /health)" = "200" ]      || fail "/health stopped responding at ${i}s"
+            [ "$(status /api/v1/tickets)" = "401" ] || fail "/api/v1/tickets stopped requiring auth at ${i}s"
+            [ "$(status /mcp/sse)" = "401" ]     || fail "/mcp/sse stopped requiring auth at ${i}s"
+            sleep 1
+          done
+
+          # Still serving authenticated traffic at the end, not just liveness.
+          curl -fsS --max-time 5 -b /tmp/ci-cookies.txt "$B/api/v1/me" >/dev/null \
+            || fail "the session stopped working over the window"
+          echo "ok  ran 30s under load, still serving authenticated requests"
+
+      # The realistic first run: an operator copies the example env file. Its
+      # SESSION_SECRET is 47 characters, so it clears the 32-character minimum
+      # and the instance comes up — signed with a key published in this repo.
+      # Assert the app says so loudly rather than starting quietly.
+      - name: Warn when running on the example env file
+        run: |
+          set -euo pipefail
+
+          if [ ! -f docker/.env ]; then
+            echo "::warning::docker/.env absent — using docker/.env.example. An instance started this way is signed with PUBLISHED secrets and is forgeable by anyone who reads the repo."
+            cp docker/.env.example docker/.env
+          fi
+
+          docker run -d --name ghd-ci-example --network ghd-ci \
+            -e DATABASE_URL="postgres://helpdesk:helpdesk@ghd-ci-db:5432/helpdesk?sslmode=disable" \
+            -e BASE_URL="http://localhost:8099" \
+            -e SESSION_SECRET="$(grep '^SESSION_SECRET=' docker/.env | cut -d= -f2-)" \
+            -e JWT_SECRET="$(grep '^JWT_SECRET=' docker/.env | cut -d= -f2-)" \
+            ghd:ci
+          sleep 10
+          logs="$(docker logs ghd-ci-example 2>&1)"
+          echo "$logs"
+
+          # It must start — refusing to boot would be hostile to anyone trying
+          # the project out — and it must complain at ERROR while doing so.
+          [ "$(docker inspect -f '{{.State.Status}}' ghd-ci-example)" = "running" ] || {
+            echo "::error::the example env file must still produce a running instance"
+            exit 1
+          }
+          echo "$logs" | grep -q "INSECURE CONFIGURATION" || {
+            echo "::error::started on the example env file with no insecure-configuration warning"
+            exit 1
+          }
+          echo "$logs" | grep -q '"level":"ERROR"' || {
+            echo "::error::the insecure-configuration warning was not logged at ERROR"
+            exit 1
+          }
+          echo "ok  the example env file starts, and says it is insecure at ERROR"
+
       - name: Container logs
         if: always()
         run: docker logs ghd-ci-app 2>&1 | tail -40 || true
@@ -343,5 +460,5 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          docker rm -f ghd-ci-app ghd-ci-db >/dev/null 2>&1 || true
+          docker rm -f ghd-ci-app ghd-ci-db ghd-ci-example >/dev/null 2>&1 || true
           docker network rm ghd-ci >/dev/null 2>&1 || true
