@@ -127,6 +127,10 @@ type AuthStoreIface interface {
 
 // Server is the top-level HTTP handler.
 type Server struct {
+	// authLimiter throttles credential endpoints. Built from config so the
+	// test harness can disable it with 0.
+	authLimiter *authmw.RateLimiter
+
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions sessions.Store
@@ -198,6 +202,9 @@ func New(
 		oauthClientStore: oauthClients,
 		authStore:        authStore,
 		cannedResponses:  cannedResponses,
+		// Built here rather than injected: it is derived entirely from config
+		// and has no other collaborators.
+		authLimiter: authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 	}
 	s.router = s.buildRouter()
 	return s

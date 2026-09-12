@@ -12,6 +12,12 @@ type Config struct {
 	BaseURL  string `envconfig:"BASE_URL" required:"true"`
 
 	// Auth
+	// AuthRateLimitPerMinute caps credential attempts per client address per
+	// minute across login, MFA verification and signup. 0 disables it, which
+	// the test harness uses — a suite logging in hundreds of times a second is
+	// not an attack.
+	AuthRateLimitPerMinute int `envconfig:"AUTH_RATE_LIMIT_PER_MINUTE" default:"10"`
+
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`
 	JWTSecret     string `envconfig:"JWT_SECRET" required:"true"`
 
