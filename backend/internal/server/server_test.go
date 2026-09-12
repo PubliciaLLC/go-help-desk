@@ -66,6 +66,15 @@ type harness struct {
 
 func newHarness(t *testing.T) (*harness, func()) {
 	t.Helper()
+	// 0 = the credential throttle is off, which is what almost every test
+	// wants; see the AuthRateLimitPerMinute comment below.
+	return newHarnessWithRateLimit(t, 0)
+}
+
+// newHarnessWithRateLimit builds a harness with the credential throttle set to
+// a given per-minute limit, so the throttling itself can be exercised.
+func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func()) {
+	t.Helper()
 	db, closeDB := testutil.NewDB(t)
 	q, rollback := testutil.TxQueries(t, db)
 
@@ -189,6 +198,10 @@ func newHarness(t *testing.T) (*harness, func()) {
 		// purpose: an https base URL would set Secure on the session cookie,
 		// which httptest's plaintext requests would then drop.
 		BaseURL: "http://localhost:8080",
+		// 0 disables the credential throttle. This suite logs in hundreds of
+		// times from one address in a few seconds, which is not an attack;
+		// TestAuthRateLimit covers the limiter with it switched on.
+		AuthRateLimitPerMinute: authRateLimit,
 	}
 	// Derived exactly as main.go does, so tests exercise the encrypted cookie
 	// store rather than a signed-only one production never uses.
