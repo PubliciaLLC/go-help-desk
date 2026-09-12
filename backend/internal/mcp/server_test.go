@@ -92,6 +92,27 @@ func TestTools_RefuseWithoutAuthenticatedActor(t *testing.T) {
 				}))
 			},
 		},
+		{
+			name: "update_ticket_status",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleUpdateTicketStatus(ctx, callToolRequest("update_ticket_status", map[string]any{
+					"ticket_id": ticketID,
+					"status_id": uuid.New().String(),
+				}))
+			},
+		},
+		{
+			name: "list_categories",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleListCategories(ctx, callToolRequest("list_categories", map[string]any{}))
+			},
+		},
+		{
+			name: "list_statuses",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleListStatuses(ctx, callToolRequest("list_statuses", map[string]any{}))
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -130,7 +151,7 @@ func TestActorFrom_RoundTrips(t *testing.T) {
 // reporter_user_id survives deliberately: it names the SUBJECT of a ticket, not
 // the caller, because staff legitimately open tickets on someone's behalf.
 func TestRegisterTools_DeclareNoCallerIdentity(t *testing.T) {
-	s := New(nil, nil)
+	s := New(nil, nil, nil, nil)
 
 	tools := s.mcp.ListTools()
 	require.NotEmpty(t, tools, "tools must be registered")

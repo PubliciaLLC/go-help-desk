@@ -85,7 +85,12 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	// RequireMFA. Reversed, a caller with no credentials at all is told
 	// "MFA verification required" (403) instead of "authentication required"
 	// (401), which is both wrong and a confusing thing to debug.
-	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff)(
+	// Reporting users are admitted so they can read their own tickets. The
+	// transport no longer decides what a caller may do — every tool gates its
+	// own writes on requireStaff and filters its own reads through the
+	// Authorizer. Widening here without those checks would re-open
+	// GHSA-2x4f-j4jv-m2cm to a lesser degree.
+	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
 	chain = authmw.BearerAuth(s.cfg.JWTSecret)(chain)

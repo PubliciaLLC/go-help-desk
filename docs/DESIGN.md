@@ -221,7 +221,29 @@ Serves both the frontend SPA and external integrations.
 
 ### MCP Interface
 
-Exposes help desk operations as an MCP server for AI tool integration.
+Exposes help desk operations as an MCP server for AI tool integration, served
+over SSE at `/mcp/`.
+
+**Tools**
+
+| Tool | Who may call it | Notes |
+|------|-----------------|-------|
+| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. |
+| `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. |
+| `list_statuses` | any signed-in user | The statuses this instance defines. |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
+| `add_reply` | staff, admin | `internal: true` posts a staff-only note and does not notify the reporter. |
+| `assign_ticket` | staff, admin | To a user or a group. |
+| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. |
+
+**Authorization.** `/mcp/` runs behind the same middleware chain as `/api/`, so
+every call is authenticated. Beyond that, the transport does not decide what a
+caller may do: each tool gates its own writes, and every read is filtered
+through the same visibility rule the REST API applies — staff scope when
+enforcement is on, own-tickets-only for reporting users. A ticket the caller may
+not see reports "not found" rather than "forbidden", so tracking numbers cannot
+be probed.
 
 ### Authentication Methods
 

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -17,12 +18,11 @@ import (
 // Two lookups per request. That is acceptable because it only runs when scope
 // enforcement is switched on, and only for staff — admins short-circuit and
 // reporting users are handled by the existing reporter check.
-func (s *Server) staffScopeFor(r *http.Request, a *authmw.Actor) (ticket.StaffScope, error) {
+func (s *Server) staffScopeFor(ctx context.Context, a *authmw.Actor) (ticket.StaffScope, error) {
 	if a == nil || a.Role != user.RoleStaff {
 		return ticket.StaffScope{}, nil
 	}
 
-	ctx := r.Context()
 	groups, err := s.groups.ListGroupsForUser(ctx, a.UserID)
 	if err != nil {
 		return ticket.StaffScope{}, fmt.Errorf("listing groups for user: %w", err)
@@ -52,15 +52,19 @@ func (s *Server) staffScopeFor(r *http.Request, a *authmw.Actor) (ticket.StaffSc
 // applies. That check lives here rather than at each call site so the two
 // cannot drift apart, which is the mistake that left MCP unscoped while the
 // REST API was not.
-func (s *Server) canViewTicket(r *http.Request, t ticket.Ticket) (bool, error) {
-	a := authmw.GetActor(r)
+// CanViewTicket reports whether an actor may see a ticket.
+//
+// Exported and context-shaped rather than request-shaped so the MCP server can
+// use the same function. Two surfaces deciding ticket visibility independently
+// is what produced GHSA-2x4f-j4jv-m2cm; there is one rule and this is it.
+func (s *Server) CanViewTicket(ctx context.Context, a *authmw.Actor, t ticket.Ticket) (bool, error) {
 	if a == nil {
 		return false, nil
 	}
 
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
-	if !s.adminSvc.TicketScopeEnforced(r.Context()) {
+	if !s.adminSvc.TicketScopeEnforced(ctx) {
 		// Legacy behaviour: admins and staff see everything, users see their own.
 		if a.Role == user.RoleUser {
 			return t.ReporterUserID != nil && *t.ReporterUserID == a.UserID, nil
@@ -68,9 +72,34 @@ func (s *Server) canViewTicket(r *http.Request, t ticket.Ticket) (bool, error) {
 		return true, nil
 	}
 
-	scope, err := s.staffScopeFor(r, a)
+	scope, err := s.staffScopeFor(ctx, a)
 	if err != nil {
 		return false, err
 	}
 	return ticket.CanView(t, actor, scope), nil
+}
+
+// canViewTicket is the request-shaped wrapper used by the HTTP handlers.
+func (s *Server) canViewTicket(r *http.Request, t ticket.Ticket) (bool, error) {
+	return s.CanViewTicket(r.Context(), authmw.GetActor(r), t)
+}
+
+// TicketVisibility resolves an actor's authority into the mode a listing
+// applies. Paired with CanViewTicket: that answers "may this actor see this
+// ticket", this answers "which tickets may a query return". They must agree,
+// which is why they live together.
+func (s *Server) TicketVisibility(ctx context.Context, a *authmw.Actor) (ticket.Visibility, error) {
+	if a == nil {
+		// No actor, no tickets. Handlers reject this earlier; returning the
+		// narrowest mode means a missed check still fails closed.
+		return ticket.VisibilityReporter, nil
+	}
+	if a.Role == user.RoleUser {
+		return ticket.VisibilityReporter, nil
+	}
+	if a.Role == user.RoleAdmin || !s.adminSvc.TicketScopeEnforced(ctx) {
+		// Legacy behaviour when enforcement is off: staff see everything.
+		return ticket.VisibilityAll, nil
+	}
+	return ticket.VisibilityScoped, nil
 }

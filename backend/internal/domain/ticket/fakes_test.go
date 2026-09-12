@@ -205,6 +205,10 @@ func (f *fakeStore) ListVisibleToStaff(context.Context, uuid.UUID, int, int) ([]
 	return nil, nil
 }
 
+func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticket, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }

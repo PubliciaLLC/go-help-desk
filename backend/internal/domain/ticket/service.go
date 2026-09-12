@@ -765,6 +765,13 @@ func (s *Service) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limi
 	return s.store.ListVisibleToStaff(ctx, userID, limit, offset)
 }
 
+// ListFiltered returns tickets matching a Filter. The caller is responsible
+// for setting Filter.Visibility correctly — this does not re-derive the
+// actor's authority, it applies what it is given.
+func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) {
+	return s.store.ListFiltered(ctx, f)
+}
+
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
 func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
 	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)

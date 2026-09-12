@@ -193,3 +193,57 @@ ORDER BY
   CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
   created_at DESC
 LIMIT $2 OFFSET $3;
+
+-- name: ListTicketsFiltered :many
+-- The MCP list surface: one query carrying every optional filter plus the
+-- visibility rule, rather than the caller choosing among the eight
+-- single-purpose list/search queries above and then filtering in Go.
+--
+-- Visibility is three cases, not a patchable special case:
+--   unrestricted   — an admin, or staff while scope enforcement is off
+--   reporter_only  — a reporting user, who sees only tickets they reported
+--   otherwise      — the DESIGN.md staff scope (same predicate as
+--                    ListTicketsVisibleToStaff)
+--
+-- Every other filter is NULL-means-absent, so one prepared statement serves
+-- all combinations. Filtering and paginating in the same statement is what
+-- keeps pages full: a page fetched and then filtered returns short pages and
+-- skips rows.
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+WHERE
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = sqlc.arg(actor_id)::uuid)
+        OR EXISTS (
+          SELECT 1 FROM group_scopes gs
+          JOIN group_members gm ON gm.group_id = gs.group_id
+          WHERE gm.user_id = sqlc.arg(actor_id)::uuid
+            AND gs.category_id = t.category_id
+            AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+        )
+      )
+    )
+  )
+  AND (sqlc.narg(status_id)::uuid IS NULL OR t.status_id = sqlc.narg(status_id)::uuid)
+  AND (sqlc.narg(priority)::text IS NULL OR t.priority = sqlc.narg(priority)::text)
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (sqlc.narg(assignee_user_id)::uuid IS NULL OR t.assignee_user_id = sqlc.narg(assignee_user_id)::uuid)
+  AND (
+    sqlc.arg(search_query)::text = ''
+    OR t.tracking_number ILIKE sqlc.arg(tracking_pattern)::text
+    OR t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(search_query)::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', sqlc.arg(search_query)::text)) ELSE 0 END DESC,
+  t.created_at DESC
+LIMIT sqlc.arg(result_limit) OFFSET sqlc.arg(result_offset);

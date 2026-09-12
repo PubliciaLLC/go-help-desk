@@ -687,3 +687,35 @@ func wrapNotFound(err error, kind, id string) error {
 	}
 	return fmt.Errorf("getting %s %s: %w", kind, id, err)
 }
+
+// ListFiltered applies a ticket.Filter in a single statement. The visibility
+// mode arrives already resolved: this translates it, it does not decide it.
+func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Ticket, error) {
+	p := dbgen.ListTicketsFilteredParams{
+		Unrestricted: f.Visibility == ticket.VisibilityAll,
+		ReporterOnly: f.Visibility == ticket.VisibilityReporter,
+		ActorID:      f.ActorID,
+		StatusID:     database.NullUUID(f.StatusID),
+		CategoryID:   database.NullUUID(f.CategoryID),
+		// A NULL assignee filter means "any assignee", which is why this is a
+		// pointer rather than uuid.Nil — the latter is a real, if absent, value.
+		AssigneeUserID:  database.NullUUID(f.AssigneeUserID),
+		SearchQuery:     buildSearchTSQuery(f.Query),
+		TrackingPattern: searchPattern(f.Query),
+		ResultLimit:     int32(f.Limit),
+		ResultOffset:    int32(f.Offset),
+	}
+	if f.Priority != nil {
+		p.Priority = sql.NullString{String: string(*f.Priority), Valid: true}
+	}
+
+	rows, err := s.q.ListTicketsFiltered(ctx, p)
+	if err != nil {
+		return nil, fmt.Errorf("listing filtered tickets: %w", err)
+	}
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return out, nil
+}

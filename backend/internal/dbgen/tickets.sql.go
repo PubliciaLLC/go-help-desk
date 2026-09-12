@@ -856,6 +856,155 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 	return items, nil
 }
 
+const listTicketsFiltered = `-- name: ListTicketsFiltered :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+WHERE
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $3::uuid)
+        OR EXISTS (
+          SELECT 1 FROM group_scopes gs
+          JOIN group_members gm ON gm.group_id = gs.group_id
+          WHERE gm.user_id = $3::uuid
+            AND gs.category_id = t.category_id
+            AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+        )
+      )
+    )
+  )
+  AND ($4::uuid IS NULL OR t.status_id = $4::uuid)
+  AND ($5::text IS NULL OR t.priority = $5::text)
+  AND ($6::uuid IS NULL OR t.category_id = $6::uuid)
+  AND ($7::uuid IS NULL OR t.assignee_user_id = $7::uuid)
+  AND (
+    $8::text = ''
+    OR t.tracking_number ILIKE $9::text
+    OR t.search_vector @@ to_tsquery('english', $8::text)
+  )
+ORDER BY
+  CASE WHEN $8::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', $8::text)) ELSE 0 END DESC,
+  t.created_at DESC
+LIMIT $11 OFFSET $10
+`
+
+type ListTicketsFilteredParams struct {
+	Unrestricted    bool           `json:"unrestricted"`
+	ReporterOnly    bool           `json:"reporter_only"`
+	ActorID         uuid.UUID      `json:"actor_id"`
+	StatusID        uuid.NullUUID  `json:"status_id"`
+	Priority        sql.NullString `json:"priority"`
+	CategoryID      uuid.NullUUID  `json:"category_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	SearchQuery     string         `json:"search_query"`
+	TrackingPattern string         `json:"tracking_pattern"`
+	ResultOffset    int32          `json:"result_offset"`
+	ResultLimit     int32          `json:"result_limit"`
+}
+
+type ListTicketsFilteredRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+// The MCP list surface: one query carrying every optional filter plus the
+// visibility rule, rather than the caller choosing among the eight
+// single-purpose list/search queries above and then filtering in Go.
+//
+// Visibility is three cases, not a patchable special case:
+//
+//	unrestricted   — an admin, or staff while scope enforcement is off
+//	reporter_only  — a reporting user, who sees only tickets they reported
+//	otherwise      — the DESIGN.md staff scope (same predicate as
+//	                 ListTicketsVisibleToStaff)
+//
+// Every other filter is NULL-means-absent, so one prepared statement serves
+// all combinations. Filtering and paginating in the same statement is what
+// keeps pages full: a page fetched and then filtered returns short pages and
+// skips rows.
+func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilteredParams) ([]ListTicketsFilteredRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTicketsFiltered,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		arg.StatusID,
+		arg.Priority,
+		arg.CategoryID,
+		arg.AssigneeUserID,
+		arg.SearchQuery,
+		arg.TrackingPattern,
+		arg.ResultOffset,
+		arg.ResultLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTicketsFilteredRow
+	for rows.Next() {
+		var i ListTicketsFilteredRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTicketsVisibleToStaff = `-- name: ListTicketsVisibleToStaff :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
 WHERE
