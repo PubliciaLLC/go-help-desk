@@ -17,6 +17,12 @@ type Querier interface {
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
 	ClearMFA(ctx context.Context, id uuid.UUID) error
+	// Rows in ticket_status_history that reference a status, in either direction.
+	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
+	// so a status with zero CURRENT tickets can still be undeletable because a past
+	// transition mentions it. Counting first turns a raw foreign-key 500 into an
+	// explanation the administrator can act on.
+	CountStatusHistoryByStatus(ctx context.Context, toStatusID uuid.UUID) (int64, error)
 	CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error)
 	CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error)
 	CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error)

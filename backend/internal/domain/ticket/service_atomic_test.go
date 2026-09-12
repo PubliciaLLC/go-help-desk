@@ -169,7 +169,7 @@ func TestOperations_CommitOnce(t *testing.T) {
 			name: "Close",
 			run: func(h *harness) error {
 				seeded := h.seedOpen()
-				return h.svc.Close(context.Background(), seeded.ID)
+				return h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor)
 			},
 		},
 		{

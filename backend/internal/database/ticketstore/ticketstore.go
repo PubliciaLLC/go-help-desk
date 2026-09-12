@@ -586,6 +586,12 @@ func (s *Store) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) 
 	return s.q.CountTicketsByStatus(ctx, id)
 }
 
+// CountStatusHistoryByStatus counts past transitions mentioning a status, in
+// either direction.
+func (s *Store) CountStatusHistoryByStatus(ctx context.Context, id uuid.UUID) (int64, error) {
+	return s.q.CountStatusHistoryByStatus(ctx, id)
+}
+
 func (s *Store) CountByStatusForReporter(ctx context.Context, statusID, userID uuid.UUID) (int64, error) {
 	return s.q.CountTicketsByStatusForReporter(ctx, dbgen.CountTicketsByStatusForReporterParams{
 		StatusID:       statusID,
