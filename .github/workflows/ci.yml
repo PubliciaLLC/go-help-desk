@@ -235,14 +235,39 @@ jobs:
       # CI until here.
       - name: Start Postgres for the smoke test
         run: |
+          set -euo pipefail
           docker network create ghd-ci
           docker run -d --name ghd-ci-db --network ghd-ci \
             -e POSTGRES_DB=helpdesk -e POSTGRES_USER=helpdesk -e POSTGRES_PASSWORD=helpdesk \
             postgres:17-alpine
-          for i in $(seq 1 60); do
-            docker exec ghd-ci-db pg_isready -U helpdesk >/dev/null 2>&1 && break
+
+          # pg_isready alone is not enough. The postgres image runs a temporary
+          # server during initdb, and pg_isready answers for THAT one — so a
+          # single success can be followed by the real server restarting and
+          # refusing connections. The app then dies on "failed to open
+          # database" and the job fails for a reason that has nothing to do
+          # with the change under test.
+          #
+          # Requiring a real query to succeed three times in a row, one second
+          # apart, outlasts the restart.
+          ok=0
+          for i in $(seq 1 90); do
+            if docker exec ghd-ci-db psql -U helpdesk -d helpdesk -c 'SELECT 1' >/dev/null 2>&1; then
+              ok=$((ok + 1))
+              if [ "$ok" -ge 3 ]; then
+                echo "postgres ready after ${i}s"
+                break
+              fi
+            else
+              ok=0   # a refusal resets the streak; the restart is what we are waiting out
+            fi
             sleep 1
           done
+          if [ "$ok" -lt 3 ]; then
+            echo "::error::postgres never became reliably ready"
+            docker logs ghd-ci-db
+            exit 1
+          fi
 
       - name: Run the image and smoke-test it
         run: |
