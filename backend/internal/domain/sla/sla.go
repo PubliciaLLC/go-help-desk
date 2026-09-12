@@ -41,9 +41,13 @@ func IsResponseBreached(r Record, p Policy, ticketCreatedAt, now time.Time) bool
 // IsResolutionBreached returns true when the resolution target has elapsed and
 // the ticket has not been resolved.
 func IsResolutionBreached(r Record, p Policy, ticketCreatedAt, now time.Time) bool {
-	if r.ResolvedAt != nil {
-		return false // already resolved
-	}
 	deadline := ticketCreatedAt.Add(time.Duration(p.ResolutionTargetMin) * time.Minute)
+	if r.ResolvedAt != nil {
+		// Resolved: judge it by WHEN, not by the clock now. Treating any
+		// resolved ticket as met would hide every late resolution; the old
+		// early return did that, and nothing recorded ResolvedAt anyway, so
+		// on-time resolutions were about to be reported as breaches instead.
+		return r.ResolvedAt.After(deadline)
+	}
 	return now.After(deadline)
 }

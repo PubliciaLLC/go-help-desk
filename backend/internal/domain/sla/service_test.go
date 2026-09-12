@@ -167,3 +167,108 @@ func TestSLAService_EvaluateBreaches(t *testing.T) {
 	require.NotNil(t, rec.ResponseBreachedAt, "response should be breached")
 	require.NotNil(t, rec.ResolutionBreachedAt, "resolution should be breached")
 }
+
+// swallowProbeStore lets a test distinguish "no SLA record" from a store failure, which
+// is the whole point of these tests: the service used to treat both the same.
+type swallowProbeStore struct {
+	record    sla.Record
+	hasRecord bool
+	getErr    error
+	updates   int
+}
+
+func (f *swallowProbeStore) CreatePolicy(context.Context, sla.Policy) error { return nil }
+func (f *swallowProbeStore) GetPolicy(context.Context, uuid.UUID) (sla.Policy, error) {
+	return sla.Policy{}, nil
+}
+func (f *swallowProbeStore) UpdatePolicy(context.Context, sla.Policy) error     { return nil }
+func (f *swallowProbeStore) DeletePolicy(context.Context, uuid.UUID) error      { return nil }
+func (f *swallowProbeStore) ListPolicies(context.Context) ([]sla.Policy, error) { return nil, nil }
+func (f *swallowProbeStore) FindPolicy(context.Context, ticket.Priority, uuid.UUID) (*sla.Policy, error) {
+	return nil, nil
+}
+func (f *swallowProbeStore) CreateRecord(context.Context, sla.Record) error { return nil }
+func (f *swallowProbeStore) GetRecord(_ context.Context, _ uuid.UUID) (sla.Record, error) {
+	if f.getErr != nil {
+		return sla.Record{}, f.getErr
+	}
+	if !f.hasRecord {
+		return sla.Record{}, sla.ErrNoRecord
+	}
+	return f.record, nil
+}
+func (f *swallowProbeStore) UpdateRecord(_ context.Context, r sla.Record) error {
+	f.updates++
+	f.record = r
+	return nil
+}
+
+// A transient database failure used to be indistinguishable from "this ticket
+// has no SLA", so it was swallowed and the first-response timestamp was lost
+// permanently — which later reads as a genuine breach.
+func TestRecordFirstResponse_PropagatesStoreFailures(t *testing.T) {
+	boom := errors.New("connection reset by peer")
+	f := &swallowProbeStore{getErr: boom}
+
+	err := sla.NewService(f).RecordFirstResponse(context.Background(), uuid.New(), time.Now())
+
+	require.ErrorIs(t, err, boom, "a store failure must not be reported as success")
+	require.Zero(t, f.updates)
+}
+
+func TestRecordFirstResponse_NoRecordIsNotAnError(t *testing.T) {
+	f := &swallowProbeStore{hasRecord: false}
+
+	require.NoError(t, sla.NewService(f).RecordFirstResponse(context.Background(), uuid.New(), time.Now()))
+	require.Zero(t, f.updates, "nothing to update when the ticket is not under an SLA")
+}
+
+func TestEvaluateBreaches_PropagatesStoreFailures(t *testing.T) {
+	boom := errors.New("connection reset by peer")
+	f := &swallowProbeStore{getErr: boom}
+
+	err := sla.NewService(f).EvaluateBreaches(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now())
+	require.ErrorIs(t, err, boom)
+}
+
+// Nothing wrote ResolvedAt, so IsResolutionBreached saw NULL on every ticket
+// and would have reported each one as breached once its deadline passed,
+// however promptly it had been resolved.
+func TestRecordResolved(t *testing.T) {
+	now := time.Now()
+	f := &swallowProbeStore{hasRecord: true, record: sla.Record{TicketID: uuid.New()}}
+
+	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), f.record.TicketID, now))
+	require.Equal(t, 1, f.updates)
+	require.NotNil(t, f.record.ResolvedAt)
+	require.True(t, f.record.ResolvedAt.Equal(now))
+
+	// Re-resolving must not overwrite the original time.
+	later := now.Add(2 * time.Hour)
+	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), f.record.TicketID, later))
+	require.Equal(t, 1, f.updates, "already recorded")
+	require.True(t, f.record.ResolvedAt.Equal(now))
+}
+
+// A resolved ticket is judged by WHEN it was resolved, not by the clock now.
+func TestIsResolutionBreached_UsesTheResolutionTime(t *testing.T) {
+	created := time.Now().Add(-10 * time.Hour)
+	policy := sla.Policy{ResolutionTargetMin: 60} // one hour
+	deadline := created.Add(time.Hour)
+
+	onTime := deadline.Add(-10 * time.Minute)
+	late := deadline.Add(10 * time.Minute)
+	now := time.Now()
+
+	require.False(t,
+		sla.IsResolutionBreached(sla.Record{ResolvedAt: &onTime}, policy, created, now),
+		"resolved before the deadline is not a breach, however long ago that was")
+
+	require.True(t,
+		sla.IsResolutionBreached(sla.Record{ResolvedAt: &late}, policy, created, now),
+		"resolved after the deadline is a breach")
+
+	require.True(t,
+		sla.IsResolutionBreached(sla.Record{}, policy, created, now),
+		"unresolved past the deadline is a breach")
+}

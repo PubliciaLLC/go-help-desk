@@ -4,6 +4,7 @@ package slastore
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -94,6 +95,9 @@ func (s *Store) CreateRecord(ctx context.Context, r sla.Record) error {
 func (s *Store) GetRecord(ctx context.Context, ticketID uuid.UUID) (sla.Record, error) {
 	r, err := s.q.GetSLARecord(ctx, ticketID)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sla.Record{}, fmt.Errorf("%w: %s", sla.ErrNoRecord, ticketID)
+		}
 		return sla.Record{}, fmt.Errorf("getting SLA record %s: %w", ticketID, err)
 	}
 	return sla.Record{
