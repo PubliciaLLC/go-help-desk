@@ -147,6 +147,11 @@ func run() error {
 	}
 
 	// ── Auth helpers ──────────────────────────────────────────────────────────
+	// Session cookies carry SessionData as gob, so the concrete type must be
+	// registered before any session is written or read. Done here, in the
+	// wiring, rather than in a package init() — CLAUDE.md forbids init() with
+	// side effects, and a global registry mutated at import time is exactly
+	// the kind of action-at-a-distance that rule exists to prevent.
 	gob.Register(auth.SessionData{})
 	// Two derived keys, not one raw secret: the second encrypts the cookie, so
 	// session contents are no longer readable by whoever holds it.

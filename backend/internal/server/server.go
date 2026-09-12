@@ -4,7 +4,6 @@ package server
 
 import (
 	"context"
-	"encoding/gob"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -34,12 +33,6 @@ import (
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
 )
-
-func init() {
-	// Session cookies store SessionData via gob; registering here rather than
-	// in cmd/server lets integration tests round-trip sessions too.
-	gob.Register(auth.SessionData{})
-}
 
 // ProtectMCP wraps an MCP handler in exactly the middleware chain that guards
 // /api/, then restricts it to staff and administrators.
