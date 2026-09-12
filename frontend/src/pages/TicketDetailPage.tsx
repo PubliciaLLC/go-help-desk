@@ -76,7 +76,10 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
   })
 
   const unassignMutation = useMutation({
-    mutationFn: () => updateTicket(ticketId, { assignee_user_id: undefined, assignee_group_id: undefined }),
+    // clear_assignee, not two undefineds: JSON.stringify drops undefined keys,
+    // so the old body serialised to {} and the server skipped the assign
+    // branch entirely — the button reported success and changed nothing.
+    mutationFn: () => updateTicket(ticketId, { clear_assignee: true }),
     onSuccess: () => { setError(''); onUpdated() },
     onError: (err) => setError(extractError(err)),
   })

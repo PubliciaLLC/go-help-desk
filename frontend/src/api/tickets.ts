@@ -42,6 +42,10 @@ export async function updateTicket(
     status_id?: string
     assignee_user_id?: string
     assignee_group_id?: string
+    // Unassigns the ticket. Needed because the two fields above cannot express
+    // "nobody": an explicit null and an omitted key are indistinguishable to
+    // the server, which decodes both into a nil *uuid.UUID.
+    clear_assignee?: boolean
     category_id?: string
     type_id?: string | null
     item_id?: string | null

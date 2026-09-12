@@ -389,6 +389,12 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		StatusID        *uuid.UUID `json:"status_id"`
 		AssigneeUserID  *uuid.UUID `json:"assignee_user_id"`
 		AssigneeGroupID *uuid.UUID `json:"assignee_group_id"`
+		// ClearAssignee unassigns the ticket. It is a separate flag because
+		// both fields above decode into *uuid.UUID, where an explicit JSON
+		// null and an omitted key both arrive as nil — so there is no way to
+		// say "set this to nobody" with them alone. Same shape as
+		// clear_category on SLA policies.
+		ClearAssignee bool `json:"clear_assignee"`
 		CategoryID      *uuid.UUID `json:"category_id"`
 		TypeID          *uuid.UUID `json:"type_id"`
 		ItemID          *uuid.UUID `json:"item_id"`
@@ -413,7 +419,15 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+	if body.ClearAssignee {
+		// Explicitly to nobody. Previously unreachable: the UI sent both
+		// fields as undefined, which serialised to {} and skipped this branch
+		// entirely, so "Clear assignment" returned 200 and changed nothing.
+		if _, err := s.tickets.Assign(r.Context(), id, nil, nil, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
 			handleError(w, err)
 			return

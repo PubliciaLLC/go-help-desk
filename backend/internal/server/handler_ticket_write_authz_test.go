@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Visibility was enforced on the ticket READ handler and silently omitted on
@@ -88,4 +89,55 @@ func TestReporterCanStillReplyToTheirOwnTicket(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode,
 		"a reporter must still be able to reply on their own ticket; body %s", b)
+}
+
+// "Clear assignment" used to send {assignee_user_id: undefined,
+// assignee_group_id: undefined}, which JSON.stringify serialises to {} — so
+// the handler's assign branch never ran, the request returned 200, and the
+// ticket kept its assignee with no error shown. The two fields cannot express
+// "nobody" on their own: the server decodes an explicit null and an omitted
+// key into the same nil pointer.
+func TestUpdateTicket_ClearAssignee(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject:        "Assigned then released",
+		CategoryID:     h.catID,
+		Priority:       ticket.PriorityMedium,
+		ReporterUserID: &h.adminID,
+	})
+	require.NoError(t, err)
+
+	_, err = h.ticketSvc.Assign(ctx, tk.ID, &h.staffID, nil,
+		ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin})
+	require.NoError(t, err)
+
+	assigned, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, assigned.AssigneeUserID, "precondition: the ticket is assigned")
+
+	t.Run("an empty body still changes nothing", func(t *testing.T) {
+		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{})
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+
+		got, err := h.ticketSvc.GetByID(ctx, tk.ID)
+		require.NoError(t, err)
+		require.NotNil(t, got.AssigneeUserID,
+			"an empty patch must not silently unassign — that is why the flag exists")
+	})
+
+	t.Run("clear_assignee unassigns", func(t *testing.T) {
+		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(),
+			map[string]any{"clear_assignee": true})
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+
+		got, err := h.ticketSvc.GetByID(ctx, tk.ID)
+		require.NoError(t, err)
+		require.Nil(t, got.AssigneeUserID, "the ticket must actually be unassigned")
+		require.Nil(t, got.AssigneeGroupID)
+	})
 }
