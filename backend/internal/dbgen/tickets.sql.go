@@ -856,6 +856,103 @@ func (q *Queries) ListTicketsByStatus(ctx context.Context, arg ListTicketsByStat
 	return items, nil
 }
 
+const listTicketsVisibleToStaff = `-- name: ListTicketsVisibleToStaff :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+WHERE
+  t.reporter_user_id = $1
+  OR t.assignee_user_id = $1
+  OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $1)
+  OR EXISTS (
+    SELECT 1 FROM group_scopes gs
+    JOIN group_members gm ON gm.group_id = gs.group_id
+    WHERE gm.user_id = $1
+      AND gs.category_id = t.category_id
+      AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+  )
+ORDER BY created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type ListTicketsVisibleToStaffParams struct {
+	ReporterUserID uuid.NullUUID `json:"reporter_user_id"`
+	Limit          int32         `json:"limit"`
+	Offset         int32         `json:"offset"`
+}
+
+type ListTicketsVisibleToStaffRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+// Every ticket a staff member may see under DESIGN.md's scope model: reported
+// by them, assigned to them, assigned to one of their groups, or falling in a
+// Category/Type their groups cover. A NULL group_scopes.type_id is a
+// category-level scope covering every type beneath it; items never factor in.
+//
+// Filtering happens here rather than in Go because the caller paginates: a page
+// fetched and then filtered returns short pages and skips rows.
+func (q *Queries) ListTicketsVisibleToStaff(ctx context.Context, arg ListTicketsVisibleToStaffParams) ([]ListTicketsVisibleToStaffRow, error) {
+	rows, err := q.db.QueryContext(ctx, listTicketsVisibleToStaff, arg.ReporterUserID, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTicketsVisibleToStaffRow
+	for rows.Next() {
+		var i ListTicketsVisibleToStaffRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUnassignedTickets = `-- name: ListUnassignedTickets :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
@@ -1283,6 +1380,114 @@ func (q *Queries) SearchTicketsByReporter(ctx context.Context, arg SearchTickets
 	var items []SearchTicketsByReporterRow
 	for rows.Next() {
 		var i SearchTicketsByReporterRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TrackingNumber,
+			&i.Subject,
+			&i.Description,
+			&i.CategoryID,
+			&i.TypeID,
+			&i.ItemID,
+			&i.Priority,
+			&i.StatusID,
+			&i.AssigneeUserID,
+			&i.AssigneeGroupID,
+			&i.ReporterUserID,
+			&i.GuestEmail,
+			&i.ResolutionNotes,
+			&i.ResolvedAt,
+			&i.ClosedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GuestName,
+			&i.GuestPhone,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchTicketsVisibleToStaff = `-- name: SearchTicketsVisibleToStaff :many
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets t
+WHERE
+  (
+    t.reporter_user_id = $1
+    OR t.assignee_user_id = $1
+    OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = $1)
+    OR EXISTS (
+      SELECT 1 FROM group_scopes gs
+      JOIN group_members gm ON gm.group_id = gs.group_id
+      WHERE gm.user_id = $1
+        AND gs.category_id = t.category_id
+        AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+    )
+  )
+  AND (
+    tracking_number ILIKE $4
+    OR (CASE WHEN $5::text <> '' THEN search_vector @@ to_tsquery('english', $5::text) ELSE false END)
+  )
+ORDER BY
+  CASE WHEN $5::text <> '' THEN ts_rank(search_vector, to_tsquery('english', $5::text)) ELSE 0 END DESC,
+  created_at DESC
+LIMIT $2 OFFSET $3
+`
+
+type SearchTicketsVisibleToStaffParams struct {
+	ReporterUserID uuid.NullUUID `json:"reporter_user_id"`
+	Limit          int32         `json:"limit"`
+	Offset         int32         `json:"offset"`
+	TrackingNumber string        `json:"tracking_number"`
+	SearchQuery    string        `json:"search_query"`
+}
+
+type SearchTicketsVisibleToStaffRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+// Search variant of ListTicketsVisibleToStaff, matching the predicate and
+// ranking used by the other ticket searches.
+func (q *Queries) SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error) {
+	rows, err := q.db.QueryContext(ctx, searchTicketsVisibleToStaff,
+		arg.ReporterUserID,
+		arg.Limit,
+		arg.Offset,
+		arg.TrackingNumber,
+		arg.SearchQuery,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SearchTicketsVisibleToStaffRow
+	for rows.Next() {
+		var i SearchTicketsVisibleToStaffRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TrackingNumber,

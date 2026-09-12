@@ -128,6 +128,30 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// With scope enforcement on, a staff member's default list is everything
+	// the scope model admits — including unassigned tickets in a category
+	// their groups cover. Without that the queue is invisible: nothing is
+	// assigned yet, so nobody can pick it up.
+	//
+	// Admins keep the existing path; they see everything either way.
+	if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
+		var (
+			tickets []ticket.Ticket
+			err     error
+		)
+		if q != "" {
+			tickets, err = s.tickets.SearchVisibleToStaff(ctx, a.UserID, q, 100, 0)
+		} else {
+			tickets, err = s.tickets.ListVisibleToStaff(ctx, a.UserID, 100, 0)
+		}
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, tickets)
+		return
+	}
+
 	// Staff/admin (scope=mine): tickets assigned to them + tickets assigned to their groups.
 	all := make([]ticket.Ticket, 0)
 
@@ -294,7 +318,6 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}
 func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
-	a := authmw.GetActor(r)
 	id := chi.URLParam(r, "id")
 
 	// Support both UUID and tracking number lookup.
@@ -310,12 +333,17 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Users can only view their own tickets.
-	if a != nil && a.Role == user.RoleUser {
-		if t.ReporterUserID == nil || *t.ReporterUserID != a.UserID {
-			Error(w, http.StatusForbidden, "forbidden", "not your ticket")
-			return
-		}
+	// One place decides who may see a ticket, for every role. Inlining the
+	// rule per handler is what let the reporting-user check exist here while
+	// staff scope existed nowhere.
+	ok, err := s.canViewTicket(r, t)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !ok {
+		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return
 	}
 
 	JSON(w, http.StatusOK, t)
@@ -596,20 +624,24 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/history
 func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request) {
-	a := authmw.GetActor(r)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
 		return
 	}
-	// Users may only view history for their own tickets.
-	if a != nil && a.Role == user.RoleUser {
+	// Status history is ticket content: gate it on the same rule as the ticket.
+	{
 		t, err := s.tickets.GetByID(r.Context(), id)
 		if err != nil {
 			handleError(w, err)
 			return
 		}
-		if t.ReporterUserID == nil || *t.ReporterUserID != a.UserID {
+		ok, err := s.canViewTicket(r, t)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if !ok {
 			Error(w, http.StatusForbidden, "forbidden", "not your ticket")
 			return
 		}

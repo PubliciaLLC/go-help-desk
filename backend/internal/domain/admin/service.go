@@ -183,6 +183,19 @@ func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 }
 
 // SLAEnabled returns whether SLA tracking is active.
+// TicketScopeEnforced reports whether staff ticket visibility is limited to
+// their group scope.
+//
+// Defaults to false, and deliberately so. DESIGN.md specifies scoped
+// visibility, but no release ever implemented it, so every existing instance
+// has staff who can see every ticket. Turning that on during an upgrade would
+// hide tickets out from under people mid-conversation; an admin switches it on
+// once groups are configured.
+func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyTicketScopeEnforced)
+	return v
+}
+
 func (s *Service) SLAEnabled(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeySLAEnabled)
 	return v

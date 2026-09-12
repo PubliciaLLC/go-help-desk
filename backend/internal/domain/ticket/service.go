@@ -749,3 +749,14 @@ func (s *Service) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 func (s *Service) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 	return s.store.DeleteAttachment(ctx, id)
 }
+
+// ListVisibleToStaff returns the tickets a staff member may see under the
+// scope model. Used when an instance has scope enforcement switched on.
+func (s *Service) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error) {
+	return s.store.ListVisibleToStaff(ctx, userID, limit, offset)
+}
+
+// SearchVisibleToStaff is ListVisibleToStaff with a search term.
+func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
+	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)
+}
