@@ -62,3 +62,27 @@ func TestDeriveSessionKeys_RejectsShortSecret(t *testing.T) {
 		require.ErrorIs(t, err, auth.ErrSessionSecretTooShort, "secret %q must be refused", secret)
 	}
 }
+
+func TestSecureCookies(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{name: "https enables Secure", baseURL: "https://help.example.com", want: true},
+		{name: "https is case-insensitive", baseURL: "HTTPS://help.example.com", want: true},
+		{name: "surrounding whitespace is ignored", baseURL: "  https://help.example.com  ", want: true},
+		{name: "plain http does not", baseURL: "http://localhost:8080", want: false},
+		{name: "empty does not", baseURL: "", want: false},
+
+		// A Secure cookie is dropped by the browser over plain HTTP, so getting
+		// this wrong on localhost makes login silently do nothing.
+		{name: "http host merely containing https does not", baseURL: "http://https.example.com", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, auth.SecureCookies(tc.baseURL))
+		})
+	}
+}

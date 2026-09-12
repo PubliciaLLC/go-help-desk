@@ -195,11 +195,17 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name := claims.Name
-
-	if name == "" {
-		name = claims.PreferredUsername
-	}
+	// Same fallback chain as the SAML ACS handler, ending at the email address.
+	// An IdP that releases no name claim at all is a configuration mistake, but
+	// it is the operator's mistake to discover — before this chain existed the
+	// login died in provisioning as "display name is required" and surfaced as
+	// a 500, which reads like a server fault rather than a missing profile scope.
+	name := firstNonEmpty(
+		claims.Name,
+		claims.PreferredUsername,
+		strings.Join([]string{claims.GivenName, claims.FamilyName}, " "),
+		email,
+	)
 
 	u, err := s.users.UpsertOIDCUser(
 		r.Context(),
