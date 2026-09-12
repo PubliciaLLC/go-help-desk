@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Session cookies are authenticated with one key and encrypted with another.
@@ -50,4 +51,15 @@ func DeriveSessionKeys(secret string) (hashKey, blockKey []byte, err error) {
 	}
 
 	return hashKey, blockKey, nil
+}
+
+// SecureCookies reports whether the session cookie should carry the Secure
+// attribute, derived from the configured base URL.
+//
+// It is derived rather than configured because either constant is wrong: always
+// true breaks local development on http://localhost, where the browser silently
+// drops the cookie and login appears to do nothing; always false ships a session
+// cookie that travels in the clear on any downgrade to HTTP behind TLS.
+func SecureCookies(baseURL string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(baseURL)), "https://")
 }

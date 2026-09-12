@@ -160,6 +160,7 @@ func run() error {
 		MaxAge:   86400 * 30,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   auth.SecureCookies(cfg.BaseURL),
 	}
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {

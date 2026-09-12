@@ -794,6 +794,34 @@ func TestOIDCCallback_SendsCodeVerifierOnExchange(t *testing.T) {
 		"the verifier sent at exchange must be the preimage of the challenge sent at login")
 }
 
+// TestOIDCCallback_FallsBackToEmailForDisplayName covers an IdP that releases
+// no name claim at all — a profile-scope misconfiguration, and a common one.
+//
+// Provisioning requires a display name, so before the fallback chain existed
+// this died inside UpsertOIDCUser as "display name is required" and surfaced to
+// the user as a 500: a server fault for what is an IdP configuration problem.
+// The SAML ACS handler has always fallen back to the email address; this is the
+// same chain.
+func TestOIDCCallback_FallsBackToEmailForDisplayName(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	// No Name, no PreferredUsername, no GivenName/FamilyName.
+	resp := oh.login(t, fakeOIDCClaims{
+		Subject:       "nameless-sub",
+		Email:         "nameless@test.local",
+		EmailVerified: true,
+	})
+
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"a missing name claim must not fail the login")
+
+	me, ok := whoami(t, oh.harness, resp.Cookies())
+	require.True(t, ok, "the login must produce a session")
+	require.Equal(t, "nameless@test.local", me.DisplayName,
+		"display name must fall back to the email address, as SAML does")
+}
+
 func TestOIDCCallback_HappyPathCreatesSession(t *testing.T) {
 	oh, cleanup := newOIDCHarness(t)
 	defer cleanup()
