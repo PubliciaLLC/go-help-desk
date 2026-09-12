@@ -38,14 +38,14 @@ type FieldDef struct {
 
 // Assignment attaches a FieldDef to a specific CTI node.
 type Assignment struct {
-	ID             uuid.UUID  `json:"id"`
-	FieldDefID     uuid.UUID  `json:"field_def_id"`
-	FieldDef       *FieldDef  `json:"field_def,omitempty"` // populated on list responses
-	ScopeType      ScopeType  `json:"scope_type"`
-	ScopeID        uuid.UUID  `json:"scope_id"`
-	SortOrder      int        `json:"sort_order"`
-	VisibleOnNew   bool       `json:"visible_on_new"`
-	RequiredOnNew  bool       `json:"required_on_new"`
+	ID            uuid.UUID `json:"id"`
+	FieldDefID    uuid.UUID `json:"field_def_id"`
+	FieldDef      *FieldDef `json:"field_def,omitempty"` // populated on list responses
+	ScopeType     ScopeType `json:"scope_type"`
+	ScopeID       uuid.UUID `json:"scope_id"`
+	SortOrder     int       `json:"sort_order"`
+	VisibleOnNew  bool      `json:"visible_on_new"`
+	RequiredOnNew bool      `json:"required_on_new"`
 }
 
 // TicketFieldValue holds the value of a custom field on a specific ticket.

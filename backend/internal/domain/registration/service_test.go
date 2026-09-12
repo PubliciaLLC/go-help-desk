@@ -13,7 +13,7 @@ import (
 // ── fakes ─────────────────────────────────────────────────────────────────────
 
 type fakeStore struct {
-	record PendingRegistration
+	record    PendingRegistration
 	upsertErr error
 	getErr    error
 	deleteErr error
@@ -76,11 +76,11 @@ func (f *fakeMailer) SendVerificationEmail(_, _, _ string) error {
 
 func TestIsEmailDomainAllowed(t *testing.T) {
 	cases := []struct {
-		name     string
-		email    string
-		allowed  []string
-		openReg  bool
-		want     bool
+		name    string
+		email   string
+		allowed []string
+		openReg bool
+		want    bool
 	}{
 		{"empty allowed + openReg", "a@example.com", nil, true, true},
 		{"empty allowed + no openReg", "a@example.com", nil, false, false},
