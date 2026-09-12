@@ -305,3 +305,39 @@ func TestGetByID_NotFoundWording(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "not found: ticket "+missing.String(), err.Error())
 }
+
+// A search term that contains no indexable tokens ("???", "!!!") tokenises to
+// an empty tsquery. Keying the SQL off that emptiness alone made the entire
+// search clause disappear, so the query returned every visible ticket as though
+// each one matched. A search that matches nothing must return nothing.
+func TestListFiltered_UnindexableQueryMatchesNothing(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	f := newFilteredFixture(t, q)
+	base := ticket.Filter{ActorID: f.staff.ID, Visibility: ticket.VisibilityAll, Limit: 50}
+
+	// Baseline: with no term at all, everything visible comes back.
+	all, err := f.ts.ListFiltered(ctx, base)
+	require.NoError(t, err)
+	require.NotEmpty(t, all, "precondition: there are tickets to match")
+
+	for _, term := range []string{"???", "!!!", "@#$", "   "} {
+		t.Run("term "+term, func(t *testing.T) {
+			fl := base
+			fl.Query = term
+			got, err := f.ts.ListFiltered(ctx, fl)
+			require.NoError(t, err)
+			if term == "   " {
+				// Whitespace is not a search at all — it must behave like no term.
+				require.Len(t, got, len(all), "a blank term means no search")
+				return
+			}
+			require.Empty(t, got,
+				"a term with no indexable tokens must match nothing, not everything")
+		})
+	}
+}

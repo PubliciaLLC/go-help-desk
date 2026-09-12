@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // Admin instance settings, and the denylist of keys never returned to a client.
@@ -45,6 +46,24 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Validate before writing anything. ticket.go documents the prefix as
+	// "enforced where the setting is saved rather than where a ticket is
+	// created" — nothing enforced it, so an invalid prefix was accepted with a
+	// 204 and then silently ignored at mint time in favour of the default. The
+	// admin's setting simply did nothing, and nothing ever said so.
+	if raw, ok := body[admin.KeyTicketPrefix]; ok {
+		var prefix string
+		if err := json.Unmarshal(raw, &prefix); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "ticket prefix must be a string")
+			return
+		}
+		if err := ticket.ValidateTrackingPrefix(prefix); err != nil {
+			Error(w, http.StatusBadRequest, "invalid_ticket_prefix",
+				"ticket prefix must be 1-8 characters, uppercase letters or digits only")
+			return
+		}
+	}
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)

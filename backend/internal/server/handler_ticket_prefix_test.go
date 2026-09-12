@@ -95,3 +95,39 @@ func TestTicketPrefix_ExistingNumbersAreNotRewritten(t *testing.T) {
 	decodeJSON(t, resp, &got)
 	require.Equal(t, before, got.TrackingNumber, "existing numbers are never rewritten")
 }
+
+// An invalid prefix used to be accepted with 204 and then silently ignored at
+// mint time in favour of the default — the admin's setting did nothing and
+// nothing said so. ticket.go claimed this was "enforced where the setting is
+// saved"; now it is.
+func TestUpdateSettings_RejectsInvalidTicketPrefix(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	cases := []struct {
+		name   string
+		prefix string
+	}{
+		{"lowercase", "ghd"},
+		{"hyphenated", "GH-D"},
+		{"too long", "ABCDEFGHI"},
+		{"empty", ""},
+		{"punctuation", "GHD!"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings",
+				map[string]any{admin.KeyTicketPrefix: tc.prefix})
+			res.Body.Close()
+			require.Equal(t, http.StatusBadRequest, res.StatusCode,
+				"an invalid prefix must be refused, not accepted and ignored")
+		})
+	}
+
+	// And a valid one still saves.
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{admin.KeyTicketPrefix: "IT2"})
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode)
+	require.Equal(t, "IT2", h.adminSvc.TicketPrefix(context.Background()))
+}

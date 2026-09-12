@@ -174,8 +174,9 @@ var ErrInvalidTrackingPrefix = errors.New("tracking prefix must be 1-8 uppercase
 
 // ValidateTrackingPrefix reports whether a prefix is usable.
 //
-// This is enforced where the setting is saved rather than where a ticket is
-// created. A bad prefix accepted into settings would not fail loudly — it would
+// This is enforced where the setting is saved (handleUpdateSettings rejects an
+// invalid prefix with 400) as well as at mint time, where an invalid value
+// falls back to the default rather than producing a malformed number. A bad prefix accepted into settings would not fail loudly — it would
 // quietly mint malformed tracking numbers that are then in customers' inboxes
 // and impossible to recall.
 func ValidateTrackingPrefix(prefix string) error {

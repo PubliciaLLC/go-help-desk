@@ -150,6 +150,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	if in.ReporterUserID == nil && (in.GuestEmail == nil || *in.GuestEmail == "") {
 		return Ticket{}, fmt.Errorf("reporter user or guest email is required: %w", ErrValidation)
 	}
+	// Priority is optional; both callers were defaulting it to medium
+	// themselves, so the default lives here now rather than in two places.
+	// A value that is present but wrong is a different matter: unchecked it
+	// reached the priority CHECK constraint and failed the transaction AFTER
+	// NextSeq had consumed a tracking number, so a typo cost a 500 and a
+	// permanent gap in the ticket sequence.
+	if in.Priority == "" {
+		in.Priority = PriorityMedium
+	}
+	if !in.Priority.Valid() {
+		return Ticket{}, fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
+	}
 
 	seq, err := s.store.NextSeq(ctx)
 	if err != nil {

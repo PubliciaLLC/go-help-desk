@@ -699,7 +699,11 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		CategoryID:   database.NullUUID(f.CategoryID),
 		// A NULL assignee filter means "any assignee", which is why this is a
 		// pointer rather than uuid.Nil — the latter is a real, if absent, value.
-		AssigneeUserID:  database.NullUUID(f.AssigneeUserID),
+		AssigneeUserID: database.NullUUID(f.AssigneeUserID),
+		// Searching is whether a term was ASKED for, which is not the same as
+		// the tsquery being non-empty: "???" tokenises to nothing but is still
+		// a search, and must not quietly match every ticket.
+		Searching:       strings.TrimSpace(f.Query) != "",
 		SearchQuery:     buildSearchTSQuery(f.Query),
 		TrackingPattern: searchPattern(f.Query),
 		ResultLimit:     int32(f.Limit),

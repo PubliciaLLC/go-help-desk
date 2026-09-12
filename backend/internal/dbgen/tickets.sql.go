@@ -886,15 +886,24 @@ WHERE
   AND ($5::text IS NULL OR t.priority = $5::text)
   AND ($6::uuid IS NULL OR t.category_id = $6::uuid)
   AND ($7::uuid IS NULL OR t.assignee_user_id = $7::uuid)
+  -- ` + "`" + `searching` + "`" + ` says whether the caller asked for a search at all, which is
+  -- NOT the same as search_query being empty. A term like "???" contains no
+  -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
+  -- alone made the whole clause vanish and returned every visible ticket as
+  -- though each one matched. A search that tokenises to nothing must match on
+  -- the tracking number or not at all.
   AND (
-    $8::text = ''
+    NOT $8::bool
     OR t.tracking_number ILIKE $9::text
-    OR t.search_vector @@ to_tsquery('english', $8::text)
+    OR (
+      $10::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $10::text)
+    )
   )
 ORDER BY
-  CASE WHEN $8::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', $8::text)) ELSE 0 END DESC,
+  CASE WHEN $10::text <> '' THEN ts_rank(t.search_vector, to_tsquery('english', $10::text)) ELSE 0 END DESC,
   t.created_at DESC
-LIMIT $11 OFFSET $10
+LIMIT $12 OFFSET $11
 `
 
 type ListTicketsFilteredParams struct {
@@ -905,8 +914,9 @@ type ListTicketsFilteredParams struct {
 	Priority        sql.NullString `json:"priority"`
 	CategoryID      uuid.NullUUID  `json:"category_id"`
 	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
-	SearchQuery     string         `json:"search_query"`
+	Searching       bool           `json:"searching"`
 	TrackingPattern string         `json:"tracking_pattern"`
+	SearchQuery     string         `json:"search_query"`
 	ResultOffset    int32          `json:"result_offset"`
 	ResultLimit     int32          `json:"result_limit"`
 }
@@ -958,8 +968,9 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.Priority,
 		arg.CategoryID,
 		arg.AssigneeUserID,
-		arg.SearchQuery,
+		arg.Searching,
 		arg.TrackingPattern,
+		arg.SearchQuery,
 		arg.ResultOffset,
 		arg.ResultLimit,
 	)
