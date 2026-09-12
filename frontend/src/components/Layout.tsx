@@ -1,8 +1,8 @@
+import { useState } from 'react'
 import { Link, useRouterState } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
-import { getSiteConfig } from '@/api/admin'
+import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -39,15 +39,13 @@ interface LayoutProps {
 export function Layout({ children }: LayoutProps) {
   const { user, clear } = useAuthStore()
 
-  const { data: siteConfig } = useQuery({
-    queryKey: ['site-config'],
-    queryFn: getSiteConfig,
-    staleTime: 5 * 60 * 1000, // refresh at most every 5 min
-  })
+  const { name: siteName, logoURL, version } = useSiteBranding()
 
-  const siteName = siteConfig?.name ?? 'Go Help Desk'
-  const logoURL = siteConfig?.logo_url ?? ''
-  const version = siteConfig?.version ?? ''
+  // A stored logo_url can outlive the file it points at — a failed upload, a
+  // lost volume. The header rendered the image instead of the name, so a dead
+  // URL left it blank with no way to tell what instance you were looking at.
+  const [logoBroken, setLogoBroken] = useState(false)
+  const showLogo = logoURL !== '' && !logoBroken
 
   async function handleLogout() {
     await logout().catch(() => {})
@@ -63,8 +61,13 @@ export function Layout({ children }: LayoutProps) {
         <aside className="flex w-60 flex-col border-r bg-white">
           {/* Branding */}
           <div className="flex h-14 items-center border-b px-4">
-            {logoURL ? (
-              <img src={logoURL} alt={siteName} className="h-8 max-w-[160px] object-contain" />
+            {showLogo ? (
+              <img
+                src={logoURL}
+                alt={siteName}
+                className="h-8 max-w-[160px] object-contain"
+                onError={() => setLogoBroken(true)}
+              />
             ) : (
               <span className="text-lg font-semibold text-gray-900">{siteName}</span>
             )}
