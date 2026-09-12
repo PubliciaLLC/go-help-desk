@@ -323,7 +323,7 @@ func TestUserService_EnrollMFA(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	secret, qrURL, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost")
+	secret, qrURL, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost", false)
 	require.NoError(t, err)
 	require.NotEmpty(t, secret)
 	require.NotEmpty(t, qrURL)
@@ -339,7 +339,7 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	secret, _, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost")
+	secret, _, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost", false)
 	require.NoError(t, err)
 
 	code, err := totp.GenerateCode(secret, time.Now())
@@ -396,4 +396,49 @@ func TestWithBcryptCost_FloorsAtMinCost(t *testing.T) {
 	cost, err := bcrypt.Cost([]byte(store.byID[created.ID].PasswordHash))
 	require.NoError(t, err)
 	require.Equal(t, bcrypt.MinCost, cost)
+}
+
+// TestUserService_EnrollMFA_RefusesSilentReEnrolment pins the guard on a full
+// MFA bypass.
+//
+// Enrolment overwrites the stored TOTP secret and returns the new one, while
+// MFAEnabled stays true. Without this guard an attacker holding only the
+// victim's PASSWORD could log in with an MFA-unverified session, re-enrol, and
+// then satisfy the challenge with a code of their own — verified end to end
+// against the HTTP surface before the fix. See
+// internal/server/mfa_bypass_exploit_test.go for that half.
+func TestUserService_EnrollMFA_RefusesSilentReEnrolment(t *testing.T) {
+	svc := user.NewService(newFakeUserStore())
+	u, err := svc.Create(context.Background(), user.CreateUserInput{
+		Email:       "heidi@example.com",
+		DisplayName: "Heidi",
+		Role:        user.RoleUser,
+		Password:    "pass",
+	})
+	require.NoError(t, err)
+
+	// First enrolment needs no prior challenge — the account is not protected yet.
+	secret, _, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost", false)
+	require.NoError(t, err)
+	code, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+	require.NoError(t, svc.ConfirmMFAEnrollment(context.Background(), u.ID, code))
+
+	// Now protected: re-enrolment without proof of possession must be refused.
+	_, _, err = svc.EnrollMFA(context.Background(), u.ID, "http://localhost", false)
+	require.ErrorIs(t, err, user.ErrMFAAlreadyEnrolled)
+
+	// And it must not have rotated the secret on the way out — a refusal that
+	// still overwrote the secret would lock the legitimate user out, which is
+	// most of the damage the attack does.
+	after, err := svc.GetByID(context.Background(), u.ID)
+	require.NoError(t, err)
+	require.Equal(t, secret, after.MFASecret, "a refused re-enrolment must not rotate the secret")
+	require.True(t, after.MFAEnabled)
+
+	// Rotation stays self-service for someone who still holds the current
+	// authenticator: the caller vouches for that with allowReenroll.
+	rotated, _, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost", true)
+	require.NoError(t, err)
+	require.NotEqual(t, secret, rotated)
 }

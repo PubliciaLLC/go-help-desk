@@ -216,6 +216,19 @@ func CanUserUpdate(t Ticket, u user.User, status Status, reopenWindowDays int) e
 		return nil
 	}
 	// User role from here down.
+
+	// Ownership. This comment promised the rule for a long time while the code
+	// did not implement it, and the HTTP layer did not compensate: a reporting
+	// user could post into any ticket by id. The handlers now gate on
+	// visibility too, and this is the second line — a domain rule its callers
+	// already believed they were getting.
+	//
+	// A guest ticket has no reporter user, so no signed-in reporting user owns
+	// it.
+	if t.ReporterUserID == nil || *t.ReporterUserID != u.ID {
+		return ErrForbidden
+	}
+
 	if status.Name == StatusNameClosed {
 		return ErrClosed
 	}
