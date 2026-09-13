@@ -66,3 +66,31 @@ UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE 
 
 -- name: AdminSetPassword :exec
 UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
+
+-- name: RecordMFAFailure :one
+-- Counts a failed TOTP attempt and locks the account once the threshold is
+-- reached. Returns the resulting lock time so the caller can refuse
+-- immediately without a second round trip.
+--
+-- The count and the lock are set in one statement so concurrent attempts
+-- cannot both read "4 failures" and both decide they are allowed.
+UPDATE users
+SET mfa_failed_attempts = mfa_failed_attempts + 1,
+    mfa_locked_until = CASE
+        WHEN mfa_failed_attempts + 1 >= sqlc.arg(max_attempts)::int
+        THEN now() + make_interval(secs => sqlc.arg(lock_seconds)::int)
+        ELSE mfa_locked_until
+    END,
+    updated_at = now()
+WHERE id = $1
+RETURNING mfa_failed_attempts, mfa_locked_until;
+
+-- name: ClearMFAFailures :exec
+-- Called after a correct code. NIST SP 800-63B has the verifier disregard
+-- prior failed attempts once the user authenticates successfully.
+UPDATE users
+SET mfa_failed_attempts = 0, mfa_locked_until = NULL, updated_at = now()
+WHERE id = $1;
+
+-- name: GetMFALock :one
+SELECT mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1;

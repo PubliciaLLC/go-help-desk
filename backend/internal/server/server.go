@@ -127,14 +127,14 @@ type AuthStoreIface interface {
 
 // Server is the top-level HTTP handler.
 type Server struct {
-	// loginLimiter throttles password attempts, keyed on the submitted email.
-	// mfaLimiter throttles TOTP attempts, keyed on the authenticated user.
+	// loginLimiter throttles password and signup attempts, keyed on the
+	// submitted email and the transport address respectively.
 	//
-	// Separate because the secrets differ: a password is protected by bcrypt
-	// and an unbounded keyspace, a TOTP code is six digits with three values
-	// live at once. The TOTP budget has to be far stingier to mean anything.
+	// TOTP attempts are NOT limited here: they are counted on the user row
+	// (user.RecordMFAFailure), because an in-memory counter is cleared by a
+	// restart and multiplied by the replica count, which is not a limit on a
+	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
-	mfaLimiter   *authmw.RateLimiter
 
 	cfg      *config.Config
 	router   *chi.Mux
@@ -210,11 +210,6 @@ func New(
 		// Built here rather than injected: derived entirely from config, no
 		// other collaborators.
 		loginLimiter: authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
-		// Deliberately not configurable, and deliberately mean. At 5 per 15
-		// minutes a holder of the password needs roughly a month to reach a
-		// few percent chance against the code space; at 10 per minute the same
-		// attacker passes even odds inside a fortnight.
-		mfaLimiter: authmw.NewRateLimiter(mfaAttemptLimit, mfaAttemptWindow),
 	}
 	s.router = s.buildRouter()
 	return s
@@ -260,14 +255,6 @@ func requestLogger(next http.Handler) http.Handler {
 	})
 }
 
-// TOTP attempt budget. Not configurable: an operator lowering the bar here
-// would not know they had, and there is no legitimate workflow that needs more
-// than a handful of code entries in a quarter of an hour.
-const (
-	mfaAttemptLimit  = 5
-	mfaAttemptWindow = 15 * time.Minute
-)
-
 func (s *Server) buildRouter() *chi.Mux {
 	r := chi.NewRouter()
 	// chimw.RealIP is deliberately NOT installed. It overwrites RemoteAddr
@@ -299,13 +286,19 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.Mount("/auth", s.authRouter())
 		r.Mount("/tickets", s.ticketRouter())
 		r.Mount("/groups", s.groupsRouter())
-		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/tags", s.handleListActiveTags)
+		// RequireMFA as well as RequireRole: without it a session that has
+		// passed the password but not the second factor could still read
+		// these. Small in isolation, but a half-authenticated session should
+		// reach nothing but the challenge it still owes.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
+			Get("/tags", s.handleListActiveTags)
 		// Public category/type/item listing (active only, no admin required).
 		r.Get("/categories", s.handleListPublicCategories)
 		r.Get("/categories/{id}/types", s.handleListPublicTypes)
 		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
-		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)).Get("/statuses", s.handleListStatuses)
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
+			Get("/statuses", s.handleListStatuses)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

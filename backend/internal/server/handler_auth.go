@@ -98,22 +98,36 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	// Keyed on the user, which is the account under attack, and which no
-	// proxy topology can obscure. There is no anonymous lockout vector here:
-	// reaching this endpoint at all requires a session that already passed the
-	// password, so burning someone's TOTP budget means you already hold their
-	// password — an alarm, not a denial of service.
-	mfaKey := "mfa:" + a.UserID.String()
-	if !s.mfaLimiter.Allow(mfaKey) {
-		tooManyAttempts(w)
+	// Counted on the user row, not in memory: a counter a restart clears is
+	// not a limit on a six-digit secret, and per-process counters multiply by
+	// the replica count. Keyed on the account under attack, so no proxy
+	// topology obscures it.
+	//
+	// There is no anonymous lockout vector: reaching this endpoint requires a
+	// session that already passed the password, so burning someone's budget
+	// means you already hold their password — an alarm, not a denial of
+	// service.
+	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+		if errors.Is(err, user.ErrMFALocked) {
+			tooManyAttempts(w)
+			return
+		}
+		handleError(w, err)
 		return
 	}
 
 	if err := s.users.VerifyMFACode(r.Context(), a.UserID, body.Code); err != nil {
+		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
+			handleError(w, lockErr)
+			return
+		}
 		Error(w, http.StatusUnauthorized, "invalid_mfa_code", "invalid TOTP code")
 		return
 	}
-	s.mfaLimiter.Reset(mfaKey)
+	if err := s.users.ClearMFAFailures(r.Context(), a.UserID); err != nil {
+		handleError(w, err)
+		return
+	}
 	if err := s.writeSession(w, r, auth.SessionData{
 		UserID:    a.UserID,
 		Role:      a.Role,

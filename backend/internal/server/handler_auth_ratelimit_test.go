@@ -1,16 +1,10 @@
 package server_test
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
-	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/require"
-
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 )
 
 // The limiter's own unit tests passed while the deployed chain was fully
@@ -91,65 +85,7 @@ func TestLoginThrottle_SuccessClearsTheBudget(t *testing.T) {
 	}
 }
 
-// The endpoint the whole exercise is about: six digits, three codes live at
-// once. Keyed on the authenticated user, so no proxy topology and no IP
-// rotation affects it.
-func TestMFAVerifyThrottle_IsKeyedOnTheUser(t *testing.T) {
-	h, cleanup := newHarness(t) // login throttle off; the MFA budget is not configurable
-	defer cleanup()
-	ctx := context.Background()
-
-	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
-	require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(`["staff","admin"]`)))
-	enrollMFA(t, ctx, h.userSvc, h.staffID)
-
-	s := &session{h: h}
-	res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
-		map[string]any{"email": "staff@test.local", "password": "password"})
-	require.Equal(t, http.StatusOK, res.StatusCode)
-
-	// mfaAttemptLimit is 5.
-	for i := 1; i <= 5; i++ {
-		res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
-			map[string]any{"code": fmt.Sprintf("%06d", i)})
-		require.Equal(t, http.StatusUnauthorized, res.StatusCode, "guess %d", i)
-	}
-
-	res, _ = s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": "999999"})
-	require.Equal(t, http.StatusTooManyRequests, res.StatusCode,
-		"a six-digit code must not be guessable at will")
-
-	// And a forged header buys nothing, because the key is the user.
-	res, _ = s.sendWithHeaders(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
-		map[string]any{"code": "888888"}, map[string]string{"X-Forwarded-For": "1.2.3.4"})
-	require.Equal(t, http.StatusTooManyRequests, res.StatusCode,
-		"the budget follows the account, not the address")
-}
-
-// A legitimate user who fumbles a code and then enters the right one must not
-// stay throttled.
-func TestMFAVerifyThrottle_SuccessClearsTheBudget(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-	ctx := context.Background()
-
-	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
-	require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(`["staff","admin"]`)))
-	enrollMFA(t, ctx, h.userSvc, h.staffID)
-
-	u, err := h.userSvc.GetByID(ctx, h.staffID)
-	require.NoError(t, err)
-
-	s := &session{h: h}
-	s.send(t, http.MethodPost, "/api/v1/auth/local/login",
-		map[string]any{"email": "staff@test.local", "password": "password"})
-
-	for i := 0; i < 3; i++ {
-		s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": "000000"})
-	}
-
-	code, err := totp.GenerateCode(u.MFASecret, time.Now())
-	require.NoError(t, err)
-	res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": code})
-	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
-}
+// TOTP throttling moved to a durable per-account counter; see
+// TestMFALock_IsDurable in handler_auth_hardening_test.go. Keeping an
+// in-memory version here too would have meant two limits on one secret, the
+// weaker of which resets on restart.

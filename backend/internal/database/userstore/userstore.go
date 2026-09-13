@@ -114,6 +114,33 @@ func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
 	return s.q.ClearMFA(ctx, id)
 }
 
+// RecordMFAFailure counts a failed TOTP attempt and locks the account once the
+// threshold is reached, in one statement so concurrent attempts cannot both
+// read the same count and both decide they are under the limit.
+func (s *Store) RecordMFAFailure(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
+	row, err := s.q.RecordMFAFailure(ctx, dbgen.RecordMFAFailureParams{
+		ID:          id,
+		MaxAttempts: int32(maxAttempts),
+		LockSeconds: int32(lockFor / time.Second),
+	})
+	if err != nil {
+		return 0, nil, fmt.Errorf("recording MFA failure: %w", err)
+	}
+	return int(row.MfaFailedAttempts), database.TimePtr(row.MfaLockedUntil), nil
+}
+
+func (s *Store) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
+	return s.q.ClearMFAFailures(ctx, id)
+}
+
+func (s *Store) GetMFALock(ctx context.Context, id uuid.UUID) (int, *time.Time, error) {
+	row, err := s.q.GetMFALock(ctx, id)
+	if err != nil {
+		return 0, nil, fmt.Errorf("getting MFA lock: %w", err)
+	}
+	return int(row.MfaFailedAttempts), database.TimePtr(row.MfaLockedUntil), nil
+}
+
 func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	return s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
 }

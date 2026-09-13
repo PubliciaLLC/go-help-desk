@@ -24,10 +24,12 @@ var errFakeNotFound = user.ErrNotFound
 
 // fakeUserStore is an in-memory implementation of user.Store for unit tests.
 type fakeUserStore struct {
-	byID    map[uuid.UUID]user.User
-	byEmail map[string]user.User
-	bySAML  map[string]user.User
-	byOIDC  map[string]user.User
+	mfaFailures map[uuid.UUID]int
+	mfaLocks    map[uuid.UUID]*time.Time
+	byID        map[uuid.UUID]user.User
+	byEmail     map[string]user.User
+	bySAML      map[string]user.User
+	byOIDC      map[string]user.User
 
 	// Call counters, so tests can assert that a rejected login neither
 	// created nor mutated a user record.
@@ -54,10 +56,12 @@ func (f *fakeUserStore) seed(u user.User) {
 
 func newFakeUserStore() *fakeUserStore {
 	return &fakeUserStore{
-		byID:    make(map[uuid.UUID]user.User),
-		byEmail: make(map[string]user.User),
-		bySAML:  make(map[string]user.User),
-		byOIDC:  make(map[string]user.User),
+		byID:        make(map[uuid.UUID]user.User),
+		byEmail:     make(map[string]user.User),
+		bySAML:      make(map[string]user.User),
+		byOIDC:      make(map[string]user.User),
+		mfaFailures: make(map[uuid.UUID]int),
+		mfaLocks:    make(map[uuid.UUID]*time.Time),
 	}
 }
 
@@ -441,4 +445,58 @@ func TestUserService_EnrollMFA_RefusesSilentReEnrolment(t *testing.T) {
 	rotated, _, err := svc.EnrollMFA(context.Background(), u.ID, "http://localhost", true)
 	require.NoError(t, err)
 	require.NotEqual(t, secret, rotated)
+}
+
+// VerifyPassword used to return the moment the email lookup missed, without
+// hashing anything. A nonexistent address therefore answered in microseconds
+// while a real one paid the full bcrypt cost — a reliable account-enumeration
+// oracle no matter how identical the status code and body are kept.
+//
+// Asserted as a ratio rather than an absolute, because absolute timings are
+// machine- and load-dependent. The bound is deliberately loose: before the fix
+// the miss path was orders of magnitude faster, so anything near parity proves
+// the work is being spent.
+func TestVerifyPassword_MissCostsTheSameAsAHit(t *testing.T) {
+	svc := user.NewService(newFakeUserStore(), user.WithBcryptCost(bcrypt.DefaultCost))
+	u, err := svc.Create(context.Background(), user.CreateUserInput{
+		Email: "real@example.com", DisplayName: "Real", Role: user.RoleUser, Password: "correct horse",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, u.ID)
+
+	measure := func(email string) time.Duration {
+		start := time.Now()
+		_, _ = svc.VerifyPassword(context.Background(), email, "some guess")
+		return time.Since(start)
+	}
+
+	// Warm up, so the first bcrypt call's setup does not skew the comparison.
+	measure("real@example.com")
+
+	hit := measure("real@example.com")
+	miss := measure("does-not-exist@example.com")
+
+	require.Greater(t, miss*4, hit,
+		"a miss (%v) must not be dramatically faster than a hit (%v) — that is an enumeration oracle", miss, hit)
+}
+
+// MFA attempt tracking. The fake keeps it in the struct so a test can assert
+// that failures are counted and cleared.
+func (f *fakeUserStore) RecordMFAFailure(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
+	f.mfaFailures[id]++
+	if f.mfaFailures[id] >= maxAttempts {
+		until := time.Now().Add(lockFor)
+		f.mfaLocks[id] = &until
+	}
+	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
+func (f *fakeUserStore) ClearMFAFailures(_ context.Context, id uuid.UUID) error {
+	delete(f.mfaFailures, id)
+	delete(f.mfaLocks, id)
+	return nil
+}
+
+func (f *fakeUserStore) GetMFALock(_ context.Context, id uuid.UUID) (int, *time.Time, error) {
+	return f.mfaFailures[id], f.mfaLocks[id], nil
 }
