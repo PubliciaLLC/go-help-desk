@@ -43,6 +43,11 @@ export async function updateUser(id: string, patch: {
   role?: Role
   disabled?: boolean
   reset_mfa?: boolean
+  // Required whenever reset_mfa is set. Clearing MFA without rotating the
+  // password hands the account to anyone who already holds the old one: they
+  // burn the victim's TOTP budget, the victim reports a lockout, an
+  // administrator clears MFA in good faith, and the attacker enrols first.
+  new_password?: string
 }): Promise<AdminUser> {
   const res = await api.patch<AdminUser>(`/admin/users/${id}`, patch)
   return res.data

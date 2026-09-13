@@ -53,6 +53,8 @@ export function UserDetailPage() {
 
   // ── Password state ──────────────────────────────────────────────────────────
   const [newPassword, setNewPassword] = useState('')
+  const [mfaResetPassword, setMfaResetPassword] = useState('')
+  const [mfaResetError, setMfaResetError] = useState('')
   const [passwordError, setPasswordError] = useState('')
   const [passwordSaved, setPasswordSaved] = useState(false)
 
@@ -114,9 +116,20 @@ export function UserDetailPage() {
   })
 
   // ── Reset MFA ───────────────────────────────────────────────────────────────
+  // A new password goes with it. Clearing MFA alone is a compromise chain
+  // rather than a recovery: whoever already holds the password burns the
+  // victim's TOTP budget, the victim reports being locked out, an
+  // administrator clears MFA in good faith, and the attacker — password still
+  // working — logs in and enrols their own authenticator first. The server
+  // enforces this; the form collects it.
   const resetMFAMutation = useMutation({
-    mutationFn: () => updateUser(id, { reset_mfa: true }),
-    onSuccess: () => invalidate(),
+    mutationFn: () => updateUser(id, { reset_mfa: true, new_password: mfaResetPassword }),
+    onSuccess: () => {
+      setMfaResetPassword('')
+      setMfaResetError('')
+      invalidate()
+    },
+    onError: (err) => setMfaResetError(extractError(err)),
   })
 
   // ── Password reset ──────────────────────────────────────────────────────────
@@ -273,19 +286,34 @@ export function UserDetailPage() {
             <div className="border-t pt-3 space-y-3">
               {/* MFA reset */}
               {user.mfa_enabled && (
-                <div className="flex items-center justify-between">
+                <div className="space-y-2">
                   <div>
                     <p className="text-sm font-medium text-gray-700">Reset MFA</p>
-                    <p className="text-xs text-gray-500">Clears the TOTP secret — user re-enrolls on next login.</p>
+                    <p className="text-xs text-gray-500">
+                      Clears the TOTP secret so the user re-enrolls on next login. Set a new
+                      password at the same time and give it to them directly — otherwise anyone
+                      who already knows their old password can enrol first.
+                    </p>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => resetMFAMutation.mutate()}
-                    disabled={resetMFAMutation.isPending}
-                  >
-                    {resetMFAMutation.isPending ? 'Resetting…' : 'Reset MFA'}
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="New password for this user"
+                      className="h-8 text-sm"
+                      value={mfaResetPassword}
+                      onChange={(e) => setMfaResetPassword(e.target.value)}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => resetMFAMutation.mutate()}
+                      disabled={resetMFAMutation.isPending || !mfaResetPassword.trim()}
+                    >
+                      {resetMFAMutation.isPending ? 'Resetting…' : 'Reset MFA'}
+                    </Button>
+                  </div>
+                  {mfaResetError && <p className="text-xs text-red-600">{mfaResetError}</p>}
                 </div>
               )}
 
