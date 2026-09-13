@@ -102,7 +102,19 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain = authmw.BearerAuth(s.cfg.JWTSecret)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
-	return chain
+
+	// /mcp/ is mounted on the bare ServeMux, not on the chi router, so it never
+	// reaches the r.Use stack that gives every /api/ request an id, a log line,
+	// and a panic guard. GHSA-5g72-m483-3v63 named that gap alongside the auth
+	// one ("bypasses the entire chi middleware chain, auth and logging alike");
+	// the auth half was fixed and this half was not, so MCP traffic left no
+	// request-log trace at all. GHSA-2x4f-j4jv-m2cm tells operators to review
+	// recent activity for signs of exploitation — against a tool surface that
+	// was not logging, that instruction could not be carried out.
+	//
+	// Outermost, so the log line records the status the client actually saw,
+	// including the 401s and 403s the auth chain produces.
+	return chimw.RequestID(chimw.Recoverer(requestLogger(chain)))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
