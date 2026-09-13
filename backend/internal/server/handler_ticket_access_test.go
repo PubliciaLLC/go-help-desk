@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -61,15 +62,22 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 		{http.MethodPatch, base, map[string]any{"clear_assignee": true}},
 		{http.MethodGet, base + "/replies", nil},
 		{http.MethodPost, base + "/replies", map[string]any{"body": "injected"}},
-		{http.MethodPost, base + "/resolve", map[string]any{"resolution_notes": "x"}},
+		{http.MethodPost, base + "/resolve", map[string]any{"notes": "x"}},
 		{http.MethodPost, base + "/reopen", nil},
 		{http.MethodPost, base + "/close", nil},
 		{http.MethodGet, base + "/links", nil},
-		{http.MethodPost, base + "/links", map[string]any{"target_ticket_id": uuid.New().String(), "link_type": "related"}},
+		// Real field names: target_id and notes. With the wrong ones the
+		// handler answers 400 or 500 and the 403 assertion passes for the
+		// wrong reason.
+		{http.MethodPost, base + "/links", map[string]any{"target_id": uuid.New().String(), "link_type": "related"}},
+		{http.MethodDelete, base + "/links/" + uuid.New().String() + "/related", nil},
 		{http.MethodGet, base + "/history", nil},
 		{http.MethodGet, base + "/tags", nil},
 		{http.MethodPost, base + "/tags", map[string]any{"name": "vip"}},
+		{http.MethodDelete, base + "/tags/" + uuid.New().String(), nil},
 		{http.MethodGet, base + "/attachments", nil},
+		{http.MethodGet, base + "/attachments/" + uuid.New().String(), nil},
+		{http.MethodGet, base + "/canned-responses", nil},
 		{http.MethodGet, base + "/custom-fields", nil},
 		{http.MethodPut, base + "/custom-fields", map[string]any{"values": map[string]any{}}},
 	}
@@ -156,4 +164,65 @@ func statusIDNamed(t *testing.T, h *harness, name string) uuid.UUID {
 	}
 	t.Fatalf("status %q not found", name)
 	return uuid.Nil
+}
+
+// The path gate authorises {id} and nothing else. handleAddLink names a SECOND
+// ticket in its body, so it was the one route that genuinely addressed two
+// tickets while only one was checked. Confirmed by execution before the fix:
+// 403 reading the foreign ticket, 204 writing a link onto it.
+func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	foreign := foreignTicket(t, h)
+
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": foreign.ID.String(), "link_type": "duplicate_of"})
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode,
+		"linking TO a ticket the caller cannot read is a write onto that ticket; body %s", b)
+
+	links, err := h.ticketSvc.ListLinks(ctx, foreign.ID)
+	require.NoError(t, err)
+	require.Empty(t, links, "nothing may have been written onto the foreign ticket")
+}
+
+// Staff are the other half of the bug: with scope enforcement on, a staff
+// member outside a ticket's scope must be refused on the subroutes too, not
+// just on GET /{id}.
+func TestTicketSubtree_RefusesStaffOutsideTheirScope(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyTicketScopeEnforced, true))
+
+	// Reported by the admin, unassigned, in a category the staff user's groups
+	// do not cover — so it is outside their scope entirely.
+	outOfScope, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Finance escalation", CategoryID: h.catID,
+		Priority: ticket.PriorityHigh, ReporterUserID: &h.adminID,
+	})
+	require.NoError(t, err)
+
+	base := "/api/v1/tickets/" + outOfScope.ID.String()
+	res := h.do(t, http.MethodGet, base, nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition: out of scope")
+
+	for _, path := range []string{"/replies", "/history", "/tags", "/links", "/custom-fields"} {
+		t.Run(path, func(t *testing.T) {
+			res := h.do(t, http.MethodGet, base+path, nil)
+			res.Body.Close()
+			require.Equal(t, http.StatusForbidden, res.StatusCode,
+				"staff outside scope must be refused here too")
+		})
+	}
 }

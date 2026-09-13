@@ -532,7 +532,7 @@ func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
 	// Access to the ticket is not access to the internal notes on it: the
 	// reporter may read their own thread and must still not see staff-only
 	// notes. This returned the raw rows.
-	JSON(w, http.StatusOK, visibleReplies(replies, authmw.GetActor(r)))
+	JSON(w, http.StatusOK, ticket.VisibleReplies(replies, authmw.GetActor(r).Role))
 }
 
 // POST /api/v1/tickets/{id}/resolve
@@ -635,6 +635,21 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// The path gate authorised {id}; this request names a second ticket. Both
+	// ends need the check, because the link is written onto the TARGET's
+	// thread too: a reporting user could otherwise mark a ticket it cannot
+	// read as a duplicate of its own, and tell existing from nonexistent
+	// target ids by the difference between 204 and a foreign-key failure.
+	ok, err := s.canViewTicketID(r, body.TargetID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !ok {
+		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return
+	}
+
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	if err := s.tickets.AddLink(r.Context(), sourceID, body.TargetID, ticket.LinkType(body.LinkType), actor); err != nil {
 		handleError(w, err)

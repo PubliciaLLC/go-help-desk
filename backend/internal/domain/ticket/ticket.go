@@ -262,3 +262,24 @@ func CanTransitionStatus(to Status, role user.Role) error {
 	}
 	return nil
 }
+
+// VisibleReplies drops internal notes for a caller who is not staff.
+//
+// Internal notes are staff-to-staff. Access to a ticket is not access to them:
+// the reporter may read their own thread and must still not see them.
+//
+// It lives here because both the REST layer and the MCP server answer with
+// replies, and each had its own copy of the rule. One rule with two callers,
+// not two rules.
+func VisibleReplies(replies []Reply, role user.Role) []Reply {
+	if role == user.RoleAdmin || role == user.RoleStaff {
+		return replies
+	}
+	out := make([]Reply, 0, len(replies))
+	for _, r := range replies {
+		if !r.Internal {
+			out = append(out, r)
+		}
+	}
+	return out
+}

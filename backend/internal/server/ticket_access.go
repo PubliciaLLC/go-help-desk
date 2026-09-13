@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"net/http"
 	"strings"
 
@@ -9,19 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
-
-// ticketCtxKey carries the resolved, access-checked ticket into handlers.
-type ticketCtxKey struct{}
-
-// ticketFromContext returns the ticket requireTicketAccess already resolved and
-// authorised, and whether it was present.
-func ticketFromContext(r *http.Request) (ticket.Ticket, bool) {
-	t, ok := r.Context().Value(ticketCtxKey{}).(ticket.Ticket)
-	return t, ok
-}
 
 // requireTicketAccess resolves the {id} path parameter and refuses the request
 // unless the caller may see that ticket.
@@ -66,28 +53,20 @@ func (s *Server) requireTicketAccess(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ticketCtxKey{}, t)))
+		next.ServeHTTP(w, r)
 	})
 }
 
-// visibleReplies drops internal notes for a caller who is not staff.
+// canViewTicketID fetches a ticket by id and reports whether the caller may see
+// it.
 //
-// Internal notes are staff-to-staff. Access to the ticket is not access to
-// them: the reporter is allowed to read their own thread and must still not see
-// them. handleListReplies returned the raw rows, so every internal note on a
-// reporter's own ticket was readable by that reporter.
-//
-// The same rule exists in internal/mcp for the MCP surface; both consume the
-// ticket's replies and neither should be the only place it is enforced.
-func visibleReplies(replies []ticket.Reply, a *authmw.Actor) []ticket.Reply {
-	if a != nil && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff) {
-		return replies
+// For the cases the path gate cannot cover: a request that names a SECOND
+// ticket in its body. requireTicketAccess authorises {id} and nothing else, so
+// a handler taking another ticket id has to ask separately.
+func (s *Server) canViewTicketID(r *http.Request, id uuid.UUID) (bool, error) {
+	t, err := s.tickets.GetByID(r.Context(), id)
+	if err != nil {
+		return false, err
 	}
-	out := make([]ticket.Reply, 0, len(replies))
-	for _, rep := range replies {
-		if !rep.Internal {
-			out = append(out, rep)
-		}
-	}
-	return out
+	return s.canViewTicket(r, t)
 }
