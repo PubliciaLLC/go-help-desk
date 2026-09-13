@@ -280,5 +280,11 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// SoftDelete is an UPDATE, so the sessions table's ON DELETE CASCADE never
+	// fires and the deleted user's sessions would outlive them.
+	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -93,6 +93,11 @@ func (s *Store) New(r *http.Request, name string) (*sessions.Session, error) {
 	}
 
 	if err := gob.NewDecoder(bytes.NewReader(row.Data)).Decode(&session.Values); err != nil {
+		// gob leaves the map partly filled on a failed decode. The middleware
+		// checks IsNew first so this is not reachable today, but a handler
+		// reading Values without that check would see fragments of a session
+		// that failed to load.
+		session.Values = map[any]any{}
 		return session, nil
 	}
 	session.ID = id
@@ -151,6 +156,15 @@ func (s *Store) Save(r *http.Request, w http.ResponseWriter, session *sessions.S
 	}
 	http.SetCookie(w, sessions.NewCookie(session.Name(), encoded, session.Options))
 	return nil
+}
+
+// Delete removes one session by id.
+//
+// Used to rotate the id when a session gains authority: the old row goes and a
+// fresh id is minted, so an id an attacker planted before login cannot be the
+// id that ends up authenticated.
+func (s *Store) Delete(ctx context.Context, id string) error {
+	return s.q.DeleteSession(ctx, id)
 }
 
 // DeleteForUser revokes every session a user holds.

@@ -269,6 +269,10 @@ type SessionStore interface {
 	// which an existing session is wrong: disable, role change, password
 	// change, MFA reset.
 	DeleteForUser(ctx context.Context, userID uuid.UUID) error
+
+	// Delete removes one session, which is how the id is rotated when a
+	// session gains authority.
+	Delete(ctx context.Context, id string) error
 }
 
 func (s *Server) buildRouter() *chi.Mux {

@@ -4,9 +4,12 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -144,8 +147,12 @@ func TestChangePassword_KeepsTheCallerSignedIn(t *testing.T) {
 	defer cleanup()
 
 	caller := loggedIn(t, h)
-	other := &session{h: h, jar: caller.jar}
-	_ = other
+	// A copy of the caller's own cookie — the one most likely to have been
+	// stolen, since it is the session they are sitting in. An earlier version
+	// of this test built this and then discarded it with `_ = other`, which
+	// looked like coverage and asserted nothing; the assertion below fails
+	// against an implementation that re-uses the caller's session id.
+	thief := &session{h: h, jar: caller.jar}
 
 	elsewhere := loggedIn(t, h) // a second, independent login
 
@@ -160,4 +167,75 @@ func TestChangePassword_KeepsTheCallerSignedIn(t *testing.T) {
 	res, _ = elsewhere.send(t, http.MethodGet, "/api/v1/me", nil)
 	require.Equal(t, http.StatusUnauthorized, res.StatusCode,
 		"every other session must be evicted")
+
+	res, _ = thief.send(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+		"a stolen copy of the caller's own cookie must die too — evicting "+
+			"everyone except the person who copied your live session is no eviction")
+}
+
+// Session fixation. Moving session state server-side removed an accidental
+// protection: with a stateless cookie the cookie WAS the state, so logging in
+// overwrote it with a payload the attacker never saw. With a row keyed by an
+// id the attacker can plant, reusing that id across authentication hands them
+// the authenticated session.
+//
+// Verified as a working attack before the fix — the planted cookie returned
+// the victim's identity from /me.
+func TestSessionFixation_IdRotatesOnPrivilegeChange(t *testing.T) {
+	assertRotates := func(t *testing.T, h *harness, authenticate func(s *session)) {
+		t.Helper()
+		attacker := &session{h: h}
+
+		// Any valid id will do; the attacker gets one by logging in as
+		// themselves. The signature proves the server issued it, not who owns it.
+		res, _ := attacker.send(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "user@test.local", "password": "password"})
+		require.Equal(t, http.StatusOK, res.StatusCode, "attacker obtains an id")
+		planted := attacker.jar
+		require.NotEmpty(t, planted)
+
+		// The victim's browser is made to carry it, then the victim authenticates.
+		victim := &session{h: h, jar: planted}
+		authenticate(victim)
+
+		// The attacker still holds the ORIGINAL cookie.
+		stale := &session{h: h, jar: planted}
+		res, body := stale.send(t, http.MethodGet, "/api/v1/me", nil)
+		require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+			"the planted id must not survive authentication; body %s", body)
+	}
+
+	t.Run("local login", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		assertRotates(t, h, func(s *session) {
+			res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+				map[string]any{"email": "staff@test.local", "password": "password"})
+			require.Equal(t, http.StatusOK, res.StatusCode)
+		})
+	})
+
+	t.Run("MFA verification", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		ctx := context.Background()
+		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+		require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(`["staff","admin"]`)))
+		enrollMFA(t, ctx, h.userSvc, h.staffID)
+
+		u, err := h.userSvc.GetByID(ctx, h.staffID)
+		require.NoError(t, err)
+
+		assertRotates(t, h, func(s *session) {
+			res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+				map[string]any{"email": "staff@test.local", "password": "password"})
+			require.Equal(t, http.StatusOK, res.StatusCode)
+			code, err := totp.GenerateCode(u.MFASecret, time.Now())
+			require.NoError(t, err)
+			res, _ = s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
+				map[string]any{"code": code})
+			require.Equal(t, http.StatusNoContent, res.StatusCode)
+		})
+	})
 }

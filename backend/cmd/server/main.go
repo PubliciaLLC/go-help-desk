@@ -258,6 +258,33 @@ func run() error {
 	mux.Handle("/health", srv)
 	mux.Handle("/", server.NewSPAHandler(ui.FS()))
 
+	// Expired rows stop authenticating the moment they expire — GetSession
+	// filters on expires_at — so this is housekeeping, not a security control.
+	// Without it the table grows by one row per login forever, and the OIDC
+	// login redirect writes a row per cookieless hit before anyone has
+	// authenticated at all.
+	sweepCtx, stopSweep := context.WithCancel(ctx)
+	defer stopSweep()
+	go func() {
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				n, err := sessionStore.DeleteExpired(sweepCtx)
+				if err != nil {
+					slog.WarnContext(sweepCtx, "sweeping expired sessions failed", "error", err)
+					continue
+				}
+				if n > 0 {
+					slog.InfoContext(sweepCtx, "swept expired sessions", "count", n)
+				}
+			}
+		}
+	}()
+
 	httpSrv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),
 		// Wraps everything, including the SPA: the orphaned pre-rename cookie
