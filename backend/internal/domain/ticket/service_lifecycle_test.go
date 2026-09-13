@@ -639,9 +639,12 @@ func TestResolve_UsesTheSameTimestampRuleAsUpdateStatus(t *testing.T) {
 	// seedClosed carries a ResolvedAt from before the close, which is what
 	// makes this meaningful: the preserve branch has to be rejected on the
 	// strength of the OLD STATUS, not because the field happened to be nil.
-	// An earlier version of this subtest drove UpdateStatus and started from a
-	// ticket with no ResolvedAt, so it passed even when the Resolve call site
-	// was given the wrong old status.
+	//
+	// An earlier version of this subtest drove UpdateStatus despite its name,
+	// so the Resolve call site was never exercised and passing it the wrong
+	// old status left the suite green. Its fixture was fine — the ticket did
+	// carry a stale ResolvedAt, because Close sets ClosedAt without clearing
+	// it. Only the door was wrong.
 	t.Run("Resolve on a closed ticket gets a fresh timestamp", func(t *testing.T) {
 		h := newHarness(t)
 		seeded := h.seedClosed()
