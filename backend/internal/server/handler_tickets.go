@@ -388,6 +388,16 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Covers both branches below: clear_assignee is a separate path from
+	// assignee_user_id, and guarding only one would leave a reporter able to
+	// unassign the staff member working their ticket.
+	if body.ClearAssignee || body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+		if err := ticket.CanAssign(actor.Role); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	if body.ClearAssignee {
 		// Explicitly to nobody. Previously unreachable: the UI sent both
 		// fields as undefined, which serialised to {} and skipped this branch

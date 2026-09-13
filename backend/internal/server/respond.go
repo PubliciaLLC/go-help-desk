@@ -11,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // JSON writes v as JSON with the given status code.
@@ -54,6 +55,14 @@ func DecodeJSON(r *http.Request, dst any) error {
 func handleError(w http.ResponseWriter, err error) {
 	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	// A refused permission is an ordinary, correct outcome. Falling through to
+	// 500 told the caller "an internal error occurred" for a boundary working
+	// exactly as designed, and buried a real authorisation event in the error
+	// log where it reads as a server bug.
+	if errors.Is(err, ticket.ErrForbidden) {
+		Error(w, http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 		return
 	}
 	slog.Error("internal error", "error", err)
