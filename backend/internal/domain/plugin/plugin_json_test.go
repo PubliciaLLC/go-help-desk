@@ -2,6 +2,8 @@ package plugin_test
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -34,10 +36,12 @@ func TestPlugin_JSONContract(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(b, &got))
 
-	require.Contains(t, got, "manifest")
-	require.Contains(t, got, "enabled")
-	require.Contains(t, got, "installed_at")
-	require.NotContains(t, got, "Manifest", "PascalCase means the client reads undefined")
+	// The exact set, not just "contains": a field added later without a tag
+	// would otherwise ship PascalCase with every test still passing.
+	require.ElementsMatch(t,
+		[]string{"manifest", "enabled", "installed_at"},
+		slices.Collect(maps.Keys(got)),
+		"unexpected key on the wire — a new field needs a json tag, or json:\"-\" if it is server-side only")
 
 	// A server filesystem path is not the browser's business. It also tells a
 	// reader where the install directory is, which is free reconnaissance.
@@ -46,7 +50,7 @@ func TestPlugin_JSONContract(t *testing.T) {
 	require.NotContains(t, string(b), "/var/lib/ghd")
 
 	manifest := got["manifest"].(map[string]any)
-	for _, k := range []string{"id", "name", "version", "description", "author", "hooks", "runtime"} {
-		require.Contains(t, manifest, k)
-	}
+	require.ElementsMatch(t,
+		[]string{"id", "name", "version", "description", "author", "hooks", "runtime"},
+		slices.Collect(maps.Keys(manifest)))
 }

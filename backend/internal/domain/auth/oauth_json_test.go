@@ -2,6 +2,8 @@ package auth_test
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -41,9 +43,11 @@ func TestOAuthClient_JSONContract(t *testing.T) {
 	require.NotContains(t, got, "hashed_secret")
 	require.NotContains(t, got, "HashedSecret")
 
-	for _, k := range []string{"id", "client_id", "name", "scopes", "created_at"} {
-		require.Contains(t, got, k)
-	}
+	// The exact set, not just "contains": a future secret-bearing field added
+	// without a tag would otherwise ship PascalCase with every test passing.
 	// handleCreateOAuthClient hand-builds client_id/name; list must agree.
-	require.NotContains(t, got, "ClientID", "PascalCase means the client reads undefined")
+	require.ElementsMatch(t,
+		[]string{"id", "client_id", "name", "scopes", "created_at"},
+		slices.Collect(maps.Keys(got)),
+		"unexpected key on the wire — a new field needs a json tag, or json:\"-\" if it is a secret")
 }
