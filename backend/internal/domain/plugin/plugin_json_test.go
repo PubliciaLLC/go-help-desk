@@ -46,7 +46,7 @@ func TestPlugin_JSONContract(t *testing.T) {
 	require.NotContains(t, string(b), "/var/lib/ghd")
 
 	manifest := got["manifest"].(map[string]any)
-	for _, k := range []string{"id", "name", "version", "description", "author"} {
+	for _, k := range []string{"id", "name", "version", "description", "author", "hooks", "runtime"} {
 		require.Contains(t, manifest, k)
 	}
 }
