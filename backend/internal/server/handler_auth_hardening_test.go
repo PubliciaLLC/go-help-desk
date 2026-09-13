@@ -13,47 +13,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 )
 
-// Clearing MFA without rotating the password is a compromise chain, not a
-// recovery: an attacker holding the password burns the victim's TOTP budget,
-// the victim reports a lockout, an administrator clears MFA in good faith, and
-// the attacker logs in and enrols their own authenticator first.
-func TestAdminResetMFA_RequiresANewPassword(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-	ctx := context.Background()
-	enrollMFA(t, ctx, h.userSvc, h.staffID)
-
-	t.Run("refused without one", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
-			map[string]any{"reset_mfa": true})
-		res.Body.Close()
-		require.Equal(t, http.StatusBadRequest, res.StatusCode)
-
-		u, err := h.userSvc.GetByID(ctx, h.staffID)
-		require.NoError(t, err)
-		require.True(t, u.MFAEnabled, "MFA must be left alone when the request is refused")
-	})
-
-	t.Run("accepted with one, and the old password stops working", func(t *testing.T) {
-		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
-			map[string]any{"reset_mfa": true, "new_password": "a-fresh-password-set-by-the-admin"})
-		res.Body.Close()
-		// 200 with the updated user, not 204 — this handler returns a body.
-		require.Equal(t, http.StatusOK, res.StatusCode)
-
-		u, err := h.userSvc.GetByID(ctx, h.staffID)
-		require.NoError(t, err)
-		require.False(t, u.MFAEnabled, "MFA was reset")
-
-		// The whole point: whatever the attacker knew is now useless.
-		_, err = h.userSvc.VerifyPassword(ctx, "staff@test.local", "password")
-		require.Error(t, err, "the old password must not survive an MFA reset")
-
-		_, err = h.userSvc.VerifyPassword(ctx, "staff@test.local", "a-fresh-password-set-by-the-admin")
-		require.NoError(t, err)
-	})
-}
-
 // A session that has passed the password but not the second factor should
 // reach nothing but the challenge it still owes.
 func TestHalfAuthenticatedSession_CannotReadReferenceData(t *testing.T) {

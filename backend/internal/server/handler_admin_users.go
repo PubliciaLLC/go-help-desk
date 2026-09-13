@@ -138,8 +138,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Role        *string `json:"role"`
 		Disabled    *bool   `json:"disabled"`
 		ResetMFA    bool    `json:"reset_mfa"`
-		// NewPassword is required alongside ResetMFA; see the comment there.
-		NewPassword string `json:"new_password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -163,28 +161,16 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	// MFA reset (works regardless of disabled state).
 	//
-	// It must rotate the password at the same time, because clearing MFA alone
-	// is a compromise chain rather than a recovery: an attacker who already
-	// holds the password burns the victim's TOTP budget, the victim reports
-	// being locked out, an administrator clears MFA in good faith, and the
-	// attacker — still holding a working password — logs in and enrols their
-	// own authenticator before the victim does. The reset hands the account
-	// over.
-	//
-	// Requiring a new password in the same request breaks that: whatever the
-	// attacker knows stops working at the moment MFA is cleared. The
-	// administrator has to convey the new password out of band, which they
-	// were going to have to do for the MFA re-enrolment anyway.
+	// This deliberately does NOT force a password rotation. It briefly did, to
+	// defend a chain where someone already holding the password burns the
+	// victim's TOTP budget, waits for an administrator to clear MFA, and
+	// enrols first. That chain is real but needs a targeted attacker who
+	// already has valid credentials and is racing the victim; the ordinary
+	// reason for a reset is a new phone. Making every routine reset also
+	// require conveying a new password out of band was a large, permanent cost
+	// for a rare one, so the requirement was removed. Password reset remains
+	// available separately when an administrator judges it warranted.
 	if body.ResetMFA {
-		if body.NewPassword == "" {
-			Error(w, http.StatusBadRequest, "password_required",
-				"resetting MFA also requires setting a new password: clearing MFA alone hands the account to anyone who already has the old password")
-			return
-		}
-		if err := s.users.AdminSetPassword(r.Context(), id, body.NewPassword); err != nil {
-			handleError(w, err)
-			return
-		}
 		if err := s.users.ResetMFA(r.Context(), id); err != nil {
 			handleError(w, err)
 			return
