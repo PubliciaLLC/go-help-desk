@@ -111,6 +111,15 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Disabling a user is the first thing an operator does when an
+			// account is believed compromised, and it revokes their sessions.
+			// An API key is a separate credential that no revocation path
+			// touched, so without this the disable cut the browser off and
+			// left the scriptable, longer-lived credential working.
+			if !u.IsActive() {
+				next.ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, setActor(r, &Actor{
 				UserID:    u.ID,
 				Role:      u.Role,
