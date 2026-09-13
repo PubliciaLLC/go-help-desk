@@ -209,30 +209,6 @@ func TestBuildListFilter_RejectsBadFilters(t *testing.T) {
 	}
 }
 
-func TestVisibleReplies_HidesInternalNotesFromReportingUsers(t *testing.T) {
-	replies := []ticket.Reply{
-		{Body: "public one", Internal: false},
-		{Body: "staff only", Internal: true},
-		{Body: "public two", Internal: false},
-	}
-
-	staff := &authmw.Actor{UserID: uuid.New(), Role: user.RoleStaff}
-	require.Len(t, visibleReplies(replies, staff), 3, "staff see the whole thread")
-
-	admin := &authmw.Actor{UserID: uuid.New(), Role: user.RoleAdmin}
-	require.Len(t, visibleReplies(replies, admin), 3, "admins see the whole thread")
-
-	reporter := &authmw.Actor{UserID: uuid.New(), Role: user.RoleUser}
-	got := visibleReplies(replies, reporter)
-	require.Len(t, got, 2)
-	for _, r := range got {
-		require.False(t, r.Internal, "an internal note must never reach a reporting user")
-	}
-
-	// A nil caller is not staff, so it must get the filtered thread too.
-	require.Len(t, visibleReplies(replies, nil), 2)
-}
-
 func TestRequireStaff(t *testing.T) {
 	require.True(t, requireStaff(&authmw.Actor{Role: user.RoleAdmin}))
 	require.True(t, requireStaff(&authmw.Actor{Role: user.RoleStaff}))

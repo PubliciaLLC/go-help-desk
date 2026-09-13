@@ -298,7 +298,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		if err != nil {
 			return errResult(err.Error())
 		}
-		out.Replies = visibleReplies(replies, caller)
+		out.Replies = ticket.VisibleReplies(replies, caller.Role)
 
 		// Links are ticket-to-ticket relationships (duplicate-of, blocks, …).
 		// They carry no content of their own, so there is nothing to filter:
@@ -311,22 +311,6 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		out.Links = links
 	}
 	return jsonResult(out)
-}
-
-// visibleReplies drops internal notes for a non-staff caller. Internal notes
-// are staff-to-staff; a reporting user reading their own ticket must not see
-// them. Pure so the rule can be tested without a ticket service.
-func visibleReplies(replies []ticket.Reply, caller *authmw.Actor) []ticket.Reply {
-	if requireStaff(caller) {
-		return replies
-	}
-	out := make([]ticket.Reply, 0, len(replies))
-	for _, r := range replies {
-		if !r.Internal {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {

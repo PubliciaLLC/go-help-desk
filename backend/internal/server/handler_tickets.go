@@ -352,31 +352,6 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, t)
 }
 
-// requireTicketVisible answers whether the caller may act on this ticket,
-// writing the refusal itself and reporting false when it has.
-//
-// It exists because visibility was enforced on the read handlers and silently
-// omitted on the write handlers. Any handler that touches a ticket by id must
-// call it; a write that is not permitted to read its own target is never
-// correct.
-func (s *Server) requireTicketVisible(w http.ResponseWriter, r *http.Request, id uuid.UUID) bool {
-	t, err := s.tickets.GetByID(r.Context(), id)
-	if err != nil {
-		handleError(w, err)
-		return false
-	}
-	ok, err := s.canViewTicket(r, t)
-	if err != nil {
-		handleError(w, err)
-		return false
-	}
-	if !ok {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
-		return false
-	}
-	return true
-}
-
 // PATCH /api/v1/tickets/{id}
 func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
@@ -402,13 +377,6 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
-		return
-	}
-
-	// Gate BEFORE any mutation. The read handler checked visibility and the
-	// write handlers did not, so a reporting user could reassign or
-	// recategorise a ticket it was not even allowed to fetch.
-	if !s.requireTicketVisible(w, r, id) {
 		return
 	}
 
@@ -479,14 +447,6 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	// Internal replies are staff/admin only.
 	if body.Internal && a.Role == user.RoleUser {
 		Error(w, http.StatusForbidden, "forbidden", "only staff can post internal notes")
-		return
-	}
-
-	// Same gate as the read path. Without it a reporting user could post into
-	// any ticket by UUID — including one it could not read — and the reply is
-	// mailed to the real reporter, so it was a write into someone else's
-	// correspondence.
-	if !s.requireTicketVisible(w, r, id) {
 		return
 	}
 
@@ -569,7 +529,10 @@ func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, replies)
+	// Access to the ticket is not access to the internal notes on it: the
+	// reporter may read their own thread and must still not see staff-only
+	// notes. This returned the raw rows.
+	JSON(w, http.StatusOK, ticket.VisibleReplies(replies, authmw.GetActor(r).Role))
 }
 
 // POST /api/v1/tickets/{id}/resolve
@@ -672,6 +635,21 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// The path gate authorised {id}; this request names a second ticket. Both
+	// ends need the check, because the link is written onto the TARGET's
+	// thread too: a reporting user could otherwise mark a ticket it cannot
+	// read as a duplicate of its own, and tell existing from nonexistent
+	// target ids by the difference between 204 and a foreign-key failure.
+	ok, err := s.canViewTicketID(r, body.TargetID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !ok {
+		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return
+	}
+
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	if err := s.tickets.AddLink(r.Context(), sourceID, body.TargetID, ticket.LinkType(body.LinkType), actor); err != nil {
 		handleError(w, err)
