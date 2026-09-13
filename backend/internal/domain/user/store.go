@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -16,6 +17,12 @@ var ErrNotFound = errors.New("not found")
 // Store is the persistence interface for users.
 // Implementations live in internal/database/userstore.
 type Store interface {
+	// MFA attempt tracking. Durable rather than in memory, because a counter
+	// that a restart clears is not a limit on a six-digit secret.
+	RecordMFAFailure(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (attempts int, lockedUntil *time.Time, err error)
+	ClearMFAFailures(ctx context.Context, id uuid.UUID) error
+	GetMFALock(ctx context.Context, id uuid.UUID) (attempts int, lockedUntil *time.Time, err error)
+
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)

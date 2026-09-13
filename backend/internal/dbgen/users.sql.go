@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	uuid "github.com/google/uuid"
@@ -32,6 +33,19 @@ UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE 
 
 func (q *Queries) ClearMFA(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, clearMFA, id)
+	return err
+}
+
+const clearMFAFailures = `-- name: ClearMFAFailures :exec
+UPDATE users
+SET mfa_failed_attempts = 0, mfa_locked_until = NULL, updated_at = now()
+WHERE id = $1
+`
+
+// Called after a correct code. NIST SP 800-63B has the verifier disregard
+// prior failed attempts once the user authenticates successfully.
+func (q *Queries) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, clearMFAFailures, id)
 	return err
 }
 
@@ -112,8 +126,24 @@ func (q *Queries) EnableUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const getMFALock = `-- name: GetMFALock :one
+SELECT mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1
+`
+
+type GetMFALockRow struct {
+	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
+	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
+}
+
+func (q *Queries) GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error) {
+	row := q.db.QueryRowContext(ctx, getMFALock, id)
+	var i GetMFALockRow
+	err := row.Scan(&i.MfaFailedAttempts, &i.MfaLockedUntil)
+	return i, err
+}
+
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE email = $1 AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE email = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -133,12 +163,14 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.DeletedAt,
 		&i.Disabled,
 		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE id = $1 AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -158,12 +190,14 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.DeletedAt,
 		&i.Disabled,
 		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
 	)
 	return i, err
 }
 
 const getUserByIDAdmin = `-- name: GetUserByIDAdmin :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE id = $1
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) {
@@ -183,13 +217,15 @@ func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, err
 		&i.DeletedAt,
 		&i.Disabled,
 		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
 	)
 	return i, err
 }
 
 const getUserByOIDCSubject = `-- name: GetUserByOIDCSubject :one
 
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error) {
@@ -209,12 +245,14 @@ func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) 
 		&i.DeletedAt,
 		&i.Disabled,
 		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
 	)
 	return i, err
 }
 
 const getUserBySAMLSubject = `-- name: GetUserBySAMLSubject :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error) {
@@ -234,12 +272,14 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 		&i.DeletedAt,
 		&i.Disabled,
 		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
 	)
 	return i, err
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersParams struct {
@@ -270,6 +310,8 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.DeletedAt,
 			&i.Disabled,
 			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -285,7 +327,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 }
 
 const listUsersAdmin = `-- name: ListUsersAdmin :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersAdminParams struct {
@@ -316,6 +358,8 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 			&i.DeletedAt,
 			&i.Disabled,
 			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
 		); err != nil {
 			return nil, err
 		}
@@ -328,6 +372,43 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordMFAFailure = `-- name: RecordMFAFailure :one
+UPDATE users
+SET mfa_failed_attempts = mfa_failed_attempts + 1,
+    mfa_locked_until = CASE
+        WHEN mfa_failed_attempts + 1 >= $2::int
+        THEN now() + make_interval(secs => $3::int)
+        ELSE mfa_locked_until
+    END,
+    updated_at = now()
+WHERE id = $1
+RETURNING mfa_failed_attempts, mfa_locked_until
+`
+
+type RecordMFAFailureParams struct {
+	ID          uuid.UUID `json:"id"`
+	MaxAttempts int32     `json:"max_attempts"`
+	LockSeconds int32     `json:"lock_seconds"`
+}
+
+type RecordMFAFailureRow struct {
+	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
+	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
+}
+
+// Counts a failed TOTP attempt and locks the account once the threshold is
+// reached. Returns the resulting lock time so the caller can refuse
+// immediately without a second round trip.
+//
+// The count and the lock are set in one statement so concurrent attempts
+// cannot both read "4 failures" and both decide they are allowed.
+func (q *Queries) RecordMFAFailure(ctx context.Context, arg RecordMFAFailureParams) (RecordMFAFailureRow, error) {
+	row := q.db.QueryRowContext(ctx, recordMFAFailure, arg.ID, arg.MaxAttempts, arg.LockSeconds)
+	var i RecordMFAFailureRow
+	err := row.Scan(&i.MfaFailedAttempts, &i.MfaLockedUntil)
+	return i, err
 }
 
 const restoreUser = `-- name: RestoreUser :exec

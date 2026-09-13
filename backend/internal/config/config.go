@@ -12,10 +12,17 @@ type Config struct {
 	BaseURL  string `envconfig:"BASE_URL" required:"true"`
 
 	// Auth
-	// AuthRateLimitPerMinute caps credential attempts per client address per
-	// minute across login, MFA verification and signup. 0 disables it, which
-	// the test harness uses — a suite logging in hundreds of times a second is
-	// not an attack.
+	// AuthRateLimitPerMinute caps FAILED password attempts per account per
+	// minute, and signup attempts per source address per minute. 0 disables
+	// both, which the test harness uses — a suite logging in hundreds of times
+	// a second is not an attack.
+	//
+	// Not TOTP: those are counted durably on the user row, because a counter a
+	// restart clears is not a limit on a six-digit secret. See
+	// user.MFAMaxFailedAttempts.
+	//
+	// Only failures count and a correct password is always honoured, so this
+	// cannot be used to lock someone out of their own account.
 	AuthRateLimitPerMinute int `envconfig:"AUTH_RATE_LIMIT_PER_MINUTE" default:"10"`
 
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`

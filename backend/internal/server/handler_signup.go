@@ -3,6 +3,9 @@ package server
 import (
 	"errors"
 	"net/http"
+	"time"
+
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
@@ -24,6 +27,16 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if !s.adminSvc.SelfSignupEnabled(ctx) {
 		Error(w, http.StatusForbidden, "signup_disabled", "self-service signup is not enabled")
+		return
+	}
+
+	// The only endpoint with no account to key on: the account is what is
+	// being created. The transport address is the remaining option, and its
+	// weaknesses are acceptable here — signup abuse is spam, not credential
+	// guessing, and a shared bucket behind a proxy throttles registrations
+	// rather than locking anyone out of their own account.
+	if !s.loginLimiter.Allow("signup:" + authmw.ClientAddr(r)) {
+		tooManyAttempts(w, time.Minute)
 		return
 	}
 

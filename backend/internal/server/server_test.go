@@ -307,6 +307,26 @@ func (h *harness) doAsUser(t *testing.T, method, path string, body any) *http.Re
 
 // doAs sends a request using a session-style actor injected via a custom header
 // (we inject the actor directly by using a special test helper request).
+// doUnauthWithHeaders is doUnauth with extra request headers, for asserting
+// that forwarding headers buy a caller nothing.
+func (h *harness) doUnauthWithHeaders(t *testing.T, method, path string, body any, headers map[string]string) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
 func (h *harness) doUnauth(t *testing.T, method, path string, body any) *http.Response {
 	t.Helper()
 	var buf bytes.Buffer

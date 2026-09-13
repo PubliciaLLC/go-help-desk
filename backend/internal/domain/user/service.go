@@ -19,6 +19,9 @@ type Service struct {
 	// hashCost is the bcrypt cost for password hashing. Always
 	// bcrypt.DefaultCost in production; see WithBcryptCost.
 	hashCost int
+
+	// dummyHash makes a miss cost the same as a hit; see compareAgainstDummyHash.
+	dummyHash []byte
 }
 
 // NewService returns a Service backed by the given Store.
@@ -27,7 +30,27 @@ func NewService(store Store, opts ...Option) *Service {
 	for _, opt := range opts {
 		opt(s)
 	}
+	// Computed once, at the configured cost, so a failed lookup can spend the
+	// same time a real comparison would. Generated rather than hard-coded
+	// because the cost is configurable and a constant from another cost would
+	// time differently, which is the whole thing being avoided.
+	if h, err := bcrypt.GenerateFromPassword([]byte("dummy password for constant-time misses"), s.hashCost); err == nil {
+		s.dummyHash = h
+	}
 	return s
+}
+
+// compareAgainstDummyHash burns the same work a real password check would.
+//
+// Without it, VerifyPassword returns in microseconds for an address with no
+// account and takes the full bcrypt cost for one that has an account — a
+// reliable enumeration oracle no matter how carefully the response body and
+// status code are kept identical.
+func (s *Service) compareAgainstDummyHash(plain string) {
+	if len(s.dummyHash) == 0 {
+		return
+	}
+	_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(plain))
 }
 
 // Option configures a Service at construction.
@@ -117,9 +140,15 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User, error) {
 	u, err := s.store.GetByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
 	if err != nil {
+		// Spend the same work on a miss as on a hit. Returning here without
+		// hashing made a nonexistent address answer in microseconds while a
+		// real one took the full bcrypt cost, which is a reliable account
+		// enumeration oracle regardless of what the response body says.
+		s.compareAgainstDummyHash(plain)
 		return User{}, fmt.Errorf("looking up user: %w", err)
 	}
 	if !u.IsActive() {
+		s.compareAgainstDummyHash(plain)
 		return User{}, fmt.Errorf("user account is disabled")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(plain)); err != nil {
@@ -514,4 +543,57 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 		return fmt.Errorf("hashing password: %w", err)
 	}
 	return s.store.AdminSetPassword(ctx, id, string(hash))
+}
+
+// MFA attempt policy.
+//
+// Deliberately not configurable: an operator raising the ceiling would be
+// weakening a control without knowing it, and no legitimate workflow needs
+// more than a handful of code entries. NIST SP 800-63B caps consecutive failed
+// attempts per account; RFC 4226 section 7.3 requires throttling for exactly
+// this reason, since a six-digit code is guessable at roughly 3e-6 per attempt
+// and pquerna/otp accepts a +/-1 window, so three codes are live at once.
+const (
+	MFAMaxFailedAttempts = 5
+	MFALockDuration      = 15 * time.Minute
+)
+
+// ErrMFALocked reports that an account has spent its TOTP attempts.
+var ErrMFALocked = errors.New("too many incorrect codes; try again later")
+
+// CheckMFALock reports whether the account is currently locked out of TOTP
+// verification.
+func (s *Service) CheckMFALock(ctx context.Context, id uuid.UUID) error {
+	_, lockedUntil, err := s.store.GetMFALock(ctx, id)
+	if err != nil {
+		return err
+	}
+	if lockedUntil != nil && time.Now().Before(*lockedUntil) {
+		return ErrMFALocked
+	}
+	return nil
+}
+
+// RecordMFAFailure counts a wrong code and reports ErrMFALocked once the
+// account has spent its attempts.
+//
+// The lock is time-based rather than administrator-cleared on purpose. An
+// administrator clearing it would have to clear MFA to do so, and clearing MFA
+// is what hands the account to whoever already holds the password — see the
+// reset path in handler_admin_users.go.
+func (s *Service) RecordMFAFailure(ctx context.Context, id uuid.UUID) error {
+	_, lockedUntil, err := s.store.RecordMFAFailure(ctx, id, MFAMaxFailedAttempts, MFALockDuration)
+	if err != nil {
+		return err
+	}
+	if lockedUntil != nil && time.Now().Before(*lockedUntil) {
+		return ErrMFALocked
+	}
+	return nil
+}
+
+// ClearMFAFailures forgets prior failures after a correct code, per NIST SP
+// 800-63B.
+func (s *Service) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
+	return s.store.ClearMFAFailures(ctx, id)
 }

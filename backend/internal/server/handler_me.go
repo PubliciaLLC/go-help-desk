@@ -87,8 +87,25 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Same durable budget as verification: this also takes a six-digit code.
+	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+		if errors.Is(err, user.ErrMFALocked) {
+			tooManyAttempts(w, user.MFALockDuration)
+			return
+		}
+		handleError(w, err)
+		return
+	}
 	if err := s.users.ConfirmMFAEnrollment(r.Context(), a.UserID, body.Code); err != nil {
+		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
+			handleError(w, lockErr)
+			return
+		}
 		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+		return
+	}
+	if err := s.users.ClearMFAFailures(r.Context(), a.UserID); err != nil {
+		handleError(w, err)
 		return
 	}
 	// Successful enrollment satisfies this login's MFA challenge — flip the

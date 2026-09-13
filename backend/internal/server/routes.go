@@ -9,14 +9,12 @@ import (
 func (s *Server) authRouter() *chi.Mux {
 	r := chi.NewRouter()
 
-	// Credential endpoints only. Logout, provider discovery and the SSO
-	// callbacks are not guessable secrets, and throttling a callback would
-	// break a legitimate login burst after an IdP redirect.
-	throttle := s.authLimiter.Middleware
-
-	r.With(throttle).Post("/local/login", s.handleLocalLogin)
+	// Throttling lives in the handlers rather than here: the key differs per
+	// endpoint (account for login and MFA, address for signup) and two of the
+	// three are only known after the body is parsed.
+	r.Post("/local/login", s.handleLocalLogin)
 	r.Post("/local/logout", s.handleLogout)
-	r.With(throttle).Post("/local/mfa/verify", s.handleMFAVerify)
+	r.Post("/local/mfa/verify", s.handleMFAVerify)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 	r.Get("/providers", s.handleAuthProviders)
@@ -33,7 +31,7 @@ func (s *Server) authRouter() *chi.Mux {
 
 	// Self-service signup (enabled/disabled via admin settings).
 	r.Get("/signup/status", s.handleSignupStatus)
-	r.With(throttle).Post("/signup", s.handleSignup)
+	r.Post("/signup", s.handleSignup)
 	r.Post("/verify-email", s.handleVerifyEmail)
 
 	return r
@@ -266,7 +264,7 @@ func (s *Server) meRouter() *chi.Mux {
 	// MFA enrollment endpoints must remain reachable without a passed MFA
 	// challenge — otherwise a user forced to enroll cannot complete enrollment.
 	r.Get("/mfa/enroll", s.handleMFAEnrollStart)
-	r.With(s.authLimiter.Middleware).Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+	r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
 
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.RequireMFA)

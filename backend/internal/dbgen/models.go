@@ -249,19 +249,21 @@ type Type struct {
 }
 
 type User struct {
-	ID           uuid.UUID    `json:"id"`
-	Email        string       `json:"email"`
-	DisplayName  string       `json:"display_name"`
-	Role         string       `json:"role"`
-	PasswordHash string       `json:"password_hash"`
-	MfaSecret    string       `json:"mfa_secret"`
-	MfaEnabled   bool         `json:"mfa_enabled"`
-	SamlSubject  string       `json:"saml_subject"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	DeletedAt    sql.NullTime `json:"deleted_at"`
-	Disabled     bool         `json:"disabled"`
-	OidcSubject  string       `json:"oidc_subject"`
+	ID                uuid.UUID    `json:"id"`
+	Email             string       `json:"email"`
+	DisplayName       string       `json:"display_name"`
+	Role              string       `json:"role"`
+	PasswordHash      string       `json:"password_hash"`
+	MfaSecret         string       `json:"mfa_secret"`
+	MfaEnabled        bool         `json:"mfa_enabled"`
+	SamlSubject       string       `json:"saml_subject"`
+	CreatedAt         time.Time    `json:"created_at"`
+	UpdatedAt         time.Time    `json:"updated_at"`
+	DeletedAt         sql.NullTime `json:"deleted_at"`
+	Disabled          bool         `json:"disabled"`
+	OidcSubject       string       `json:"oidc_subject"`
+	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
+	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
 }
 
 type WebhookConfig struct {

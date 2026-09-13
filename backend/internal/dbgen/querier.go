@@ -17,6 +17,9 @@ type Querier interface {
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
 	ClearMFA(ctx context.Context, id uuid.UUID) error
+	// Called after a correct code. NIST SP 800-63B has the verifier disregard
+	// prior failed attempts once the user authenticates successfully.
+	ClearMFAFailures(ctx context.Context, id uuid.UUID) error
 	// Rows in ticket_status_history that reference a status, in either direction.
 	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
 	// so a status with zero CURRENT tickets can still be undeletable because a past
@@ -79,6 +82,7 @@ type Querier interface {
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
+	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
@@ -159,6 +163,13 @@ type Querier interface {
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) ([]User, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
+	// Counts a failed TOTP attempt and locks the account once the threshold is
+	// reached. Returns the resulting lock time so the caller can refuse
+	// immediately without a second round trip.
+	//
+	// The count and the lock are set in one statement so concurrent attempts
+	// cannot both read "4 failures" and both decide they are allowed.
+	RecordMFAFailure(ctx context.Context, arg RecordMFAFailureParams) (RecordMFAFailureRow, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
