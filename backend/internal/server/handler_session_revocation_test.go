@@ -106,6 +106,23 @@ func TestSessionRevocation(t *testing.T) {
 			"and it must not be able to enrol a replacement authenticator")
 	})
 
+	// SoftDelete is an UPDATE, so the sessions table's ON DELETE CASCADE never
+	// fires. Shipped without a test on the first pass, against this project's
+	// own "no implementation without a test" rule.
+	t.Run("deleting the user kills the session", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		s := loggedIn(t, h)
+
+		res := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+h.staffID.String(), nil)
+		res.Body.Close()
+		require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+		res, _ = s.send(t, http.MethodGet, "/api/v1/me", nil)
+		require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+			"a deleted user's session must not outlive them")
+	})
+
 	t.Run("an admin password reset kills the session", func(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
