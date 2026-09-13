@@ -11,22 +11,22 @@ import (
 // matches, optionally narrowed to a priority, a category, or both. A policy
 // that narrows neither is the catch-all tier.
 type Policy struct {
-	ID                  uuid.UUID
-	Name                string
-	Priority            *ticket.Priority // nil = applies to all priorities
-	CategoryID          *uuid.UUID       // nil = applies to all categories
-	ResponseTargetMin   int              // minutes until first response required
-	ResolutionTargetMin int              // minutes until resolution required
+	ID                  uuid.UUID        `json:"id"`
+	Name                string           `json:"name"`
+	Priority            *ticket.Priority `json:"priority,omitempty"`    // nil = applies to all priorities
+	CategoryID          *uuid.UUID       `json:"category_id,omitempty"` // nil = applies to all categories
+	ResponseTargetMin   int              `json:"response_target_min"`   // minutes until first response required
+	ResolutionTargetMin int              `json:"resolution_target_min"` // minutes until resolution required
 }
 
 // Record tracks SLA state for a single ticket.
 type Record struct {
-	TicketID             uuid.UUID
-	PolicyID             uuid.UUID
-	FirstResponseAt      *time.Time
-	ResolvedAt           *time.Time
-	ResponseBreachedAt   *time.Time
-	ResolutionBreachedAt *time.Time
+	TicketID             uuid.UUID  `json:"ticket_id"`
+	PolicyID             uuid.UUID  `json:"policy_id"`
+	FirstResponseAt      *time.Time `json:"first_response_at,omitempty"`
+	ResolvedAt           *time.Time `json:"resolved_at,omitempty"`
+	ResponseBreachedAt   *time.Time `json:"response_breached_at,omitempty"`
+	ResolutionBreachedAt *time.Time `json:"resolution_breached_at,omitempty"`
 }
 
 // IsResponseBreached returns true when the response target has elapsed and no
