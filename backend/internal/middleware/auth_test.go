@@ -208,3 +208,75 @@ func TestBearerAuth_Invalid_PassesThrough(t *testing.T) {
 
 	require.Nil(t, captured, "invalid JWT must not set actor")
 }
+
+// ── APIKeyAuth: disabled and deleted users ────────────────────────────────────
+
+// APIKeyAuth checked the key's own expiry and nothing about the owner, so
+// disabling a user revoked their sessions and left their API key — the
+// scriptable, longer-lived credential — working. Soft-delete happened to be
+// covered because the store's lookup filters deleted_at, which is why this
+// looked handled.
+func TestAPIKeyAuth_DisabledUser_AttachesNoActor(t *testing.T) {
+	cases := []struct {
+		name      string
+		u         user.User
+		wantActor bool
+	}{
+		{
+			name:      "active user authenticates",
+			u:         user.User{ID: uuid.New(), Role: user.RoleStaff},
+			wantActor: true,
+		},
+		{
+			name:      "disabled user does not",
+			u:         user.User{ID: uuid.New(), Role: user.RoleStaff, Disabled: true},
+			wantActor: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := APIKeyAuthFunc(func(_ context.Context, _ string) (auth.APIKey, user.User, error) {
+				return auth.APIKey{ID: uuid.New(), Scopes: []string{"tickets:read"}}, tc.u, nil
+			})
+
+			var got *Actor
+			h := APIKeyAuth(lookup)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = GetActor(r)
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req.Header.Set("Authorization", "ApiKey whatever")
+			h.ServeHTTP(httptest.NewRecorder(), req)
+
+			if !tc.wantActor {
+				require.Nil(t, got, "a disabled user's key must not produce an actor")
+				return
+			}
+			require.NotNil(t, got)
+			require.Equal(t, tc.u.ID, got.UserID)
+		})
+	}
+}
+
+// A soft-deleted user reaching the middleware must also be refused. The store
+// filters them out today, so this pins the middleware's own behaviour rather
+// than relying on the query to keep doing that.
+func TestAPIKeyAuth_SoftDeletedUser_AttachesNoActor(t *testing.T) {
+	deleted := time.Now()
+	lookup := APIKeyAuthFunc(func(_ context.Context, _ string) (auth.APIKey, user.User, error) {
+		return auth.APIKey{ID: uuid.New()}, user.User{
+			ID: uuid.New(), Role: user.RoleStaff, DeletedAt: &deleted,
+		}, nil
+	})
+
+	var got *Actor
+	h := APIKeyAuth(lookup)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = GetActor(r)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "ApiKey whatever")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	require.Nil(t, got, "a soft-deleted user's key must not produce an actor")
+}
