@@ -15,8 +15,8 @@ import (
 
 // handleListOAuthClients serves []OAuthClient straight to the client. Untagged,
 // that put HashedSecret on the wire alongside Go field names. APIKey next door
-// has carried `json:"-"` on its hash since it was written; this struct is the
-// one that was missed.
+// got `json:"-"` on its hash in 766376d ("Add JSON tags to all domain structs"),
+// which missed this struct — along with plugin, audit and sla.
 //
 // Asserting exact keys rather than round-tripping: a round trip through the
 // same struct passes whatever the names happen to be.
