@@ -152,4 +152,14 @@ func TestMFALock_ClearedOnSuccess(t *testing.T) {
 
 	require.NoError(t, h.userSvc.CheckMFALock(ctx, h.staffID),
 		"prior failures must be forgotten after a correct code")
+
+	// Not just unlocked — the budget must be FULL again. Asserting only that
+	// the account is unlocked passes even if the counter was never cleared,
+	// which is how the earlier version of this test passed with the clear
+	// removed entirely.
+	for i := 1; i <= 4; i++ {
+		res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": "000001"})
+		require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+			"failure %d should be inside a refreshed budget, not a carried-over one", i)
+	}
 }

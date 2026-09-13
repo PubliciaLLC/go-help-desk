@@ -1,11 +1,14 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/crewjam/saml/samlsp"
 	"github.com/gorilla/sessions"
@@ -26,19 +29,34 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Keyed on the address being attacked, not the network address, so the
-	// limit holds whatever the deployment topology is and cannot be shaken off
-	// by rotating IPs. Normalised the same way the lookup normalises, and
-	// counted whether or not the account exists — otherwise 429-versus-401 is
-	// a user-enumeration oracle.
-	loginKey := "login:" + strings.ToLower(strings.TrimSpace(body.Email))
-	if !s.loginLimiter.Allow(loginKey) {
-		tooManyAttempts(w)
-		return
-	}
+	// The password is checked FIRST, and a correct one is honoured even when
+	// the budget is spent.
+	//
+	// Refusing on the count before verifying — which this did — let any
+	// anonymous caller lock any account out of its own login just by knowing
+	// the email address and sending wrong guesses. Verified: three guesses,
+	// then the real user's correct password answered 429. That is the very
+	// property this change criticised in the address-keyed version, on a key
+	// that is far easier to learn than an IP.
+	//
+	// Ordering it this way costs nothing real. bcrypt is what actually limits
+	// password guessing — every attempt burns tens of milliseconds of server
+	// CPU whatever the counter says — so the counter's job is to stop sustained
+	// wrong guessing, not to be the primary cost. It cannot be used to deny
+	// anyone their own account, because the correct password always works.
+	//
+	// (TOTP is the opposite case: verification is a cheap HMAC, so there the
+	// count has to gate before the check. It does — see CheckMFALock below.)
+	loginKey := "login:" + loginRateKey(body.Email)
 
 	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
 	if err != nil {
+		// Only failures are counted, and the refusal happens here rather than
+		// before the check, so a legitimate user is never held out.
+		if !s.loginLimiter.Allow(loginKey) {
+			tooManyAttempts(w, time.Minute)
+			return
+		}
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
 		return
 	}
@@ -109,7 +127,7 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	// service.
 	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
-			tooManyAttempts(w)
+			tooManyAttempts(w, user.MFALockDuration)
 			return
 		}
 		handleError(w, err)
@@ -343,4 +361,19 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// loginRateKey derives a fixed-size rate-limit key from a submitted email.
+//
+// The key is attacker-supplied and every distinct value is retained for the
+// length of the window, so using the address itself made live memory a
+// function of inbound bandwidth rather than of account count: 1 MiB emails
+// cost 1 MiB of heap each for a minute. Hashing bounds it to 32 bytes per
+// distinct value regardless of what is sent.
+//
+// Normalised exactly as the account lookup normalises, so the same account is
+// always the same bucket and no casing or padding variant buys a fresh budget.
+func loginRateKey(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return hex.EncodeToString(sum[:])
 }

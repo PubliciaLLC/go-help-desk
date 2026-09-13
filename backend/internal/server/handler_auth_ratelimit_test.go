@@ -1,9 +1,11 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/stretchr/testify/require"
 )
 
@@ -89,3 +91,63 @@ func TestLoginThrottle_SuccessClearsTheBudget(t *testing.T) {
 // TestMFALock_IsDurable in handler_auth_hardening_test.go. Keeping an
 // in-memory version here too would have meant two limits on one secret, the
 // weaker of which resets on restart.
+
+// The first version of this throttle refused on the count BEFORE checking the
+// password, which let any anonymous caller lock any account out of its own
+// login just by knowing the email address. Verified before the fix: three
+// wrong guesses, then the real user's correct password answered 429.
+func TestLoginThrottle_CannotLockAUserOutOfTheirOwnAccount(t *testing.T) {
+	h, cleanup := newHarnessWithRateLimit(t, 3)
+	defer cleanup()
+
+	for i := 0; i < 6; i++ {
+		res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "staff@test.local", "password": "attacker guess"})
+		res.Body.Close()
+	}
+
+	// Different casing and padding, to confirm it normalises to the same
+	// bucket and is still admitted.
+	res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "  STAFF@test.local ", "password": "password"})
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode,
+		"a correct password must be honoured however much an attacker has spent")
+}
+
+// Wrong guesses are still capped once the budget is gone.
+func TestLoginThrottle_RefusesSustainedWrongGuesses(t *testing.T) {
+	h, cleanup := newHarnessWithRateLimit(t, 3)
+	defer cleanup()
+
+	bad := func() int {
+		res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "staff@test.local", "password": "wrong"})
+		res.Body.Close()
+		return res.StatusCode
+	}
+	for i := 1; i <= 3; i++ {
+		require.Equal(t, http.StatusUnauthorized, bad(), "attempt %d", i)
+	}
+	require.Equal(t, http.StatusTooManyRequests, bad())
+}
+
+// Signup is the one endpoint with no account to key on, so it keys on the
+// transport address. It had no test at all.
+func TestSignupThrottle_IsApplied(t *testing.T) {
+	h, cleanup := newHarnessWithRateLimit(t, 2)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeySelfSignupEnabled, true))
+
+	signup := func(email string) int {
+		res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/signup",
+			map[string]any{"email": email, "display_name": "X", "password": "a-long-enough-password"})
+		res.Body.Close()
+		return res.StatusCode
+	}
+	signup("a@test.local")
+	signup("b@test.local")
+	require.Equal(t, http.StatusTooManyRequests, signup("c@test.local"),
+		"signup must be throttled per source address")
+}

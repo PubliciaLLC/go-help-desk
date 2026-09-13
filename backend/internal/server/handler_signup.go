@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 
@@ -35,7 +36,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// guessing, and a shared bucket behind a proxy throttles registrations
 	// rather than locking anyone out of their own account.
 	if !s.loginLimiter.Allow("signup:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w)
+		tooManyAttempts(w, time.Minute)
 		return
 	}
 

@@ -90,7 +90,7 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	// Same durable budget as verification: this also takes a six-digit code.
 	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
-			tooManyAttempts(w)
+			tooManyAttempts(w, user.MFALockDuration)
 			return
 		}
 		handleError(w, err)
