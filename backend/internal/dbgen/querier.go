@@ -72,7 +72,16 @@ type Querier interface {
 	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
 	DisableUser(ctx context.Context, id uuid.UUID) error
 	EnableUser(ctx context.Context, id uuid.UUID) error
-	// Category-specific policy takes precedence over a global one (category_id IS NULL).
+	// The four tiers DESIGN.md documents, most specific first:
+	//   1. Priority + Category
+	//   2. Priority only      (category_id IS NULL = any category)
+	//   3. Category only      (priority IS NULL = any priority)
+	//   4. Catch-all          (neither set)
+	//
+	// A NULL column means "matches anything", so the WHERE admits every candidate
+	// and the ORDER BY picks the most specific. Before this, priority was NOT NULL
+	// and the predicate required an exact match, so tiers 3 and 4 could neither be
+	// stored nor matched.
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)

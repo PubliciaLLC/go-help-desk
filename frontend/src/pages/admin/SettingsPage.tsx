@@ -832,6 +832,7 @@ function PolicyFormRow({
           value={form.priority}
           onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
         >
+          <option value="">Any priority</option>
           {PRIORITIES.map((p) => (
             <option key={p} value={p} className="capitalize">{p}</option>
           ))}
@@ -896,7 +897,7 @@ function SLAPoliciesSection() {
     setFormError('')
     setForm({
       name: p.name,
-      priority: p.priority,
+      priority: p.priority ?? '',
       category_id: p.category_id ?? '',
       response_target_min: p.response_target_min,
       resolution_target_min: p.resolution_target_min,
@@ -913,7 +914,7 @@ function SLAPoliciesSection() {
   const createMutation = useMutation({
     mutationFn: () => createSLAPolicy({
       name: form.name,
-      priority: form.priority,
+      priority: form.priority || undefined,
       category_id: form.category_id || undefined,
       response_target_min: form.response_target_min,
       resolution_target_min: form.resolution_target_min,
@@ -929,7 +930,8 @@ function SLAPoliciesSection() {
   const updateMutation = useMutation({
     mutationFn: (id: string) => updateSLAPolicy(id, {
       name: form.name,
-      priority: form.priority,
+      priority: form.priority || undefined,
+      clear_priority: !form.priority,
       category_id: form.category_id || undefined,
       clear_category: !form.category_id,
       response_target_min: form.response_target_min,
@@ -985,9 +987,13 @@ function SLAPoliciesSection() {
                     <tr key={p.id} className="hover:bg-gray-50">
                       <td className="px-3 py-2 font-medium">{p.name}</td>
                       <td className="px-3 py-2">
-                        <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
-                          {p.priority}
-                        </span>
+                        {p.priority ? (
+                          <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
+                            {p.priority}
+                          </span>
+                        ) : (
+                          <span className="text-gray-600">Any priority</span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-gray-600">
                         {p.category_id

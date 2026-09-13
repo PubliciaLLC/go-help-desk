@@ -515,7 +515,7 @@ export async function listSLAPolicies(): Promise<SLAPolicy[]> {
 
 export async function createSLAPolicy(input: {
   name: string
-  priority: string
+  priority?: string
   category_id?: string
   response_target_min: number
   resolution_target_min: number
@@ -529,6 +529,7 @@ export async function updateSLAPolicy(
   patch: {
     name?: string
     priority?: string
+    clear_priority?: boolean
     category_id?: string
     clear_category?: boolean
     response_target_min?: number

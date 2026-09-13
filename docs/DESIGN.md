@@ -390,7 +390,7 @@ When the SLA toggle is enabled, a **SLA Policies** management blade appears dire
 | Field | Description |
 |-------|-------------|
 | **Name** | Display label, e.g. "Critical — 1h response" |
-| **Priority** | `critical`, `high`, `medium`, or `low` — applies this policy to matching tickets |
+| **Priority** | Optional. `critical`, `high`, `medium`, or `low` — restricts the policy to tickets of that priority. Leave blank for "Any priority". |
 | **Category** | Optional. Restricts the policy to a specific category. Leave blank for "All categories". |
 | **Response target** | Minutes from ticket creation to first staff reply |
 | **Resolution target** | Minutes from ticket creation to ticket resolved |

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { saveSAMLConfig, uploadLogo, addGroupScope, updateSLAPolicy } from './admin'
+import { saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy } from './admin'
 
 // admin.ts is 557 lines and almost all of it is one-line wrappers, which are
 // deliberately not tested — see the note in tickets.test.ts. Covered here is
@@ -77,5 +77,27 @@ describe('payloads where absent and empty differ', () => {
 
     const [, body] = patch.mock.calls[0]
     expect(body).toEqual({ clear_category: true })
+  })
+
+  // A policy with no priority is the catch-all tier, and clear_priority is the
+  // only way to widen an existing policy back to it — priority: null and an
+  // absent priority are the same nil pointer on the server.
+  it('keeps clear_priority distinct from omitting priority', async () => {
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: {} })
+    await updateSLAPolicy('p1', { name: 'Catch-all', clear_priority: true })
+
+    const [, body] = patch.mock.calls[0]
+    expect(body).toEqual({ name: 'Catch-all', clear_priority: true })
+    expect('priority' in (body as object)).toBe(false)
+  })
+
+  // Sending priority: "" instead of omitting it is a 400: the server validates
+  // a supplied priority, and "" is not one of the four.
+  it('omits priority entirely for a catch-all policy', async () => {
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    await createSLAPolicy({ name: 'Catch-all', response_target_min: 60, resolution_target_min: 480 })
+
+    const [, body] = post.mock.calls[0]
+    expect('priority' in (body as object)).toBe(false)
   })
 })

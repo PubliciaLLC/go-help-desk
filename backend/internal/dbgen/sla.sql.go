@@ -18,12 +18,12 @@ VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type CreateSLAPolicyParams struct {
-	ID                  uuid.UUID     `json:"id"`
-	Name                string        `json:"name"`
-	Priority            string        `json:"priority"`
-	CategoryID          uuid.NullUUID `json:"category_id"`
-	ResponseTargetMin   int32         `json:"response_target_min"`
-	ResolutionTargetMin int32         `json:"resolution_target_min"`
+	ID                  uuid.UUID      `json:"id"`
+	Name                string         `json:"name"`
+	Priority            sql.NullString `json:"priority"`
+	CategoryID          uuid.NullUUID  `json:"category_id"`
+	ResponseTargetMin   int32          `json:"response_target_min"`
+	ResolutionTargetMin int32          `json:"resolution_target_min"`
 }
 
 func (q *Queries) CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error {
@@ -75,18 +75,33 @@ func (q *Queries) DeleteSLAPolicy(ctx context.Context, id uuid.UUID) error {
 
 const findSLAPolicy = `-- name: FindSLAPolicy :one
 SELECT id, name, priority, category_id, response_target_min, resolution_target_min FROM sla_policies
-WHERE priority = $1
-  AND (category_id = $2 OR category_id IS NULL)
-ORDER BY category_id NULLS LAST
+WHERE (priority IS NULL OR priority = $1::text)
+  AND (category_id IS NULL OR category_id = $2::uuid)
+ORDER BY
+  CASE
+    WHEN priority IS NOT NULL AND category_id IS NOT NULL THEN 1
+    WHEN priority IS NOT NULL THEN 2
+    WHEN category_id IS NOT NULL THEN 3
+    ELSE 4
+  END
 LIMIT 1
 `
 
 type FindSLAPolicyParams struct {
-	Priority   string        `json:"priority"`
-	CategoryID uuid.NullUUID `json:"category_id"`
+	Priority   string    `json:"priority"`
+	CategoryID uuid.UUID `json:"category_id"`
 }
 
-// Category-specific policy takes precedence over a global one (category_id IS NULL).
+// The four tiers DESIGN.md documents, most specific first:
+//  1. Priority + Category
+//  2. Priority only      (category_id IS NULL = any category)
+//  3. Category only      (priority IS NULL = any priority)
+//  4. Catch-all          (neither set)
+//
+// A NULL column means "matches anything", so the WHERE admits every candidate
+// and the ORDER BY picks the most specific. Before this, priority was NOT NULL
+// and the predicate required an exact match, so tiers 3 and 4 could neither be
+// stored nor matched.
 func (q *Queries) FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error) {
 	row := q.db.QueryRowContext(ctx, findSLAPolicy, arg.Priority, arg.CategoryID)
 	var i SlaPolicy
@@ -179,12 +194,12 @@ WHERE id = $1
 `
 
 type UpdateSLAPolicyParams struct {
-	ID                  uuid.UUID     `json:"id"`
-	Name                string        `json:"name"`
-	Priority            string        `json:"priority"`
-	CategoryID          uuid.NullUUID `json:"category_id"`
-	ResponseTargetMin   int32         `json:"response_target_min"`
-	ResolutionTargetMin int32         `json:"resolution_target_min"`
+	ID                  uuid.UUID      `json:"id"`
+	Name                string         `json:"name"`
+	Priority            sql.NullString `json:"priority"`
+	CategoryID          uuid.NullUUID  `json:"category_id"`
+	ResponseTargetMin   int32          `json:"response_target_min"`
+	ResolutionTargetMin int32          `json:"resolution_target_min"`
 }
 
 func (q *Queries) UpdateSLAPolicy(ctx context.Context, arg UpdateSLAPolicyParams) error {

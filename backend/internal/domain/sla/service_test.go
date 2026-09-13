@@ -94,7 +94,7 @@ func TestSLAService_AttachPolicy_WithPolicy(t *testing.T) {
 	policy := sla.Policy{
 		ID:                  uuid.New(),
 		Name:                "Standard",
-		Priority:            ticket.PriorityMedium,
+		Priority:            prio(ticket.PriorityMedium),
 		ResponseTargetMin:   60,
 		ResolutionTargetMin: 480,
 	}
@@ -272,3 +272,53 @@ func TestIsResolutionBreached_UsesTheResolutionTime(t *testing.T) {
 		sla.IsResolutionBreached(sla.Record{}, policy, created, now),
 		"unresolved past the deadline is a breach")
 }
+
+// A policy's priority was written to the database unvalidated. An unknown value
+// reached the column's CHECK constraint and surfaced as a 500; a nil one is the
+// catch-all tier and must be allowed through.
+func TestSLAService_PolicyPriorityValidation(t *testing.T) {
+	bogus := ticket.Priority("urgent")
+	high := ticket.PriorityHigh
+
+	cases := []struct {
+		name     string
+		priority *ticket.Priority
+		wantErr  bool
+	}{
+		{name: "nil means any priority", priority: nil},
+		{name: "a known priority", priority: &high},
+		{name: "an unknown priority", priority: &bogus, wantErr: true},
+		{name: "an empty priority", priority: prio(""), wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := sla.NewService(newFakeSLAStore())
+			in := sla.Policy{
+				Name:                "P",
+				Priority:            tc.priority,
+				ResponseTargetMin:   60,
+				ResolutionTargetMin: 480,
+			}
+
+			created, err := svc.CreatePolicy(context.Background(), in)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.priority, created.Priority)
+			}
+
+			// Update is the second door onto the same column.
+			in.ID = uuid.New()
+			err = svc.UpdatePolicy(context.Background(), in)
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func prio(p ticket.Priority) *ticket.Priority { return &p }

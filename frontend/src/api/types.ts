@@ -214,7 +214,7 @@ export interface TicketFieldValue {
 export interface SLAPolicy {
   id: string
   name: string
-  priority: Priority
+  priority?: Priority // absent = applies to every priority
   category_id?: string
   response_target_min: number
   resolution_target_min: number

@@ -145,12 +145,12 @@ type Setting struct {
 }
 
 type SlaPolicy struct {
-	ID                  uuid.UUID     `json:"id"`
-	Name                string        `json:"name"`
-	Priority            string        `json:"priority"`
-	CategoryID          uuid.NullUUID `json:"category_id"`
-	ResponseTargetMin   int32         `json:"response_target_min"`
-	ResolutionTargetMin int32         `json:"resolution_target_min"`
+	ID                  uuid.UUID      `json:"id"`
+	Name                string         `json:"name"`
+	Priority            sql.NullString `json:"priority"`
+	CategoryID          uuid.NullUUID  `json:"category_id"`
+	ResponseTargetMin   int32          `json:"response_target_min"`
+	ResolutionTargetMin int32          `json:"resolution_target_min"`
 }
 
 type SlaRecord struct {

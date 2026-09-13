@@ -105,15 +105,29 @@ func (s *Service) EvaluateBreaches(ctx context.Context, t ticket.Ticket, now tim
 
 // ── Policy CRUD ───────────────────────────────────────────────────────────────
 
-func (s *Service) CreatePolicy(ctx context.Context, p Policy) (Policy, error) {
+// validatePolicy guards both doors onto sla_policies. Priority was previously
+// unvalidated on either, so an unknown value travelled all the way to the
+// column's CHECK constraint and the raw driver error — table name, constraint
+// name, SQLSTATE — was handed back to the client as the 400's message.
+func validatePolicy(p Policy) error {
 	if p.Name == "" {
-		return Policy{}, fmt.Errorf("policy name is required")
+		return fmt.Errorf("policy name is required")
+	}
+	if p.Priority != nil && !p.Priority.Valid() {
+		return fmt.Errorf("invalid priority %q", *p.Priority)
 	}
 	if p.ResponseTargetMin <= 0 {
-		return Policy{}, fmt.Errorf("response target must be greater than zero")
+		return fmt.Errorf("response target must be greater than zero")
 	}
 	if p.ResolutionTargetMin <= 0 {
-		return Policy{}, fmt.Errorf("resolution target must be greater than zero")
+		return fmt.Errorf("resolution target must be greater than zero")
+	}
+	return nil
+}
+
+func (s *Service) CreatePolicy(ctx context.Context, p Policy) (Policy, error) {
+	if err := validatePolicy(p); err != nil {
+		return Policy{}, err
 	}
 	p.ID = uuid.New()
 	if err := s.store.CreatePolicy(ctx, p); err != nil {
@@ -127,14 +141,8 @@ func (s *Service) GetPolicy(ctx context.Context, id uuid.UUID) (Policy, error) {
 }
 
 func (s *Service) UpdatePolicy(ctx context.Context, p Policy) error {
-	if p.Name == "" {
-		return fmt.Errorf("policy name is required")
-	}
-	if p.ResponseTargetMin <= 0 {
-		return fmt.Errorf("response target must be greater than zero")
-	}
-	if p.ResolutionTargetMin <= 0 {
-		return fmt.Errorf("resolution target must be greater than zero")
+	if err := validatePolicy(p); err != nil {
+		return err
 	}
 	return s.store.UpdatePolicy(ctx, p)
 }

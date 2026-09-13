@@ -26,8 +26,10 @@ type Store interface {
 	DeletePolicy(ctx context.Context, id uuid.UUID) error
 	ListPolicies(ctx context.Context) ([]Policy, error)
 
-	// FindPolicy returns the most specific policy for a ticket's priority and
-	// category. Category-specific policies take precedence over global ones.
+	// FindPolicy returns the most specific policy matching a ticket's priority
+	// and category, in the order DESIGN.md documents: priority+category, then
+	// priority only, then category only, then the catch-all. A policy field
+	// left nil matches any value. nil, nil means no policy applies.
 	FindPolicy(ctx context.Context, priority ticket.Priority, categoryID uuid.UUID) (*Policy, error)
 
 	// Records

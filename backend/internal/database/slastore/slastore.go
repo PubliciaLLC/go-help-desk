@@ -24,7 +24,7 @@ func (s *Store) CreatePolicy(ctx context.Context, p sla.Policy) error {
 	return s.q.CreateSLAPolicy(ctx, dbgen.CreateSLAPolicyParams{
 		ID:                  p.ID,
 		Name:                p.Name,
-		Priority:            string(p.Priority),
+		Priority:            nullPriority(p.Priority),
 		CategoryID:          database.NullUUID(p.CategoryID),
 		ResponseTargetMin:   int32(p.ResponseTargetMin),
 		ResolutionTargetMin: int32(p.ResolutionTargetMin),
@@ -43,7 +43,7 @@ func (s *Store) UpdatePolicy(ctx context.Context, p sla.Policy) error {
 	return s.q.UpdateSLAPolicy(ctx, dbgen.UpdateSLAPolicyParams{
 		ID:                  p.ID,
 		Name:                p.Name,
-		Priority:            string(p.Priority),
+		Priority:            nullPriority(p.Priority),
 		CategoryID:          database.NullUUID(p.CategoryID),
 		ResponseTargetMin:   int32(p.ResponseTargetMin),
 		ResolutionTargetMin: int32(p.ResolutionTargetMin),
@@ -69,7 +69,7 @@ func (s *Store) ListPolicies(ctx context.Context) ([]sla.Policy, error) {
 func (s *Store) FindPolicy(ctx context.Context, priority ticket.Priority, categoryID uuid.UUID) (*sla.Policy, error) {
 	r, err := s.q.FindSLAPolicy(ctx, dbgen.FindSLAPolicyParams{
 		Priority:   string(priority),
-		CategoryID: database.NullUUID(&categoryID),
+		CategoryID: categoryID,
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -124,9 +124,27 @@ func policyFromRow(r dbgen.SlaPolicy) sla.Policy {
 	return sla.Policy{
 		ID:                  r.ID,
 		Name:                r.Name,
-		Priority:            ticket.Priority(r.Priority),
+		Priority:            priorityPtr(r.Priority),
 		CategoryID:          database.UUIDPtr(r.CategoryID),
 		ResponseTargetMin:   int(r.ResponseTargetMin),
 		ResolutionTargetMin: int(r.ResolutionTargetMin),
 	}
+}
+
+// ticket.Priority is a named string type, so it cannot travel through the
+// shared *string helpers in package database without a conversion here.
+// A NULL priority is the "any priority" tier.
+func nullPriority(p *ticket.Priority) sql.NullString {
+	if p == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: string(*p), Valid: true}
+}
+
+func priorityPtr(n sql.NullString) *ticket.Priority {
+	if !n.Valid {
+		return nil
+	}
+	v := ticket.Priority(n.String)
+	return &v
 }

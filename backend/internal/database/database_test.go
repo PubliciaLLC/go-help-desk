@@ -726,7 +726,7 @@ func TestSLAStore_Policies(t *testing.T) {
 	p := sla.Policy{
 		ID:                  uuid.New(),
 		Name:                "Standard",
-		Priority:            ticket.PriorityMedium,
+		Priority:            prio(ticket.PriorityMedium),
 		ResponseTargetMin:   60,
 		ResolutionTargetMin: 480,
 	}
@@ -811,7 +811,7 @@ func TestSLAStore_Records(t *testing.T) {
 	p := sla.Policy{
 		ID:                  uuid.New(),
 		Name:                "SLATest",
-		Priority:            ticket.PriorityHigh,
+		Priority:            prio(ticket.PriorityHigh),
 		ResponseTargetMin:   30,
 		ResolutionTargetMin: 240,
 	}
@@ -834,6 +834,124 @@ func TestSLAStore_Records(t *testing.T) {
 	updated, err := ss.GetRecord(ctx, tk.ID)
 	require.NoError(t, err)
 	require.NotNil(t, updated.FirstResponseAt)
+}
+
+// FindPolicy must choose by specificity, not by insertion order, so every case
+// seeds its policies least-specific-first — the order the old query, which
+// ordered only on category_id, would have been happy to return.
+//
+// Tiers 3 and 4 could not exist before sla_policies.priority became nullable:
+// a ticket whose priority had no policy of its own silently got no SLA, even
+// with a catch-all configured.
+func TestSLAStore_FindPolicyTiers(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	const (
+		tier1 = "priority+category"
+		tier2 = "priority only"
+		tier3 = "category only"
+		tier4 = "catch-all"
+	)
+
+	cases := []struct {
+		name string
+		// seed lists the tiers to create, least specific first.
+		seed           []string
+		lookupPrio     ticket.Priority
+		lookupOtherCat bool
+		want           string // "" = no policy should match
+	}{
+		{
+			name:       "all four tiers configured: priority+category wins",
+			seed:       []string{tier4, tier3, tier2, tier1},
+			lookupPrio: ticket.PriorityHigh,
+			want:       tier1,
+		},
+		{
+			name:       "no priority+category policy: priority only wins",
+			seed:       []string{tier4, tier3, tier2},
+			lookupPrio: ticket.PriorityHigh,
+			want:       tier2,
+		},
+		{
+			name:       "no policy for this priority: category only wins",
+			seed:       []string{tier4, tier3},
+			lookupPrio: ticket.PriorityHigh,
+			want:       tier3,
+		},
+		{
+			name:       "only a catch-all: it matches",
+			seed:       []string{tier4},
+			lookupPrio: ticket.PriorityHigh,
+			want:       tier4,
+		},
+		{
+			// The defect this change exists to fix: a ticket whose priority has
+			// no policy of its own must still fall through to the catch-all.
+			name:           "catch-all covers a priority no policy names",
+			seed:           []string{tier4, tier2},
+			lookupPrio:     ticket.PriorityLow,
+			lookupOtherCat: true,
+			want:           tier4,
+		},
+		{
+			name:           "a category-only policy does not leak to another category",
+			seed:           []string{tier3},
+			lookupPrio:     ticket.PriorityHigh,
+			lookupOtherCat: true,
+			want:           "",
+		},
+		{
+			name:       "a priority-only policy does not leak to another priority",
+			seed:       []string{tier2},
+			lookupPrio: ticket.PriorityLow,
+			want:       "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, rollback := testutil.TxQueries(t, db)
+			defer rollback()
+
+			ctx := context.Background()
+			ss := slastore.New(q)
+			cs := categorystore.New(q)
+
+			cat := category.Category{ID: uuid.New(), Name: "Tier " + tc.name, SortOrder: 1, Active: true}
+			require.NoError(t, cs.CreateCategory(ctx, cat))
+			other := category.Category{ID: uuid.New(), Name: "Other " + tc.name, SortOrder: 2, Active: true}
+			require.NoError(t, cs.CreateCategory(ctx, other))
+
+			byTier := map[string]sla.Policy{
+				tier1: {Name: tier1, Priority: prio(ticket.PriorityHigh), CategoryID: &cat.ID},
+				tier2: {Name: tier2, Priority: prio(ticket.PriorityHigh), CategoryID: nil},
+				tier3: {Name: tier3, Priority: nil, CategoryID: &cat.ID},
+				tier4: {Name: tier4, Priority: nil, CategoryID: nil},
+			}
+			for _, name := range tc.seed {
+				p := byTier[name]
+				p.ID = uuid.New()
+				p.ResponseTargetMin = 60
+				p.ResolutionTargetMin = 480
+				require.NoError(t, ss.CreatePolicy(ctx, p))
+			}
+
+			lookupCat := cat.ID
+			if tc.lookupOtherCat {
+				lookupCat = other.ID
+			}
+			got, err := ss.FindPolicy(ctx, tc.lookupPrio, lookupCat)
+			require.NoError(t, err)
+			if tc.want == "" {
+				require.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			require.Equal(t, tc.want, got.Name)
+		})
+	}
 }
 
 // ── Admin store ──────────────────────────────────────────────────────────────
@@ -1047,3 +1165,5 @@ func TestAuditStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 }
+
+func prio(p ticket.Priority) *ticket.Priority { return &p }
