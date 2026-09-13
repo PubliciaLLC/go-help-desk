@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -229,12 +230,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 // Pure and taking the cached system statuses explicitly so the rule lives in
 // one place rather than being re-derived at each of the four call sites that
 // change a status.
-func applyStatusTimestamps(t *Ticket, newStatusID uuid.UUID, sys *systemStatuses, now time.Time) {
+func applyStatusTimestamps(t *Ticket, oldStatusID, newStatusID uuid.UUID, sys *systemStatuses, now time.Time) {
 	switch newStatusID {
 	case sys.resolvedID:
-		// Preserve an existing timestamp: re-resolving an already-resolved
-		// ticket must not silently extend the reopen window.
-		if t.ResolvedAt == nil {
+		// Preserve the timestamp only when the ticket is ALREADY Resolved, so
+		// re-resolving does not silently extend the reopen window. A ticket
+		// arriving from any other status — notably Closed, which keeps its old
+		// resolved_at — is being resolved afresh and gets a fresh stamp;
+		// otherwise the reporter is judged against a window that expired
+		// before this resolution happened.
+		// oldStatusID, not t.StatusID: both callers assign the new status
+		// before calling, so reading it here would always match.
+		if oldStatusID != sys.resolvedID || t.ResolvedAt == nil {
 			t.ResolvedAt = &now
 		}
 		t.ClosedAt = nil
@@ -281,7 +288,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	// auto-close. Moving OFF Resolved without clearing the timestamp is the
 	// mirror image: once the auto-close scheduler is wired, a ticket being
 	// actively worked would be closed underneath whoever was working it.
-	applyStatusTimestamps(&t, newStatusID, s.sys, now)
+	applyStatusTimestamps(&t, oldStatusID, newStatusID, s.sys, now)
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		if err := st.Update(ctx, t); err != nil {
@@ -296,6 +303,18 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		return nil
 	}); err != nil {
 		return Ticket{}, err
+	}
+
+	// The other door into Resolved. Recording this only in Resolve() meant a
+	// ticket resolved by PATCHing status_id, or by MCP update_ticket_status,
+	// left sla_records.resolved_at NULL — and the breach evaluator reads NULL
+	// as "never resolved", so an on-time resolution became a permanent false
+	// breach. Non-fatal and after the commit, matching Resolve.
+	if s.sla != nil && newStatusID == s.sys.resolvedID {
+		if err := s.sla.RecordResolved(ctx, t.ID, now); err != nil {
+			slog.WarnContext(ctx, "recording SLA resolution failed; the ticket may report a false breach",
+				"ticket_id", t.ID, "error", err)
+		}
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -475,8 +494,13 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	now := time.Now()
 	t.StatusID = s.sys.resolvedID
 	t.ResolutionNotes = &notes
-	t.ResolvedAt = &now
 	t.UpdatedAt = now
+	// Through the shared rule, not by hand. Setting ResolvedAt directly here
+	// was how this door came to disagree with UpdateStatus: it restarted the
+	// reopen window on a re-resolve, and resolving a CLOSED ticket left
+	// closed_at set on an open ticket, which hides it from the auto-close
+	// query forever.
+	applyStatusTimestamps(&t, oldStatusID, s.sys.resolvedID, s.sys, now)
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		if err := st.Update(ctx, t); err != nil {
@@ -498,7 +522,14 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	// Non-fatal for the same reason AttachPolicy is — SLA reporting must not
 	// fail the resolution itself.
 	if s.sla != nil {
-		_ = s.sla.RecordResolved(ctx, t.ID, now)
+		if err := s.sla.RecordResolved(ctx, t.ID, now); err != nil {
+			// Non-fatal — SLA bookkeeping must not fail the resolution — but
+			// not silent either. Discarded entirely, a transient failure here
+			// leaves resolved_at NULL forever and the ticket later reports a
+			// breach it did not commit, with nothing anywhere explaining why.
+			slog.WarnContext(ctx, "recording SLA resolution failed; the ticket may report a false breach",
+				"ticket_id", t.ID, "error", err)
+		}
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
