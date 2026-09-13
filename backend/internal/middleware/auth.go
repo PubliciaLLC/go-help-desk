@@ -57,7 +57,7 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			raw, ok := session.Values["session"]
+			raw, ok := session.Values[auth.SessionDataKey]
 			if !ok {
 				slog.Debug("session auth: key not found in values")
 				next.ServeHTTP(w, r)

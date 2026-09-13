@@ -1,0 +1,185 @@
+// Package sessionstore keeps session state in Postgres instead of in the
+// cookie.
+//
+// The cookie carries nothing but an opaque id; everything else lives in a row.
+// That is what makes a session revocable: disabling a user, changing a role,
+// resetting MFA or logging out becomes a DELETE, and takes effect on the next
+// request rather than whenever the cookie happens to expire.
+//
+// It implements gorilla/sessions' Store, so the authentication middleware and
+// every handler keep the API they already use.
+package sessionstore
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/gob"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/securecookie"
+	"github.com/gorilla/sessions"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+)
+
+// sessionIDBytes is the entropy in a session id.
+//
+// The id is a bearer credential — whoever holds it is the session — so it is
+// sized like one. 32 bytes matches the API-key tokens elsewhere in this
+// codebase.
+const sessionIDBytes = 32
+
+// Store is a gorilla/sessions Store backed by the sessions table.
+type Store struct {
+	q       *dbgen.Queries
+	codecs  []securecookie.Codec
+	options *sessions.Options
+}
+
+// New returns a Store. The keys sign and encrypt the cookie that carries the
+// session id.
+//
+// The id is signed even though it is opaque and useless on its own: an
+// unsigned id lets an attacker submit arbitrary values, which turns every
+// request into a probe of the sessions table. Signing means only ids this
+// server issued are ever looked up.
+func New(q *dbgen.Queries, hashKey, blockKey []byte, opts *sessions.Options) *Store {
+	return &Store{
+		q:       q,
+		codecs:  securecookie.CodecsFromPairs(hashKey, blockKey),
+		options: opts,
+	}
+}
+
+// Get returns the session for the request, from gorilla's per-request cache
+// when it has already been loaded.
+func (s *Store) Get(r *http.Request, name string) (*sessions.Session, error) {
+	return sessions.GetRegistry(r).Get(s, name)
+}
+
+// New loads a session from the database, or returns an empty one.
+//
+// An unreadable cookie, an unknown id and an expired row are all treated the
+// same way: a fresh session. Distinguishing them would tell a caller whether an
+// id had ever existed.
+func (s *Store) New(r *http.Request, name string) (*sessions.Session, error) {
+	session := sessions.NewSession(s, name)
+	opts := *s.options
+	session.Options = &opts
+	session.IsNew = true
+
+	c, err := r.Cookie(name)
+	if err != nil {
+		return session, nil
+	}
+
+	var id string
+	if err := securecookie.DecodeMulti(name, c.Value, &id, s.codecs...); err != nil {
+		return session, nil
+	}
+
+	row, err := s.q.GetSession(r.Context(), id)
+	if err != nil {
+		// Includes sql.ErrNoRows, which is the normal outcome after a session
+		// is revoked or expires. Not an error the caller can do anything with.
+		return session, nil
+	}
+
+	if err := gob.NewDecoder(bytes.NewReader(row.Data)).Decode(&session.Values); err != nil {
+		return session, nil
+	}
+	session.ID = id
+	session.IsNew = false
+	return session, nil
+}
+
+// Save writes the session to the database and the id to the cookie.
+//
+// A negative MaxAge deletes the row, which is what makes logout mean
+// something: the cookie is cleared AND the session stops existing, so a copy
+// taken beforehand is equally dead.
+func (s *Store) Save(r *http.Request, w http.ResponseWriter, session *sessions.Session) error {
+	if session.Options != nil && session.Options.MaxAge < 0 {
+		if session.ID != "" {
+			if err := s.q.DeleteSession(r.Context(), session.ID); err != nil {
+				return fmt.Errorf("deleting session: %w", err)
+			}
+		}
+		http.SetCookie(w, sessions.NewCookie(session.Name(), "", session.Options))
+		return nil
+	}
+
+	if session.ID == "" {
+		id, err := newSessionID()
+		if err != nil {
+			return err
+		}
+		session.ID = id
+	}
+
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(session.Values); err != nil {
+		return fmt.Errorf("encoding session: %w", err)
+	}
+
+	maxAge := s.options.MaxAge
+	if session.Options != nil && session.Options.MaxAge > 0 {
+		maxAge = session.Options.MaxAge
+	}
+
+	if err := s.q.UpsertSession(r.Context(), dbgen.UpsertSessionParams{
+		ID: session.ID,
+		// Denormalised out of the payload so revocation can find every session
+		// a user holds without decoding each row.
+		UserID:    userIDFrom(session),
+		Data:      buf.Bytes(),
+		ExpiresAt: time.Now().Add(time.Duration(maxAge) * time.Second),
+	}); err != nil {
+		return fmt.Errorf("saving session: %w", err)
+	}
+
+	encoded, err := securecookie.EncodeMulti(session.Name(), session.ID, s.codecs...)
+	if err != nil {
+		return fmt.Errorf("encoding session cookie: %w", err)
+	}
+	http.SetCookie(w, sessions.NewCookie(session.Name(), encoded, session.Options))
+	return nil
+}
+
+// DeleteForUser revokes every session a user holds.
+//
+// Called after the events that make an existing session wrong: disable, role
+// change, password change, MFA reset.
+func (s *Store) DeleteForUser(ctx context.Context, userID uuid.UUID) error {
+	return s.q.DeleteSessionsForUser(ctx, database.NullUUID(&userID))
+}
+
+// DeleteExpired removes rows past their expiry. Sessions are already refused
+// on read, so this is housekeeping rather than a security control.
+func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
+	return s.q.DeleteExpiredSessions(ctx)
+}
+
+func newSessionID() (string, error) {
+	b := make([]byte, sessionIDBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating session id: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// userIDFrom pulls the user out of the session payload for the indexed column.
+func userIDFrom(session *sessions.Session) uuid.NullUUID {
+	data, ok := session.Values[auth.SessionDataKey].(auth.SessionData)
+	if !ok || data.UserID == uuid.Nil {
+		return uuid.NullUUID{}
+	}
+	return uuid.NullUUID{UUID: data.UserID, Valid: true}
+}

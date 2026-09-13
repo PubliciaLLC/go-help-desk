@@ -138,7 +138,7 @@ type Server struct {
 
 	cfg      *config.Config
 	router   *chi.Mux
-	sessions sessions.Store
+	sessions SessionStore
 
 	users           *user.Service
 	tickets         *ticket.Service
@@ -174,7 +174,7 @@ type Server struct {
 // New constructs a Server and registers all routes.
 func New(
 	cfg *config.Config,
-	sessionStore sessions.Store,
+	sessionStore SessionStore,
 	users *user.Service,
 	tickets *ticket.Service,
 	categories *category.Service,
@@ -253,6 +253,22 @@ func requestLogger(next http.Handler) http.Handler {
 			slog.Debug("set-cookie header", "value", setCookie)
 		}
 	})
+}
+
+// SessionStore is the session contract this package needs: gorilla's Store for
+// the ordinary read/write path, plus revocation.
+//
+// Revocation is the reason sessions moved server-side, so it belongs in the
+// interface rather than behind a type assertion at each call site — a handler
+// that forgets to revoke is the failure mode, and an interface method is
+// harder to forget than an assertion.
+type SessionStore interface {
+	sessions.Store
+
+	// DeleteForUser revokes every session a user holds, for the events after
+	// which an existing session is wrong: disable, role change, password
+	// change, MFA reset.
+	DeleteForUser(ctx context.Context, userID uuid.UUID) error
 }
 
 func (s *Server) buildRouter() *chi.Mux {

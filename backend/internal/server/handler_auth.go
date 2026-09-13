@@ -323,7 +323,7 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	// even when an existing cookie can't be decoded (e.g. after a module rename
 	// changes gob type paths). We're overwriting the session anyway.
 	session, _ := s.sessions.Get(r, auth.SessionName)
-	session.Values["session"] = sd
+	session.Values[auth.SessionDataKey] = sd
 	return session.Save(r, w)
 }
 

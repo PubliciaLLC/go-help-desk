@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
@@ -189,14 +190,22 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("deriving session keys: %w", err)
 	}
-	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
-	sessionStore.Options = &sessions.Options{
+	// Server-side sessions, not a cookie store. The cookie carries an opaque
+	// id and the state lives in Postgres, which is what lets a session be
+	// revoked: disable, role change, MFA reset and logout all become a DELETE
+	// that takes effect on the next request, rather than waiting out the
+	// cookie's lifetime.
+	//
+	// Seven days rather than thirty. Revocation is the real fix, but a shorter
+	// absolute lifetime bounds the case nobody noticed. There is no idle
+	// timeout: refreshing it would mean re-saving on every request.
+	sessionStore := sessionstore.New(q, sessionHashKey, sessionBlockKey, &sessions.Options{
 		Path:     "/",
-		MaxAge:   86400 * 30,
+		MaxAge:   86400 * 7,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Secure:   auth.SecureCookies(cfg.BaseURL),
-	}
+	})
 
 	apiKeyLookup := authmw.APIKeyAuthFunc(func(ctx context.Context, hashed string) (auth.APIKey, user.User, error) {
 		key, err := authStore.GetByHash(ctx, hashed)

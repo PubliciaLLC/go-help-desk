@@ -60,12 +60,18 @@ type Querier interface {
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
+	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) error
 	DeleteItem(ctx context.Context, id uuid.UUID) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
 	DeletePlugin(ctx context.Context, id string) error
 	DeleteSLAPolicy(ctx context.Context, id uuid.UUID) error
+	DeleteSession(ctx context.Context, id string) error
+	// Every session a user holds. Used for disable, role change, password change
+	// and MFA reset — the events after which a cookie minted under the old state
+	// must stop working.
+	DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUID) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
 	DeleteType(ctx context.Context, id uuid.UUID) error
@@ -97,6 +103,9 @@ type Querier interface {
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
+	// Only unexpired rows: an expired session must behave exactly like a missing
+	// one, so a stale row cannot authenticate anybody between sweeps.
+	GetSession(ctx context.Context, id string) (Session, error)
 	GetSetting(ctx context.Context, key string) (json.RawMessage, error)
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
 	GetStatusByName(ctx context.Context, name string) (Status, error)
@@ -215,6 +224,7 @@ type Querier interface {
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
 	UpsertPendingRegistration(ctx context.Context, arg UpsertPendingRegistrationParams) (PendingRegistration, error)
+	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
 }
 
 var _ Querier = (*Queries)(nil)

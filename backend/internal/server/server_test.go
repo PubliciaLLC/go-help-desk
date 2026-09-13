@@ -23,6 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
@@ -203,14 +204,22 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		// TestAuthRateLimit covers the limiter with it switched on.
 		AuthRateLimitPerMinute: authRateLimit,
 	}
-	// Derived exactly as main.go does, so tests exercise the encrypted cookie
-	// store rather than a signed-only one production never uses.
+	// Derived exactly as main.go does, so tests exercise the real store rather
+	// than a shape production never uses.
 	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
 	require.NoError(t, err)
 	// Session cookies carry SessionData as gob. cmd/server registers it the
 	// same way; there is no init() doing it behind anyone's back.
 	gob.Register(auth.SessionData{})
-	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
+	// The real store, not a cookie store: revocation is the reason sessions
+	// moved server-side, and a cookie store cannot exercise it. It shares the
+	// harness transaction, so session rows roll back with everything else.
+	sessionStore := sessionstore.New(q, sessionHashKey, sessionBlockKey, &sessions.Options{
+		Path:     "/",
+		MaxAge:   86400 * 7,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 
 	srv := server.New(
 		cfg,
@@ -1044,14 +1053,16 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		SessionSecret: "test-session-secret-32-bytes-long!",
 		JWTSecret:     "test-jwt-secret",
 	}
-	// Derived exactly as main.go does, so tests exercise the encrypted cookie
-	// store rather than a signed-only one production never uses.
+	// Derived exactly as main.go does, so tests exercise the real store rather
+	// than a shape production never uses.
 	sessionHashKey, sessionBlockKey, err := auth.DeriveSessionKeys(cfg.SessionSecret)
 	require.NoError(t, err)
 	// Session cookies carry SessionData as gob. cmd/server registers it the
 	// same way; there is no init() doing it behind anyone's back.
 	gob.Register(auth.SessionData{})
-	sessionStore := sessions.NewCookieStore(sessionHashKey, sessionBlockKey)
+	sessionStore := sessionstore.New(q, sessionHashKey, sessionBlockKey, &sessions.Options{
+		Path: "/", MaxAge: 86400 * 7, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+	})
 
 	srv := server.New(
 		cfg,

@@ -34,7 +34,7 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	// The decode error is ignored deliberately: CookieStore.Get always returns
 	// a usable session, and an undecodable cookie simply carries no data.
 	session, _ := s.sessions.Get(r, auth.SessionName)
-	sd, _ := session.Values["session"].(auth.SessionData)
+	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
 	req := provider.AuthorizationURL(state)
 
 	sd.OIDCState = state
@@ -69,7 +69,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sd, ok := session.Values["session"].(auth.SessionData)
+	sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData)
 
 	if !ok {
 		Error(w,
