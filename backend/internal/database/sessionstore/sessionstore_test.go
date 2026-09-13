@@ -54,6 +54,21 @@ func newStore(t *testing.T) (*sessionstore.Store, *dbgen.Queries, func()) {
 	return st, q, func() { rollback(); closeDB() }
 }
 
+// purge removes a user and its sessions outright.
+//
+// The two expiry tests run outside the harness transaction, so anything they
+// create survives the test. Setup tests assert the users table is EMPTY, so a
+// leftover user here fails an unrelated test in another file — exactly the
+// "no test should depend on state left by another" rule. Hard delete, not
+// SoftDelete: a soft-deleted row is still a row.
+func purge(t *testing.T, db *testutil.DB, userID uuid.UUID) {
+	t.Helper()
+	_, err := db.SQL.Exec(`DELETE FROM sessions WHERE user_id = $1`, userID)
+	require.NoError(t, err)
+	_, err = db.SQL.Exec(`DELETE FROM users WHERE id = $1`, userID)
+	require.NoError(t, err)
+}
+
 // seedUser creates a real user: sessions.user_id is a foreign key, so a
 // made-up uuid cannot be saved.
 func seedUser(t *testing.T, q *dbgen.Queries) uuid.UUID {
@@ -190,14 +205,17 @@ func TestStore_DeleteForUser(t *testing.T) {
 
 func TestStore_ExpiredRowDoesNotLoad(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
-	defer closeDB()
+	// Registered before the purge below so it runs AFTER it: t.Cleanup is
+	// LIFO, and a deferred close would run before either, leaving purge to
+	// talk to a closed database.
+	t.Cleanup(closeDB)
 
 	short := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
 		Path: "/", MaxAge: 1, HttpOnly: true,
 	})
 	id := seedUser(t, db.Queries)
 	value := saveNew(t, short, id)
-	t.Cleanup(func() { _ = short.DeleteForUser(context.Background(), id) })
+	t.Cleanup(func() { purge(t, db, id) })
 
 	require.False(t, load(t, short, value).IsNew, "it loads while live")
 
@@ -209,7 +227,7 @@ func TestStore_ExpiredRowDoesNotLoad(t *testing.T) {
 
 func TestStore_DeleteExpired(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
-	defer closeDB()
+	t.Cleanup(closeDB)
 
 	live := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{Path: "/", MaxAge: 3600})
 	short := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{Path: "/", MaxAge: 1})
@@ -218,8 +236,8 @@ func TestStore_DeleteExpired(t *testing.T) {
 	keep := saveNew(t, live, keepUser)
 	saveNew(t, short, goneUser)
 	t.Cleanup(func() {
-		_ = live.DeleteForUser(context.Background(), keepUser)
-		_ = live.DeleteForUser(context.Background(), goneUser)
+		purge(t, db, keepUser)
+		purge(t, db, goneUser)
 	})
 
 	require.Eventually(t, func() bool {
