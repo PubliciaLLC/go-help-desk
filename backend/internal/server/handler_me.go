@@ -41,6 +41,23 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// Every other session for this user, then a fresh one for the caller.
+	// Changing your password is how you evict someone who has your old one, so
+	// the other sessions must die — but signing yourself out of the tab you
+	// just used to do it is a bug, not security.
+	if err := s.sessions.DeleteForUser(r.Context(), a.UserID); err != nil {
+		handleError(w, err)
+		return
+	}
+	if err := s.writeSession(w, r, auth.SessionData{
+		UserID:    a.UserID,
+		Role:      a.Role,
+		MFAPassed: a.MFAPassed,
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }
 

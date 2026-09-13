@@ -151,6 +151,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 				handleError(w, err)
 				return
 			}
+			// Disabling an account that keeps working until its cookie
+			// expires is not disabling it.
+			if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+				handleError(w, err)
+				return
+			}
 		} else {
 			if err := s.users.Enable(r.Context(), id); err != nil {
 				handleError(w, err)
@@ -175,6 +181,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
+		// An existing session carries MFAPassed=true, and handleMFAEnrollStart
+		// passes that straight in as allowReenroll — so without this, whoever
+		// holds a cookie minted before the reset can enrol their own
+		// authenticator afterwards, no password needed.
+		if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+			handleError(w, err)
+			return
+		}
 	}
 
 	// Profile field updates.
@@ -184,6 +198,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
+		originalRole := u.Role
 		if body.DisplayName != nil {
 			u.DisplayName = *body.DisplayName
 		}
@@ -193,9 +208,20 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if body.Role != nil {
 			u.Role = user.Role(*body.Role)
 		}
+		// A role change must not leave the old role live in an existing
+		// session, which carries Role in its payload. Only for a role change:
+		// renaming someone should not sign them out.
+		roleChanged := body.Role != nil && user.Role(*body.Role) != originalRole
+
 		if err := s.users.Update(r.Context(), u); err != nil {
 			handleError(w, err)
 			return
+		}
+		if roleChanged {
+			if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+				handleError(w, err)
+				return
+			}
 		}
 	}
 
@@ -235,6 +261,12 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		handleError(w, err)
 		return
 	}
+	// An administrator resetting someone's password is usually responding to a
+	// compromise, so any session opened with the old one has to go.
+	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -245,6 +277,12 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
+	// SoftDelete is an UPDATE, so the sessions table's ON DELETE CASCADE never
+	// fires and the deleted user's sessions would outlive them.
+	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -317,13 +318,41 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// writeSession persists session data to the cookie store.
+// writeSession stores session data under a NEWLY MINTED session id.
+//
+// Rotating the id is the whole point, not an implementation detail. The
+// callers that matter are privilege changes — login, MFA verification, SAML
+// and OIDC callbacks, signup, password change — and reusing the incoming id
+// across one of those is session fixation: an attacker obtains a valid id (any
+// account will do, including one they signed up for), plants that cookie in a
+// victim's
+// browser, and when the victim authenticates, the attacker's own cookie is now
+// the victim's authenticated session. Verified end to end before this fix: the
+// planted cookie returned the victim's identity from /me.
+//
+// The stateless cookie store this replaced was immune by accident — the cookie
+// WAS the state, so logging in overwrote it with a payload the attacker never
+// saw. Moving state server-side removes that accident, so the rotation has to
+// be deliberate.
+//
+// OWASP's Session Management guidance puts it as: renew the session identifier
+// on any privilege change.
 func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.SessionData) error {
-	// Ignore the decode error: CookieStore.Get always returns a usable session
-	// even when an existing cookie can't be decoded (e.g. after a module rename
-	// changes gob type paths). We're overwriting the session anyway.
+	// Ignore the decode error: Get always returns a usable session even when an
+	// existing cookie can't be decoded. We're replacing it anyway.
 	session, _ := s.sessions.Get(r, auth.SessionName)
-	session.Values["session"] = sd
+
+	if session.ID != "" {
+		// Drop the row the incoming cookie pointed at, then clear the id so
+		// Save mints a new one. Deleting matters as much as rotating: left
+		// behind, the old id keeps working for whoever still holds it.
+		if err := s.sessions.Delete(r.Context(), session.ID); err != nil {
+			return fmt.Errorf("rotating session: %w", err)
+		}
+		session.ID = ""
+	}
+
+	session.Values[auth.SessionDataKey] = sd
 	return session.Save(r, w)
 }
 

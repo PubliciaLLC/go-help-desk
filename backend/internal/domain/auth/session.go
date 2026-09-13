@@ -35,6 +35,14 @@ type SessionData struct {
 // logout, not two.
 const SessionName = "ghd_session"
 
+// SessionDataKey is the key SessionData is stored under inside a session.
+//
+// Named because the session store reads it too: it lifts the user id out of
+// the payload into an indexed column so every session a user holds can be
+// revoked without decoding each row. A bare string literal in two packages is
+// how those two quietly stop agreeing.
+const SessionDataKey = "session"
+
 // LegacySessionName is the pre-rename cookie name. Nothing reads it: a cookie
 // under this name cannot be decrypted any more regardless, because the keys
 // that signed it were derived under the old HKDF labels.

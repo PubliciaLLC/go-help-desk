@@ -139,6 +139,15 @@ type Plugin struct {
 	InstalledAt time.Time `json:"installed_at"`
 }
 
+type Session struct {
+	ID        string        `json:"id"`
+	UserID    uuid.NullUUID `json:"user_id"`
+	Data      []byte        `json:"data"`
+	ExpiresAt time.Time     `json:"expires_at"`
+	CreatedAt time.Time     `json:"created_at"`
+	UpdatedAt time.Time     `json:"updated_at"`
+}
+
 type Setting struct {
 	Key   string          `json:"key"`
 	Value json.RawMessage `json:"value"`
