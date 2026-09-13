@@ -229,6 +229,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The smoke test above only ever runs the runner's own architecture. The
+      # release is multi-arch, and the way that breaks is asymmetric: the build
+      # succeeds and the image dies with "exec format error" on the platform
+      # nobody tested. Cross-building every target here catches a Dockerfile
+      # that only cross-compiles correctly for amd64.
+      #
+      # No `load:` — a multi-platform result cannot be loaded into the local
+      # docker image store, and there is nothing to run anyway on a runner that
+      # is not those architectures. The Dockerfile asserts its own GOARCH
+      # internally, so a wrong-architecture binary fails the build rather than
+      # producing an image that merely looks fine.
+      - name: Cross-build every released platform
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
       # Building an image proves it compiles, not that it starts. Issue #43 was
       # a build failure; the class of problem it belongs to — a container that
       # builds and then dies, or starts and serves nothing — was invisible to
