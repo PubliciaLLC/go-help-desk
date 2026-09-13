@@ -48,31 +48,46 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r.Post("/", s.handleCreateTicket)
 	// /tickets/fields must be registered before /{id} to avoid ambiguity
 	r.Get("/fields", s.handleResolveFieldsForCTI)
-	r.Get("/{id}", s.handleGetTicket)
-	r.Patch("/{id}", s.handleUpdateTicket)
-	r.Post("/{id}/replies", s.handleAddReply)
-	r.Get("/{id}/replies", s.handleListReplies)
-	r.Post("/{id}/resolve", s.handleResolveTicket)
-	r.Post("/{id}/reopen", s.handleReopenTicket)
-	r.Post("/{id}/close", s.handleCloseTicket)
-	r.Post("/{id}/links", s.handleAddLink)
-	r.Delete("/{id}/links/{targetId}/{linkType}", s.handleRemoveLink)
-	r.Get("/{id}/links", s.handleListLinks)
-	r.Get("/{id}/history", s.handleListStatusHistory)
+	// Everything addressing a specific ticket goes through requireTicketAccess.
+	// Applying it per handler is what failed: it was on GET and PATCH and
+	// missing from the fifteen routes beneath them, so the reply thread of a
+	// ticket you could not read was readable. As a subtree middleware a new
+	// route cannot forget it.
+	r.Route("/{id}", func(r chi.Router) {
+		r.Use(s.requireTicketAccess)
 
-	r.Get("/{id}/tags", s.handleListTicketTags)
-	r.Post("/{id}/tags", s.handleAddTicketTag)
-	r.Delete("/{id}/tags/{tagId}", s.handleRemoveTicketTag)
+		r.Get("/", s.handleGetTicket)
+		r.Patch("/", s.handleUpdateTicket)
 
-	// Canned responses are for staff/admin composing replies, not the reporting user.
-	r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).Get("/{id}/canned-responses", s.handleListTicketCannedResponses)
+		r.Post("/replies", s.handleAddReply)
+		r.Get("/replies", s.handleListReplies)
 
-	r.Get("/{id}/attachments", s.handleListAttachments)
-	r.Post("/{id}/attachments", s.handleUploadAttachment)
-	r.Get("/{id}/attachments/{attachId}", s.handleDownloadAttachment)
+		r.Post("/resolve", s.handleResolveTicket)
+		r.Post("/reopen", s.handleReopenTicket)
+		r.Post("/close", s.handleCloseTicket)
 
-	r.Get("/{id}/custom-fields", s.handleListTicketCustomFields)
-	r.Put("/{id}/custom-fields", s.handlePutTicketCustomFields)
+		r.Post("/links", s.handleAddLink)
+		r.Delete("/links/{targetId}/{linkType}", s.handleRemoveLink)
+		r.Get("/links", s.handleListLinks)
+
+		r.Get("/history", s.handleListStatusHistory)
+
+		r.Get("/tags", s.handleListTicketTags)
+		r.Post("/tags", s.handleAddTicketTag)
+		r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
+
+		// Canned responses are for staff/admin composing replies, not the
+		// reporting user.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+			Get("/canned-responses", s.handleListTicketCannedResponses)
+
+		r.Get("/attachments", s.handleListAttachments)
+		r.Post("/attachments", s.handleUploadAttachment)
+		r.Get("/attachments/{attachId}", s.handleDownloadAttachment)
+
+		r.Get("/custom-fields", s.handleListTicketCustomFields)
+		r.Put("/custom-fields", s.handlePutTicketCustomFields)
+	})
 
 	return r
 }
