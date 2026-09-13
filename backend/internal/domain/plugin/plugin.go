@@ -18,21 +18,21 @@ const (
 
 // Manifest describes a plugin's identity and capabilities.
 type Manifest struct {
-	ID          string // reverse-DNS identifier, e.g. "com.example.slack-notifier"
-	Name        string
-	Version     string
-	Description string
-	Author      string
-	Hooks       []notification.EventType // events this plugin subscribes to
-	Runtime     Runtime
+	ID          string                   `json:"id"` // reverse-DNS identifier, e.g. "com.example.slack-notifier"
+	Name        string                   `json:"name"`
+	Version     string                   `json:"version"`
+	Description string                   `json:"description"`
+	Author      string                   `json:"author"`
+	Hooks       []notification.EventType `json:"hooks"` // events this plugin subscribes to
+	Runtime     Runtime                  `json:"runtime"`
 }
 
 // Plugin is the persisted record of an installed plugin.
 type Plugin struct {
-	Manifest    Manifest
-	Enabled     bool
-	WASMPath    string // path to .wasm file on disk; empty for native plugins
-	InstalledAt time.Time
+	Manifest    Manifest  `json:"manifest"`
+	Enabled     bool      `json:"enabled"`
+	WASMPath    string    `json:"-"` // path to .wasm file on disk; empty for native plugins
+	InstalledAt time.Time `json:"installed_at"`
 }
 
 // Handler is the function a plugin provides to process an event.

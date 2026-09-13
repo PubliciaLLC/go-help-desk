@@ -13,12 +13,12 @@ import (
 // credentials grant. The secret is hashed on write; the raw secret is shown
 // once at creation.
 type OAuthClient struct {
-	ID           uuid.UUID
-	ClientID     string
-	HashedSecret string
-	Name         string
-	Scopes       []string
-	CreatedAt    time.Time
+	ID           uuid.UUID `json:"id"`
+	ClientID     string    `json:"client_id"`
+	HashedSecret string    `json:"-"` // never leaves the server; handleListOAuthClients serves this struct directly
+	Name         string    `json:"name"`
+	Scopes       []string  `json:"scopes"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Claims is the JWT payload issued for client credentials tokens.
