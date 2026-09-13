@@ -635,14 +635,19 @@ func TestResolve_UsesTheSameTimestampRuleAsUpdateStatus(t *testing.T) {
 	// A ticket arriving from Closed is being resolved afresh, so it gets a
 	// fresh stamp. Preserving the old one would judge the reporter against a
 	// window that expired before this resolution happened.
-	t.Run("a ticket resolved from Closed gets a fresh timestamp", func(t *testing.T) {
+	//
+	// seedClosed carries a ResolvedAt from before the close, which is what
+	// makes this meaningful: the preserve branch has to be rejected on the
+	// strength of the OLD STATUS, not because the field happened to be nil.
+	// An earlier version of this subtest drove UpdateStatus and started from a
+	// ticket with no ResolvedAt, so it passed even when the Resolve call site
+	// was given the wrong old status.
+	t.Run("Resolve on a closed ticket gets a fresh timestamp", func(t *testing.T) {
 		h := newHarness(t)
-		reporter := uuid.New()
-		seeded := h.seedResolved(reporter)
+		seeded := h.seedClosed()
 		stale := *seeded.ResolvedAt
-		require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
 
-		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+		_, err := h.svc.Resolve(context.Background(), seeded.ID, "resolved again",
 			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
 		require.NoError(t, err)
 
@@ -650,6 +655,24 @@ func TestResolve_UsesTheSameTimestampRuleAsUpdateStatus(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, stored.ResolvedAt.After(stale),
 			"a fresh resolution must not inherit the timestamp from before it was closed")
+		require.Nil(t, stored.ClosedAt)
+	})
+
+	// The same rule through the other door, so neither call site can be given
+	// the wrong old status without a test noticing.
+	t.Run("UpdateStatus on a closed ticket gets a fresh timestamp", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedClosed()
+		stale := *seeded.ResolvedAt
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.True(t, stored.ResolvedAt.After(stale))
+		require.Nil(t, stored.ClosedAt)
 	})
 }
 

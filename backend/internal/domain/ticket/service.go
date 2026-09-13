@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -311,10 +310,11 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	// as "never resolved", so an on-time resolution became a permanent false
 	// breach. Non-fatal and after the commit, matching Resolve.
 	if s.sla != nil && newStatusID == s.sys.resolvedID {
-		if err := s.sla.RecordResolved(ctx, t.ID, now); err != nil {
-			slog.WarnContext(ctx, "recording SLA resolution failed; the ticket may report a false breach",
-				"ticket_id", t.ID, "error", err)
-		}
+		// Non-fatal: SLA bookkeeping must not fail the status change it
+		// describes. Discarded here rather than logged because domain code
+		// does not log — cmd/server wraps the SLA service so the boundary
+		// reports these, which is where a failure can actually be seen.
+		_ = s.sla.RecordResolved(ctx, t.ID, now)
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -522,14 +522,9 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	// Non-fatal for the same reason AttachPolicy is — SLA reporting must not
 	// fail the resolution itself.
 	if s.sla != nil {
-		if err := s.sla.RecordResolved(ctx, t.ID, now); err != nil {
-			// Non-fatal — SLA bookkeeping must not fail the resolution — but
-			// not silent either. Discarded entirely, a transient failure here
-			// leaves resolved_at NULL forever and the ticket later reports a
-			// breach it did not commit, with nothing anywhere explaining why.
-			slog.WarnContext(ctx, "recording SLA resolution failed; the ticket may report a false breach",
-				"ticket_id", t.ID, "error", err)
-		}
+		// See UpdateStatus: non-fatal, and reported by the boundary wrapper in
+		// cmd/server rather than logged from the domain.
+		_ = s.sla.RecordResolved(ctx, t.ID, now)
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
