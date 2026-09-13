@@ -216,7 +216,13 @@ func TestSessionFixation_IdRotatesOnPrivilegeChange(t *testing.T) {
 		})
 	})
 
-	t.Run("MFA verification", func(t *testing.T) {
+	// The id must rotate at EVERY privilege change, so each step needs its own
+	// planted id. An earlier version of this subtest planted a pre-login id and
+	// then logged in — but login rotates, so the assertion passed without ever
+	// exercising verification. Neutering rotation in handleMFAVerify left it
+	// green. The cookie captured here is the one login just issued, which is
+	// the only id that can prove the verify step rotates.
+	t.Run("MFA verification rotates the post-login id", func(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
 		ctx := context.Background()
@@ -227,15 +233,26 @@ func TestSessionFixation_IdRotatesOnPrivilegeChange(t *testing.T) {
 		u, err := h.userSvc.GetByID(ctx, h.staffID)
 		require.NoError(t, err)
 
-		assertRotates(t, h, func(s *session) {
-			res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
-				map[string]any{"email": "staff@test.local", "password": "password"})
-			require.Equal(t, http.StatusOK, res.StatusCode)
-			code, err := totp.GenerateCode(u.MFASecret, time.Now())
-			require.NoError(t, err)
-			res, _ = s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
-				map[string]any{"code": code})
-			require.Equal(t, http.StatusNoContent, res.StatusCode)
-		})
+		victim := &session{h: h}
+		res, _ := victim.send(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "staff@test.local", "password": "password"})
+		require.Equal(t, http.StatusOK, res.StatusCode)
+
+		// The password-only session id, captured before the second factor.
+		halfAuthed := &session{h: h, jar: victim.jar}
+
+		code, err := totp.GenerateCode(u.MFASecret, time.Now())
+		require.NoError(t, err)
+		res, body := victim.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
+			map[string]any{"code": code})
+		require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+
+		res, _ = halfAuthed.send(t, http.MethodGet, "/api/v1/me", nil)
+		require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+			"the id held before the second factor must not survive passing it")
+
+		// And the victim's own session must still work.
+		res, _ = victim.send(t, http.MethodGet, "/api/v1/me", nil)
+		require.Equal(t, http.StatusOK, res.StatusCode)
 	})
 }

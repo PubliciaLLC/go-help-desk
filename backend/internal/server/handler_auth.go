@@ -318,14 +318,14 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
-// writeSession persists session data to the cookie store.
 // writeSession stores session data under a NEWLY MINTED session id.
 //
-// Rotating the id is the whole point, not an implementation detail. Every
-// caller here is a privilege change — login, MFA verification, SAML and OIDC
-// callbacks, signup, password change — and reusing the incoming id across one
-// of those is session fixation: an attacker obtains a valid id (any account
-// will do, including one they signed up for), plants that cookie in a victim's
+// Rotating the id is the whole point, not an implementation detail. The
+// callers that matter are privilege changes — login, MFA verification, SAML
+// and OIDC callbacks, signup, password change — and reusing the incoming id
+// across one of those is session fixation: an attacker obtains a valid id (any
+// account will do, including one they signed up for), plants that cookie in a
+// victim's
 // browser, and when the victim authenticates, the attacker's own cookie is now
 // the victim's authenticated session. Verified end to end before this fix: the
 // planted cookie returned the victim's identity from /me.
