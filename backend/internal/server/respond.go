@@ -48,3 +48,14 @@ func handleError(w http.ResponseWriter, err error) {
 	slog.Error("internal error", "error", err)
 	Error(w, http.StatusInternalServerError, "internal_error", "an internal error occurred")
 }
+
+// tooManyAttempts is the refusal for a spent credential budget.
+//
+// Deliberately the same message for every throttled endpoint: saying which
+// budget was spent, or how much remains, tells an attacker whether an account
+// exists and how close they are.
+func tooManyAttempts(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "60")
+	Error(w, http.StatusTooManyRequests, "rate_limited",
+		"too many attempts; please wait and try again")
+}

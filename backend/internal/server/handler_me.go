@@ -87,10 +87,19 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Same budget as verification: this also takes a six-digit code, and a
+	// caller confirming an enrolment already holds the secret, so a limit here
+	// costs nothing legitimate.
+	mfaKey := "mfa:" + a.UserID.String()
+	if !s.mfaLimiter.Allow(mfaKey) {
+		tooManyAttempts(w)
+		return
+	}
 	if err := s.users.ConfirmMFAEnrollment(r.Context(), a.UserID, body.Code); err != nil {
 		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
 		return
 	}
+	s.mfaLimiter.Reset(mfaKey)
 	// Successful enrollment satisfies this login's MFA challenge — flip the
 	// session so forced-enrollment users aren't locked out until they log out.
 	if err := s.writeSession(w, r, auth.SessionData{

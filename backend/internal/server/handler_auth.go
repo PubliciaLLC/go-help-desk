@@ -26,6 +26,17 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keyed on the address being attacked, not the network address, so the
+	// limit holds whatever the deployment topology is and cannot be shaken off
+	// by rotating IPs. Normalised the same way the lookup normalises, and
+	// counted whether or not the account exists — otherwise 429-versus-401 is
+	// a user-enumeration oracle.
+	loginKey := "login:" + strings.ToLower(strings.TrimSpace(body.Email))
+	if !s.loginLimiter.Allow(loginKey) {
+		tooManyAttempts(w)
+		return
+	}
+
 	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
 	if err != nil {
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
@@ -42,6 +53,9 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	//   - not enrolled & role is in enforced list → must enroll before access (mfa_enrollment_needed)
 	//   - otherwise → session is fully authenticated
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
+	// The password was right, so prior failures for this address stop counting.
+	s.loginLimiter.Reset(loginKey)
+
 	mfaNeeded := mfaEnabled && u.MFAEnabled
 	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 	mfaPassed := !mfaNeeded && !mfaEnrollmentNeeded
@@ -84,10 +98,22 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Keyed on the user, which is the account under attack, and which no
+	// proxy topology can obscure. There is no anonymous lockout vector here:
+	// reaching this endpoint at all requires a session that already passed the
+	// password, so burning someone's TOTP budget means you already hold their
+	// password — an alarm, not a denial of service.
+	mfaKey := "mfa:" + a.UserID.String()
+	if !s.mfaLimiter.Allow(mfaKey) {
+		tooManyAttempts(w)
+		return
+	}
+
 	if err := s.users.VerifyMFACode(r.Context(), a.UserID, body.Code); err != nil {
 		Error(w, http.StatusUnauthorized, "invalid_mfa_code", "invalid TOTP code")
 		return
 	}
+	s.mfaLimiter.Reset(mfaKey)
 	if err := s.writeSession(w, r, auth.SessionData{
 		UserID:    a.UserID,
 		Role:      a.Role,

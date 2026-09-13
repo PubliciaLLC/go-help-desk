@@ -127,9 +127,14 @@ type AuthStoreIface interface {
 
 // Server is the top-level HTTP handler.
 type Server struct {
-	// authLimiter throttles credential endpoints. Built from config so the
-	// test harness can disable it with 0.
-	authLimiter *authmw.RateLimiter
+	// loginLimiter throttles password attempts, keyed on the submitted email.
+	// mfaLimiter throttles TOTP attempts, keyed on the authenticated user.
+	//
+	// Separate because the secrets differ: a password is protected by bcrypt
+	// and an unbounded keyspace, a TOTP code is six digits with three values
+	// live at once. The TOTP budget has to be far stingier to mean anything.
+	loginLimiter *authmw.RateLimiter
+	mfaLimiter   *authmw.RateLimiter
 
 	cfg      *config.Config
 	router   *chi.Mux
@@ -202,9 +207,14 @@ func New(
 		oauthClientStore: oauthClients,
 		authStore:        authStore,
 		cannedResponses:  cannedResponses,
-		// Built here rather than injected: it is derived entirely from config
-		// and has no other collaborators.
-		authLimiter: authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		// Built here rather than injected: derived entirely from config, no
+		// other collaborators.
+		loginLimiter: authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		// Deliberately not configurable, and deliberately mean. At 5 per 15
+		// minutes a holder of the password needs roughly a month to reach a
+		// few percent chance against the code space; at 10 per minute the same
+		// attacker passes even odds inside a fortnight.
+		mfaLimiter: authmw.NewRateLimiter(mfaAttemptLimit, mfaAttemptWindow),
 	}
 	s.router = s.buildRouter()
 	return s
@@ -250,9 +260,23 @@ func requestLogger(next http.Handler) http.Handler {
 	})
 }
 
+// TOTP attempt budget. Not configurable: an operator lowering the bar here
+// would not know they had, and there is no legitimate workflow that needs more
+// than a handful of code entries in a quarter of an hour.
+const (
+	mfaAttemptLimit  = 5
+	mfaAttemptWindow = 15 * time.Minute
+)
+
 func (s *Server) buildRouter() *chi.Mux {
 	r := chi.NewRouter()
-	r.Use(chimw.RealIP)
+	// chimw.RealIP is deliberately NOT installed. It overwrites RemoteAddr
+	// from X-Forwarded-For, which is attacker controlled; its only consumer
+	// here was the rate limiter, and it made that limiter bypassable with a
+	// header. Nothing else reads RemoteAddr. If real client addresses are
+	// wanted later — a login audit trail is the plausible reason — they come
+	// back with a trusted-proxy setting attached, so that getting it wrong
+	// costs a log field rather than a security control.
 	r.Use(chimw.RequestID)
 	r.Use(chimw.Recoverer)
 	r.Use(requestLogger)

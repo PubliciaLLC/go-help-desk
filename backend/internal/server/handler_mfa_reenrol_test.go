@@ -60,6 +60,34 @@ func (s *session) send(t *testing.T, method, path string, body any) (*http.Respo
 	return res, b
 }
 
+// sendWithHeaders is send with extra request headers.
+func (s *session) sendWithHeaders(t *testing.T, method, path string, body any, headers map[string]string) (*http.Response, []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+	}
+	req := httptest.NewRequest(method, path, &buf)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	for _, c := range s.jar {
+		req.AddCookie(c)
+	}
+	rr := httptest.NewRecorder()
+	s.h.srv.ServeHTTP(rr, req)
+	res := rr.Result()
+	if cs := res.Cookies(); len(cs) > 0 {
+		s.jar = cs
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	return res, b
+}
+
 func mfaProtectedStaff(t *testing.T, h *harness) {
 	t.Helper()
 	ctx := context.Background()
