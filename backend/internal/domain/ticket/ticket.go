@@ -246,6 +246,25 @@ func CanUserUpdate(t Ticket, u user.User, status Status, reopenWindowDays int) e
 	return nil
 }
 
+// CanAssign returns nil if the actor with the given role may set or clear a
+// ticket's assignee.
+//
+// DESIGN.md gives assignment to Staff ("Assign tickets to any staff member or
+// group"); the User row covers creating, viewing and updating their own
+// tickets and says nothing about assignment. Being able to see a ticket is a
+// separate question from being able to direct work on it — the subtree
+// middleware answers the first, this answers the second.
+//
+// Deliberately a predicate rather than a check inside Service.Assign: routing
+// rules auto-assign on create via SystemActor, and authorisation belongs to
+// the caller, as it does for CanTransitionStatus.
+func CanAssign(role user.Role) error {
+	if role == user.RoleUser {
+		return ErrForbidden
+	}
+	return nil
+}
+
 // CanTransitionStatus returns nil if the actor with the given role may move
 // a ticket from one status to another.
 // Rules:

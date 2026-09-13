@@ -164,6 +164,39 @@ func TestCanUserUpdate(t *testing.T) {
 	}
 }
 
+// CanAssign is the rule DESIGN.md states for the Staff row ("Assign tickets to
+// any staff member or group") and omits from the User row. It is enforced at
+// the handler rather than inside Service.Assign, because routing rules
+// auto-assign on create through SystemActor.
+func TestCanAssign(t *testing.T) {
+	cases := []struct {
+		name    string
+		role    user.Role
+		wantErr bool
+	}{
+		{name: "admin may assign", role: user.RoleAdmin},
+		{name: "staff may assign", role: user.RoleStaff},
+		{name: "reporting user may not assign", role: user.RoleUser, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ticket.CanAssign(tc.role)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ticket.ErrForbidden)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// SystemActor carries RoleAdmin precisely so auto-assignment keeps working on
+// a ticket a reporter filed. If that ever changes, routing rules break at the
+// point of creation and this is the cheapest place to find out.
+func TestCanAssign_SystemActorMayAssign(t *testing.T) {
+	require.NoError(t, ticket.CanAssign(ticket.SystemActor.Role))
+}
+
 func TestCanTransitionStatus(t *testing.T) {
 	statusClosed := ticket.Status{Name: ticket.StatusNameClosed, Kind: ticket.StatusKindSystem}
 	statusResolved := ticket.Status{Name: ticket.StatusNameResolved, Kind: ticket.StatusKindSystem}
