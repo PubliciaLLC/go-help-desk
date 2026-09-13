@@ -237,6 +237,23 @@ type statusRecorder struct {
 	status int
 }
 
+// Flush forwards to the underlying writer. Embedding http.ResponseWriter gives
+// this type that interface and nothing else, so without an explicit forward a
+// `w.(http.Flusher)` assertion downstream fails even when the real writer
+// flushes fine. mcp-go's SSE transport makes exactly that assertion and answers
+// 500 "Streaming unsupported" when it misses, which killed MCP entirely the
+// moment this logger was placed in front of it.
+func (sr *statusRecorder) Flush() {
+	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the writer underneath, which is the
+// modern way past this whole class of wrapper problem — deadlines, and any
+// optional interface added to net/http later.
+func (sr *statusRecorder) Unwrap() http.ResponseWriter { return sr.ResponseWriter }
+
 func (sr *statusRecorder) WriteHeader(code int) {
 	sr.status = code
 	sr.ResponseWriter.WriteHeader(code)

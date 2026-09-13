@@ -96,6 +96,11 @@ func TestProtectMCP_LogDoesNotLeakTheAPIKey(t *testing.T) {
 	req.Header.Set("Authorization", "ApiKey "+h.apiKey)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
 
+	// Positive assertion first: two NotContains checks both pass against an empty
+	// buffer, so without this the test would keep passing if logging broke
+	// entirely — which is the opposite of what it exists to guard.
+	require.Contains(t, buf.String(), "/mcp/sse", "expected the request to be logged at all")
+
 	require.NotContains(t, buf.String(), h.apiKey, "the raw API key must never reach the log")
 	require.False(t, strings.Contains(strings.ToLower(buf.String()), "authorization"))
 }

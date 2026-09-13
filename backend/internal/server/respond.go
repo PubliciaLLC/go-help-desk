@@ -61,6 +61,13 @@ func handleError(w http.ResponseWriter, err error) {
 	// 500 told the caller "an internal error occurred" for a boundary working
 	// exactly as designed, and buried a real authorisation event in the error
 	// log where it reads as a server bug.
+	// Not a permission problem: the caller may well own this ticket. The ticket
+	// is in a state that does not accept the change, which is what 409 is for.
+	// It fell through to 500 for the same reason ErrForbidden did.
+	if errors.Is(err, ticket.ErrClosed) {
+		Error(w, http.StatusConflict, "ticket_closed", "this ticket is closed")
+		return
+	}
 	if errors.Is(err, ticket.ErrForbidden) {
 		Error(w, http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 		return

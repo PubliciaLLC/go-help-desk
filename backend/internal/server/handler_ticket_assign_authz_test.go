@@ -159,3 +159,39 @@ func TestReportingUser_ResolveIsForbiddenNotServerError(t *testing.T) {
 	require.Equal(t, "forbidden", body.Error.Code,
 		"the code must say forbidden, not internal_error")
 }
+
+// ErrClosed took the same 500 path ErrForbidden did. It is a different thing —
+// the caller owns the ticket and is allowed to reply; the ticket's state does
+// not accept it — so it gets 409 rather than 403.
+func TestReplyToClosedTicket_IsConflictNotServerError(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "will be closed", "description": "x", "category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+
+	// Admin closes it; only admins may.
+	resp = h.doAsAdmin(t, http.MethodPost,
+		fmt.Sprintf("/api/v1/tickets/%s/close", created.ID), map[string]any{})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = h.doAsUser(t, http.MethodPost,
+		fmt.Sprintf("/api/v1/tickets/%s/replies", created.ID),
+		map[string]any{"body": "still there?"})
+	require.Equal(t, http.StatusConflict, resp.StatusCode,
+		"a closed ticket is a state conflict, not an internal error")
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "ticket_closed", body.Error.Code)
+}
