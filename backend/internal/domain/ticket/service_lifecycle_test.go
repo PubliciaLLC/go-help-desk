@@ -586,3 +586,134 @@ func TestRemoveStatus_DeletesWhenNothingReferencesIt(t *testing.T) {
 	require.NoError(t, h.svc.RemoveStatus(context.Background(), custom.ID))
 	require.Equal(t, 1, h.statuses.deletes)
 }
+
+// Resolve and UpdateStatus are two doors into the same state, and they
+// disagreed: UpdateStatus went through applyStatusTimestamps while Resolve set
+// ResolvedAt by hand. So the rule the helper exists to enforce held on one path
+// and not the other.
+func TestResolve_UsesTheSameTimestampRuleAsUpdateStatus(t *testing.T) {
+	// Re-resolving must not restart the reopen window. UpdateStatus already
+	// guaranteed this; Resolve did not, so a reporter's window silently moved
+	// depending on which endpoint staff happened to use.
+	t.Run("re-resolving preserves the original timestamp", func(t *testing.T) {
+		h := newHarness(t)
+		reporter := uuid.New()
+		seeded := h.seedResolved(reporter)
+		original := *seeded.ResolvedAt
+
+		_, err := h.svc.Resolve(context.Background(), seeded.ID, "again",
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.True(t, stored.ResolvedAt.Equal(original),
+			"resolving an already-resolved ticket must not extend the reopen window")
+	})
+
+	// Resolving a CLOSED ticket left closed_at set on a now-open ticket, which
+	// hides it from the auto-close query permanently.
+	t.Run("resolving a closed ticket clears closed_at", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+		require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+
+		closed, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, closed.ClosedAt, "precondition")
+
+		_, err = h.svc.Resolve(context.Background(), seeded.ID, "reopened and resolved",
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.ClosedAt, "a resolved ticket is not closed")
+		require.NotNil(t, stored.ResolvedAt)
+	})
+
+	// A ticket arriving from Closed is being resolved afresh, so it gets a
+	// fresh stamp. Preserving the old one would judge the reporter against a
+	// window that expired before this resolution happened.
+	//
+	// seedClosed carries a ResolvedAt from before the close, which is what
+	// makes this meaningful: the preserve branch has to be rejected on the
+	// strength of the OLD STATUS, not because the field happened to be nil.
+	//
+	// An earlier version of this subtest drove UpdateStatus despite its name,
+	// so the Resolve call site was never exercised and passing it the wrong
+	// old status left the suite green. Its fixture was fine — the ticket did
+	// carry a stale ResolvedAt, because Close sets ClosedAt without clearing
+	// it. Only the door was wrong.
+	t.Run("Resolve on a closed ticket gets a fresh timestamp", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedClosed()
+		stale := *seeded.ResolvedAt
+
+		_, err := h.svc.Resolve(context.Background(), seeded.ID, "resolved again",
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.True(t, stored.ResolvedAt.After(stale),
+			"a fresh resolution must not inherit the timestamp from before it was closed")
+		require.Nil(t, stored.ClosedAt)
+	})
+
+	// The same rule through the other door, so neither call site can be given
+	// the wrong old status without a test noticing.
+	t.Run("UpdateStatus on a closed ticket gets a fresh timestamp", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedClosed()
+		stale := *seeded.ResolvedAt
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.True(t, stored.ResolvedAt.After(stale))
+		require.Nil(t, stored.ClosedAt)
+	})
+}
+
+// SLA resolution was recorded in Resolve and not in UpdateStatus — the other
+// door into Resolved. A ticket resolved by PATCHing status_id therefore left
+// sla_records.resolved_at NULL, which the breach evaluator reads as "never
+// resolved" and reports as a permanent false breach.
+func TestUpdateStatus_RecordsTheSLAResolution(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions,
+		"resolving through UpdateStatus must record the SLA resolution too")
+}
+
+func TestResolve_RecordsTheSLAResolution(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+
+	_, err := h.svc.Resolve(context.Background(), seeded.ID, "done",
+		ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+}
+
+// Moving to any other status is not a resolution and must not record one.
+func TestUpdateStatus_DoesNotRecordSLAForOtherStatuses(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.closedStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleAdmin})
+	require.NoError(t, err)
+
+	require.Zero(t, h.sla.resolutions)
+}

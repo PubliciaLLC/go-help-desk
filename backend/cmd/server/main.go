@@ -147,7 +147,10 @@ func run() error {
 	// not a (*sla.Service)(nil) wrapped in an interface (which would pass != nil checks).
 	var slaSvc ticket.SLAService
 	if cfg.SLAEnabled {
-		slaSvc = sla.NewService(slStore)
+		// Wrapped so SLA bookkeeping failures are reported. The ticket
+		// service treats them as non-fatal and drops them, and the domain
+		// does not log — so without this they vanish entirely.
+		slaSvc = newLoggingSLA(sla.NewService(slStore), slog.Default())
 	}
 
 	// ── Notifications ─────────────────────────────────────────────────────────
