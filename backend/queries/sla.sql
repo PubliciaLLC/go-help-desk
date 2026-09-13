@@ -18,11 +18,26 @@ DELETE FROM sla_policies WHERE id = $1;
 SELECT * FROM sla_policies ORDER BY priority, name;
 
 -- name: FindSLAPolicy :one
--- Category-specific policy takes precedence over a global one (category_id IS NULL).
+-- The four tiers DESIGN.md documents, most specific first:
+--   1. Priority + Category
+--   2. Priority only      (category_id IS NULL = any category)
+--   3. Category only      (priority IS NULL = any priority)
+--   4. Catch-all          (neither set)
+--
+-- A NULL column means "matches anything", so the WHERE admits every candidate
+-- and the ORDER BY picks the most specific. Before this, priority was NOT NULL
+-- and the predicate required an exact match, so tiers 3 and 4 could neither be
+-- stored nor matched.
 SELECT * FROM sla_policies
-WHERE priority = $1
-  AND (category_id = $2 OR category_id IS NULL)
-ORDER BY category_id NULLS LAST
+WHERE (priority IS NULL OR priority = sqlc.arg(priority)::text)
+  AND (category_id IS NULL OR category_id = sqlc.arg(category_id)::uuid)
+ORDER BY
+  CASE
+    WHEN priority IS NOT NULL AND category_id IS NOT NULL THEN 1
+    WHEN priority IS NOT NULL THEN 2
+    WHEN category_id IS NOT NULL THEN 3
+    ELSE 4
+  END
 LIMIT 1;
 
 -- name: CreateSLARecord :exec

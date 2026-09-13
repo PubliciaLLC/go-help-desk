@@ -27,8 +27,10 @@ func (s *Server) handleListSLAPolicies(w http.ResponseWriter, r *http.Request) {
 // POST /admin/sla/policies
 func (s *Server) handleCreateSLAPolicy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name                string     `json:"name"`
-		Priority            string     `json:"priority"`
+		Name string `json:"name"`
+		// A pointer so an omitted or null priority stays distinct from an
+		// empty string: omitted is the catch-all tier, "" is a bad request.
+		Priority            *string    `json:"priority"`
 		CategoryID          *uuid.UUID `json:"category_id"`
 		ResponseTargetMin   int        `json:"response_target_min"`
 		ResolutionTargetMin int        `json:"resolution_target_min"`
@@ -37,9 +39,13 @@ func (s *Server) handleCreateSLAPolicy(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	var priority *ticket.Priority
+	if body.Priority != nil {
+		priority = ptrPriority(ticket.Priority(*body.Priority))
+	}
 	p, err := s.slaPolicies.CreatePolicy(r.Context(), sla.Policy{
 		Name:                body.Name,
-		Priority:            ticket.Priority(body.Priority),
+		Priority:            priority,
 		CategoryID:          body.CategoryID,
 		ResponseTargetMin:   body.ResponseTargetMin,
 		ResolutionTargetMin: body.ResolutionTargetMin,
@@ -70,6 +76,7 @@ func (s *Server) handleUpdateSLAPolicy(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name                *string    `json:"name"`
 		Priority            *string    `json:"priority"`
+		ClearPriority       bool       `json:"clear_priority"`
 		CategoryID          *uuid.UUID `json:"category_id"`
 		ClearCategory       bool       `json:"clear_category"`
 		ResponseTargetMin   *int       `json:"response_target_min"`
@@ -82,8 +89,12 @@ func (s *Server) handleUpdateSLAPolicy(w http.ResponseWriter, r *http.Request) {
 	if body.Name != nil {
 		existing.Name = *body.Name
 	}
-	if body.Priority != nil {
-		existing.Priority = ticket.Priority(*body.Priority)
+	// Mirrors clear_category: a null and an absent priority both decode to a
+	// nil pointer, so widening a policy to every priority needs its own flag.
+	if body.ClearPriority {
+		existing.Priority = nil
+	} else if body.Priority != nil {
+		existing.Priority = ptrPriority(ticket.Priority(*body.Priority))
 	}
 	if body.ClearCategory {
 		existing.CategoryID = nil
@@ -116,3 +127,5 @@ func (s *Server) handleDeleteSLAPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func ptrPriority(p ticket.Priority) *ticket.Priority { return &p }

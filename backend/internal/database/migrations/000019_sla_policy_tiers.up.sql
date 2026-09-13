@@ -1,0 +1,11 @@
+-- Allow the two SLA tiers DESIGN.md documents but the schema forbade.
+--
+-- "Policy Matching" lists four tiers by specificity: Priority+Category,
+-- Priority only, Category only, and a catch-all with neither. The column was
+-- NOT NULL, so the last two could not be stored at all — a ticket whose
+-- priority had no policy silently got no SLA even where tier 3 or 4 should
+-- have applied.
+--
+-- NULL means "any priority". The existing CHECK still constrains the non-NULL
+-- values, since a CHECK passes on NULL.
+ALTER TABLE sla_policies ALTER COLUMN priority DROP NOT NULL;

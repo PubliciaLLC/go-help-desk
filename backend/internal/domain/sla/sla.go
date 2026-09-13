@@ -7,15 +7,16 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
-// Policy defines the response and resolution time targets for a given
-// priority level, optionally narrowed to a specific category.
+// Policy defines the response and resolution time targets for tickets it
+// matches, optionally narrowed to a priority, a category, or both. A policy
+// that narrows neither is the catch-all tier.
 type Policy struct {
 	ID                  uuid.UUID
 	Name                string
-	Priority            ticket.Priority
-	CategoryID          *uuid.UUID // nil = applies to all categories
-	ResponseTargetMin   int        // minutes until first response required
-	ResolutionTargetMin int        // minutes until resolution required
+	Priority            *ticket.Priority // nil = applies to all priorities
+	CategoryID          *uuid.UUID       // nil = applies to all categories
+	ResponseTargetMin   int              // minutes until first response required
+	ResolutionTargetMin int              // minutes until resolution required
 }
 
 // Record tracks SLA state for a single ticket.
