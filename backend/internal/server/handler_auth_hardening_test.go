@@ -122,3 +122,33 @@ func TestMFALock_ClearedOnSuccess(t *testing.T) {
 			"failure %d should be inside a refreshed budget, not a carried-over one", i)
 	}
 }
+
+// reset_mfa had no test at any layer before #120 and none after its revert, so
+// the only thing that ever covered it was the requirement test that went away
+// with the requirement. This covers the operation itself, which is what
+// actually needs to keep working.
+func TestAdminResetMFA(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	enrollMFA(t, ctx, h.userSvc, h.staffID)
+
+	before, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+	require.True(t, before.MFAEnabled, "precondition: the user is enrolled")
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+h.staffID.String(),
+		map[string]any{"reset_mfa": true})
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode,
+		"an MFA reset needs nothing else in the request")
+
+	after, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+	require.False(t, after.MFAEnabled, "MFA must be off so the user re-enrols")
+	require.Empty(t, after.MFASecret, "the old secret must be gone, not merely disabled")
+
+	// The password is deliberately untouched: that was the over-correction.
+	_, err = h.userSvc.VerifyPassword(ctx, "staff@test.local", "password")
+	require.NoError(t, err, "an MFA reset must not disturb the password")
+}

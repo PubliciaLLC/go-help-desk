@@ -577,10 +577,11 @@ func (s *Service) CheckMFALock(ctx context.Context, id uuid.UUID) error {
 // RecordMFAFailure counts a wrong code and reports ErrMFALocked once the
 // account has spent its attempts.
 //
-// The lock is time-based rather than administrator-cleared on purpose. An
-// administrator clearing it would have to clear MFA to do so, and clearing MFA
-// is what hands the account to whoever already holds the password — see the
-// reset path in handler_admin_users.go.
+// The lock is time-based rather than administrator-cleared on purpose: it
+// expires on its own, so a user locked out by a wrong code gets back in
+// without needing anyone, and an administrator is not drawn into clearing MFA
+// — which would leave the account open to whoever already knows the password
+// until the legitimate user re-enrols.
 func (s *Service) RecordMFAFailure(ctx context.Context, id uuid.UUID) error {
 	_, lockedUntil, err := s.store.RecordMFAFailure(ctx, id, MFAMaxFailedAttempts, MFALockDuration)
 	if err != nil {
