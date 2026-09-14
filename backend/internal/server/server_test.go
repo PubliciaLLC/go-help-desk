@@ -999,24 +999,30 @@ func TestGetMe_AsStaff(t *testing.T) {
 	require.Equal(t, h.staffID, u.ID)
 }
 
+// Through a signed-in session, not the harness API key: changing your own
+// password is refused to machine credentials, because a credential acts at its
+// owner's identity and must not be able to become them. The assertions are
+// unchanged — only how the caller authenticates.
 func TestChangePassword_AsStaff(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.do(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
+	sess := loggedIn(t, h)
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
 		"password": "newpassword123",
 	})
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 }
 
 func TestChangePassword_TooShort(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.do(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
+	sess := loggedIn(t, h)
+	res, _ := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
 		"password": "short",
 	})
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────

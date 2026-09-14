@@ -286,15 +286,33 @@ func (s *Server) meRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
 
-	// MFA enrollment endpoints must remain reachable without a passed MFA
-	// challenge — otherwise a user forced to enroll cannot complete enrollment.
-	r.Get("/mfa/enroll", s.handleMFAEnrollStart)
-	r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+	// Everything that changes how this account authenticates is refused to API
+	// keys and OAuth clients. A credential acts at its owner's identity, so
+	// without this a leaked key was account takeover rather than the access it
+	// was issued for: change the password, re-enroll MFA against the attacker's
+	// authenticator, and the owner is locked out by a credential they created
+	// for a cron job. Scopes cannot help — the narrowest key still belongs to
+	// its owner.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.DenyMachineCredentials)
 
+		// MFA enrollment stays outside RequireMFA — otherwise a user compelled
+		// to enroll cannot complete enrollment.
+		r.Get("/mfa/enroll", s.handleMFAEnrollStart)
+		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireMFA)
+			r.Patch("/password", s.handleChangePassword)
+		})
+	})
+
+	// Reading your own identity is left to machine credentials: an integration
+	// legitimately needs to know who it is acting as, and this discloses
+	// nothing it could not already infer.
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.RequireMFA)
 		r.Get("/", s.handleGetMe)
-		r.Patch("/password", s.handleChangePassword)
 	})
 
 	return r

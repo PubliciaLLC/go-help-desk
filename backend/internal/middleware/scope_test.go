@@ -47,30 +47,30 @@ func TestRequireScope(t *testing.T) {
 			// The defect this whole change exists to fix: a credential issued
 			// before enforcement carries no scopes and could do everything.
 			name:     "scoped credential with no scopes is denied",
-			actor:    &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Scoped: true},
+			actor:    &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Machine: true},
 			required: ticketsRead, want: http.StatusForbidden,
 		},
 		{
 			name: "scoped credential with the scope is allowed",
-			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Scoped: true,
+			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Machine: true,
 				Scopes: []string{"tickets:read"}},
 			required: ticketsRead, want: http.StatusOK,
 		},
 		{
 			name: "write satisfies read",
-			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Scoped: true,
+			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Machine: true,
 				Scopes: []string{"tickets:write"}},
 			required: ticketsRead, want: http.StatusOK,
 		},
 		{
 			name: "read does not satisfy write",
-			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Scoped: true,
+			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Machine: true,
 				Scopes: []string{"tickets:read"}},
 			required: ticketsWrite, want: http.StatusForbidden,
 		},
 		{
 			name: "a different resource does not satisfy it",
-			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Scoped: true,
+			actor: &Actor{UserID: uuid.New(), Role: user.RoleAdmin, Machine: true,
 				Scopes: []string{"users:write"}},
 			required: ticketsWrite, want: http.StatusForbidden,
 		},
@@ -98,7 +98,7 @@ func TestRequireScope(t *testing.T) {
 // a 403 otherwise has to guess, and guessing leads to granting everything.
 func TestRequireScope_NamesTheMissingScope(t *testing.T) {
 	rr := runWithActor(t,
-		&Actor{UserID: uuid.New(), Role: user.RoleAdmin, Scoped: true,
+		&Actor{UserID: uuid.New(), Role: user.RoleAdmin, Machine: true,
 			Scopes: []string{"users:read"}},
 		ticketsWrite)
 
@@ -111,7 +111,7 @@ func TestRequireScope_NamesTheMissingScope(t *testing.T) {
 // RequireRole rather than instead of it.
 func TestRequireScope_CannotGrantBeyondTheRole(t *testing.T) {
 	// A reporting user's key carrying users:write.
-	actor := &Actor{UserID: uuid.New(), Role: user.RoleUser, Scoped: true,
+	actor := &Actor{UserID: uuid.New(), Role: user.RoleUser, Machine: true,
 		Scopes: []string{"users:write"}}
 
 	reached := false

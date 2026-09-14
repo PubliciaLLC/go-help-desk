@@ -27,11 +27,15 @@ type Actor struct {
 	MFAPassed bool
 	ClientID  string // non-empty for OAuth2 bearer token requests
 	Scopes    []string
-	// Scoped marks a credential whose scopes are enforced: API keys and OAuth
-	// clients. Without it, an empty Scopes slice is ambiguous — a session has
-	// none because it is unscoped, a credential has none because it was
-	// granted none, and those must resolve opposite ways.
-	Scoped bool
+	// Machine marks an API key or OAuth client — a credential acting on a
+	// person's behalf rather than the person themselves.
+	//
+	// It decides two things. Scopes are enforced only on machine credentials:
+	// an empty Scopes slice is otherwise ambiguous, since a session has none
+	// because it is unscoped and a credential has none because it was granted
+	// none, and those must resolve opposite ways. And the endpoints that change
+	// how an account authenticates are refused to machine credentials outright.
+	Machine bool
 }
 
 // GetActor retrieves the Actor from the request context. Returns nil if not set.
@@ -136,7 +140,7 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 				Role:      u.Role,
 				MFAPassed: true,
 				Scopes:    key.Scopes,
-				Scoped:    true,
+				Machine:   true,
 			}))
 		})
 	}
@@ -165,7 +169,7 @@ func RequireScope(required auth.Scope) func(http.Handler) http.Handler {
 				http.Error(w, `{"error":{"code":"unauthorized","message":"authentication required"}}`, http.StatusUnauthorized)
 				return
 			}
-			if !a.Scoped {
+			if !a.Machine {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -180,6 +184,35 @@ func RequireScope(required auth.Scope) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// DenyMachineCredentials refuses a request made by an API key or OAuth client.
+//
+// For the endpoints that change how the account itself authenticates: the
+// password, and MFA enrollment. A credential is issued so a script can do a
+// job; it is not the person, and it should not be able to become them.
+//
+// Without this, an API key acts at its owner's identity, so a leaked key was
+// full account takeover rather than the access it was issued for — change the
+// password, re-enroll MFA against an attacker's authenticator, and the human is
+// locked out of their own account by a credential they created for a cron job.
+// Revoking the key afterwards does not undo either.
+//
+// Scopes do not solve this. The narrowest possible key still belongs to its
+// owner, so any scope that reached these routes would reach account takeover.
+func DenyMachineCredentials(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a := GetActor(r)
+		if a == nil {
+			http.Error(w, `{"error":{"code":"unauthorized","message":"authentication required"}}`, http.StatusUnauthorized)
+			return
+		}
+		if a.Machine {
+			http.Error(w, `{"error":{"code":"session_required","message":"this action requires a signed-in session, not an API key or OAuth client"}}`, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RequireResource is RequireScope with the action taken from the HTTP method:
@@ -245,7 +278,7 @@ func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handle
 				MFAPassed: true,
 				ClientID:  claims.ClientID,
 				Scopes:    claims.Scopes,
-				Scoped:    true,
+				Machine:   true,
 			}))
 		})
 	}
