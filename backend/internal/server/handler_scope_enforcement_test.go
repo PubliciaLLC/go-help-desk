@@ -116,18 +116,65 @@ func TestScopeEnforcement_WriteImpliesRead(t *testing.T) {
 		"tickets:write must let the integration read back what it created")
 }
 
-// A scope cannot grant what the role denies. This is the property that keeps
-// scopes from becoming an escalation surface.
-func TestScopeEnforcement_CannotExceedTheOwnersRole(t *testing.T) {
+// A reporting user cannot mint a credential at all, so the escalation route of
+// "issue myself an admin-scoped key" is closed at the door.
+//
+// This is RequireRole doing its job, not the scope ordering — the ordering
+// property (a scope never grants what the role denies) is pinned at the
+// middleware layer by TestRequireScope_CannotGrantBeyondTheRole, where both
+// checks can be composed directly. Named for what it actually asserts.
+func TestScopeEnforcement_ReportingUsersCannotMintCredentials(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	// A key owned by the reporting user, carrying an admin scope.
 	resp := h.doAsUser(t, http.MethodPost, "/api/v1/admin/api-keys", map[string]any{
 		"name": "escalation-attempt", "scopes": []string{"users:write"},
 	})
-	require.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"a reporting user cannot even reach the credential admin endpoint")
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
+
+// The scope catalogue is itself behind a scope. It lists what every credential
+// in the system can be granted, which is reconnaissance worth refusing to a
+// credential that was granted nothing.
+func TestScopeEnforcement_CatalogueIsItselfScoped(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	none := mintKey(t, h, []string{})
+	resp := withKey(t, h, none, http.MethodGet, "/api/v1/admin/scopes", nil)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	withCreds := mintKey(t, h, []string{"credentials:read"})
+	resp = withKey(t, h, withCreds, http.MethodGet, "/api/v1/admin/scopes", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"credentials:read must be enough to build the picker")
+}
+
+// The reference endpoints a ticket client needs are covered by tickets:read,
+// not left open. They were reachable by a credential with no scopes at all.
+func TestScopeEnforcement_ReferenceEndpointsAreScoped(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	none := mintKey(t, h, []string{})
+	for _, path := range []string{
+		"/api/v1/tags", "/api/v1/statuses", "/api/v1/admin/security-warnings",
+	} {
+		t.Run(path, func(t *testing.T) {
+			resp := withKey(t, h, none, http.MethodGet, path, nil)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode,
+				"a credential with no scopes must not read %s", path)
+		})
+	}
+
+	reader := mintKey(t, h, []string{"tickets:read"})
+	for _, path := range []string{"/api/v1/tags", "/api/v1/statuses"} {
+		t.Run("allowed "+path, func(t *testing.T) {
+			resp := withKey(t, h, reader, http.MethodGet, path, nil)
+			require.Equal(t, http.StatusOK, resp.StatusCode,
+				"tickets:read must cover the reference data a ticket client needs")
+		})
+	}
 }
 
 // A typo must fail at creation rather than producing a credential that looks

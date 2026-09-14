@@ -80,3 +80,58 @@ func TestMachineCredential_CanStillReadItsOwnIdentity(t *testing.T) {
 	resp := h.do(t, http.MethodGet, "/api/v1/me", nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
+
+// /me/password is closed to machine credentials, but an admin-owned API key can
+// reach the same outcome the long way round: reset the password of user {id}
+// where {id} is its own owner. In practice every API key is admin-owned,
+// because only admins can mint one and it acts at its owner's role.
+//
+// Resetting OTHER users' credentials is ordinary administrative automation and
+// must keep working.
+func TestMachineCredential_CannotResetItsOwnOwnersCredentials(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// h.adminKey belongs to the seeded admin, so adminID is its own owner.
+	self := "/api/v1/admin/users/" + h.adminID.String()
+
+	resp := h.doAsAdmin(t, http.MethodPost, self+"/password",
+		map[string]any{"new_password": "attacker-chosen-password-123"})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"a key must not reset the password of the account it belongs to")
+
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "session_required", body.Error.Code)
+
+	resp = h.doAsAdmin(t, http.MethodPatch, self, map[string]any{"reset_mfa": true})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"nor reset its own owner's MFA")
+}
+
+func TestMachineCredential_CanStillAdministerOtherUsers(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// The staff user is a different account from the admin key's owner.
+	other := "/api/v1/admin/users/" + h.staffID.String()
+
+	resp := h.doAsAdmin(t, http.MethodPost, other+"/password",
+		map[string]any{"new_password": "a-legitimate-reset-123"})
+	require.Equal(t, http.StatusNoContent, resp.StatusCode,
+		"resetting another user's password is ordinary admin automation")
+}
+
+// A signed-in admin must still be able to reset their own credentials — the
+// guard is about machine credentials, not about self-service.
+func TestSession_CanStillResetItsOwnPassword(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	sess := loggedIn(t, h)
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password",
+		map[string]any{"password": "a-new-password-123"})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+}

@@ -295,6 +295,22 @@ The action is taken from the HTTP method — `GET` and `HEAD` need `read`,
 everything else needs `write` — and enforced per route group rather than per
 handler, so a route added later cannot forget it.
 
+**MCP is covered too.** Every MCP message is a POST, so the action cannot come
+from the method; each tool declares what it needs at registration. The read
+tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`) need
+`tickets:read` and the write tools (`create_ticket`, `add_reply`,
+`assign_ticket`, `update_ticket_status`) need `tickets:write`. The two reference
+tools sit under `tickets` rather than `categories`/`settings` because they exist
+to compose a ticket and are available to every role, unlike the administrative
+category and status endpoints. The top-level `/tags` and `/statuses` reference
+endpoints are covered by `tickets:read` for the same reason.
+
+A machine credential is also refused the endpoints that change how an account
+authenticates — its own (`/me/password`, `/me/mfa/enroll*`) and, through the
+admin surface, its own owner's. Scopes cannot express this: the narrowest key
+still belongs to its owner, so any scope reaching those routes reaches account
+takeover.
+
 `GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
 picker from it so the two cannot drift.
 

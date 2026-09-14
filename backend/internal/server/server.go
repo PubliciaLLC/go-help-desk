@@ -340,14 +340,14 @@ func (s *Server) buildRouter() *chi.Mux {
 		// these. Small in isolation, but a half-authenticated session should
 		// reach nothing but the challenge it still owes.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
-			Get("/tags", s.handleListActiveTags)
+			With(authmw.RequireResource(auth.ResourceTickets)).Get("/tags", s.handleListActiveTags)
 		// Public category/type/item listing (active only, no admin required).
 		r.Get("/categories", s.handleListPublicCategories)
 		r.Get("/categories/{id}/types", s.handleListPublicTypes)
 		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
-			Get("/statuses", s.handleListStatuses)
+			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

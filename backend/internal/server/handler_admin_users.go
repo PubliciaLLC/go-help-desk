@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // Admin user management: listing, creation, profile edits, password reset.
@@ -177,6 +178,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// for a rare one, so the requirement was removed. Password reset remains
 	// available separately when an administrator judges it warranted.
 	if body.ResetMFA {
+		if denySelfCredentialTakeover(w, r, id) {
+			return
+		}
 		if err := s.users.ResetMFA(r.Context(), id); err != nil {
 			handleError(w, err)
 			return
@@ -244,10 +248,36 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, detail)
 }
 
+// denySelfCredentialTakeover refuses a machine credential that is targeting the
+// account it belongs to.
+//
+// /me/password and /me/mfa/enroll are already closed to machine credentials,
+// but an API key owned by an administrator can reach the same outcome the long
+// way round: reset the password of user {id} where {id} is its own owner. The
+// key then holds a password its owner does not know, and MFA reset does the
+// same for the second factor.
+//
+// Resetting OTHER users' credentials is ordinary administrative automation and
+// stays available. Only the self-target is refused, because that is the one
+// case where the credential is escalating into being the person rather than
+// acting for them.
+func denySelfCredentialTakeover(w http.ResponseWriter, r *http.Request, target uuid.UUID) bool {
+	a := authmw.GetActor(r)
+	if a == nil || !a.Machine || a.UserID != target {
+		return false
+	}
+	Error(w, http.StatusForbidden, "session_required",
+		"an API key or OAuth client cannot reset the credentials of the account it belongs to")
+	return true
+}
+
 func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
+		return
+	}
+	if denySelfCredentialTakeover(w, r, id) {
 		return
 	}
 	var body struct {
