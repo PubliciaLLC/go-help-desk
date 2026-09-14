@@ -236,6 +236,27 @@ type Querier interface {
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
 	UpsertPendingRegistration(ctx context.Context, arg UpsertPendingRegistrationParams) (PendingRegistration, error)
+	// The lifetime is a duration in seconds, not a timestamp, so that expires_at is
+	// computed by the database — from clock_timestamp(), not now().
+	//
+	// It used to arrive as an absolute time from Go's clock while GetSession and
+	// DeleteExpiredSessions compared it against Postgres now(). Two clocks decided
+	// one lifetime: any skew between the application host and the database shortened
+	// every session by the offset, and skew larger than the session lifetime made
+	// every session expire the moment it was written — a login that appears to
+	// succeed and then does not, with nothing in the logs to say why. Nothing here
+	// needs the application's clock, so it no longer uses it.
+	//
+	// clock_timestamp() rather than now(), because now() is transaction-scoped: it
+	// returns the transaction's START time, so saving a session inside a
+	// transaction that has been open a while silently shortens it. Measured: a
+	// 3-second lifetime written 2 seconds into a transaction comes out as 0.99
+	// seconds, and a transaction older than the lifetime would write a row that is
+	// already expired — a login that reports success and then does not work.
+	// clock_timestamp() is the real time at statement execution and does not care
+	// how old the transaction is. The read and the sweep below use it for the same
+	// reason inverted: a frozen, earlier now() would keep an expired session
+	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
 }
 

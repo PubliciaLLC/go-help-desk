@@ -2,6 +2,7 @@ package sessionstore_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"net/http"
 	"net/http/httptest"
@@ -339,4 +340,85 @@ func TestStore_ReEnabledUsersSessionLoadsAgain(t *testing.T) {
 
 	require.False(t, load(t, st, value).IsNew,
 		"re-enabling the user must make their existing session work again")
+}
+
+// txQueries runs the GENERATED queries inside a caller-held transaction, so
+// these tests exercise the real SQL rather than SQL retyped into the test.
+func txQueries(t *testing.T, db *testutil.DB) (*dbgen.Queries, *sql.Tx, time.Time) {
+	t.Helper()
+	tx, err := db.SQL.Begin()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	var txStart time.Time
+	require.NoError(t, tx.QueryRow(`SELECT now()`).Scan(&txStart))
+	return dbgen.New(tx), tx, txStart
+}
+
+// A session's lifetime must not depend on how long the writing transaction has
+// been open.
+//
+// expires_at is computed by the database, and with now() that is the
+// TRANSACTION's start time, not the write's. Measured directly against
+// Postgres: a 3-second lifetime written 2 seconds into a transaction yields
+// 0.99 seconds. A transaction older than the lifetime writes a row that is
+// already expired — a login that reports success and then does not work.
+func TestStore_LifetimeIsUnaffectedByTransactionAge(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	t.Cleanup(closeDB)
+
+	id := seedUser(t, db.Queries)
+	t.Cleanup(func() { purge(t, db, id) })
+
+	q, tx, _ := txQueries(t, db)
+
+	// Outlive the lifetime we are about to request, without ending the transaction.
+	const lifetime = 2
+	time.Sleep(3 * time.Second)
+
+	sessionID := "tx-age-" + uuid.NewString()
+	require.NoError(t, q.UpsertSession(context.Background(), dbgen.UpsertSessionParams{
+		ID:              sessionID,
+		UserID:          uuid.NullUUID{UUID: id, Valid: true},
+		Data:            []byte("x"),
+		LifetimeSeconds: lifetime,
+	}))
+
+	var expiresAt, realNow time.Time
+	require.NoError(t, tx.QueryRow(
+		`SELECT expires_at, clock_timestamp() FROM sessions WHERE id = $1`, sessionID).
+		Scan(&expiresAt, &realNow))
+
+	require.True(t, expiresAt.After(realNow),
+		"a session written by an old transaction must not be born expired")
+	require.InDelta(t, float64(lifetime), expiresAt.Sub(realNow).Seconds(), 0.5,
+		"the writing transaction's age leaked into the session lifetime")
+}
+
+// The read side has the same hazard inverted, and it fails OPEN: now() inside a
+// long transaction is EARLIER than real time, so a session that expired while
+// the transaction was open would still satisfy the filter and keep
+// authenticating.
+func TestStore_ExpiredSessionDoesNotLoadInsideALongTransaction(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	t.Cleanup(closeDB)
+
+	id := seedUser(t, db.Queries)
+	t.Cleanup(func() { purge(t, db, id) })
+
+	q, _, _ := txQueries(t, db)
+
+	sessionID := "read-clock-" + uuid.NewString()
+	require.NoError(t, q.UpsertSession(context.Background(), dbgen.UpsertSessionParams{
+		ID:              sessionID,
+		UserID:          uuid.NullUUID{UUID: id, Valid: true},
+		Data:            []byte("x"),
+		LifetimeSeconds: 1,
+	}))
+
+	time.Sleep(2 * time.Second)
+
+	_, err := q.GetSession(context.Background(), sessionID)
+	require.ErrorIs(t, err, sql.ErrNoRows,
+		"an expired session must stop loading however long the reading transaction has been open")
 }

@@ -18,7 +18,6 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/securecookie"
@@ -145,9 +144,13 @@ func (s *Store) Save(r *http.Request, w http.ResponseWriter, session *sessions.S
 		ID: session.ID,
 		// Denormalised out of the payload so revocation can find every session
 		// a user holds without decoding each row.
-		UserID:    userIDFrom(session),
-		Data:      buf.Bytes(),
-		ExpiresAt: time.Now().Add(time.Duration(maxAge) * time.Second),
+		UserID: userIDFrom(session),
+		Data:   buf.Bytes(),
+		// A duration, not a deadline: the database computes expires_at from its
+		// own now(), which is the same clock GetSession and the expiry sweep
+		// compare against. Sending an absolute time from here made a session's
+		// lifetime depend on two clocks agreeing.
+		LifetimeSeconds: int32(maxAge),
 	}); err != nil {
 		return fmt.Errorf("saving session: %w", err)
 	}
