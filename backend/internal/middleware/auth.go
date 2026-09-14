@@ -27,6 +27,11 @@ type Actor struct {
 	MFAPassed bool
 	ClientID  string // non-empty for OAuth2 bearer token requests
 	Scopes    []string
+	// Scoped marks a credential whose scopes are enforced: API keys and OAuth
+	// clients. Without it, an empty Scopes slice is ambiguous — a session has
+	// none because it is unscoped, a credential has none because it was
+	// granted none, and those must resolve opposite ways.
+	Scoped bool
 }
 
 // GetActor retrieves the Actor from the request context. Returns nil if not set.
@@ -131,7 +136,48 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 				Role:      u.Role,
 				MFAPassed: true,
 				Scopes:    key.Scopes,
+				Scoped:    true,
 			}))
+		})
+	}
+}
+
+// RequireScope refuses a request whose credential does not carry the scope the
+// route needs.
+//
+// It runs AFTER RequireRole, and that order is the whole design: a scope
+// narrows, it never grants. An API key acts at its owner's role and an OAuth
+// client acts as staff, so `users:write` on a key owned by a reporting user
+// still reaches nothing — RequireRole has already refused.
+//
+// Session-authenticated requests carry no scopes and are not scoped. A browser
+// session IS the user, with whatever their role allows; scopes exist to give a
+// machine credential less than its owner, and there is nothing to narrow when
+// the human is driving.
+func RequireScope(required auth.Scope) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a := GetActor(r)
+			if a == nil {
+				// No actor at all is RequireRole's to answer, not ours; saying
+				// "insufficient scope" to an anonymous caller would tell them
+				// the route exists and misname why they were refused.
+				http.Error(w, `{"error":{"code":"unauthorized","message":"authentication required"}}`, http.StatusUnauthorized)
+				return
+			}
+			if !a.Scoped {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !auth.Allows(a.Scopes, required) {
+				// The scope name is from a fixed vocabulary with no quotes or
+				// backslashes, so it cannot break the JSON literal.
+				http.Error(w, fmt.Sprintf(
+					`{"error":{"code":"insufficient_scope","message":"this credential does not carry the %s scope"}}`,
+					required), http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }
@@ -173,6 +219,7 @@ func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handle
 				MFAPassed: true,
 				ClientID:  claims.ClientID,
 				Scopes:    claims.Scopes,
+				Scoped:    true,
 			}))
 		})
 	}
