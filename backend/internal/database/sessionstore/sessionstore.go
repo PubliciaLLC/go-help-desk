@@ -92,7 +92,9 @@ func (s *Store) New(r *http.Request, name string) (*sessions.Session, error) {
 		return session, nil
 	}
 
-	if err := gob.NewDecoder(bytes.NewReader(row.Data)).Decode(&session.Values); err != nil {
+	// GetSession embeds the session row because it joins users to exclude
+	// disabled and deleted accounts; the join columns are not selected.
+	if err := gob.NewDecoder(bytes.NewReader(row.Session.Data)).Decode(&session.Values); err != nil {
 		// gob leaves the map partly filled on a failed decode. The middleware
 		// checks IsNew first so this is not reachable today, but a handler
 		// reading Values without that check would see fragments of a session

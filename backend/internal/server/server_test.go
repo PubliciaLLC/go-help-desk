@@ -63,6 +63,7 @@ type harness struct {
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
+	sessions        *sessionstore.Store
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -255,6 +256,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
 		userID:          reportingUser.ID,
+		sessions:        sessionStore,
 	}
 	cleanup := func() {
 		rollback()
@@ -295,6 +297,46 @@ func (h *harness) doAsAdmin(t *testing.T, method, path string, body any) *http.R
 	rr := httptest.NewRecorder()
 	h.srv.ServeHTTP(rr, req)
 	return rr.Result()
+}
+
+// doWithBearer sends a request carrying an OAuth client-credentials token.
+func (h *harness) doWithBearer(t *testing.T, token, path string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+// doWithCookie sends a request carrying a raw Set-Cookie value as its Cookie.
+func (h *harness) doWithCookie(t *testing.T, cookie, path string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Cookie", cookie)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+// oauthToken runs the client-credentials grant and returns the access token.
+func (h *harness) oauthToken(t *testing.T, clientID, clientSecret string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, json.NewEncoder(&buf).Encode(map[string]any{
+		"grant_type": "client_credentials", "client_id": clientID, "client_secret": clientSecret,
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/token", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "token grant failed: %s", rr.Body.String())
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&out))
+	require.NotEmpty(t, out.AccessToken)
+	return out.AccessToken
 }
 
 // doAsUser sends a request authenticated as the seeded reporting (RoleUser) user.

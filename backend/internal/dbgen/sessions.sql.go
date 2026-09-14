@@ -46,21 +46,41 @@ func (q *Queries) DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUI
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, user_id, data, expires_at, created_at, updated_at FROM sessions WHERE id = $1 AND expires_at > now()
+SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at FROM sessions s
+LEFT JOIN users u ON u.id = s.user_id
+WHERE s.id = $1
+  AND s.expires_at > now()
+  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL))
 `
+
+type GetSessionRow struct {
+	Session Session `json:"session"`
+}
 
 // Only unexpired rows: an expired session must behave exactly like a missing
 // one, so a stale row cannot authenticate anybody between sweeps.
-func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
+//
+// The join makes a disabled or deleted user's session behave the same way.
+// Disabling already deletes a user's sessions, but that is a write racing the
+// login it is meant to stop: a disable landing between the password check and
+// the session INSERT deleted nothing and left a live session behind. Deciding
+// it here instead means there is no window to lose — the row simply does not
+// load. This costs no extra round trip, since the session lookup already
+// queries the database on every authenticated request.
+//
+// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
+// PKCE verifier) into a session before anybody has authenticated, and an inner
+// join would drop those and break the login it is protecting.
+func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, error) {
 	row := q.db.QueryRowContext(ctx, getSession, id)
-	var i Session
+	var i GetSessionRow
 	err := row.Scan(
-		&i.ID,
-		&i.UserID,
-		&i.Data,
-		&i.ExpiresAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.Session.ID,
+		&i.Session.UserID,
+		&i.Session.Data,
+		&i.Session.ExpiresAt,
+		&i.Session.CreatedAt,
+		&i.Session.UpdatedAt,
 	)
 	return i, err
 }

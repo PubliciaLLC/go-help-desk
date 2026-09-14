@@ -273,3 +273,42 @@ func TestCreate_PriorityValidation(t *testing.T) {
 		})
 	}
 }
+
+// An expired reopen window is not a permission problem: the caller owns the
+// ticket and may reopen it in general. Returning ErrForbidden told them "you do
+// not have permission", which sends them to an administrator for something no
+// administrator can grant.
+func TestCanUserUpdate_ExpiredReopenWindowIsNotForbidden(t *testing.T) {
+	owner := user.User{ID: uuid.New(), Role: user.RoleUser}
+	resolved := time.Now().AddDate(0, 0, -30)
+
+	tk := ticket.Ticket{ReporterUserID: &owner.ID, ResolvedAt: &resolved}
+	err := ticket.CanUserUpdate(tk, owner, ticket.Status{Name: ticket.StatusNameResolved}, 7)
+
+	require.ErrorIs(t, err, ticket.ErrReopenWindowClosed)
+	require.NotErrorIs(t, err, ticket.ErrForbidden,
+		"the window closing must be distinguishable from a permission refusal")
+}
+
+// Inside the window it still succeeds — a fix that refused everyone would pass
+// the test above.
+func TestCanUserUpdate_InsideReopenWindowSucceeds(t *testing.T) {
+	owner := user.User{ID: uuid.New(), Role: user.RoleUser}
+	resolved := time.Now().AddDate(0, 0, -1)
+
+	tk := ticket.Ticket{ReporterUserID: &owner.ID, ResolvedAt: &resolved}
+	require.NoError(t, ticket.CanUserUpdate(tk, owner,
+		ticket.Status{Name: ticket.StatusNameResolved}, 7))
+}
+
+// A non-owner is still a permission refusal, so the two errors stay distinct in
+// both directions.
+func TestCanUserUpdate_NonOwnerIsStillForbidden(t *testing.T) {
+	other := uuid.New()
+	tk := ticket.Ticket{ReporterUserID: &other}
+	err := ticket.CanUserUpdate(tk, user.User{ID: uuid.New(), Role: user.RoleUser},
+		ticket.Status{Name: ticket.StatusNameNew}, 7)
+
+	require.ErrorIs(t, err, ticket.ErrForbidden)
+	require.NotErrorIs(t, err, ticket.ErrReopenWindowClosed)
+}

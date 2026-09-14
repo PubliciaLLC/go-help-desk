@@ -99,7 +99,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
-	chain = authmw.BearerAuth(s.cfg.JWTSecret)(chain)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
@@ -320,7 +320,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
 	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
-	r.Use(authmw.BearerAuth(s.cfg.JWTSecret))
+	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID))
 
 	// Health check — no auth required.
 	r.Get("/health", s.handleHealth)

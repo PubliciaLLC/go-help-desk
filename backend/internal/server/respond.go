@@ -68,6 +68,13 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "ticket_closed", "this ticket is closed")
 		return
 	}
+	// Also 409 rather than 403: nothing about the caller's permissions would
+	// change the answer, so a message about permission would send them to an
+	// administrator who cannot help.
+	if errors.Is(err, ticket.ErrReopenWindowClosed) {
+		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
+		return
+	}
 	if errors.Is(err, ticket.ErrForbidden) {
 		Error(w, http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 		return

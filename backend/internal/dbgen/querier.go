@@ -105,7 +105,19 @@ type Querier interface {
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	// Only unexpired rows: an expired session must behave exactly like a missing
 	// one, so a stale row cannot authenticate anybody between sweeps.
-	GetSession(ctx context.Context, id string) (Session, error)
+	//
+	// The join makes a disabled or deleted user's session behave the same way.
+	// Disabling already deletes a user's sessions, but that is a write racing the
+	// login it is meant to stop: a disable landing between the password check and
+	// the session INSERT deleted nothing and left a live session behind. Deciding
+	// it here instead means there is no window to lose — the row simply does not
+	// load. This costs no extra round trip, since the session lookup already
+	// queries the database on every authenticated request.
+	//
+	// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
+	// PKCE verifier) into a session before anybody has authenticated, and an inner
+	// join would drop those and break the login it is protecting.
+	GetSession(ctx context.Context, id string) (GetSessionRow, error)
 	GetSetting(ctx context.Context, key string) (json.RawMessage, error)
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
 	GetStatusByName(ctx context.Context, name string) (Status, error)

@@ -203,6 +203,11 @@ func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
 var (
 	ErrForbidden = errors.New("forbidden")
 	ErrClosed    = errors.New("ticket is closed")
+	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
+	// caller owns the ticket and has the right to reopen it in general. What
+	// expired is the window, and telling them "you do not have permission"
+	// sends them to an administrator for something no administrator can grant.
+	ErrReopenWindowClosed = errors.New("the reopen window for this ticket has closed")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.
@@ -235,12 +240,13 @@ func CanUserUpdate(t Ticket, u user.User, status Status, reopenWindowDays int) e
 	}
 	if status.Name == StatusNameResolved {
 		if t.ResolvedAt == nil {
-			// Resolved but no timestamp — treat as permanently resolved.
-			return ErrForbidden
+			// Resolved but no timestamp — treat as permanently resolved. Same
+			// outcome for the caller as an expired window, so same error.
+			return ErrReopenWindowClosed
 		}
 		deadline := t.ResolvedAt.AddDate(0, 0, reopenWindowDays)
 		if time.Now().After(deadline) {
-			return ErrForbidden
+			return ErrReopenWindowClosed
 		}
 	}
 	return nil

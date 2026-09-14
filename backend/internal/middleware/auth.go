@@ -82,6 +82,12 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 // It returns the key and the owning user. Return a non-nil error to reject.
 type APIKeyAuthFunc func(ctx context.Context, hashed string) (auth.APIKey, user.User, error)
 
+// OAuthClientLookupFunc resolves an OAuth client by its client ID. BearerAuth
+// calls it on every request so that deleting a client revokes its outstanding
+// tokens; without it a token stays valid for its full hour no matter what the
+// administrator does, which is not a revocation mechanism at all.
+type OAuthClientLookupFunc func(ctx context.Context, clientID string) (auth.OAuthClient, error)
+
 // APIKeyMarkUsedFunc is called asynchronously to update last_used_at.
 type APIKeyMarkUsedFunc func(ctx context.Context, id uuid.UUID, at time.Time) error
 
@@ -132,7 +138,7 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 
 // BearerAuth reads "Authorization: Bearer <jwt>", verifies it as an OAuth2
 // client credentials token, and attaches a synthetic actor.
-func BearerAuth(jwtSecret string) func(http.Handler) http.Handler {
+func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if GetActor(r) != nil {
@@ -147,6 +153,18 @@ func BearerAuth(jwtSecret string) func(http.Handler) http.Handler {
 			}
 			claims, err := auth.VerifyAccessToken(raw[len(prefix):], jwtSecret)
 			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// A valid signature only proves this token was issued, not that the
+			// client it names still exists. Deleting a client is the only
+			// revocation this system offers, and until this lookup it revoked
+			// nothing: the token kept working until it expired on its own.
+			if lookup == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if _, err := lookup(r.Context(), claims.ClientID); err != nil {
 				next.ServeHTTP(w, r)
 				return
 			}

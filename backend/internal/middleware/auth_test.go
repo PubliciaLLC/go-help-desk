@@ -4,6 +4,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -180,7 +181,7 @@ func TestBearerAuth_ValidJWT_SetsActor(t *testing.T) {
 	require.NoError(t, err)
 
 	var captured *Actor
-	handler := BearerAuth(jwtSecret)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := BearerAuth(jwtSecret, clientFound)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -197,7 +198,7 @@ func TestBearerAuth_ValidJWT_SetsActor(t *testing.T) {
 
 func TestBearerAuth_Invalid_PassesThrough(t *testing.T) {
 	var captured *Actor
-	handler := BearerAuth("secret")(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+	handler := BearerAuth("secret", clientFound)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		captured = GetActor(r)
 	}))
 
@@ -279,4 +280,56 @@ func TestAPIKeyAuth_SoftDeletedUser_AttachesNoActor(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	require.Nil(t, got, "a soft-deleted user's key must not produce an actor")
+}
+
+// clientFound is the lookup for tests about token validity itself: the client
+// still exists, so the only thing under test is the token.
+func clientFound(_ context.Context, clientID string) (auth.OAuthClient, error) {
+	return auth.OAuthClient{ClientID: clientID}, nil
+}
+
+// A signature-valid, unexpired token for a client that has since been deleted
+// must not authenticate. Deleting the client is the only revocation this system
+// offers; before the lookup it revoked nothing and the token ran its full hour.
+func TestBearerAuth_DeletedClient_PassesThrough(t *testing.T) {
+	const jwtSecret = "test-secret"
+	token, err := auth.IssueAccessToken(auth.OAuthClient{
+		ID: uuid.New(), ClientID: "client-gone", Scopes: []string{"tickets:read"},
+	}, jwtSecret)
+	require.NoError(t, err)
+
+	notFound := func(_ context.Context, _ string) (auth.OAuthClient, error) {
+		return auth.OAuthClient{}, errors.New("no such client")
+	}
+
+	var captured *Actor
+	handler := BearerAuth(jwtSecret, notFound)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		captured = GetActor(r)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	require.Nil(t, captured, "a deleted client's token must not produce an actor")
+}
+
+// Guard against wiring BearerAuth with no lookup and silently restoring the old
+// behaviour: refuse rather than authenticate.
+func TestBearerAuth_NilLookup_RefusesRatherThanTrusts(t *testing.T) {
+	const jwtSecret = "test-secret"
+	token, err := auth.IssueAccessToken(auth.OAuthClient{
+		ID: uuid.New(), ClientID: "client-abc",
+	}, jwtSecret)
+	require.NoError(t, err)
+
+	var captured *Actor
+	handler := BearerAuth(jwtSecret, nil)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		captured = GetActor(r)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	require.Nil(t, captured, "no lookup means no way to check revocation, so refuse")
 }
