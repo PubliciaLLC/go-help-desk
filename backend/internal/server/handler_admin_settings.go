@@ -46,6 +46,24 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// The settings that decide who may authenticate, and how, are off limits to
+	// machine credentials for the same reason /me/password is: they are a route
+	// to becoming someone rather than acting for them. Turning MFA off
+	// instance-wide, pointing SAML or OIDC at another IdP, or opening
+	// registration each get an attacker a session they should not have.
+	//
+	// Everything else here — site name, SLA toggle, reopen window — is ordinary
+	// configuration and stays available.
+	if isMachine(r) {
+		for _, k := range admin.AuthCriticalKeys() {
+			if _, ok := body[k]; ok {
+				Error(w, http.StatusForbidden, "session_required",
+					"an API key or OAuth client cannot change "+k+"; this requires a signed-in session")
+				return
+			}
+		}
+	}
+
 	// Validate before writing anything. ticket.go documents the prefix as
 	// "enforced where the setting is saved rather than where a ticket is
 	// created" — nothing enforced it, so an invalid prefix was accepted with a

@@ -149,6 +149,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Administrators are managed by administrators, not by automation.
+	//
+	// Before any mutation, because the disable below used to be applied before
+	// the promotion guard further down — a refused request that had already
+	// disabled the account.
+	//
+	// Guarding only promotion left the reverse open: demote an administrator,
+	// then reset the password of what is now a staff account, then sign in.
+	// Three requests. The rule is therefore the whole account, in either
+	// direction: a machine credential may not change an administrator's role,
+	// email, enabled state, password or MFA, and may not create or promote one.
+	if isMachine(r) {
+		if s.denyMachineTargetingAdmin(w, r, id, "modify an administrator") {
+			return
+		}
+		if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin {
+			denyMachineAdminTakeover(w, r, "promote a user to administrator")
+			return
+		}
+	}
+
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
@@ -182,9 +203,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// for a rare one, so the requirement was removed. Password reset remains
 	// available separately when an administrator judges it warranted.
 	if body.ResetMFA {
-		if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's MFA") {
-			return
-		}
 		if err := s.users.ResetMFA(r.Context(), id); err != nil {
 			handleError(w, err)
 			return
@@ -197,14 +215,6 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-	}
-
-	// Promotion to administrator is the other route to holding an
-	// administrator's password: promote someone, reset their password, sign in
-	// as them.
-	if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin &&
-		denyMachineAdminTakeover(w, r, "promote a user to administrator") {
-		return
 	}
 
 	// Profile field updates.
@@ -343,6 +353,9 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
+		return
+	}
+	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {

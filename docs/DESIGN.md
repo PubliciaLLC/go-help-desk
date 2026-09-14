@@ -314,7 +314,23 @@ The rule is about administrators rather than about the credential's own owner
 because refusing only the owner closed the path and not the outcome: every key
 reaching `/admin` is administrator-owned, so `users:write` allowed creating a
 second administrator, signing in as them, and resetting the first one's
-password. Managing non-administrator users stays available.
+password. Guarding only promotion left the reverse open too — demote an
+administrator, reset the now-staff account's password, sign in — so the rule
+covers the whole account in either direction. Managing non-administrator users
+stays available.
+
+Three more things are off limits to a machine credential, for the same reason:
+
+- **Changing the SAML or OIDC configuration.** Repointing the identity provider
+  at one the caller controls, then asserting a federated administrator's
+  subject, yields an administrator session. Reading the configuration is fine.
+- **Changing an auth-critical setting** — MFA enablement and enforcement, the
+  SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
+  configuration such as the site name stays automatable.
+- **Issuing a credential broader than itself.** Otherwise `credentials:write` is
+  every scope: hold only that, mint a key with `users:write`, use it. A
+  signed-in administrator is exempt — they already hold everything a credential
+  could be granted, so they are not escalating.
 
 Scopes cannot express any of this. The narrowest possible key still belongs to
 its owner, so any scope reaching those routes reaches account takeover.

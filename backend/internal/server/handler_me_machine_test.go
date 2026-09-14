@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -194,4 +195,158 @@ func TestMachineCredential_EscalationChainIsBlockedAtStepOne(t *testing.T) {
 		require.NotEqual(t, "pivot@test.local", u.Email,
 			"the refused administrator must not have been created")
 	}
+}
+
+// Guarding promotion left the reverse open: demote an administrator, then reset
+// the password of what is now a staff account, then sign in as them. Three
+// requests to hold a human's account and strip an administrator.
+func TestMachineCredential_CannotDemoteThenTakeOverAnAdministrator(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		"/api/v1/admin/users/"+h.adminID.String(), map[string]any{"role": "staff"})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"a machine credential must not change an administrator's role in either direction")
+
+	// And the demotion must not have happened, or the next request succeeds.
+	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/users/"+h.adminID.String(), nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var u struct {
+		Role string `json:"role"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&u))
+	require.Equal(t, "admin", u.Role, "the refused demotion must not have been applied")
+}
+
+// The guard runs before any mutation. It used to sit after the disable, so a
+// refused request had already disabled the account.
+func TestMachineCredential_RefusedUpdateAppliesNothing(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		"/api/v1/admin/users/"+h.adminID.String(),
+		map[string]any{"disabled": true, "role": "staff"})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+	// The admin key still works, which it would not if the disable had landed.
+	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/users", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"the refused disable must not have been applied")
+}
+
+func TestMachineCredential_CannotDeleteOrLockOutAnAdministrator(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	target := "/api/v1/admin/users/" + h.adminID.String()
+
+	for _, tc := range []struct {
+		name, method string
+		body         any
+	}{
+		{"delete", http.MethodDelete, nil},
+		{"disable", http.MethodPatch, map[string]any{"disabled": true}},
+		{"change email", http.MethodPatch, map[string]any{"email": "attacker@evil.test"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := h.doAsAdmin(t, tc.method, target, tc.body)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+		})
+	}
+}
+
+// Repointing the identity provider is a route to an administrator session:
+// aim SAML or OIDC at an IdP you control, assert a federated administrator's
+// subject, and the login succeeds at their role.
+func TestMachineCredential_CannotRepointTheIdentityProvider(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPut, "/api/v1/admin/oidc", map[string]any{
+		"issuer_url": "https://idp.attacker.example", "client_id": "x", "client_secret": "y",
+	})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "OIDC config is off limits")
+
+	resp = h.doAsAdmin(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": "https://idp.attacker.example/meta", "cert_pem": "c", "key_pem": "k",
+	})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "SAML config is off limits")
+}
+
+// Turning MFA off instance-wide, or opening registration, reaches a session the
+// caller should not have just as surely.
+func TestMachineCredential_CannotChangeAuthCriticalSettings(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	for _, body := range []map[string]any{
+		{"mfa_enabled": false},
+		{"open_registration_enabled": true},
+		{"allowed_email_domains": []string{"evil.test"}},
+	} {
+		resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings", body)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode,
+			"auth-critical setting %v must be refused", body)
+	}
+
+	// Ordinary configuration is still automatable.
+	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"site_name": "Renamed By Automation"})
+	require.Equal(t, http.StatusNoContent, resp.StatusCode,
+		"non-auth settings must stay available to automation")
+}
+
+// credentials:write was every scope: hold only that, mint a key with
+// users:write, use it.
+func TestMachineCredential_CannotMintABroaderCredential(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	narrow := mintKey(t, h, []string{"credentials:write", "credentials:read"})
+
+	resp := withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
+		map[string]any{"name": "escalation", "scopes": []string{"users:write"}})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"a credential must not mint one broader than itself")
+
+	var body struct {
+		Error struct{ Code, Message string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "insufficient_scope", body.Error.Code)
+	require.Contains(t, body.Error.Message, "users:write")
+
+	// Minting within its own scopes is still fine.
+	resp = withKey(t, h, narrow, http.MethodPost, "/api/v1/admin/api-keys",
+		map[string]any{"name": "sibling", "scopes": []string{"credentials:read"}})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
+// A signed-in administrator is not escalating — they already hold everything a
+// credential could be granted — so the subset rule must not apply to them.
+func TestSession_CanStillMintAnyCredential(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	sess := &session{h: h}
+	res, body := sess.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "admin@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+
+	res, body = sess.send(t, http.MethodPost, "/api/v1/admin/api-keys",
+		map[string]any{"name": "issued-by-a-human", "scopes": []string{"users:write", "settings:write"}})
+	require.Equal(t, http.StatusCreated, res.StatusCode, "body: %s", body)
+}
+
+// denyMachineTargetingAdmin must fail closed when the target cannot be read.
+func TestMachineCredential_UnreadableTargetIsRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost,
+		"/api/v1/admin/users/"+uuid.NewString()+"/password",
+		map[string]any{"new_password": "a-password-123"})
+	require.NotEqual(t, http.StatusNoContent, resp.StatusCode,
+		"a target that cannot be read cannot be shown safe to act on")
 }

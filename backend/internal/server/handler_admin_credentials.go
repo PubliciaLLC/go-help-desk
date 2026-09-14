@@ -46,6 +46,16 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
+	// A machine credential cannot mint one broader than itself. Without this,
+	// credentials:write is every scope: hold only that, issue a key with
+	// users:write, use it. Escalation by one extra request is not a boundary.
+	if isMachine(r) {
+		if over, ok := auth.Subset(authmw.GetActor(r).Scopes, body.Scopes); !ok {
+			Error(w, http.StatusForbidden, "insufficient_scope",
+				"this credential cannot grant "+over+", which it does not hold itself")
+			return
+		}
+	}
 	raw, _, err := auth.GenerateToken()
 	if err != nil {
 		handleError(w, err)
@@ -129,6 +139,16 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 	if err := auth.ValidateScopes(body.Scopes); err != nil {
 		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
+	}
+	// A machine credential cannot mint one broader than itself. Without this,
+	// credentials:write is every scope: hold only that, issue a key with
+	// users:write, use it. Escalation by one extra request is not a boundary.
+	if isMachine(r) {
+		if over, ok := auth.Subset(authmw.GetActor(r).Scopes, body.Scopes); !ok {
+			Error(w, http.StatusForbidden, "insufficient_scope",
+				"this credential cannot grant "+over+", which it does not hold itself")
+			return
+		}
 	}
 	raw, hashed, err := auth.GenerateToken()
 	if err != nil {

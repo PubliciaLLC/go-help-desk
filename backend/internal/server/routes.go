@@ -206,16 +206,23 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Delete("/logo", s.handleDeleteLogo)
 	})
 
+	// Repointing the identity provider is a route to an administrator session:
+	// aim SAML or OIDC at an IdP you control, assert a federated
+	// administrator's subject, and the login succeeds at their role. The
+	// subject is the trust anchor, so it has to stay out of reach of a
+	// credential.
 	r.Route("/saml", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetSAMLConfig)
-		r.Put("/", s.handleSaveSAMLConfig)
+		// Writes only: reading the configuration is ordinary automation, and
+		// the handler already blanks the secrets. Changing it is the takeover.
+		r.With(authmw.DenyMachineCredentials).Put("/", s.handleSaveSAMLConfig)
 	})
 
 	r.Route("/oidc", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetOIDCConfig)
-		r.Put("/", s.handleSaveOIDCConfig)
+		r.With(authmw.DenyMachineCredentials).Put("/", s.handleSaveOIDCConfig)
 	})
 
 	r.Route("/plugins", func(r chi.Router) {

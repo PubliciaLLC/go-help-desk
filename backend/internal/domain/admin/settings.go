@@ -51,3 +51,20 @@ type Store interface {
 	Set(ctx context.Context, key string, value []byte) error
 	List(ctx context.Context) (map[string][]byte, error)
 }
+
+// AuthCriticalKeys are the settings that decide who may authenticate and how.
+//
+// They are grouped here rather than checked ad hoc at the handler so that a
+// setting added to this list is enforced everywhere it is read, and so the list
+// itself is reviewable. Changing any of them is a route to a session the caller
+// should not have: turning MFA off instance-wide, repointing SAML or OIDC at an
+// identity provider the caller controls, or opening registration.
+func AuthCriticalKeys() []string {
+	return []string{
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret,
+		KeyOIDCRedirectURL,
+		KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+	}
+}

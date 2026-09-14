@@ -129,3 +129,26 @@ func Allows(granted []string, required Scope) bool {
 	}
 	return false
 }
+
+// Subset reports whether every scope in want is covered by have.
+//
+// A credential that can create credentials could otherwise mint one carrying
+// scopes it does not hold itself, which makes credentials:write equivalent to
+// every scope: hold only that, mint a key with users:write and settings:write,
+// and use it. Escalation by one extra request is not a boundary.
+//
+// Callers apply this only to machine credentials. A signed-in administrator
+// issuing a credential is not escalating — they already hold everything the
+// credential could be granted.
+func Subset(have, want []string) (string, bool) {
+	for _, w := range want {
+		s, err := ParseScope(w)
+		if err != nil {
+			return w, false
+		}
+		if !Allows(have, s) {
+			return w, false
+		}
+	}
+	return "", true
+}
