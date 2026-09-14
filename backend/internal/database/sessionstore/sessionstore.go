@@ -146,10 +146,10 @@ func (s *Store) Save(r *http.Request, w http.ResponseWriter, session *sessions.S
 		// a user holds without decoding each row.
 		UserID: userIDFrom(session),
 		Data:   buf.Bytes(),
-		// A duration, not a deadline: the database computes expires_at from its
-		// own now(), which is the same clock GetSession and the expiry sweep
-		// compare against. Sending an absolute time from here made a session's
-		// lifetime depend on two clocks agreeing.
+		// A duration, not a deadline: the database computes expires_at from
+		// clock_timestamp(), which is the same clock GetSession and the expiry
+		// sweep compare against. Sending an absolute time from here made a
+		// session's lifetime depend on two clocks agreeing.
 		LifetimeSeconds: int32(maxAge),
 	}); err != nil {
 		return fmt.Errorf("saving session: %w", err)

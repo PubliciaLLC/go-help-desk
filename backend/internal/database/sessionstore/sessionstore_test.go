@@ -47,27 +47,29 @@ var (
 
 func newStore(t *testing.T) (*sessionstore.Store, *dbgen.Queries, func()) {
 	t.Helper()
-	db, closeDB := testutil.NewDB(t)
-	q, rollback := testutil.TxQueries(t, db)
-	st := sessionstore.New(q, hashKey, blockKey, &sessions.Options{
-		Path: "/", MaxAge: 3600, HttpOnly: true,
-	})
-	return st, q, func() { rollback(); closeDB() }
+	st, q, _, cleanup := newStoreWithLifetime(t, 3600)
+	return st, q, cleanup
 }
 
-// purge removes a user and its sessions outright.
+// newStoreWithLifetime is newStore with a chosen session lifetime, and it hands
+// back the transaction so a test can hold one open on purpose.
 //
-// The two expiry tests run outside the harness transaction, so anything they
-// create survives the test. Setup tests assert the users table is EMPTY, so a
-// leftover user here fails an unrelated test in another file — exactly the
-// "no test should depend on state left by another" rule. Hard delete, not
-// SoftDelete: a soft-deleted row is still a row.
-func purge(t *testing.T, db *testutil.DB, userID uuid.UUID) {
+// Everything runs inside a transaction that is rolled back. The expiry tests
+// used to run against the database directly, because expiry was compared with
+// now(), which is frozen at the transaction's start and so would never advance
+// past a session's lifetime. Expiry is compared with clock_timestamp() now,
+// which does advance, so that reason is gone — and with it the committed rows
+// those tests left behind, which other packages could see mid-run.
+func newStoreWithLifetime(t *testing.T, maxAge int) (*sessionstore.Store, *dbgen.Queries, *sql.Tx, func()) {
 	t.Helper()
-	_, err := db.SQL.Exec(`DELETE FROM sessions WHERE user_id = $1`, userID)
+	db, closeDB := testutil.NewDB(t)
+	tx, err := db.SQL.BeginTx(context.Background(), nil)
 	require.NoError(t, err)
-	_, err = db.SQL.Exec(`DELETE FROM users WHERE id = $1`, userID)
-	require.NoError(t, err)
+	q := dbgen.New(tx)
+	st := sessionstore.New(q, hashKey, blockKey, &sessions.Options{
+		Path: "/", MaxAge: maxAge, HttpOnly: true,
+	})
+	return st, q, tx, func() { _ = tx.Rollback(); closeDB() }
 }
 
 // seedUser creates a real user: sessions.user_id is a foreign key, so a
@@ -198,25 +200,12 @@ func TestStore_DeleteForUser(t *testing.T) {
 	require.False(t, load(t, st, c).IsNew, "another user's session must survive")
 }
 
-// Expiry is checked in SQL with now(), and now() inside a transaction is the
-// TRANSACTION's start time — it does not advance. So these two run against the
-// database directly rather than inside the harness transaction, and clean up
-// after themselves. Waiting in wall-clock time inside a tx would never expire
-// anything, which is a good way to write a test that cannot fail.
-
 func TestStore_ExpiredRowDoesNotLoad(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	// Registered before the purge below so it runs AFTER it: t.Cleanup is
-	// LIFO, and a deferred close would run before either, leaving purge to
-	// talk to a closed database.
-	t.Cleanup(closeDB)
+	short, q, _, cleanup := newStoreWithLifetime(t, 1)
+	defer cleanup()
 
-	short := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
-		Path: "/", MaxAge: 1, HttpOnly: true,
-	})
-	id := seedUser(t, db.Queries)
+	id := seedUser(t, q)
 	value := saveNew(t, short, id)
-	t.Cleanup(func() { purge(t, db, id) })
 
 	require.False(t, load(t, short, value).IsNew, "it loads while live")
 
@@ -226,20 +215,19 @@ func TestStore_ExpiredRowDoesNotLoad(t *testing.T) {
 		"an expired row must stop loading without waiting for the sweeper")
 }
 
+// Running inside a transaction also pins the sweep's clock. now() is frozen at
+// the transaction's start, so a sweep using it would never see the short
+// session as expired and this test would not finish.
 func TestStore_DeleteExpired(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB)
+	live, q, _, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
 
-	live := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{Path: "/", MaxAge: 3600})
-	short := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{Path: "/", MaxAge: 1})
+	// A second store over the same transaction, with a short lifetime.
+	short := sessionstore.New(q, hashKey, blockKey, &sessions.Options{Path: "/", MaxAge: 1})
 
-	keepUser, goneUser := seedUser(t, db.Queries), seedUser(t, db.Queries)
+	keepUser, goneUser := seedUser(t, q), seedUser(t, q)
 	keep := saveNew(t, live, keepUser)
 	saveNew(t, short, goneUser)
-	t.Cleanup(func() {
-		purge(t, db, keepUser)
-		purge(t, db, goneUser)
-	})
 
 	require.Eventually(t, func() bool {
 		n, err := live.DeleteExpired(context.Background())
@@ -277,21 +265,17 @@ func TestStore_SessionWithoutAUserSaves(t *testing.T) {
 // afterwards. Deciding it in the lookup removes the window instead of
 // narrowing it.
 func TestStore_DisabledUsersSessionDoesNotLoad(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB)
+	st, q, _, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
 
-	st := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
-		Path: "/", MaxAge: 3600, HttpOnly: true,
-	})
-	id := seedUser(t, db.Queries)
+	id := seedUser(t, q)
 	value := saveNew(t, st, id)
-	t.Cleanup(func() { purge(t, db, id) })
 
 	require.False(t, load(t, st, value).IsNew, "it loads while the user is active")
 
 	// Disable directly — no session deletion, which is exactly the state the
 	// login race leaves behind.
-	require.NoError(t, userstore.New(db.Queries).Disable(context.Background(), id))
+	require.NoError(t, q.DisableUser(context.Background(), id))
 
 	require.True(t, load(t, st, value).IsNew,
 		"a disabled user's session must not load, even though nothing deleted it")
@@ -300,20 +284,15 @@ func TestStore_DisabledUsersSessionDoesNotLoad(t *testing.T) {
 // Soft-deleted users the same way. The row survives (sessions cascade on hard
 // delete only), so the lookup has to exclude it.
 func TestStore_SoftDeletedUsersSessionDoesNotLoad(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB)
+	st, q, _, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
 
-	st := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
-		Path: "/", MaxAge: 3600, HttpOnly: true,
-	})
-	id := seedUser(t, db.Queries)
+	id := seedUser(t, q)
 	value := saveNew(t, st, id)
-	t.Cleanup(func() { purge(t, db, id) })
 
 	require.False(t, load(t, st, value).IsNew)
 
-	_, err := db.SQL.Exec(`UPDATE users SET deleted_at = now() WHERE id = $1`, id)
-	require.NoError(t, err)
+	require.NoError(t, q.SoftDeleteUser(context.Background(), id))
 
 	require.True(t, load(t, st, value).IsNew,
 		"a soft-deleted user's session must not load")
@@ -322,37 +301,19 @@ func TestStore_SoftDeletedUsersSessionDoesNotLoad(t *testing.T) {
 // Re-enabling restores it — a lookup that refused every session with a user
 // would pass the two tests above.
 func TestStore_ReEnabledUsersSessionLoadsAgain(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB)
+	st, q, _, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
 
-	st := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
-		Path: "/", MaxAge: 3600, HttpOnly: true,
-	})
-	id := seedUser(t, db.Queries)
+	id := seedUser(t, q)
 	value := saveNew(t, st, id)
-	t.Cleanup(func() { purge(t, db, id) })
 
-	require.NoError(t, userstore.New(db.Queries).Disable(context.Background(), id))
+	require.NoError(t, q.DisableUser(context.Background(), id))
 	require.True(t, load(t, st, value).IsNew)
 
-	_, err := db.SQL.Exec(`UPDATE users SET disabled = FALSE WHERE id = $1`, id)
-	require.NoError(t, err)
+	require.NoError(t, q.EnableUser(context.Background(), id))
 
 	require.False(t, load(t, st, value).IsNew,
 		"re-enabling the user must make their existing session work again")
-}
-
-// txQueries runs the GENERATED queries inside a caller-held transaction, so
-// these tests exercise the real SQL rather than SQL retyped into the test.
-func txQueries(t *testing.T, db *testutil.DB) (*dbgen.Queries, *sql.Tx, time.Time) {
-	t.Helper()
-	tx, err := db.SQL.Begin()
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = tx.Rollback() })
-
-	var txStart time.Time
-	require.NoError(t, tx.QueryRow(`SELECT now()`).Scan(&txStart))
-	return dbgen.New(tx), tx, txStart
 }
 
 // A session's lifetime must not depend on how long the writing transaction has
@@ -364,13 +325,10 @@ func txQueries(t *testing.T, db *testutil.DB) (*dbgen.Queries, *sql.Tx, time.Tim
 // 0.99 seconds. A transaction older than the lifetime writes a row that is
 // already expired — a login that reports success and then does not work.
 func TestStore_LifetimeIsUnaffectedByTransactionAge(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB)
+	_, q, tx, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
 
-	id := seedUser(t, db.Queries)
-	t.Cleanup(func() { purge(t, db, id) })
-
-	q, tx, _ := txQueries(t, db)
+	id := seedUser(t, q)
 
 	// Outlive the lifetime we are about to request, without ending the transaction.
 	const lifetime = 2
@@ -400,13 +358,10 @@ func TestStore_LifetimeIsUnaffectedByTransactionAge(t *testing.T) {
 // the transaction was open would still satisfy the filter and keep
 // authenticating.
 func TestStore_ExpiredSessionDoesNotLoadInsideALongTransaction(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
-	t.Cleanup(closeDB)
+	_, q, _, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
 
-	id := seedUser(t, db.Queries)
-	t.Cleanup(func() { purge(t, db, id) })
-
-	q, _, _ := txQueries(t, db)
+	id := seedUser(t, q)
 
 	sessionID := "read-clock-" + uuid.NewString()
 	require.NoError(t, q.UpsertSession(context.Background(), dbgen.UpsertSessionParams{
