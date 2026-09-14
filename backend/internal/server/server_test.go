@@ -47,6 +47,21 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// allScopes is every scope there is, spelled out.
+//
+// There is no wildcard: a credential that should reach everything lists
+// everything. The harness key stands for a fully-authorised caller, so it holds
+// the full list — and if a resource is added later, this picks it up while real
+// credentials correctly do not.
+func allScopes() []string {
+	all := auth.All()
+	out := make([]string, len(all))
+	for i, s := range all {
+		out[i] = s.String()
+	}
+	return out
+}
+
 // harness is a test server wired against a real (rolled-back) DB transaction.
 type harness struct {
 	srv             *server.Server
@@ -135,7 +150,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		Name:        "test-key",
 		HashedToken: hashedToken,
 		UserID:      staffUser.ID,
-		Scopes:      []string{"*"},
+		Scopes:      allScopes(),
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, apiKey))
@@ -148,7 +163,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		Name:        "admin-test-key",
 		HashedToken: adminHashedToken,
 		UserID:      adminUser.ID,
-		Scopes:      []string{"*"},
+		Scopes:      allScopes(),
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, adminAPIKey))
@@ -169,7 +184,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		Name:        "user-test-key",
 		HashedToken: userHashedToken,
 		UserID:      reportingUser.ID,
-		Scopes:      []string{"*"},
+		Scopes:      allScopes(),
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, userAPIKey))

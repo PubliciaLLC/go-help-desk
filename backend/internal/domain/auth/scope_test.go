@@ -45,10 +45,8 @@ func TestAllows(t *testing.T) {
 		},
 		{
 			// A row edited by hand must not become a wildcard.
-			name: "malformed entries are ignored, not trusted",
-			// ScopeAll ("*") is deliberately absent: it IS a wildcard now, and
-			// TestScopeAll covers it plus the near-misses that must not be.
-			granted:  []string{"tickets", "tickets:*", "", "::", "tickets:READ"},
+			name:     "malformed entries are ignored, not trusted",
+			granted:  []string{"tickets", "tickets:*", "*", "", "::", "tickets:READ"},
 			required: read, want: false,
 		},
 		{
@@ -130,23 +128,54 @@ func TestValidateScopes(t *testing.T) {
 	require.Contains(t, err.Error(), "bogus", "the error must name the offending scope")
 }
 
-// ScopeAll is the explicit way to say "unrestricted". It must grant everything,
-// and it must be a thing someone chose — an empty list still denies.
-func TestScopeAll(t *testing.T) {
+// There is no wildcard scope, and nothing that looks like one may act as one.
+//
+// A credential that should reach everything lists every scope it needs. That
+// keeps what it can do legible from the credential itself, and it means adding
+// a resource later does not silently widen every credential that already
+// exists — which is exactly how "scopes" came to mean nothing the first time.
+func TestNoWildcardScopeExists(t *testing.T) {
+	notScopes := []string{
+		"*", "*:*", "**", "tickets:*", "*:read", "all", "admin", "any",
+		" *", "* ", "*,tickets:read", ".*", "%",
+	}
+
+	for _, ns := range notScopes {
+		t.Run("rejected at creation: "+ns, func(t *testing.T) {
+			_, err := auth.ParseScope(ns)
+			require.Error(t, err, "%q must not parse as a scope", ns)
+			require.Error(t, auth.ValidateScopes([]string{ns}),
+				"%q must be refused when a credential is created", ns)
+		})
+
+		t.Run("grants nothing: "+ns, func(t *testing.T) {
+			for _, s := range auth.All() {
+				require.False(t, auth.Allows([]string{ns}, s),
+					"%q must not grant %s", ns, s)
+			}
+		})
+	}
+}
+
+// The only way to hold every scope is to hold every scope. This pins the cost
+// of the decision as well as the decision: the list is long on purpose.
+func TestFullAccessRequiresEveryScopeListed(t *testing.T) {
+	all := scopeStrings(auth.All())
 	for _, s := range auth.All() {
-		require.True(t, auth.Allows([]string{auth.ScopeAll}, s),
-			"%q must grant %s", auth.ScopeAll, s)
+		require.True(t, auth.Allows(all, s), "the full list must grant %s", s)
 	}
-	require.NoError(t, auth.ValidateScopes([]string{auth.ScopeAll}))
 
-	// The distinction that makes it safe: absent still means nothing.
-	require.False(t, auth.Allows(nil,
-		auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionRead}))
-
-	// And it is the only wildcard. Anything else that looks like one is not.
-	for _, near := range []string{"*:*", "tickets:*", "**", " *", "*,"} {
-		require.False(t, auth.Allows([]string{near},
-			auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionRead}),
-			"%q must not act as a wildcard", near)
+	// Drop one, and exactly that one stops working.
+	withoutTicketsWrite := make([]string, 0, len(all))
+	for _, s := range all {
+		if s != "tickets:write" {
+			withoutTicketsWrite = append(withoutTicketsWrite, s)
+		}
 	}
+	require.False(t, auth.Allows(withoutTicketsWrite,
+		auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionWrite}),
+		"removing one scope must remove exactly that access")
+	require.True(t, auth.Allows(withoutTicketsWrite,
+		auth.Scope{Resource: auth.ResourceUsers, Action: auth.ActionWrite}),
+		"and must leave the rest alone")
 }
