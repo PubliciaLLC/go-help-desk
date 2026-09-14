@@ -306,10 +306,18 @@ category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates — its own (`/me/password`, `/me/mfa/enroll*`) and, through the
-admin surface, its own owner's. Scopes cannot express this: the narrowest key
-still belongs to its owner, so any scope reaching those routes reaches account
-takeover.
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`), and — through the
+admin surface — **any administrator's**. It may not create an administrator,
+promote a user to administrator, or reset an administrator's password or MFA.
+
+The rule is about administrators rather than about the credential's own owner
+because refusing only the owner closed the path and not the outcome: every key
+reaching `/admin` is administrator-owned, so `users:write` allowed creating a
+second administrator, signing in as them, and resetting the first one's
+password. Managing non-administrator users stays available.
+
+Scopes cannot express any of this. The narrowest possible key still belongs to
+its owner, so any scope reaching those routes reaches account takeover.
 
 `GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
 picker from it so the two cannot drift.

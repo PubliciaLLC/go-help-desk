@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
@@ -25,7 +26,11 @@ import (
 // thread through MCP while getting 403 on the REST equivalents.
 //
 // It also catches a tool registered without its scope wrapper, which a test
-// that wraps handlers itself cannot.
+// that wraps handlers itself cannot — but only for the tools it actually calls.
+// The first version of this file drove three of the eight, so unwrapping
+// add_reply or assign_ticket survived the whole suite. Every tool is exercised
+// below; mcpTools is the single list, so a tool added without an entry here is
+// the thing to notice in review.
 type mcpConn struct {
 	ts         *httptest.Server
 	token      string
@@ -110,6 +115,31 @@ func (c *mcpConn) call(t *testing.T, tool string, args map[string]any) string {
 	}
 }
 
+// mcpTools is every registered tool and the scope it requires. Arguments only
+// have to be well-formed enough to reach the handler: the scope check runs
+// before argument validation, so a random UUID is sufficient.
+func mcpTools(h *harness) []struct {
+	tool  string
+	write bool
+	args  map[string]any
+} {
+	tid := uuid.New().String()
+	return []struct {
+		tool  string
+		write bool
+		args  map[string]any
+	}{
+		{"get_ticket", false, map[string]any{"id": tid}},
+		{"list_tickets", false, map[string]any{}},
+		{"list_categories", false, map[string]any{}},
+		{"list_statuses", false, map[string]any{}},
+		{"create_ticket", true, map[string]any{"subject": "x", "category_id": h.catID.String()}},
+		{"add_reply", true, map[string]any{"ticket_id": tid, "body": "x"}},
+		{"assign_ticket", true, map[string]any{"ticket_id": tid, "assignee_user_id": uuid.New().String()}},
+		{"update_ticket_status", true, map[string]any{"ticket_id": tid, "status": "Resolved"}},
+	}
+}
+
 func TestMCP_RestrictedKeyIsRefusedOverTheRealTransport(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -118,18 +148,12 @@ func TestMCP_RestrictedKeyIsRefusedOverTheRealTransport(t *testing.T) {
 		c := openMCP(t, h, mintKey(t, h, []string{}))
 		defer c.closeBody()
 
-		for _, tc := range []struct {
-			tool string
-			args map[string]any
-		}{
-			{"list_tickets", map[string]any{}},
-			{"list_categories", map[string]any{}},
-			{"create_ticket", map[string]any{"subject": "should not exist",
-				"category_id": h.catID.String()}},
-		} {
-			got := c.call(t, tc.tool, tc.args)
-			require.Contains(t, got, "scope",
-				"%s must refuse a credential with no scopes; got %s", tc.tool, got)
+		for _, tc := range mcpTools(h) {
+			t.Run(tc.tool, func(t *testing.T) {
+				got := c.call(t, tc.tool, tc.args)
+				require.Contains(t, got, "scope",
+					"%s must refuse a credential with no scopes; got %s", tc.tool, got)
+			})
 		}
 	})
 
@@ -137,21 +161,33 @@ func TestMCP_RestrictedKeyIsRefusedOverTheRealTransport(t *testing.T) {
 		c := openMCP(t, h, mintKey(t, h, []string{"tickets:read"}))
 		defer c.closeBody()
 
-		got := c.call(t, "list_tickets", map[string]any{})
-		require.NotContains(t, got, "does not carry", "tickets:read must allow reads")
-
-		got = c.call(t, "create_ticket", map[string]any{
-			"subject": "should not exist", "category_id": h.catID.String()})
-		require.Contains(t, got, "scope", "tickets:read must not allow a write; got %s", got)
+		for _, tc := range mcpTools(h) {
+			t.Run(tc.tool, func(t *testing.T) {
+				got := c.call(t, tc.tool, tc.args)
+				if tc.write {
+					require.Contains(t, got, "scope",
+						"tickets:read must not reach the write tool %s; got %s", tc.tool, got)
+					return
+				}
+				require.NotContains(t, got, "does not carry",
+					"tickets:read must reach the read tool %s; got %s", tc.tool, got)
+			})
+		}
 	})
 
-	t.Run("write scope works", func(t *testing.T) {
+	t.Run("write scope reaches the write tools", func(t *testing.T) {
 		c := openMCP(t, h, mintKey(t, h, []string{"tickets:write"}))
 		defer c.closeBody()
 
-		got := c.call(t, "create_ticket", map[string]any{
-			"subject": "made over mcp", "category_id": h.catID.String()})
-		require.NotContains(t, got, "does not carry",
-			"tickets:write must allow creating a ticket; got %s", got)
+		for _, tc := range mcpTools(h) {
+			if !tc.write {
+				continue
+			}
+			t.Run(tc.tool, func(t *testing.T) {
+				got := c.call(t, tc.tool, tc.args)
+				require.NotContains(t, got, "does not carry",
+					"tickets:write must reach %s; got %s", tc.tool, got)
+			})
+		}
 	})
 }

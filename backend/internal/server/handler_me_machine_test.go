@@ -81,57 +81,117 @@ func TestMachineCredential_CanStillReadItsOwnIdentity(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
-// /me/password is closed to machine credentials, but an admin-owned API key can
-// reach the same outcome the long way round: reset the password of user {id}
-// where {id} is its own owner. In practice every API key is admin-owned,
-// because only admins can mint one and it acts at its owner's role.
+// Refusing only the credential's OWN owner closed the path and not the outcome.
+// Every key reaching /admin is administrator-owned, so with users:write the long
+// way round was four requests: create a second administrator, sign in as them,
+// reset the original owner's password.
 //
-// Resetting OTHER users' credentials is ordinary administrative automation and
-// must keep working.
-func TestMachineCredential_CannotResetItsOwnOwnersCredentials(t *testing.T) {
+// The rule is therefore about administrators, not about self.
+func TestMachineCredential_CannotReachAdministratorCredentials(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	// h.adminKey belongs to the seeded admin, so adminID is its own owner.
-	self := "/api/v1/admin/users/" + h.adminID.String()
+	t.Run("cannot create an administrator", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+			"email": "second-admin@test.local", "display_name": "Second",
+			"role": "admin", "password": "a-password-123",
+		})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
 
-	resp := h.doAsAdmin(t, http.MethodPost, self+"/password",
-		map[string]any{"new_password": "attacker-chosen-password-123"})
-	require.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"a key must not reset the password of the account it belongs to")
+	t.Run("cannot promote to administrator", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodPatch,
+			"/api/v1/admin/users/"+h.staffID.String(), map[string]any{"role": "admin"})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
 
-	var body struct {
-		Error struct{ Code string } `json:"error"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
-	require.Equal(t, "session_required", body.Error.Code)
+	t.Run("cannot reset an administrator's password", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodPost,
+			"/api/v1/admin/users/"+h.adminID.String()+"/password",
+			map[string]any{"new_password": "attacker-chosen-password-123"})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
 
-	resp = h.doAsAdmin(t, http.MethodPatch, self, map[string]any{"reset_mfa": true})
-	require.Equal(t, http.StatusForbidden, resp.StatusCode,
-		"nor reset its own owner's MFA")
+		var body struct {
+			Error struct{ Code string } `json:"error"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+		require.Equal(t, "session_required", body.Error.Code)
+	})
+
+	t.Run("cannot reset an administrator's MFA", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodPatch,
+			"/api/v1/admin/users/"+h.adminID.String(), map[string]any{"reset_mfa": true})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
 }
 
-func TestMachineCredential_CanStillAdministerOtherUsers(t *testing.T) {
+// Ordinary automation must keep working: provisioning and deprovisioning
+// non-administrators, and resetting a forgotten password.
+func TestMachineCredential_CanStillAdministerNonAdmins(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	// The staff user is a different account from the admin key's owner.
-	other := "/api/v1/admin/users/" + h.staffID.String()
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"email": "new-agent@test.local", "display_name": "Agent",
+		"role": "staff", "password": "a-password-123",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"creating a non-administrator is ordinary automation")
 
-	resp := h.doAsAdmin(t, http.MethodPost, other+"/password",
+	resp = h.doAsAdmin(t, http.MethodPost,
+		"/api/v1/admin/users/"+h.staffID.String()+"/password",
 		map[string]any{"new_password": "a-legitimate-reset-123"})
 	require.Equal(t, http.StatusNoContent, resp.StatusCode,
-		"resetting another user's password is ordinary admin automation")
+		"resetting a non-administrator's password is ordinary automation")
 }
 
-// A signed-in admin must still be able to reset their own credentials — the
-// guard is about machine credentials, not about self-service.
-func TestSession_CanStillResetItsOwnPassword(t *testing.T) {
+// A signed-in administrator must still be able to do all of it. A guard keyed on
+// the target rather than the caller would lock the humans out too.
+func TestSession_CanStillAdministerAdministrators(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	sess := loggedIn(t, h)
-	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password",
-		map[string]any{"password": "a-new-password-123"})
-	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+	sess := &session{h: h}
+	res, body := sess.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "admin@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "admin login; body: %s", body)
+
+	res, body = sess.send(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"email": "third-admin@test.local", "display_name": "Third",
+		"role": "admin", "password": "a-password-123",
+	})
+	require.Equal(t, http.StatusCreated, res.StatusCode,
+		"a signed-in administrator must still create administrators; body: %s", body)
+
+	res, body = sess.send(t, http.MethodPost,
+		"/api/v1/admin/users/"+h.adminID.String()+"/password",
+		map[string]any{"new_password": "a-deliberate-reset-123"})
+	require.Equal(t, http.StatusNoContent, res.StatusCode,
+		"and reset an administrator's password; body: %s", body)
+}
+
+// The escalation chain the review demonstrated, end to end: it must fail at the
+// first step rather than merely being inconvenient.
+func TestMachineCredential_EscalationChainIsBlockedAtStepOne(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"email": "pivot@test.local", "display_name": "Pivot",
+		"role": "admin", "password": "attacker-known-password-123",
+	})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"step one of the chain must fail")
+
+	// And the account must not exist, so no later step has anything to use.
+	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/users", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var users []struct {
+		Email string `json:"email"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&users))
+	for _, u := range users {
+		require.NotEqual(t, "pivot@test.local", u.Email,
+			"the refused administrator must not have been created")
+	}
 }

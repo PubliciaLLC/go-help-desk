@@ -90,6 +90,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	if user.Role(body.Role) == user.RoleAdmin &&
+		denyMachineAdminTakeover(w, r, "create an administrator") {
+		return
+	}
 	u, err := s.users.Create(r.Context(), user.CreateUserInput{
 		Email:       body.Email,
 		DisplayName: body.DisplayName,
@@ -178,7 +182,7 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// for a rare one, so the requirement was removed. Password reset remains
 	// available separately when an administrator judges it warranted.
 	if body.ResetMFA {
-		if denySelfCredentialTakeover(w, r, id) {
+		if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's MFA") {
 			return
 		}
 		if err := s.users.ResetMFA(r.Context(), id); err != nil {
@@ -193,6 +197,14 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
+	}
+
+	// Promotion to administrator is the other route to holding an
+	// administrator's password: promote someone, reset their password, sign in
+	// as them.
+	if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin &&
+		denyMachineAdminTakeover(w, r, "promote a user to administrator") {
+		return
 	}
 
 	// Profile field updates.
@@ -248,27 +260,54 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, detail)
 }
 
-// denySelfCredentialTakeover refuses a machine credential that is targeting the
-// account it belongs to.
-//
-// /me/password and /me/mfa/enroll are already closed to machine credentials,
-// but an API key owned by an administrator can reach the same outcome the long
-// way round: reset the password of user {id} where {id} is its own owner. The
-// key then holds a password its owner does not know, and MFA reset does the
-// same for the second factor.
-//
-// Resetting OTHER users' credentials is ordinary administrative automation and
-// stays available. Only the self-target is refused, because that is the one
-// case where the credential is escalating into being the person rather than
-// acting for them.
-func denySelfCredentialTakeover(w http.ResponseWriter, r *http.Request, target uuid.UUID) bool {
+// isMachine reports whether an API key or OAuth client made this request.
+func isMachine(r *http.Request) bool {
 	a := authmw.GetActor(r)
-	if a == nil || !a.Machine || a.UserID != target {
+	return a != nil && a.Machine
+}
+
+// denyMachineAdminTakeover refuses a machine credential that is reaching for
+// administrator credentials.
+//
+// Refusing only the credential's own owner closed the path and not the outcome.
+// Every API key that reaches /admin is administrator-owned, because only an
+// administrator can mint one and it acts at its owner's role — so with
+// users:write the long way round was four requests: create a second
+// administrator, sign in as them, reset the original owner's password. Promoting
+// an existing user to administrator gets there too.
+//
+// So the rule is about administrators rather than about self: a machine
+// credential may not create one, promote to one, or reset one's credentials.
+// That closes every route to holding an administrator's password, including the
+// self-target that started this.
+//
+// Managing non-administrator users — provisioning, deprovisioning, resetting a
+// forgotten password — is ordinary automation and stays available.
+func denyMachineAdminTakeover(w http.ResponseWriter, r *http.Request, why string) bool {
+	if !isMachine(r) {
 		return false
 	}
 	Error(w, http.StatusForbidden, "session_required",
-		"an API key or OAuth client cannot reset the credentials of the account it belongs to")
+		"an API key or OAuth client cannot "+why+"; this requires a signed-in session")
 	return true
+}
+
+// denyMachineTargetingAdmin refuses when the target account is an administrator.
+func (s *Server) denyMachineTargetingAdmin(w http.ResponseWriter, r *http.Request, target uuid.UUID, why string) bool {
+	if !isMachine(r) {
+		return false
+	}
+	u, err := s.users.GetByID(r.Context(), target)
+	if err != nil {
+		// Fail closed: if the target cannot be read, it cannot be shown to be
+		// safe to act on.
+		handleError(w, err)
+		return true
+	}
+	if u.Role != user.RoleAdmin {
+		return false
+	}
+	return denyMachineAdminTakeover(w, r, why)
 }
 
 func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -277,7 +316,7 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
 		return
 	}
-	if denySelfCredentialTakeover(w, r, id) {
+	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
 		return
 	}
 	var body struct {
