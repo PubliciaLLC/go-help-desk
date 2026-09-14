@@ -48,6 +48,17 @@ const (
 	ResourceCredentials = "credentials"
 )
 
+// ScopeAll grants every scope.
+//
+// It exists because "unrestricted" is a real and legitimate thing to want — the
+// admin UI needs a Full access option, and an operator migrating an existing
+// integration needs a way to say "as before" — and because the honest way to
+// express it is a value you can see in the credential's scope list, not an
+// empty list that silently means everything.
+//
+// It does not weaken the default. Empty still denies; this has to be chosen.
+const ScopeAll = "*"
+
 // Scope is one resource and one action.
 type Scope struct {
 	Resource string
@@ -76,6 +87,9 @@ func All() []Scope {
 // should fail loudly at credential creation, not quietly grant nothing and be
 // discovered in production.
 func ParseScope(s string) (Scope, error) {
+	if s == ScopeAll {
+		return Scope{Resource: ScopeAll}, nil
+	}
 	resource, action, ok := strings.Cut(s, ":")
 	if !ok {
 		return Scope{}, fmt.Errorf("scope %q: want resource:action", s)
@@ -112,6 +126,9 @@ func ValidateScopes(scopes []string) error {
 // hand must not become a wildcard.
 func Allows(granted []string, required Scope) bool {
 	for _, g := range granted {
+		if g == ScopeAll {
+			return true
+		}
 		s, err := ParseScope(g)
 		if err != nil {
 			continue

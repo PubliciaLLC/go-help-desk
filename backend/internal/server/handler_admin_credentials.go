@@ -39,6 +39,13 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Reject unknown scopes at creation. Unrecognised entries are ignored at
+	// enforcement time, so without this a typo produces a credential that
+	// looks restricted, is accepted, and quietly grants less than intended.
+	if err := auth.ValidateScopes(body.Scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
 	raw, _, err := auth.GenerateToken()
 	if err != nil {
 		handleError(w, err)
@@ -97,6 +104,10 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if err := auth.ValidateScopes(body.Scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
 		return
 	}
 	raw, hashed, err := auth.GenerateToken()

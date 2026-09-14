@@ -2,6 +2,7 @@ package server
 
 import (
 	"github.com/go-chi/chi/v5"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -41,6 +42,7 @@ func (s *Server) ticketRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
 	r.Use(authmw.RequireMFA)
+	r.Use(authmw.RequireResource(auth.ResourceTickets))
 
 	r.Get("/", s.handleListTickets)
 	r.Post("/", s.handleCreateTicket)
@@ -96,6 +98,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Use(authmw.RequireMFA)
 
 	r.Route("/users", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceUsers))
 		r.Get("/", s.handleListUsers)
 		r.Post("/", s.handleCreateUser)
 		r.Get("/{id}", s.handleGetUser)
@@ -105,6 +108,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/groups", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceGroups))
 		r.Get("/", s.handleListGroups)
 		r.Post("/", s.handleCreateGroup)
 		r.Get("/{id}", s.handleGetGroup)
@@ -119,6 +123,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/categories", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCategories))
 		r.Get("/", s.handleListCategories)
 		r.Post("/", s.handleCreateCategory)
 		r.Get("/{id}", s.handleGetCategory)
@@ -161,12 +166,14 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/custom-fields", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCategories))
 		r.Get("/", s.handleListFieldDefs)
 		r.Post("/", s.handleCreateFieldDef)
 		r.Patch("/{id}", s.handleUpdateFieldDef)
 	})
 
 	r.Route("/sla/policies", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSLA))
 		r.Get("/", s.handleListSLAPolicies)
 		r.Post("/", s.handleCreateSLAPolicy)
 		r.Patch("/{id}", s.handleUpdateSLAPolicy)
@@ -174,6 +181,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/statuses", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleListStatuses)
 		r.Post("/", s.handleCreateStatus)
 		r.Patch("/{id}", s.handleUpdateStatus)
@@ -186,6 +194,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	r.Get("/security-warnings", s.handleGetSecurityWarnings)
 
 	r.Route("/settings", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetSettings)
 		r.Patch("/", s.handleUpdateSettings)
 		r.Post("/logo", s.handleUploadLogo)
@@ -193,16 +202,19 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/saml", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetSAMLConfig)
 		r.Put("/", s.handleSaveSAMLConfig)
 	})
 
 	r.Route("/oidc", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
 		r.Get("/", s.handleGetOIDCConfig)
 		r.Put("/", s.handleSaveOIDCConfig)
 	})
 
 	r.Route("/plugins", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourcePlugins))
 		r.Get("/", s.handleListPlugins)
 		r.Post("/", s.handleInstallPlugin)
 		r.Patch("/{id}", s.handleUpdatePlugin)
@@ -210,18 +222,21 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/api-keys", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListAPIKeys)
 		r.Post("/", s.handleCreateAPIKey)
 		r.Delete("/{id}", s.handleDeleteAPIKey)
 	})
 
 	r.Route("/oauth-clients", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListOAuthClients)
 		r.Post("/", s.handleCreateOAuthClient)
 		r.Delete("/{id}", s.handleDeleteOAuthClient)
 	})
 
 	r.Route("/webhooks", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceWebhooks))
 		r.Get("/", s.handleListWebhooks)
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
@@ -229,6 +244,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/tags", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceTags))
 		r.Get("/", s.handleAdminListTags)
 		r.Post("/", s.handleAdminCreateTag)
 		r.Delete("/{id}", s.handleAdminDeleteTag)
@@ -236,6 +252,7 @@ func (s *Server) adminRouter() *chi.Mux {
 	})
 
 	r.Route("/canned-responses", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCannedResponses))
 		r.Get("/", s.handleAdminListCannedResponses)
 		r.Post("/", s.handleAdminCreateCannedResponse)
 		r.Patch("/{id}", s.handleAdminUpdateCannedResponse)
@@ -251,6 +268,7 @@ func (s *Server) groupsRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
 	r.Use(authmw.RequireMFA)
+	r.Use(authmw.RequireResource(auth.ResourceGroups))
 
 	r.Get("/", s.handleListGroups)
 

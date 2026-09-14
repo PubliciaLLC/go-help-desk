@@ -182,6 +182,32 @@ func RequireScope(required auth.Scope) func(http.Handler) http.Handler {
 	}
 }
 
+// RequireResource is RequireScope with the action taken from the HTTP method:
+// GET and HEAD need read, everything else needs write.
+//
+// Applied with r.Use on a route group rather than per handler, for the reason
+// requireTicketAccess exists: per-handler guards get forgotten. The ticket
+// subtree shipped with the check on two routes and missing from the fifteen
+// beneath them. A group-level middleware cannot be forgotten by a route added
+// later.
+//
+// A POST that only reads is therefore over-restricted rather than under-. That
+// is the correct direction for the mistake to fall.
+func RequireResource(resource string) func(http.Handler) http.Handler {
+	read := RequireScope(auth.Scope{Resource: resource, Action: auth.ActionRead})
+	write := RequireScope(auth.Scope{Resource: resource, Action: auth.ActionWrite})
+	return func(next http.Handler) http.Handler {
+		readH, writeH := read(next), write(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				readH.ServeHTTP(w, r)
+				return
+			}
+			writeH.ServeHTTP(w, r)
+		})
+	}
+}
+
 // BearerAuth reads "Authorization: Bearer <jwt>", verifies it as an OAuth2
 // client credentials token, and attaches a synthetic actor.
 func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handler) http.Handler {

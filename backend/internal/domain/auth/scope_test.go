@@ -45,8 +45,10 @@ func TestAllows(t *testing.T) {
 		},
 		{
 			// A row edited by hand must not become a wildcard.
-			name:     "malformed entries are ignored, not trusted",
-			granted:  []string{"tickets", "tickets:*", "*", "", "::"},
+			name: "malformed entries are ignored, not trusted",
+			// ScopeAll ("*") is deliberately absent: it IS a wildcard now, and
+			// TestScopeAll covers it plus the near-misses that must not be.
+			granted:  []string{"tickets", "tickets:*", "", "::", "tickets:READ"},
 			required: read, want: false,
 		},
 		{
@@ -126,4 +128,25 @@ func TestValidateScopes(t *testing.T) {
 	err := auth.ValidateScopes([]string{"tickets:read", "bogus:read"})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bogus", "the error must name the offending scope")
+}
+
+// ScopeAll is the explicit way to say "unrestricted". It must grant everything,
+// and it must be a thing someone chose — an empty list still denies.
+func TestScopeAll(t *testing.T) {
+	for _, s := range auth.All() {
+		require.True(t, auth.Allows([]string{auth.ScopeAll}, s),
+			"%q must grant %s", auth.ScopeAll, s)
+	}
+	require.NoError(t, auth.ValidateScopes([]string{auth.ScopeAll}))
+
+	// The distinction that makes it safe: absent still means nothing.
+	require.False(t, auth.Allows(nil,
+		auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionRead}))
+
+	// And it is the only wildcard. Anything else that looks like one is not.
+	for _, near := range []string{"*:*", "tickets:*", "**", " *", "*,"} {
+		require.False(t, auth.Allows([]string{near},
+			auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionRead}),
+			"%q must not act as a wildcard", near)
+	}
 }
