@@ -268,3 +268,75 @@ func TestStore_SessionWithoutAUserSaves(t *testing.T) {
 	require.False(t, loaded.IsNew)
 	require.Equal(t, "abc123", loaded.Values["oidc_nonce"])
 }
+
+// The store decides whether a disabled user's session loads, rather than
+// relying on the disable handler having deleted it. That is deliberate: a
+// disable landing between the password check and the session INSERT deletes
+// nothing, because the row does not exist yet, and nothing revokes it
+// afterwards. Deciding it in the lookup removes the window instead of
+// narrowing it.
+func TestStore_DisabledUsersSessionDoesNotLoad(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	t.Cleanup(closeDB)
+
+	st := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
+		Path: "/", MaxAge: 3600, HttpOnly: true,
+	})
+	id := seedUser(t, db.Queries)
+	value := saveNew(t, st, id)
+	t.Cleanup(func() { purge(t, db, id) })
+
+	require.False(t, load(t, st, value).IsNew, "it loads while the user is active")
+
+	// Disable directly — no session deletion, which is exactly the state the
+	// login race leaves behind.
+	require.NoError(t, userstore.New(db.Queries).Disable(context.Background(), id))
+
+	require.True(t, load(t, st, value).IsNew,
+		"a disabled user's session must not load, even though nothing deleted it")
+}
+
+// Soft-deleted users the same way. The row survives (sessions cascade on hard
+// delete only), so the lookup has to exclude it.
+func TestStore_SoftDeletedUsersSessionDoesNotLoad(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	t.Cleanup(closeDB)
+
+	st := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
+		Path: "/", MaxAge: 3600, HttpOnly: true,
+	})
+	id := seedUser(t, db.Queries)
+	value := saveNew(t, st, id)
+	t.Cleanup(func() { purge(t, db, id) })
+
+	require.False(t, load(t, st, value).IsNew)
+
+	_, err := db.SQL.Exec(`UPDATE users SET deleted_at = now() WHERE id = $1`, id)
+	require.NoError(t, err)
+
+	require.True(t, load(t, st, value).IsNew,
+		"a soft-deleted user's session must not load")
+}
+
+// Re-enabling restores it — a lookup that refused every session with a user
+// would pass the two tests above.
+func TestStore_ReEnabledUsersSessionLoadsAgain(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	t.Cleanup(closeDB)
+
+	st := sessionstore.New(db.Queries, hashKey, blockKey, &sessions.Options{
+		Path: "/", MaxAge: 3600, HttpOnly: true,
+	})
+	id := seedUser(t, db.Queries)
+	value := saveNew(t, st, id)
+	t.Cleanup(func() { purge(t, db, id) })
+
+	require.NoError(t, userstore.New(db.Queries).Disable(context.Background(), id))
+	require.True(t, load(t, st, value).IsNew)
+
+	_, err := db.SQL.Exec(`UPDATE users SET disabled = FALSE WHERE id = $1`, id)
+	require.NoError(t, err)
+
+	require.False(t, load(t, st, value).IsNew,
+		"re-enabling the user must make their existing session work again")
+}
