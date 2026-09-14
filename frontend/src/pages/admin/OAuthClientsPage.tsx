@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listAPIKeys, createAPIKey, deleteAPIKey, listScopes } from '@/api/admin'
+import { listOAuthClients, createOAuthClient, deleteOAuthClient, listScopes } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -8,14 +8,22 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { ScopePicker } from '@/components/admin/ScopePicker'
-import { PlusIcon, CopyIcon, KeyIcon } from 'lucide-react'
-import type { APIKey } from '@/api/types'
+import { PlusIcon, CopyIcon, PlugIcon } from 'lucide-react'
+import type { OAuthClient } from '@/api/types'
 
-function TokenBanner({ token, onDismiss }: { token: string; onDismiss: () => void }) {
+function SecretBanner({
+  clientID,
+  secret,
+  onDismiss,
+}: {
+  clientID: string
+  secret: string
+  onDismiss: () => void
+}) {
   const [copied, setCopied] = useState(false)
 
   function copy() {
-    navigator.clipboard.writeText(token)
+    navigator.clipboard.writeText(secret)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
@@ -24,60 +32,73 @@ function TokenBanner({ token, onDismiss }: { token: string; onDismiss: () => voi
     <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-green-800">API key created — copy it now</p>
-          <p className="text-xs text-green-700 mt-0.5">This token will not be shown again.</p>
+          <p className="text-sm font-medium text-green-800">
+            Client created — copy the secret now
+          </p>
+          <p className="text-xs text-green-700 mt-0.5">It will not be shown again.</p>
         </div>
-        <button onClick={onDismiss} className="text-green-600 hover:text-green-800 text-xs">Dismiss</button>
+        <button onClick={onDismiss} className="text-green-600 hover:text-green-800 text-xs">
+          Dismiss
+        </button>
       </div>
-      <div className="flex items-center gap-2">
-        <code className="flex-1 rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
-          {token}
-        </code>
-        <Button size="sm" variant="outline" onClick={copy} className="shrink-0">
-          <CopyIcon className="h-3.5 w-3.5 mr-1" />
-          {copied ? 'Copied!' : 'Copy'}
-        </Button>
+      <div className="space-y-2">
+        <div>
+          <p className="text-xs text-green-700 mb-1">Client ID</p>
+          <code className="block rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
+            {clientID}
+          </code>
+        </div>
+        <div>
+          <p className="text-xs text-green-700 mb-1">Client secret</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
+              {secret}
+            </code>
+            <Button size="sm" variant="outline" onClick={copy} className="shrink-0">
+              <CopyIcon className="h-3.5 w-3.5 mr-1" />
+              {copied ? 'Copied!' : 'Copy'}
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-export function APIKeysPage() {
+export function OAuthClientsPage() {
   const qc = useQueryClient()
   const [newName, setNewName] = useState('')
   const [newScopes, setNewScopes] = useState<string[]>([])
   const [createError, setCreateError] = useState('')
-  const [newToken, setNewToken] = useState<string | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<APIKey | null>(null)
+  const [created, setCreated] = useState<{ clientID: string; secret: string } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<OAuthClient | null>(null)
 
-  const { data: keys = [], isLoading } = useQuery({
-    queryKey: ['admin', 'api-keys'],
-    queryFn: listAPIKeys,
+  const { data: clients = [], isLoading } = useQuery({
+    queryKey: ['admin', 'oauth-clients'],
+    queryFn: listOAuthClients,
   })
 
-  // Served by the API rather than hard-coded here, so the picker cannot offer a
-  // scope the server does not enforce, or omit one it does.
   const { data: catalogue = [] } = useQuery({
     queryKey: ['admin', 'scopes'],
     queryFn: listScopes,
   })
 
   const createMutation = useMutation({
-    mutationFn: () => createAPIKey({ name: newName.trim(), scopes: newScopes }),
+    mutationFn: () => createOAuthClient({ name: newName.trim(), scopes: newScopes }),
     onSuccess: (res) => {
       setNewName('')
       setNewScopes([])
       setCreateError('')
-      setNewToken(res.token)
-      qc.invalidateQueries({ queryKey: ['admin', 'api-keys'] })
+      setCreated({ clientID: res.client_id, secret: res.client_secret })
+      qc.invalidateQueries({ queryKey: ['admin', 'oauth-clients'] })
     },
     onError: (err) => setCreateError(extractError(err)),
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteAPIKey(id),
+    mutationFn: (id: string) => deleteOAuthClient(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['admin', 'api-keys'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'oauth-clients'] })
       setPendingDelete(null)
     },
   })
@@ -91,23 +112,31 @@ export function APIKeysPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">API Keys</h1>
+          <h1 className="text-2xl font-bold text-gray-900">OAuth Clients</h1>
           <p className="mt-1 text-sm text-gray-500">
-            API keys allow external services (Hermes, scripts, integrations) to authenticate with the REST API and MCP server.
+            Machine-to-machine integrations exchange a client ID and secret for a short-lived
+            token. Deleting a client stops its existing tokens working immediately.
           </p>
         </div>
 
-        {newToken && (
-          <TokenBanner token={newToken} onDismiss={() => setNewToken(null)} />
+        {created && (
+          <SecretBanner
+            clientID={created.clientID}
+            secret={created.secret}
+            onDismiss={() => setCreated(null)}
+          />
         )}
 
         <div className="rounded-lg border bg-white p-4">
-          <p className="mb-3 text-sm font-medium text-gray-700">Create new key</p>
+          <p className="mb-3 text-sm font-medium text-gray-700">Create new client</p>
           <div className="space-y-4">
             <Input
-              placeholder="Key name (e.g. Hermes, email-bridge)"
+              placeholder="Client name (e.g. JIRA sync, CI pipeline)"
               value={newName}
-              onChange={(e) => { setNewName(e.target.value); setCreateError('') }}
+              onChange={(e) => {
+                setNewName(e.target.value)
+                setCreateError('')
+              }}
               className="max-w-xs"
             />
 
@@ -130,51 +159,56 @@ export function APIKeysPage() {
         </div>
 
         {isLoading ? (
-          <div className="flex justify-center py-12"><Spinner /></div>
+          <div className="flex justify-center py-12">
+            <Spinner />
+          </div>
         ) : (
           <div className="rounded-lg border bg-white overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
+                  <th className="px-4 py-3 text-left">Client ID</th>
                   <th className="px-4 py-3 text-left">Permissions</th>
                   <th className="px-4 py-3 text-left">Created</th>
-                  <th className="px-4 py-3 text-left">Last used</th>
-                  <th className="px-4 py-3 text-left">Expires</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {keys.map((k) => (
-                  <tr key={k.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900 flex items-center gap-2">
-                      <KeyIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                      {k.name}
+                {clients.map((c) => (
+                  <tr key={c.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      <span className="flex items-center gap-2">
+                        <PlugIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                        {c.name}
+                      </span>
                     </td>
+                    <td className="px-4 py-3 font-mono text-xs text-gray-600">{c.client_id}</td>
                     <td className="px-4 py-3">
-                      {k.scopes?.length ? (
+                      {c.scopes?.length ? (
                         <div className="flex flex-wrap gap-1">
-                          {k.scopes.map((sc) => (
-                            <span key={sc} className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700">
+                          {c.scopes.map((sc) => (
+                            <span
+                              key={sc}
+                              className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700"
+                            >
                               {sc}
                             </span>
                           ))}
                         </div>
                       ) : (
                         <span className="text-xs text-amber-700">
-                          None — this key is refused everywhere
+                          None — this client is refused everywhere
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.created_at)}</td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.last_used_at)}</td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.expires_at)}</td>
+                    <td className="px-4 py-3 text-gray-500">{fmt(c.created_at)}</td>
                     <td className="px-4 py-3 text-right">
                       <Button
                         size="sm"
                         variant="outline"
                         className="text-red-600 border-red-200 hover:bg-red-50"
-                        onClick={() => setPendingDelete(k)}
+                        onClick={() => setPendingDelete(c)}
                         disabled={deleteMutation.isPending}
                       >
                         Revoke
@@ -182,10 +216,10 @@ export function APIKeysPage() {
                     </td>
                   </tr>
                 ))}
-                {keys.length === 0 && (
+                {clients.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
-                      No API keys yet.
+                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                      No OAuth clients yet.
                     </td>
                   </tr>
                 )}
@@ -198,8 +232,8 @@ export function APIKeysPage() {
       <ConfirmDialog
         open={pendingDelete !== null}
         onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
-        title={`Revoke key "${pendingDelete?.name ?? ''}"?`}
-        description="Any service using this key will immediately lose access. This cannot be undone."
+        title={`Revoke client "${pendingDelete?.name ?? ''}"?`}
+        description="Any integration using this client loses access immediately, including tokens it already holds. This cannot be undone."
         confirmLabel="Revoke"
         isPending={deleteMutation.isPending}
         onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}

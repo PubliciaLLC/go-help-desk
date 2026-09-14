@@ -19,6 +19,7 @@ import { TagsPage } from '@/pages/admin/TagsPage'
 import { CannedResponsesPage } from '@/pages/admin/CannedResponsesPage'
 import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
+import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
@@ -175,6 +176,13 @@ const adminAPIKeysRoute = createRoute({
   component: APIKeysPage,
 })
 
+const adminOAuthClientsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/oauth-clients',
+  beforeLoad: requireAdmin,
+  component: OAuthClientsPage,
+})
+
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const submitRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -227,6 +235,7 @@ export const router = createRouter({
     adminCannedResponsesRoute,
     adminCustomFieldsRoute,
     adminAPIKeysRoute,
+  adminOAuthClientsRoute,
     adminSettingsRoute,
   ]),
 })

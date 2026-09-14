@@ -156,6 +156,20 @@ export interface APIKey {
   created_at: string
 }
 
+export interface ScopeInfo {
+  scope: string
+  resource: string
+  action: string
+}
+
+export interface OAuthClient {
+  id: string
+  client_id: string
+  name: string
+  scopes: string[]
+  created_at: string
+}
+
 export interface WebhookConfig {
   id: string
   url: string

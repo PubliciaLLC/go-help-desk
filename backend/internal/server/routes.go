@@ -221,6 +221,13 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Delete("/{id}", s.handleUninstallPlugin)
 	})
 
+	// The scope catalogue, for the admin UI's picker. Behind credentials:read
+	// because it is only useful to something issuing credentials.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCredentials))
+		r.Get("/scopes", s.handleListScopes)
+	})
+
 	r.Route("/api-keys", func(r chi.Router) {
 		r.Use(authmw.RequireResource(auth.ResourceCredentials))
 		r.Get("/", s.handleListAPIKeys)

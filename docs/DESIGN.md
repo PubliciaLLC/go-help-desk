@@ -254,6 +254,56 @@ be probed.
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
 | MCP | Inherits from above | Sits on top of REST API, same auth applies |
 
+### Credential Scopes
+
+Machine credentials — API keys and OAuth clients — carry scopes. Browser
+sessions do not: a session **is** the user, with whatever their role allows.
+Scopes exist to give a machine credential *less* than its owner, and there is
+nothing to narrow when a person is driving.
+
+A scope is `resource:action`, where action is `read` or `write`.
+
+| Resource | Covers |
+|----------|--------|
+| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions |
+| `users` | User administration |
+| `groups` | Groups, their members, and their category/type scopes |
+| `categories` | Categories, types, items, and custom-field assignments |
+| `tags` | Tag administration |
+| `canned_responses` | Canned response templates |
+| `sla` | SLA policies |
+| `settings` | Instance settings, statuses, and SAML/OIDC configuration |
+| `plugins` | Plugin administration |
+| `webhooks` | Webhook subscriptions |
+| `credentials` | API keys and OAuth clients |
+
+Four rules govern them:
+
+1. **Scopes narrow; they never grant.** The scope check runs *after* the role
+   check, so `users:write` on a key owned by a reporting user reaches nothing.
+   An API key acts at its owner's role; an OAuth client acts as staff.
+2. **An empty scope list denies everything.** A credential with no scopes
+   reaches nothing at all.
+3. **Write implies read** on the same resource. An integration that may create
+   tickets but not read them back is not a useful shape.
+4. **There is no wildcard.** A credential that should reach everything lists
+   every scope it needs. This keeps what a credential can do legible from the
+   credential itself, and means adding a resource later does not silently widen
+   credentials that already exist.
+
+The action is taken from the HTTP method — `GET` and `HEAD` need `read`,
+everything else needs `write` — and enforced per route group rather than per
+handler, so a route added later cannot forget it.
+
+`GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
+picker from it so the two cannot drift.
+
+**Scopes were documented here before they were enforced.** Until 1.2.0 they were
+accepted, stored and returned by the API, and no code read them — every
+credential issued as restricted was unrestricted. Enforcement in 1.2.0 is a
+breaking change: credentials created before it carry no scopes and are therefore
+denied, and must be re-issued.
+
 ---
 
 ## Plugin Infrastructure

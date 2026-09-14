@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -272,6 +272,31 @@ export async function updateSettings(patch: Record<string, unknown>): Promise<vo
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
+
+export async function listScopes(): Promise<ScopeInfo[]> {
+  const res = await api.get<ScopeInfo[]>('/admin/scopes')
+  return res.data
+}
+
+export async function listOAuthClients(): Promise<OAuthClient[]> {
+  const res = await api.get<OAuthClient[]>('/admin/oauth-clients')
+  return res.data
+}
+
+export async function createOAuthClient(input: {
+  name: string
+  scopes: string[]
+}): Promise<{ client_id: string; client_secret: string; name: string }> {
+  const res = await api.post<{ client_id: string; client_secret: string; name: string }>(
+    '/admin/oauth-clients',
+    input,
+  )
+  return res.data
+}
+
+export async function deleteOAuthClient(id: string): Promise<void> {
+  await api.delete(`/admin/oauth-clients/${id}`)
+}
 
 export async function listAPIKeys(): Promise<APIKey[]> {
   const res = await api.get<APIKey[]>('/admin/api-keys')

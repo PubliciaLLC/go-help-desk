@@ -86,6 +86,26 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleListScopes returns the scope catalogue.
+//
+// Served rather than duplicated in the frontend so the picker cannot drift from
+// what the server enforces: a scope the UI offers but the server rejects would
+// produce a credential that fails at creation, and one the server knows but the
+// UI omits would be silently unreachable.
+func (s *Server) handleListScopes(w http.ResponseWriter, r *http.Request) {
+	type scopeInfo struct {
+		Scope    string `json:"scope"`
+		Resource string `json:"resource"`
+		Action   string `json:"action"`
+	}
+	all := auth.All()
+	out := make([]scopeInfo, len(all))
+	for i, sc := range all {
+		out[i] = scopeInfo{Scope: sc.String(), Resource: sc.Resource, Action: string(sc.Action)}
+	}
+	JSON(w, http.StatusOK, out)
+}
+
 // ── OAuth Clients ────────────────────────────────────────────────────────────
 
 func (s *Server) handleListOAuthClients(w http.ResponseWriter, r *http.Request) {

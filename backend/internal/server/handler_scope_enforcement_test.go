@@ -149,3 +149,38 @@ func TestScopeEnforcement_UnknownScopeRejectedAtCreation(t *testing.T) {
 	require.Contains(t, body.Error.Message, "tickets:reed",
 		"the error must name the scope that was wrong")
 }
+
+// The picker is built from this, so it must match what the server enforces
+// exactly: a scope the UI offers but the server rejects fails at creation, and
+// one the server knows but the UI omits is silently unreachable.
+func TestScopeCatalogue_MatchesWhatIsEnforced(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/scopes", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var got []struct {
+		Scope, Resource, Action string
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.NotEmpty(t, got)
+
+	served := make([]string, len(got))
+	for i, s := range got {
+		served[i] = s.Scope
+		require.Equal(t, s.Resource+":"+s.Action, s.Scope,
+			"the parts must compose into the scope the UI will send")
+	}
+
+	// Every advertised scope must be one a credential can actually be created
+	// with, and there must be no wildcard among them.
+	resp = h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/api-keys",
+		map[string]any{"name": "every-scope", "scopes": served})
+	require.Equal(t, http.StatusCreated, resp.StatusCode,
+		"every scope the catalogue advertises must be accepted at creation")
+
+	for _, s := range served {
+		require.NotContains(t, s, "*", "the catalogue must not advertise a wildcard")
+	}
+}
