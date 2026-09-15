@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -21,6 +22,27 @@ import (
 type Store struct{ q *dbgen.Queries }
 
 // New returns a Store backed by the given Queries.
+// pageInt32 narrows a page bound to what the generated queries accept.
+//
+// sqlc emits int32 for LIMIT and OFFSET. Converting a Go int directly meant an
+// offset above MaxInt32 wrapped: 2147483648 went negative and Postgres answered
+// "OFFSET must not be negative" as a 500, and 4294967296 wrapped to zero and
+// silently returned the first page.
+//
+// Clamping here rather than at each caller is deliberate. The HTTP handler
+// bounds its own input, but MCP's list_tickets takes an offset straight from a
+// tool argument, and any future caller would have to remember. The conversion
+// is the place the value stops fitting, so it is the place to make it fit.
+func pageInt32(n int) int32 {
+	if n < 0 {
+		return 0
+	}
+	if n > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(n)
+}
+
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 
 // ── ticket.Store ────────────────────────────────────────────────────────────
@@ -158,8 +180,8 @@ func buildSearchTSQuery(q string) string {
 func (s *Store) SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchTicketsByReporter(ctx, dbgen.SearchTicketsByReporterParams{
 		ReporterUserID: database.NullUUID(&userID),
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 		TrackingNumber: searchPattern(q),
 		SearchQuery:    buildSearchTSQuery(q),
 	})
@@ -176,8 +198,8 @@ func (s *Store) SearchByReporter(ctx context.Context, userID uuid.UUID, q string
 func (s *Store) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchTicketsByAssigneeUser(ctx, dbgen.SearchTicketsByAssigneeUserParams{
 		AssigneeUserID: database.NullUUID(&userID),
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 		TrackingNumber: searchPattern(q),
 		SearchQuery:    buildSearchTSQuery(q),
 	})
@@ -194,8 +216,8 @@ func (s *Store) SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q st
 func (s *Store) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchTicketsByAssigneeGroup(ctx, dbgen.SearchTicketsByAssigneeGroupParams{
 		AssigneeGroupID: database.NullUUID(&groupID),
-		Limit:           int32(limit),
-		Offset:          int32(offset),
+		Limit:           pageInt32(limit),
+		Offset:          pageInt32(offset),
 		TrackingNumber:  searchPattern(q),
 		SearchQuery:     buildSearchTSQuery(q),
 	})
@@ -212,8 +234,8 @@ func (s *Store) SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q 
 func (s *Store) ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListTicketsByReporter(ctx, dbgen.ListTicketsByReporterParams{
 		ReporterUserID: database.NullUUID(&userID),
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by reporter: %w", err)
@@ -231,8 +253,8 @@ func (s *Store) ListByReporter(ctx context.Context, userID uuid.UUID, limit, off
 func (s *Store) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListTicketsVisibleToStaff(ctx, dbgen.ListTicketsVisibleToStaffParams{
 		ReporterUserID: database.NullUUID(&userID),
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets visible to staff: %w", err)
@@ -248,8 +270,8 @@ func (s *Store) ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit,
 func (s *Store) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchTicketsVisibleToStaff(ctx, dbgen.SearchTicketsVisibleToStaffParams{
 		ReporterUserID: database.NullUUID(&userID),
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 		TrackingNumber: searchPattern(q),
 		SearchQuery:    buildSearchTSQuery(q),
 	})
@@ -266,8 +288,8 @@ func (s *Store) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q st
 func (s *Store) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListTicketsByAssigneeUser(ctx, dbgen.ListTicketsByAssigneeUserParams{
 		AssigneeUserID: database.NullUUID(&userID),
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by assignee user: %w", err)
@@ -282,8 +304,8 @@ func (s *Store) ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit,
 func (s *Store) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListTicketsByAssigneeGroup(ctx, dbgen.ListTicketsByAssigneeGroupParams{
 		AssigneeGroupID: database.NullUUID(&groupID),
-		Limit:           int32(limit),
-		Offset:          int32(offset),
+		Limit:           pageInt32(limit),
+		Offset:          pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by assignee group: %w", err)
@@ -298,8 +320,8 @@ func (s *Store) ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limi
 func (s *Store) ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListTicketsByStatus(ctx, dbgen.ListTicketsByStatusParams{
 		StatusID: statusID,
-		Limit:    int32(limit),
-		Offset:   int32(offset),
+		Limit:    pageInt32(limit),
+		Offset:   pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing tickets by status: %w", err)
@@ -313,8 +335,8 @@ func (s *Store) ListByStatus(ctx context.Context, statusID uuid.UUID, limit, off
 
 func (s *Store) ListAll(ctx context.Context, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListAllTickets(ctx, dbgen.ListAllTicketsParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		Limit:  pageInt32(limit),
+		Offset: pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing all tickets: %w", err)
@@ -328,8 +350,8 @@ func (s *Store) ListAll(ctx context.Context, limit, offset int) ([]ticket.Ticket
 
 func (s *Store) SearchAll(ctx context.Context, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchAllTickets(ctx, dbgen.SearchAllTicketsParams{
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 		TrackingNumber: searchPattern(q),
 		SearchQuery:    buildSearchTSQuery(q),
 	})
@@ -345,8 +367,8 @@ func (s *Store) SearchAll(ctx context.Context, q string, limit, offset int) ([]t
 
 func (s *Store) ListUnassigned(ctx context.Context, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListUnassignedTickets(ctx, dbgen.ListUnassignedTicketsParams{
-		Limit:  int32(limit),
-		Offset: int32(offset),
+		Limit:  pageInt32(limit),
+		Offset: pageInt32(offset),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing unassigned tickets: %w", err)
@@ -360,8 +382,8 @@ func (s *Store) ListUnassigned(ctx context.Context, limit, offset int) ([]ticket
 
 func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]ticket.Ticket, error) {
 	rows, err := s.q.SearchUnassignedTickets(ctx, dbgen.SearchUnassignedTicketsParams{
-		Limit:          int32(limit),
-		Offset:         int32(offset),
+		Limit:          pageInt32(limit),
+		Offset:         pageInt32(offset),
 		TrackingNumber: searchPattern(q),
 		SearchQuery:    buildSearchTSQuery(q),
 	})
@@ -378,7 +400,7 @@ func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset in
 func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListResolvedTicketsBefore(ctx, dbgen.ListResolvedTicketsBeforeParams{
 		ResolvedAt: sql.NullTime{Time: before, Valid: true},
-		Limit:      int32(limit),
+		Limit:      pageInt32(limit),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing resolved tickets before %v: %w", before, err)
@@ -723,8 +745,8 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		Searching:       strings.TrimSpace(f.Query) != "",
 		SearchQuery:     buildSearchTSQuery(f.Query),
 		TrackingPattern: searchPattern(f.Query),
-		ResultLimit:     int32(f.Limit),
-		ResultOffset:    int32(f.Offset),
+		ResultLimit:     pageInt32(f.Limit),
+		ResultOffset:    pageInt32(f.Offset),
 	}
 	if f.Priority != nil {
 		p.Priority = sql.NullString{String: string(*f.Priority), Valid: true}
