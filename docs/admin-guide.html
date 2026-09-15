@@ -488,63 +488,44 @@ Facilities
 
 <h2 id="admin-email-tpl">Email templates</h2>
 
-<p>Email notification templates are edited from <em>Admin → Email → Templates</em>. Templates use Go's <code>text/template</code> syntax.</p>
+<div class="callout callout-warn">
+  <p><strong>Templates are not editable from the admin UI.</strong> There is no <em>Admin → Email → Templates</em> page, no preview and no send-test. The templates are compiled into the binary; changing one means editing the file and rebuilding.</p>
+</div>
 
-<h3>Available templates</h3>
+<p>There are three, in <code>backend/internal/server/notify/templates/</code>:</p>
+
 <table>
-  <thead><tr><th>Template</th><th>When sent</th><th>Recipients</th></tr></thead>
+  <thead><tr><th>Template</th><th>When sent</th><th>Recipient</th></tr></thead>
   <tbody>
-    <tr><td><code>ticket_created</code></td><td>A ticket is submitted</td><td>Ticket submitter</td></tr>
-    <tr><td><code>ticket_assigned</code></td><td>A ticket is assigned to a staff member</td><td>Assigned staff member</td></tr>
-    <tr><td><code>reply_added</code></td><td>A public reply is added</td><td>All participants (submitter + staff who have replied)</td></tr>
-    <tr><td><code>ticket_resolved</code></td><td>Ticket status changes to Resolved</td><td>Ticket submitter</td></tr>
-    <tr><td><code>ticket_closed</code></td><td>Ticket auto-closes after the reopen window</td><td>Ticket submitter</td></tr>
-    <tr><td><code>guest_ticket_created</code></td><td>A guest submits a ticket</td><td>Guest (by email provided at submission)</td></tr>
-    <tr><td><code>guest_access_link</code></td><td>Guest requests a new access link</td><td>Guest (by provided email)</td></tr>
+    <tr><td><code>ticket_created.tmpl</code></td><td>A ticket is filed with a guest address</td><td>That address</td></tr>
+    <tr><td><code>ticket_replied.tmpl</code></td><td>A public reply is added and the reporter is being notified</td><td>The reporter</td></tr>
+    <tr><td><code>email_verification.tmpl</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
   </tbody>
 </table>
 
+<p>Assignment, status change, resolve and close send no email. Neither does an internal note, whatever the notify flag says.</p>
+
 <h3>Template variables</h3>
-<pre><code>{{ .Ticket.ID }}               -- ticket UUID
-{{ .Ticket.Subject }}          -- ticket subject line
-{{ .Ticket.Description }}      -- ticket description body
-{{ .Ticket.Status }}           -- current status name
-{{ .Ticket.Priority }}         -- priority name
-{{ .Ticket.Category }}         -- category name
-{{ .Ticket.Type }}             -- type name (may be empty)
-{{ .Ticket.Item }}             -- item name (may be empty)
-{{ .Ticket.TrackingNumber }}   -- tracking number (guest access)
-{{ .Ticket.CreatedAt }}        -- creation timestamp (RFC 3339)
 
-{{ .Submitter.Name }}          -- submitter's full name
-{{ .Submitter.Email }}         -- submitter's email address
+<p>Two, and deliberately only two:</p>
 
-{{ .Assignee.Name }}           -- assignee's name (in assigned template)
-{{ .Reply.Body }}              -- reply body (in reply_added template)
-{{ .Reply.Author.Name }}       -- reply author's name
-{{ .ResolutionNotes }}         -- resolution notes (in resolved template)
+<pre><code>{{ .TrackingNumber }}   -- e.g. GHD-2026-000001
+{{ .TicketURL }}        -- the configured base URL plus the ticket path</code></pre>
 
-{{ .TicketURL }}               -- full URL to view the ticket in the app
-{{ .AppName }}                 -- configured application name</code></pre>
+<p>There is no <code>.Ticket.Subject</code>, no <code>.Reply.Body</code>, no <code>.Submitter</code>. From v1.2.0 a notification email carries no content from the ticket at all — mail leaving the help desk is sent from the operator's domain, and anyone who can file a ticket chooses that text, so the content stays in the application behind the access rules that already govern it. See <a href="upgrading-1.2.0.html#email">Upgrading to 1.2.0</a>.</p>
 
-<h3>Template example</h3>
-<pre><code>Subject: [{{ .AppName }}] Reply on: {{ .Ticket.Subject }}
+<p>The whole of <code>ticket_replied.tmpl</code>:</p>
 
-Hi {{ .Submitter.Name }},
+<pre><code>There is a new reply on your ticket.
 
-{{ .Reply.Author.Name }} replied to your ticket:
+Ticket: {{.TrackingNumber}}
 
----
-{{ .Reply.Body }}
----
+Read it here:
+{{.TicketURL}}</code></pre>
 
-View the full ticket: {{ .TicketURL }}
+<p>Messages are <code>text/plain</code>, quoted-printable, with no HTML alternative. Adding an HTML part would turn the body into a live sink the moment any content went back into it.</p>
 
-Ticket #{{ .Ticket.TrackingNumber }}
-</code></pre>
-
-<h3>Preview and test</h3>
-<p>Use the <em>Preview</em> button on any template page to see a rendered preview with sample data. Use <em>Send test</em> to deliver a test email to your own address.</p>
+<p>If you need the ticket text in an external system, use a webhook: those carry the full event payload, subject and reply body included, because a webhook target is registered by an administrator rather than chosen by a reporter.</p>
 
 
 <h2 id="admin-webhooks">Webhooks</h2>

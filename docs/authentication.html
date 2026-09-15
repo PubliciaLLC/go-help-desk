@@ -75,7 +75,7 @@
       <li><a href="#auth-local">Local Accounts</a></li>
       <li><a href="#auth-mfa">TOTP MFA</a></li>
       <li><a href="#auth-saml">SAML 2.0</a></li>
-      <li><a href="#auth-guest">Guest Submission</a></li>
+      <li><a href="#auth-guest">Guest Submission (soon)</a></li>
       <li><a href="#auth-api-keys">API Keys</a></li>
     </ul>
   </div>
@@ -107,9 +107,9 @@
 <main class="docs-content">
 
 <h1 class="docs-page-title" id="auth-overview">Authentication</h1>
-<p class="docs-page-sub">Local accounts, TOTP MFA, SAML 2.0 SSO, guest submission, and API keys.</p>
+<p class="docs-page-sub">Local accounts, TOTP MFA, SAML 2.0 SSO, and API keys.</p>
 
-<p>Go Help Desk supports four authentication paths. They can be combined — for example, SAML SSO for most users plus TOTP MFA for admin accounts, with API keys for scripted access.</p>
+<p>Go Help Desk supports three authentication paths. They can be combined — for example, SAML SSO for most users plus TOTP MFA for admin accounts, with API keys for scripted access.</p>
 
 <table>
   <thead><tr><th>Method</th><th>Who it's for</th><th>Enabled by default</th></tr></thead>
@@ -117,8 +117,7 @@
     <tr><td>Local accounts</td><td>All roles</td><td>Yes</td></tr>
     <tr><td>TOTP MFA</td><td>All roles (layered on local auth)</td><td>No — set <code>MFA_ENABLED=true</code></td></tr>
     <tr><td>SAML 2.0</td><td>All roles (replaces local for non-admins)</td><td>No — set <code>SAML_ENABLED=true</code></td></tr>
-    <tr><td>Guest submission</td><td>Unauthenticated visitors</td><td>No — set <code>GUEST_SUBMISSION_ENABLED=true</code></td></tr>
-    <tr><td>API keys</td><td>Scripts and integrations</td><td>Yes (self-service by users)</td></tr>
+        <tr><td>API keys</td><td>Scripts and integrations</td><td>Yes (self-service by users)</td></tr>
   </tbody>
 </table>
 
@@ -341,37 +340,14 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
 </div>
 
 
-<h2 id="auth-guest">Guest submission</h2>
+<h2 id="auth-guest">Guest submission — coming soon</h2>
 
-<p>Set <code>GUEST_SUBMISSION_ENABLED=true</code> to allow unauthenticated visitors to submit support tickets without creating an account.</p>
-
-<h3>Submission flow</h3>
-<ol>
-  <li>Guest navigates to <code>/submit</code> (linked from the login page when guest submission is enabled).</li>
-  <li>Guest fills out the ticket form: subject, description, category, and their email address.</li>
-  <li>On submission, the ticket is created and the system generates a unique <strong>tracking number</strong> (e.g. <code>TRK-2849</code>) and a time-limited signed access link.</li>
-  <li>The access link is emailed to the address provided. The guest clicks it to view their ticket.</li>
-</ol>
-
-<h3>Access links</h3>
-<p>The email link authenticates the guest for that specific ticket only. It is:</p>
-<ul>
-  <li><strong>Ticket-scoped</strong> — grants read/write access to one ticket and no other data.</li>
-  <li><strong>Time-limited</strong> — expires after 7 days (configurable in admin settings).</li>
-  <li><strong>Re-requestable</strong> — guests who need a new link can visit <code>/track</code>, enter their email address and tracking number, and receive a fresh link.</li>
-</ul>
-
-<h3>What guests can do</h3>
-<ul>
-  <li>View the ticket subject, description, and full public reply thread.</li>
-  <li>Add replies to the ticket.</li>
-  <li>Download attachments on the ticket.</li>
-</ul>
-<p>Guests cannot see internal notes, other tickets, the ticket list, or any admin functionality.</p>
-
-<div class="callout callout-note">
-  <p><strong>Email required</strong> — Guest submission requires a functioning SMTP configuration. Without email, the guest cannot receive their access link. The system will still create the ticket, but the tracking number/link won't be deliverable.</p>
+<div class="callout callout-warn">
+  <p><strong>This does not work yet.</strong> The pieces exist and do not connect: <code>POST /api/v1/tickets</code> sits behind a role check, so the handler's guest branch is unreachable, the <code>/submit</code> page posts to that same authenticated endpoint, and the <code>GUEST_SUBMISSION_ENABLED</code> setting changes nothing. An authenticated caller that sends <code>guest_email</code> has it discarded rather than stored. Turning the toggle on produces no error and no guest tickets.</p>
+  <p>Tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>, together with the tokenised view a guest needs in order to read replies. The two have to land together: since v1.2.0 notification email carries no ticket content, so a guest with no way to sign in would receive a link to a page they cannot open.</p>
 </div>
+
+<p>What is planned: an unauthenticated visitor submits a ticket at <code>/submit</code>, gives a name, an email address and optionally a phone number, and receives a tracking number. A link scoped to that one ticket lets them read the thread and reply, without an account. Nothing here is implemented; treat the above as intent, not documentation.</p>
 
 
 <h2 id="auth-api-keys">API keys</h2>

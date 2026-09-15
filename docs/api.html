@@ -217,6 +217,7 @@
 }</code></pre>
   <p>Priority values are lower-case: <code>critical</code>, <code>high</code>, <code>medium</code>, <code>low</code>. A value that is present but not one of these is a <code>400</code>.</p>
   <p><code>guest_email</code> must be a single bare address — no display name, one address only. From v1.2.0 it is validated and normalised; anything else is a <code>400</code>.</p>
+  <p><strong>Not usable yet.</strong> This endpoint requires a session, and an authenticated caller's guest fields are discarded rather than stored, so no guest ticket can currently be created. Tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>.</p>
 </div>
 
 <div class="endpoint">
