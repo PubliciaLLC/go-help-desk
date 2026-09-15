@@ -29,11 +29,12 @@ var errNotFound = errors.New("not found")
 // ── ticket store ─────────────────────────────────────────────────────────────
 
 type fakeStore struct {
-	tickets map[uuid.UUID]ticket.Ticket
-	replies map[uuid.UUID][]ticket.Reply
-	history []ticket.StatusHistoryEntry
-	links   map[uuid.UUID][]ticket.TicketLink
-	seq     int64
+	forUpdateReads int
+	tickets        map[uuid.UUID]ticket.Ticket
+	replies        map[uuid.UUID][]ticket.Reply
+	history        []ticket.StatusHistoryEntry
+	links          map[uuid.UUID][]ticket.TicketLink
+	seq            int64
 
 	// Call counters, so a test can assert an operation did not write.
 	creates        int
@@ -67,6 +68,16 @@ func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 	f.creates++
 	f.tickets[t.ID] = t
 	return nil
+}
+
+// GetByIDForUpdate is the same read; there is no locking to simulate in a map,
+// and the property the lock provides — that lifecycle writes recompute from the
+// row they are about to overwrite — is exercised against real Postgres in
+// internal/database, where a fake would only assert that a reimplementation
+// agrees with itself.
+func (f *fakeStore) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (ticket.Ticket, error) {
+	f.forUpdateReads++
+	return f.GetByID(ctx, id)
 }
 
 func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (ticket.Ticket, error) {

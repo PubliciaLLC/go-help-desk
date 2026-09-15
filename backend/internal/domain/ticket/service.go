@@ -256,25 +256,21 @@ func applyStatusTimestamps(t *Ticket, oldStatusID, newStatusID uuid.UUID, sys *s
 }
 
 func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.UUID, actor Actor) (Ticket, error) {
-	t, err := s.store.GetByID(ctx, ticketID)
-	if err != nil {
-		return Ticket{}, err
-	}
-
 	newStatus, err := s.getStatusByID(ctx, newStatusID)
 	if err != nil {
 		return Ticket{}, err
 	}
 
+	// The role check does not depend on the row, so it stays outside the
+	// transaction and refuses without taking a lock.
 	if err := CanTransitionStatus(newStatus, actor.Role); err != nil {
 		return Ticket{}, fmt.Errorf("status transition not allowed: %w", err)
 	}
 
-	before := ticketMap(t)
-	oldStatusID := t.StatusID
+	var t Ticket
+	var before map[string]any
+	var oldStatusID uuid.UUID
 	now := time.Now()
-	t.StatusID = newStatusID
-	t.UpdatedAt = now
 
 	// resolved_at and closed_at are maintained here as well as in
 	// Resolve/Close/Reopen, because this is a second door into the same three
@@ -287,9 +283,21 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	// auto-close. Moving OFF Resolved without clearing the timestamp is the
 	// mirror image: once the auto-close scheduler is wired, a ticket being
 	// actively worked would be closed underneath whoever was working it.
-	applyStatusTimestamps(&t, oldStatusID, newStatusID, s.sys, now)
-
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// Read under the lock: everything below is computed from this row, so
+		// a concurrent writer that committed first is seen rather than
+		// overwritten.
+		var err error
+		t, err = st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		before = ticketMap(t)
+		oldStatusID = t.StatusID
+		t.StatusID = newStatusID
+		t.UpdatedAt = now
+		applyStatusTimestamps(&t, oldStatusID, newStatusID, s.sys, now)
+
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("updating ticket status: %w", err)
 		}
@@ -330,16 +338,20 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 
 // Assign sets the assignee user and/or group on a ticket.
 func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID, assigneeGroupID *uuid.UUID, actor Actor) (Ticket, error) {
-	t, err := s.store.GetByID(ctx, ticketID)
-	if err != nil {
-		return Ticket{}, err
-	}
-	before := ticketMap(t)
-	t.AssigneeUserID = assigneeUserID
-	t.AssigneeGroupID = assigneeGroupID
-	t.UpdatedAt = time.Now()
+	var t Ticket
+	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		var err error
+		t, err = st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		before := ticketMap(t)
+		t.AssigneeUserID = assigneeUserID
+		t.AssigneeGroupID = assigneeGroupID
+		t.UpdatedAt = now
+
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("assigning ticket: %w", err)
 		}
@@ -432,6 +444,20 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		if !reopened {
 			return nil
 		}
+		// Re-read under the lock before overwriting the row. The copy above
+		// decided WHETHER to reopen — a decision about the status the reporter
+		// replied to — but st.Update writes every column, so the row it writes
+		// has to be the row it just read, or a concurrent assign or edit is
+		// lost.
+		locked, err := st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		locked.StatusID = t.StatusID
+		locked.ResolvedAt = nil
+		locked.UpdatedAt = t.UpdatedAt
+		t = locked
+
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("reopening ticket: %w", err)
 		}
@@ -502,24 +528,28 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	if err := CanTransitionStatus(s.sys.resolved, actor.Role); err != nil {
 		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
 	}
-	t, err := s.store.GetByID(ctx, ticketID)
-	if err != nil {
-		return Ticket{}, err
-	}
-	before := ticketMap(t)
-	oldStatusID := t.StatusID
+	var t Ticket
+	var before map[string]any
+	var oldStatusID uuid.UUID
 	now := time.Now()
-	t.StatusID = s.sys.resolvedID
-	t.ResolutionNotes = &notes
-	t.UpdatedAt = now
-	// Through the shared rule, not by hand. Setting ResolvedAt directly here
-	// was how this door came to disagree with UpdateStatus: it restarted the
-	// reopen window on a re-resolve, and resolving a CLOSED ticket left
-	// closed_at set on an open ticket, which hides it from the auto-close
-	// query forever.
-	applyStatusTimestamps(&t, oldStatusID, s.sys.resolvedID, s.sys, now)
-
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		var err error
+		t, err = st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		before = ticketMap(t)
+		oldStatusID = t.StatusID
+		t.StatusID = s.sys.resolvedID
+		t.ResolutionNotes = &notes
+		t.UpdatedAt = now
+		// Through the shared rule, not by hand. Setting ResolvedAt directly
+		// here was how this door came to disagree with UpdateStatus: it
+		// restarted the reopen window on a re-resolve, and resolving a CLOSED
+		// ticket left closed_at set on an open ticket, which hides it from the
+		// auto-close query forever.
+		applyStatusTimestamps(&t, oldStatusID, s.sys.resolvedID, s.sys, now)
+
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("resolving ticket: %w", err)
 		}
@@ -571,23 +601,30 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 // close showed as "System" in the timeline and wrote no audit entry at all,
 // while DESIGN.md requires history to name whoever made the change.
 func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
-	t, err := s.store.GetByID(ctx, ticketID)
-	if err != nil {
-		return err
-	}
-	if t.StatusID == s.sys.closedID {
-		// Already closed. Without this, re-closing appends a duplicate
-		// Closed→Closed history row and re-fires the notification.
-		return nil
-	}
-	before := ticketMap(t)
-	oldStatusID := t.StatusID
+	var t Ticket
+	alreadyClosed := false
 	now := time.Now()
-	t.StatusID = s.sys.closedID
-	t.ClosedAt = &now
-	t.UpdatedAt = now
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		var err error
+		t, err = st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		if t.StatusID == s.sys.closedID {
+			// Already closed. Without this, re-closing appends a duplicate
+			// Closed→Closed history row and re-fires the notification.
+			// Checked under the lock so two concurrent closes cannot both
+			// pass it.
+			alreadyClosed = true
+			return nil
+		}
+		before := ticketMap(t)
+		oldStatusID := t.StatusID
+		t.StatusID = s.sys.closedID
+		t.ClosedAt = &now
+		t.UpdatedAt = now
+
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("closing ticket: %w", err)
 		}
@@ -602,6 +639,12 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	// Re-closing dispatches nothing, same as before: the check moved under the
+	// lock but its meaning did not.
+	if alreadyClosed {
+		return nil
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -631,14 +674,28 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 	if targetStatusID == uuid.Nil {
 		return Ticket{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
 	}
-	before := ticketMap(t)
-	oldStatusID := t.StatusID
-	t.StatusID = targetStatusID
-	t.ClosedAt = nil
-	t.ResolvedAt = nil
-	t.UpdatedAt = time.Now()
+
+	now := time.Now()
+	var oldStatusID uuid.UUID
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// Re-read under the lock. The check above answered the precondition on
+		// an unlocked copy; this is the row actually being overwritten, and a
+		// concurrent close or resolve may have landed in between.
+		t, err = st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		if t.StatusID != s.sys.closedID {
+			return fmt.Errorf("ticket is not closed")
+		}
+		before := ticketMap(t)
+		oldStatusID = t.StatusID
+		t.StatusID = targetStatusID
+		t.ClosedAt = nil
+		t.ResolvedAt = nil
+		t.UpdatedAt = now
+
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("reopening ticket: %w", err)
 		}

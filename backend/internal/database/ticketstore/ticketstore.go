@@ -55,6 +55,17 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (ticket.Ticket, error
 	return fromRow(ticketRow(row)), nil
 }
 
+// GetByIDForUpdate reads the ticket and holds a write lock on it until the
+// transaction ends. Only meaningful inside one; on the pool it locks and
+// releases immediately.
+func (s *Store) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (ticket.Ticket, error) {
+	row, err := s.q.GetTicketByIDForUpdate(ctx, id)
+	if err != nil {
+		return ticket.Ticket{}, wrapNotFound(err, "ticket", id.String())
+	}
+	return fromRow(ticketRow(row)), nil
+}
+
 func (s *Store) GetByTrackingNumber(ctx context.Context, tn ticket.TrackingNumber) (ticket.Ticket, error) {
 	row, err := s.q.GetTicketByTrackingNumber(ctx, string(tn))
 	if err != nil {

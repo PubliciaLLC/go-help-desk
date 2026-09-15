@@ -13,6 +13,22 @@ INSERT INTO tickets (
 -- name: GetTicketByID :one
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE id = $1;
 
+-- name: GetTicketByIDForUpdate :one
+-- The same row as GetTicketByID, with a write lock held until the transaction
+-- ends.
+--
+-- Every lifecycle write used to read the ticket on the pool, mutate the whole
+-- struct, and then UPDATE all of it inside a transaction. UpdateTicket is a
+-- full-row overwrite, so two staff acting within a few milliseconds silently
+-- lost one of the changes — and worse, the history and audit rows for the lost
+-- change were still committed, so the ticket contradicted its own timeline: the
+-- row said open while ticket_status_history said Resolved.
+--
+-- Reading here instead serialises the writers. The second one sees the first's
+-- committed state and applies its change on top, which is what someone clicking
+-- Resolve a moment after someone else clicked Assign expects.
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE id = $1 FOR UPDATE;
+
 -- name: GetTicketByTrackingNumber :one
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE tracking_number = $1;
 

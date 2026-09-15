@@ -123,6 +123,20 @@ type Querier interface {
 	GetStatusByName(ctx context.Context, name string) (Status, error)
 	GetTagByName(ctx context.Context, name string) (Tag, error)
 	GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByIDRow, error)
+	// The same row as GetTicketByID, with a write lock held until the transaction
+	// ends.
+	//
+	// Every lifecycle write used to read the ticket on the pool, mutate the whole
+	// struct, and then UPDATE all of it inside a transaction. UpdateTicket is a
+	// full-row overwrite, so two staff acting within a few milliseconds silently
+	// lost one of the changes — and worse, the history and audit rows for the lost
+	// change were still committed, so the ticket contradicted its own timeline: the
+	// row said open while ticket_status_history said Resolved.
+	//
+	// Reading here instead serialises the writers. The second one sees the first's
+	// committed state and applies its change on top, which is what someone clicking
+	// Resolve a moment after someone else clicked Assign expects.
+	GetTicketByIDForUpdate(ctx context.Context, id uuid.UUID) (GetTicketByIDForUpdateRow, error)
 	GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (GetTicketByTrackingNumberRow, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
