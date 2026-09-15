@@ -105,7 +105,54 @@ by an earlier version cannot be validated. Session lifetime is also now 7 days
 rather than 30.
 
 Changing SAML, OIDC, MFA or signup settings now requires a signed-in
-administrator; an API key cannot, whatever scopes it holds.
+administrator; an API key cannot, whatever scopes it holds. The refusal is
+`403 session_required`. Each of those settings is a route to a session:
+repoint the identity provider, or switch on open registration, and an attacker
+signs in as somebody.
+
+**Notification email no longer contains ticket content.** This is the change
+your users will notice. A reply notification used to carry the reply text and
+the ticket subject. It now says what happened, names the ticket by its tracking
+number, and links to it:
+
+```
+Subject: There is a new reply on [GHD-2026-000001]
+
+There is a new reply on your ticket.
+
+Ticket: GHD-2026-000001
+
+Read it here:
+https://help.example.com/tickets/…
+```
+
+Mail leaving the help desk is sent from the operator's domain, so anything in
+it is said with the operator's reputation behind it — and anyone who can file a
+ticket chooses that text. A ticket subject of "Your account is suspended, call
+555-0100" was previously delivered verbatim, from you, to an address the sender
+picked. The content stays in the application now, behind the access rules that
+already govern it. The recipient's own address is written bare, with no display
+name, for the same reason.
+
+> **Known gap for guest tickets.** A ticket filed with a guest address has no
+> signed-in reader and there is no guest ticket view, so a guest recipient
+> cannot read the reply at all — the link leads to the sign-in page. Guest
+> submission is not reachable in v1, so in practice this affects only a ticket
+> an agent files on someone's behalf with a guest address. A tokenised guest
+> view is issue #154, scheduled for v2.
+
+**Guest email addresses are validated.** Nothing checked them before: any string
+was accepted, stored, and handed to the mailer. A ticket whose `guest_email` is
+not a single bare address is now refused with `400`, and the stored value is
+normalised. If you create tickets through the API with a guest address, check
+that what you send parses as one address and carries no display name.
+
+**A rejected email address answers 400, not 500.** Adding validation without
+mapping its refusal meant a mistyped address at signup came back as "an internal
+error occurred". If you parse error responses, the code is `bad_request`.
+
+The website carries the same notes at
+<https://gohelpdesk.org/docs/upgrading-1.2.0>.
 
 ## API
 
