@@ -67,6 +67,10 @@
   <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
 
   <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading</div>
+    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+  </div>
+  <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
     <ul><li><a href="getting-started.html">Getting Started</a></li></ul>
   </div>
@@ -243,7 +247,11 @@
 <h2 id="mcp-auth">Authentication</h2>
 
 <div class="callout callout-warn">
-  <p><strong>Fixed in v1.1.1 — upgrade before exposing <code>/mcp/</code>.</strong> In v1.0.0, v1.0.1 and v1.1.0 the MCP server required <em>no authentication at all</em>: anyone who could reach the port could read and write any ticket. See <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm">GHSA-2x4f-j4jv-m2cm</a>.</p>
+  <p><strong>Run v1.2.0 before exposing <code>/mcp/</code>.</strong> Two separate problems, both fixed:</p>
+  <ul>
+    <li>In v1.0.0, v1.0.1 and v1.1.0 the MCP server required <em>no authentication at all</em> — anyone who could reach the port could read and write any ticket. Fixed in v1.1.1: <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm">GHSA-2x4f-j4jv-m2cm</a>.</li>
+    <li>Up to and including v1.1.1, the tools were authenticated but <em>not</em> scope-checked, so a credential reached every tool whatever scopes it held. Fixed in v1.2.0: <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">GHSA-p2wx-wvfr-7h3p</a>. See <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a>.</li>
+  </ul>
 </div>
 
 <p>Since v1.1.1 the MCP server sits behind the same authentication middleware as the REST API, and accepts any of:</p>
@@ -279,7 +287,8 @@
 </table>
 
 <div class="callout callout-note">
-  <p><strong>No per-group scoping.</strong> A Staff account can reach any ticket through these tools, not only tickets in its own groups. This matches what the REST API allows a Staff account to do when fetching a ticket directly. If you need per-group restriction, do not grant MCP access to accounts that should not see every ticket.</p>
+  <p><strong>Group scoping applies from v1.2.0.</strong> Every tool that names a ticket checks that the caller may see it, using the same rule as the REST API: a Staff account reaches tickets assigned to it or its groups, and a reporting user reaches only its own. A ticket the caller may not see is reported as not found rather than refused, so the tools cannot be used to probe which tracking numbers exist.</p>
+  <p>Up to and including v1.1.1 there was no such check: a Staff account reached any ticket through these tools. If you are on an earlier version, do not grant MCP access to accounts that should not see every ticket.</p>
 </div>
 
 <p><strong>Identity comes from the request, never from a tool argument.</strong> Before v1.1.1, <code>add_reply</code> and <code>assign_ticket</code> accepted <code>author_user_id</code> and <code>actor_user_id</code> parameters — a caller named itself and the server believed it. Those parameters no longer exist. The one identity field that remains, <code>reporter_user_id</code> on <code>create_ticket</code>, names the <em>subject</em> of a ticket rather than the caller, because staff legitimately open tickets on someone's behalf.</p>

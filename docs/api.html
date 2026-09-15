@@ -66,6 +66,10 @@
   <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
 
   <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading</div>
+    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+  </div>
+  <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
     <ul><li><a href="getting-started.html">Getting Started</a></li></ul>
   </div>
@@ -136,6 +140,10 @@
     </tr>
   </tbody>
 </table>
+
+<div class="callout callout-warn">
+  <p><strong>From v1.2.0 every endpoint also checks the credential's scopes.</strong> Authenticating is no longer enough: an API key or OAuth client reaches only the resources it was granted, as read or write. A credential with no scopes reaches nothing — and the v1.1.1 admin UI created credentials with no scopes, so most existing keys stop working on upgrade. <code>GET /api/v1/admin/scopes</code> lists what can be granted. See <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a>.</p>
+</div>
 
 <div class="callout callout-note">
   <p>The MCP server at <code>/mcp/</code> accepts the same API key and OAuth2 JWT authentication as the REST API. See <a href="mcp.html">MCP Server</a> for connection details.</p>

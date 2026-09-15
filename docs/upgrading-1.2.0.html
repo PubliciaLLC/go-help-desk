@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upgrading to 1.2.0 — Go Help Desk Docs</title>
+  <meta name="description" content="What changes when you upgrade Go Help Desk to 1.2.0: credentials created by the 1.1.1 admin UI stop working, everyone is signed out once, and notification emails no longer carry ticket content." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/upgrading-1.2.0.html" />
+  <meta property="og:site_name" content="Go Help Desk" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/upgrading-1.2.0.html" />
+  <meta property="og:title" content="Upgrading to 1.2.0 — Go Help Desk Docs" />
+  <meta property="og:description" content="What changes when you upgrade Go Help Desk to 1.2.0: credentials created by the 1.1.1 admin UI stop working, everyone is signed out once, and notification emails no longer carry ticket content." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:site" content="@go_help_desk" />
+  <meta name="twitter:title" content="Upgrading to 1.2.0 — Go Help Desk Docs" />
+  <meta name="twitter:description" content="What changes when you upgrade Go Help Desk to 1.2.0: credentials created by the 1.1.1 admin UI stop working, everyone is signed out once, and notification emails no longer carry ticket content." />
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+  <link rel="stylesheet" href="../style.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Upgrading to 1.2.0",
+    "description": "What changes when you upgrade Go Help Desk to 1.2.0: credentials created by the 1.1.1 admin UI stop working, everyone is signed out once, and notification emails no longer carry ticket content.",
+    "url": "https://gohelpdesk.org/docs/upgrading-1.2.0.html",
+    "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
+    "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
+    "isPartOf": { "@type": "SoftwareApplication", "name": "Go Help Desk", "url": "https://gohelpdesk.org" }
+  }
+  </script>
+  <style>
+    .breaks-table td:first-child { font-weight:600; white-space:nowrap; }
+    .breaks-table td:nth-child(2) { font-size:0.9rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading to 1.2.0</div>
+    <ul>
+      <li><a href="upgrading-1.2.0.html" class="active">Overview</a></li>
+      <li><a href="#credentials">Credentials stop working</a></li>
+      <li><a href="#sessions">Everyone is signed out</a></li>
+      <li><a href="#settings">Auth settings need a person</a></li>
+      <li><a href="#email">Email carries less</a></li>
+      <li><a href="#guest">Guest addresses are checked</a></li>
+      <li><a href="#steps">Doing the upgrade</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Overview</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="introduction">Upgrading to 1.2.0</h1>
+<p class="docs-page-sub">A security release, and the one release so far that changes behaviour you may be relying on. Read this before you upgrade, not after.</p>
+
+<div class="callout callout-warn">
+  <p><strong>Upgrade regardless.</strong> 1.2.0 closes eight authentication and authorization defects present in every version up to and including 1.1.1, several of them critical. See <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">GHSA-p2wx-wvfr-7h3p</a>. Nothing on this page is a reason to stay on 1.1.1 — it is a list of things to have ready when you go.</p>
+</div>
+
+<p>Closing those defects meant enforcing rules that were previously declared and not applied. Anything that was working <em>because</em> a rule went unenforced stops working. That is the shape of every item below.</p>
+
+<table class="breaks-table">
+  <thead><tr><th>What changes</th><th>Who notices</th></tr></thead>
+  <tbody>
+    <tr><td>Credentials lose access</td><td>Every integration using an API key or OAuth client made in the admin UI</td></tr>
+    <tr><td>Sessions are invalidated</td><td>Every signed-in user, once</td></tr>
+    <tr><td>Auth settings need a person</td><td>Automation that configures SAML, OIDC, MFA or signup</td></tr>
+    <tr><td>Email carries no ticket content</td><td>Everyone who reads notifications in their inbox</td></tr>
+    <tr><td>Guest addresses are validated</td><td>Anything filing tickets with a guest address</td></tr>
+  </tbody>
+</table>
+
+<h2 id="credentials">Every credential the 1.1.1 admin UI created stops working</h2>
+
+<p>Scopes existed before 1.2.0 and were never checked: a credential holding no scopes at all could call anything its role allowed. The 1.1.1 admin UI created credentials with an empty scope list, because an empty list cost nothing. From 1.2.0 scopes are enforced, and an empty list grants nothing.</p>
+
+<p>So the credentials most likely to break are the ones made through the UI — which is to say, most of them.</p>
+
+<ul>
+  <li><strong>Find them.</strong> The API key and OAuth client pages show <code>None</code> against every credential with no scopes. Those are the dead ones.</li>
+  <li><strong>See what you can grant.</strong> <code>GET /api/v1/admin/scopes</code> lists every scope, eleven resources across read and write.</li>
+  <li><strong>Re-issue with the scopes each one needs.</strong> Grant the narrowest set that does the job — that is the point of the change.</li>
+</ul>
+
+<p>Credentials created directly through the API <em>with</em> scopes keep working unchanged.</p>
+
+<div class="callout callout-note">
+  <p><strong>There is no full-access scope.</strong> A credential that needs everything is granted every scope explicitly. This is deliberate: a wildcard is a credential nobody has to think about, and thinking about it is the whole exercise.</p>
+</div>
+
+<h2 id="sessions">Everyone is signed out once</h2>
+
+<p>Sessions moved server-side so that they can be revoked — before 1.2.0 a session cookie could not be invalidated, which meant a compromised account stayed compromised until its password changed and sometimes after. Cookies issued by an earlier version cannot be validated against the new store, so every existing session ends at upgrade.</p>
+
+<p>Session lifetime is now <strong>7 days</strong>, down from 30.</p>
+
+<p>Plan for it: a maintenance window, or simply the knowledge that everyone signs in again the first time they load the app.</p>
+
+<h2 id="settings">Changing authentication settings now requires a signed-in administrator</h2>
+
+<p>SAML, OIDC, MFA and signup settings can no longer be changed by an API key or OAuth client, whatever scopes it holds. The response is <code>403 session_required</code>.</p>
+
+<p>The reason is that each of those settings is a route to a session: repoint the identity provider, or switch on open registration, and an attacker signs in as somebody. A machine credential should not be able to do that, and until 1.2.0 it could.</p>
+
+<p>If you configure a new instance from a script, the script now needs an administrator session rather than a key — or configure those settings by hand once, and leave the rest to automation.</p>
+
+<h2 id="email">Notification email no longer contains ticket content</h2>
+
+<p>This is the change your users will notice.</p>
+
+<p>Before 1.2.0, a reply notification contained the reply text and the ticket subject. It does not any more. A notification now says what happened, names the ticket by its tracking number, and links to it:</p>
+
+<pre><code>Subject: There is a new reply on [GHD-2026-000001]
+
+There is a new reply on your ticket.
+
+Ticket: GHD-2026-000001
+
+Read it here:
+https://help.example.com/tickets/…</code></pre>
+
+<p>Mail leaving the help desk is sent from <em>your</em> domain, so anything in it is said with your organisation's reputation behind it — and anyone who can file a ticket chooses that text. A ticket subject of "Your account is suspended, call 555-0100" was previously delivered verbatim, from you, to an address the sender picked. The content now stays in the application, behind the access rules that already govern it.</p>
+
+<p>The recipient's own address is also written bare, with no display name, for the same reason.</p>
+
+<div class="callout callout-warn">
+  <p><strong>Known gap for guest tickets.</strong> A ticket filed with a guest address has no signed-in reader, and there is no guest ticket view yet, so a guest recipient cannot read the reply at all — the link leads to the sign-in page. Guest submission is not reachable in v1, so in practice this affects only tickets an agent files on someone's behalf with a guest address. A tokenised guest view is tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a> and is scheduled for v2.</p>
+</div>
+
+<h2 id="guest">Guest email addresses are validated</h2>
+
+<p>Nothing checked them before: any string at all was accepted, stored, and handed to the mailer. A ticket whose guest address is not a single bare address is now refused with <code>400</code>, and the address that is stored is normalised — trimmed and lower-cased.</p>
+
+<p>If you create tickets through the API with a guest address, check that what you send parses as one address and carries no display name.</p>
+
+<h2 id="steps">Doing the upgrade</h2>
+
+<ol>
+  <li><strong>Take a database backup.</strong> Migrations are forward-only; there is no automatic rollback.</li>
+  <li><strong>List your credentials</strong> and note what each integration actually calls, so you can re-issue with the right scopes rather than guessing.</li>
+  <li><strong>Upgrade.</strong>
+    <pre><code>cd go-help-desk
+git pull
+cd docker
+docker compose up -d --build</code></pre>
+    Migrations run automatically on startup, before the server accepts traffic.
+  </li>
+  <li><strong>Sign in as an administrator</strong> — your old session is gone — and re-issue the credentials showing <code>None</code>.</li>
+  <li><strong>Tell your users</strong> that notification emails now link to the ticket instead of quoting it.</li>
+</ol>
+
+<p>For the general upgrade mechanics, including zero-downtime upgrades, see <a href="getting-started.html#upgrading">Getting Started → Upgrading</a>.</p>
+
+<div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="getting-started.html" class="btn btn-outline">← Getting Started</a>
+  <a href="authentication.html" class="btn btn-outline">Authentication →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a><a href="https://x.com/go_help_desk" rel="me">X</a><a href="https://ko-fi.com/erikpt">Support</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

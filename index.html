@@ -71,18 +71,36 @@
 </nav>
 
 <!-- ── Hero ──────────────────────────────────────────────────────────────── -->
-<!-- Security notice. Remove once v1.1.1 has been out long enough that
+<!-- Security notice. Remove once v1.2.0 has been out long enough that
      operators on affected versions have had a fair chance to upgrade. -->
 <div style="background:#7f1d1d;color:#fff;padding:.75rem 0;font-size:.9rem;">
   <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
     <strong>Security update:</strong>
     <span style="flex:1;min-width:16rem;">
-      v1.1.1 closes an unauthenticated read/write path in the MCP server that affects every earlier release.
-      If <code style="background:rgba(255,255,255,.15);padding:.1rem .3rem;border-radius:3px;">/mcp/</code>
-      is reachable on your instance, upgrade now.
+      <strong>v1.2.0 is the recommended release for everyone, including anyone already on v1.1.1.</strong>
+      It closes eight authentication and authorization defects present in every version up to and
+      including v1.1.1: MFA could be defeated with a password alone, signed-in users could read and
+      write tickets they had no access to, API key and OAuth scopes were never enforced, and a
+      credential could not be revoked. Upgrade now.
     </span>
-    <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm"
+    <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p"
        style="color:#fff;text-decoration:underline;white-space:nowrap;">Read the advisory →</a>
+  </div>
+</div>
+
+<!-- Upgrading is not a drop-in swap: enforcing scopes retires every credential
+     the 1.1.1 admin UI created. Operators need that before they upgrade, not
+     after their integrations stop. -->
+<div style="background:#78350f;color:#fff;padding:.6rem 0;font-size:.85rem;">
+  <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
+    <strong>Before you upgrade:</strong>
+    <span style="flex:1;min-width:16rem;">
+      Every API key and OAuth client created through the v1.1.1 admin UI stops working: it was saved
+      with no scopes, and scopes are now enforced. Re-issue them with the scopes they need. Everyone
+      is also signed out once, because sessions moved server-side.
+    </span>
+    <a href="docs/upgrading-1.2.0.html"
+       style="color:#fff;text-decoration:underline;white-space:nowrap;">Upgrade notes →</a>
   </div>
 </div>
 
@@ -441,7 +459,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
 <!-- ── Footer ─────────────────────────────────────────────────────────────── -->
 <footer>
   <div class="container footer-inner">
-    <span>Go Help Desk — <a href="LICENSE">AGPL v3</a></span>
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
     <span style="display:flex; gap: 1.5rem;">
       <a href="docs.html">Docs</a>
       <a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a>
