@@ -209,14 +209,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	// asked the database to store.
 	//
 	// The two values the notification email is allowed to carry — the tracking
-	// number and the guest's address — are taken from this row. Built in
-	// memory they are request text that happens to have been written down;
-	// read back they are the record. A read failure is not fatal: the ticket
-	// exists, so fall back to the in-memory copy for the SLA and audit paths
-	// and skip the email, which is the part that must not carry request text.
-	stored, readErr := s.store.GetByID(ctx, t.ID)
-	if readErr != nil {
-		stored = t
+	// number and the guest's address — come from this row and from nowhere
+	// else. Built in memory they are request text that happens to have been
+	// written down; read back they are the record.
+	//
+	// There is deliberately no fallback to the in-memory copy. Falling back
+	// would put the request copy back in the email on the one path where the
+	// read failed, which is the whole thing this avoids — and it would do it
+	// invisibly. A read failure costs the notification, not the ticket: the
+	// ticket is committed and is returned to the caller either way.
+	var emailTracking, emailRecipient string
+	if stored, err := s.store.GetByID(ctx, t.ID); err == nil {
+		emailTracking = string(stored.TrackingNumber)
+		if stored.GuestEmail != nil {
+			emailRecipient = *stored.GuestEmail
+		}
 	}
 
 	// Everything below runs only after the commit. Dispatching inside the
@@ -241,18 +248,14 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	if t.GuestEmail != nil && *t.GuestEmail != "" {
 		createdPayload["guest_email"] = *t.GuestEmail
 	}
-	var recipient string
-	if readErr == nil && stored.GuestEmail != nil {
-		recipient = *stored.GuestEmail
-	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventTicketCreated,
 		TicketID:       t.ID,
 		ActorID:        in.ReporterUserID,
 		Payload:        createdPayload,
 		OccurredAt:     now,
-		TrackingNumber: string(stored.TrackingNumber),
-		Recipient:      recipient,
+		TrackingNumber: emailTracking,
+		Recipient:      emailRecipient,
 	})
 
 	return t, nil
