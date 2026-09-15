@@ -438,11 +438,13 @@ denied, and must be re-issued.
   content in the application, where the existing access rules apply to it.
 
   **Known gap:** a ticket filed with a guest address has no signed-in reader,
-  and there is no guest ticket view, so a guest recipient can no longer read
-  the reply text at all. Guest submission is not reachable in v1 — the ticket
-  API requires a session — so this affects only a ticket an agent files on
-  someone's behalf with a guest address. The fix is a tokenised guest view,
-  tracked as issue #154 and scheduled for v2.
+  and there is no guest ticket view, so a guest recipient would have nowhere to
+  read the reply text. No ticket is affected today, because none can be
+  created: `POST /api/v1/tickets` sits behind `RequireRole`, so the handler's
+  guest branch (`isGuest := a == nil`) is unreachable, and an authenticated
+  caller's `guest_email` is discarded rather than stored. The gap becomes real
+  the moment guest submission works. The fix is a tokenised guest view, tracked
+  as issue #154 and scheduled for v2.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.

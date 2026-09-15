@@ -136,20 +136,34 @@ name, for the same reason.
 
 > **Known gap for guest tickets.** A ticket filed with a guest address has no
 > signed-in reader and there is no guest ticket view, so a guest recipient
-> cannot read the reply at all — the link leads to the sign-in page. Guest
-> submission is not reachable in v1, so in practice this affects only a ticket
-> an agent files on someone's behalf with a guest address. A tokenised guest
-> view is issue #154, scheduled for v2.
+> would have nowhere to read the reply — the link leads to the sign-in page.
+> No ticket is affected today: `POST /api/v1/tickets` requires a session, and
+> an authenticated caller's `guest_email` is discarded rather than stored, so
+> no guest ticket can currently be created at all. The gap becomes real the
+> moment guest submission works. A tokenised guest view is issue #154,
+> scheduled for v2.
 
 **Guest email addresses are validated.** Nothing checked them before: any string
-was accepted, stored, and handed to the mailer. A ticket whose `guest_email` is
-not a single bare address is now refused with `400`, and the stored value is
-normalised. If you create tickets through the API with a guest address, check
-that what you send parses as one address and carries no display name.
+was accepted, stored, and handed to the mailer. A guest address that is not a
+single bare address is now refused with `400`, and the stored value is
+normalised. This bites nothing today — see the note above — but it is the rule
+guest submission will meet when it is wired up.
 
 **A rejected email address answers 400, not 500.** Adding validation without
 mapping its refusal meant a mistyped address at signup came back as "an internal
 error occurred". If you parse error responses, the code is `bad_request`.
+
+**New tickets get a different tracking-number prefix.** Up to 1.1.1 the prefix
+was hardcoded `OHD`; from 1.2.0 it is a setting that defaults to `GHD`. Existing
+tickets keep the numbers they have — nothing is rewritten — so an instance that
+upgrades ends up with `OHD-2026-000123` and `GHD-2026-000124` side by side. Set
+**Admin → Settings → Tracking number prefix** back to `OHD` before opening new tickets if
+you would rather keep one series. A prefix is 1–8 upper-case letters or digits.
+
+**A Content-Security-Policy is now sent on every response.** It is
+`default-src 'self'` with `img-src 'self' data:` and `frame-ancestors 'none'`.
+If your instance loads a logo or any other asset from another host, or is
+embedded in an iframe, that stops working. Self-hosted assets are unaffected.
 
 The website carries the same notes at
 <https://gohelpdesk.org/docs/upgrading-1.2.0>.
