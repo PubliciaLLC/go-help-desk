@@ -2,6 +2,8 @@ package user
 
 import (
 	"errors"
+	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -42,9 +44,40 @@ func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }
 // Validate returns an error if the user is structurally invalid.
 // It does not validate the password hash or MFA secret — those are set by
 // the service layer during specific operations.
+// ValidateEmail checks that s is a single, bare email address and returns it
+// normalised.
+//
+// Nothing in this application validated an email address. Register stored
+// whatever arrived, User.Validate only checked non-empty, and the sole
+// mail.ParseAddress lived in the mail sender — which meant an address
+// containing CRLF was accepted at signup, written to the database, and became
+// a real account on verification. The SMTP layer refuses to send to it, so a
+// header was never injected, but the address is also a login identity and it
+// was never a valid one.
+//
+// A display name is rejected: "Attacker <victim@example.com>" parses happily
+// and would store a different address than it appears to.
+func ValidateEmail(s string) (string, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return "", errors.New("email is required")
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid email address: %w", err)
+	}
+	if addr.Name != "" {
+		return "", errors.New("email address must not include a display name")
+	}
+	if addr.Address == "" {
+		return "", errors.New("invalid email address")
+	}
+	return strings.ToLower(addr.Address), nil
+}
+
 func (u User) Validate() error {
-	if strings.TrimSpace(u.Email) == "" {
-		return errors.New("email is required")
+	if _, err := ValidateEmail(u.Email); err != nil {
+		return err
 	}
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return errors.New("display name is required")

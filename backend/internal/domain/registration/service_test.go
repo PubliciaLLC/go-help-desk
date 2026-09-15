@@ -199,3 +199,52 @@ func TestVerify(t *testing.T) {
 		}
 	})
 }
+
+// isEmailDomainAllowed does not inspect the address when open registration is
+// on — it returns openReg without looking — so before validation any string at
+// all was accepted, written to pending_registrations, and became a user account
+// on verification. Proven before the fix: Register returned nil and stored
+// "attacker@evil.test\r\nbcc: victim@example.com".
+func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
+	for _, addr := range []string{
+		"attacker@evil.test\r\nBcc: victim@example.com",
+		"a@b.test\nX-Injected: yes",
+		"not an email at all",
+		"Attacker <victim@example.com>",
+	} {
+		store := &fakeStore{}
+		mailer := &fakeMailer{}
+		svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
+
+		err := svc.Register(context.Background(), addr, "Attacker", "password123", nil, true)
+
+		if err == nil {
+			t.Fatalf("Register accepted %q", addr)
+		}
+		if !errors.Is(err, ErrInvalidEmail) {
+			t.Fatalf("Register(%q) = %v, want ErrInvalidEmail", addr, err)
+		}
+		// Nothing was written, and nothing was sent. A refusal that still
+		// stored the row would leave the garbage behind.
+		if store.record.Email != "" {
+			t.Fatalf("a refused registration stored %q", store.record.Email)
+		}
+		if mailer.sent {
+			t.Fatal("a refused registration still sent mail")
+		}
+	}
+}
+
+// A real signup must still work, and the address is normalised on the way in.
+func TestRegister_AcceptsAndNormalisesARealAddress(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "https://help.example.com")
+
+	if err := svc.Register(context.Background(), "  User@Example.COM  ", "User",
+		"password123", nil, true); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if store.record.Email != "user@example.com" {
+		t.Fatalf("stored %q, want it trimmed and lowercased", store.record.Email)
+	}
+}
