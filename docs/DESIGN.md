@@ -321,9 +321,14 @@ stays available.
 
 Three more things are off limits to a machine credential, for the same reason:
 
-- **Changing the SAML or OIDC configuration.** Repointing the identity provider
-  at one the caller controls, then asserting a federated administrator's
-  subject, yields an administrator session. Reading the configuration is fine.
+- **Changing the SAML or OIDC configuration.** Login providers are settable from
+  the admin UI and nowhere else. Repointing the identity provider at one the
+  caller controls, then asserting a federated administrator's subject, yields an
+  administrator session — and it is also the last way a credential could make
+  the server fetch a URL of the caller's choosing on the internal network.
+  Blocked on both doors: the dedicated config routes and the `saml_*` / `oidc_*`
+  settings keys. Reading the configuration stays available to automation, since
+  the handlers already blank the secrets.
 - **Changing an auth-critical setting** — MFA enablement and enforcement, the
   SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
   configuration such as the site name stays automatable.

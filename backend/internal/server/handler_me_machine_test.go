@@ -369,3 +369,74 @@ func TestMachineCredential_CannotSpendTheMFABudget(t *testing.T) {
 	// The budget is untouched: the owner can still log in.
 	loggedIn(t, h)
 }
+
+// Login providers are settable from the admin UI and nowhere else.
+//
+// Pointing SAML or OIDC at an identity provider you control, then signing in as
+// a federated administrator, is a direct route to an administrator session. It
+// is also the last way a credential could make the server fetch a URL of the
+// caller's choosing on the internal network.
+//
+// There are two doors — the dedicated config routes and the generic settings
+// endpoint — and this checks both, because closing one and leaving the other is
+// exactly how this kind of guard fails.
+func TestMachineCredential_CannotSetLoginProvidersByAnyRoute(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	t.Run("the dedicated config routes", func(t *testing.T) {
+		resp := h.doAsAdmin(t, http.MethodPut, "/api/v1/admin/oidc", map[string]any{
+			"enabled": true, "issuer_url": "https://idp.attacker.example",
+			"client_id": "x", "client_secret": "y",
+		})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+
+		resp = h.doAsAdmin(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+			"metadata_url": "https://idp.attacker.example/meta", "cert_pem": "c", "key_pem": "k",
+		})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("the generic settings endpoint", func(t *testing.T) {
+		// Every key that decides who may sign in, one at a time — a list that
+		// blocks most of them is not a boundary.
+		for _, key := range []string{
+			"oidc_issuer_url", "oidc_enabled", "oidc_client_id", "oidc_client_secret",
+			"oidc_redirect_url",
+			"saml_metadata_url", "saml_enabled", "saml_cert_pem", "saml_key_pem",
+			"mfa_enabled", "mfa_enforced_roles",
+			"allowed_email_domains", "self_signup_enabled", "open_registration_enabled",
+		} {
+			t.Run(key, func(t *testing.T) {
+				resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings",
+					map[string]any{key: "https://idp.attacker.example"})
+				require.Equal(t, http.StatusForbidden, resp.StatusCode,
+					"%s must not be settable by an API key", key)
+			})
+		}
+	})
+
+	t.Run("reading the configuration is still allowed", func(t *testing.T) {
+		// Monitoring and backup tooling legitimately reads this, and the
+		// handler already blanks the secrets.
+		resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/oidc", nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
+// A signed-in administrator must still be able to configure login providers —
+// the admin UI is the supported way to do it.
+func TestSession_CanStillSetLoginProviders(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	sess := &session{h: h}
+	res, body := sess.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "admin@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+
+	res, body = sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"mfa_enabled": true})
+	require.Equal(t, http.StatusNoContent, res.StatusCode,
+		"an administrator in the UI must still change auth settings; body: %s", body)
+}
