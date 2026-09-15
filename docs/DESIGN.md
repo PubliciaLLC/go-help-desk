@@ -53,7 +53,7 @@ Core fields (all editions):
 - **Attachments** (file uploads)
 - **Replies/thread** (staff and user messages)
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
-- **Tracking number** (for guest access)
+- **Tracking number** (for guest access, once guest submission ships — #154)
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
 
 SLA fields (optional feature toggle, all editions):
@@ -206,6 +206,8 @@ would receive a link to a page they cannot open.
 - No account creation required
 
 ### Ticket Submission by Role
+
+The Guest column describes the planned behaviour; see "Guest Submission" above.
 
 | Field | Guest | User (logged in) | Staff / Admin |
 |-------|-------|-----------------|---------------|
@@ -435,9 +437,10 @@ denied, and must be re-issued.
 
 ## Notifications (v1)
 
-- **Email** — a reply on a ticket, and the acknowledgement for a ticket filed
-  with a guest address. A reporter with an account gets the reply notification;
-  the acknowledgement goes to the guest address only.
+- **Email** — a reply on a ticket, to the reporter. There is also an
+  acknowledgement for a ticket filed with a guest address, which sends to
+  nobody today: the acknowledgement goes to the guest address only, and guest
+  submission is not reachable yet (#154).
 - Email is a notification, not a copy of the ticket. A message says what
   happened, names the ticket by its tracking number, and links to it. It does
   not carry the ticket subject or the reply text, and the recipient's own
@@ -487,7 +490,7 @@ The fields available on a ticket are the union of all fields assigned to its sel
 
 Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
 
-Guests see and can fill only category-level fields with `visible_on_new = true`. Regular authenticated users see category + type fields. Staff/admin see all levels.
+Guests will see and be able to fill only category-level fields with `visible_on_new = true`, once guest submission ships (#154). Regular authenticated users see category + type fields. Staff/admin see all levels.
 
 ---
 

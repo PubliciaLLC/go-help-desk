@@ -140,15 +140,18 @@ name, for the same reason.
 > guest submission does not work yet — see #154, which covers both the
 > submission path and the tokenised view a guest needs to read the thread.
 
-**Guest email addresses are validated.** Nothing checked them before: any string
-was accepted, stored, and handed to the mailer. A guest address that is not a
-single bare address is now refused with `400`, and the stored value is
-normalised. Nothing meets this rule today — guest submission is not live — but
-it is the rule it will meet.
+**Guest email addresses are validated too.** Nothing checked them before either.
+A guest address that is not a single bare address is now refused with `400`, and
+the stored value is normalised. No ticket meets this rule today — guest
+submission has never been reachable, so no guest address has ever been stored
+through it — but it is the rule it will meet.
 
-**A rejected email address answers 400, not 500.** Adding validation without
-mapping its refusal meant a mistyped address at signup came back as "an internal
-error occurred". If you parse error responses, the code is `bad_request`.
+**Email addresses are validated, and a bad one answers 400.** Nothing validated
+them before 1.2.0 — `mail.ParseAddress` lived only in the mail sender, so an
+address that no mailer could ever deliver to was accepted at signup, written to
+the database, and became an account. Signup and the admin user edit now refuse
+one with `400` and the code `bad_request`. Anything automating either should
+expect that where it previously got `201` or `204`.
 
 **New tickets get a different tracking-number prefix.** Up to 1.1.1 the prefix
 was hardcoded `OHD`; from 1.2.0 it is a setting that defaults to `GHD`. Existing
@@ -157,10 +160,41 @@ upgrades ends up with `OHD-2026-000123` and `GHD-2026-000124` side by side. Set
 **Admin → Settings → Tracking number prefix** back to `OHD` before opening new tickets if
 you would rather keep one series. A prefix is 1–8 upper-case letters or digits.
 
-**A Content-Security-Policy is now sent on every response.** It is
-`default-src 'self'` with `img-src 'self' data:` and `frame-ancestors 'none'`.
-If your instance loads a logo or any other asset from another host, or is
-embedded in an iframe, that stops working. Self-hosted assets are unaffected.
+**A Content-Security-Policy is now sent on every response.** In full:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+img-src 'self' data:; font-src 'self'; connect-src 'self';
+frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+```
+
+So: an asset loaded from another host stops loading — a logo set to an external
+URL is the likely one — the app can no longer be embedded in an iframe, and a
+form cannot post anywhere but back to the instance. Self-hosted assets are
+unaffected. An uploaded logo is served under a stricter policy of its own.
+
+**Webhook targets on private addresses are refused.** Webhook delivery now goes
+through a client that checks the address it actually dialled, and refuses
+loopback, RFC1918, link-local, carrier-grade NAT and their IPv6 forms. It is
+checked at dial time rather than on the URL string, so a hostname that resolves
+to a private address is refused too.
+
+This is the upgrade note most likely to bite quietly: a webhook pointing at
+something on your own network — an internal n8n, a Mattermost on the same
+LAN — stops being delivered, and an existing hook fails at dial with nothing
+surfaced in the UI. Move those targets to an address the server reaches over
+the public network, or proxy them. SAML metadata and OIDC discovery are
+deliberately *not* address-guarded, since a self-hosted identity provider on a
+private network is normal.
+
+**Ticket tags are staff-only.** Listing, adding and removing tags on a ticket
+now require Staff or Admin. A reporting user could previously read the
+classification staff had written about their own ticket, delete it, and add
+tags of their own to the global list.
+
+**A wrong TOTP code now counts.** Five failures lock the account for 15
+minutes. The count lives on the user row rather than in memory, so it survives
+a restart and is not multiplied by the replica count.
 
 The website carries the same notes at
 <https://gohelpdesk.org/docs/upgrading-1.2.0>.
