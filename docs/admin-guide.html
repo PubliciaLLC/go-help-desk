@@ -489,7 +489,7 @@ Facilities
 <h2 id="admin-email-tpl">Email templates</h2>
 
 <div class="callout callout-warn">
-  <p><strong>Templates are not editable from the admin UI.</strong> There is no <em>Admin → Email → Templates</em> page, no preview and no send-test. The templates are compiled into the binary; changing one means editing the file and rebuilding.</p>
+  <p><strong>Editing templates from the admin UI is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
 </div>
 
 <p>There are three, in <code>backend/internal/server/notify/templates/</code>:</p>
@@ -530,7 +530,11 @@ Read it here:
 
 <h2 id="admin-webhooks">Webhooks</h2>
 
-<p>Webhooks let you push ticket events to external systems in real time. Configure them from <em>Admin → Webhooks → New webhook</em>.</p>
+<p>Webhooks let you push ticket events to external systems in real time.</p>
+
+<div class="callout callout-warn">
+  <p><strong>The admin page for these is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/157">issue #157</a>. There is no <em>Admin → Webhooks</em> screen yet. Until there is, configure them against the API: <code>GET</code> and <code>POST /api/v1/admin/webhooks</code>, <code>PATCH</code> and <code>DELETE /api/v1/admin/webhooks/{id}</code>. The fields below are that API's fields.</p>
+</div>
 
 <h3>Configuration</h3>
 <table class="param-table">
