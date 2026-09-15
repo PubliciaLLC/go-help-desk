@@ -147,11 +147,21 @@ submission has never been reachable, so no guest address has ever been stored
 through it — but it is the rule it will meet.
 
 **Email addresses are validated, and a bad one answers 400.** Nothing validated
-them before 1.2.0 — `mail.ParseAddress` lived only in the mail sender, so an
-address that no mailer could ever deliver to was accepted at signup, written to
-the database, and became an account. Signup and the admin user edit now refuse
-one with `400` and the code `bad_request`. Anything automating either should
-expect that where it previously got `201` or `204`.
+them before 1.2.0 — `mail.ParseAddress` lived only in the mail sender, and
+`User.Validate` checked that the address was non-empty and nothing else. So an
+administrator could create or edit a user with an address no mailer could ever
+deliver to, and it became a real account and a login identity. Self-signup
+behaved differently and no better: the address was written to
+`pending_registrations`, then the mailer refused it and the caller got a `500`
+— or, with SMTP not configured, a `202` and a pending row nobody could ever
+verify.
+
+Three endpoints now answer `400` with the code `bad_request` where they used to
+accept the value: `POST /api/v1/auth/signup` (previously `202`),
+`POST /api/v1/admin/users` (previously `201`) and
+`PATCH /api/v1/admin/users/{id}` (previously `200`). The last one also refuses
+an edit to an account whose *stored* address does not pass — an account created
+before 1.2.0 may hold one. Fix the address in the same request.
 
 **New tickets get a different tracking-number prefix.** Up to 1.1.1 the prefix
 was hardcoded `OHD`; from 1.2.0 it is a setting that defaults to `GHD`. Existing
@@ -173,19 +183,20 @@ URL is the likely one — the app can no longer be embedded in an iframe, and a
 form cannot post anywhere but back to the instance. Self-hosted assets are
 unaffected. An uploaded logo is served under a stricter policy of its own.
 
-**Webhook targets on private addresses are refused.** Webhook delivery now goes
-through a client that checks the address it actually dialled, and refuses
-loopback, RFC1918, link-local, carrier-grade NAT and their IPv6 forms. It is
-checked at dial time rather than on the URL string, so a hostname that resolves
-to a private address is refused too.
+**Webhook targets on private addresses are refused.** Loopback, RFC1918,
+link-local, unique-local, carrier-grade NAT and the NAT64 range, in both their
+IPv4 and IPv6 forms. Saving a new webhook on one of those is refused with a
+visible error; delivery checks again at the moment it dials, so a hostname that
+resolves to a private address, a redirect to one, and DNS rebinding are all
+caught as well.
 
-This is the upgrade note most likely to bite quietly: a webhook pointing at
-something on your own network — an internal n8n, a Mattermost on the same
-LAN — stops being delivered, and an existing hook fails at dial with nothing
-surfaced in the UI. Move those targets to an address the server reaches over
-the public network, or proxy them. SAML metadata and OIDC discovery are
-deliberately *not* address-guarded, since a self-hosted identity provider on a
-private network is normal.
+The quiet part is your *existing* hooks. One pointing at something on your own
+network — an internal n8n, a Mattermost on the same LAN — stops being delivered
+on upgrade, and the failure is swallowed: nothing in the UI, no delivery record.
+Check your webhook targets before upgrading. Move them to an address the server
+reaches over the public network, or put a proxy in front. SAML metadata and OIDC
+discovery are deliberately *not* address-guarded, since a self-hosted identity
+provider on a private network is normal.
 
 **Ticket tags are staff-only.** Listing, adding and removing tags on a ticket
 now require Staff or Admin. A reporting user could previously read the
