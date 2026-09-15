@@ -9,7 +9,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), tokenised guest ticket view (#154) |
+| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), guest ticket submission and a tokenised guest view (#154) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
@@ -186,10 +186,21 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 - Google Workspace
 - (Standard SAML 2.0 — additional IdPs should work via metadata import)
 
-### Guest Submission (Optional, Off by Default)
+### Guest Submission (Coming Soon — #154)
+
+**Not available yet.** The pieces exist and do not connect: `POST /api/v1/tickets`
+sits behind `RequireRole`, so the handler's guest branch (`isGuest := a == nil`)
+is unreachable, the `/submit` page posts to that same authenticated endpoint, and
+the admin toggle changes nothing. An authenticated caller's `guest_email` is
+discarded rather than stored.
+
+The design below is the intent, tracked in #154 together with the tokenised view
+a guest needs in order to read replies — the two have to land together, because
+notification email carries no ticket content, so a guest with no way to sign in
+would receive a link to a page they cannot open.
 
 - Toggle in admin settings
-- Unauthenticated users can submit a ticket at `/submit` and receive a **tracking number**
+- Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
 - Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
@@ -437,14 +448,10 @@ denied, and must be re-issued.
   and anyone who can file a ticket chooses that text. Recipients read the
   content in the application, where the existing access rules apply to it.
 
-  **Known gap:** a ticket filed with a guest address has no signed-in reader,
-  and there is no guest ticket view, so a guest recipient would have nowhere to
-  read the reply text. No ticket is affected today, because none can be
-  created: `POST /api/v1/tickets` sits behind `RequireRole`, so the handler's
-  guest branch (`isGuest := a == nil`) is unreachable, and an authenticated
-  caller's `guest_email` is discarded rather than stored. The gap becomes real
-  the moment guest submission works. The fix is a tokenised guest view, tracked
-  as issue #154 and scheduled for v2.
+  **Guest tickets:** a guest recipient would have nowhere to read the reply,
+  since there is no guest ticket view. Nothing is affected today because guest
+  submission does not work yet — see "Guest Submission" above and #154, which
+  covers the submission path and the tokenised view together.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.

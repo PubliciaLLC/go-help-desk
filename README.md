@@ -47,7 +47,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
-- Guest ticket submission (optional) — name, email, and optional phone captured; tracking number returned
+- Guest ticket submission — *coming soon* (#154). The form and the settings toggle exist, but the ticket API requires a session, so no guest ticket can be filed yet.
 - File attachments (PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP; 25 MB max; images auto-recompressed; optional ClamAV virus scanning)
 
 ## Quick start
@@ -63,7 +63,7 @@ Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`,
 
 ## Configuration
 
-Environment variables control infrastructure; feature flags (SAML, MFA, SLA, guest submission) and branding are managed through the **Admin → Settings** UI and stored in the database.
+Environment variables control infrastructure; feature flags (SAML, MFA, SLA) and branding are managed through the **Admin → Settings** UI and stored in the database. There is a guest-submission toggle too, but it does nothing yet — see #154.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -85,9 +85,10 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA, SLA and guest-submission are toggled in the Admin UI. The
-> matching environment variables still exist and set the value the instance
-> starts with; the Admin UI setting takes precedence once it has been saved.
+> **Note:** SAML, MFA and SLA are toggled in the Admin UI. The matching
+> environment variables still exist and set the value the instance starts with;
+> the Admin UI setting takes precedence once it has been saved. The
+> guest-submission toggle is present but inert until #154 lands.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
@@ -134,20 +135,16 @@ picked. The content stays in the application now, behind the access rules that
 already govern it. The recipient's own address is written bare, with no display
 name, for the same reason.
 
-> **Known gap for guest tickets.** A ticket filed with a guest address has no
-> signed-in reader and there is no guest ticket view, so a guest recipient
-> would have nowhere to read the reply — the link leads to the sign-in page.
-> No ticket is affected today: `POST /api/v1/tickets` requires a session, and
-> an authenticated caller's `guest_email` is discarded rather than stored, so
-> no guest ticket can currently be created at all. The gap becomes real the
-> moment guest submission works. A tokenised guest view is issue #154,
-> scheduled for v2.
+> **Guest tickets.** A guest recipient would have nowhere to read the reply,
+> since the link leads to the sign-in page. Nothing is affected today, because
+> guest submission does not work yet — see #154, which covers both the
+> submission path and the tokenised view a guest needs to read the thread.
 
 **Guest email addresses are validated.** Nothing checked them before: any string
 was accepted, stored, and handed to the mailer. A guest address that is not a
 single bare address is now refused with `400`, and the stored value is
-normalised. This bites nothing today — see the note above — but it is the rule
-guest submission will meet when it is wired up.
+normalised. Nothing meets this rule today — guest submission is not live — but
+it is the rule it will meet.
 
 **A rejected email address answers 400, not 500.** Adding validation without
 mapping its refusal meant a mistyped address at signup came back as "an internal
