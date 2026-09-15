@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -63,6 +64,25 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", "invalid assignee_group_id")
 			return
+		}
+		// Refusing only RoleUser was not enough. With scope enforced, the
+		// default listing and GET /tickets/{id} both refuse a ticket outside
+		// the caller's groups — and this branch handed the same tickets over to
+		// anyone who named the group. Group ids are listed to every staff
+		// member by GET /groups, so it was a filter, not a boundary. An OAuth
+		// client acts as staff and belongs to no group at all, which made it
+		// every ticket assigned to any group.
+		if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
+			scope, err := s.staffScopeFor(ctx, a)
+			if err != nil {
+				handleError(w, err)
+				return
+			}
+			if !slices.Contains(scope.GroupIDs, gid) {
+				Error(w, http.StatusForbidden, "forbidden",
+					"you are not a member of that group")
+				return
+			}
 		}
 		var tickets []ticket.Ticket
 		if q != "" {

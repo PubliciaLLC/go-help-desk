@@ -468,12 +468,29 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		Type:     notification.EventTicketReplied,
 		TicketID: t.ID,
 		ActorID:  actor.UserID,
-		Payload: map[string]any{
-			"reporter_email": reporterEmail, // used by dispatcher to set To address
-			"TrackingNumber": string(t.TrackingNumber),
-			"Subject":        t.Subject,
-			"ReplyBody":      body,
-		},
+		Payload: func() map[string]any {
+			p := map[string]any{
+				"reporter_email": reporterEmail, // used by dispatcher to set To address
+				"TrackingNumber": string(t.TrackingNumber),
+				"Subject":        t.Subject,
+				"internal":       internal,
+			}
+			// An internal note's body does not go in the event.
+			//
+			// Blanking reporter_email keeps it out of the customer's email, but
+			// the webhook dispatcher marshals this whole event and POSTs it to
+			// every subscriber. A credential holding only webhooks:write —
+			// refused tickets:read — could register a URL and receive the body
+			// of every staff-only note on the instance. Scopes are supposed to
+			// narrow, and that one widened.
+			//
+			// The flag stays so a legitimate subscriber can tell the two apart,
+			// which it previously could not.
+			if !internal {
+				p["ReplyBody"] = body
+			}
+			return p
+		}(),
 		OccurredAt: time.Now(),
 	})
 

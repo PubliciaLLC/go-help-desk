@@ -350,3 +350,22 @@ func TestMachineCredential_UnreadableTargetIsRefused(t *testing.T) {
 	require.NotEqual(t, http.StatusNoContent, resp.StatusCode,
 		"a target that cannot be read cannot be shown safe to act on")
 }
+
+// A machine credential must not reach MFA verification. Each wrong code spends
+// the durable per-user budget, so a leaked key could re-lock the account every
+// fifteen minutes and the human would never get in — a denial of service on
+// their own account that revoking the key does not immediately undo.
+func TestMachineCredential_CannotSpendTheMFABudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	for i := 0; i < 6; i++ {
+		resp := h.do(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
+			map[string]any{"code": "000000"})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode,
+			"attempt %d must be refused before it reaches the counter", i+1)
+	}
+
+	// The budget is untouched: the owner can still log in.
+	loggedIn(t, h)
+}

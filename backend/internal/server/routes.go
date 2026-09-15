@@ -15,7 +15,12 @@ func (s *Server) authRouter() *chi.Mux {
 	// three are only known after the body is parsed.
 	r.Post("/local/login", s.handleLocalLogin)
 	r.Post("/local/logout", s.handleLogout)
-	r.Post("/local/mfa/verify", s.handleMFAVerify)
+	// An API key reaches this too — APIKeyAuth sets MFAPassed, so the handler's
+	// "requires a session that already passed the password" is not what the
+	// routing enforces. Each wrong code spends the durable per-user MFA budget,
+	// so a leaked key could re-lock the account every fifteen minutes and the
+	// owner would never get in.
+	r.With(authmw.DenyMachineCredentials).Post("/local/mfa/verify", s.handleMFAVerify)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 	r.Get("/providers", s.handleAuthProviders)
