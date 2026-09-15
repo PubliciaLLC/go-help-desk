@@ -161,7 +161,10 @@ accept the value: `POST /api/v1/auth/signup` (previously `202`),
 `POST /api/v1/admin/users` (previously `201`) and
 `PATCH /api/v1/admin/users/{id}` (previously `200`). The last one also refuses
 an edit to an account whose *stored* address does not pass — an account created
-before 1.2.0 may hold one. Fix the address in the same request.
+before 1.2.0 may hold one. Send a corrected `email` in the same request. Only
+`display_name`, `email` and `role` go through that check: disabling an account
+and resetting its MFA still work regardless, so a bad stored address never
+stops you locking someone out.
 
 **New tickets get a different tracking-number prefix.** Up to 1.1.1 the prefix
 was hardcoded `OHD`; from 1.2.0 it is a setting that defaults to `GHD`. Existing
@@ -184,8 +187,11 @@ form cannot post anywhere but back to the instance. Self-hosted assets are
 unaffected. An uploaded logo is served under a stricter policy of its own.
 
 **Webhook targets on private addresses are refused.** Loopback, RFC1918,
-link-local, unique-local, carrier-grade NAT and the NAT64 range, in both their
-IPv4 and IPv6 forms. Saving a new webhook on one of those is refused with a
+link-local, unique-local, multicast and the unspecified address, plus
+carrier-grade NAT (`100.64.0.0/10`), IETF protocol assignments
+(`192.0.0.0/24`), benchmarking (`198.18.0.0/15`), reserved space
+(`240.0.0.0/4`) and NAT64 (`64:ff9b::/96`). IPv4-mapped IPv6 forms are
+unwrapped first, so they cannot be used to slip past. Saving a new webhook on one of those is refused with a
 visible error; delivery checks again at the moment it dials, so a hostname that
 resolves to a private address, a redirect to one, and DNS rebinding are all
 caught as well.
