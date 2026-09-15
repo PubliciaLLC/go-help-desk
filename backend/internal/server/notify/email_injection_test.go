@@ -2,7 +2,9 @@ package notify
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"net"
 	"strings"
 	"testing"
@@ -214,4 +216,126 @@ func TestEmail_VerificationLinkHostIsStable(t *testing.T) {
 		raw := strings.ReplaceAll(<-received, "=\r\n", "")
 		require.Contains(t, raw, "https://help.example.com/verify-email")
 	}
+}
+
+// The body is attacker-controlled: a reply is whatever the customer typed.
+// text/plain is what stops markup in it being markup; this covers the rest.
+func TestSanitizeBody(t *testing.T) {
+	t.Run("keeps what a reply legitimately contains", func(t *testing.T) {
+		in := "Line one\nLine two\n\nNew paragraph\twith a tab\nAccents: caf\u00e9, \u65e5\u672c\u8a9e, emoji \U0001F3AB"
+		require.Equal(t, in, sanitizeBody(in), "ordinary text must pass through untouched")
+	})
+
+	t.Run("normalises line endings", func(t *testing.T) {
+		require.Equal(t, "a\nb\nc", sanitizeBody("a\r\nb\rc"))
+	})
+
+	t.Run("strips characters that change what text appears to say", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			bad  rune
+		}{
+			{"right-to-left override", '\u202e'},
+			{"left-to-right embedding", '\u202a'},
+			{"bidi isolate", '\u2066'},
+			{"line separator", '\u2028'},
+			{"paragraph separator", '\u2029'},
+			{"null byte", '\x00'},
+			{"escape", '\x1b'},
+			{"DEL", '\u007f'},
+			{"C1 control", '\u0085'},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				got := sanitizeBody("before" + string(tc.bad) + "after")
+				require.NotContains(t, got, string(tc.bad), "%s must be removed", tc.name)
+				require.Contains(t, got, "before", "the surrounding text must survive")
+				require.Contains(t, got, "after")
+			})
+		}
+	})
+}
+
+// The reply body reaches the wire whole, across lines. Before this, the header
+// rule was applied to it and every multi-line reply arrived as one line.
+func TestEmail_MultiLineReplySurvivesToTheWire(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+
+	body := sanitizeBody("First line\nSecond line\n\nAfter a blank line")
+	require.NoError(t, d.send("user@example.com", "Subject", []byte(body)))
+
+	raw := strings.ReplaceAll(<-received, "=\r\n", "")
+	require.Contains(t, raw, "First line\r\nSecond line",
+		"the line break must survive rather than becoming a space")
+	require.Contains(t, raw, "After a blank line")
+}
+
+// The message must stay text/plain with no HTML alternative. That declaration
+// is what actually prevents script execution — an HTML part added later would
+// turn every reply body into a live XSS sink.
+func TestEmail_IsPlainTextWithNoHTMLPart(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+
+	require.NoError(t, d.send("user@example.com", "Subject",
+		[]byte("<script>alert(1)</script> and <b>bold</b>")))
+
+	raw := <-received
+	lower := strings.ToLower(raw)
+	require.Contains(t, lower, "content-type: text/plain; charset=utf-8")
+	require.NotContains(t, lower, "text/html", "an HTML part would make the body a live sink")
+	require.NotContains(t, lower, "multipart/", "no alternative part")
+
+	// The markup is delivered as literal text, which is the point: it is
+	// content, not instructions.
+	require.Contains(t, strings.ReplaceAll(raw, "=\r\n", ""), "script")
+}
+
+// Through Dispatch, which is how a reply actually becomes an email — not by
+// calling sanitizeBody and then send() separately.
+//
+// The first version of the multi-line test did exactly that, so reverting
+// sanitizePayload to the header rule (the bug that flattened every reply)
+// failed nothing. Testing the helper is not testing the path.
+func TestEmail_ReplyEventReachesTheWireIntact(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+
+	require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+		Type: notification.EventTicketReplied,
+		Payload: map[string]any{
+			"reporter_email": "user@example.com",
+			"TrackingNumber": "GHD-2026-000001",
+			"Subject":        "Printer broken",
+			"ReplyBody":      "First line\nSecond line\n\nAfter a blank line",
+			"internal":       false,
+		},
+	}))
+
+	raw := strings.ReplaceAll(<-received, "=\r\n", "")
+	require.Contains(t, raw, "First line\r\nSecond line",
+		"a multi-line reply must not be flattened on the way to the wire")
+	require.Contains(t, raw, "After a blank line")
+}
+
+// And the same path must still strip what makes text lie about itself.
+func TestEmail_ReplyEventStripsDisplayTricks(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+
+	require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+		Type: notification.EventTicketReplied,
+		Payload: map[string]any{
+			"reporter_email": "user@example.com",
+			"TrackingNumber": "GHD-2026-000001",
+			"Subject":        "Printer broken",
+			"ReplyBody":      "invoice" + string(rune(0x202e)) + "txt.exe",
+			"internal":       false,
+		},
+	}))
+
+	raw := <-received
+	require.NotContains(t, raw, string(rune(0x202e)),
+		"a bidi override must not reach the recipient")
+	require.Contains(t, strings.ReplaceAll(raw, "=\r\n", ""), "invoice")
 }

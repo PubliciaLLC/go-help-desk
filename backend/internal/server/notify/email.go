@@ -53,6 +53,17 @@ func sanitizeHeader(s string) string {
 
 // sanitizePayload returns a shallow copy of payload where all string values are
 // header/body-safe normalized text (CR/LF removed, trimmed).
+// sanitizePayload cleans values for use in the message BODY.
+//
+// It used to apply sanitizeHeader to every string, which flattened every
+// multi-line reply onto one line in the email — the header rule applied to
+// content that is not a header. The header path does not need it here anyway:
+// send() sanitizes the Subject at the point it writes it, which is the only
+// place a payload string becomes a header.
+//
+// What it strips instead is the set of characters that have no business in a
+// plain-text body and exist mainly to make text display as something other
+// than what it is.
 func sanitizePayload(payload map[string]any) map[string]any {
 	if payload == nil {
 		return nil
@@ -60,12 +71,57 @@ func sanitizePayload(payload map[string]any) map[string]any {
 	out := make(map[string]any, len(payload))
 	for k, v := range payload {
 		if s, ok := v.(string); ok {
-			out[k] = sanitizeHeader(s)
+			out[k] = sanitizeBody(s)
 			continue
 		}
 		out[k] = v
 	}
 	return out
+}
+
+// sanitizeBody makes a string safe to place in a text/plain body while keeping
+// it readable.
+//
+// The message is text/plain, so markup in it is not markup — that is what
+// actually prevents script execution, not this. This removes what remains:
+//
+//   - Control characters, which no plain-text body needs and which a
+//     non-conforming renderer may act on. Newline and tab are kept, because a
+//     reply legitimately contains both.
+//   - Bidirectional overrides (U+202A-U+202E, U+2066-U+2069). These reorder
+//     displayed text without changing it, so "cancel-order.txt" can be shown
+//     as something else entirely.
+//   - U+2028 and U+2029, which are line terminators to a JavaScript parser and
+//     would matter the moment any of this is rendered somewhere other than a
+//     mail client.
+//
+// Line endings are normalised to \n so the quoted-printable encoder produces
+// consistent CRLF rather than inheriting whatever the client sent.
+func sanitizeBody(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case r < 0x20 || r == 0x7f: // C0 controls and DEL
+			continue
+		case r >= 0x80 && r <= 0x9f: // C1 controls
+			continue
+		case r >= 0x202A && r <= 0x202E: // bidi embedding and override
+			continue
+		case r >= 0x2066 && r <= 0x2069: // bidi isolates
+			continue
+		case r == 0x2028 || r == 0x2029: // line and paragraph separators
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // Dispatch sends an email for supported event types. Unsupported events are
