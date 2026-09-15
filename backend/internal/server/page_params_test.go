@@ -1,6 +1,7 @@
 package server
 
 import (
+	"math"
 	"net/http/httptest"
 	"testing"
 
@@ -33,9 +34,25 @@ func TestPageParams(t *testing.T) {
 		},
 		{name: "unparseable offset falls back to zero", query: "?offset=abc", wantLimit: 100},
 		{
-			// int32 overflow in the store layer turned a huge offset negative.
-			name: "absurd offset is still non-negative", query: "?offset=3000000000",
-			wantLimit: 100, wantOffet: 3000000000,
+			// This case asserted that 3000000000 passed through unchanged,
+			// which is exactly the value that overflows the store's int32:
+			// 2147483648 went negative and became a 500, and 4294967296
+			// wrapped to 0 and silently returned page one. The test encoded
+			// the bug instead of catching it.
+			name: "offset above MaxInt32 is clamped", query: "?offset=3000000000",
+			wantLimit: 100, wantOffet: math.MaxInt32,
+		},
+		{
+			name: "the exact overflow boundary is clamped", query: "?offset=2147483648",
+			wantLimit: 100, wantOffet: math.MaxInt32,
+		},
+		{
+			name: "the value that wrapped to page one is clamped", query: "?offset=4294967296",
+			wantLimit: 100, wantOffet: math.MaxInt32,
+		},
+		{
+			name: "an offset that fits is untouched", query: "?offset=2147483647",
+			wantLimit: 100, wantOffet: math.MaxInt32,
 		},
 	}
 	for _, tc := range cases {
@@ -45,6 +62,8 @@ func TestPageParams(t *testing.T) {
 			require.Equal(t, tc.wantOffet, offset)
 			require.Positive(t, limit, "a non-positive limit returns nothing at all")
 			require.GreaterOrEqual(t, offset, 0, "a negative offset is a database error")
+			require.LessOrEqual(t, offset, math.MaxInt32,
+				"the store casts to int32; anything larger wraps")
 		})
 	}
 }

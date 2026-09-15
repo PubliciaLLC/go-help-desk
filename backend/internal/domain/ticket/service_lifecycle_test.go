@@ -717,3 +717,51 @@ func TestUpdateStatus_DoesNotRecordSLAForOtherStatuses(t *testing.T) {
 
 	require.Zero(t, h.sla.resolutions)
 }
+
+// Every lifecycle write must read the row it is about to overwrite from inside
+// its transaction. Update rewrites every column, so a copy read on the pool is
+// a lost update waiting for a second writer.
+//
+// fakeStore counts the locking reads but nothing asserted the count, so
+// reverting any one method to s.store.GetByID failed no test — the counter was
+// decoration. This asserts it per method.
+func TestLifecycleWrites_ReadUnderTheLock(t *testing.T) {
+	cases := []struct {
+		name string
+		call func(*harness, ticket.Ticket) error
+	}{
+		{"UpdateStatus", func(h *harness, seeded ticket.Ticket) error {
+			_, err := h.svc.UpdateStatus(context.Background(), seeded.ID,
+				h.resolvedStatus.ID, ticket.Actor{Role: user.RoleStaff})
+			return err
+		}},
+		{"Assign", func(h *harness, seeded ticket.Ticket) error {
+			assignee := uuid.New()
+			_, err := h.svc.Assign(context.Background(), seeded.ID, &assignee, nil,
+				ticket.Actor{Role: user.RoleStaff})
+			return err
+		}},
+		{"Resolve", func(h *harness, seeded ticket.Ticket) error {
+			_, err := h.svc.Resolve(context.Background(), seeded.ID, "done",
+				ticket.Actor{Role: user.RoleStaff})
+			return err
+		}},
+		{"Close", func(h *harness, seeded ticket.Ticket) error {
+			return h.svc.Close(context.Background(), seeded.ID,
+				ticket.Actor{Role: user.RoleAdmin})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			seeded := h.seedOpen()
+			before := h.store.forUpdateReads
+
+			require.NoError(t, tc.call(h, seeded))
+
+			require.Greater(t, h.store.forUpdateReads, before,
+				"%s must read the ticket through GetByIDForUpdate inside its "+
+					"transaction; reading on the pool loses concurrent writes", tc.name)
+		})
+	}
+}

@@ -60,6 +60,35 @@ func guardedDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
 }
 
+// extraInternalRanges are internal in practice but not covered by IsPrivate.
+var extraInternalRanges = func() []*net.IPNet {
+	cidrs := []string{
+		"100.64.0.0/10", // carrier-grade NAT; Alibaba/Tencent metadata lives here
+		"192.0.0.0/24",  // IETF protocol assignments
+		"198.18.0.0/15", // benchmarking
+		"240.0.0.0/4",   // reserved
+		"64:ff9b::/96",  // NAT64, which maps straight onto IPv4 space
+	}
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic("safehttp: bad built-in CIDR " + c) // a constant list; a typo is a build-time bug
+		}
+		out = append(out, n)
+	}
+	return out
+}()
+
+func inExtraInternalRange(ip net.IP) bool {
+	for _, n := range extraInternalRanges {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func checkIP(ip net.IP) error {
 	switch {
 	case ip.IsLoopback():
@@ -70,6 +99,13 @@ func checkIP(ip net.IP) error {
 		// 169.254.169.254 is the cloud metadata endpoint on every major
 		// provider, and it hands out credentials to anyone who asks.
 		return fmt.Errorf("refusing to connect to link-local address %s", ip)
+	case inExtraInternalRange(ip):
+		// net.IP.IsPrivate covers only RFC1918 and IPv6 ULA. The ranges below
+		// are not "private" by that definition but are just as internal in
+		// practice — 100.64.0.0/10 is carrier-grade NAT, and 100.100.100.200
+		// is the metadata endpoint on Alibaba and Tencent clouds, which the
+		// link-local check does not catch.
+		return fmt.Errorf("refusing to connect to internal address %s", ip)
 	case ip.IsUnspecified():
 		return fmt.Errorf("refusing to connect to unspecified address %s", ip)
 	case ip.IsMulticast(), ip.IsInterfaceLocalMulticast():

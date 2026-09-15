@@ -1,8 +1,10 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"net/http"
 	"testing"
 
@@ -105,4 +107,82 @@ func TestListTickets_PagingAppliesToSearch(t *testing.T) {
 	var out []map[string]any
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 	require.Len(t, out, 2, "search must honour the limit")
+}
+
+// The staff default view merges 1+N queries — own tickets plus one per group.
+// Pushing the page window into each of them and concatenating returned
+// limit×(1+groups) rows and skipped offset rows in every sublist
+// independently, so ?limit=5 returned 10 and the frontend then disabled Next
+// while tickets were still unreachable.
+//
+// This is the branch every staff member and admin lands on by default, and the
+// original paging tests only covered the reporter branch, which is why it
+// shipped.
+func TestListTickets_PagingOnTheMergedStaffView(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	grp, err := h.groupSvc.Create(ctx, "Support "+uuid.NewString()[:8], "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.AddMember(ctx, grp.ID, h.staffID))
+
+	// Eight assigned to the staff member, eight to their group: two sources.
+	const perSource = 8
+	for i := 0; i < perSource*2; i++ {
+		resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject": fmt.Sprintf("Merged %02d", i), "description": "x",
+			"category_id": h.catID.String(),
+		})
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+		var created struct {
+			ID string `json:"id"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+
+		assign := map[string]any{"assignee_user_id": h.staffID.String()}
+		if i >= perSource {
+			assign = map[string]any{"assignee_group_id": grp.ID.String()}
+		}
+		resp = h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+created.ID, assign)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	}
+
+	page := func(t *testing.T, query string) []map[string]any {
+		t.Helper()
+		resp := h.do(t, http.MethodGet, "/api/v1/tickets"+query, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var out []map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+		return out
+	}
+
+	t.Run("limit means limit, not limit per source", func(t *testing.T) {
+		require.Len(t, page(t, "?limit=5"), 5)
+		require.Len(t, page(t, "?limit=8"), 8)
+	})
+
+	t.Run("pages do not overlap and cover everything", func(t *testing.T) {
+		seen := map[any]bool{}
+		for off := 0; off < perSource*2; off += 5 {
+			for _, tk := range page(t, fmt.Sprintf("?limit=5&offset=%d", off)) {
+				require.False(t, seen[tk["id"]],
+					"ticket %v appeared on two pages", tk["id"])
+				seen[tk["id"]] = true
+			}
+		}
+		require.Len(t, seen, perSource*2,
+			"paging must reach every ticket exactly once")
+	})
+
+	t.Run("the page past the end is empty", func(t *testing.T) {
+		require.Empty(t, page(t, "?limit=5&offset=100"))
+	})
+
+	t.Run("ordering is stable across repeated reads", func(t *testing.T) {
+		first := page(t, "?limit=16")
+		second := page(t, "?limit=16")
+		require.Equal(t, first, second,
+			"identical requests must return identical order, or pages shuffle")
+	})
 }

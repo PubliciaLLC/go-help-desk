@@ -470,9 +470,27 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		if err != nil {
 			return err
 		}
+		// Re-decide on the locked row, not just re-read it.
+		//
+		// The copy above decided to reopen because the ticket was Resolved when
+		// the reply arrived. If an administrator closed it in between, that
+		// decision is stale: reopening from the unlocked copy wrote the new
+		// status while leaving closed_at set, producing an open ticket with a
+		// closing timestamp — and a history row claiming it moved from
+		// Resolved when it actually left Closed.
+		if locked.StatusID != oldStatusID {
+			// Someone else moved it. The reply is already written and stands;
+			// the reopen does not, because the condition for it is gone.
+			reopened = false
+			t = locked
+			return nil
+		}
 		locked.StatusID = t.StatusID
-		locked.ResolvedAt = nil
 		locked.UpdatedAt = t.UpdatedAt
+		// Through the shared rule, so this door agrees with the others about
+		// resolved_at and closed_at rather than clearing one and forgetting
+		// the other.
+		applyStatusTimestamps(&locked, oldStatusID, reopenTargetStatusID, s.sys, t.UpdatedAt)
 		t = locked
 
 		if err := st.Update(ctx, t); err != nil {

@@ -24,6 +24,13 @@ func TestCheckIP_RefusesInternalAddresses(t *testing.T) {
 		{"unique-local v6", "fd00::1"},
 		{"unspecified", "0.0.0.0"},
 		{"multicast", "224.0.0.1"},
+		// Not "private" by Go's definition, but internal in practice.
+		{"carrier-grade NAT", "100.64.0.1"},
+		{"Alibaba/Tencent metadata", "100.100.100.200"},
+		{"IETF protocol assignments", "192.0.0.1"},
+		{"benchmarking range", "198.18.0.1"},
+		{"reserved 240/4", "240.0.0.1"},
+		{"NAT64 mapping loopback", "64:ff9b::7f00:1"},
 		// An IPv4 address wrapped as IPv6 is 16 bytes, and every check above
 		// misses it unless it is unwrapped first.
 		{"IPv4-mapped loopback", "::ffff:127.0.0.1"},

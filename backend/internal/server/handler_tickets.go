@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -44,10 +45,14 @@ func pageParams(r *http.Request) (limit, offset int) {
 		}
 	}
 	if v := r.URL.Query().Get("offset"); v != "" {
-		// A negative offset reaches Postgres as "OFFSET must not be negative"
-		// and becomes a 500 for what is a bad request.
+		// Clamped to what the store can carry. The generated queries take an
+		// int32, so an offset above MaxInt32 wraps: 2147483648 became negative
+		// and Postgres answered "OFFSET must not be negative" as a 500, and
+		// 4294967296 wrapped to 0 and quietly returned page one.
+		//
+		// A negative offset is refused for the same reason it used to 500.
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			offset = n
+			offset = min(n, math.MaxInt32)
 		}
 	}
 	return limit, offset
@@ -204,15 +209,26 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Staff/admin (scope=mine): tickets assigned to them + tickets assigned to their groups.
-	all := make([]ticket.Ticket, 0)
+	// Staff/admin (scope=mine): tickets assigned to them + tickets assigned to
+	// their groups.
+	//
+	// This branch merges 1+N queries, so the page window cannot be pushed down
+	// into each of them — applying limit and offset per query and concatenating
+	// returned limit×(1+groups) rows and skipped offset rows in every sublist
+	// independently. Each source is therefore read up to the end of the
+	// requested page, merged, and sliced once.
+	//
+	// The cost is bounded by the offset ceiling, and the indexes added in
+	// migration 21 cover the ordering.
+	window := offset + limit
+	all := make([]ticket.Ticket, 0, window)
 
 	var err error
 	var mine []ticket.Ticket
 	if q != "" {
-		mine, err = s.tickets.SearchByAssigneeUser(ctx, a.UserID, q, limit, offset)
+		mine, err = s.tickets.SearchByAssigneeUser(ctx, a.UserID, q, window, 0)
 	} else {
-		mine, err = s.tickets.ListByAssigneeUser(ctx, a.UserID, limit, offset)
+		mine, err = s.tickets.ListByAssigneeUser(ctx, a.UserID, window, 0)
 	}
 	if err != nil {
 		handleError(w, err)
@@ -232,9 +248,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	for _, g := range groups {
 		var gTickets []ticket.Ticket
 		if q != "" {
-			gTickets, err = s.tickets.SearchByAssigneeGroup(ctx, g.ID, q, limit, offset)
+			gTickets, err = s.tickets.SearchByAssigneeGroup(ctx, g.ID, q, window, 0)
 		} else {
-			gTickets, err = s.tickets.ListByAssigneeGroup(ctx, g.ID, limit, offset)
+			gTickets, err = s.tickets.ListByAssigneeGroup(ctx, g.ID, window, 0)
 		}
 		if err != nil {
 			handleError(w, err)
@@ -248,7 +264,22 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	JSON(w, http.StatusOK, all)
+	// Sorted here because the merge destroyed the per-query ordering, with the
+	// id as a tiebreaker: created_at alone is not unique, and without a
+	// tiebreaker two tickets sharing a timestamp can swap places between pages
+	// — showing one twice and hiding the other.
+	slices.SortFunc(all, func(x, y ticket.Ticket) int {
+		if c := y.CreatedAt.Compare(x.CreatedAt); c != 0 {
+			return c // newest first
+		}
+		return strings.Compare(x.ID.String(), y.ID.String())
+	})
+
+	if offset >= len(all) {
+		JSON(w, http.StatusOK, []ticket.Ticket{})
+		return
+	}
+	JSON(w, http.StatusOK, all[offset:min(offset+limit, len(all))])
 }
 
 // POST /api/v1/tickets
