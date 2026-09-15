@@ -211,10 +211,27 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		_ = s.sla.AttachPolicy(ctx, t) // SLA failure is non-fatal
 	}
 
+	// The payload is what makes this email reachable at all. It shipped with
+	// none, and eventToEmail returns ok=false without a recipient — so the
+	// "Your ticket has been received" mail has never been sent to anyone. For a
+	// guest that mail is the only place the tracking number appears, so a guest
+	// ticket was unreachable by the person who filed it.
+	//
+	// The existing email test hand-built this payload, which is why it passed
+	// while nothing populated it.
+	createdPayload := map[string]any{
+		"TrackingNumber": string(t.TrackingNumber),
+		"Subject":        t.Subject,
+		"Priority":       string(t.Priority),
+	}
+	if t.GuestEmail != nil && *t.GuestEmail != "" {
+		createdPayload["guest_email"] = *t.GuestEmail
+	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:       notification.EventTicketCreated,
 		TicketID:   t.ID,
 		ActorID:    in.ReporterUserID,
+		Payload:    createdPayload,
 		OccurredAt: now,
 	})
 

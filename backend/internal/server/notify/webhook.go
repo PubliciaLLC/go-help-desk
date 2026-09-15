@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"net/http"
 	"time"
 
@@ -29,8 +30,11 @@ type WebhookDispatcher struct {
 // NewWebhookDispatcher returns a WebhookDispatcher with sensible timeouts.
 func NewWebhookDispatcher(store WebhookStore) *WebhookDispatcher {
 	return &WebhookDispatcher{
-		store:  store,
-		client: &http.Client{Timeout: 10 * time.Second},
+		store: store,
+		// Guarded: the URL is operator-supplied and the app container can
+		// reach the database, the antivirus daemon and cloud metadata, none
+		// of which are reachable from outside.
+		client: safehttp.Client(10 * time.Second),
 	}
 }
 

@@ -107,6 +107,14 @@ func fitWithin(srcW, srcH, maxW, maxH int) (int, int) {
 // logoMaxWidth × logoMaxHeight (nearest-neighbor, aspect-ratio preserved), and
 // re-encodes the result as PNG. The returned bytes are always a valid PNG.
 func resizeRasterLogo(data []byte, kind string) ([]byte, error) {
+	// Same decompression bomb as attachments: the 2 MB logo limit still admits
+	// a 949 KB file that decodes to 859 MB. Lower blast radius — the caller is
+	// an administrator — but a leaked credential should not be a one-request
+	// denial of service.
+	if err := decodedSizeWithin(data, maxImagePixels); err != nil {
+		return nil, err
+	}
+
 	var src image.Image
 	var err error
 	switch kind {

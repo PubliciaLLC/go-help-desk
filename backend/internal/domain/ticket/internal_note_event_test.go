@@ -81,3 +81,64 @@ func replyEventForTest(t *testing.T, body string, internal bool) notification.Ev
 	t.Fatal("no ticket.replied event dispatched")
 	return notification.Event{}
 }
+
+// The "Your ticket has been received" email shipped unreachable: Create
+// dispatched EventTicketCreated with NO payload, and eventToEmail returns
+// ok=false without a recipient, so the mail was never sent to anyone. For a
+// guest it is the only place the tracking number appears, which made a guest
+// ticket unreachable by the person who filed it.
+//
+// The existing email test hand-built this payload, which is why it passed while
+// nothing populated it.
+func TestCreateEvent_CarriesWhatTheEmailNeeds(t *testing.T) {
+	h := newHarness(t)
+
+	guest := "guest@example.com"
+	created, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject:    "Printer jammed",
+		CategoryID: h.seedOpen().CategoryID,
+		Priority:   ticket.PriorityHigh,
+		GuestEmail: &guest,
+		GuestName:  "Guest Person",
+	})
+	require.NoError(t, err)
+
+	var ev notification.Event
+	for _, e := range h.dispatcher.events {
+		if e.Type == notification.EventTicketCreated {
+			ev = e
+		}
+	}
+	require.Equal(t, notification.EventTicketCreated, ev.Type, "no created event dispatched")
+
+	// Exactly the keys the template and eventToEmail read. A missing one means
+	// no email, silently.
+	require.Equal(t, guest, ev.Payload["guest_email"],
+		"without a recipient the dispatcher drops the mail and says nothing")
+	require.Equal(t, string(created.TrackingNumber), ev.Payload["TrackingNumber"],
+		"the tracking number is the guest's only handle on the ticket")
+	require.Equal(t, "Printer jammed", ev.Payload["Subject"])
+	require.Equal(t, string(ticket.PriorityHigh), ev.Payload["Priority"],
+		"ticket_created.tmpl renders .Priority")
+}
+
+// A signed-in reporter has no guest_email, and must not get one invented.
+func TestCreateEvent_NoGuestEmailForAuthenticatedReporters(t *testing.T) {
+	h := newHarness(t)
+	reporter := uuid.New()
+
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject:        "Signed in",
+		CategoryID:     h.seedOpen().CategoryID,
+		Priority:       ticket.PriorityLow,
+		ReporterUserID: &reporter,
+	})
+	require.NoError(t, err)
+
+	for _, e := range h.dispatcher.events {
+		if e.Type == notification.EventTicketCreated {
+			require.NotContains(t, e.Payload, "guest_email")
+			require.Equal(t, "Signed in", e.Payload["Subject"])
+		}
+	}
+}

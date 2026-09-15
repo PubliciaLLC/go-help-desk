@@ -15,9 +15,10 @@ import (
 )
 
 // metadataFetchTimeout bounds the IdP metadata fetch. It runs while SAML is
-// being (re)configured, and http.DefaultClient has no timeout at all — an IdP
-// that accepts the connection and then stalls would otherwise hang the reload
-// indefinitely, with the admin UI simply never returning.
+// being (re)configured, so an IdP that accepts the connection and then stalls
+// would otherwise hang the reload indefinitely, with the admin UI simply never
+// returning. The client is safehttp's, which carries this timeout and refuses
+// internal addresses.
 const metadataFetchTimeout = 15 * time.Second
 
 // SAMLConfig holds the parameters needed to initialise a SAML service provider.
@@ -66,6 +67,12 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	fetchCtx, cancel := context.WithTimeout(ctx, metadataFetchTimeout)
 	defer cancel()
 
+	// NOT address-guarded, deliberately: a self-hosted deployment commonly runs
+	// its IdP on the same private network, so refusing private addresses here
+	// would break a normal topology on upgrade. The exposure is bounded instead
+	// by the timeout and by not echoing the fetch error back to the caller —
+	// see handleSaveSAMLConfig. Webhook targets ARE guarded, because those are
+	// external by definition.
 	idpMeta, err := samlsp.FetchMetadata(fetchCtx, &http.Client{Timeout: metadataFetchTimeout}, *metadataURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", cfg.MetadataURL, err)

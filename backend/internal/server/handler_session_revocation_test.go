@@ -101,7 +101,7 @@ func TestSessionRevocation(t *testing.T) {
 		require.Equal(t, http.StatusUnauthorized, res.StatusCode,
 			"a cookie minted before the reset must not survive it")
 
-		res, _ = s.send(t, http.MethodGet, "/api/v1/me/mfa/enroll", nil)
+		res, _ = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
 		require.NotEqual(t, http.StatusOK, res.StatusCode,
 			"and it must not be able to enrol a replacement authenticator")
 	})

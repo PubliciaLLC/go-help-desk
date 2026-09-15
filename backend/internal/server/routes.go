@@ -315,7 +315,11 @@ func (s *Server) meRouter() *chi.Mux {
 
 		// MFA enrollment stays outside RequireMFA — otherwise a user compelled
 		// to enroll cannot complete enrollment.
-		r.Get("/mfa/enroll", s.handleMFAEnrollStart)
+		// POST, not GET: it mints and stages a secret. As a GET it was
+		// reachable by top-level navigation from any site — the session cookie
+		// is SameSite=Lax — so a single link could start enrolment for a
+		// logged-in victim.
+		r.Post("/mfa/enroll", s.handleMFAEnrollStart)
 		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
 
 		r.Group(func(r chi.Router) {

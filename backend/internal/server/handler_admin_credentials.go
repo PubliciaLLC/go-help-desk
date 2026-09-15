@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"net/http"
 	"time"
 
@@ -211,6 +212,13 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	// Checked here so a bad target is reported when the form is saved. The
+	// real boundary is the guarded dialer in notify — a name that passes now
+	// can resolve somewhere else by delivery time.
+	if err := safehttp.ValidateURL(body.URL); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_url", err.Error())
 		return
 	}
 	wh := authstore.WebhookConfig{

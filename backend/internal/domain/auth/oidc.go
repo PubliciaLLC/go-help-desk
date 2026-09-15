@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
@@ -53,11 +55,24 @@ type OIDCClaims struct {
 	PreferredUsername string `json:"preferred_username"`
 }
 
+// oidcFetchTimeout bounds discovery, JWKS fetches and token exchange.
+const oidcFetchTimeout = 15 * time.Second
+
 // NewOIDCProvider initializes an OIDC provider using discovery.
 func NewOIDCProvider(
 	ctx context.Context,
 	cfg OIDCConfig,
 ) (*OIDCProvider, error) {
+
+	// go-oidc uses http.DefaultClient unless one is in the context: no timeout
+	// at all. Discovery runs synchronously at startup, so a tarpit issuer hung
+	// the boot indefinitely, and every login's token exchange inherited the
+	// same client.
+	//
+	// Not address-guarded, for the same reason as the SAML metadata fetch: a
+	// self-hosted IdP on a private network is a normal topology and refusing it
+	// would break working installs.
+	ctx = oidc.ClientContext(ctx, &http.Client{Timeout: oidcFetchTimeout})
 
 	provider, err := oidc.NewProvider(
 		ctx,

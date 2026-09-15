@@ -5,13 +5,16 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"fmt"
 	"mime/quotedprintable"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
@@ -180,5 +183,73 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 	if d.cfg.SMTPUser != "" {
 		auth = smtp.PlainAuth("", d.cfg.SMTPUser, d.cfg.SMTPPassword, d.cfg.SMTPHost)
 	}
-	return smtp.SendMail(addr, auth, fromAddr.Address, []string{toAddr.Address}, msg.Bytes())
+	return sendMailWithTimeout(addr, auth, fromAddr.Address, toAddr.Address, msg.Bytes(), smtpTimeout)
+}
+
+// smtpTimeout bounds a single delivery end to end.
+//
+// net/smtp.SendMail dials with no timeout and sets no deadline, and delivery
+// happens on the request goroutine after the ticket has already committed. A
+// relay that accepts the connection and then stops responding therefore parked
+// the handler indefinitely: the client eventually saw the write timeout drop
+// the connection with no response, retried, and filed a duplicate ticket, while
+// every goroutine that touched email piled up until the relay recovered.
+const smtpTimeout = 20 * time.Second
+
+// sendMailWithTimeout is net/smtp.SendMail with a dial timeout and a deadline
+// covering the whole conversation.
+func sendMailWithTimeout(addr string, auth smtp.Auth, from, to string, msg []byte, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return fmt.Errorf("dialing SMTP server: %w", err)
+	}
+	// One deadline for the whole exchange, so a relay that answers the dial and
+	// then stalls mid-conversation cannot hold the goroutine either.
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("setting SMTP deadline: %w", err)
+	}
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("parsing SMTP address: %w", err)
+	}
+
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("SMTP handshake: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("STARTTLS: %w", err)
+		}
+	}
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(auth); err != nil {
+				return fmt.Errorf("SMTP auth: %w", err)
+			}
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("SMTP MAIL FROM: %w", err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("SMTP RCPT TO: %w", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("SMTP DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("writing message: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("closing message: %w", err)
+	}
+	return c.Quit()
 }

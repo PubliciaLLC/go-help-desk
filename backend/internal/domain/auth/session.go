@@ -17,6 +17,17 @@ type SessionData struct {
 	// It is cleared after callback validation.
 	OIDCState string
 
+	// PendingMFASecret holds a TOTP secret that has been shown to the user but
+	// not yet confirmed with a code from it.
+	//
+	// It lives here rather than on the user row because writing it to the row
+	// destroyed the authenticator the user was still relying on: starting
+	// enrolment overwrote MFASecret while MFAEnabled stayed true, so merely
+	// opening the rotate-authenticator screen and closing it locked the user
+	// out, and an administrator reset was the only way back — for a sole
+	// administrator, no way back at all.
+	PendingMFASecret string
+
 	// OIDCNonce is the nonce sent with the authorization request. The callback
 	// requires the ID token to echo it back.
 	OIDCNonce string

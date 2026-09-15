@@ -30,7 +30,7 @@ export async function changePassword(current: string, next: string): Promise<voi
 }
 
 export async function enrollMFAStart(): Promise<{ secret: string; qr_url: string; qr_data_url: string }> {
-  const res = await api.get('/me/mfa/enroll')
+  const res = await api.post('/me/mfa/enroll')
   return res.data
 }
 

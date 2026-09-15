@@ -27,7 +27,7 @@ func TestMachineCredential_CannotTakeOverTheAccount(t *testing.T) {
 	}{
 		{"change the owner's password", http.MethodPatch, "/api/v1/me/password",
 			map[string]any{"password": "attacker-chosen-password-123"}},
-		{"start MFA re-enrollment", http.MethodGet, "/api/v1/me/mfa/enroll", nil},
+		{"start MFA re-enrollment", http.MethodPost, "/api/v1/me/mfa/enroll", nil},
 		{"confirm MFA re-enrollment", http.MethodPost, "/api/v1/me/mfa/enroll/confirm",
 			map[string]any{"code": "000000"}},
 	} {
@@ -67,7 +67,7 @@ func TestSession_CanStillManageItsOwnAccount(t *testing.T) {
 
 	s := loggedIn(t, h)
 
-	res, body := s.send(t, http.MethodGet, "/api/v1/me/mfa/enroll", nil)
+	res, body := s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode,
 		"a signed-in person must still be able to enroll MFA; body: %s", body)
 }
