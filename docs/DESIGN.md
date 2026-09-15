@@ -9,7 +9,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS) |
+| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), tokenised guest ticket view (#154) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
@@ -441,8 +441,8 @@ denied, and must be re-issued.
   and there is no guest ticket view, so a guest recipient can no longer read
   the reply text at all. Guest submission is not reachable in v1 — the ticket
   API requires a session — so this affects only a ticket an agent files on
-  someone's behalf with a guest address. A tokenised guest view is the fix and
-  is not in v1.
+  someone's behalf with a guest address. The fix is a tokenised guest view,
+  tracked as issue #154 and scheduled for v2.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
