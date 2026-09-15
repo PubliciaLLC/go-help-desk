@@ -198,7 +198,7 @@
       "type": "http",
       "url": "https://helpdesk.example.com/mcp/",
       "headers": {
-        "Authorization": "Bearer ohd_sk_xxxxxxxxxxxxxxxxxxx"
+        "Authorization": "ApiKey 3f8a…"
       }
     }
   }
@@ -216,7 +216,7 @@
           "url": "https://helpdesk.example.com/mcp/",
           "requestOptions": {
             "headers": {
-              "Authorization": "Bearer ohd_sk_xxxxxxxxxxxxxxxxxxx"
+              "Authorization": "ApiKey 3f8a…"
             }
           }
         }
@@ -232,7 +232,7 @@
     "helpdesk": {
       "url": "https://helpdesk.example.com/mcp/",
       "headers": {
-        "Authorization": "Bearer ohd_sk_xxxxxxxxxxxxxxxxxxx"
+        "Authorization": "ApiKey 3f8a…"
       }
     }
   }
@@ -257,7 +257,7 @@
 <p>Since v1.1.1 the MCP server sits behind the same authentication middleware as the REST API, and accepts any of:</p>
 
 <ul>
-  <li><strong>API key</strong> (recommended for long-lived client configs) — <code>Authorization: ApiKey ohd_sk_...</code></li>
+  <li><strong>API key</strong> (recommended for long-lived client configs) — <code>Authorization: ApiKey &lt;token&gt;</code> — 64 hex characters, no prefix, shown once when the key is created</li>
   <li><strong>OAuth2 JWT</strong> (recommended for server-to-server) — obtain a token from <code>POST /api/v1/auth/oauth/token</code> and send it as <code>Authorization: Bearer &lt;jwt&gt;</code>.</li>
   <li><strong>Session cookie</strong> — works, but is only useful from a browser context.</li>
 </ul>

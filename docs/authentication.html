@@ -191,7 +191,7 @@
 <p>To reset a user's MFA (e.g. after they lose their device and all recovery codes): <em>Admin → Users → [user] → Reset MFA</em>. This deletes the TOTP secret and all recovery codes. The user is prompted to re-enroll on their next login.</p>
 
 <h3>TOTP codes in the API</h3>
-<p>For programmatic login, submit the TOTP code to <code>POST /api/auth/mfa/verify</code> after a successful password login. See the <a href="api.html#api-auth">API: Auth endpoints</a>.</p>
+<p>For programmatic login, submit the TOTP code to <code>POST /api/v1/auth/local/mfa/verify</code> after a successful password login. See the <a href="api.html#api-auth-endpoints">API: Auth endpoints</a>.</p>
 
 
 <h2 id="auth-saml">SAML 2.0 SSO</h2>
@@ -218,9 +218,9 @@
   <div class="step-body">
     <h4>Register the SP with your IdP</h4>
     <p>Once the app is running, your SP metadata is at:</p>
-    <pre><code>https://&lt;BASE_URL&gt;/api/auth/saml/metadata</code></pre>
+    <pre><code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></pre>
     <p>Import this URL into your IdP's application configuration. The ACS (Assertion Consumer Service) URL is:</p>
-    <pre><code>https://&lt;BASE_URL&gt;/api/auth/saml/acs</code></pre>
+    <pre><code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></pre>
     <p>At minimum, configure your IdP to send these attributes in the SAML assertion:</p>
     <table>
       <thead><tr><th>Attribute name</th><th>Value</th></tr></thead>
@@ -262,8 +262,8 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
       <li>In Okta Admin: <em>Applications → Create App Integration → SAML 2.0</em></li>
       <li>On the SAML Settings page:
         <ul>
-          <li><strong>Single sign-on URL</strong>: <code>https://&lt;BASE_URL&gt;/api/auth/saml/acs</code></li>
-          <li><strong>Audience URI (SP Entity ID)</strong>: <code>https://&lt;BASE_URL&gt;/api/auth/saml/metadata</code></li>
+          <li><strong>Single sign-on URL</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
+          <li><strong>Audience URI (SP Entity ID)</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
           <li><strong>Name ID format</strong>: EmailAddress</li>
         </ul>
       </li>
@@ -289,8 +289,8 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
       <li>Go to <em>Single sign-on → SAML</em>.</li>
       <li>Under <em>Basic SAML Configuration</em>:
         <ul>
-          <li><strong>Identifier (Entity ID)</strong>: <code>https://&lt;BASE_URL&gt;/api/auth/saml/metadata</code></li>
-          <li><strong>Reply URL (ACS)</strong>: <code>https://&lt;BASE_URL&gt;/api/auth/saml/acs</code></li>
+          <li><strong>Identifier (Entity ID)</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
+          <li><strong>Reply URL (ACS)</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
         </ul>
       </li>
       <li>Under <em>Attributes &amp; Claims</em>, verify that <code>emailaddress</code>, <code>givenname</code>, and <code>surname</code> are present. Map them to <code>email</code>, <code>firstName</code>, and <code>lastName</code> respectively.</li>
@@ -310,8 +310,8 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
       <li>On the Google Identity Provider details page, click <strong>Download Metadata</strong> and host the XML at a stable URL, or note the <strong>SSO URL</strong> and certificate to build the metadata manually.</li>
       <li>Under <em>Service provider details</em>:
         <ul>
-          <li><strong>ACS URL</strong>: <code>https://&lt;BASE_URL&gt;/api/auth/saml/acs</code></li>
-          <li><strong>Entity ID</strong>: <code>https://&lt;BASE_URL&gt;/api/auth/saml/metadata</code></li>
+          <li><strong>ACS URL</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
+          <li><strong>Entity ID</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
           <li><strong>Name ID format</strong>: EMAIL</li>
         </ul>
       </li>
@@ -389,8 +389,8 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
 
 <h3>Using a key</h3>
 <p>Pass the key as a Bearer token in the <code>Authorization</code> header:</p>
-<pre><code>curl https://helpdesk.example.com/api/tickets \
-  -H "Authorization: Bearer GHD_xxxxxxxxxxxxxxxxxxx"</code></pre>
+<pre><code>curl https://helpdesk.example.com/api/v1/tickets \
+  -H "Authorization: ApiKey 3f8a…"</code></pre>
 
 <p>All <code>/api/</code> endpoints and the <code>/mcp/</code> server accept API key auth.</p>
 
