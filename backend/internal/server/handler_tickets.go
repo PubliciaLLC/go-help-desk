@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -23,11 +24,41 @@ import (
 //   - assignee_group_id=<uuid> — tickets for a specific group (staff/admin only).
 //   - scope=mine|unassigned|all — admin-only scopes. "unassigned" returns tickets
 //     with no assignee user or group. "all" returns every ticket. Defaults to "mine".
+//
+// pageParams reads limit and offset from the query string.
+//
+// Every ticket list passed a hard-coded (100, 0). Past 100 tickets the older
+// ones simply stopped appearing, with nothing to say a limit had been reached
+// and no way to ask for the next page — search could still find them if you
+// knew what to type, but you could not browse to them.
+//
+// The default stays 100 so a client that sends nothing sees exactly what it saw
+// before. The ceiling stops one request asking for the whole table.
+func pageParams(r *http.Request) (limit, offset int) {
+	const defaultLimit, maxLimit = 100, 200
+
+	limit = defaultLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = min(n, maxLimit)
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		// A negative offset reaches Postgres as "OFFSET must not be negative"
+		// and becomes a 500 for what is a bad request.
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			offset = n
+		}
+	}
+	return limit, offset
+}
+
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	ctx := r.Context()
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	limit, offset := pageParams(r)
 
 	// Admin-only: filter all tickets by reporter user ID.
 	if ridStr := r.URL.Query().Get("reporter_id"); ridStr != "" {
@@ -42,9 +73,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		}
 		var tickets []ticket.Ticket
 		if q != "" {
-			tickets, err = s.tickets.SearchByReporter(ctx, rid, q, 100, 0)
+			tickets, err = s.tickets.SearchByReporter(ctx, rid, q, limit, offset)
 		} else {
-			tickets, err = s.tickets.ListByReporter(ctx, rid, 100, 0)
+			tickets, err = s.tickets.ListByReporter(ctx, rid, limit, offset)
 		}
 		if err != nil {
 			handleError(w, err)
@@ -86,9 +117,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		}
 		var tickets []ticket.Ticket
 		if q != "" {
-			tickets, err = s.tickets.SearchByAssigneeGroup(ctx, gid, q, 100, 0)
+			tickets, err = s.tickets.SearchByAssigneeGroup(ctx, gid, q, limit, offset)
 		} else {
-			tickets, err = s.tickets.ListByAssigneeGroup(ctx, gid, 100, 0)
+			tickets, err = s.tickets.ListByAssigneeGroup(ctx, gid, limit, offset)
 		}
 		if err != nil {
 			handleError(w, err)
@@ -111,15 +142,15 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		switch scope {
 		case "unassigned":
 			if q != "" {
-				tickets, err = s.tickets.SearchUnassigned(ctx, q, 100, 0)
+				tickets, err = s.tickets.SearchUnassigned(ctx, q, limit, offset)
 			} else {
-				tickets, err = s.tickets.ListUnassigned(ctx, 100, 0)
+				tickets, err = s.tickets.ListUnassigned(ctx, limit, offset)
 			}
 		case "all":
 			if q != "" {
-				tickets, err = s.tickets.SearchAll(ctx, q, 100, 0)
+				tickets, err = s.tickets.SearchAll(ctx, q, limit, offset)
 			} else {
-				tickets, err = s.tickets.ListAll(ctx, 100, 0)
+				tickets, err = s.tickets.ListAll(ctx, limit, offset)
 			}
 		}
 		if err != nil {
@@ -137,9 +168,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			err     error
 		)
 		if q != "" {
-			tickets, err = s.tickets.SearchByReporter(ctx, a.UserID, q, 100, 0)
+			tickets, err = s.tickets.SearchByReporter(ctx, a.UserID, q, limit, offset)
 		} else {
-			tickets, err = s.tickets.ListByReporter(ctx, a.UserID, 100, 0)
+			tickets, err = s.tickets.ListByReporter(ctx, a.UserID, limit, offset)
 		}
 		if err != nil {
 			handleError(w, err)
@@ -161,9 +192,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			err     error
 		)
 		if q != "" {
-			tickets, err = s.tickets.SearchVisibleToStaff(ctx, a.UserID, q, 100, 0)
+			tickets, err = s.tickets.SearchVisibleToStaff(ctx, a.UserID, q, limit, offset)
 		} else {
-			tickets, err = s.tickets.ListVisibleToStaff(ctx, a.UserID, 100, 0)
+			tickets, err = s.tickets.ListVisibleToStaff(ctx, a.UserID, limit, offset)
 		}
 		if err != nil {
 			handleError(w, err)
@@ -179,9 +210,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	var err error
 	var mine []ticket.Ticket
 	if q != "" {
-		mine, err = s.tickets.SearchByAssigneeUser(ctx, a.UserID, q, 100, 0)
+		mine, err = s.tickets.SearchByAssigneeUser(ctx, a.UserID, q, limit, offset)
 	} else {
-		mine, err = s.tickets.ListByAssigneeUser(ctx, a.UserID, 100, 0)
+		mine, err = s.tickets.ListByAssigneeUser(ctx, a.UserID, limit, offset)
 	}
 	if err != nil {
 		handleError(w, err)
@@ -201,9 +232,9 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	for _, g := range groups {
 		var gTickets []ticket.Ticket
 		if q != "" {
-			gTickets, err = s.tickets.SearchByAssigneeGroup(ctx, g.ID, q, 100, 0)
+			gTickets, err = s.tickets.SearchByAssigneeGroup(ctx, g.ID, q, limit, offset)
 		} else {
-			gTickets, err = s.tickets.ListByAssigneeGroup(ctx, g.ID, 100, 0)
+			gTickets, err = s.tickets.ListByAssigneeGroup(ctx, g.ID, limit, offset)
 		}
 		if err != nil {
 			handleError(w, err)
