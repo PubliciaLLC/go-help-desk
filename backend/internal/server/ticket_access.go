@@ -14,11 +14,12 @@ import (
 // unless the caller may see that ticket.
 //
 // It is middleware on the whole /tickets/{id} subtree rather than a call inside
-// each handler, because the per-handler version is what failed: the rule was
-// applied to GET /{id} and PATCH /{id} and silently omitted from the fifteen
-// routes beneath them. GET /{id}/replies then returned the entire thread —
-// staff-only internal notes included — to any signed-in user holding a ticket
-// UUID, while GET /{id} on the same ticket correctly answered 403.
+// each handler, because the per-handler version is what failed: at 1.1.1 the
+// rule was written inline in GET /{id} and GET /{id}/history and nowhere else,
+// so PATCH and the fifteen routes beneath them were open. GET /{id}/replies
+// returned the entire thread — staff-only internal notes included — to any
+// signed-in user holding a ticket UUID, while GET /{id} on the same ticket
+// correctly answered 403.
 //
 // As middleware the check cannot be forgotten by a new route, which is the
 // property that matters more than the check itself.

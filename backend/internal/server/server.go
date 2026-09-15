@@ -99,10 +99,22 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
-	chain = authmw.BearerAuth(s.cfg.JWTSecret)(chain)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
-	return chain
+
+	// /mcp/ is mounted on the bare ServeMux, not on the chi router, so it never
+	// reaches the r.Use stack that gives every /api/ request an id, a log line,
+	// and a panic guard. GHSA-5g72-m483-3v63 named that gap alongside the auth
+	// one ("bypasses the entire chi middleware chain, auth and logging alike");
+	// the auth half was fixed and this half was not, so MCP traffic left no
+	// request-log trace at all. GHSA-2x4f-j4jv-m2cm tells operators to review
+	// recent activity for signs of exploitation — against a tool surface that
+	// was not logging, that instruction could not be carried out.
+	//
+	// Outermost, so the log line records the status the client actually saw,
+	// including the 401s and 403s the auth chain produces.
+	return chimw.RequestID(chimw.Recoverer(requestLogger(chain)))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -225,6 +237,23 @@ type statusRecorder struct {
 	status int
 }
 
+// Flush forwards to the underlying writer. Embedding http.ResponseWriter gives
+// this type that interface and nothing else, so without an explicit forward a
+// `w.(http.Flusher)` assertion downstream fails even when the real writer
+// flushes fine. mcp-go's SSE transport makes exactly that assertion and answers
+// 500 "Streaming unsupported" when it misses, which killed MCP entirely the
+// moment this logger was placed in front of it.
+func (sr *statusRecorder) Flush() {
+	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the writer underneath, which is the
+// modern way past this whole class of wrapper problem — deadlines, and any
+// optional interface added to net/http later.
+func (sr *statusRecorder) Unwrap() http.ResponseWriter { return sr.ResponseWriter }
+
 func (sr *statusRecorder) WriteHeader(code int) {
 	sr.status = code
 	sr.ResponseWriter.WriteHeader(code)
@@ -287,11 +316,12 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Use(chimw.RequestID)
 	r.Use(chimw.Recoverer)
 	r.Use(requestLogger)
+	r.Use(securityHeaders)
 
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
 	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
-	r.Use(authmw.BearerAuth(s.cfg.JWTSecret))
+	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID))
 
 	// Health check — no auth required.
 	r.Get("/health", s.handleHealth)
@@ -311,6 +341,8 @@ func (s *Server) buildRouter() *chi.Mux {
 		// these. Small in isolation, but a half-authenticated session should
 		// reach nothing but the challenge it still owes.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets),
+				authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
 			Get("/tags", s.handleListActiveTags)
 		// Public category/type/item listing (active only, no admin required).
 		r.Get("/categories", s.handleListPublicCategories)
@@ -318,7 +350,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
-			Get("/statuses", s.handleListStatuses)
+			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

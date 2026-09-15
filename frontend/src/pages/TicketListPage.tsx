@@ -23,6 +23,10 @@ function emptyMessageFor(scope: TicketScope) {
   }
 }
 
+// Matches the server's default. Larger pages mean fewer clicks; smaller ones
+// mean a faster first paint. 50 is the compromise.
+const PAGE_SIZE = 50
+
 export function TicketListPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -58,16 +62,37 @@ export function TicketListPage() {
   // Non-admins are always scoped to "mine" — the backend rejects other scopes.
   const effectiveScope: TicketScope = isAdmin ? scope : 'mine'
 
-  // Always fetch; pass search query to backend when present.
+  // The server returns at most PAGE_SIZE rows. Before paging existed it
+  // returned at most 100 and there was no way to ask for the rest, so anything
+  // older than the hundredth ticket was unreachable by browsing.
+  const [page, setPage] = useState(0)
+
+  // Any change to what is being asked for starts again at the first page —
+  // otherwise a narrower search lands on an offset past its own results and
+  // shows an empty list.
+  useEffect(() => {
+    setPage(0)
+  }, [debouncedQuery, effectiveScope, reporterFilter])
+
   const { data: allTickets = [], isFetching } = useQuery({
-    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope, reporter: reporterFilter }],
+    queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope, reporter: reporterFilter, page }],
     queryFn: () =>
       listTickets({
         q: debouncedQuery || undefined,
         scope: reporterFilter ? undefined : effectiveScope,
         reporter_id: reporterFilter,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
       }),
+    // Keeping the previous page visible while the next loads stops the table
+    // collapsing to empty on every click.
+    placeholderData: (previous) => previous,
   })
+
+  // A full page means there is probably another. The server returns an array,
+  // not a total, so this is what there is to go on — and it is enough for
+  // next/previous.
+  const mayHaveMore = allTickets.length === PAGE_SIZE
 
   // IDs of statuses named "Closed" — filtered out unless the toggle is on.
   const closedIds = useMemo(
@@ -337,6 +362,33 @@ export function TicketListPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Shown whenever there is more than one page to move between. The
+            server returns an array rather than a total, so there is no page
+            count to display — only whether moving is possible. */}
+        {(page > 0 || mayHaveMore) && (
+          <div className="flex items-center justify-between pt-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0 || isFetching}
+            >
+              Previous
+            </Button>
+            <span className="text-sm text-gray-500" aria-live="polite">
+              {`Page ${page + 1}`}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setPage((p) => p + 1)}
+              disabled={!mayHaveMore || isFetching}
+            >
+              Next
+            </Button>
           </div>
         )}
       </div>

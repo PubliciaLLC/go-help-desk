@@ -105,12 +105,38 @@ type Querier interface {
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)
 	// Only unexpired rows: an expired session must behave exactly like a missing
 	// one, so a stale row cannot authenticate anybody between sweeps.
-	GetSession(ctx context.Context, id string) (Session, error)
+	//
+	// The join makes a disabled or deleted user's session behave the same way.
+	// Disabling already deletes a user's sessions, but that is a write racing the
+	// login it is meant to stop: a disable landing between the password check and
+	// the session INSERT deleted nothing and left a live session behind. Deciding
+	// it here instead means there is no window to lose — the row simply does not
+	// load. This costs no extra round trip, since the session lookup already
+	// queries the database on every authenticated request.
+	//
+	// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
+	// PKCE verifier) into a session before anybody has authenticated, and an inner
+	// join would drop those and break the login it is protecting.
+	GetSession(ctx context.Context, id string) (GetSessionRow, error)
 	GetSetting(ctx context.Context, key string) (json.RawMessage, error)
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
 	GetStatusByName(ctx context.Context, name string) (Status, error)
 	GetTagByName(ctx context.Context, name string) (Tag, error)
 	GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByIDRow, error)
+	// The same row as GetTicketByID, with a write lock held until the transaction
+	// ends.
+	//
+	// Every lifecycle write used to read the ticket on the pool, mutate the whole
+	// struct, and then UPDATE all of it inside a transaction. UpdateTicket is a
+	// full-row overwrite, so two staff acting within a few milliseconds silently
+	// lost one of the changes — and worse, the history and audit rows for the lost
+	// change were still committed, so the ticket contradicted its own timeline: the
+	// row said open while ticket_status_history said Resolved.
+	//
+	// Reading here instead serialises the writers. The second one sees the first's
+	// committed state and applies its change on top, which is what someone clicking
+	// Resolve a moment after someone else clicked Assign expects.
+	GetTicketByIDForUpdate(ctx context.Context, id uuid.UUID) (GetTicketByIDForUpdateRow, error)
 	GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (GetTicketByTrackingNumberRow, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -224,6 +250,27 @@ type Querier interface {
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
 	UpsertPendingRegistration(ctx context.Context, arg UpsertPendingRegistrationParams) (PendingRegistration, error)
+	// The lifetime is a duration in seconds, not a timestamp, so that expires_at is
+	// computed by the database — from clock_timestamp(), not now().
+	//
+	// It used to arrive as an absolute time from Go's clock while GetSession and
+	// DeleteExpiredSessions compared it against Postgres now(). Two clocks decided
+	// one lifetime: any skew between the application host and the database shortened
+	// every session by the offset, and skew larger than the session lifetime made
+	// every session expire the moment it was written — a login that appears to
+	// succeed and then does not, with nothing in the logs to say why. Nothing here
+	// needs the application's clock, so it no longer uses it.
+	//
+	// clock_timestamp() rather than now(), because now() is transaction-scoped: it
+	// returns the transaction's START time, so saving a session inside a
+	// transaction that has been open a while silently shortens it. Measured: a
+	// 3-second lifetime written 2 seconds into a transaction comes out as 0.99
+	// seconds, and a transaction older than the lifetime would write a row that is
+	// already expired — a login that reports success and then does not work.
+	// clock_timestamp() is the real time at statement execution and does not care
+	// how old the transaction is. The read and the sweep below use it for the same
+	// reason inverted: a frozen, earlier now() would keep an expired session
+	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
 }
 

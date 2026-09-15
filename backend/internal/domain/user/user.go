@@ -2,11 +2,19 @@ package user
 
 import (
 	"errors"
+	"fmt"
+	"net/mail"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// ErrValidation marks a refusal caused by the caller's input rather than by
+// anything going wrong. Without it these came back as plain errors, which
+// handleError cannot tell from a database outage — so a mistyped email address
+// was answered with 500 "an internal error occurred" and logged as one.
+var ErrValidation = errors.New("invalid input")
 
 // Role names the three access tiers. Order matters: do not change values.
 type Role string
@@ -42,17 +50,48 @@ func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }
 // Validate returns an error if the user is structurally invalid.
 // It does not validate the password hash or MFA secret — those are set by
 // the service layer during specific operations.
+// ValidateEmail checks that s is a single, bare email address and returns it
+// normalised.
+//
+// Nothing in this application validated an email address. Register stored
+// whatever arrived, User.Validate only checked non-empty, and the sole
+// mail.ParseAddress lived in the mail sender — which meant an address
+// containing CRLF was accepted at signup, written to the database, and became
+// a real account on verification. The SMTP layer refuses to send to it, so a
+// header was never injected, but the address is also a login identity and it
+// was never a valid one.
+//
+// A display name is rejected: "Attacker <victim@example.com>" parses happily
+// and would store a different address than it appears to.
+func ValidateEmail(s string) (string, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: email is required", ErrValidation)
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("%w: %q is not an email address", ErrValidation, trimmed)
+	}
+	if addr.Name != "" {
+		return "", fmt.Errorf("%w: email address must not include a display name", ErrValidation)
+	}
+	if addr.Address == "" {
+		return "", fmt.Errorf("%w: invalid email address", ErrValidation)
+	}
+	return strings.ToLower(addr.Address), nil
+}
+
 func (u User) Validate() error {
-	if strings.TrimSpace(u.Email) == "" {
-		return errors.New("email is required")
+	if _, err := ValidateEmail(u.Email); err != nil {
+		return err
 	}
 	if strings.TrimSpace(u.DisplayName) == "" {
-		return errors.New("display name is required")
+		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}
 	switch u.Role {
 	case RoleAdmin, RoleStaff, RoleUser:
 	default:
-		return errors.New("invalid role")
+		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	return nil
 }

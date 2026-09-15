@@ -15,6 +15,11 @@ import (
 // ErrTokenExpired is returned when the verification token has passed its TTL.
 var ErrTokenExpired = fmt.Errorf("verification token has expired")
 
+// ErrInvalidEmail is returned when the address is not a single bare email
+// address. Separate from ErrDomainNotAllowed so the caller can say which of the
+// two it was.
+var ErrInvalidEmail = fmt.Errorf("invalid email address")
+
 // ErrDomainNotAllowed is returned when the email domain is not permitted.
 var ErrDomainNotAllowed = fmt.Errorf("email domain not allowed")
 
@@ -43,8 +48,16 @@ func NewService(store Store, users userCreator, mailer Mailer, baseURL string) *
 // Register validates the request, stores a pending registration, and sends the
 // verification email. allowedDomains and openReg come from admin settings.
 func (s *Service) Register(ctx context.Context, email, displayName, password string, allowedDomains []string, openReg bool) error {
-	email = strings.ToLower(strings.TrimSpace(email))
 	displayName = strings.TrimSpace(displayName)
+
+	// Validated before anything is stored. isEmailDomainAllowed does not
+	// inspect the address when open registration is on — it returns openReg
+	// without looking — so without this any string at all was accepted, written
+	// to pending_registrations, and became a user account on verification.
+	email, err := user.ValidateEmail(email)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidEmail, err)
+	}
 
 	if !isEmailDomainAllowed(email, allowedDomains, openReg) {
 		if len(allowedDomains) == 0 {
@@ -74,7 +87,10 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 		return fmt.Errorf("storing pending registration: %w", err)
 	}
 
-	if err := s.mailer.SendVerificationEmail(email, stored.Token.String(), s.baseURL); err != nil {
+	// stored.Email, not email: what goes into the message is the address that
+	// is actually on the row, read back from the database, not the string the
+	// request supplied. Same reason stored.Token is used rather than pr.Token.
+	if err := s.mailer.SendVerificationEmail(stored.Email, stored.Token.String(), s.baseURL); err != nil {
 		// Non-fatal: log-worthy but don't expose SMTP failures to callers.
 		return fmt.Errorf("sending verification email: %w", err)
 	}

@@ -209,3 +209,74 @@ func TestTicketScope_ReportingUserUnaffected(t *testing.T) {
 }
 
 var _ = uuid.Nil
+
+// The group filter was a filter, not a boundary.
+//
+// requireTicketAccess refuses an out-of-scope ticket by id, and the default
+// listing omits it — but ?assignee_group_id= refused only RoleUser and then ran
+// an unscoped query. Group ids are handed to every staff member by GET /groups,
+// so naming a group you do not belong to returned its tickets. An OAuth client
+// acts as staff and belongs to no group at all, which made it every ticket
+// assigned to any group.
+func TestTicketScope_GroupFilterRespectsScope(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// A group the staff user is NOT in, holding a ticket.
+	grp, err := h.groupSvc.Create(ctx, "Legal", "")
+	require.NoError(t, err)
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "Sensitive legal matter", "category_id": h.catID.String(), "priority": "high",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeJSON(t, resp, &created)
+
+	resp = h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+created.ID,
+		map[string]any{"assignee_group_id": grp.ID.String()})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	enableScope(t, h)
+
+	// The boundary that already worked, as the control.
+	got := h.do(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
+	require.Equal(t, http.StatusForbidden, got.StatusCode,
+		"precondition: the ticket is out of scope by id")
+
+	// The same ticket, asked for by group.
+	got = h.do(t, http.MethodGet, "/api/v1/tickets?assignee_group_id="+grp.ID.String(), nil)
+	require.Equal(t, http.StatusForbidden, got.StatusCode,
+		"naming a group you are not in must not hand over its tickets")
+
+	// And with a search term, which took a different query.
+	got = h.do(t, http.MethodGet,
+		"/api/v1/tickets?assignee_group_id="+grp.ID.String()+"&q=Sensitive", nil)
+	require.Equal(t, http.StatusForbidden, got.StatusCode,
+		"the search variant must be scoped too")
+}
+
+// A staff member IN the group must still be able to filter by it, and an admin
+// is not scoped at all — a guard that refused everyone would pass the test above.
+func TestTicketScope_GroupFilterStillWorksForMembers(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	grp, err := h.groupSvc.Create(ctx, "Support", "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.AddMember(ctx, grp.ID, h.staffID))
+
+	enableScope(t, h)
+
+	got := h.do(t, http.MethodGet, "/api/v1/tickets?assignee_group_id="+grp.ID.String(), nil)
+	require.Equal(t, http.StatusOK, got.StatusCode,
+		"a member must still be able to filter by their own group")
+
+	got = h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets?assignee_group_id="+grp.ID.String(), nil)
+	require.Equal(t, http.StatusOK, got.StatusCode,
+		"admins are not scoped")
+}

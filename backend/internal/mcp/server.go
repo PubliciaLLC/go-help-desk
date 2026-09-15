@@ -27,6 +27,7 @@ import (
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -56,6 +57,45 @@ const staffOnlyMessage = "this tool requires a staff or administrator account"
 // through MCP — their own tickets, subject to the same visibility rule the REST
 // API applies — but creating, replying, assigning and moving a ticket through
 // its lifecycle stay with staff.
+// scoped wraps a tool handler in a scope check.
+//
+// ProtectMCP authenticates and checks the role; until 1.2.0 nothing on this
+// surface read scopes at all, so a credential carrying none — or carrying only
+// users:read — could read every ticket and create, reply, assign and re-status
+// through MCP while the same credential got 403 on the REST equivalents.
+// DESIGN.md said "MCP … same auth applies"; it did not.
+//
+// Applied at registration rather than inside each handler, for the reason the
+// REST routes use group middleware: a tool added later cannot forget it.
+//
+// Every MCP message is a POST, so the action cannot be derived from the method
+// the way RequireResource does it; each tool declares what it needs.
+func scoped(required auth.Scope, h toolHandler) toolHandler {
+	return func(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		a := actorFrom(ctx)
+		if a == nil {
+			return errResult(noActorMessage)
+		}
+		// Sessions are not scoped: a session is the person, and scopes exist to
+		// give a machine credential less than its owner.
+		if a.Machine && !auth.Allows(a.Scopes, required) {
+			return errResult("this credential does not carry the " + required.String() + " scope")
+		}
+		return h(ctx, req)
+	}
+}
+
+type toolHandler = func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error)
+
+// The MCP surface is a ticket surface. list_categories and list_statuses are
+// reference data for composing a ticket and are available to every role, unlike
+// the administrative category and status endpoints, so they sit under
+// tickets:read rather than categories:read and settings:read.
+var (
+	mcpRead  = auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionRead}
+	mcpWrite = auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionWrite}
+)
+
 func requireStaff(a *authmw.Actor) bool {
 	return a != nil && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 }
@@ -188,7 +228,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithDescription("Get a ticket by its UUID or tracking number (e.g. GHD-2026-000001), including its replies and linked tickets"),
 		mcpgo.WithString("id", mcpgo.Required(), mcpgo.Description("Ticket UUID or tracking number")),
 		mcpgo.WithBoolean("include_replies", mcpgo.Description("Include the reply thread and linked tickets (default true)")),
-	), s.handleGetTicket)
+	), scoped(mcpRead, s.handleGetTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"create_ticket",
@@ -205,7 +245,7 @@ func (s *Server) registerTools() {
 		// staff legitimately open tickets on someone's behalf. It defaults to
 		// the caller when omitted.
 		mcpgo.WithString("reporter_user_id", mcpgo.Description("Reporter user UUID (defaults to the authenticated caller)")),
-	), s.handleCreateTicket)
+	), scoped(mcpWrite, s.handleCreateTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"add_reply",
@@ -214,7 +254,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
 		// No author parameter: the author is the authenticated caller.
-	), s.handleAddReply)
+	), scoped(mcpWrite, s.handleAddReply))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_tickets",
@@ -226,7 +266,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("q", mcpgo.Description("Full-text search over subject, description and tracking number")),
 		mcpgo.WithNumber("limit", mcpgo.Description("Max results, 1-100 (default 20)")),
 		mcpgo.WithNumber("offset", mcpgo.Description("Pagination offset")),
-	), s.handleListTickets)
+	), scoped(mcpRead, s.handleListTickets))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"assign_ticket",
@@ -235,25 +275,25 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("assignee_user_id", mcpgo.Description("User UUID to assign to")),
 		mcpgo.WithString("assignee_group_id", mcpgo.Description("Group UUID to assign to")),
 		// No actor parameter: the actor is the authenticated caller.
-	), s.handleAssignTicket)
+	), scoped(mcpWrite, s.handleAssignTicket))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"update_ticket_status",
 		mcpgo.WithDescription("Move a ticket to a different status"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("status_id", mcpgo.Required(), mcpgo.Description("Target status UUID (see list_statuses)")),
-	), s.handleUpdateTicketStatus)
+	), scoped(mcpWrite, s.handleUpdateTicketStatus))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_categories",
 		mcpgo.WithDescription("List the Category/Type/Item catalogue used when opening a ticket"),
 		mcpgo.WithBoolean("include_inactive", mcpgo.Description("Include retired entries (default false)")),
-	), s.handleListCategories)
+	), scoped(mcpRead, s.handleListCategories))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_statuses",
 		mcpgo.WithDescription("List the ticket statuses this instance defines"),
-	), s.handleListStatuses)
+	), scoped(mcpRead, s.handleListStatuses))
 }
 
 // ticketWithReplies is get_ticket's response shape. The ticket's own fields are

@@ -15,4 +15,4 @@ package version
 // v1.1.0 shipped reporting itself as 1.0.1 because this constant was not
 // bumped and the described override does not exist. A test pins the two
 // together so the next release cannot repeat it.
-var Version = "1.1.1"
+var Version = "1.2.0"

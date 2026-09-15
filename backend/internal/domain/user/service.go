@@ -103,7 +103,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 		UpdatedAt:   time.Now(),
 	}
 	if err := u.Validate(); err != nil {
-		return User{}, fmt.Errorf("invalid user: %w", err)
+		return User{}, err
 	}
 	switch {
 	case in.Password != "":
@@ -186,6 +186,51 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // administrator reset, which is the only safe answer — a user who cannot
 // produce a current code is indistinguishable from an attacker who never had
 // one.
+// ConfirmMFAEnrollmentWith validates a code against a secret the caller staged
+// and, only on success, makes that secret the user's.
+//
+// The secret arrives from the caller's session rather than the user row,
+// because writing an unconfirmed secret to the row destroys the authenticator
+// the user is still using.
+func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string) error {
+	if pendingSecret == "" {
+		return fmt.Errorf("MFA enrollment not started")
+	}
+	if !totp.Validate(code, pendingSecret) {
+		return fmt.Errorf("invalid TOTP code")
+	}
+	u, err := s.store.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	u.MFASecret = pendingSecret
+	u.MFAEnabled = true
+	u.UpdatedAt = time.Now()
+	return s.store.Update(ctx, u)
+}
+
+// GenerateMFASecret mints a secret and its otpauth URL WITHOUT persisting
+// anything. The caller stages it until the user proves possession.
+func (s *Service) GenerateMFASecret(ctx context.Context, userID uuid.UUID, issuer string, allowReenroll bool) (secret, qrURL string, err error) {
+	u, err := s.store.GetByID(ctx, userID)
+	if err != nil {
+		return "", "", err
+	}
+	if u.MFAEnabled && !allowReenroll {
+		return "", "", ErrMFAAlreadyEnrolled
+	}
+	key, err := totp.Generate(totp.GenerateOpts{Issuer: issuer, AccountName: u.Email})
+	if err != nil {
+		return "", "", fmt.Errorf("generating TOTP key: %w", err)
+	}
+	return key.Secret(), key.URL(), nil
+}
+
+// Deprecated: EnrollMFA writes an unconfirmed secret to the user row, which
+// destroys the authenticator the user is still relying on. Use
+// GenerateMFASecret to mint one and ConfirmMFAEnrollmentWith to adopt it after
+// the user proves possession. No production caller remains; kept only because
+// tests still exercise it, and removal belongs in its own commit.
 func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string, allowReenroll bool) (secret, qrDataURL string, err error) {
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
@@ -502,7 +547,7 @@ func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
 // Update persists changes to an existing user.
 func (s *Service) Update(ctx context.Context, u User) error {
 	if err := u.Validate(); err != nil {
-		return fmt.Errorf("invalid user: %w", err)
+		return err
 	}
 	u.UpdatedAt = time.Now()
 	return s.store.Update(ctx, u)

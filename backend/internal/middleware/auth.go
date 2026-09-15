@@ -27,6 +27,15 @@ type Actor struct {
 	MFAPassed bool
 	ClientID  string // non-empty for OAuth2 bearer token requests
 	Scopes    []string
+	// Machine marks an API key or OAuth client — a credential acting on a
+	// person's behalf rather than the person themselves.
+	//
+	// It decides two things. Scopes are enforced only on machine credentials:
+	// an empty Scopes slice is otherwise ambiguous, since a session has none
+	// because it is unscoped and a credential has none because it was granted
+	// none, and those must resolve opposite ways. And the endpoints that change
+	// how an account authenticates are refused to machine credentials outright.
+	Machine bool
 }
 
 // GetActor retrieves the Actor from the request context. Returns nil if not set.
@@ -82,6 +91,12 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 // It returns the key and the owning user. Return a non-nil error to reject.
 type APIKeyAuthFunc func(ctx context.Context, hashed string) (auth.APIKey, user.User, error)
 
+// OAuthClientLookupFunc resolves an OAuth client by its client ID. BearerAuth
+// calls it on every request so that deleting a client revokes its outstanding
+// tokens; without it a token stays valid for its full hour no matter what the
+// administrator does, which is not a revocation mechanism at all.
+type OAuthClientLookupFunc func(ctx context.Context, clientID string) (auth.OAuthClient, error)
+
 // APIKeyMarkUsedFunc is called asynchronously to update last_used_at.
 type APIKeyMarkUsedFunc func(ctx context.Context, id uuid.UUID, at time.Time) error
 
@@ -111,19 +126,124 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// Disabling a user is the first thing an operator does when an
+			// account is believed compromised, and it revokes their sessions.
+			// An API key is a separate credential that no revocation path
+			// touched, so without this the disable cut the browser off and
+			// left the scriptable, longer-lived credential working.
+			if !u.IsActive() {
+				next.ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, setActor(r, &Actor{
 				UserID:    u.ID,
 				Role:      u.Role,
 				MFAPassed: true,
 				Scopes:    key.Scopes,
+				Machine:   true,
 			}))
+		})
+	}
+}
+
+// RequireScope refuses a request whose credential does not carry the scope the
+// route needs.
+//
+// It runs AFTER RequireRole, and that order is the whole design: a scope
+// narrows, it never grants. An API key acts at its owner's role and an OAuth
+// client acts as staff, so `users:write` on a key owned by a reporting user
+// still reaches nothing — RequireRole has already refused.
+//
+// Session-authenticated requests carry no scopes and are not scoped. A browser
+// session IS the user, with whatever their role allows; scopes exist to give a
+// machine credential less than its owner, and there is nothing to narrow when
+// the human is driving.
+func RequireScope(required auth.Scope) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a := GetActor(r)
+			if a == nil {
+				// No actor at all is RequireRole's to answer, not ours; saying
+				// "insufficient scope" to an anonymous caller would tell them
+				// the route exists and misname why they were refused.
+				http.Error(w, `{"error":{"code":"unauthorized","message":"authentication required"}}`, http.StatusUnauthorized)
+				return
+			}
+			if !a.Machine {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !auth.Allows(a.Scopes, required) {
+				// The scope name is from a fixed vocabulary with no quotes or
+				// backslashes, so it cannot break the JSON literal.
+				http.Error(w, fmt.Sprintf(
+					`{"error":{"code":"insufficient_scope","message":"this credential does not carry the %s scope"}}`,
+					required), http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// DenyMachineCredentials refuses a request made by an API key or OAuth client.
+//
+// For the endpoints that change how the account itself authenticates: the
+// password, and MFA enrollment. A credential is issued so a script can do a
+// job; it is not the person, and it should not be able to become them.
+//
+// Without this, an API key acts at its owner's identity, so a leaked key was
+// full account takeover rather than the access it was issued for — change the
+// password, re-enroll MFA against an attacker's authenticator, and the human is
+// locked out of their own account by a credential they created for a cron job.
+// Revoking the key afterwards does not undo either.
+//
+// Scopes do not solve this. The narrowest possible key still belongs to its
+// owner, so any scope that reached these routes would reach account takeover.
+func DenyMachineCredentials(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a := GetActor(r)
+		if a == nil {
+			http.Error(w, `{"error":{"code":"unauthorized","message":"authentication required"}}`, http.StatusUnauthorized)
+			return
+		}
+		if a.Machine {
+			http.Error(w, `{"error":{"code":"session_required","message":"this action requires a signed-in session, not an API key or OAuth client"}}`, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireResource is RequireScope with the action taken from the HTTP method:
+// GET and HEAD need read, everything else needs write.
+//
+// Applied with r.Use on a route group rather than per handler, for the reason
+// requireTicketAccess exists: per-handler guards get forgotten. The ticket
+// subtree shipped with the check on two routes and missing from the fifteen
+// beneath them. A group-level middleware cannot be forgotten by a route added
+// later.
+//
+// A POST that only reads is therefore over-restricted rather than under-. That
+// is the correct direction for the mistake to fall.
+func RequireResource(resource string) func(http.Handler) http.Handler {
+	read := RequireScope(auth.Scope{Resource: resource, Action: auth.ActionRead})
+	write := RequireScope(auth.Scope{Resource: resource, Action: auth.ActionWrite})
+	return func(next http.Handler) http.Handler {
+		readH, writeH := read(next), write(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				readH.ServeHTTP(w, r)
+				return
+			}
+			writeH.ServeHTTP(w, r)
 		})
 	}
 }
 
 // BearerAuth reads "Authorization: Bearer <jwt>", verifies it as an OAuth2
 // client credentials token, and attaches a synthetic actor.
-func BearerAuth(jwtSecret string) func(http.Handler) http.Handler {
+func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if GetActor(r) != nil {
@@ -141,11 +261,24 @@ func BearerAuth(jwtSecret string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// A valid signature only proves this token was issued, not that the
+			// client it names still exists. Deleting a client is the only
+			// revocation this system offers, and until this lookup it revoked
+			// nothing: the token kept working until it expired on its own.
+			if lookup == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if _, err := lookup(r.Context(), claims.ClientID); err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
 			next.ServeHTTP(w, setActor(r, &Actor{
 				Role:      user.RoleStaff, // OAuth clients act at staff level
 				MFAPassed: true,
 				ClientID:  claims.ClientID,
 				Scopes:    claims.Scopes,
+				Machine:   true,
 			}))
 		})
 	}

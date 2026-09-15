@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listAPIKeys, createAPIKey, deleteAPIKey } from '@/api/admin'
+import { listAPIKeys, createAPIKey, deleteAPIKey, listScopes } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
+import { ScopePicker } from '@/components/admin/ScopePicker'
 import { PlusIcon, CopyIcon, KeyIcon } from 'lucide-react'
 import type { APIKey } from '@/api/types'
 
@@ -44,6 +45,7 @@ function TokenBanner({ token, onDismiss }: { token: string; onDismiss: () => voi
 export function APIKeysPage() {
   const qc = useQueryClient()
   const [newName, setNewName] = useState('')
+  const [newScopes, setNewScopes] = useState<string[]>([])
   const [createError, setCreateError] = useState('')
   const [newToken, setNewToken] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<APIKey | null>(null)
@@ -53,10 +55,18 @@ export function APIKeysPage() {
     queryFn: listAPIKeys,
   })
 
+  // Served by the API rather than hard-coded here, so the picker cannot offer a
+  // scope the server does not enforce, or omit one it does.
+  const { data: catalogue = [] } = useQuery({
+    queryKey: ['admin', 'scopes'],
+    queryFn: listScopes,
+  })
+
   const createMutation = useMutation({
-    mutationFn: () => createAPIKey({ name: newName.trim(), scopes: [] }),
+    mutationFn: () => createAPIKey({ name: newName.trim(), scopes: newScopes }),
     onSuccess: (res) => {
       setNewName('')
+      setNewScopes([])
       setCreateError('')
       setNewToken(res.token)
       qc.invalidateQueries({ queryKey: ['admin', 'api-keys'] })
@@ -93,19 +103,24 @@ export function APIKeysPage() {
 
         <div className="rounded-lg border bg-white p-4">
           <p className="mb-3 text-sm font-medium text-gray-700">Create new key</p>
-          <div className="flex items-center gap-3">
+          <div className="space-y-4">
             <Input
               placeholder="Key name (e.g. Hermes, email-bridge)"
               value={newName}
               onChange={(e) => { setNewName(e.target.value); setCreateError('') }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && newName.trim()) createMutation.mutate()
-              }}
               className="max-w-xs"
             />
+
+            <ScopePicker
+              catalogue={catalogue}
+              selected={newScopes}
+              onChange={setNewScopes}
+              disabled={createMutation.isPending}
+            />
+
             <Button
               onClick={() => createMutation.mutate()}
-              disabled={!newName.trim() || createMutation.isPending}
+              disabled={!newName.trim() || newScopes.length === 0 || createMutation.isPending}
             >
               <PlusIcon className="mr-2 h-4 w-4" />
               {createMutation.isPending ? 'Creating…' : 'Create'}
@@ -122,6 +137,7 @@ export function APIKeysPage() {
               <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
+                  <th className="px-4 py-3 text-left">Permissions</th>
                   <th className="px-4 py-3 text-left">Created</th>
                   <th className="px-4 py-3 text-left">Last used</th>
                   <th className="px-4 py-3 text-left">Expires</th>
@@ -134,6 +150,21 @@ export function APIKeysPage() {
                     <td className="px-4 py-3 font-medium text-gray-900 flex items-center gap-2">
                       <KeyIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
                       {k.name}
+                    </td>
+                    <td className="px-4 py-3">
+                      {k.scopes?.length ? (
+                        <div className="flex flex-wrap gap-1">
+                          {k.scopes.map((sc) => (
+                            <span key={sc} className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700">
+                              {sc}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-amber-700">
+                          None — this key is refused everywhere
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{fmt(k.created_at)}</td>
                     <td className="px-4 py-3 text-gray-500">{fmt(k.last_used_at)}</td>
@@ -153,7 +184,7 @@ export function APIKeysPage() {
                 ))}
                 {keys.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
                       No API keys yet.
                     </td>
                   </tr>

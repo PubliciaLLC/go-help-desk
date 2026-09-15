@@ -28,6 +28,21 @@ type Event struct {
 	ActorID    *uuid.UUID     // nil for system-generated events
 	Payload    map[string]any // event-specific data; do not rely on type assertions in domain code
 	OccurredAt time.Time
+
+	// TrackingNumber and Recipient are the only two values an email is allowed
+	// to carry, and both must be read off the persisted ticket rather than out
+	// of Payload.
+	//
+	// Payload is a free-form map that mixes in whatever the request supplied —
+	// the subject line, the reply body, a guest's address. An email built from
+	// it is a message this server sends, from its own domain, containing text
+	// somebody else chose: content spoofing, CWE-640. Passing these two as
+	// typed fields keeps that mixing impossible rather than merely discouraged.
+	//
+	// Both are excluded from JSON so the webhook payload shape is unchanged and
+	// so a webhook subscriber does not gain a customer's address.
+	TrackingNumber string `json:"-"`
+	Recipient      string `json:"-"`
 }
 
 // Dispatcher delivers events to whatever sinks are registered.

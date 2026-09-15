@@ -29,6 +29,13 @@ type Store interface {
 	// Ticket CRUD
 	Create(ctx context.Context, t Ticket) error
 	GetByID(ctx context.Context, id uuid.UUID) (Ticket, error)
+
+	// GetByIDForUpdate is GetByID holding a write lock until the transaction
+	// ends. Lifecycle writes use it INSIDE their transaction so that the row
+	// they mutate is the row they read: UpdateTicket overwrites every column,
+	// so a copy read before the transaction is a lost update waiting for a
+	// second writer.
+	GetByIDForUpdate(ctx context.Context, id uuid.UUID) (Ticket, error)
 	GetByTrackingNumber(ctx context.Context, tn TrackingNumber) (Ticket, error)
 	Update(ctx context.Context, t Ticket) error
 	UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error

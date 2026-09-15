@@ -5,13 +5,16 @@ package notify
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"embed"
 	"fmt"
 	"mime/quotedprintable"
+	"net"
 	"net/mail"
 	"net/smtp"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
@@ -48,23 +51,6 @@ func sanitizeHeader(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// sanitizePayload returns a shallow copy of payload where all string values are
-// header/body-safe normalized text (CR/LF removed, trimmed).
-func sanitizePayload(payload map[string]any) map[string]any {
-	if payload == nil {
-		return nil
-	}
-	out := make(map[string]any, len(payload))
-	for k, v := range payload {
-		if s, ok := v.(string); ok {
-			out[k] = sanitizeHeader(s)
-			continue
-		}
-		out[k] = v
-	}
-	return out
-}
-
 // Dispatch sends an email for supported event types. Unsupported events are
 // silently ignored — the dispatcher never returns an error to the caller.
 func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) error {
@@ -85,32 +71,43 @@ func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) 
 	return d.send(to, subject, buf.Bytes())
 }
 
+// eventToEmail decides what to send. It deliberately sends no content.
+//
+// Ticket emails used to carry the ticket subject and the reply body. That makes
+// the message a carrier for text somebody else chose, sent from a domain the
+// recipient trusts — content spoofing, CWE-640. It was not theoretical here:
+// filing a ticket with a chosen subject was enough to have this server mail
+// that text out over its own reputation.
+//
+// So the email now says only that something happened, names the ticket by its
+// tracking number, and links to it. The tracking number and the address both
+// come off the persisted ticket (Event.TrackingNumber, Event.Recipient), never
+// out of Event.Payload, which carries request text. The content stays in the
+// application behind the login that already guards it.
 func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, subject, to string, data any, ok bool) {
-	payload := sanitizePayload(event.Payload)
+	if event.Recipient == "" {
+		return "", "", "", nil, false
+	}
+
+	// Both halves of the link are trusted: the ticket's own identifier, minted
+	// server-side, and the configured base URL.
+	view := map[string]string{
+		"TrackingNumber": event.TrackingNumber,
+		"TicketURL":      strings.TrimRight(d.cfg.BaseURL, "/") + "/tickets/" + event.TicketID.String(),
+	}
+
+	// A missing tracking number costs the subject line its reference but must
+	// not cost the customer the notification.
+	ref := "your ticket"
+	if event.TrackingNumber != "" {
+		ref = "[" + event.TrackingNumber + "]"
+	}
+
 	switch event.Type {
 	case notification.EventTicketCreated:
-		guestEmail, _ := payload["guest_email"].(string)
-		if guestEmail == "" {
-			guestEmail, _ = payload["GuestEmail"].(string)
-		}
-		tracking, _ := payload["TrackingNumber"].(string)
-		subj, _ := payload["Subject"].(string)
-		if guestEmail == "" {
-			return "", "", "", nil, false
-		}
-		return "ticket_created.tmpl",
-			fmt.Sprintf("[%s] %s", tracking, subj),
-			guestEmail, payload, true
+		return "ticket_created.tmpl", "We have received " + ref, event.Recipient, view, true
 	case notification.EventTicketReplied:
-		reporterEmail, _ := payload["reporter_email"].(string)
-		if reporterEmail == "" {
-			reporterEmail, _ = payload["ReporterEmail"].(string)
-		}
-		tracking, _ := payload["TrackingNumber"].(string)
-		subj, _ := payload["Subject"].(string)
-		return "ticket_replied.tmpl",
-			fmt.Sprintf("Re: [%s] %s", tracking, subj),
-			reporterEmail, payload, true
+		return "ticket_replied.tmpl", "There is a new reply on " + ref, event.Recipient, view, true
 	}
 	return "", "", "", nil, false
 }
@@ -160,7 +157,11 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 
 	var msg bytes.Buffer
 	fmt.Fprintf(&msg, "From: %s\r\n", fromAddr.String())
-	fmt.Fprintf(&msg, "To: %s\r\n", toAddr.String())
+	// toAddr.Address, not toAddr.String(): ParseAddress accepts a display name
+	// and String() puts it back, so `"text" <victim@example.com>` would deliver
+	// whatever text the sender chose in a header of a message sent from this
+	// server's domain. The bare address is all a recipient needs.
+	fmt.Fprintf(&msg, "To: <%s>\r\n", toAddr.Address)
 	fmt.Fprintf(&msg, "Subject: %s\r\n", sanitizeHeader(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
@@ -180,5 +181,73 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 	if d.cfg.SMTPUser != "" {
 		auth = smtp.PlainAuth("", d.cfg.SMTPUser, d.cfg.SMTPPassword, d.cfg.SMTPHost)
 	}
-	return smtp.SendMail(addr, auth, fromAddr.Address, []string{toAddr.Address}, msg.Bytes())
+	return sendMailWithTimeout(addr, auth, fromAddr.Address, toAddr.Address, msg.Bytes(), smtpTimeout)
+}
+
+// smtpTimeout bounds a single delivery end to end.
+//
+// net/smtp.SendMail dials with no timeout and sets no deadline, and delivery
+// happens on the request goroutine after the ticket has already committed. A
+// relay that accepts the connection and then stops responding therefore parked
+// the handler indefinitely: the client eventually saw the write timeout drop
+// the connection with no response, retried, and filed a duplicate ticket, while
+// every goroutine that touched email piled up until the relay recovered.
+const smtpTimeout = 20 * time.Second
+
+// sendMailWithTimeout is net/smtp.SendMail with a dial timeout and a deadline
+// covering the whole conversation.
+func sendMailWithTimeout(addr string, auth smtp.Auth, from, to string, msg []byte, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return fmt.Errorf("dialing SMTP server: %w", err)
+	}
+	// One deadline for the whole exchange, so a relay that answers the dial and
+	// then stalls mid-conversation cannot hold the goroutine either.
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("setting SMTP deadline: %w", err)
+	}
+
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("parsing SMTP address: %w", err)
+	}
+
+	c, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("SMTP handshake: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	if ok, _ := c.Extension("STARTTLS"); ok {
+		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
+			return fmt.Errorf("STARTTLS: %w", err)
+		}
+	}
+	if auth != nil {
+		if ok, _ := c.Extension("AUTH"); ok {
+			if err := c.Auth(auth); err != nil {
+				return fmt.Errorf("SMTP auth: %w", err)
+			}
+		}
+	}
+	if err := c.Mail(from); err != nil {
+		return fmt.Errorf("SMTP MAIL FROM: %w", err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("SMTP RCPT TO: %w", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("SMTP DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("writing message: %w", err)
+	}
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("closing message: %w", err)
+	}
+	return c.Quit()
 }

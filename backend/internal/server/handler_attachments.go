@@ -73,7 +73,42 @@ func magicOK(data []byte, ext string) bool {
 // compressImage decodes any supported raster image and re-encodes it as
 // whichever of JPEG (quality 85) or PNG is smaller. Returns the bytes and
 // the chosen extension (".jpg" or ".png").
+// maxImagePixels caps how large a decoded raster may be.
+//
+// The byte-size limit is not a memory limit. Compressed formats expand: a
+// 169 KB PNG of uniform colour decodes to 12000×12000 — 142 MB of heap — and a
+// 949 KB one reaches 30000×30000 and 859 MB. Under the 25 MB upload cap a
+// single request could ask for roughly 20 GB, and requests run concurrently, so
+// one authenticated user could take the process down by uploading to their own
+// ticket.
+//
+// 25 megapixels is comfortably above any real photograph or screenshot (a 24 MP
+// camera, a 5K display) and far below what it takes to exhaust a server.
+const maxImagePixels = 25 << 20
+
+// decodedSizeWithin reports whether the image's dimensions are within budget,
+// reading only the header. This is the whole defence: it must happen before any
+// full decode, because the allocation is the attack.
+func decodedSizeWithin(data []byte, limit int64) error {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("reading image header: %w", err)
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return fmt.Errorf("image reports a non-positive size (%dx%d)", cfg.Width, cfg.Height)
+	}
+	if px := int64(cfg.Width) * int64(cfg.Height); px > limit {
+		return fmt.Errorf("image is %dx%d (%d pixels); the limit is %d", cfg.Width, cfg.Height, px, limit)
+	}
+	return nil
+}
+
 func compressImage(data []byte, ext string) ([]byte, string, error) {
+	// Before the decode, never after.
+	if err := decodedSizeWithin(data, maxImagePixels); err != nil {
+		return nil, "", err
+	}
+
 	var img image.Image
 	var err error
 

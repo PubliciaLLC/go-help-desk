@@ -203,6 +203,11 @@ func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
 var (
 	ErrForbidden = errors.New("forbidden")
 	ErrClosed    = errors.New("ticket is closed")
+	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
+	// caller owns the ticket and has the right to reopen it in general. What
+	// expired is the window, and telling them "you do not have permission"
+	// sends them to an administrator for something no administrator can grant.
+	ErrReopenWindowClosed = errors.New("the reopen window for this ticket has closed")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.
@@ -235,13 +240,33 @@ func CanUserUpdate(t Ticket, u user.User, status Status, reopenWindowDays int) e
 	}
 	if status.Name == StatusNameResolved {
 		if t.ResolvedAt == nil {
-			// Resolved but no timestamp — treat as permanently resolved.
-			return ErrForbidden
+			// Resolved but no timestamp — treat as permanently resolved. Same
+			// outcome for the caller as an expired window, so same error.
+			return ErrReopenWindowClosed
 		}
 		deadline := t.ResolvedAt.AddDate(0, 0, reopenWindowDays)
 		if time.Now().After(deadline) {
-			return ErrForbidden
+			return ErrReopenWindowClosed
 		}
+	}
+	return nil
+}
+
+// CanAssign returns nil if the actor with the given role may set or clear a
+// ticket's assignee.
+//
+// DESIGN.md gives assignment to Staff ("Assign tickets to any staff member or
+// group"); the User row covers creating, viewing and updating their own
+// tickets and says nothing about assignment. Being able to see a ticket is a
+// separate question from being able to direct work on it — the subtree
+// middleware answers the first, this answers the second.
+//
+// Deliberately a predicate rather than a check inside Service.Assign: routing
+// rules auto-assign on create via SystemActor, and authorisation belongs to
+// the caller, as it does for CanTransitionStatus.
+func CanAssign(role user.Role) error {
+	if role == user.RoleUser {
+		return ErrForbidden
 	}
 	return nil
 }

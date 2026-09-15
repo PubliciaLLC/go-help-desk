@@ -29,6 +29,13 @@ var errNotFound = errors.New("not found")
 // ── ticket store ─────────────────────────────────────────────────────────────
 
 type fakeStore struct {
+	forUpdateReads int
+
+	// onRead rewrites what a read returns, so a test can tell a value that came
+	// back from the store apart from the identical-looking one the caller
+	// already had in hand.
+	onRead func(ticket.Ticket) ticket.Ticket
+
 	tickets map[uuid.UUID]ticket.Ticket
 	replies map[uuid.UUID][]ticket.Reply
 	history []ticket.StatusHistoryEntry
@@ -69,6 +76,16 @@ func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 	return nil
 }
 
+// GetByIDForUpdate is the same read; there is no locking to simulate in a map,
+// and the property the lock provides — that lifecycle writes recompute from the
+// row they are about to overwrite — is exercised against real Postgres in
+// internal/database, where a fake would only assert that a reimplementation
+// agrees with itself.
+func (f *fakeStore) GetByIDForUpdate(ctx context.Context, id uuid.UUID) (ticket.Ticket, error) {
+	f.forUpdateReads++
+	return f.GetByID(ctx, id)
+}
+
 func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (ticket.Ticket, error) {
 	if f.errGetByID != nil {
 		return ticket.Ticket{}, f.errGetByID
@@ -76,6 +93,9 @@ func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (ticket.Ticket, err
 	t, ok := f.tickets[id]
 	if !ok {
 		return ticket.Ticket{}, errNotFound
+	}
+	if f.onRead != nil {
+		t = f.onRead(t)
 	}
 	return t, nil
 }

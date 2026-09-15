@@ -883,13 +883,22 @@ func TestSaveOIDCConfig_BlankSecretPreservesStored(t *testing.T) {
 	oh, cleanup := newOIDCHarness(t)
 	defer cleanup()
 
-	resp := oh.doAsAdmin(t, http.MethodPut, "/api/v1/admin/oidc", map[string]any{
+	// Through a signed-in session, not the harness API key: changing the
+	// identity provider configuration is refused to machine credentials,
+	// because repointing it at an attacker's IdP yields an administrator
+	// session. The assertions below are unchanged.
+	sess := &session{h: oh.harness}
+	res, body := sess.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "admin@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "admin login; body: %s", body)
+
+	res, body = sess.send(t, http.MethodPut, "/api/v1/admin/oidc", map[string]any{
 		"enabled":       true,
 		"issuer_url":    oh.idp.issuer(),
 		"client_id":     "rotated-client-id",
 		"client_secret": "",
 	})
-	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 
 	cfg := oh.adminSvc.GetOIDCConfig(context.Background())
 	require.Equal(t, "rotated-client-id", cfg.ClientID)

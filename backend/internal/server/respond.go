@@ -11,6 +11,9 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // JSON writes v as JSON with the given status code.
@@ -54,6 +57,35 @@ func DecodeJSON(r *http.Request, dst any) error {
 func handleError(w http.ResponseWriter, err error) {
 	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	// A refused permission is an ordinary, correct outcome. Falling through to
+	// 500 told the caller "an internal error occurred" for a boundary working
+	// exactly as designed, and buried a real authorisation event in the error
+	// log where it reads as a server bug.
+	// Not a permission problem: the caller may well own this ticket. The ticket
+	// is in a state that does not accept the change, which is what 409 is for.
+	// It fell through to 500 for the same reason ErrForbidden did.
+	if errors.Is(err, ticket.ErrClosed) {
+		Error(w, http.StatusConflict, "ticket_closed", "this ticket is closed")
+		return
+	}
+	// Also 409 rather than 403: nothing about the caller's permissions would
+	// change the answer, so a message about permission would send them to an
+	// administrator who cannot help.
+	if errors.Is(err, ticket.ErrReopenWindowClosed) {
+		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
+		return
+	}
+	// Bad input, not a fault. Without this a mistyped email address at signup,
+	// or on an admin's user edit, came back as 500 "an internal error
+	// occurred" and was logged as one.
+	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if errors.Is(err, ticket.ErrForbidden) {
+		Error(w, http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 		return
 	}
 	slog.Error("internal error", "error", err)

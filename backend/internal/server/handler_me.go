@@ -61,7 +61,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/v1/me/mfa/enroll
+// POST /api/v1/me/mfa/enroll
 func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	// This route sits outside RequireMFA so a user compelled to enrol can
@@ -69,7 +69,14 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	// MFA challenge, so re-enrolment of an already-protected account is only
 	// permitted once that challenge has been satisfied — otherwise a password
 	// alone would be enough to replace the victim's authenticator.
-	secret, qrURL, err := s.users.EnrollMFA(r.Context(), a.UserID, s.cfg.BaseURL, a.MFAPassed)
+	//
+	// The secret is minted but NOT written to the user row. Writing it there
+	// overwrote the authenticator the user was still relying on, while
+	// MFAEnabled stayed true — so opening this screen and closing it locked
+	// them out, and an administrator reset was the only way back. It is staged
+	// in the session and becomes the user's only once they prove possession by
+	// confirming a code from it.
+	secret, qrURL, err := s.users.GenerateMFASecret(r.Context(), a.UserID, s.cfg.BaseURL, a.MFAPassed)
 	if err != nil {
 		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {
 			Error(w, http.StatusForbidden, "mfa_already_enrolled",
@@ -86,6 +93,14 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
+	sd.PendingMFASecret = secret
+	if err := s.writeSession(w, r, sd); err != nil {
+		handleError(w, err)
+		return
+	}
+
 	qrDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
 	JSON(w, http.StatusOK, map[string]string{
 		"secret":      secret,
@@ -113,7 +128,10 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 		handleError(w, err)
 		return
 	}
-	if err := s.users.ConfirmMFAEnrollment(r.Context(), a.UserID, body.Code); err != nil {
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
+
+	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code); err != nil {
 		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
 			handleError(w, lockErr)
 			return

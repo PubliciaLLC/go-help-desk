@@ -164,6 +164,39 @@ func TestCanUserUpdate(t *testing.T) {
 	}
 }
 
+// CanAssign is the rule DESIGN.md states for the Staff row ("Assign tickets to
+// any staff member or group") and omits from the User row. It is enforced at
+// the handler rather than inside Service.Assign, because routing rules
+// auto-assign on create through SystemActor.
+func TestCanAssign(t *testing.T) {
+	cases := []struct {
+		name    string
+		role    user.Role
+		wantErr bool
+	}{
+		{name: "admin may assign", role: user.RoleAdmin},
+		{name: "staff may assign", role: user.RoleStaff},
+		{name: "reporting user may not assign", role: user.RoleUser, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ticket.CanAssign(tc.role)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ticket.ErrForbidden)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// SystemActor carries RoleAdmin precisely so auto-assignment keeps working on
+// a ticket a reporter filed. If that ever changes, routing rules break at the
+// point of creation and this is the cheapest place to find out.
+func TestCanAssign_SystemActorMayAssign(t *testing.T) {
+	require.NoError(t, ticket.CanAssign(ticket.SystemActor.Role))
+}
+
 func TestCanTransitionStatus(t *testing.T) {
 	statusClosed := ticket.Status{Name: ticket.StatusNameClosed, Kind: ticket.StatusKindSystem}
 	statusResolved := ticket.Status{Name: ticket.StatusNameResolved, Kind: ticket.StatusKindSystem}
@@ -239,4 +272,43 @@ func TestCreate_PriorityValidation(t *testing.T) {
 			require.Equal(t, tc.want, got.Priority)
 		})
 	}
+}
+
+// An expired reopen window is not a permission problem: the caller owns the
+// ticket and may reopen it in general. Returning ErrForbidden told them "you do
+// not have permission", which sends them to an administrator for something no
+// administrator can grant.
+func TestCanUserUpdate_ExpiredReopenWindowIsNotForbidden(t *testing.T) {
+	owner := user.User{ID: uuid.New(), Role: user.RoleUser}
+	resolved := time.Now().AddDate(0, 0, -30)
+
+	tk := ticket.Ticket{ReporterUserID: &owner.ID, ResolvedAt: &resolved}
+	err := ticket.CanUserUpdate(tk, owner, ticket.Status{Name: ticket.StatusNameResolved}, 7)
+
+	require.ErrorIs(t, err, ticket.ErrReopenWindowClosed)
+	require.NotErrorIs(t, err, ticket.ErrForbidden,
+		"the window closing must be distinguishable from a permission refusal")
+}
+
+// Inside the window it still succeeds — a fix that refused everyone would pass
+// the test above.
+func TestCanUserUpdate_InsideReopenWindowSucceeds(t *testing.T) {
+	owner := user.User{ID: uuid.New(), Role: user.RoleUser}
+	resolved := time.Now().AddDate(0, 0, -1)
+
+	tk := ticket.Ticket{ReporterUserID: &owner.ID, ResolvedAt: &resolved}
+	require.NoError(t, ticket.CanUserUpdate(tk, owner,
+		ticket.Status{Name: ticket.StatusNameResolved}, 7))
+}
+
+// A non-owner is still a permission refusal, so the two errors stay distinct in
+// both directions.
+func TestCanUserUpdate_NonOwnerIsStillForbidden(t *testing.T) {
+	other := uuid.New()
+	tk := ticket.Ticket{ReporterUserID: &other}
+	err := ticket.CanUserUpdate(tk, user.User{ID: uuid.New(), Role: user.RoleUser},
+		ticket.Status{Name: ticket.StatusNameNew}, 7)
+
+	require.ErrorIs(t, err, ticket.ErrForbidden)
+	require.NotErrorIs(t, err, ticket.ErrReopenWindowClosed)
 }

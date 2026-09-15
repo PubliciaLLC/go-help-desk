@@ -9,7 +9,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS) |
+| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), tokenised guest ticket view (#154) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
@@ -249,10 +249,149 @@ be probed.
 
 | Consumer | Auth Method | Details |
 |----------|------------|---------|
-| Browser (SPA) | Session cookies | HttpOnly cookies backed by SAML or local auth |
+| Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Sits on top of REST API, same auth applies |
+| MCP | Inherits from above | Sits on top of the REST API. Same authentication, and scopes are enforced per tool. |
+
+Sessions are server-side rows, not self-contained cookies, because that is the
+only shape in which a session can be revoked. Logout, a password change, an MFA
+reset, a role change, disabling and deleting all take effect on the next
+request. A session whose owner is disabled or deleted stops loading whether or
+not anything deleted it, and the session id rotates on login and on any
+privilege change. Lifetime is 7 days.
+
+### Credential Scopes
+
+Machine credentials — API keys and OAuth clients — carry scopes. Browser
+sessions do not: a session **is** the user, with whatever their role allows.
+Scopes exist to give a machine credential *less* than its owner, and there is
+nothing to narrow when a person is driving.
+
+A scope is `resource:action`, where action is `read` or `write`.
+
+| Resource | Covers |
+|----------|--------|
+| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions |
+| `users` | User administration |
+| `groups` | Groups, their members, and their category/type scopes |
+| `categories` | Categories, types, items, and custom-field assignments |
+| `tags` | Tag administration |
+| `canned_responses` | Canned response templates |
+| `sla` | SLA policies |
+| `settings` | Instance settings, statuses, and SAML/OIDC configuration |
+| `plugins` | Plugin administration |
+| `webhooks` | Webhook subscriptions |
+| `credentials` | API keys and OAuth clients |
+
+Four rules govern them:
+
+1. **Scopes narrow; they never grant.** The scope check runs *after* the role
+   check, so `users:write` on a key owned by a reporting user reaches nothing.
+   An API key acts at its owner's role; an OAuth client acts as staff.
+2. **An empty scope list denies everything.** A credential with no scopes
+   reaches nothing at all.
+3. **Write implies read** on the same resource. An integration that may create
+   tickets but not read them back is not a useful shape.
+4. **There is no wildcard.** A credential that should reach everything lists
+   every scope it needs. This keeps what a credential can do legible from the
+   credential itself, and means adding a resource later does not silently widen
+   credentials that already exist.
+
+The action is taken from the HTTP method — `GET` and `HEAD` need `read`,
+everything else needs `write` — and enforced per route group rather than per
+handler, so a route added later cannot forget it.
+
+**MCP is covered too.** Every MCP message is a POST, so the action cannot come
+from the method; each tool declares what it needs at registration. The read
+tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`) need
+`tickets:read` and the write tools (`create_ticket`, `add_reply`,
+`assign_ticket`, `update_ticket_status`) need `tickets:write`. The two reference
+tools sit under `tickets` rather than `categories`/`settings` because they exist
+to compose a ticket and are available to every role, unlike the administrative
+category and status endpoints. The top-level `/tags` and `/statuses` reference
+endpoints are covered by `tickets:read` for the same reason.
+
+A machine credential is also refused the endpoints that change how an account
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`), and — through the
+admin surface — **any administrator's**. It may not create an administrator,
+promote a user to administrator, or reset an administrator's password or MFA.
+
+The rule is about administrators rather than about the credential's own owner
+because refusing only the owner closed the path and not the outcome: every key
+reaching `/admin` is administrator-owned, so `users:write` allowed creating a
+second administrator, signing in as them, and resetting the first one's
+password. Guarding only promotion left the reverse open too — demote an
+administrator, reset the now-staff account's password, sign in — so the rule
+covers the whole account in either direction. Managing non-administrator users
+stays available.
+
+Three more things are off limits to a machine credential, for the same reason:
+
+- **Changing the SAML or OIDC configuration.** Login providers are settable from
+  the admin UI and nowhere else. Repointing the identity provider at one the
+  caller controls, then asserting a federated administrator's subject, yields an
+  administrator session — and it is also the last way a credential could make
+  the server fetch a URL of the caller's choosing on the internal network.
+  Blocked on both doors: the dedicated config routes and the `saml_*` / `oidc_*`
+  settings keys. Reading the configuration stays available to automation, since
+  the handlers already blank the secrets.
+- **Changing an auth-critical setting** — MFA enablement and enforcement, the
+  SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
+  configuration such as the site name stays automatable.
+- **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
+  credential reaching it could spend the account's durable failed-attempt budget
+  and lock the owner out repeatedly.
+- **Issuing a credential broader than itself.** Otherwise `credentials:write` is
+  every scope: hold only that, mint a key with `users:write`, use it. A
+  signed-in administrator is exempt — they already hold everything a credential
+  could be granted, so they are not escalating.
+
+Scopes cannot express any of this. The narrowest possible key still belongs to
+its owner, so any scope reaching those routes reaches account takeover.
+
+`GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
+picker from it so the two cannot drift.
+
+### Other protections
+
+Things the code does that are not obvious from the feature list, recorded here
+so they are not removed as dead weight:
+
+- **Credential throttling.** Failed password attempts are counted per account,
+  not per source address — an address-keyed limit is defeated by any proxy or a
+  forged forwarding header. The password counter is in-process, so a restart
+  clears it and N replicas multiply the budget by N; `AUTH_RATE_LIMIT_PER_MINUTE=0`
+  disables it and the signup limit with it. The MFA failed-attempt count is on
+  the user row and does survive a restart.
+- **Ticket list paging.** `GET /tickets` takes `?limit=` (default 100, maximum
+  200) and `?offset=`. Offset-based, not page-based. The staff view merges the
+  caller's own tickets with each of their groups', so it reads each source to
+  the end of the requested page and slices after merging — pushing the window
+  into each query returns limit × (1 + groups) rows.
+- **Uploaded images are capped at 25 megapixels**, checked from the header
+  before any decode. A byte-size limit is not a memory limit: compressed formats
+  expand, and a 169 KB PNG decodes to 142 MB.
+- **Security headers** on every response: a content security policy, `nosniff`,
+  `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
+  with a stricter, sandboxed policy so an SVG cannot execute whatever it
+  contains.
+- **Webhook targets are address-checked** at the moment of connection, so a
+  hostname resolving to an internal address, a redirect to one, and DNS
+  rebinding are all refused. The SAML metadata and OIDC issuer URLs are
+  deliberately *not* address-checked — a self-hosted identity provider on a
+  private network is a normal topology — and are restricted by who may set them
+  instead.
+- **Webhook payloads omit the body of an internal note** and carry an
+  `internal` flag, so a subscriber can tell a staff-only note from a public
+  reply. Before, it received the text of every internal note and could not tell
+  them apart.
+
+**Scopes were documented here before they were enforced.** Until 1.2.0 they were
+accepted, stored and returned by the API, and no code read them — every
+credential issued as restricted was unrestricted. Enforcement in 1.2.0 is a
+breaking change: credentials created before it carry no scopes and are therefore
+denied, and must be re-issued.
 
 ---
 
@@ -285,8 +424,28 @@ be probed.
 
 ## Notifications (v1)
 
-- **Email** — ticket creation, assignment, status changes, replies
-- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events
+- **Email** — a reply on a ticket, and the acknowledgement for a ticket filed
+  with a guest address. A reporter with an account gets the reply notification;
+  the acknowledgement goes to the guest address only.
+- Email is a notification, not a copy of the ticket. A message says what
+  happened, names the ticket by its tracking number, and links to it. It does
+  not carry the ticket subject or the reply text, and the recipient's own
+  address is written bare, with no display name.
+
+  This is deliberate. Mail leaving the help desk is sent from the operator's
+  domain, so anything in it is said with the operator's reputation behind it,
+  and anyone who can file a ticket chooses that text. Recipients read the
+  content in the application, where the existing access rules apply to it.
+
+  **Known gap:** a ticket filed with a guest address has no signed-in reader,
+  and there is no guest ticket view, so a guest recipient can no longer read
+  the reply text at all. Guest submission is not reachable in v1 — the ticket
+  API requires a session — so this affects only a ticket an agent files on
+  someone's behalf with a guest address. The fix is a tokenised guest view,
+  tracked as issue #154 and scheduled for v2.
+- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
+  do carry the full event payload, subject and reply body included: a webhook
+  target is registered by an administrator, not chosen by a reporter.
 - Additional channels (Slack, Teams, Discord) are plugin territory
 
 ---

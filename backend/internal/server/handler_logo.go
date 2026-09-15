@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -71,13 +72,39 @@ func sanitizeSVG(data []byte) error {
 			return fmt.Errorf("SVG is not well-formed XML: %w", err)
 		}
 	}
-	for _, re := range svgForbidden {
-		if re.Match(data) {
-			return fmt.Errorf("SVG contains disallowed content (scripts or event handlers are not permitted)")
+	// Match against the decoded text as well as the raw bytes. XML lets
+	// "javascript:" be written as "java&#115;cript:" or "&#x6A;avascript:",
+	// which the raw match misses entirely, and an attribute value is decoded by
+	// the browser before it is followed.
+	for _, candidate := range [][]byte{data, decodeXMLRefs(data)} {
+		for _, re := range svgForbidden {
+			if re.Match(candidate) {
+				return fmt.Errorf("SVG contains disallowed content (scripts or event handlers are not permitted)")
+			}
 		}
 	}
 	return nil
 }
+
+// decodeXMLRefs expands numeric character references so the patterns above see
+// what a browser would see. Named entities are left alone: XML predefines only
+// five and none of them spell anything dangerous.
+func decodeXMLRefs(data []byte) []byte {
+	return xmlNumericRef.ReplaceAllFunc(data, func(m []byte) []byte {
+		body := string(m[2 : len(m)-1]) // strip "&#" and ";"
+		base := 10
+		if len(body) > 0 && (body[0] == 'x' || body[0] == 'X') {
+			base, body = 16, body[1:]
+		}
+		n, err := strconv.ParseInt(body, base, 32)
+		if err != nil || n <= 0 || n > 0x10FFFF {
+			return m
+		}
+		return []byte(string(rune(n)))
+	})
+}
+
+var xmlNumericRef = regexp.MustCompile(`&#[xX]?[0-9a-fA-F]+;`)
 
 // fitWithin returns the largest dimensions that fit inside maxW×maxH while
 // preserving the aspect ratio of srcW×srcH. If the source already fits,
@@ -107,6 +134,14 @@ func fitWithin(srcW, srcH, maxW, maxH int) (int, int) {
 // logoMaxWidth × logoMaxHeight (nearest-neighbor, aspect-ratio preserved), and
 // re-encodes the result as PNG. The returned bytes are always a valid PNG.
 func resizeRasterLogo(data []byte, kind string) ([]byte, error) {
+	// Same decompression bomb as attachments: the 2 MB logo limit still admits
+	// a 949 KB file that decodes to 859 MB. Lower blast radius — the caller is
+	// an administrator — but a leaked credential should not be a one-request
+	// denial of service.
+	if err := decodedSizeWithin(data, maxImagePixels); err != nil {
+		return nil, err
+	}
+
 	var src image.Image
 	var err error
 	switch kind {
@@ -263,6 +298,12 @@ func (s *Server) handleServeLogo(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", entry.mime)
 		w.Header().Set("Cache-Control", "public, max-age=300")
+		// Stricter than the site-wide policy. An SVG is markup; served from
+		// this origin and opened directly, it would run with this origin's
+		// cookies. Pattern matching on the upload catches known shapes and has
+		// already been bypassed once with XML character references, so the file
+		// is made inert here instead of relying on that.
+		w.Header().Set("Content-Security-Policy", logoCSP)
 		_, _ = w.Write(data)
 		return
 	}

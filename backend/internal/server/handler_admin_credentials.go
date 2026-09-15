@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"net/http"
 	"time"
 
@@ -38,6 +39,34 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
+	}
+	// Required, not defaulted. With deny-by-default an empty list produces a
+	// credential that can do nothing, and the caller would not find out until
+	// the integration started returning 403. Omitting the field used to reach
+	// the database as NULL and come back as an opaque 500 — on the exact call
+	// the upgrade notes tell every operator to make.
+	if len(body.Scopes) == 0 {
+		Error(w, http.StatusBadRequest, "scopes_required",
+			"scopes is required: a credential with no scopes is refused on every route. "+
+				"See GET /api/v1/admin/scopes for the available scopes.")
+		return
+	}
+	// Reject unknown scopes at creation. Unrecognised entries are ignored at
+	// enforcement time, so without this a typo produces a credential that
+	// looks restricted, is accepted, and quietly grants less than intended.
+	if err := auth.ValidateScopes(body.Scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	// A machine credential cannot mint one broader than itself. Without this,
+	// credentials:write is every scope: hold only that, issue a key with
+	// users:write, use it. Escalation by one extra request is not a boundary.
+	if isMachine(r) {
+		if over, ok := auth.Subset(authmw.GetActor(r).Scopes, body.Scopes); !ok {
+			Error(w, http.StatusForbidden, "insufficient_scope",
+				"this credential cannot grant "+over+", which it does not hold itself")
+			return
+		}
 	}
 	raw, _, err := auth.GenerateToken()
 	if err != nil {
@@ -79,6 +108,26 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleListScopes returns the scope catalogue.
+//
+// Served rather than duplicated in the frontend so the picker cannot drift from
+// what the server enforces: a scope the UI offers but the server rejects would
+// produce a credential that fails at creation, and one the server knows but the
+// UI omits would be silently unreachable.
+func (s *Server) handleListScopes(w http.ResponseWriter, r *http.Request) {
+	type scopeInfo struct {
+		Scope    string `json:"scope"`
+		Resource string `json:"resource"`
+		Action   string `json:"action"`
+	}
+	all := auth.All()
+	out := make([]scopeInfo, len(all))
+	for i, sc := range all {
+		out[i] = scopeInfo{Scope: sc.String(), Resource: sc.Resource, Action: string(sc.Action)}
+	}
+	JSON(w, http.StatusOK, out)
+}
+
 // ── OAuth Clients ────────────────────────────────────────────────────────────
 
 func (s *Server) handleListOAuthClients(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +147,29 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
+	}
+	// Required for the same reason as on API keys: with deny-by-default an
+	// empty list creates a client that can do nothing, and omitting the field
+	// reached the database as NULL and returned an opaque 500.
+	if len(body.Scopes) == 0 {
+		Error(w, http.StatusBadRequest, "scopes_required",
+			"scopes is required: a credential with no scopes is refused on every route. "+
+				"See GET /api/v1/admin/scopes for the available scopes.")
+		return
+	}
+	if err := auth.ValidateScopes(body.Scopes); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_scope", err.Error())
+		return
+	}
+	// A machine credential cannot mint one broader than itself. Without this,
+	// credentials:write is every scope: hold only that, issue a key with
+	// users:write, use it. Escalation by one extra request is not a boundary.
+	if isMachine(r) {
+		if over, ok := auth.Subset(authmw.GetActor(r).Scopes, body.Scopes); !ok {
+			Error(w, http.StatusForbidden, "insufficient_scope",
+				"this credential cannot grant "+over+", which it does not hold itself")
+			return
+		}
 	}
 	raw, hashed, err := auth.GenerateToken()
 	if err != nil {
@@ -160,6 +232,13 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	// Checked here so a bad target is reported when the form is saved. The
+	// real boundary is the guarded dialer in notify — a name that passes now
+	// can resolve somewhere else by delivery time.
+	if err := safehttp.ValidateURL(body.URL); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_url", err.Error())
 		return
 	}
 	wh := authstore.WebhookConfig{

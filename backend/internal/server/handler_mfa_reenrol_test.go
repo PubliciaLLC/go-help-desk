@@ -113,7 +113,7 @@ func TestMFA_PasswordAloneCannotReEnrol(t *testing.T) {
 	require.True(t, login["mfa_needed"].(bool), "precondition: the account is MFA-protected")
 
 	// The bypass: re-enrol from a session that has not passed the challenge.
-	res, body = s.send(t, http.MethodGet, "/api/v1/me/mfa/enroll", nil)
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
 	require.Equal(t, http.StatusForbidden, res.StatusCode,
 		"re-enrolment from an MFA-unverified session must be refused; got body %s", body)
 	require.NotContains(t, string(body), "secret",
@@ -140,7 +140,7 @@ func TestMFA_RefusedReEnrolmentLeavesTheSecretIntact(t *testing.T) {
 	s.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
 		"email": "staff@test.local", "password": "password",
 	})
-	s.send(t, http.MethodGet, "/api/v1/me/mfa/enroll", nil)
+	s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
 
 	after, err := h.userSvc.GetByID(ctx, h.staffID)
 	require.NoError(t, err)
@@ -172,7 +172,7 @@ func TestMFA_HolderOfCurrentAuthenticatorCanRotate(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 
 	// Now rotating to a new authenticator is allowed.
-	res, body = s.send(t, http.MethodGet, "/api/v1/me/mfa/enroll", nil)
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode,
 		"a fully verified user must still be able to rotate authenticators; body %s", body)
 
@@ -180,4 +180,92 @@ func TestMFA_HolderOfCurrentAuthenticatorCanRotate(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &enroll))
 	require.NotEmpty(t, enroll["secret"])
 	require.NotEqual(t, original.MFASecret, enroll["secret"], "rotation must issue a new secret")
+}
+
+// Starting enrolment must not destroy the authenticator the user is still
+// using.
+//
+// EnrollMFA wrote the new secret to the user row while MFAEnabled stayed true,
+// so merely opening the rotate-authenticator screen and closing it locked the
+// user out: their real authenticator stopped working and only an administrator
+// could restore it — and a sole administrator had no one to ask. The test above
+// stops at "a new secret was returned" and never checks the old one still works,
+// which is why this shipped.
+func TestMFA_AbandonedEnrolmentLeavesTheCurrentAuthenticatorWorking(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	mfaProtectedStaff(t, h)
+
+	original, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+
+	s := &session{h: h}
+	s.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	code, err := totp.GenerateCode(original.MFASecret, time.Now())
+	require.NoError(t, err)
+	res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": code})
+	require.Equal(t, http.StatusNoContent, res.StatusCode)
+
+	// Start enrolment and then walk away — no confirm.
+	res, body := s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	var enroll map[string]string
+	require.NoError(t, json.Unmarshal(body, &enroll))
+	require.NotEqual(t, original.MFASecret, enroll["secret"])
+
+	// The stored secret is untouched.
+	after, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+	require.Equal(t, original.MFASecret, after.MFASecret,
+		"an unconfirmed secret must not replace the one in use")
+
+	// And the real proof: the original authenticator still logs in.
+	s2 := &session{h: h}
+	s2.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	code, err = totp.GenerateCode(original.MFASecret, time.Now())
+	require.NoError(t, err)
+	res, body = s2.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": code})
+	require.Equal(t, http.StatusNoContent, res.StatusCode,
+		"the authenticator the user still holds must keep working; body: %s", body)
+}
+
+// Confirming with the staged secret completes the rotation — a fix that simply
+// never saved anything would pass the test above.
+func TestMFA_ConfirmingCompletesTheRotation(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	mfaProtectedStaff(t, h)
+
+	original, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+
+	s := &session{h: h}
+	s.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	code, err := totp.GenerateCode(original.MFASecret, time.Now())
+	require.NoError(t, err)
+	s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": code})
+
+	res, body := s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var enroll map[string]string
+	require.NoError(t, json.Unmarshal(body, &enroll))
+
+	newCode, err := totp.GenerateCode(enroll["secret"], time.Now())
+	require.NoError(t, err)
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll/confirm",
+		map[string]any{"code": newCode})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+
+	after, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+	require.Equal(t, enroll["secret"], after.MFASecret, "confirming must adopt the new secret")
+	require.True(t, after.MFAEnabled)
 }

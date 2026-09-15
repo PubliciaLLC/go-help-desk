@@ -603,7 +603,10 @@ export function TicketDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <TagInput ticketId={id} readonly={!isStaffOrAdmin} />
+                {/* Staff-only. Tags carry internal classification, and the
+                    API refuses them for reporting users, so rendering this
+                    would only produce a failed request. */}
+                {isStaffOrAdmin && <TagInput ticketId={id} readonly={false} />}
               </CardContent>
             </Card>
 

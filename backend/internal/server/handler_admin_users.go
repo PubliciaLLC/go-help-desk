@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // Admin user management: listing, creation, profile edits, password reset.
@@ -89,6 +90,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	if user.Role(body.Role) == user.RoleAdmin &&
+		denyMachineAdminTakeover(w, r, "create an administrator") {
+		return
+	}
 	u, err := s.users.Create(r.Context(), user.CreateUserInput{
 		Email:       body.Email,
 		DisplayName: body.DisplayName,
@@ -142,6 +147,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
+	}
+
+	// Administrators are managed by administrators, not by automation.
+	//
+	// Before any mutation, because the disable below used to be applied before
+	// the promotion guard further down — a refused request that had already
+	// disabled the account.
+	//
+	// Guarding only promotion left the reverse open: demote an administrator,
+	// then reset the password of what is now a staff account, then sign in.
+	// Three requests. The rule is therefore the whole account, in either
+	// direction: a machine credential may not change an administrator's role,
+	// email, enabled state, password or MFA, and may not create or promote one.
+	if isMachine(r) {
+		if s.denyMachineTargetingAdmin(w, r, id, "modify an administrator") {
+			return
+		}
+		if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin {
+			denyMachineAdminTakeover(w, r, "promote a user to administrator")
+			return
+		}
 	}
 
 	// Disable/enable toggle (processed before any profile update).
@@ -244,10 +270,63 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, detail)
 }
 
+// isMachine reports whether an API key or OAuth client made this request.
+func isMachine(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	return a != nil && a.Machine
+}
+
+// denyMachineAdminTakeover refuses a machine credential that is reaching for
+// administrator credentials.
+//
+// Refusing only the credential's own owner closed the path and not the outcome.
+// Every API key that reaches /admin is administrator-owned, because only an
+// administrator can mint one and it acts at its owner's role — so with
+// users:write the long way round was four requests: create a second
+// administrator, sign in as them, reset the original owner's password. Promoting
+// an existing user to administrator gets there too.
+//
+// So the rule is about administrators rather than about self: a machine
+// credential may not create one, promote to one, or reset one's credentials.
+// That closes every route to holding an administrator's password, including the
+// self-target that started this.
+//
+// Managing non-administrator users — provisioning, deprovisioning, resetting a
+// forgotten password — is ordinary automation and stays available.
+func denyMachineAdminTakeover(w http.ResponseWriter, r *http.Request, why string) bool {
+	if !isMachine(r) {
+		return false
+	}
+	Error(w, http.StatusForbidden, "session_required",
+		"an API key or OAuth client cannot "+why+"; this requires a signed-in session")
+	return true
+}
+
+// denyMachineTargetingAdmin refuses when the target account is an administrator.
+func (s *Server) denyMachineTargetingAdmin(w http.ResponseWriter, r *http.Request, target uuid.UUID, why string) bool {
+	if !isMachine(r) {
+		return false
+	}
+	u, err := s.users.GetByID(r.Context(), target)
+	if err != nil {
+		// Fail closed: if the target cannot be read, it cannot be shown to be
+		// safe to act on.
+		handleError(w, err)
+		return true
+	}
+	if u.Role != user.RoleAdmin {
+		return false
+	}
+	return denyMachineAdminTakeover(w, r, why)
+}
+
 func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
+		return
+	}
+	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
 		return
 	}
 	var body struct {
@@ -274,6 +353,9 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
+		return
+	}
+	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {

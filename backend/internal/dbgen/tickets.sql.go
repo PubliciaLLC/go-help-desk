@@ -239,6 +239,74 @@ func (q *Queries) GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByI
 	return i, err
 }
 
+const getTicketByIDForUpdate = `-- name: GetTicketByIDForUpdate :one
+SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE id = $1 FOR UPDATE
+`
+
+type GetTicketByIDForUpdateRow struct {
+	ID              uuid.UUID      `json:"id"`
+	TrackingNumber  string         `json:"tracking_number"`
+	Subject         string         `json:"subject"`
+	Description     string         `json:"description"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	Priority        string         `json:"priority"`
+	StatusID        uuid.UUID      `json:"status_id"`
+	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail      sql.NullString `json:"guest_email"`
+	ResolutionNotes sql.NullString `json:"resolution_notes"`
+	ResolvedAt      sql.NullTime   `json:"resolved_at"`
+	ClosedAt        sql.NullTime   `json:"closed_at"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	GuestName       string         `json:"guest_name"`
+	GuestPhone      string         `json:"guest_phone"`
+}
+
+// The same row as GetTicketByID, with a write lock held until the transaction
+// ends.
+//
+// Every lifecycle write used to read the ticket on the pool, mutate the whole
+// struct, and then UPDATE all of it inside a transaction. UpdateTicket is a
+// full-row overwrite, so two staff acting within a few milliseconds silently
+// lost one of the changes — and worse, the history and audit rows for the lost
+// change were still committed, so the ticket contradicted its own timeline: the
+// row said open while ticket_status_history said Resolved.
+//
+// Reading here instead serialises the writers. The second one sees the first's
+// committed state and applies its change on top, which is what someone clicking
+// Resolve a moment after someone else clicked Assign expects.
+func (q *Queries) GetTicketByIDForUpdate(ctx context.Context, id uuid.UUID) (GetTicketByIDForUpdateRow, error) {
+	row := q.db.QueryRowContext(ctx, getTicketByIDForUpdate, id)
+	var i GetTicketByIDForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.TrackingNumber,
+		&i.Subject,
+		&i.Description,
+		&i.CategoryID,
+		&i.TypeID,
+		&i.ItemID,
+		&i.Priority,
+		&i.StatusID,
+		&i.AssigneeUserID,
+		&i.AssigneeGroupID,
+		&i.ReporterUserID,
+		&i.GuestEmail,
+		&i.ResolutionNotes,
+		&i.ResolvedAt,
+		&i.ClosedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.GuestName,
+		&i.GuestPhone,
+	)
+	return i, err
+}
+
 const getTicketByTrackingNumber = `-- name: GetTicketByTrackingNumber :one
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets WHERE tracking_number = $1
 `

@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/tls"
+	"log/slog"
 	"net/http"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
@@ -151,8 +152,14 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	// Hot-reload the SAML middleware. A failure here is non-fatal: the config is
 	// saved and will be retried on next restart, but we report it to the caller.
 	if err := s.reloadSAML(r.Context()); err != nil {
+		// The error is logged, not returned. The fetch reaches whatever URL the
+		// caller supplied, and the failure text distinguishes a closed port
+		// from a listening one, and names the root element of whatever it did
+		// reach ("expected <EntityDescriptor> but have <html>"). Echoed back,
+		// that turns this form into an internal port and protocol scanner.
+		slog.Error("SAML reload failed", "error", err)
 		JSON(w, http.StatusOK, map[string]any{
-			"warning": "SAML config saved but middleware could not be loaded: " + err.Error(),
+			"warning": "SAML config saved, but the identity provider metadata could not be loaded. Check the metadata URL and the server log.",
 		})
 		return
 	}

@@ -1015,7 +1015,7 @@ func TestAuthStore_APIKeys(t *testing.T) {
 		Name:        "test-key",
 		HashedToken: hashed,
 		UserID:      u.ID,
-		Scopes:      []string{"*"},
+		Scopes:      scopeStringsForTest(),
 		CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
 	}
 	require.NoError(t, as.CreateAPIKey(ctx, k))
@@ -1167,3 +1167,13 @@ func TestAuditStore(t *testing.T) {
 }
 
 func prio(p ticket.Priority) *ticket.Priority { return &p }
+
+// scopeStringsForTest is every scope, spelled out. There is no wildcard.
+func scopeStringsForTest() []string {
+	all := auth.All()
+	out := make([]string, len(all))
+	for i, s := range all {
+		out[i] = s.String()
+	}
+	return out
+}

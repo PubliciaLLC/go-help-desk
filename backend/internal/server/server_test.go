@@ -47,6 +47,21 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// allScopes is every scope there is, spelled out.
+//
+// There is no wildcard: a credential that should reach everything lists
+// everything. The harness key stands for a fully-authorised caller, so it holds
+// the full list — and if a resource is added later, this picks it up while real
+// credentials correctly do not.
+func allScopes() []string {
+	all := auth.All()
+	out := make([]string, len(all))
+	for i, s := range all {
+		out[i] = s.String()
+	}
+	return out
+}
+
 // harness is a test server wired against a real (rolled-back) DB transaction.
 type harness struct {
 	srv             *server.Server
@@ -63,6 +78,8 @@ type harness struct {
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
+	sessions        *sessionstore.Store
+	authStore       *authstore.Store
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -134,7 +151,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		Name:        "test-key",
 		HashedToken: hashedToken,
 		UserID:      staffUser.ID,
-		Scopes:      []string{"*"},
+		Scopes:      allScopes(),
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, apiKey))
@@ -147,7 +164,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		Name:        "admin-test-key",
 		HashedToken: adminHashedToken,
 		UserID:      adminUser.ID,
-		Scopes:      []string{"*"},
+		Scopes:      allScopes(),
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, adminAPIKey))
@@ -168,7 +185,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		Name:        "user-test-key",
 		HashedToken: userHashedToken,
 		UserID:      reportingUser.ID,
-		Scopes:      []string{"*"},
+		Scopes:      allScopes(),
 		CreatedAt:   time.Now(),
 	}
 	require.NoError(t, authSt.CreateAPIKey(ctx, userAPIKey))
@@ -255,6 +272,8 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
 		userID:          reportingUser.ID,
+		sessions:        sessionStore,
+		authStore:       authSt,
 	}
 	cleanup := func() {
 		rollback()
@@ -295,6 +314,46 @@ func (h *harness) doAsAdmin(t *testing.T, method, path string, body any) *http.R
 	rr := httptest.NewRecorder()
 	h.srv.ServeHTTP(rr, req)
 	return rr.Result()
+}
+
+// doWithBearer sends a request carrying an OAuth client-credentials token.
+func (h *harness) doWithBearer(t *testing.T, token, path string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+// doWithCookie sends a request carrying a raw Set-Cookie value as its Cookie.
+func (h *harness) doWithCookie(t *testing.T, cookie, path string) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Cookie", cookie)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
+// oauthToken runs the client-credentials grant and returns the access token.
+func (h *harness) oauthToken(t *testing.T, clientID, clientSecret string) string {
+	t.Helper()
+	var buf bytes.Buffer
+	require.NoError(t, json.NewEncoder(&buf).Encode(map[string]any{
+		"grant_type": "client_credentials", "client_id": clientID, "client_secret": clientSecret,
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/oauth/token", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	require.Equal(t, http.StatusOK, rr.Code, "token grant failed: %s", rr.Body.String())
+	var out struct {
+		AccessToken string `json:"access_token"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&out))
+	require.NotEmpty(t, out.AccessToken)
+	return out.AccessToken
 }
 
 // doAsUser sends a request authenticated as the seeded reporting (RoleUser) user.
@@ -942,24 +1001,30 @@ func TestGetMe_AsStaff(t *testing.T) {
 	require.Equal(t, h.staffID, u.ID)
 }
 
+// Through a signed-in session, not the harness API key: changing your own
+// password is refused to machine credentials, because a credential acts at its
+// owner's identity and must not be able to become them. The assertions are
+// unchanged — only how the caller authenticates.
 func TestChangePassword_AsStaff(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.do(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
+	sess := loggedIn(t, h)
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
 		"password": "newpassword123",
 	})
-	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 }
 
 func TestChangePassword_TooShort(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	resp := h.do(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
+	sess := loggedIn(t, h)
+	res, _ := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
 		"password": "short",
 	})
-	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
