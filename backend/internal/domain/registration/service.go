@@ -87,7 +87,10 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 		return fmt.Errorf("storing pending registration: %w", err)
 	}
 
-	if err := s.mailer.SendVerificationEmail(email, stored.Token.String(), s.baseURL); err != nil {
+	// stored.Email, not email: what goes into the message is the address that
+	// is actually on the row, read back from the database, not the string the
+	// request supplied. Same reason stored.Token is used rather than pr.Token.
+	if err := s.mailer.SendVerificationEmail(stored.Email, stored.Token.String(), s.baseURL); err != nil {
 		// Non-fatal: log-worthy but don't expose SMTP failures to callers.
 		return fmt.Errorf("sending verification email: %w", err)
 	}

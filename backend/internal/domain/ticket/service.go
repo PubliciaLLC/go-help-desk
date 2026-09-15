@@ -205,6 +205,20 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		return Ticket{}, err
 	}
 
+	// Re-read what was committed, and announce that rather than the struct we
+	// asked the database to store.
+	//
+	// The two values the notification email is allowed to carry — the tracking
+	// number and the guest's address — are taken from this row. Built in
+	// memory they are request text that happens to have been written down;
+	// read back they are the record. A read failure is not fatal: the ticket
+	// exists, so fall back to the in-memory copy for the SLA and audit paths
+	// and skip the email, which is the part that must not carry request text.
+	stored, readErr := s.store.GetByID(ctx, t.ID)
+	if readErr != nil {
+		stored = t
+	}
+
 	// Everything below runs only after the commit. Dispatching inside the
 	// transaction would announce a ticket that a rollback then discarded.
 	if s.sla != nil {
@@ -227,12 +241,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	if t.GuestEmail != nil && *t.GuestEmail != "" {
 		createdPayload["guest_email"] = *t.GuestEmail
 	}
+	var recipient string
+	if readErr == nil && stored.GuestEmail != nil {
+		recipient = *stored.GuestEmail
+	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketCreated,
-		TicketID:   t.ID,
-		ActorID:    in.ReporterUserID,
-		Payload:    createdPayload,
-		OccurredAt: now,
+		Type:           notification.EventTicketCreated,
+		TicketID:       t.ID,
+		ActorID:        in.ReporterUserID,
+		Payload:        createdPayload,
+		OccurredAt:     now,
+		TrackingNumber: string(stored.TrackingNumber),
+		Recipient:      recipient,
 	})
 
 	return t, nil
@@ -525,10 +545,17 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 
 	// Dispatch reply event. reporter_email is only populated when notifyCustomer
 	// is true; the email dispatcher skips sending when the address is empty.
+	//
+	// Recipient and TrackingNumber are the same two values again, carried
+	// separately from Payload because they are the only ones an email may use.
+	// reporterEmail is looked up from the ticket's own row by the caller and
+	// t is the locked row, so neither is request text.
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:     notification.EventTicketReplied,
-		TicketID: t.ID,
-		ActorID:  actor.UserID,
+		Type:           notification.EventTicketReplied,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      reporterEmail,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address

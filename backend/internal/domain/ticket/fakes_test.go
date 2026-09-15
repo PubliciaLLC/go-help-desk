@@ -30,11 +30,17 @@ var errNotFound = errors.New("not found")
 
 type fakeStore struct {
 	forUpdateReads int
-	tickets        map[uuid.UUID]ticket.Ticket
-	replies        map[uuid.UUID][]ticket.Reply
-	history        []ticket.StatusHistoryEntry
-	links          map[uuid.UUID][]ticket.TicketLink
-	seq            int64
+
+	// onRead rewrites what a read returns, so a test can tell a value that came
+	// back from the store apart from the identical-looking one the caller
+	// already had in hand.
+	onRead func(ticket.Ticket) ticket.Ticket
+
+	tickets map[uuid.UUID]ticket.Ticket
+	replies map[uuid.UUID][]ticket.Reply
+	history []ticket.StatusHistoryEntry
+	links   map[uuid.UUID][]ticket.TicketLink
+	seq     int64
 
 	// Call counters, so a test can assert an operation did not write.
 	creates        int
@@ -87,6 +93,9 @@ func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (ticket.Ticket, err
 	t, ok := f.tickets[id]
 	if !ok {
 		return ticket.Ticket{}, errNotFound
+	}
+	if f.onRead != nil {
+		t = f.onRead(t)
 	}
 	return t, nil
 }

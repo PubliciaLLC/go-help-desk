@@ -424,8 +424,18 @@ denied, and must be re-issued.
 
 ## Notifications (v1)
 
-- **Email** — ticket creation, assignment, status changes, replies
-- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events
+- **Email** — ticket creation and replies
+- Email is a notification, not a copy of the ticket. A message says what
+  happened, names the ticket by its tracking number, and links to it. It does
+  not carry the ticket subject or the reply text.
+
+  This is deliberate. Mail leaving the help desk is sent from the operator's
+  domain, so anything in it is said with the operator's reputation behind it,
+  and anyone who can file a ticket chooses that text. Recipients read the
+  content in the application, where the existing access rules apply to it.
+- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
+  do carry the full event payload, subject and reply body included: a webhook
+  target is registered by an administrator, not chosen by a reporter.
 - Additional channels (Slack, Teams, Discord) are plugin territory
 
 ---

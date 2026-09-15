@@ -51,79 +51,6 @@ func sanitizeHeader(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// sanitizePayload returns a shallow copy of payload where all string values are
-// header/body-safe normalized text (CR/LF removed, trimmed).
-// sanitizePayload cleans values for use in the message BODY.
-//
-// It used to apply sanitizeHeader to every string, which flattened every
-// multi-line reply onto one line in the email — the header rule applied to
-// content that is not a header. The header path does not need it here anyway:
-// send() sanitizes the Subject at the point it writes it, which is the only
-// place a payload string becomes a header.
-//
-// What it strips instead is the set of characters that have no business in a
-// plain-text body and exist mainly to make text display as something other
-// than what it is.
-func sanitizePayload(payload map[string]any) map[string]any {
-	if payload == nil {
-		return nil
-	}
-	out := make(map[string]any, len(payload))
-	for k, v := range payload {
-		if s, ok := v.(string); ok {
-			out[k] = sanitizeBody(s)
-			continue
-		}
-		out[k] = v
-	}
-	return out
-}
-
-// sanitizeBody makes a string safe to place in a text/plain body while keeping
-// it readable.
-//
-// The message is text/plain, so markup in it is not markup — that is what
-// actually prevents script execution, not this. This removes what remains:
-//
-//   - Control characters, which no plain-text body needs and which a
-//     non-conforming renderer may act on. Newline and tab are kept, because a
-//     reply legitimately contains both.
-//   - Bidirectional overrides (U+202A-U+202E, U+2066-U+2069). These reorder
-//     displayed text without changing it, so "cancel-order.txt" can be shown
-//     as something else entirely.
-//   - U+2028 and U+2029, which are line terminators to a JavaScript parser and
-//     would matter the moment any of this is rendered somewhere other than a
-//     mail client.
-//
-// Line endings are normalised to \n so the quoted-printable encoder produces
-// consistent CRLF rather than inheriting whatever the client sent.
-func sanitizeBody(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == '\n' || r == '\t':
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f: // C0 controls and DEL
-			continue
-		case r >= 0x80 && r <= 0x9f: // C1 controls
-			continue
-		case r >= 0x202A && r <= 0x202E: // bidi embedding and override
-			continue
-		case r >= 0x2066 && r <= 0x2069: // bidi isolates
-			continue
-		case r == 0x2028 || r == 0x2029: // line and paragraph separators
-			continue
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return strings.TrimSpace(b.String())
-}
-
 // Dispatch sends an email for supported event types. Unsupported events are
 // silently ignored — the dispatcher never returns an error to the caller.
 func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) error {
@@ -144,32 +71,43 @@ func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) 
 	return d.send(to, subject, buf.Bytes())
 }
 
+// eventToEmail decides what to send. It deliberately sends no content.
+//
+// Ticket emails used to carry the ticket subject and the reply body. That makes
+// the message a carrier for text somebody else chose, sent from a domain the
+// recipient trusts — content spoofing, CWE-640. It was not theoretical here:
+// filing a ticket with a chosen subject was enough to have this server mail
+// that text out over its own reputation.
+//
+// So the email now says only that something happened, names the ticket by its
+// tracking number, and links to it. The tracking number and the address both
+// come off the persisted ticket (Event.TrackingNumber, Event.Recipient), never
+// out of Event.Payload, which carries request text. The content stays in the
+// application behind the login that already guards it.
 func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, subject, to string, data any, ok bool) {
-	payload := sanitizePayload(event.Payload)
+	if event.Recipient == "" {
+		return "", "", "", nil, false
+	}
+
+	// Both halves of the link are trusted: the ticket's own identifier, minted
+	// server-side, and the configured base URL.
+	view := map[string]string{
+		"TrackingNumber": event.TrackingNumber,
+		"TicketURL":      strings.TrimRight(d.cfg.BaseURL, "/") + "/tickets/" + event.TicketID.String(),
+	}
+
+	// A missing tracking number costs the subject line its reference but must
+	// not cost the customer the notification.
+	ref := "your ticket"
+	if event.TrackingNumber != "" {
+		ref = "[" + event.TrackingNumber + "]"
+	}
+
 	switch event.Type {
 	case notification.EventTicketCreated:
-		guestEmail, _ := payload["guest_email"].(string)
-		if guestEmail == "" {
-			guestEmail, _ = payload["GuestEmail"].(string)
-		}
-		tracking, _ := payload["TrackingNumber"].(string)
-		subj, _ := payload["Subject"].(string)
-		if guestEmail == "" {
-			return "", "", "", nil, false
-		}
-		return "ticket_created.tmpl",
-			fmt.Sprintf("[%s] %s", tracking, subj),
-			guestEmail, payload, true
+		return "ticket_created.tmpl", "We have received " + ref, event.Recipient, view, true
 	case notification.EventTicketReplied:
-		reporterEmail, _ := payload["reporter_email"].(string)
-		if reporterEmail == "" {
-			reporterEmail, _ = payload["ReporterEmail"].(string)
-		}
-		tracking, _ := payload["TrackingNumber"].(string)
-		subj, _ := payload["Subject"].(string)
-		return "ticket_replied.tmpl",
-			fmt.Sprintf("Re: [%s] %s", tracking, subj),
-			reporterEmail, payload, true
+		return "ticket_replied.tmpl", "There is a new reply on " + ref, event.Recipient, view, true
 	}
 	return "", "", "", nil, false
 }

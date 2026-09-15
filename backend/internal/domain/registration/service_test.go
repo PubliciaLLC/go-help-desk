@@ -7,17 +7,20 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // ── fakes ─────────────────────────────────────────────────────────────────────
 
 type fakeStore struct {
-	record    PendingRegistration
-	upsertErr error
-	getErr    error
-	deleteErr error
-	deleted   bool
+	record       PendingRegistration
+	rewriteEmail string
+	upsertErr    error
+	getErr       error
+	deleteErr    error
+	deleted      bool
 }
 
 func (f *fakeStore) Upsert(_ context.Context, pr PendingRegistration) (PendingRegistration, error) {
@@ -25,6 +28,11 @@ func (f *fakeStore) Upsert(_ context.Context, pr PendingRegistration) (PendingRe
 		return PendingRegistration{}, f.upsertErr
 	}
 	f.record = pr
+	// A real Upsert is ON CONFLICT ... RETURNING: what comes back is the row,
+	// which need not equal what was handed in.
+	if f.rewriteEmail != "" {
+		pr.Email = f.rewriteEmail
+	}
 	return pr, nil
 }
 
@@ -247,4 +255,34 @@ func TestRegister_AcceptsAndNormalisesARealAddress(t *testing.T) {
 	if store.record.Email != "user@example.com" {
 		t.Fatalf("stored %q, want it trimmed and lowercased", store.record.Email)
 	}
+}
+
+// The verification mail must go to the address that is on the row, not the one
+// in the request.
+//
+// They are normally the same string. They are not the same value: one is
+// request text, the other is what the database returned, and only the second
+// has actually been written down. Upsert is ON CONFLICT ... RETURNING, so on a
+// repeat registration the row that comes back is the existing one.
+//
+// This also keeps request text out of the message, which is what
+// go/email-injection is about — the mail is sent from this server's domain, so
+// anything in it is said with this server's reputation behind it.
+func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
+	store := &fakeStore{}
+	store.rewriteEmail = "canonical@example.com"
+	mailer := &recordingMailer{}
+	svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
+
+	err := svc.Register(context.Background(), "Requested@Example.com", "Ada", "correct horse", nil, true)
+	require.NoError(t, err)
+	require.Equal(t, "canonical@example.com", mailer.to,
+		"the mail must go to the address the store returned")
+}
+
+type recordingMailer struct{ to string }
+
+func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
+	m.to = to
+	return nil
 }
