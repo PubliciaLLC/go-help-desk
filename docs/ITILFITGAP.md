@@ -69,7 +69,7 @@ routing; user communication.*
 
 **Have.** Web SPA intake for users and staff; guest submission with a tracking
 number (`handler_tickets.go`); REST API with API-key and OAuth2 auth; an MCP
-server (`internal/mcp/server.go`, 5 tools); three-level CTI classification;
+server (`internal/mcp/server.go`, 8 tools); three-level CTI classification;
 group routing derived from CTI scope (`group_scopes`); assignment to a user or
 a group; threaded replies with staff-only internal notes; attachments with
 validation and optional ClamAV; tags; canned responses; live full-text search;

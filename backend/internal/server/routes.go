@@ -54,10 +54,10 @@ func (s *Server) ticketRouter() *chi.Mux {
 	// /tickets/fields must be registered before /{id} to avoid ambiguity
 	r.Get("/fields", s.handleResolveFieldsForCTI)
 	// Everything addressing a specific ticket goes through requireTicketAccess.
-	// Applying it per handler is what failed: it was on GET and PATCH and
-	// missing from the fifteen routes beneath them, so the reply thread of a
-	// ticket you could not read was readable. As a subtree middleware a new
-	// route cannot forget it.
+	// Applying it per handler is what failed: at 1.1.1 the check was inline in
+	// handleGetTicket and handleListStatusHistory and nowhere else, so PATCH,
+	// the reply thread, links and tags on a ticket you could not read were all
+	// open. As a subtree middleware a new route cannot forget it.
 	r.Route("/{id}", func(r chi.Router) {
 		r.Use(s.requireTicketAccess)
 

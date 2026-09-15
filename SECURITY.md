@@ -41,7 +41,7 @@ We do not run a bug bounty program.
 
 - The Go Help Desk backend (`backend/`)
 - The React frontend (`frontend/`)
-- Official Docker images and `docker-compose.yml` in this repository
+- `docker-compose.yml` and the `Dockerfile` in this repository
 - Default configuration and documented deployment paths
 
 **Out of scope:**

@@ -226,6 +226,11 @@ func (s *Service) GenerateMFASecret(ctx context.Context, userID uuid.UUID, issue
 	return key.Secret(), key.URL(), nil
 }
 
+// Deprecated: EnrollMFA writes an unconfirmed secret to the user row, which
+// destroys the authenticator the user is still relying on. Use
+// GenerateMFASecret to mint one and ConfirmMFAEnrollmentWith to adopt it after
+// the user proves possession. No production caller remains; kept only because
+// tests still exercise it, and removal belongs in its own commit.
 func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string, allowReenroll bool) (secret, qrDataURL string, err error) {
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {

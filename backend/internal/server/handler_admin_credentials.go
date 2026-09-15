@@ -40,6 +40,17 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Required, not defaulted. With deny-by-default an empty list produces a
+	// credential that can do nothing, and the caller would not find out until
+	// the integration started returning 403. Omitting the field used to reach
+	// the database as NULL and come back as an opaque 500 — on the exact call
+	// the upgrade notes tell every operator to make.
+	if len(body.Scopes) == 0 {
+		Error(w, http.StatusBadRequest, "scopes_required",
+			"scopes is required: a credential with no scopes is refused on every route. "+
+				"See GET /api/v1/admin/scopes for the available scopes.")
+		return
+	}
 	// Reject unknown scopes at creation. Unrecognised entries are ignored at
 	// enforcement time, so without this a typo produces a credential that
 	// looks restricted, is accepted, and quietly grants less than intended.
@@ -135,6 +146,15 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	// Required for the same reason as on API keys: with deny-by-default an
+	// empty list creates a client that can do nothing, and omitting the field
+	// reached the database as NULL and returned an opaque 500.
+	if len(body.Scopes) == 0 {
+		Error(w, http.StatusBadRequest, "scopes_required",
+			"scopes is required: a credential with no scopes is refused on every route. "+
+				"See GET /api/v1/admin/scopes for the available scopes.")
 		return
 	}
 	if err := auth.ValidateScopes(body.Scopes); err != nil {

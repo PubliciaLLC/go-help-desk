@@ -79,6 +79,7 @@ type harness struct {
 	ticketSvc       *ticket.Service
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
+	authStore       *authstore.Store
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -272,6 +273,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		ticketSvc:       ticketSvc,
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
+		authStore:       authSt,
 	}
 	cleanup := func() {
 		rollback()

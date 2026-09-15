@@ -249,10 +249,17 @@ be probed.
 
 | Consumer | Auth Method | Details |
 |----------|------------|---------|
-| Browser (SPA) | Session cookies | HttpOnly cookies backed by SAML or local auth |
+| Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Sits on top of REST API, same auth applies |
+| MCP | Inherits from above | Sits on top of the REST API. Same authentication, and scopes are enforced per tool. |
+
+Sessions are server-side rows, not self-contained cookies, because that is the
+only shape in which a session can be revoked. Logout, a password change, an MFA
+reset, a role change, disabling and deleting all take effect on the next
+request. A session whose owner is disabled or deleted stops loading whether or
+not anything deleted it, and the session id rotates on login and on any
+privilege change. Lifetime is 7 days.
 
 ### Credential Scopes
 
@@ -332,6 +339,9 @@ Three more things are off limits to a machine credential, for the same reason:
 - **Changing an auth-critical setting** — MFA enablement and enforcement, the
   SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
   configuration such as the site name stays automatable.
+- **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
+  credential reaching it could spend the account's durable failed-attempt budget
+  and lock the owner out repeatedly.
 - **Issuing a credential broader than itself.** Otherwise `credentials:write` is
   every scope: hold only that, mint a key with `users:write`, use it. A
   signed-in administrator is exempt — they already hold everything a credential
@@ -342,6 +352,40 @@ its owner, so any scope reaching those routes reaches account takeover.
 
 `GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
 picker from it so the two cannot drift.
+
+### Other protections
+
+Things the code does that are not obvious from the feature list, recorded here
+so they are not removed as dead weight:
+
+- **Credential throttling.** Failed password attempts are counted per account,
+  not per source address — an address-keyed limit is defeated by any proxy or a
+  forged forwarding header. The password counter is in-process, so a restart
+  clears it and N replicas multiply the budget by N; `AUTH_RATE_LIMIT_PER_MINUTE=0`
+  disables it and the signup limit with it. The MFA failed-attempt count is on
+  the user row and does survive a restart.
+- **Ticket list paging.** `GET /tickets` takes `?limit=` (default 100, maximum
+  200) and `?offset=`. Offset-based, not page-based. The staff view merges the
+  caller's own tickets with each of their groups', so it reads each source to
+  the end of the requested page and slices after merging — pushing the window
+  into each query returns limit × (1 + groups) rows.
+- **Uploaded images are capped at 25 megapixels**, checked from the header
+  before any decode. A byte-size limit is not a memory limit: compressed formats
+  expand, and a 169 KB PNG decodes to 142 MB.
+- **Security headers** on every response: a content security policy, `nosniff`,
+  `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
+  with a stricter, sandboxed policy so an SVG cannot execute whatever it
+  contains.
+- **Webhook targets are address-checked** at the moment of connection, so a
+  hostname resolving to an internal address, a redirect to one, and DNS
+  rebinding are all refused. The SAML metadata and OIDC issuer URLs are
+  deliberately *not* address-checked — a self-hosted identity provider on a
+  private network is a normal topology — and are restricted by who may set them
+  instead.
+- **Webhook payloads omit the body of an internal note** and carry an
+  `internal` flag, so a subscriber can tell a staff-only note from a public
+  reply. Before, it received the text of every internal note and could not tell
+  them apart.
 
 **Scopes were documented here before they were enforced.** Until 1.2.0 they were
 accepted, stored and returned by the API, and no code read them — every

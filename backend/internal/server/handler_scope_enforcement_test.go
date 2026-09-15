@@ -2,10 +2,14 @@ package server_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -25,6 +29,37 @@ func mintKey(t *testing.T, h *harness, scopes []string) string {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
 	require.NotEmpty(t, out.Token)
 	return out.Token
+}
+
+// mintLegacyKey seeds a credential with no scopes directly in the store.
+//
+// The API refuses to create one — an empty scope list produces a credential
+// that can do nothing, so it is a 400 rather than a silent dead key. But
+// exactly that shape exists in every database upgraded from 1.1.1, where the
+// admin UI sent an empty list. These tests are about what happens to those
+// credentials, so they have to be seeded the way the upgrade leaves them.
+func mintLegacyKey(t *testing.T, h *harness) string {
+	t.Helper()
+	raw, _, err := auth.GenerateToken()
+	require.NoError(t, err)
+	// Hash AFTER prefixing, as handleCreateAPIKey does. Hashing the bare token
+	// stores a digest of something the client never sends, so the key simply
+	// never authenticates — a 401 that looks like a scope refusal.
+	raw = "GHD_" + raw
+	hashed := auth.HashToken(raw)
+
+	require.NoError(t, h.authStore.CreateAPIKey(context.Background(), auth.APIKey{
+		ID:          uuid.New(),
+		Name:        "pre-1.2.0 key",
+		HashedToken: hashed,
+		UserID:      h.adminID,
+		// An empty array, not nil: the 1.1.1 admin UI sent `scopes: []`, which
+		// is what an upgraded database actually contains. nil marshals to SQL
+		// NULL and violates the not-null constraint — that was issue #143.
+		Scopes:    []string{},
+		CreatedAt: time.Now(),
+	}))
+	return raw
 }
 
 func withKey(t *testing.T, h *harness, token, method, path string, body any) *http.Response {
@@ -82,7 +117,7 @@ func TestScopeEnforcement_NoScopesReachesNothing(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	none := mintKey(t, h, []string{})
+	none := mintLegacyKey(t, h)
 
 	for _, tc := range []struct {
 		method, path string
@@ -140,7 +175,7 @@ func TestScopeEnforcement_CatalogueIsItselfScoped(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	none := mintKey(t, h, []string{})
+	none := mintLegacyKey(t, h)
 	resp := withKey(t, h, none, http.MethodGet, "/api/v1/admin/scopes", nil)
 	require.Equal(t, http.StatusForbidden, resp.StatusCode)
 
@@ -156,7 +191,7 @@ func TestScopeEnforcement_ReferenceEndpointsAreScoped(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	none := mintKey(t, h, []string{})
+	none := mintLegacyKey(t, h)
 	for _, path := range []string{
 		"/api/v1/tags", "/api/v1/statuses", "/api/v1/admin/security-warnings",
 	} {
@@ -229,5 +264,48 @@ func TestScopeCatalogue_MatchesWhatIsEnforced(t *testing.T) {
 
 	for _, s := range served {
 		require.NotContains(t, s, "*", "the catalogue must not advertise a wildcard")
+	}
+}
+
+// Omitting scopes reached the database as NULL and came back as an opaque 500 —
+// on the exact call the upgrade notes tell every operator to make, since every
+// pre-1.2.0 credential has to be re-issued. The admin UI always sends the field,
+// so this only ever bit people using curl, Terraform or a script.
+//
+// A 400 rather than a default, because with deny-by-default an empty list
+// creates a credential that can do nothing and the caller would not find out
+// until the integration started returning 403.
+func TestCredentialCreation_RequiresScopes(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	for _, path := range []string{"/api/v1/admin/api-keys", "/api/v1/admin/oauth-clients"} {
+		t.Run(path, func(t *testing.T) {
+			t.Run("omitted entirely", func(t *testing.T) {
+				resp := h.doAsAdmin(t, http.MethodPost, path, map[string]any{"name": "no-scopes"})
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+					"an omitted scopes field must be a 400, not a 500")
+
+				var body struct {
+					Error struct{ Code, Message string } `json:"error"`
+				}
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+				require.Equal(t, "scopes_required", body.Error.Code)
+				require.Contains(t, body.Error.Message, "/admin/scopes",
+					"the error should say where to find the scope list")
+			})
+
+			t.Run("present but empty", func(t *testing.T) {
+				resp := h.doAsAdmin(t, http.MethodPost, path,
+					map[string]any{"name": "empty-scopes", "scopes": []string{}})
+				require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			})
+
+			t.Run("with scopes still works", func(t *testing.T) {
+				resp := h.doAsAdmin(t, http.MethodPost, path,
+					map[string]any{"name": "fine", "scopes": []string{"tickets:read"}})
+				require.Equal(t, http.StatusCreated, resp.StatusCode)
+			})
+		})
 	}
 }

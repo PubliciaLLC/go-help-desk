@@ -145,7 +145,7 @@ func TestMCP_RestrictedKeyIsRefusedOverTheRealTransport(t *testing.T) {
 	defer cleanup()
 
 	t.Run("no scopes reaches no tool", func(t *testing.T) {
-		c := openMCP(t, h, mintKey(t, h, []string{}))
+		c := openMCP(t, h, mintLegacyKey(t, h))
 		defer c.closeBody()
 
 		for _, tc := range mcpTools(h) {

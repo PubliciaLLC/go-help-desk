@@ -79,12 +79,33 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `SMTP_FROM` | | — | |
 | `ATTACHMENT_DIR` | | `/data/attachments` | Attachment storage path |
 | `CLAMAV_ADDR` | | `tcp://clamav:3310`* | ClamAV daemon address. The Docker Compose setup runs ClamAV automatically and wires this up. For bare-metal / Kubernetes installs, set this to your own daemon address; leave it unset to disable scanning. |
+| `AUTH_RATE_LIMIT_PER_MINUTE` | | `10` | Failed password attempts per account per minute before a 429. `0` disables it, and also disables the signup limit. In-process: a restart clears the counters and N replicas multiply the budget by N. |
 | `APP_ENV` | | `production` | Set to `development` for verbose logging |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, `error` |
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA, SLA, and guest-submission are toggled in the Admin UI — not environment variables. Environment variables that existed for these in older versions have been removed.
+> **Note:** SAML, MFA, SLA and guest-submission are toggled in the Admin UI. The
+> matching environment variables still exist and set the value the instance
+> starts with; the Admin UI setting takes precedence once it has been saved.
+> Changing an auth-related setting requires a signed-in administrator — an API
+> key cannot, whatever scopes it holds.
+
+## Upgrading to 1.2.0
+
+**Every API key and OAuth client created through the admin UI stops working.**
+Scopes are enforced from 1.2.0, and the 1.1.1 UI created credentials with an
+empty scope list, which now grants nothing. Re-issue them with the scopes they
+need — `GET /api/v1/admin/scopes` lists what is available, and the credential
+pages show "None" against the ones that are dead. Credentials created directly
+through the API *with* scopes keep working.
+
+**Everyone is signed out once.** Sessions moved server-side, so cookies issued
+by an earlier version cannot be validated. Session lifetime is also now 7 days
+rather than 30.
+
+Changing SAML, OIDC, MFA or signup settings now requires a signed-in
+administrator; an API key cannot, whatever scopes it holds.
 
 ## API
 
@@ -99,12 +120,15 @@ The REST API is documented informally by the handler source at `backend/internal
 | `GET /api/v1/setup/status` | none | Whether first-run setup is needed |
 | `POST /api/v1/setup` | none (once) | Create the first admin account |
 | `POST /api/v1/auth/local/login` | none | Session login |
-| `GET/POST /api/v1/tickets` | session / API key | List or create tickets |
+| `GET/POST /api/v1/tickets` | session / API key | List or create tickets. The list takes `?limit=` (default 100, maximum 200) and `?offset=`. |
 | `GET/PATCH /api/v1/tickets/{id}` | session / API key | Get or update a ticket |
 | `GET /api/v1/groups` | staff / admin | List groups (for ticket assignment) |
-| `GET /api/v1/tags?q=` | any auth | Active tags (autocomplete) |
+| `GET /api/v1/tags?q=` | staff, admin | Active tags (autocomplete). Tags carry internal classification, so reporting users cannot read them. |
 | `GET/POST /api/v1/admin/groups` | admin | Manage groups |
 | `GET/POST /api/v1/admin/groups/{id}/members` | admin | Manage group membership |
+| `GET /api/v1/admin/scopes` | admin | The scope catalogue a credential can be granted |
+| `GET/POST /api/v1/admin/api-keys` | admin | Manage API keys. `scopes` is required on create. |
+| `GET/POST /api/v1/admin/oauth-clients` | admin | Manage OAuth2 clients. `scopes` is required on create. |
 | `GET /api/v1/admin/tags` | admin | All tags including deactivated |
 | `DELETE /api/v1/admin/tags/{id}` | admin | Deactivate a tag |
 | `POST /api/v1/admin/tags/{id}/restore` | admin | Restore a deactivated tag |
@@ -119,7 +143,7 @@ OAuth2 client credentials (`POST /api/v1/auth/oauth/token`) produce short-lived 
 
 ## Development
 
-Requires Go 1.24+, Node 24+, PostgreSQL 17+.
+Requires Go 1.26+, Node 24+, PostgreSQL 17+.
 
 ```sh
 # backend

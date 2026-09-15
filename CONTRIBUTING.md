@@ -17,7 +17,7 @@ Go Help Desk is licensed under the [GNU Affero General Public License v3.0](LICE
 
 ### Requirements
 
-- Go 1.24+
+- Go 1.26+
 - Node.js 24+ and npm
 - PostgreSQL 17+ (local or Docker)
 - [sqlc](https://sqlc.dev) (for schema changes)

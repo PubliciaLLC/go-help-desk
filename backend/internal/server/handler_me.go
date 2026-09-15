@@ -61,7 +61,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/v1/me/mfa/enroll
+// POST /api/v1/me/mfa/enroll
 func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	// This route sits outside RequireMFA so a user compelled to enrol can
