@@ -175,3 +175,43 @@ func TestEmail_BodyCannotInjectAHeaderOrEndTheMessage(t *testing.T) {
 	require.Contains(t, bodyOnWire, "hello")
 	require.NotEmpty(t, bodyOnWire)
 }
+
+// The verification link must come from configuration, never from the request.
+//
+// This is the scenario in CodeQL's go/email-injection documentation: a
+// Host header the attacker controls is used to build a link, the mail goes out
+// from a server the victim trusts, and clicking it hands the reset token to the
+// attacker. CWE-640.
+//
+// It is not present — SendVerificationEmail takes a baseURL argument and
+// main.go passes cfg.BaseURL — but "not present" is one refactor away from
+// present. Someone making links work behind a proxy would reach for r.Host.
+func TestEmail_VerificationLinkComesFromConfigNotTheRequest(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+
+	require.NoError(t, d.SendVerificationEmail(
+		"user@example.com", "the-secret-token", "https://help.example.com"))
+
+	raw := <-received
+	// Quoted-printable may soft-wrap a long line with "=\r\n"; undo that before
+	// looking, or a split URL reads as absent when it is present.
+	unwrapped := strings.ReplaceAll(raw, "=\r\n", "")
+
+	require.Contains(t, unwrapped, "https://help.example.com/verify-email?token=3Dthe-secret-token",
+		"the link must be built from the configured base URL")
+	require.NotContains(t, unwrapped, "127.0.0.1",
+		"the link must not carry the host the request arrived on")
+}
+
+// The link must not be steerable by anything a caller can influence per
+// request: the same token, sent twice, must produce the same host.
+func TestEmail_VerificationLinkHostIsStable(t *testing.T) {
+	for _, base := range []string{"https://help.example.com", "https://help.example.com"} {
+		addr, received := captureSMTP(t)
+		d := dispatcherFor(t, addr)
+		require.NoError(t, d.SendVerificationEmail("user@example.com", "tok", base))
+		raw := strings.ReplaceAll(<-received, "=\r\n", "")
+		require.Contains(t, raw, "https://help.example.com/verify-email")
+	}
+}
