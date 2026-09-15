@@ -16,13 +16,16 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
-// CodeQL reports go/email-injection here: user text reaches an SMTP write.
-// Rather than argue about it, these drive the real send path against a real
-// SMTP listener and read what actually goes on the wire.
+// These drive the real send path against a real SMTP listener and read what
+// actually goes on the wire.
 //
-// The claim under test is narrow: an attacker controls the ticket subject and
-// the reply body, and must not be able to add a header, redirect the message,
-// or end it early.
+// The file started out arguing that CodeQL's go/email-injection finding was a
+// false positive. It was not — the finding was a regression of mine, and the
+// fix was to stop putting request text in the message at all. What the tests
+// assert now is that outcome: an attacker chooses the ticket subject, the
+// reply body and, on a guest ticket, the recipient address, and none of it
+// reaches the message — no added header, no redirect, no early end, and no
+// text delivered in a header of a message sent from this server's domain.
 
 // headerNames returns the lowercased name of every line that starts a header.
 // A continuation line (one beginning with whitespace) is part of the header
@@ -207,15 +210,23 @@ func TestEmail_VerificationLinkComesFromConfigNotTheRequest(t *testing.T) {
 		"the link must not carry the host the request arrived on")
 }
 
-// The link must not be steerable by anything a caller can influence per
-// request: the same token, sent twice, must produce the same host.
-func TestEmail_VerificationLinkHostIsStable(t *testing.T) {
-	for _, base := range []string{"https://help.example.com", "https://help.example.com"} {
-		addr, received := captureSMTP(t)
-		d := dispatcherFor(t, addr)
-		require.NoError(t, d.SendVerificationEmail("user@example.com", "tok", base))
-		raw := strings.ReplaceAll(<-received, "=\r\n", "")
-		require.Contains(t, raw, "https://help.example.com/verify-email")
+// The link host follows the configured base URL and nothing else.
+//
+// This looped over the same base URL twice, so it asserted nothing the test
+// above did not already assert. Two different base URLs is the check that has
+// a chance of failing: the link has to track the configuration, and a host
+// taken from somewhere else would show up as the wrong one in at least one of
+// the two runs.
+func TestEmail_VerificationLinkHostFollowsTheConfiguredBaseURL(t *testing.T) {
+	for _, base := range []string{"https://help.example.com", "https://support.example.org"} {
+		t.Run(base, func(t *testing.T) {
+			addr, received := captureSMTP(t)
+			d := dispatcherFor(t, addr)
+			require.NoError(t, d.SendVerificationEmail("user@example.com", "tok", base))
+			raw := strings.ReplaceAll(<-received, "=\r\n", "")
+			require.Contains(t, raw, base+"/verify-email")
+			require.NotContains(t, raw, "127.0.0.1")
+		})
 	}
 }
 
@@ -339,4 +350,28 @@ func TestEmail_PayloadAddressIsNotAFallbackRecipient(t *testing.T) {
 		t.Fatalf("a message was sent with no Recipient set:\n%s", raw)
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+// A display name is attacker text, and it is delivered.
+//
+// mail.ParseAddress accepts `"Pay now, call 555-0100" <victim@example.com>`,
+// and toAddr.String() puts the quoted part back. So the To header was the one
+// place request text still reached the wire after ticket content was taken out
+// of the subject and the body — same content spoofing, moved one header down,
+// and aimed at whatever address the person filing the ticket chose.
+//
+// send() now writes the bare address. The name of the person being emailed is
+// not worth a channel for arbitrary text.
+func TestEmail_RecipientDisplayNameDoesNotReachTheWire(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+
+	require.NoError(t, d.send(
+		`"URGENT: your account is suspended, call 555-0100" <victim@example.com>`,
+		"Subject", []byte("body")))
+
+	raw := strings.ReplaceAll(<-received, "=\r\n", "")
+	require.Contains(t, raw, "To: <victim@example.com>")
+	require.NotContains(t, raw, "555-0100", "the display name must not be delivered")
+	require.NotContains(t, raw, "suspended")
 }

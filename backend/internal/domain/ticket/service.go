@@ -151,6 +151,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	if in.ReporterUserID == nil && (in.GuestEmail == nil || *in.GuestEmail == "") {
 		return Ticket{}, fmt.Errorf("reporter user or guest email is required: %w", ErrValidation)
 	}
+	// A guest address is a stored recipient, so it goes through the same gate
+	// as an account's address. Nothing checked it before: any string was
+	// accepted, written to the row, and handed to the mailer — including one
+	// carrying a display name, which is chosen text delivered in a header of a
+	// message sent from this server's domain.
+	if in.GuestEmail != nil && *in.GuestEmail != "" {
+		normalised, err := user.ValidateEmail(*in.GuestEmail)
+		if err != nil {
+			return Ticket{}, fmt.Errorf("guest email: %s: %w", err, ErrValidation)
+		}
+		in.GuestEmail = &normalised
+	}
 	// Priority is optional; both callers were defaulting it to medium
 	// themselves, so the default lives here now rather than in two places.
 	// A value that is present but wrong is a different matter: unchecked it
@@ -551,8 +563,10 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 	//
 	// Recipient and TrackingNumber are the same two values again, carried
 	// separately from Payload because they are the only ones an email may use.
-	// reporterEmail is looked up from the ticket's own row by the caller and
-	// t is the locked row, so neither is request text.
+	// reporterEmail is looked up from the ticket's own row by the caller, and t
+	// is a row read from the store — under FOR UPDATE on the reopen path,
+	// plainly otherwise. Either way it is the record, not request text, which
+	// is the property that matters here.
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventTicketReplied,
 		TicketID:       t.ID,

@@ -11,7 +11,9 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // JSON writes v as JSON with the given status code.
@@ -73,6 +75,13 @@ func handleError(w http.ResponseWriter, err error) {
 	// administrator who cannot help.
 	if errors.Is(err, ticket.ErrReopenWindowClosed) {
 		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
+		return
+	}
+	// Bad input, not a fault. Without this a mistyped email address at signup,
+	// or on an admin's user edit, came back as 500 "an internal error
+	// occurred" and was logged as one.
+	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	if errors.Is(err, ticket.ErrForbidden) {

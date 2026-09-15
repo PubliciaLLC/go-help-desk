@@ -157,7 +157,11 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 
 	var msg bytes.Buffer
 	fmt.Fprintf(&msg, "From: %s\r\n", fromAddr.String())
-	fmt.Fprintf(&msg, "To: %s\r\n", toAddr.String())
+	// toAddr.Address, not toAddr.String(): ParseAddress accepts a display name
+	// and String() puts it back, so `"text" <victim@example.com>` would deliver
+	// whatever text the sender chose in a header of a message sent from this
+	// server's domain. The bare address is all a recipient needs.
+	fmt.Fprintf(&msg, "To: <%s>\r\n", toAddr.Address)
 	fmt.Fprintf(&msg, "Subject: %s\r\n", sanitizeHeader(subject))
 	msg.WriteString("MIME-Version: 1.0\r\n")
 	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")

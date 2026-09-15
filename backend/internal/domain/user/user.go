@@ -10,6 +10,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// ErrValidation marks a refusal caused by the caller's input rather than by
+// anything going wrong. Without it these came back as plain errors, which
+// handleError cannot tell from a database outage — so a mistyped email address
+// was answered with 500 "an internal error occurred" and logged as one.
+var ErrValidation = errors.New("invalid input")
+
 // Role names the three access tiers. Order matters: do not change values.
 type Role string
 
@@ -60,17 +66,17 @@ func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }
 func ValidateEmail(s string) (string, error) {
 	trimmed := strings.TrimSpace(s)
 	if trimmed == "" {
-		return "", errors.New("email is required")
+		return "", fmt.Errorf("%w: email is required", ErrValidation)
 	}
 	addr, err := mail.ParseAddress(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("invalid email address: %w", err)
+		return "", fmt.Errorf("%w: %q is not an email address", ErrValidation, trimmed)
 	}
 	if addr.Name != "" {
-		return "", errors.New("email address must not include a display name")
+		return "", fmt.Errorf("%w: email address must not include a display name", ErrValidation)
 	}
 	if addr.Address == "" {
-		return "", errors.New("invalid email address")
+		return "", fmt.Errorf("%w: invalid email address", ErrValidation)
 	}
 	return strings.ToLower(addr.Address), nil
 }
@@ -80,12 +86,12 @@ func (u User) Validate() error {
 		return err
 	}
 	if strings.TrimSpace(u.DisplayName) == "" {
-		return errors.New("display name is required")
+		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}
 	switch u.Role {
 	case RoleAdmin, RoleStaff, RoleUser:
 	default:
-		return errors.New("invalid role")
+		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	return nil
 }

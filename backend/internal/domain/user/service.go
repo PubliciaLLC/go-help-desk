@@ -103,7 +103,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 		UpdatedAt:   time.Now(),
 	}
 	if err := u.Validate(); err != nil {
-		return User{}, fmt.Errorf("invalid user: %w", err)
+		return User{}, err
 	}
 	switch {
 	case in.Password != "":
@@ -547,7 +547,7 @@ func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
 // Update persists changes to an existing user.
 func (s *Service) Update(ctx context.Context, u User) error {
 	if err := u.Validate(); err != nil {
-		return fmt.Errorf("invalid user: %w", err)
+		return err
 	}
 	u.UpdatedAt = time.Now()
 	return s.store.Update(ctx, u)

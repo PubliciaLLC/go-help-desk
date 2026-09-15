@@ -76,7 +76,7 @@ func TestCreate_ReadFailureAfterCommitSendsNoEmail(t *testing.T) {
 		"with no row to read, no address may be announced")
 }
 
-func TestAddReply_AnnouncesTheLockedRowsTrackingNumber(t *testing.T) {
+func TestAddReply_AnnouncesTheStoredTrackingNumber(t *testing.T) {
 	h := newHarness(t)
 	tk := h.seedOpen()
 	staff := uuid.New()
@@ -99,4 +99,45 @@ func TestAddReply_AnnouncesTheLockedRowsTrackingNumber(t *testing.T) {
 	require.NotNil(t, replied)
 	require.Equal(t, "STORED-2026-000002", replied.TrackingNumber)
 	require.Equal(t, "reporter@example.com", replied.Recipient)
+}
+
+// A guest address is a stored recipient, so it goes through the same gate as
+// an account's address. Nothing validated it before: any string at all was
+// accepted, written to the row, and handed to the mailer.
+func TestCreate_RefusesAGuestAddressThatIsNotOne(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		email string
+	}{
+		{"display name carries chosen text", `"Call 555-0100 now" <victim@example.com>`},
+		{"not an address at all", "not-an-address"},
+		{"header injection attempt", "victim@example.com\r\nBcc: attacker@evil.test"},
+		{"two addresses", "a@example.com, b@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			email := tc.email
+			_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+				Subject:    "Printer broken",
+				GuestEmail: &email,
+				GuestName:  "Ada",
+			})
+			require.ErrorIs(t, err, ticket.ErrValidation)
+			require.Empty(t, h.dispatcher.events, "a refused ticket announces nothing")
+		})
+	}
+}
+
+// And the address that is stored is the normalised one.
+func TestCreate_StoresTheNormalisedGuestAddress(t *testing.T) {
+	h := newHarness(t)
+	email := "  Ada@Example.COM  "
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject:    "Printer broken",
+		GuestEmail: &email,
+		GuestName:  "Ada",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, tk.GuestEmail)
+	require.Equal(t, "ada@example.com", *tk.GuestEmail)
 }

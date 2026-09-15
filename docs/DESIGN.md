@@ -424,15 +424,25 @@ denied, and must be re-issued.
 
 ## Notifications (v1)
 
-- **Email** — ticket creation and replies
+- **Email** — a reply on a ticket, and the acknowledgement for a ticket filed
+  with a guest address. A reporter with an account gets the reply notification;
+  the acknowledgement goes to the guest address only.
 - Email is a notification, not a copy of the ticket. A message says what
   happened, names the ticket by its tracking number, and links to it. It does
-  not carry the ticket subject or the reply text.
+  not carry the ticket subject or the reply text, and the recipient's own
+  address is written bare, with no display name.
 
   This is deliberate. Mail leaving the help desk is sent from the operator's
   domain, so anything in it is said with the operator's reputation behind it,
   and anyone who can file a ticket chooses that text. Recipients read the
   content in the application, where the existing access rules apply to it.
+
+  **Known gap:** a ticket filed with a guest address has no signed-in reader,
+  and there is no guest ticket view, so a guest recipient can no longer read
+  the reply text at all. Guest submission is not reachable in v1 — the ticket
+  API requires a session — so this affects only a ticket an agent files on
+  someone's behalf with a guest address. A tokenised guest view is the fix and
+  is not in v1.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
