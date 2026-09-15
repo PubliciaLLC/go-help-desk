@@ -316,6 +316,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Use(chimw.RequestID)
 	r.Use(chimw.Recoverer)
 	r.Use(requestLogger)
+	r.Use(securityHeaders)
 
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
@@ -340,7 +341,9 @@ func (s *Server) buildRouter() *chi.Mux {
 		// these. Small in isolation, but a half-authenticated session should
 		// reach nothing but the challenge it still owes.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
-			With(authmw.RequireResource(auth.ResourceTickets)).Get("/tags", s.handleListActiveTags)
+			With(authmw.RequireResource(auth.ResourceTickets),
+				authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+			Get("/tags", s.handleListActiveTags)
 		// Public category/type/item listing (active only, no admin required).
 		r.Get("/categories", s.handleListPublicCategories)
 		r.Get("/categories/{id}/types", s.handleListPublicTypes)

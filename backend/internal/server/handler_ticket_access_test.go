@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -225,4 +226,52 @@ func TestTicketSubtree_RefusesStaffOutsideTheirScope(t *testing.T) {
 				"staff outside scope must be refused here too")
 		})
 	}
+}
+
+// Tags are how staff mark a ticket for other staff — "fraud-suspect",
+// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and says
+// nothing about them in the User row.
+//
+// Ungated, the reporting user saw the classification written about them on
+// their own ticket, could delete it, and could add tags of their own to the
+// global catalogue.
+func TestTags_AreStaffOnly(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "my ticket", "description": "x", "category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	base := "/api/v1/tickets/" + created.ID + "/tags"
+
+	// Staff classify the ticket.
+	resp = h.do(t, http.MethodPost, base, map[string]any{"name": "fraud-suspect"})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	t.Run("the reporter cannot read the classification", func(t *testing.T) {
+		resp := h.doAsUser(t, http.MethodGet, base, nil)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("the reporter cannot add a tag", func(t *testing.T) {
+		resp := h.doAsUser(t, http.MethodPost, base, map[string]any{"name": "user-invented"})
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("the reporter cannot read the global catalogue", func(t *testing.T) {
+		resp := h.doAsUser(t, http.MethodGet, "/api/v1/tags", nil)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("staff still can", func(t *testing.T) {
+		resp := h.do(t, http.MethodGet, base, nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		resp = h.do(t, http.MethodGet, "/api/v1/tags", nil)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+	})
 }

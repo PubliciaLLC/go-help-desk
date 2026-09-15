@@ -77,9 +77,17 @@ func (s *Server) ticketRouter() *chi.Mux {
 
 		r.Get("/history", s.handleListStatusHistory)
 
-		r.Get("/tags", s.handleListTicketTags)
-		r.Post("/tags", s.handleAddTicketTag)
-		r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
+		// Tags are how staff mark a ticket for other staff — "fraud-suspect",
+		// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and
+		// says nothing about them in the User row. Ungated, the reporting user
+		// saw the classification written about them, could delete it, and could
+		// add tags of their own to the global list.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/tags", s.handleListTicketTags)
+			r.Post("/tags", s.handleAddTicketTag)
+			r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
+		})
 
 		// Canned responses are for staff/admin composing replies, not the
 		// reporting user.
