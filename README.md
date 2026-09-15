@@ -47,7 +47,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
-- Guest ticket submission (optional) — name, email, and optional phone captured; tracking number returned
+- Guest ticket submission — *coming soon* (#154). The form and the settings toggle exist, but the ticket API requires a session, so no guest ticket can be filed yet.
 - File attachments (PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP; 25 MB max; images auto-recompressed; optional ClamAV virus scanning)
 
 ## Quick start
@@ -63,7 +63,7 @@ Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`,
 
 ## Configuration
 
-Environment variables control infrastructure; feature flags (SAML, MFA, SLA, guest submission) and branding are managed through the **Admin → Settings** UI and stored in the database.
+Environment variables control infrastructure; feature flags (SAML, MFA, SLA) and branding are managed through the **Admin → Settings** UI and stored in the database. There is a guest-submission toggle too, but it does nothing yet — see #154.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -85,9 +85,10 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA, SLA and guest-submission are toggled in the Admin UI. The
-> matching environment variables still exist and set the value the instance
-> starts with; the Admin UI setting takes precedence once it has been saved.
+> **Note:** SAML, MFA and SLA are toggled in the Admin UI. The matching
+> environment variables still exist and set the value the instance starts with;
+> the Admin UI setting takes precedence once it has been saved. The
+> guest-submission toggle is present but inert until #154 lands.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
@@ -105,7 +106,115 @@ by an earlier version cannot be validated. Session lifetime is also now 7 days
 rather than 30.
 
 Changing SAML, OIDC, MFA or signup settings now requires a signed-in
-administrator; an API key cannot, whatever scopes it holds.
+administrator; an API key cannot, whatever scopes it holds. The refusal is
+`403 session_required`. Each of those settings is a route to a session:
+repoint the identity provider, or switch on open registration, and an attacker
+signs in as somebody.
+
+**Notification email no longer contains ticket content.** This is the change
+your users will notice. A reply notification used to carry the reply text and
+the ticket subject. It now says what happened, names the ticket by its tracking
+number, and links to it:
+
+```
+Subject: There is a new reply on [GHD-2026-000001]
+
+There is a new reply on your ticket.
+
+Ticket: GHD-2026-000001
+
+Read it here:
+https://help.example.com/tickets/…
+```
+
+Mail leaving the help desk is sent from the operator's domain, so anything in
+it is said with the operator's reputation behind it — and anyone who can file a
+ticket chooses that text. A ticket subject of "Your account is suspended, call
+555-0100" was previously delivered verbatim, from you, to an address the sender
+picked. The content stays in the application now, behind the access rules that
+already govern it. The recipient's own address is written bare, with no display
+name, for the same reason.
+
+> **Guest tickets.** A guest recipient would have nowhere to read the reply,
+> since the link leads to the sign-in page. Nothing is affected today, because
+> guest submission does not work yet — see #154, which covers both the
+> submission path and the tokenised view a guest needs to read the thread.
+
+**Guest email addresses are validated too.** Nothing checked them before either.
+A guest address that is not a single bare address is now refused with `400`, and
+the stored value is normalised. No ticket meets this rule today — guest
+submission has never been reachable, so no guest address has ever been stored
+through it — but it is the rule it will meet.
+
+**Email addresses are validated, and a bad one answers 400.** Nothing validated
+them before 1.2.0 — `mail.ParseAddress` lived only in the mail sender, and
+`User.Validate` checked that the address was non-empty and nothing else. So an
+administrator could create or edit a user with an address no mailer could ever
+deliver to, and it became a real account and a login identity. Self-signup
+behaved differently and no better: the address was written to
+`pending_registrations`, then the mailer refused it and the caller got a `500`
+— or, with SMTP not configured, a `202` and a pending row nobody could ever
+verify.
+
+Three endpoints now answer `400` with the code `bad_request` where they used to
+accept the value: `POST /api/v1/auth/signup` (previously `202`),
+`POST /api/v1/admin/users` (previously `201`) and
+`PATCH /api/v1/admin/users/{id}` (previously `200`). The last one also refuses
+an edit to an account whose *stored* address does not pass — an account created
+before 1.2.0 may hold one. Send a corrected `email` in the same request. Only
+`display_name`, `email` and `role` go through that check: disabling an account
+and resetting its MFA still work regardless, so a bad stored address never
+stops you locking someone out.
+
+**New tickets get a different tracking-number prefix.** Up to 1.1.1 the prefix
+was hardcoded `OHD`; from 1.2.0 it is a setting that defaults to `GHD`. Existing
+tickets keep the numbers they have — nothing is rewritten — so an instance that
+upgrades ends up with `OHD-2026-000123` and `GHD-2026-000124` side by side. Set
+**Admin → Settings → Tracking number prefix** back to `OHD` before opening new tickets if
+you would rather keep one series. A prefix is 1–8 upper-case letters or digits.
+
+**A Content-Security-Policy is now sent on every response.** In full:
+
+```
+default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+img-src 'self' data:; font-src 'self'; connect-src 'self';
+frame-ancestors 'none'; base-uri 'none'; form-action 'self'
+```
+
+So: an asset loaded from another host stops loading — a logo set to an external
+URL is the likely one — the app can no longer be embedded in an iframe, and a
+form cannot post anywhere but back to the instance. Self-hosted assets are
+unaffected. An uploaded logo is served under a stricter policy of its own.
+
+**Webhook targets on private addresses are refused.** Loopback, RFC1918,
+link-local, unique-local, multicast and the unspecified address, plus
+carrier-grade NAT (`100.64.0.0/10`), IETF protocol assignments
+(`192.0.0.0/24`), benchmarking (`198.18.0.0/15`), reserved space
+(`240.0.0.0/4`) and NAT64 (`64:ff9b::/96`). IPv4-mapped IPv6 forms are
+unwrapped first, so they cannot be used to slip past. Saving a new webhook on one of those is refused with a
+visible error; delivery checks again at the moment it dials, so a hostname that
+resolves to a private address, a redirect to one, and DNS rebinding are all
+caught as well.
+
+The quiet part is your *existing* hooks. One pointing at something on your own
+network — an internal n8n, a Mattermost on the same LAN — stops being delivered
+on upgrade, and the failure is swallowed: nothing in the UI, no delivery record.
+Check your webhook targets before upgrading. Move them to an address the server
+reaches over the public network, or put a proxy in front. SAML metadata and OIDC
+discovery are deliberately *not* address-guarded, since a self-hosted identity
+provider on a private network is normal.
+
+**Ticket tags are staff-only.** Listing, adding and removing tags on a ticket
+now require Staff or Admin. A reporting user could previously read the
+classification staff had written about their own ticket, delete it, and add
+tags of their own to the global list.
+
+**A wrong TOTP code now counts.** Five failures lock the account for 15
+minutes. The count lives on the user row rather than in memory, so it survives
+a restart and is not multiplied by the replica count.
+
+The website carries the same notes at
+<https://gohelpdesk.org/docs/upgrading-1.2.0>.
 
 ## API
 
