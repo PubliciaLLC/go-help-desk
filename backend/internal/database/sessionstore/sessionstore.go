@@ -18,6 +18,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/securecookie"
@@ -75,7 +76,7 @@ func New(q *dbgen.Queries, hashKey, blockKey []byte, opts *sessions.Options) *St
 // taken from the session. Everything that decides where the cookie goes and how
 // it is protected comes from the configuration.
 func (s *Store) cookie(name, value string, maxAge int) *http.Cookie {
-	return &http.Cookie{
+	c := &http.Cookie{
 		Name:     name,
 		Value:    value,
 		Path:     s.options.Path,
@@ -85,6 +86,20 @@ func (s *Store) cookie(name, value string, maxAge int) *http.Cookie {
 		HttpOnly: s.options.HttpOnly,
 		SameSite: s.options.SameSite,
 	}
+	// Expires as well as Max-Age, which is what sessions.NewCookie did and what
+	// this replaced. Every current browser prefers Max-Age and would be fine
+	// without it, but dropping an attribute that was going out yesterday is a
+	// change nobody asked for, and a cookie with no expiry at all is a session
+	// cookie — a different thing from one that lasts seven days.
+	switch {
+	case maxAge > 0:
+		c.Expires = time.Now().Add(time.Duration(maxAge) * time.Second)
+	case maxAge < 0:
+		// Any time in the past deletes it. Matching gorilla's choice exactly so
+		// the wire form is unchanged.
+		c.Expires = time.Unix(1, 0)
+	}
+	return c
 }
 
 // Get returns the session for the request, from gorilla's per-request cache
