@@ -18,6 +18,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/securecookie"
@@ -50,11 +51,55 @@ type Store struct {
 // request into a probe of the sessions table. Signing means only ids this
 // server issued are ever looked up.
 func New(q *dbgen.Queries, hashKey, blockKey []byte, opts *sessions.Options) *Store {
+	if opts == nil {
+		opts = &sessions.Options{Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode}
+	}
 	return &Store{
 		q:       q,
 		codecs:  securecookie.CodecsFromPairs(hashKey, blockKey),
 		options: opts,
 	}
+}
+
+// cookie builds the session cookie from the store's configured options.
+//
+// Deliberately not from session.Options. A caller can replace that wholesale,
+// and one does: handleLogout sets it to &sessions.Options{MaxAge: -1}, which
+// drops Path, HttpOnly, SameSite and Secure along with everything else. The
+// deletion cookie was then written with an empty Path, so the browser scoped it
+// to the request's own directory — /api/v1/auth/local — and a cookie set at "/"
+// is not deleted by a Set-Cookie at a different path. Logging out cleared the
+// session row but left the cookie in the browser for the rest of its seven
+// days.
+//
+// MaxAge is the one attribute a caller legitimately varies, so it is the one
+// taken from the session. Everything that decides where the cookie goes and how
+// it is protected comes from the configuration.
+func (s *Store) cookie(name, value string, maxAge int) *http.Cookie {
+	c := &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     s.options.Path,
+		Domain:   s.options.Domain,
+		MaxAge:   maxAge,
+		Secure:   s.options.Secure,
+		HttpOnly: s.options.HttpOnly,
+		SameSite: s.options.SameSite,
+	}
+	// Expires as well as Max-Age, which is what sessions.NewCookie did and what
+	// this replaced. Every current browser prefers Max-Age and would be fine
+	// without it, but dropping an attribute that was going out yesterday is a
+	// change nobody asked for, and a cookie with no expiry at all is a session
+	// cookie — a different thing from one that lasts seven days.
+	switch {
+	case maxAge > 0:
+		c.Expires = time.Now().Add(time.Duration(maxAge) * time.Second)
+	case maxAge < 0:
+		// Any time in the past deletes it. Matching gorilla's choice exactly so
+		// the wire form is unchanged.
+		c.Expires = time.Unix(1, 0)
+	}
+	return c
 }
 
 // Get returns the session for the request, from gorilla's per-request cache
@@ -118,7 +163,7 @@ func (s *Store) Save(r *http.Request, w http.ResponseWriter, session *sessions.S
 				return fmt.Errorf("deleting session: %w", err)
 			}
 		}
-		http.SetCookie(w, sessions.NewCookie(session.Name(), "", session.Options))
+		http.SetCookie(w, s.cookie(session.Name(), "", -1))
 		return nil
 	}
 
@@ -159,7 +204,7 @@ func (s *Store) Save(r *http.Request, w http.ResponseWriter, session *sessions.S
 	if err != nil {
 		return fmt.Errorf("encoding session cookie: %w", err)
 	}
-	http.SetCookie(w, sessions.NewCookie(session.Name(), encoded, session.Options))
+	http.SetCookie(w, s.cookie(session.Name(), encoded, maxAge))
 	return nil
 }
 
