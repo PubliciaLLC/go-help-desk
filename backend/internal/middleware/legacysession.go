@@ -20,7 +20,12 @@ import (
 //
 // Remove once instances have had a release cycle to upgrade: 30 days after the
 // rename release, no live browser can still hold one.
-func ExpireLegacySession(next http.Handler) http.Handler {
+// secure must match how the instance is served: a browser on plain HTTP drops
+// a Set-Cookie carrying Secure, so setting it unconditionally would stop the
+// deletion arriving on exactly the deployments that still have the old cookie.
+// It comes from the same auth.SecureCookies(cfg.BaseURL) that decides it for
+// the live session cookie, so the two cannot drift apart.
+func ExpireLegacySession(secure bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := r.Cookie(auth.LegacySessionName); err == nil {
 			http.SetCookie(w, &http.Cookie{
@@ -28,6 +33,7 @@ func ExpireLegacySession(next http.Handler) http.Handler {
 				Value:    "",
 				Path:     "/",
 				MaxAge:   -1,
+				Secure:   secure,
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
 			})

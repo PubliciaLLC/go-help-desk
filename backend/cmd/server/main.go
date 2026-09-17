@@ -289,7 +289,7 @@ func run() error {
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),
 		// Wraps everything, including the SPA: the orphaned pre-rename cookie
 		// should be cleared on whatever request the browser makes first.
-		Handler:      authmw.ExpireLegacySession(mux),
+		Handler:      authmw.ExpireLegacySession(auth.SecureCookies(cfg.BaseURL), mux),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,

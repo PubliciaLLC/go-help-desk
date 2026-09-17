@@ -24,7 +24,7 @@ func TestExpireLegacySession(t *testing.T) {
 		req.AddCookie(&http.Cookie{Name: auth.LegacySessionName, Value: "stale-payload"})
 		rec := httptest.NewRecorder()
 
-		authmw.ExpireLegacySession(next).ServeHTTP(rec, req)
+		authmw.ExpireLegacySession(true, next).ServeHTTP(rec, req)
 
 		require.True(t, reached, "the request must still be served")
 
@@ -37,6 +37,25 @@ func TestExpireLegacySession(t *testing.T) {
 		require.NotNil(t, cleared, "the legacy cookie must be expired")
 		require.Equal(t, "", cleared.Value)
 		require.Less(t, cleared.MaxAge, 0, "a negative MaxAge is what deletes it")
+		require.True(t, cleared.Secure, "the deletion must carry Secure on an HTTPS instance")
+		require.True(t, cleared.HttpOnly)
+		require.Equal(t, "/", cleared.Path,
+			"a cookie set at / is only deleted by a Set-Cookie at /")
+	})
+
+	// A browser on plain HTTP discards a Set-Cookie carrying Secure, so an
+	// unconditional Secure would stop the deletion reaching the deployments most
+	// likely to still hold the old cookie.
+	t.Run("omits Secure when the instance is not served over HTTPS", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.AddCookie(&http.Cookie{Name: auth.LegacySessionName, Value: "stale-payload"})
+		rec := httptest.NewRecorder()
+
+		authmw.ExpireLegacySession(false, next).ServeHTTP(rec, req)
+
+		cookies := rec.Result().Cookies()
+		require.Len(t, cookies, 1)
+		require.False(t, cookies[0].Secure)
 	})
 
 	t.Run("does not touch the current cookie", func(t *testing.T) {
@@ -45,7 +64,7 @@ func TestExpireLegacySession(t *testing.T) {
 		req.AddCookie(&http.Cookie{Name: auth.SessionName, Value: "live-session"})
 		rec := httptest.NewRecorder()
 
-		authmw.ExpireLegacySession(next).ServeHTTP(rec, req)
+		authmw.ExpireLegacySession(true, next).ServeHTTP(rec, req)
 
 		require.True(t, reached)
 		for _, c := range rec.Result().Cookies() {
@@ -59,7 +78,7 @@ func TestExpireLegacySession(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		rec := httptest.NewRecorder()
 
-		authmw.ExpireLegacySession(next).ServeHTTP(rec, req)
+		authmw.ExpireLegacySession(true, next).ServeHTTP(rec, req)
 
 		require.True(t, reached)
 		require.Empty(t, rec.Result().Cookies(),

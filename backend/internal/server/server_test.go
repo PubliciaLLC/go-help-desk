@@ -395,6 +395,17 @@ func (h *harness) doUnauthWithHeaders(t *testing.T, method, path string, body an
 	return rr.Result()
 }
 
+// doUnauthWithCookie sends a request carrying one cookie and no other
+// credential, which is how a browser actually reaches a session-only route.
+func (h *harness) doUnauthWithCookie(t *testing.T, method, path string, c *http.Cookie) *http.Response {
+	t.Helper()
+	req := httptest.NewRequest(method, path, nil)
+	req.AddCookie(c)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	return rr.Result()
+}
+
 func (h *harness) doUnauth(t *testing.T, method, path string, body any) *http.Response {
 	t.Helper()
 	var buf bytes.Buffer
