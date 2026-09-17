@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -38,6 +39,8 @@ func TestExpireLegacySession(t *testing.T) {
 		require.Equal(t, "", cleared.Value)
 		require.Less(t, cleared.MaxAge, 0, "a negative MaxAge is what deletes it")
 		require.True(t, cleared.Secure, "the deletion must carry Secure on an HTTPS instance")
+		require.False(t, cleared.Expires.IsZero(), "the deletion must carry an expiry too")
+		require.True(t, cleared.Expires.Before(time.Now()), "and it must be in the past")
 		require.True(t, cleared.HttpOnly)
 		require.Equal(t, "/", cleared.Path,
 			"a cookie set at / is only deleted by a Set-Cookie at /")

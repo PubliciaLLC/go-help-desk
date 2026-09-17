@@ -90,7 +90,12 @@ func TestCookie_DeletionMatchesTheCookieItDeletes(t *testing.T) {
 	cleared := del.Result().Cookies()[0]
 	require.Equal(t, "", cleared.Value)
 	require.Less(t, cleared.MaxAge, 0)
-	require.True(t, cleared.Expires.Before(time.Now()), "the expiry must be in the past")
+	// Not merely Before(now): the zero time.Time is also before now, so that
+	// alone passes when no Expires is set at all — which is what a mutant
+	// dropping the delete branch does.
+	require.False(t, cleared.Expires.IsZero(), "the deletion must carry an expiry")
+	require.WithinDuration(t, time.Unix(1, 0), cleared.Expires, time.Second,
+		"deleting means an expiry in the past, matching the form gorilla used")
 
 	require.Equal(t, set.Path, cleared.Path, "a deletion at another path deletes nothing")
 	require.Equal(t, set.Domain, cleared.Domain)
