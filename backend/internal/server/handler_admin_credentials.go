@@ -278,6 +278,16 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.URL != nil {
+		// Checked here for the same reason as on create, and it was missing:
+		// an existing hook could be repointed at a private address and accepted
+		// with 200. The guarded dialer still refused it at delivery, so nothing
+		// was ever fetched — but the hook was then stored, shown as enabled,
+		// and silently never delivered, which is indistinguishable from a
+		// working one because delivery failures are not recorded anywhere.
+		if err := safehttp.ValidateURL(*body.URL); err != nil {
+			Error(w, http.StatusBadRequest, "invalid_url", err.Error())
+			return
+		}
 		existing.URL = *body.URL
 	}
 	if body.Events != nil {
