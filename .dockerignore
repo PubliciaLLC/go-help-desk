@@ -21,6 +21,7 @@ backend/internal/ui/dist
 
 # Local tooling, worktrees and drafts. .claude alone is ~200 MB here.
 .claude
+.claire
 .security
 .remember
 .vscode
@@ -31,6 +32,7 @@ backend/internal/ui/dist
 docker
 docs
 
-# Test output.
-coverage.out
-*.test
+# Test output. Globbed, because these land in backend/ — a pattern without a
+# slash matches at the root only, which is the same reason *.md is not here.
+**/coverage.out
+**/*.test
