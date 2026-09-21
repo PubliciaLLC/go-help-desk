@@ -28,25 +28,46 @@ const GuestTokenTTL = 30 * 24 * time.Hour
 // token that it had once been real.
 var ErrGuestTokenNotFound = errors.New("guest token not found")
 
-// IssueGuestToken mints a token for a ticket and returns the raw value, which
-// is the only time it exists outside an email.
+// rotateGuestToken issues a replacement link for a ticket and returns the raw
+// token, which is the only moment it exists outside an email.
 //
-// Any token the ticket already held is deleted first, so issuing is also
-// rotating. There is deliberately no grace period: overlapping tokens would
-// leave a leaked link working after the rotation meant to kill it, which is
-// most of the reason to rotate.
-func (s *Service) IssueGuestToken(ctx context.Context, ticketID uuid.UUID) (string, error) {
+// Takes a Store rather than hanging off Service so a caller can pass the
+// transactional store from InTx: a rotation has to commit with the change that
+// caused it, or a status change that rolls back leaves the customer holding a
+// dead link.
+//
+// Returns "" for a ticket with no guest address. Account holders sign in; there
+// is nobody to send a link to, and minting one would be a credential issued for
+// no reason.
+//
+// Any token the ticket already held is deleted first, so issuing is rotating.
+// There is deliberately no grace period: overlapping tokens would leave a
+// leaked link working past the rotation meant to kill it, which is most of the
+// reason to rotate.
+func rotateGuestToken(ctx context.Context, st Store, t Ticket) (string, error) {
+	if t.GuestEmail == nil || *t.GuestEmail == "" {
+		return "", nil
+	}
 	raw, hashed, err := auth.GenerateToken()
 	if err != nil {
 		return "", fmt.Errorf("generating guest token: %w", err)
 	}
-	if err := s.store.DeleteGuestTokensForTicket(ctx, ticketID); err != nil {
+	if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
 		return "", fmt.Errorf("clearing previous guest tokens: %w", err)
 	}
-	if err := s.store.CreateGuestToken(ctx, uuid.New(), ticketID, hashed, time.Now().Add(GuestTokenTTL)); err != nil {
+	if err := st.CreateGuestToken(ctx, uuid.New(), t.ID, hashed, time.Now().Add(GuestTokenTTL)); err != nil {
 		return "", fmt.Errorf("storing guest token: %w", err)
 	}
 	return raw, nil
+}
+
+// IssueGuestToken rotates outside a transaction, for the re-request flow.
+func (s *Service) IssueGuestToken(ctx context.Context, ticketID uuid.UUID) (string, error) {
+	t, err := s.store.GetByID(ctx, ticketID)
+	if err != nil {
+		return "", err
+	}
+	return rotateGuestToken(ctx, s.store, t)
 }
 
 // RevokeGuestTokens removes a ticket's access without issuing a replacement.
@@ -85,4 +106,18 @@ func (s *Service) TicketForGuestToken(ctx context.Context, raw string) (Ticket, 
 // whether a tracking number or an address exists.
 func (s *Service) GuestTicketIDFor(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error) {
 	return s.store.TicketIDByTrackingAndGuestEmail(ctx, tn, email)
+}
+
+// guestRecipient is the address a lifecycle notification goes to, or "" when
+// the ticket belongs to an account holder.
+//
+// Only guests are notified of a status change, a resolution or a reopen. An
+// account holder signs in and sees it; mailing them every transition would be
+// a new stream of email nobody asked for, and the link it carried would be one
+// they do not need.
+func guestRecipient(t Ticket) string {
+	if t.GuestEmail == nil {
+		return ""
+	}
+	return *t.GuestEmail
 }

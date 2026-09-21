@@ -182,6 +182,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	}
 
 	now := time.Now()
+	var guestToken string
 	t := Ticket{
 		ID:             uuid.New(),
 		TrackingNumber: GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
@@ -211,6 +212,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		}
 		if err := au.Create(ctx, auditEntry(in.ReporterUserID, "ticket", t.ID, "created", nil, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing ticket creation: %w", err)
+		}
+		// A guest's first link, minted with the ticket so a rollback takes the
+		// credential with it. Returns "" for a ticket with a reporter account.
+		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
+			return err
 		}
 		return nil
 	}); err != nil {
@@ -268,6 +274,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		OccurredAt:     now,
 		TrackingNumber: emailTracking,
 		Recipient:      emailRecipient,
+		GuestToken:     guestToken,
 	})
 
 	return t, nil
@@ -322,6 +329,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	var t Ticket
 	var before map[string]any
 	var oldStatusID uuid.UUID
+	var guestToken string
 	now := time.Now()
 
 	// resolved_at and closed_at are maintained here as well as in
@@ -359,6 +367,17 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "status_changed", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing status change: %w", err)
 		}
+		// A status change is something the guest is told about, so it rotates
+		// the link and the notification carries the replacement. Closing is
+		// the exception: it revokes instead, since there is nothing left to
+		// come back to.
+		if newStatusID == s.sys.closedID {
+			if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
+				return fmt.Errorf("revoking guest access: %w", err)
+			}
+		} else if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return Ticket{}, err
@@ -378,11 +397,14 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketStatusChanged,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		Payload:    map[string]any{"new_status_id": newStatusID},
-		OccurredAt: time.Now(),
+		Type:           notification.EventTicketStatusChanged,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		Payload:        map[string]any{"new_status_id": newStatusID},
+		OccurredAt:     time.Now(),
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestToken:     guestToken,
 	})
 
 	return t, nil
@@ -552,6 +574,19 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 
 	// Record first staff response for SLA. Deliberately best-effort: the reply
 	// is already persisted and this is a metric, not the user's intent, so an
+	// A public reply rotates the guest's link and the notification carries the
+	// replacement. An internal note does not: the guest is never told about
+	// one, so rotating would lock them out — and the email announcing a new
+	// link would itself disclose that staff had written something privately
+	// about their ticket, which is the leak 1.2.0 kept out of the webhook
+	// payload.
+	var guestToken string
+	if !internal && t.GuestEmail != nil && *t.GuestEmail != "" {
+		if guestToken, err = s.IssueGuestToken(ctx, t.ID); err != nil {
+			return Reply{}, err
+		}
+	}
+
 	// SLA outage must not fail a reply that succeeded. Unlike the reopen above,
 	// nothing is announced on the strength of this write.
 	if s.sla != nil && actor.Role != user.RoleUser {
@@ -573,6 +608,7 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 		ActorID:        actor.UserID,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      reporterEmail,
+		GuestToken:     guestToken,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address
@@ -610,6 +646,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	var t Ticket
 	var before map[string]any
 	var oldStatusID uuid.UUID
+	var guestToken string
 	now := time.Now()
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		var err error
@@ -638,6 +675,11 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing resolution: %w", err)
 		}
+		// Rotate: the guest is told, and the link they are told with is the
+		// one they need to reopen inside the window.
+		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return Ticket{}, err
@@ -654,10 +696,13 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketResolved,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		OccurredAt: now,
+		Type:           notification.EventTicketResolved,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     now,
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestToken:     guestToken,
 	})
 
 	return t, nil
@@ -715,6 +760,13 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "closed", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing close: %w", err)
 		}
+		// Revoke rather than rotate. A closed ticket accepts nothing, so a
+		// link to it would grant a read of a thread that can no longer move —
+		// and leaving credentials alive after the thing they reach is finished
+		// is how a link ends up working two years later.
+		if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
+			return fmt.Errorf("revoking guest access: %w", err)
+		}
 		return nil
 	}); err != nil {
 		return err
@@ -756,6 +808,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 
 	now := time.Now()
 	var oldStatusID uuid.UUID
+	var guestToken string
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		// Re-read under the lock. The check above answered the precondition on
@@ -784,16 +837,24 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing reopen: %w", err)
 		}
+		// A reopen issues a fresh link: closing revoked the old one, and a
+		// customer who reopens needs a way back to the thread they reopened.
+		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
+			return err
+		}
 		return nil
 	}); err != nil {
 		return Ticket{}, err
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketReopened,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		OccurredAt: time.Now(),
+		Type:           notification.EventTicketReopened,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     time.Now(),
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestToken:     guestToken,
 	})
 	return t, nil
 }

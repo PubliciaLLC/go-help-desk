@@ -43,6 +43,12 @@ type Event struct {
 	// so a webhook subscriber does not gain a customer's address.
 	TrackingNumber string `json:"-"`
 	Recipient      string `json:"-"`
+
+	// GuestToken is the raw access token minted for this change, when the
+	// recipient is a guest. It is the guest's whole credential, so it is
+	// excluded from JSON like the two above — a webhook subscriber receiving
+	// one would hold the customer's access to their own ticket.
+	GuestToken string `json:"-"`
 }
 
 // Dispatcher delivers events to whatever sinks are registered.
