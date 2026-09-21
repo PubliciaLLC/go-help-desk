@@ -128,10 +128,13 @@ type Ticket struct {
 // NotifyCustomer controls whether a ticket-update email is sent to the reporter;
 // it is always false for internal notes.
 type Reply struct {
-	ID             uuid.UUID  `json:"id"`
-	TicketID       uuid.UUID  `json:"ticket_id"`
+	ID       uuid.UUID `json:"id"`
+	TicketID uuid.UUID `json:"ticket_id"`
+	// AuthorID is NULL for a reply written by a guest, who has no account.
+	// That is the only way it is NULL — every other path passes the acting
+	// user — so a reply with no author on a ticket with a guest address came
+	// from the customer. TestReply_OnlyGuestsWriteAnAuthorlessReply pins it.
 	AuthorID       *uuid.UUID `json:"author_id,omitempty"`
-	GuestToken     *string    `json:"-"`
 	Body           string     `json:"body"`
 	Internal       bool       `json:"internal"`
 	NotifyCustomer bool       `json:"notify_customer"`
@@ -235,6 +238,27 @@ func CanUserUpdate(t Ticket, u user.User, status Status, reopenWindowDays int) e
 		return ErrForbidden
 	}
 
+	return lifecycleAllowsReply(t, status, reopenWindowDays)
+}
+
+// CanGuestUpdate is CanUserUpdate without the ownership comparison.
+//
+// A guest holds a token that names one ticket, so ownership was decided before
+// this is reached — there is nothing here to compare, since a guest ticket has
+// no reporter user. Every lifecycle rule still applies: a closed ticket is
+// closed to the customer who opened it too, and the reopen window does not
+// widen because the reply arrived by link rather than by login.
+//
+// Separate from CanUserUpdate rather than a flag on Actor because skipping an
+// ownership check is not something a caller should be able to ask for by
+// setting a struct field. One function, one call site.
+func CanGuestUpdate(t Ticket, status Status, reopenWindowDays int) error {
+	return lifecycleAllowsReply(t, status, reopenWindowDays)
+}
+
+// lifecycleAllowsReply holds the rules that do not depend on who is asking:
+// whether the ticket's own state accepts another reply at all.
+func lifecycleAllowsReply(t Ticket, status Status, reopenWindowDays int) error {
 	if status.Name == StatusNameClosed {
 		return ErrClosed
 	}

@@ -40,9 +40,12 @@ type Querier interface {
 	// ── Field definitions ─────────────────────────────────────────────────────────
 	CreateCustomFieldDef(ctx context.Context, arg CreateCustomFieldDefParams) (CustomFieldDef, error)
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
+	CreateGuestAccessToken(ctx context.Context, arg CreateGuestAccessTokenParams) error
 	CreateItem(ctx context.Context, arg CreateItemParams) error
 	CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
+	// author_id is NULL for a reply written by a guest, who has no account. That is
+	// the only way it is NULL: every other path passes the acting user.
 	CreateReply(ctx context.Context, arg CreateReplyParams) error
 	CreateSLAPolicy(ctx context.Context, arg CreateSLAPolicyParams) error
 	CreateSLARecord(ctx context.Context, arg CreateSLARecordParams) error
@@ -60,8 +63,13 @@ type Querier interface {
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
+	DeleteExpiredGuestAccessTokens(ctx context.Context) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) error
+	// Rotation and revocation are the same operation: remove what the ticket has.
+	// Rotation then inserts a replacement in the same transaction; revocation
+	// does not.
+	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	DeleteItem(ctx context.Context, id uuid.UUID) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
@@ -122,6 +130,21 @@ type Querier interface {
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
 	GetStatusByName(ctx context.Context, name string) (Status, error)
 	GetTagByName(ctx context.Context, name string) (Tag, error)
+	// Resolves a raw token's hash to the ticket it names, in one round trip.
+	//
+	// Expiry is decided here rather than in Go so that an expired token behaves
+	// exactly like a missing one — the row simply does not load, and there is no
+	// branch in the caller that could answer 403 and confirm the token was real.
+	// clock_timestamp() rather than now() for the same reason as sessions: now()
+	// is the transaction's start time, so two clocks were deciding one lifetime.
+	//
+	// Closed tickets are excluded: closing revokes access, and doing it in the
+	// query means a token that outlived its DELETE by a moment still reaches
+	// nothing.
+	// The explicit column list, not sqlc.embed: tickets carries a search_vector
+	// that no caller wants and that has no Go type worth naming. This is the same
+	// list GetTicketByID selects, so both map through one row shape.
+	GetTicketByGuestToken(ctx context.Context, tokenHash string) (GetTicketByGuestTokenRow, error)
 	GetTicketByID(ctx context.Context, id uuid.UUID) (GetTicketByIDRow, error)
 	// The same row as GetTicketByID, with a write lock held until the transaction
 	// ends.
@@ -138,6 +161,14 @@ type Querier interface {
 	// Resolve a moment after someone else clicked Assign expects.
 	GetTicketByIDForUpdate(ctx context.Context, id uuid.UUID) (GetTicketByIDForUpdateRow, error)
 	GetTicketByTrackingNumber(ctx context.Context, trackingNumber string) (GetTicketByTrackingNumberRow, error)
+	// Backs the re-request flow. Matching on both the tracking number and the
+	// address means possession of one alone proves nothing, and the caller
+	// answers 202 either way so this cannot be used to test whether either
+	// exists.
+	//
+	// Closed tickets are excluded so a re-request cannot resurrect access that
+	// closing revoked.
+	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
@@ -231,6 +262,9 @@ type Querier interface {
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
+	// First use stamps the row. Separate from the lookup so a read of the ticket
+	// is not also a write on the hot path when the column is already set.
+	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error

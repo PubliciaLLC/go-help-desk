@@ -42,27 +42,27 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 }
 
 const createReply = `-- name: CreateReply :exec
-INSERT INTO ticket_replies (id, ticket_id, author_id, guest_token, body, internal, notify_customer, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_customer, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateReplyParams struct {
-	ID             uuid.UUID      `json:"id"`
-	TicketID       uuid.UUID      `json:"ticket_id"`
-	AuthorID       uuid.NullUUID  `json:"author_id"`
-	GuestToken     sql.NullString `json:"guest_token"`
-	Body           string         `json:"body"`
-	Internal       bool           `json:"internal"`
-	NotifyCustomer bool           `json:"notify_customer"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID             uuid.UUID     `json:"id"`
+	TicketID       uuid.UUID     `json:"ticket_id"`
+	AuthorID       uuid.NullUUID `json:"author_id"`
+	Body           string        `json:"body"`
+	Internal       bool          `json:"internal"`
+	NotifyCustomer bool          `json:"notify_customer"`
+	CreatedAt      time.Time     `json:"created_at"`
 }
 
+// author_id is NULL for a reply written by a guest, who has no account. That is
+// the only way it is NULL: every other path passes the acting user.
 func (q *Queries) CreateReply(ctx context.Context, arg CreateReplyParams) error {
 	_, err := q.db.ExecContext(ctx, createReply,
 		arg.ID,
 		arg.TicketID,
 		arg.AuthorID,
-		arg.GuestToken,
 		arg.Body,
 		arg.Internal,
 		arg.NotifyCustomer,
@@ -474,7 +474,7 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 }
 
 const listReplies = `-- name: ListReplies :many
-SELECT id, ticket_id, author_id, guest_token, body, internal, created_at, notify_customer FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC
+SELECT id, ticket_id, author_id, body, internal, created_at, notify_customer FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC
 `
 
 func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error) {
@@ -490,7 +490,6 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]Ticket
 			&i.ID,
 			&i.TicketID,
 			&i.AuthorID,
-			&i.GuestToken,
 			&i.Body,
 			&i.Internal,
 			&i.CreatedAt,
