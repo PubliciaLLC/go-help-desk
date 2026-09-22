@@ -265,3 +265,32 @@ func TestGuest_CanReplyToTheirOwnTicketOnly(t *testing.T) {
 	require.Equal(t, 1, len(replies), "the other ticket's reply count is untouched")
 	_ = uuid.Nil
 }
+
+// Expiry and closure are decided inside the query, not in Go. This exercises
+// that against the real database: the domain fake asserts the same rules, and
+// a fake that were more permissive than Postgres would make every other guest
+// test optimistic.
+func TestGuest_ClosingTheTicketStopsTheLinkAtTheQuery(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk, token := seedGuestTicket(t, h)
+
+	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "precondition: the link works")
+
+	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
+	require.NoError(t, h.ticketSvc.Close(ctx, tk.ID, staff))
+
+	res = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
+		"closing revokes, and the query refuses even if a row somehow survived")
+
+	// And replying is refused too, not merely reading.
+	reply := h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "hello?"})
+	defer reply.Body.Close()
+	require.Equal(t, http.StatusNotFound, reply.StatusCode)
+}

@@ -21,6 +21,8 @@ import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
+import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
+import { GuestTrackPage } from '@/pages/GuestTrackPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
 
@@ -184,6 +186,20 @@ const adminOAuthClientsRoute = createRoute({
 })
 
 // ── Guest ─────────────────────────────────────────────────────────────────────
+const guestViewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  // The token is in the path because an emailed link has to be clickable. The
+  // page removes it from the address bar on mount.
+  path: '/g/$token',
+  component: GuestTicketViewPage,
+})
+
+const guestTrackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/track',
+  component: GuestTrackPage,
+})
+
 const submitRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/submit',
@@ -222,6 +238,8 @@ export const router = createRouter({
     verifyEmailRoute,
     dashboardRoute,
     submitRoute,
+    guestViewRoute,
+    guestTrackRoute,
     ticketsRoute,
     newTicketRoute,
     ticketDetailRoute,

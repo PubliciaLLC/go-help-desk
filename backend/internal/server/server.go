@@ -408,10 +408,16 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 // handleGetSiteConfig returns public-facing branding info and the app version.
 // No authentication required — used by the SPA shell before login.
 func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
-	JSON(w, http.StatusOK, map[string]string{
-		"name":     s.adminSvc.SiteName(r.Context()),
-		"logo_url": s.adminSvc.SiteLogoURL(r.Context()),
-		"version":  version.Version,
+	// guest_submission_enabled is here rather than in a status endpoint of its
+	// own because the login page needs it to decide whether to offer a link to
+	// /submit, and offering a dead end is worse than offering nothing. It says
+	// only whether the instance accepts guest tickets — the same thing an
+	// unauthenticated POST to /guest/tickets would reveal by answering 404.
+	JSON(w, http.StatusOK, map[string]any{
+		"name":                     s.adminSvc.SiteName(r.Context()),
+		"logo_url":                 s.adminSvc.SiteLogoURL(r.Context()),
+		"version":                  version.Version,
+		"guest_submission_enabled": s.adminSvc.GuestSubmissionEnabled(r.Context()),
 	})
 }
 

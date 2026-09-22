@@ -47,7 +47,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
-- Guest ticket submission — *coming soon* (#154). The form and the settings toggle exist, but the ticket API requires a session, so no guest ticket can be filed yet.
+- Guest ticket submission — a visitor files a ticket at `/submit`, gets a tracking number, and receives a per-ticket link to read the thread and reply without an account. Off by default; enable under **Admin → Settings**.
 - File attachments (PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP; 25 MB max; images auto-recompressed; optional ClamAV virus scanning)
 
 ## Quick start
@@ -63,7 +63,7 @@ Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`,
 
 ## Configuration
 
-Environment variables control infrastructure; feature flags (SAML, MFA, SLA) and branding are managed through the **Admin → Settings** UI and stored in the database. There is a guest-submission toggle too, but it does nothing yet — see #154.
+Environment variables control infrastructure; feature flags (SAML, MFA, SLA, guest submission) and branding are managed through the **Admin → Settings** UI and stored in the database.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -85,10 +85,9 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA) and
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA and SLA are toggled in the Admin UI. The matching
-> environment variables still exist and set the value the instance starts with;
-> the Admin UI setting takes precedence once it has been saved. The
-> guest-submission toggle is present but inert until #154 lands.
+> **Note:** SAML, MFA, SLA and guest submission are toggled in the Admin UI.
+> The matching environment variables still exist and set the value the instance
+> starts with; the Admin UI setting takes precedence once it has been saved.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
@@ -135,10 +134,9 @@ picked. The content stays in the application now, behind the access rules that
 already govern it. The recipient's own address is written bare, with no display
 name, for the same reason.
 
-> **Guest tickets.** A guest recipient would have nowhere to read the reply,
-> since the link leads to the sign-in page. Nothing is affected today, because
-> guest submission does not work yet — see #154, which covers both the
-> submission path and the tokenised view a guest needs to read the thread.
+> **Guest tickets** get a per-ticket link instead, so a recipient with no
+> account can still read the thread. The link is replaced every time the ticket
+> is updated and revoked when it closes.
 
 **Guest email addresses are validated too.** Nothing checked them before either.
 A guest address that is not a single bare address is now refused with `400`, and
