@@ -16,6 +16,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
@@ -148,6 +149,12 @@ type Server struct {
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
 
+	// scanner is never nil. An unconfigured one answers Unavailable to every
+	// scan, which the policy then decides about — rather than a nil check the
+	// caller can forget, turning "no scanner" into a nil dereference instead
+	// of a decision.
+	scanner *antivirus.Scanner
+
 	// guestResendLimiter is per ticket, and much tighter than the credential
 	// budget: a resend rotates, so anyone who can guess a sequential tracking
 	// number and knows the address could otherwise replace the link a customer
@@ -230,6 +237,7 @@ func New(
 		// Built here rather than injected: derived entirely from config, no
 		// other collaborators.
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		scanner:            antivirus.New(cfg.ClamAVAddr),
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
 	}
 	s.router = s.buildRouter()

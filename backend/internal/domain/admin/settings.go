@@ -21,6 +21,8 @@ const (
 	KeyMFAEnforcedRoles       = "mfa_enforced_roles"
 	KeyReopenWindowDays       = "reopen_window_days"
 	KeyReopenTargetStatusName = "reopen_target_status_name"
+	KeyAttachmentScanPolicy   = "attachment_scan_policy" // off | required | permissive
+	KeyAttachmentScanAddress  = "attachment_scan_address"
 	KeySiteName               = "site_name"
 	KeySiteLogoURL            = "site_logo_url"
 

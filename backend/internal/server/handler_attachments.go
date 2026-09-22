@@ -2,14 +2,13 @@ package server
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 	"image"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -137,81 +136,6 @@ func compressImage(data []byte, ext string) ([]byte, string, error) {
 	return pngBuf.Bytes(), ".png", nil
 }
 
-// scanClamAV sends data to a running clamd daemon and returns true if the
-// file is infected. If the daemon is unreachable, it logs a warning and
-// returns false (non-fatal) so uploads are not blocked by an unavailable scanner.
-func scanClamAV(addr string, data []byte) (infected bool, virusName string) {
-	if addr == "" {
-		return false, ""
-	}
-
-	var conn net.Conn
-	var err error
-
-	if strings.HasPrefix(addr, "unix://") {
-		conn, err = net.DialTimeout("unix", strings.TrimPrefix(addr, "unix://"), 5*time.Second)
-	} else {
-		host := strings.TrimPrefix(addr, "tcp://")
-		conn, err = net.DialTimeout("tcp", host, 5*time.Second)
-	}
-	if err != nil {
-		slog.Warn("ClamAV unreachable — skipping virus scan", "addr", addr, "error", err)
-		return false, ""
-	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
-
-	// INSTREAM protocol: zINSTREAM\0, then chunks of [4-byte len][data], terminated by [0 0 0 0].
-	if _, err := conn.Write([]byte("zINSTREAM\x00")); err != nil {
-		slog.Warn("ClamAV write error", "error", err)
-		return false, ""
-	}
-
-	chunkSize := 4096
-	for i := 0; i < len(data); i += chunkSize {
-		end := i + chunkSize
-		if end > len(data) {
-			end = len(data)
-		}
-		chunk := data[i:end]
-		sz := make([]byte, 4)
-		binary.BigEndian.PutUint32(sz, uint32(len(chunk)))
-		if _, err := conn.Write(sz); err != nil {
-			slog.Warn("ClamAV chunk write error", "error", err)
-			return false, ""
-		}
-		if _, err := conn.Write(chunk); err != nil {
-			slog.Warn("ClamAV chunk write error", "error", err)
-			return false, ""
-		}
-	}
-	// Terminator.
-	if _, err := conn.Write([]byte{0, 0, 0, 0}); err != nil {
-		slog.Warn("ClamAV terminator write error", "error", err)
-		return false, ""
-	}
-
-	resp, err := io.ReadAll(conn)
-	if err != nil {
-		slog.Warn("ClamAV response read error", "error", err)
-		return false, ""
-	}
-
-	result := strings.TrimRight(string(resp), "\x00\n")
-	slog.Debug("ClamAV result", "result", result)
-
-	if strings.Contains(result, "FOUND") {
-		// Format: "stream: <VirusName> FOUND"
-		parts := strings.Fields(result)
-		name := ""
-		if len(parts) >= 2 {
-			name = parts[len(parts)-2]
-		}
-		return true, name
-	}
-	return false, ""
-}
-
 // POST /api/v1/tickets/{id}/attachments
 // Accepts multipart/form-data with field name "file" (one file per request).
 // Only authenticated users (not guests) can upload attachments.
@@ -283,11 +207,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Virus scan (skipped when ClamAV is not configured).
-	if infected, virusName := scanClamAV(s.cfg.ClamAVAddr, data); infected {
-		slog.Warn("infected file blocked", "virus", virusName, "filename", origName, "ticket", ticketID)
-		Error(w, http.StatusUnprocessableEntity, "infected",
-			fmt.Sprintf("file rejected: virus detected (%s)", virusName))
+	if !s.scanUpload(w, r, data, origName, ticketID) {
 		return
 	}
 
@@ -415,4 +335,56 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 		fmt.Sprintf(`attachment; filename=%q`, att.Filename))
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	http.ServeContent(w, r, att.Filename, att.CreatedAt, f)
+}
+
+// scanUpload scans the file and applies the configured policy, reporting
+// whether the upload may proceed. It has written the response when it returns
+// false.
+//
+// The distinction this exists for: "scanned and clean" and "could not scan"
+// used to be the same value. scanClamAV returned (infected bool, …) and every
+// failure — no address, unreachable daemon, a write error mid-stream —
+// returned false, which the caller read as clean. So an instance whose ClamAV
+// had been dead for a month accepted everything, logged a warning nobody
+// reads, and showed the administrator nothing.
+//
+// Now an unscannable file is refused by default. 503 rather than 4xx because
+// nothing is wrong with the request: the server cannot currently do its job,
+// and the caller should try again. Retry-After says so, which also covers the
+// first few minutes after a fresh `docker compose up`, where clamav is still
+// downloading its signature database and the application is already serving.
+func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte, filename string, ticketID uuid.UUID) bool {
+	ctx := r.Context()
+	policy := s.adminSvc.AttachmentScanPolicy(ctx, s.scanner.Configured())
+	if policy == antivirus.PolicyOff {
+		return true
+	}
+
+	res := s.scanner.Scan(ctx, data)
+	switch res.Verdict {
+	case antivirus.Infected:
+		slog.WarnContext(ctx, "infected upload refused",
+			"virus", res.Virus, "filename", filename, "ticket", ticketID)
+		Error(w, http.StatusUnprocessableEntity, "infected",
+			fmt.Sprintf("file rejected: %s", res.Virus))
+		return false
+
+	case antivirus.Unavailable:
+		if policy == antivirus.PolicyPermissive {
+			// The old behaviour, now reachable only by choosing it.
+			slog.WarnContext(ctx, "accepting an unscanned upload: scan policy is permissive",
+				"filename", filename, "ticket", ticketID, "reason", res.Reason)
+			return true
+		}
+		slog.ErrorContext(ctx, "refusing an upload that could not be scanned",
+			"filename", filename, "ticket", ticketID, "reason", res.Reason)
+		// Deliberately says nothing about why the scanner is unreachable: the
+		// reason names internal infrastructure, and the caller can do nothing
+		// with it either way.
+		w.Header().Set("Retry-After", "60")
+		Error(w, http.StatusServiceUnavailable, "scanner_unavailable",
+			"attachments cannot be accepted right now because the virus scanner is unavailable; please try again shortly")
+		return false
+	}
+	return true
 }

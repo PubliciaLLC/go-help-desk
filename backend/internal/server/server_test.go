@@ -94,6 +94,14 @@ func newHarness(t *testing.T) (*harness, func()) {
 // a given per-minute limit, so the throttling itself can be exercised.
 func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func()) {
 	t.Helper()
+	return newHarnessWith(t, authRateLimit, "")
+}
+
+// newHarnessWith builds a harness with a scanner address, so a test can tell
+// "an address is configured" apart from "a scanner answers" — which is the
+// whole difference between reporting scanner health and reporting settings.
+func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harness, func()) {
+	t.Helper()
 	db, closeDB := testutil.NewDB(t)
 	q, rollback := testutil.TxQueries(t, db)
 
@@ -216,7 +224,8 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		// is a harness gap rather than a behaviour worth testing. http:// on
 		// purpose: an https base URL would set Secure on the session cookie,
 		// which httptest's plaintext requests would then drop.
-		BaseURL: "http://localhost:8080",
+		BaseURL:    "http://localhost:8080",
+		ClamAVAddr: clamAVAddr,
 		// 0 disables the credential throttle. This suite logs in hundreds of
 		// times from one address in a few seconds, which is not an attack;
 		// TestAuthRateLimit covers the limiter with it switched on.
