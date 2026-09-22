@@ -226,6 +226,12 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		// which httptest's plaintext requests would then drop.
 		BaseURL:    "http://localhost:8080",
 		ClamAVAddr: clamAVAddr,
+		// Without this, AttachmentDir is "" and uploads land in
+		// filepath.Join("", "tickets", …) — relative to the package
+		// directory. Every attachment test then wrote a real file into the
+		// source tree, and a review caught them committed. t.TempDir is
+		// removed when the test ends.
+		AttachmentDir: t.TempDir(),
 		// 0 disables the credential throttle. This suite logs in hundreds of
 		// times from one address in a few seconds, which is not an attack;
 		// TestAuthRateLimit covers the limiter with it switched on.

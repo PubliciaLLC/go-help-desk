@@ -64,6 +64,12 @@ docker/data/
 # ── Uploads ───────────────────────────────────────────────────────────────────
 uploads/
 
+# Attachment storage. The default AttachmentDir is absolute (/data/attachments)
+# so this only catches a relative one — which is what an unset value produces,
+# and what a test harness that forgets to set it will write into the package
+# directory.
+tickets/
+
 # ── Air (live reload) ─────────────────────────────────────────────────────────
 backend/.air.toml
 
