@@ -409,8 +409,10 @@ func TestEmail_GuestLinkCarriesTheTokenAndNothingElse(t *testing.T) {
 			}))
 
 			raw := strings.ReplaceAll(<-received, "=\r\n", "")
-			require.Contains(t, raw, "https://help.example.com/g/0123456789abcdef",
-				"a guest reaches their ticket by token, not by id")
+			require.Contains(t, raw, "https://help.example.com/g#0123456789abcdef",
+				"the token rides in the fragment, which no server ever receives")
+			require.NotContains(t, raw, "/g/0123456789abcdef",
+				"a token in the path is logged by requestLogger on the shell request")
 			require.NotContains(t, raw, id.String(),
 				"the ticket id is not the guest's path and must not leak one")
 			for _, forbidden := range []string{"suspended", "555-0100", "Wire the money"} {
@@ -439,7 +441,7 @@ func TestEmail_WithoutATokenTheLinkIsTheTicketID(t *testing.T) {
 
 	raw := strings.ReplaceAll(<-received, "=\r\n", "")
 	require.Contains(t, raw, "https://help.example.com/tickets/"+id.String())
-	require.NotContains(t, raw, "/g/")
+	require.NotContains(t, raw, "/g#")
 }
 
 // The three lifecycle notifications exist to deliver a rotated link. With no

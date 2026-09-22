@@ -298,18 +298,18 @@ func (s *Server) resendGuestLink(ctx context.Context, trackingNumber, email stri
 	if err != nil {
 		return
 	}
-	// A second budget, keyed on the ticket rather than the caller.
+	// A second budget, keyed on the ticket rather than the caller, and far
+	// tighter than the per-address one.
 	//
-	// The address budget alone bounds nothing useful here: a resend rotates,
-	// so anyone who can guess a tracking number — they are sequential — and
-	// knows the address can replace the link the customer is currently using,
-	// over and over, from as many addresses as they like. The new link always
-	// goes to the real customer, so this is an inbox flood rather than a
-	// lockout, but a flood of working links is still a flood.
+	// The address budget bounds nothing useful here: a resend rotates, so
+	// anyone who can guess a tracking number — they are sequential — and knows
+	// the address could replace the link the customer is holding ten times a
+	// minute, from as many addresses as they like. That is a sustained lockout,
+	// not merely an inbox flood.
 	//
 	// Checked after the lookup, so a miss consumes nothing and the budget
 	// cannot be probed to learn which tickets exist.
-	if !s.loginLimiter.Allow("guest-resend-ticket:" + ticketID.String()) {
+	if !s.guestResendLimiter.Allow(ticketID.String()) {
 		return
 	}
 	// Minting and mailing both happen in the service, which already holds the

@@ -97,9 +97,20 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	// whoever filed the ticket, its subject line and reply bodies, from mail
 	// sent over the operator's domain. A link this server generated is not
 	// that, and the message still carries nothing anyone else wrote.
+	// A guest link carries the token in the URL FRAGMENT, not the path.
+	//
+	// A fragment is never sent to a server. Not to this one, not to a proxy in
+	// front of it, not in a Referer header. The path form was logged verbatim
+	// at INFO by requestLogger on the browser's first request for the SPA
+	// shell — the application's own access log was the leak the frontend
+	// comment claimed to be defending against — and no amount of redaction
+	// makes it safe in every proxy, CDN and aggregator in front of us.
+	//
+	// The SPA reads location.hash and clears it. The server never learns it
+	// except as an Authorization header on the API calls that need it.
 	path := "/tickets/" + event.TicketID.String()
 	if event.GuestToken != "" {
-		path = "/g/" + event.GuestToken
+		path = "/g#" + event.GuestToken
 	}
 	view := map[string]string{
 		"TrackingNumber": event.TrackingNumber,

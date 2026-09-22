@@ -53,9 +53,9 @@ export async function addGuestReply(token: string, body: string): Promise<GuestR
 export interface GuestTicketInput {
   subject: string
   description: string
+  // Category only. A guest does not pick a type or an item — the server
+  // ignores both, and accepting them here would suggest otherwise.
   category_id: string
-  type_id?: string | null
-  item_id?: string | null
   guest_email: string
   guest_name: string
   guest_phone?: string

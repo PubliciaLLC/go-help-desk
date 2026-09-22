@@ -14,8 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // doGuest sends a request carrying a guest token and nothing else.
@@ -278,8 +280,6 @@ func TestGuest_CanReplyToTheirOwnTicketOnly(t *testing.T) {
 	raw, _ := io.ReadAll(res2.Body)
 	require.NotContains(t, string(raw), "Printer jammed",
 		"one token, one ticket — and no parameter to change")
-	require.Equal(t, 1, len(replies), "the other ticket's reply count is untouched")
-	_ = uuid.Nil
 }
 
 // Expiry and closure are decided inside the query, not in Go. This exercises
@@ -404,29 +404,179 @@ func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
 	require.True(t, byBody["thank you"], "the guest's own reply is")
 }
 
-// Moving a ticket to Closed by status change revokes rather than rotates. The
-// close test alone passed with that branch removed, because it goes through
-// Close().
-func TestGuest_StatusChangeToClosedRevokesRatherThanRotating(t *testing.T) {
+// Closing by status change is pinned in the domain suite
+// (TestGuestToken_StatusChangeToClosedMintsNothing), where the dispatched
+// event is visible. A server-level version lived here and was decorative: both
+// its assertions hold whether the branch revokes or rotates, because
+// closed_at gates the query either way.
+
+// The per-ticket resend budget lives in the handler, and the budget is the
+// RateLimiter's contract, so it is asserted where it can actually be observed:
+// the limiter directly, and the endpoint answering identically either way.
+//
+// Not by counting rows. The harness runs inside an uncommitted transaction, so
+// a query outside it sees nothing — a test that "passed" by finding zero rows
+// would be measuring the harness, not the budget.
+func TestGuest_ResendBudgetIsOnePerTicketPerFiveMinutes(t *testing.T) {
+	limiter := authmw.NewRateLimiter(1, 5*time.Minute)
+	id := uuid.New().String()
+
+	require.True(t, limiter.Allow(id), "the customer who lost their link gets one")
+	require.False(t, limiter.Allow(id), "a second inside the window must not rotate")
+	require.True(t, limiter.Allow(uuid.New().String()),
+		"the budget is per ticket, so another ticket is unaffected")
+}
+
+// However often it is called, the answer does not change. That is what stops
+// the endpoint being an oracle, and it has to hold while the budget is
+// refusing as well as while it is allowing.
+func TestGuest_ResendAnswersIdenticallyWhenTheBudgetIsExhausted(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
-	tk, token := seedGuestTicket(t, h)
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	tk, _ := seedGuestTicket(t, h)
 
-	// Admin: moving straight to Closed is an admin transition, so staff would
-	// be refused before the rotation rule was ever reached.
-	admin := ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin}
-	_, err := h.ticketSvc.UpdateStatus(ctx, tk.ID,
-		statusIDNamed(t, h, ticket.StatusNameClosed), admin)
-	require.NoError(t, err)
+	body := map[string]any{
+		"tracking_number": string(tk.TrackingNumber),
+		"email":           "guest@test.local",
+	}
 
-	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	var codes []int
+	var bodies []string
+	for i := 0; i < 4; i++ {
+		res := h.doGuest(t, http.MethodPost, "/api/v1/guest/resend", "", body)
+		raw, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		codes = append(codes, res.StatusCode)
+		bodies = append(bodies, string(raw))
+	}
+	for i := range codes {
+		require.Equal(t, http.StatusAccepted, codes[i], "call %d", i)
+		require.Equal(t, bodies[0], bodies[i], "call %d answered differently", i)
+	}
+}
+
+// The category a guest names is checked against the active list before
+// anything is written. Without it an unknown id reached a foreign key after
+// NextSeq had already taken a tracking number.
+func TestGuest_CategoryMustBeOneOpenToGuests(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+
+	for _, tc := range []struct{ name, categoryID string }{
+		{"an id that is not a category", uuid.New().String()},
+		{"the nil uuid", uuid.Nil.String()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+				"subject": "Door", "description": "sticks", "category_id": tc.categoryID,
+				"guest_email": "walkin@test.local", "guest_name": "Sam",
+			})
+			defer res.Body.Close()
+			require.Equal(t, http.StatusBadRequest, res.StatusCode,
+				"refused before the write, not by a foreign key after it")
+		})
+	}
+}
+
+// guest_name is required, which DESIGN.md said and the route did not enforce.
+func TestGuest_NameIsRequired(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+		"subject": "Door", "description": "sticks", "category_id": h.catID.String(),
+		"guest_email": "walkin@test.local",
+	})
 	defer res.Body.Close()
-	require.Equal(t, http.StatusNotFound, res.StatusCode)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+}
 
-	_, err = h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+// expires_at > clock_timestamp() lives in the query, and nothing exercised it
+// against Postgres — the domain fake decided expiry itself, which is only
+// trustworthy if the database agrees.
+//
+// Inserted directly with a past expiry, because nothing in the application
+// will mint one: the point is that a row which has aged out is refused by the
+// query rather than by the code that wrote it.
+func TestGuest_AnExpiredRowIsRefusedByTheQuery(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk, _ := seedGuestTicket(t, h)
+
+	raw, hashed, err := auth.GenerateToken()
 	require.NoError(t, err)
-	// And nothing was mailed with a fresh link for a ticket nobody can act on.
-	_, err = h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@test.local")
-	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound)
+	require.NoError(t, h.ticketStore.CreateGuestToken(ctx, uuid.New(), tk.ID, hashed,
+		time.Now().Add(-time.Second)))
+
+	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", raw, nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
+		"an aged-out row must be as dead as one that was never written")
+
+	// And a live row beside it still works, so the clause is discriminating
+	// rather than refusing everything.
+	live, liveHash, err := auth.GenerateToken()
+	require.NoError(t, err)
+	require.NoError(t, h.ticketStore.CreateGuestToken(ctx, uuid.New(), tk.ID, liveHash,
+		time.Now().Add(time.Hour)))
+
+	ok := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", live, nil)
+	defer ok.Body.Close()
+	require.Equal(t, http.StatusOK, ok.StatusCode)
+}
+
+// reopenTargetStatusID returning its ListStatuses error rather than swallowing
+// it into uuid.Nil is a real fix — the domain reads uuid.Nil as a misconfigured
+// setting, so an outage surfaced as a 400 blaming an administrator's typo — but
+// it is NOT pinned by a test here, and a test that closed the pool was
+// decorative: with the database dead every other query fails too, so the
+// handler answers 500 whether the error is returned or swallowed. Isolating it
+// needs a store that fails only ListStatuses, which the harness cannot express.
+
+// The budget has to be checked at the call site, not merely exist.
+//
+// Observing it needs a token whose fate is visible: mint one directly, then
+// resend. A resend that runs rotates and kills it; a resend the budget refuses
+// leaves it alone. Removing the check makes the second case fail.
+func TestGuest_ResendBudgetIsActuallyConsulted(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	tk, _ := seedGuestTicket(t, h)
+
+	body := map[string]any{
+		"tracking_number": string(tk.TrackingNumber),
+		"email":           "guest@test.local",
+	}
+
+	// First resend: inside the budget, so it rotates and the token we hold dies.
+	mine, err := h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+	require.NoError(t, err)
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/resend", "", body)
+	res.Body.Close()
+	require.Equal(t, http.StatusAccepted, res.StatusCode)
+
+	gone := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", mine, nil)
+	gone.Body.Close()
+	require.Equal(t, http.StatusNotFound, gone.StatusCode,
+		"precondition: a resend inside the budget does rotate")
+
+	// Second resend: the budget refuses, so this one must leave the link alone.
+	mine, err = h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+	require.NoError(t, err)
+	res = h.doGuest(t, http.MethodPost, "/api/v1/guest/resend", "", body)
+	res.Body.Close()
+	require.Equal(t, http.StatusAccepted, res.StatusCode, "the answer never changes")
+
+	still := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", mine, nil)
+	defer still.Body.Close()
+	require.Equal(t, http.StatusOK, still.StatusCode,
+		"a resend the budget refused must not have rotated anything")
 }

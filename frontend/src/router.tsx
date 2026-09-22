@@ -188,9 +188,9 @@ const adminOAuthClientsRoute = createRoute({
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const guestViewRoute = createRoute({
   getParentRoute: () => rootRoute,
-  // The token is in the path because an emailed link has to be clickable. The
-  // page removes it from the address bar on mount.
-  path: '/g/$token',
+  // No token in the path: it rides in the fragment, which is never sent to a
+  // server and so cannot be logged by ours or by anything in front of it.
+  path: '/g',
   component: GuestTicketViewPage,
 })
 

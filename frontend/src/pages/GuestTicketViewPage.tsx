@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react'
-import { useParams } from '@tanstack/react-router'
+import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { addGuestReply, getGuestTicket, GuestLinkInvalid } from '@/api/guest'
@@ -9,15 +8,22 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 // The ticket a guest reached by link.
 //
-// The token arrives in the path because a link has to be clickable, and is
-// taken out of the address bar immediately: a token left in the URL leaks
-// through Referer on every outbound link and through any access log in front
-// of the app. It lives in component state from then on and goes back to the
-// server in a header.
+// The token arrives in the URL FRAGMENT, which browsers never send to a
+// server. It was briefly a path segment, and that put it in this application's
+// own request log at INFO on the first load of the shell — before any proxy or
+// CDN in front of us got a turn. A fragment cannot be logged by any of them,
+// and is not sent in Referer either.
+//
+// Read once on mount, then cleared from the address bar and from history, so
+// it does not survive a screenshot or a shared URL. It lives in component
+// state from then on and goes back as an Authorization header.
 export function GuestTicketViewPage() {
-  const { token } = useParams({ from: '/g/$token' })
   const qc = useQueryClient()
   const [reply, setReply] = useState('')
+
+  // useMemo, not useState+useEffect: the value has to exist for the first
+  // render's query, and the effect below wipes the source it is read from.
+  const token = useMemo(() => window.location.hash.replace(/^#/, ''), [])
 
   useEffect(() => {
     // replaceState, not pushState: the token must not survive in history
@@ -30,6 +36,9 @@ export function GuestTicketViewPage() {
     queryKey: ['guest-ticket', token],
     queryFn: () => getGuestTicket(token),
     retry: false,
+    // No token, no request. A bare /g with nothing after the hash is someone
+    // who lost the fragment, and the error branch below is the right answer.
+    enabled: token !== '',
   })
 
   const send = useMutation({
@@ -46,8 +55,8 @@ export function GuestTicketViewPage() {
 
   // One message for every reason. The server does not say which, deliberately,
   // and repeating a guess back to the visitor would undo that.
-  if (error || !ticket) {
-    const expired = error instanceof GuestLinkInvalid
+  if (token === '' || error || !ticket) {
+    const expired = token === '' || error instanceof GuestLinkInvalid
     return (
       <Shell>
         <Card>

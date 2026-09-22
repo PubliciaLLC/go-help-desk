@@ -148,6 +148,14 @@ type Server struct {
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
 
+	// guestResendLimiter is per ticket, and much tighter than the credential
+	// budget: a resend rotates, so anyone who can guess a sequential tracking
+	// number and knows the address could otherwise replace the link a customer
+	// is holding ten times a minute, indefinitely, from one address. One every
+	// five minutes still lets a customer who lost their link get another
+	// straight away, and turns a sustained lockout into an inconvenience.
+	guestResendLimiter *authmw.RateLimiter
+
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions SessionStore
@@ -221,7 +229,8 @@ func New(
 		cannedResponses:  cannedResponses,
 		// Built here rather than injected: derived entirely from config, no
 		// other collaborators.
-		loginLimiter: authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
 	}
 	s.router = s.buildRouter()
 	return s
