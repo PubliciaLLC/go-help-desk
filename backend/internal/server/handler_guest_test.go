@@ -37,6 +37,21 @@ func (h *harness) doGuest(t *testing.T, method, path, token string, body any) *h
 	return rr.Result()
 }
 
+// nearMiss returns a token differing from the real one in its last character.
+//
+// Appending a fixed digit does not: the token is hex, so one time in sixteen
+// the "near miss" IS the real token and the case asserts a 404 against a
+// request that correctly answers 200. It passed locally and failed in CI, which
+// is the only reason it was caught rather than shipped.
+func nearMiss(token string) string {
+	last := token[len(token)-1]
+	replacement := "0"
+	if last == '0' {
+		replacement = "1"
+	}
+	return token[:len(token)-1] + replacement
+}
+
 // seedGuestTicket files a guest ticket through the service and returns it with
 // the token the creation minted.
 func seedGuestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
@@ -69,7 +84,7 @@ func TestGuest_TokenReachesOneTicketAndEveryRefusalLooksAlike(t *testing.T) {
 	for _, tc := range []struct{ name, tok string }{
 		{"no token at all", ""},
 		{"a token that was never issued", "0000000000000000000000000000000000000000000000000000000000000000"},
-		{"a near miss on a real token", token[:len(token)-1] + "0"},
+		{"a near miss on a real token", nearMiss(token)},
 		{"not hex", "not-a-token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
