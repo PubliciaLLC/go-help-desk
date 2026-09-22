@@ -580,3 +580,71 @@ func TestGuest_ResendBudgetIsActuallyConsulted(t *testing.T) {
 	require.Equal(t, http.StatusOK, still.StatusCode,
 		"a resend the budget refused must not have rotated anything")
 }
+
+// The middleware's 404 and a handler's 404 have to be the same bytes, or the
+// difference is itself the signal the identical body exists to remove.
+func TestGuest_TheTwo404sAreByteIdentical(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	fromMiddleware := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket",
+		"0000000000000000000000000000000000000000000000000000000000000000", nil)
+	mw, _ := io.ReadAll(fromMiddleware.Body)
+	fromMiddleware.Body.Close()
+
+	// The submission route answers 404 through Error() when the toggle is off.
+	fromHandler := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{})
+	hd, _ := io.ReadAll(fromHandler.Body)
+	fromHandler.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, fromMiddleware.StatusCode)
+	require.Equal(t, http.StatusNotFound, fromHandler.StatusCode)
+	require.Equal(t, string(hd), string(mw),
+		"a refusal that differs by even a byte is a refusal that says which kind it was")
+}
+
+// Re-request is gated on the same toggle as submission: an instance that does
+// not offer guest tickets does not offer a way to get back into one.
+func TestGuest_ResendIsRefusedUntilEnabled(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/resend", "",
+		map[string]any{"tracking_number": "GHD-2026-000001", "email": "a@b.test"})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
+}
+
+// The per-ticket budget is checked after the lookup, so a miss spends nothing.
+// Reversing that would let someone burn a stranger's budget by guessing, and
+// would make the budget itself tell them which tickets exist.
+func TestGuest_AMissDoesNotSpendTheTicketsBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	tk, _ := seedGuestTicket(t, h)
+
+	// Three requests that match nothing.
+	for _, body := range []map[string]any{
+		{"tracking_number": string(tk.TrackingNumber), "email": "wrong@test.local"},
+		{"tracking_number": "GHD-2026-999999", "email": "guest@test.local"},
+		{"tracking_number": string(tk.TrackingNumber), "email": "also-wrong@test.local"},
+	} {
+		res := h.doGuest(t, http.MethodPost, "/api/v1/guest/resend", "", body)
+		res.Body.Close()
+		require.Equal(t, http.StatusAccepted, res.StatusCode)
+	}
+
+	// The real customer's one call must still rotate.
+	mine, err := h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+	require.NoError(t, err)
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/resend", "",
+		map[string]any{"tracking_number": string(tk.TrackingNumber), "email": "guest@test.local"})
+	res.Body.Close()
+
+	gone := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", mine, nil)
+	defer gone.Body.Close()
+	require.Equal(t, http.StatusNotFound, gone.StatusCode,
+		"misses must not have spent the budget the customer needs")
+}

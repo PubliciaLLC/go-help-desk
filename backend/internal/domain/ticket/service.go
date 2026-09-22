@@ -330,6 +330,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	var before map[string]any
 	var oldStatusID uuid.UUID
 	var guestToken string
+	var closing bool
 	now := time.Now()
 
 	// resolved_at and closed_at are maintained here as well as in
@@ -375,6 +376,12 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 			if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
 				return fmt.Errorf("revoking guest access: %w", err)
 			}
+			// And tell nobody, which is what Close() does. Revoking left
+			// Recipient set with no token, so the mail fell back to the
+			// account URL — the guest was sent "see where it stands" pointing
+			// at /tickets/<uuid>, a page they have no account to open. The two
+			// doors into Closed now behave the same way.
+			closing = true
 		} else if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
 			return err
 		}
@@ -403,7 +410,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		Payload:        map[string]any{"new_status_id": newStatusID},
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
-		Recipient:      guestRecipient(t),
+		Recipient:      guestNotifyTarget(t, closing),
 		GuestToken:     guestToken,
 	})
 

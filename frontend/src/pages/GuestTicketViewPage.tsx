@@ -55,16 +55,44 @@ export function GuestTicketViewPage() {
 
   // One message for every reason. The server does not say which, deliberately,
   // and repeating a guess back to the visitor would undo that.
-  if (token === '' || error || !ticket) {
-    const expired = token === '' || error instanceof GuestLinkInvalid
+  // Two different situations, and telling them apart matters.
+  //
+  // No token means the address bar has been cleared — a reload, a bookmark, a
+  // shared URL. The link in the email almost certainly still works, so saying
+  // "this link no longer works" would be false and would push the customer at
+  // /track, which ROTATES: they would destroy the working link they still have
+  // in order to be sent another.
+  if (token === '') {
+    return (
+      <Shell>
+        <Card>
+          <CardHeader><CardTitle className="text-lg">Open the link from your email</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm text-gray-700">
+            <p>
+              This page needs the full link we emailed you. Reloading or
+              bookmarking it drops the part that identifies your ticket, which
+              is deliberate — it keeps that part out of browser history and
+              server logs.
+            </p>
+            <p>
+              Your emailed link still works. If you cannot find it, you can{' '}
+              <a href="/track" className="text-blue-600 underline">ask for a new one</a>.
+            </p>
+          </CardContent>
+        </Card>
+      </Shell>
+    )
+  }
+
+  if (error || !ticket) {
     return (
       <Shell>
         <Card>
           <CardHeader><CardTitle className="text-lg">This link no longer works</CardTitle></CardHeader>
           <CardContent className="space-y-3 text-sm text-gray-700">
             <p>
-              {expired
-                ? 'Links are replaced each time your ticket is updated, and stop working when a ticket is closed.'
+              {error instanceof GuestLinkInvalid
+                ? 'Links are replaced each time we update your ticket, and stop working once a ticket is closed.'
                 : 'We could not open that ticket.'}
             </p>
             <p>

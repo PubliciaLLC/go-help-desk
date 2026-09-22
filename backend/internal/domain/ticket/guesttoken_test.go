@@ -345,3 +345,36 @@ func TestGuestToken_StatusChangeToClosedMintsNothing(t *testing.T) {
 	require.Equal(t, 0, h.store.guestTokenCount(tk.ID),
 		"and must leave no token behind")
 }
+
+// Closing by status change revokes, so there is no link to send — and sending
+// anyway fell back to the account URL, mailing the guest "see where it stands"
+// pointing at a page they have no account to open. Close() tells nobody; this
+// door now agrees with it.
+func TestGuestToken_ClosingByStatusTellsNobody(t *testing.T) {
+	h := newHarness(t)
+	admin := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleAdmin}
+	tk, _ := guestTicket(t, h)
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.closedStatus.ID, admin)
+	require.NoError(t, err)
+
+	ev := lastEventOfType(t, h, notification.EventTicketStatusChanged)
+	require.Empty(t, ev.GuestToken)
+	require.Empty(t, ev.Recipient,
+		"no token means no usable link, so the mail must not go at all")
+}
+
+// Every other status change still reaches the guest — the exclusion is closing,
+// not status changes.
+func TestGuestToken_OtherStatusChangesStillNotify(t *testing.T) {
+	h := newHarness(t)
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	tk, _ := guestTicket(t, h)
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.resolvedStatus.ID, staff)
+	require.NoError(t, err)
+
+	ev := lastEventOfType(t, h, notification.EventTicketStatusChanged)
+	require.NotEmpty(t, ev.GuestToken)
+	require.Equal(t, "guest@example.test", ev.Recipient)
+}

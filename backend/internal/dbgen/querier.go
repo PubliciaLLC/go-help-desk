@@ -63,7 +63,6 @@ type Querier interface {
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
-	DeleteExpiredGuestAccessTokens(ctx context.Context) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) error
 	// Rotation and revocation are the same operation: remove what the ticket has.

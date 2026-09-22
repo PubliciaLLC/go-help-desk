@@ -39,9 +39,6 @@ WHERE token_hash = $1 AND last_used_at IS NULL;
 -- does not.
 DELETE FROM guest_access_tokens WHERE ticket_id = $1;
 
--- name: DeleteExpiredGuestAccessTokens :exec
-DELETE FROM guest_access_tokens WHERE expires_at <= clock_timestamp();
-
 -- name: GetTicketIDByTrackingAndGuestEmail :one
 -- Backs the re-request flow. Matching on both the tracking number and the
 -- address means possession of one alone proves nothing, and the caller

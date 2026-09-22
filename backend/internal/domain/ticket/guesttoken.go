@@ -62,7 +62,13 @@ func rotateGuestToken(ctx context.Context, st Store, t Ticket) (string, error) {
 	return raw, nil
 }
 
-// IssueGuestToken rotates outside a transaction, for the re-request flow.
+// IssueGuestToken rotates outside a transaction.
+//
+// Nothing in production calls it: every rotation happens inside the
+// transaction of the change that caused it, and ResendGuestLink rotates for
+// itself. It exists because a test needs a raw token to drive the HTTP surface
+// with, and the alternative is duplicating the hashing in the test package —
+// which is exactly where a test stops noticing that hashing happens at all.
 func (s *Service) IssueGuestToken(ctx context.Context, ticketID uuid.UUID) (string, error) {
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
@@ -153,4 +159,18 @@ func (s *Service) ResendGuestLink(ctx context.Context, ticketID uuid.UUID) error
 		Recipient:      guestRecipient(t),
 		GuestToken:     token,
 	})
+}
+
+// guestNotifyTarget is guestRecipient, except that a ticket being closed tells
+// nobody.
+//
+// Closing revokes rather than rotating, so there is no link to send. Sending
+// anyway fell back to the account URL — the guest received "see where it
+// stands" pointing at a page they have no account to open — and Close() sends
+// nothing at all, so the two doors into Closed disagreed.
+func guestNotifyTarget(t Ticket, closing bool) string {
+	if closing {
+		return ""
+	}
+	return guestRecipient(t)
 }

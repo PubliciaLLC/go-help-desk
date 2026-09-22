@@ -135,8 +135,11 @@ already govern it. The recipient's own address is written bare, with no display
 name, for the same reason.
 
 > **Guest tickets** get a per-ticket link instead, so a recipient with no
-> account can still read the thread. The link is replaced every time the ticket
-> is updated and revoked when it closes.
+> account can still read the thread. The link is replaced whenever the ticket
+> changes in a way the guest is told about — a reply to them, a status change,
+> a resolution, a reopen — and revoked when the ticket closes. Internal notes,
+> assignment and reclassification leave it alone, because nothing tells the
+> guest about those and replacing a link nobody is told about locks them out.
 
 **Guest email addresses are validated too.** Nothing checked them before either.
 A guest address that is not a single bare address is now refused with `400`, and

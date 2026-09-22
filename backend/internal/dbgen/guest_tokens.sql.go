@@ -35,15 +35,6 @@ func (q *Queries) CreateGuestAccessToken(ctx context.Context, arg CreateGuestAcc
 	return err
 }
 
-const deleteExpiredGuestAccessTokens = `-- name: DeleteExpiredGuestAccessTokens :exec
-DELETE FROM guest_access_tokens WHERE expires_at <= clock_timestamp()
-`
-
-func (q *Queries) DeleteExpiredGuestAccessTokens(ctx context.Context) error {
-	_, err := q.db.ExecContext(ctx, deleteExpiredGuestAccessTokens)
-	return err
-}
-
 const deleteGuestAccessTokensForTicket = `-- name: DeleteGuestAccessTokensForTicket :exec
 DELETE FROM guest_access_tokens WHERE ticket_id = $1
 `

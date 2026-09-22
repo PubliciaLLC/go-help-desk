@@ -69,5 +69,8 @@ func GuestAuth(resolve GuestTokenResolver) func(http.Handler) http.Handler {
 func guestNotFound(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
-	_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"not found"}}`))
+	// The trailing newline matters: the handlers' own 404 goes through
+	// json.Encoder, which appends one. Without it two refusals that are meant
+	// to be indistinguishable differ by a byte.
+	_, _ = w.Write([]byte("{\"error\":{\"code\":\"not_found\",\"message\":\"not found\"}}\n"))
 }
