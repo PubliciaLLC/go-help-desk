@@ -185,9 +185,10 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 // The distinction is the point: "an address is configured" and "a scanner
 // answers" are different facts, and only the second one protects anybody.
 func (s *Server) scanStatus(ctx context.Context) scanStatus {
-	configured := s.scanner.Configured()
+	sc := s.scanner(ctx)
+	configured := sc.Configured()
 	policy := s.adminSvc.AttachmentScanPolicy(ctx, configured)
-	reachable := configured && s.scanner.Ping(ctx) == nil
+	reachable := configured && sc.Ping(ctx) == nil
 
 	st := scanStatus{
 		Policy:     string(policy),

@@ -230,7 +230,7 @@ accident:
 |---|---|
 | `off` | Accepted. Nothing is scanned, and the admin UI says so. |
 | `required` | Refused with `503` and `Retry-After`. **Default wherever an address is configured.** |
-| `permissive` | Accepted, with an error-level log line. |
+| `permissive` | Accepted, with a warning logged. |
 
 `required` is the default because configuring a scanner and then accepting
 files it could not check is not a position anyone holds deliberately. It is
@@ -244,10 +244,14 @@ An unrecognised policy value falls back the same way an empty one does, so a
 typo cannot silently disable scanning — and the settings endpoint refuses an
 invalid value outright, so the operator finds out at save time.
 
-**Admin → Settings reports what scanning is actually doing**, including a live
-reachability check rather than a restatement of the configuration. An instance
-whose scanner container has died has an address configured and no protection,
-and those two facts must not look alike.
+**`GET /api/v1/admin/security-warnings` reports what scanning is actually
+doing**, including a live reachability check rather than a restatement of the
+configuration: an instance whose scanner container has died has an address
+configured and no protection, and those two facts must not look alike.
+
+The admin UI does not render that yet — it shows only the insecure-secrets
+warning — so today this is visible to an administrator who asks the API. The UI
+is the obvious follow-up and is not in this change.
 
 ---
 

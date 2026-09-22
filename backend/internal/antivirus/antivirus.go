@@ -13,6 +13,7 @@
 package antivirus
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -128,13 +129,14 @@ func (s *Scanner) Ping(ctx context.Context) error {
 	if _, err := conn.Write([]byte("zPING\x00")); err != nil {
 		return fmt.Errorf("pinging scanner: %w", err)
 	}
-	buf := make([]byte, 16)
-	n, err := conn.Read(buf)
-	if err != nil {
+	reply, err := bufio.NewReader(conn).ReadString(0)
+	if err != nil && reply == "" {
 		return fmt.Errorf("reading ping response: %w", err)
 	}
-	if !strings.HasPrefix(string(buf[:n]), "PONG") {
-		return fmt.Errorf("scanner answered %q, not PONG", strings.TrimRight(string(buf[:n]), "\x00\n"))
+	// Exact match, not a prefix: a daemon that answers anything else is not
+	// one whose verdicts we should trust.
+	if strings.TrimRight(reply, "\x00\n") != "PONG" {
+		return fmt.Errorf("scanner answered %q, not PONG", strings.TrimRight(reply, "\x00\n"))
 	}
 	return nil
 }
@@ -157,6 +159,13 @@ func (s *Scanner) Scan(ctx context.Context, data []byte) Result {
 	if err := conn.SetDeadline(time.Now().Add(s.scanTimeout)); err != nil {
 		return unavailable("setting deadline", err)
 	}
+	// The deadline bounds a hung daemon; this bounds a client that gave up.
+	// Without it a cancelled upload still holds a goroutine, its 25 MB, and a
+	// clamd worker for the full minute — and clamd has a small thread pool, so
+	// a handful of abandoned uploads can deny scanning to everyone else, which
+	// under PolicyRequired denies attachments to everyone else.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	// INSTREAM: zINSTREAM\0, then [4-byte big-endian length][chunk]…,
 	// terminated by a zero length.
@@ -179,15 +188,18 @@ func (s *Scanner) Scan(ctx context.Context, data []byte) Result {
 		return unavailable("ending stream", err)
 	}
 
-	// Read the single-line reply rather than to EOF: clamd answers and then
-	// closes, but a half-open connection would otherwise block until the
-	// deadline.
-	buf := make([]byte, 4096)
-	n, err := conn.Read(buf)
-	if err != nil {
+	// Read to the NUL terminator, not one conn.Read.
+	//
+	// A single Read returns whatever arrived in the first TCP segment. If the
+	// reply were split — "stream: Win.Trojan.LOOK" then " FOUND\0" — the first
+	// half ends in "OK" and the suffix test below would have called an
+	// infected file Clean. The delimiter is what makes the reply a reply
+	// rather than a guess about packet boundaries.
+	reply, err := bufio.NewReader(conn).ReadString(0)
+	if err != nil && reply == "" {
 		return unavailable("reading verdict", err)
 	}
-	reply := strings.TrimRight(string(buf[:n]), "\x00\n")
+	reply = strings.TrimRight(reply, "\x00\n")
 
 	switch {
 	case strings.HasSuffix(reply, "FOUND"):

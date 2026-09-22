@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -161,10 +162,110 @@ func TestValidPolicy(t *testing.T) {
 	}
 }
 
-// A dial that outlives its context must not hang an upload indefinitely.
-func TestScan_RespectsAContextThatIsAlreadyDone(t *testing.T) {
+// Cancelling mid-scan must free the connection rather than hold a clamd worker
+// for the full minute.
+//
+// The earlier version of this cancelled before dialling an unroutable address,
+// which passes whether or not the context is plumbed anywhere — the dial
+// timeout produces the same verdict. This one connects to a daemon that never
+// answers, so only cancellation can end it.
+func TestScan_CancellingReleasesTheScan(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Accept, read nothing, answer nothing. A client with no
+			// cancellation waits out the 60s deadline.
+			_ = conn
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	got := antivirus.New("tcp://192.0.2.1:3310").Scan(ctx, []byte("x"))
-	require.Equal(t, antivirus.Unavailable, got.Verdict)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	done := make(chan antivirus.Result, 1)
+	go func() { done <- antivirus.New("tcp://"+ln.Addr().String()).Scan(ctx, []byte("x")) }()
+
+	select {
+	case got := <-done:
+		require.Equal(t, antivirus.Unavailable, got.Verdict,
+			"a cancelled scan is not a clean file")
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelling did not end the scan; it is waiting out the deadline")
+	}
+}
+
+// A reply split across TCP segments must not be read as a verdict.
+//
+// "stream: Win.Trojan.LOOK" then " FOUND\0": the first half ends in "OK", so a
+// single conn.Read plus a HasSuffix test called an infected file clean. This
+// is the one path that could produce Clean without a completed scan.
+func TestScan_ASplitReplyIsNotMistakenForClean(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		r := bufio.NewReader(conn)
+		if _, err := r.ReadString(0); err != nil {
+			return
+		}
+		for {
+			var size [4]byte
+			if _, err := io.ReadFull(r, size[:]); err != nil {
+				return
+			}
+			n := binary.BigEndian.Uint32(size[:])
+			if n == 0 {
+				break
+			}
+			if _, err := io.CopyN(io.Discard, r, int64(n)); err != nil {
+				return
+			}
+		}
+		// Two writes, the first ending in "OK".
+		_, _ = conn.Write([]byte("stream: Win.Trojan.LOOK"))
+		time.Sleep(20 * time.Millisecond)
+		_, _ = conn.Write([]byte(" FOUND\x00"))
+	}()
+
+	got := antivirus.New("tcp://"+ln.Addr().String()).Scan(context.Background(), []byte("nasty"))
+	require.Equal(t, antivirus.Infected, got.Verdict,
+		"a reply arriving in two segments is still one reply")
+	require.Equal(t, "Win.Trojan.LOOK", got.Virus)
+}
+
+// Ping must not accept any reply as alive.
+func TestPing_RequiresAnActualPong(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = bufio.NewReader(conn).ReadString(0)
+				_, _ = conn.Write([]byte("ERROR\x00"))
+			}()
+		}
+	}()
+	require.Error(t, antivirus.New("tcp://"+ln.Addr().String()).Ping(context.Background()),
+		"a daemon that answers something else is not one to trust")
 }

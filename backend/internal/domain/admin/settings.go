@@ -68,5 +68,13 @@ func AuthCriticalKeys() []string {
 		KeyOIDCRedirectURL,
 		KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+		// Where the virus scanner lives is a route to disabling scanning
+		// entirely: point it at a daemon that answers OK to everything and
+		// every upload passes. A leaked API key should not be able to do that,
+		// for the same reason it cannot repoint the identity provider.
+		KeyAttachmentScanAddress,
+		// And the policy, since "off" reaches the same outcome by a shorter
+		// path.
+		KeyAttachmentScanPolicy,
 	}
 }

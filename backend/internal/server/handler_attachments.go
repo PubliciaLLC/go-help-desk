@@ -355,12 +355,13 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 // downloading its signature database and the application is already serving.
 func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte, filename string, ticketID uuid.UUID) bool {
 	ctx := r.Context()
-	policy := s.adminSvc.AttachmentScanPolicy(ctx, s.scanner.Configured())
+	sc := s.scanner(ctx)
+	policy := s.adminSvc.AttachmentScanPolicy(ctx, sc.Configured())
 	if policy == antivirus.PolicyOff {
 		return true
 	}
 
-	res := s.scanner.Scan(ctx, data)
+	res := sc.Scan(ctx, data)
 	switch res.Verdict {
 	case antivirus.Infected:
 		slog.WarnContext(ctx, "infected upload refused",
