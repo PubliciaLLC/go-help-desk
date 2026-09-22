@@ -566,7 +566,11 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
-	reopenStatusID := s.reopenTargetStatusID(r.Context())
+	reopenStatusID, err := s.reopenTargetStatusID(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, body.Internal, notifyCustomer, reporterEmail, actor, reopenDays, reopenStatusID)
 	if err != nil {
@@ -796,23 +800,28 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 //
 // Shared by the authenticated reply path and the guest one, because a guest
 // reopening a ticket has to land on the same status a reporter would.
-func (s *Server) reopenTargetStatusID(ctx context.Context) uuid.UUID {
+func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
-		return uuid.Nil
+		// Returned rather than swallowed. Extracting this from handleAddReply
+		// briefly turned a database failure into uuid.Nil, which the domain
+		// reads as a misconfigured setting and refuses with 400 "no valid
+		// reopen target status is configured" — an outage reported as an
+		// administrator's typo.
+		return uuid.Nil, err
 	}
 	want := s.adminSvc.ReopenTargetStatusName(ctx)
 	for _, st := range statuses {
 		if st.Name == want {
-			return st.ID
+			return st.ID, nil
 		}
 	}
 	for _, st := range statuses {
 		if st.Name == ticket.StatusNameNew {
 			slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
 				"configured", want)
-			return st.ID
+			return st.ID, nil
 		}
 	}
-	return uuid.Nil
+	return uuid.Nil, nil
 }

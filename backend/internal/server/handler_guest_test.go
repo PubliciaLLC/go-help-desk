@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -293,4 +294,124 @@ func TestGuest_ClosingTheTicketStopsTheLinkAtTheQuery(t *testing.T) {
 		map[string]any{"body": "hello?"})
 	defer reply.Body.Close()
 	require.Equal(t, http.StatusNotFound, reply.StatusCode)
+}
+
+// The closure clause in GetTicketByGuestToken, exercised where only it can
+// answer.
+//
+// The earlier version of this closed the ticket, which deletes the row — so it
+// passed with the clause removed, and was decorative for the thing it claimed
+// to test. Here the row is left in place and the ticket closed underneath it,
+// which is the state the clause exists for: a token that outlived its DELETE,
+// or a close that revoked nothing because the delete failed.
+func TestGuest_AQueryRefusesATokenOnAClosedTicketEvenIfTheRowSurvives(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk, token := seedGuestTicket(t, h)
+
+	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "precondition")
+
+	// Close the ticket without going through Close(), so the token row stays.
+	full, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	now := time.Now()
+	full.ClosedAt = &now
+	full.StatusID = statusIDNamed(t, h, ticket.StatusNameClosed)
+	require.NoError(t, h.ticketStore.Update(ctx, full))
+
+	res = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
+		"the query must refuse a live row against a closed ticket")
+}
+
+// The same clause on the re-request lookup, for the same reason: a resend must
+// not resurrect access to a closed ticket.
+func TestGuest_ResendFindsNothingForAClosedTicket(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	tk, _ := seedGuestTicket(t, h)
+
+	_, err := h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@test.local")
+	require.NoError(t, err, "precondition: it resolves while open")
+
+	full, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	now := time.Now()
+	full.ClosedAt = &now
+	require.NoError(t, h.ticketStore.Update(ctx, full))
+
+	_, err = h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@test.local")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound,
+		"a closed ticket must not be reachable by re-request")
+}
+
+// from_you is how a guest tells their own words from support's. Asserting only
+// that their own reply is flagged passes when the field is hardcoded true.
+func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk, token := seedGuestTicket(t, h)
+
+	staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
+	_, err := h.ticketSvc.AddReply(ctx, tk.ID, "We are on it", false, true,
+		"guest@test.local", staff, 7, statusIDNamed(t, h, ticket.StatusNameNew))
+	require.NoError(t, err)
+	_, err = h.ticketSvc.AddGuestReply(ctx, tk.ID, "thank you", 7, statusIDNamed(t, h, ticket.StatusNameNew))
+	require.NoError(t, err)
+
+	// The staff reply rotated the link, so use a current one.
+	token, err = h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+	require.NoError(t, err)
+
+	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	defer res.Body.Close()
+	var out struct {
+		Replies []struct {
+			Body    string `json:"body"`
+			FromYou bool   `json:"from_you"`
+		} `json:"replies"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&out))
+	require.Len(t, out.Replies, 2)
+
+	byBody := map[string]bool{}
+	for _, r := range out.Replies {
+		byBody[r.Body] = r.FromYou
+	}
+	require.False(t, byBody["We are on it"], "support's reply is not the guest's")
+	require.True(t, byBody["thank you"], "the guest's own reply is")
+}
+
+// Moving a ticket to Closed by status change revokes rather than rotates. The
+// close test alone passed with that branch removed, because it goes through
+// Close().
+func TestGuest_StatusChangeToClosedRevokesRatherThanRotating(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk, token := seedGuestTicket(t, h)
+
+	// Admin: moving straight to Closed is an admin transition, so staff would
+	// be refused before the rotation rule was ever reached.
+	admin := ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin}
+	_, err := h.ticketSvc.UpdateStatus(ctx, tk.ID,
+		statusIDNamed(t, h, ticket.StatusNameClosed), admin)
+	require.NoError(t, err)
+
+	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
+
+	_, err = h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+	require.NoError(t, err)
+	// And nothing was mailed with a fresh link for a ticket nobody can act on.
+	_, err = h.ticketSvc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@test.local")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound)
 }

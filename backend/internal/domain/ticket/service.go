@@ -607,14 +607,25 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 
 	// Record first staff response for SLA. Deliberately best-effort: the reply
 	// is already persisted and this is a metric, not the user's intent, so an
-	// A public reply rotates the guest's link and the notification carries the
-	// replacement. An internal note does not: the guest is never told about
-	// one, so rotating would lock them out — and the email announcing a new
-	// link would itself disclose that staff had written something privately
-	// about their ticket, which is the leak 1.2.0 kept out of the webhook
-	// payload.
+	// Rotate if and only if the replacement will be delivered.
+	//
+	// reporterEmail is the address this reply will be mailed to, and it is
+	// empty in three cases that all used to rotate anyway: an internal note,
+	// a staff reply with notify_customer off, and — worst — the guest's own
+	// reply, which passes "" because mailing customers their own words back is
+	// noise. Each minted a token that reached nobody and killed the one the
+	// guest was holding, so replying, the single thing a guest comes back to
+	// do, locked them out of their own ticket.
+	//
+	// Tying rotation to delivery makes that unrepresentable rather than merely
+	// fixed: there is no longer a path that rotates without sending.
+	//
+	// An internal note still does not rotate, and now for a second reason
+	// beyond the lockout — mail announcing a new link would disclose that
+	// staff had written something privately about the ticket, the leak 1.2.0
+	// kept out of the webhook payload.
 	var guestToken string
-	if !internal && t.GuestEmail != nil && *t.GuestEmail != "" {
+	if t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != "" {
 		if guestToken, err = s.IssueGuestToken(ctx, t.ID); err != nil {
 			return Reply{}, err
 		}

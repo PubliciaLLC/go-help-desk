@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -60,15 +61,21 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// No type_id or item_id. DESIGN.md gives a guest the category only, and
+	// accepting them cost more than a mismatched form: they went to the
+	// database unvalidated, so a random uuid hit a foreign key AFTER NextSeq
+	// had consumed a tracking number — an unauthenticated 500 that burns a
+	// number from the sequence on every call.
+	//
+	// No custom_fields either, for now: the fields a guest may fill are
+	// category-level and visible_on_new, and nothing here enforces that yet.
 	var body struct {
-		Subject     string     `json:"subject"`
-		Description string     `json:"description"`
-		CategoryID  uuid.UUID  `json:"category_id"`
-		TypeID      *uuid.UUID `json:"type_id"`
-		ItemID      *uuid.UUID `json:"item_id"`
-		GuestEmail  string     `json:"guest_email"`
-		GuestName   string     `json:"guest_name"`
-		GuestPhone  string     `json:"guest_phone"`
+		Subject     string    `json:"subject"`
+		Description string    `json:"description"`
+		CategoryID  uuid.UUID `json:"category_id"`
+		GuestEmail  string    `json:"guest_email"`
+		GuestName   string    `json:"guest_name"`
+		GuestPhone  string    `json:"guest_phone"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -80,17 +87,44 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "guest_email is required")
 		return
 	}
+	// Required, as DESIGN.md says. Staff answering a ticket from a stranger
+	// need something to address.
+	name := strings.TrimSpace(body.GuestName)
+	if name == "" {
+		Error(w, http.StatusBadRequest, "bad_request", "guest_name is required")
+		return
+	}
+	// Checked before anything is written. The category is the one id a guest
+	// supplies, and an unknown one would otherwise reach the foreign key after
+	// the tracking number had already been taken.
+	//
+	// Active categories only, and the same list the public form is offered, so
+	// an archived category cannot be selected by anyone who kept the id.
+	cats, err := s.categories.ListCategories(ctx, true)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	known := false
+	for _, c := range cats {
+		if c.ID == body.CategoryID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		Error(w, http.StatusBadRequest, "bad_request", "category_id is not a category open to guests")
+		return
+	}
 	// Priority is not taken from the request. A guest setting their own ticket
 	// to critical is a queue anyone on the internet can jump.
 	in := ticket.CreateInput{
 		Subject:        body.Subject,
 		Description:    body.Description,
 		CategoryID:     body.CategoryID,
-		TypeID:         body.TypeID,
-		ItemID:         body.ItemID,
 		Priority:       ticket.PriorityMedium,
 		GuestEmail:     &email,
-		GuestName:      strings.TrimSpace(body.GuestName),
+		GuestName:      name,
 		GuestPhone:     strings.TrimSpace(body.GuestPhone),
 		TrackingPrefix: s.adminSvc.TicketPrefix(ctx),
 	}
@@ -192,8 +226,13 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	reopenStatusID, err := s.reopenTargetStatusID(ctx)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 	reply, err := s.tickets.AddGuestReply(ctx, t.ID, body.Body,
-		s.adminSvc.ReopenWindowDays(ctx), s.reopenTargetStatusID(ctx))
+		s.adminSvc.ReopenWindowDays(ctx), reopenStatusID)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -229,8 +268,21 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Everything below is best-effort and its outcome is never reported.
-	s.resendGuestLink(r, strings.TrimSpace(body.TrackingNumber), strings.TrimSpace(body.Email))
+	// Synchronous, and the response says nothing either way.
+	//
+	// There is a timing signal here and it is worth naming rather than hiding:
+	// a match rotates the token and dials a mail server, a miss runs one
+	// SELECT, and SMTP dominates. Someone who already holds a tracking number
+	// AND an address can time this to learn whether they go together.
+	//
+	// It was briefly a goroutine. That is the wrong fix twice over: it puts an
+	// unbounded number of background database users behind an unauthenticated
+	// endpoint, and it is not this endpoint's problem to solve. Every
+	// notification in this application is delivered on the request goroutine —
+	// filing a ticket and replying to one carry the same signal, which is why
+	// the SMTP dial timeout exists at all. The fix is asynchronous delivery
+	// for all of them, tracked separately, not a goroutine here.
+	s.resendGuestLink(r.Context(), strings.TrimSpace(body.TrackingNumber), strings.TrimSpace(body.Email))
 
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -238,13 +290,26 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 // resendGuestLink mails a fresh link when the two halves match a ticket that
 // still accepts access. Failures are swallowed on purpose: the caller learns
 // nothing either way.
-func (s *Server) resendGuestLink(r *http.Request, trackingNumber, email string) {
+func (s *Server) resendGuestLink(ctx context.Context, trackingNumber, email string) {
 	if trackingNumber == "" || email == "" {
 		return
 	}
-	ctx := r.Context()
 	ticketID, err := s.tickets.GuestTicketIDFor(ctx, ticket.TrackingNumber(trackingNumber), email)
 	if err != nil {
+		return
+	}
+	// A second budget, keyed on the ticket rather than the caller.
+	//
+	// The address budget alone bounds nothing useful here: a resend rotates,
+	// so anyone who can guess a tracking number — they are sequential — and
+	// knows the address can replace the link the customer is currently using,
+	// over and over, from as many addresses as they like. The new link always
+	// goes to the real customer, so this is an inbox flood rather than a
+	// lockout, but a flood of working links is still a flood.
+	//
+	// Checked after the lookup, so a miss consumes nothing and the budget
+	// cannot be probed to learn which tickets exist.
+	if !s.loginLimiter.Allow("guest-resend-ticket:" + ticketID.String()) {
 		return
 	}
 	// Minting and mailing both happen in the service, which already holds the
