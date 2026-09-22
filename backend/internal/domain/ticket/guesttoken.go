@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 // GuestTokenTTL is the outer bound on a guest link, not its usual life.
@@ -120,4 +121,36 @@ func guestRecipient(t Ticket) string {
 		return ""
 	}
 	return *t.GuestEmail
+}
+
+// ResendGuestLink mints a fresh link for a ticket and mails it.
+//
+// Rotating here as well as delivering is deliberate: a re-request is a new
+// credential, not a second copy of the old one, so a link someone else may
+// have seen stops working the moment the real customer asks for another.
+//
+// The caller reports nothing about the outcome — a response that varied would
+// turn the re-request endpoint into a way to test whether a ticket or an
+// address exists — so the error return is for the caller's logs, not its
+// answer.
+func (s *Service) ResendGuestLink(ctx context.Context, ticketID uuid.UUID) error {
+	t, err := s.store.GetByID(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	token, err := rotateGuestToken(ctx, s.store, t)
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return ErrGuestTokenNotFound
+	}
+	return s.dispatcher.Dispatch(ctx, notification.Event{
+		Type:           notification.EventGuestLinkResent,
+		TicketID:       t.ID,
+		OccurredAt:     time.Now(),
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestToken:     token,
+	})
 }

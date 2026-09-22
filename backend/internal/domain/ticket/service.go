@@ -455,6 +455,35 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 // reporter. It is forced false for internal notes. reporterEmail is the
 // recipient address; callers are responsible for looking it up.
 func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+	return s.addReply(ctx, ticketID, body, internal, notifyCustomer, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID, nil)
+}
+
+// AddGuestReply appends a reply from a guest, who has no account.
+//
+// The caller has already resolved a token to this ticket, so ownership is
+// settled before this is reached — which is why the ownership half of
+// CanUserUpdate is skipped and the lifecycle half is not. A closed ticket is
+// closed to the customer who opened it, and the reopen window does not widen
+// because the reply arrived by link rather than by login.
+//
+// The reply has no author. That is the only way AuthorID is NULL, which is what
+// lets a reader tell a customer's words from staff's without another column.
+//
+// A guest reply is never internal and never notifies: the customer is the one
+// writing, and mailing them their own message back is noise. Staff see it in
+// the thread.
+func (s *Service) AddGuestReply(ctx context.Context, ticketID uuid.UUID, body string, reopenWindowDays int, reopenTargetStatusID uuid.UUID) (Reply, error) {
+	guest := Actor{UserID: nil, Role: user.RoleUser}
+	return s.addReply(ctx, ticketID, body, false, false, "", guest, reopenWindowDays, reopenTargetStatusID,
+		func(t Ticket, status Status) error {
+			return CanGuestUpdate(t, status, reopenWindowDays)
+		})
+}
+
+// addReply is the one reply path. authorize replaces the default ownership
+// check when non-nil; everything after it — the reopen, the write, the audit,
+// the dispatch — is shared, so a guest reply cannot drift from a user's.
+func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string, internal bool, notifyCustomer bool, reporterEmail string, actor Actor, reopenWindowDays int, reopenTargetStatusID uuid.UUID, authorize func(Ticket, Status) error) (Reply, error) {
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
 		return Reply{}, err
@@ -472,7 +501,11 @@ func (s *Service) AddReply(ctx context.Context, ticketID uuid.UUID, body string,
 	if actor.UserID != nil {
 		u.ID = *actor.UserID
 	}
-	if err := CanUserUpdate(t, u, currentStatus, reopenWindowDays); err != nil {
+	check := func(t Ticket, status Status) error { return CanUserUpdate(t, u, status, reopenWindowDays) }
+	if authorize != nil {
+		check = authorize
+	}
+	if err := check(t, currentStatus); err != nil {
 		return Reply{}, fmt.Errorf("cannot reply to ticket: %w", err)
 	}
 

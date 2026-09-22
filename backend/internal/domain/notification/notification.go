@@ -19,6 +19,12 @@ const (
 	EventTicketClosed        EventType = "ticket.closed"
 	EventTicketReopened      EventType = "ticket.reopened"
 	EventTicketLinked        EventType = "ticket.linked"
+
+	// EventGuestLinkResent is a guest asking for a fresh access link, which is
+	// not a change to the ticket. It exists so the mail goes out through the
+	// one path that sends mail, rather than giving the HTTP layer a mailer of
+	// its own.
+	EventGuestLinkResent EventType = "guest.link_resent"
 )
 
 // Event carries the data for a single lifecycle event on a ticket.

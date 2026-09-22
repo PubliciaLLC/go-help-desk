@@ -89,11 +89,21 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 		return "", "", "", nil, false
 	}
 
-	// Both halves of the link are trusted: the ticket's own identifier, minted
-	// server-side, and the configured base URL.
+	// Every part of the link is trusted: a token this server minted, or the
+	// ticket's own identifier, on the configured base URL.
+	//
+	// A guest has no account, so the token is how they reach their own ticket.
+	// This does not reopen what 1.2.0 closed — that removed CONTENT chosen by
+	// whoever filed the ticket, its subject line and reply bodies, from mail
+	// sent over the operator's domain. A link this server generated is not
+	// that, and the message still carries nothing anyone else wrote.
+	path := "/tickets/" + event.TicketID.String()
+	if event.GuestToken != "" {
+		path = "/g/" + event.GuestToken
+	}
 	view := map[string]string{
 		"TrackingNumber": event.TrackingNumber,
-		"TicketURL":      strings.TrimRight(d.cfg.BaseURL, "/") + "/tickets/" + event.TicketID.String(),
+		"TicketURL":      strings.TrimRight(d.cfg.BaseURL, "/") + path,
 	}
 
 	// A missing tracking number costs the subject line its reference but must
@@ -108,6 +118,23 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 		return "ticket_created.tmpl", "We have received " + ref, event.Recipient, view, true
 	case notification.EventTicketReplied:
 		return "ticket_replied.tmpl", "There is a new reply on " + ref, event.Recipient, view, true
+
+	// These three send only to a guest — Recipient is empty for a ticket with
+	// a reporter account, which returns above. An account holder signs in and
+	// sees a status change; mailing them every transition would be a stream of
+	// email nobody asked for, carrying a link they do not need.
+	//
+	// They exist because rotation has to deliver its replacement: each of these
+	// invalidates the link already in the guest's inbox, so each has to carry
+	// the new one or the guest is locked out.
+	case notification.EventTicketStatusChanged:
+		return "ticket_status_changed.tmpl", "There is an update on " + ref, event.Recipient, view, true
+	case notification.EventTicketResolved:
+		return "ticket_resolved.tmpl", "We have resolved " + ref, event.Recipient, view, true
+	case notification.EventTicketReopened:
+		return "ticket_reopened.tmpl", "We have reopened " + ref, event.Recipient, view, true
+	case notification.EventGuestLinkResent:
+		return "guest_link.tmpl", "Your link to " + ref, event.Recipient, view, true
 	}
 	return "", "", "", nil, false
 }

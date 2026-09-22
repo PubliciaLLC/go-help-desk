@@ -335,6 +335,7 @@ func (s *Server) buildRouter() *chi.Mux {
 
 		r.Mount("/auth", s.authRouter())
 		r.Mount("/tickets", s.ticketRouter())
+		r.Mount("/guest", s.guestRouter())
 		r.Mount("/groups", s.groupsRouter())
 		// RequireMFA as well as RequireRole: without it a session that has
 		// passed the password but not the second factor could still read

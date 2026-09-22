@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"math"
@@ -565,41 +566,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
-	reopenStatusName := s.adminSvc.ReopenTargetStatusName(r.Context())
-
-	// Look up the reopen target status ID.
-	statuses, err := s.tickets.ListStatuses(r.Context())
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	// Resolve the configured reopen target, falling back to the New system
-	// status when it does not resolve.
-	//
-	// It can fail to resolve: the setting takes any string, and a custom status
-	// can be deleted while still configured here. Passing uuid.Nil through hit
-	// the status_id foreign key mid-transaction and took the reply with it, so
-	// a customer replying to their own resolved ticket got a 500 because an
-	// administrator had mistyped a setting. The fallback keeps the customer
-	// working; the misconfiguration is an admin problem and is logged here.
-	var reopenStatusID uuid.UUID
-	for _, st := range statuses {
-		if st.Name == reopenStatusName {
-			reopenStatusID = st.ID
-			break
-		}
-	}
-	if reopenStatusID == uuid.Nil {
-		for _, st := range statuses {
-			if st.Name == ticket.StatusNameNew {
-				reopenStatusID = st.ID
-				break
-			}
-		}
-		slog.WarnContext(r.Context(), "configured reopen target status does not exist; falling back to New",
-			"configured", reopenStatusName)
-	}
-
+	reopenStatusID := s.reopenTargetStatusID(r.Context())
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	reply, err := s.tickets.AddReply(r.Context(), id, body.Body, body.Internal, notifyCustomer, reporterEmail, actor, reopenDays, reopenStatusID)
 	if err != nil {
@@ -815,4 +782,37 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	JSON(w, http.StatusOK, links)
+}
+
+// reopenTargetStatusID resolves the configured reopen target, falling back to
+// the New system status when it does not resolve.
+//
+// It can fail to resolve: the setting takes any string, and a custom status can
+// be deleted while still configured here. Passing uuid.Nil through hit the
+// status_id foreign key mid-transaction and took the user's reply with it, so a
+// customer replying to their own resolved ticket got a 500 because an
+// administrator had mistyped a setting. The fallback keeps the customer
+// working; the misconfiguration is an admin problem and is logged.
+//
+// Shared by the authenticated reply path and the guest one, because a guest
+// reopening a ticket has to land on the same status a reporter would.
+func (s *Server) reopenTargetStatusID(ctx context.Context) uuid.UUID {
+	statuses, err := s.tickets.ListStatuses(ctx)
+	if err != nil {
+		return uuid.Nil
+	}
+	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	for _, st := range statuses {
+		if st.Name == want {
+			return st.ID
+		}
+	}
+	for _, st := range statuses {
+		if st.Name == ticket.StatusNameNew {
+			slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
+				"configured", want)
+			return st.ID
+		}
+	}
+	return uuid.Nil
 }

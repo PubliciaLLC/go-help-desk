@@ -375,3 +375,96 @@ func TestEmail_RecipientDisplayNameDoesNotReachTheWire(t *testing.T) {
 	require.NotContains(t, raw, "555-0100", "the display name must not be delivered")
 	require.NotContains(t, raw, "suspended")
 }
+
+// A guest has no account, so the link carries a token. What must not happen is
+// the token going anywhere but the one address on the ticket — and the message
+// must still carry no content anyone else wrote.
+func TestEmail_GuestLinkCarriesTheTokenAndNothingElse(t *testing.T) {
+	id := uuid.New()
+	for _, tc := range []struct {
+		name   string
+		evType notification.EventType
+	}{
+		{"created", notification.EventTicketCreated},
+		{"replied", notification.EventTicketReplied},
+		{"status changed", notification.EventTicketStatusChanged},
+		{"resolved", notification.EventTicketResolved},
+		{"reopened", notification.EventTicketReopened},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, received := captureSMTP(t)
+			d := dispatcherFor(t, addr)
+			d.cfg.BaseURL = "https://help.example.com"
+
+			require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+				Type:           tc.evType,
+				TicketID:       id,
+				TrackingNumber: "GHD-2026-000001",
+				Recipient:      "guest@example.com",
+				GuestToken:     "0123456789abcdef",
+				Payload: map[string]any{
+					"Subject":   "Your account is suspended, call 555-0100",
+					"ReplyBody": "Wire the money",
+				},
+			}))
+
+			raw := strings.ReplaceAll(<-received, "=\r\n", "")
+			require.Contains(t, raw, "https://help.example.com/g/0123456789abcdef",
+				"a guest reaches their ticket by token, not by id")
+			require.NotContains(t, raw, id.String(),
+				"the ticket id is not the guest's path and must not leak one")
+			for _, forbidden := range []string{"suspended", "555-0100", "Wire the money"} {
+				require.NotContains(t, raw, forbidden,
+					"a link is not content: payload text still must not reach the wire")
+			}
+			require.Contains(t, raw, "To: <guest@example.com>")
+		})
+	}
+}
+
+// Without a token the link is the ticket id, as it was. An account holder has
+// no token and does not need one.
+func TestEmail_WithoutATokenTheLinkIsTheTicketID(t *testing.T) {
+	addr, received := captureSMTP(t)
+	d := dispatcherFor(t, addr)
+	d.cfg.BaseURL = "https://help.example.com"
+	id := uuid.New()
+
+	require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+		Type:           notification.EventTicketReplied,
+		TicketID:       id,
+		TrackingNumber: "GHD-2026-000002",
+		Recipient:      "user@example.com",
+	}))
+
+	raw := strings.ReplaceAll(<-received, "=\r\n", "")
+	require.Contains(t, raw, "https://help.example.com/tickets/"+id.String())
+	require.NotContains(t, raw, "/g/")
+}
+
+// The three lifecycle notifications exist to deliver a rotated link. With no
+// recipient — an account holder's ticket — they must send nothing at all.
+func TestEmail_LifecycleNotificationsAreGuestOnly(t *testing.T) {
+	for _, ty := range []notification.EventType{
+		notification.EventTicketStatusChanged,
+		notification.EventTicketResolved,
+		notification.EventTicketReopened,
+	} {
+		t.Run(string(ty), func(t *testing.T) {
+			addr, received := captureSMTP(t)
+			d := dispatcherFor(t, addr)
+
+			require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+				Type:           ty,
+				TicketID:       uuid.New(),
+				TrackingNumber: "GHD-2026-000003",
+			}))
+
+			select {
+			case raw := <-received:
+				t.Fatalf("a ticket with no guest recipient sent mail:\n%s", raw)
+			case <-time.After(300 * time.Millisecond):
+			}
+		})
+	}
+}

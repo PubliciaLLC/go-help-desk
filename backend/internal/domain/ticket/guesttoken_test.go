@@ -203,3 +203,57 @@ func lastEventOfType(t *testing.T, h *harness, ty notification.EventType) notifi
 	t.Fatalf("no %s event was dispatched; got %v", ty, h.dispatcher.types())
 	return notification.Event{}
 }
+
+// A guest reply carries no author, which is what lets a reader tell the
+// customer's words from staff's without another column.
+func TestGuestReply_HasNoAuthorAndIsNeverInternal(t *testing.T) {
+	h := newHarness(t)
+	tk, _ := guestTicket(t, h)
+
+	r, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 7, h.newStatus.ID)
+	require.NoError(t, err)
+	require.Nil(t, r.AuthorID, "a guest has no account to be the author")
+	require.False(t, r.Internal, "a guest cannot write a staff-only note")
+	require.False(t, r.NotifyCustomer, "mailing the customer their own message back is noise")
+}
+
+// The lifecycle rules apply to a guest exactly as they apply to the reporter:
+// the window reopens a resolved ticket, and a closed one refuses.
+func TestGuestReply_ObeysTheLifecycleItDidNotAuthor(t *testing.T) {
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+
+	t.Run("reopens a resolved ticket inside the window", func(t *testing.T) {
+		h := newHarness(t)
+		tk, _ := guestTicket(t, h)
+		_, err := h.svc.Resolve(context.Background(), tk.ID, "done", staff)
+		require.NoError(t, err)
+
+		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "not fixed", 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		after, err := h.store.GetByID(context.Background(), tk.ID)
+		require.NoError(t, err)
+		require.Equal(t, h.newStatus.ID, after.StatusID, "the link is how a guest reopens")
+		require.Nil(t, after.ResolvedAt)
+	})
+
+	t.Run("is refused outside the window", func(t *testing.T) {
+		h := newHarness(t)
+		tk, _ := guestTicket(t, h)
+		_, err := h.svc.Resolve(context.Background(), tk.ID, "done", staff)
+		require.NoError(t, err)
+
+		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "too late", 0, h.newStatus.ID)
+		require.ErrorIs(t, err, ticket.ErrReopenWindowClosed,
+			"the window does not widen because the reply arrived by link")
+	})
+
+	t.Run("is refused on a closed ticket", func(t *testing.T) {
+		h := newHarness(t)
+		tk, _ := guestTicket(t, h)
+		require.NoError(t, h.svc.Close(context.Background(), tk.ID, staff))
+
+		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "hello", 7, h.newStatus.ID)
+		require.ErrorIs(t, err, ticket.ErrClosed)
+	})
+}
