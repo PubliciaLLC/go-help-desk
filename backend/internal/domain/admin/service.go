@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -337,4 +340,35 @@ func (s *Service) AutoAssignUserIDs(ctx context.Context) []uuid.UUID {
 		}
 	}
 	return ids
+}
+
+// AttachmentScanPolicy decides what an unscannable upload means.
+//
+// Defaults to "required" wherever a scanner address exists, and "off" where
+// none does. That default is the whole point of the setting: configuring a
+// scanner and then accepting files it could not look at is not a position
+// anyone holds deliberately, and the previous behaviour — accept everything,
+// log a warning — was that position by accident.
+//
+// An unrecognised stored value falls back the same way rather than being
+// treated as "off", so a typo cannot silently disable scanning.
+func (s *Service) AttachmentScanPolicy(ctx context.Context, addrConfigured bool) antivirus.Policy {
+	v, _ := s.GetString(ctx, KeyAttachmentScanPolicy)
+	if antivirus.ValidPolicy(v) {
+		return antivirus.Policy(v)
+	}
+	if addrConfigured {
+		return antivirus.PolicyRequired
+	}
+	return antivirus.PolicyOff
+}
+
+// AttachmentScanAddress is the operator's override for where the scanner
+// lives, empty when the environment value should stand.
+//
+// Follows the same shape as SAML and the rest: the environment sets what the
+// instance starts with, and a saved setting takes precedence.
+func (s *Service) AttachmentScanAddress(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentScanAddress)
+	return strings.TrimSpace(v)
 }

@@ -1,8 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -82,6 +86,44 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Same reasoning as the prefix above: a value that is accepted and then
+	// ignored is worse than a refusal, and here the ignored value is a
+	// security control. An unrecognised policy falls back to "required", so a
+	// typo would silently refuse every upload rather than disable scanning —
+	// safe, but baffling. Refusing it says what is wrong instead.
+	if raw, ok := body[admin.KeyAttachmentScanPolicy]; ok {
+		var policy string
+		if err := json.Unmarshal(raw, &policy); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "scan policy must be a string")
+			return
+		}
+		if !antivirus.ValidPolicy(policy) {
+			Error(w, http.StatusBadRequest, "invalid_scan_policy",
+				"scan policy must be one of: off, required, permissive")
+			return
+		}
+	}
+
+	// The scanner address is a network target an operator supplies, so it goes
+	// through the same guard as webhook targets — with one deliberate
+	// difference: private addresses are ALLOWED here. A ClamAV on the same
+	// private network is the normal deployment, exactly as for a self-hosted
+	// identity provider, and refusing it would break the default compose file.
+	// What is checked is that it is a well-formed address of a scheme we can
+	// dial, so a typo fails at save time rather than at the first upload.
+	if raw, ok := body[admin.KeyAttachmentScanAddress]; ok {
+		var addr string
+		if err := json.Unmarshal(raw, &addr); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "scanner address must be a string")
+			return
+		}
+		if addr != "" && !validScannerAddr(addr) {
+			Error(w, http.StatusBadRequest, "invalid_scanner_address",
+				`scanner address must look like "tcp://host:port" or "unix:///path/to/socket"`)
+			return
+		}
+	}
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
@@ -97,6 +139,32 @@ type securityWarnings struct {
 	// InsecureSecrets names environment variables still set to a value this
 	// project ships as an example. Names only — never the values.
 	InsecureSecrets []string `json:"insecure_secrets"`
+
+	// AttachmentScanning is what the scanner is actually doing, as opposed to
+	// what the configuration says it should.
+	//
+	// Here because an operator should not have to read logs, or wait for an
+	// upload to fail, to learn that scanning is degraded. The old behaviour
+	// wrote one slog.Warn per skipped file and nothing else, so an instance
+	// whose scanner had been dead for a month looked exactly like a healthy
+	// one from the admin UI.
+	AttachmentScanning scanStatus `json:"attachment_scanning"`
+}
+
+type scanStatus struct {
+	// Policy is off, required or permissive.
+	Policy string `json:"policy"`
+
+	// Configured reports whether an address is set at all.
+	Configured bool `json:"configured"`
+
+	// Reachable is the answer to a live ping, not a cached belief.
+	Reachable bool `json:"reachable"`
+
+	// Effect says in plain words what is happening to uploads right now,
+	// because the combination of policy and reachability is not obvious and
+	// this is the sentence an administrator actually needs.
+	Effect string `json:"effect"`
 }
 
 // handleGetSecurityWarnings reports configuration problems that cannot be
@@ -107,6 +175,51 @@ type securityWarnings struct {
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, securityWarnings{
-		InsecureSecrets: s.cfg.InsecureSecrets(),
+		InsecureSecrets:    s.cfg.InsecureSecrets(),
+		AttachmentScanning: s.scanStatus(r.Context()),
 	})
+}
+
+// scanStatus pings the scanner rather than reporting what the settings say.
+//
+// The distinction is the point: "an address is configured" and "a scanner
+// answers" are different facts, and only the second one protects anybody.
+func (s *Server) scanStatus(ctx context.Context) scanStatus {
+	sc := s.scanner(ctx)
+	configured := sc.Configured()
+	policy := s.adminSvc.AttachmentScanPolicy(ctx, configured)
+	reachable := configured && sc.Ping(ctx) == nil
+
+	st := scanStatus{
+		Policy:     string(policy),
+		Configured: configured,
+		Reachable:  reachable,
+	}
+	switch {
+	case policy == antivirus.PolicyOff:
+		st.Effect = "Attachments are not scanned. Uploads are accepted without being checked."
+	case reachable:
+		st.Effect = "Attachments are scanned before being accepted."
+	case policy == antivirus.PolicyRequired:
+		st.Effect = "The scanner is unreachable, so attachment uploads are being refused until it returns."
+	default:
+		st.Effect = "The scanner is unreachable and the policy is permissive, so attachments are being accepted WITHOUT being scanned."
+	}
+	return st
+}
+
+// validScannerAddr accepts the two forms the scanner can dial. Deliberately not
+// a full URL parse: "tcp://host:port" is not a URL anyone else would parse the
+// same way, and the only question is whether net.Dial will understand it.
+func validScannerAddr(addr string) bool {
+	switch {
+	case strings.HasPrefix(addr, "unix://"):
+		return len(strings.TrimPrefix(addr, "unix://")) > 0
+	case strings.HasPrefix(addr, "tcp://"):
+		hostport := strings.TrimPrefix(addr, "tcp://")
+		host, port, err := net.SplitHostPort(hostport)
+		return err == nil && host != "" && port != ""
+	default:
+		return false
+	}
 }

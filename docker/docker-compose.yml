@@ -80,7 +80,14 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in docker/.env (min 32 chars) — copy docker/.env.example}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in docker/.env — copy docker/.env.example}
       HTTP_PORT: 8080
-      # ClamAV — wired to the internal antivirus network; non-fatal if unavailable
+      # ClamAV — wired to the internal antivirus network.
+      #
+      # NOT non-fatal any more: with an address configured, the scan policy
+      # defaults to "required", so uploads are refused with 503 while the
+      # scanner is unreachable rather than being accepted unscanned. That
+      # covers the first few minutes here, where clamav is still downloading
+      # its signature database while the app is already serving. Everything
+      # other than attachment upload works throughout.
       CLAMAV_ADDR: tcp://clamav:3310
       # Optional — set in .env to enable email notifications
       SMTP_HOST: ${SMTP_HOST:-}

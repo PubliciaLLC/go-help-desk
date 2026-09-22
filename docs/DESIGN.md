@@ -215,7 +215,43 @@ in 1.2.0.
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
 
-Attachment upload is available to all authenticated (non-guest) users. Accepted formats: PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download. Optional ClamAV virus scanning is configurable via the `CLAMAV_ADDR` environment variable — if the scanner is unavailable or unconfigured, uploads proceed normally with a logged warning.
+Attachment upload is available to all authenticated (non-guest) users. Accepted formats: PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+
+### Attachment scanning
+
+The scanner is configured with `CLAMAV_ADDR`, which an administrator can
+override under **Admin → Settings**; the environment value is what the instance
+starts with. Docker Compose ships ClamAV by default.
+
+What happens to a file the scanner could not look at is a policy, not an
+accident:
+
+| Policy | An unscannable upload |
+|---|---|
+| `off` | Accepted. Nothing is scanned, and the admin UI says so. |
+| `required` | Refused with `503` and `Retry-After`. **Default wherever an address is configured.** |
+| `permissive` | Accepted, with a warning logged. |
+
+`required` is the default because configuring a scanner and then accepting
+files it could not check is not a position anyone holds deliberately. It is
+also what makes the first few minutes of a fresh `docker compose up` safe:
+ClamAV spends around three minutes downloading its signature database while the
+application is already serving, so uploads wait for the scanner rather than
+bypassing it. The help desk works throughout; only the one operation that
+depends on the scanner is delayed.
+
+An unrecognised policy value falls back the same way an empty one does, so a
+typo cannot silently disable scanning — and the settings endpoint refuses an
+invalid value outright, so the operator finds out at save time.
+
+**`GET /api/v1/admin/security-warnings` reports what scanning is actually
+doing**, including a live reachability check rather than a restatement of the
+configuration: an instance whose scanner container has died has an address
+configured and no protection, and those two facts must not look alike.
+
+The admin UI does not render that yet — it shows only the insecure-secrets
+warning — so today this is visible to an administrator who asks the API. The UI
+is the obvious follow-up and is not in this change.
 
 ---
 

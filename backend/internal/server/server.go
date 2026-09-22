@@ -16,6 +16,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
@@ -147,6 +148,17 @@ type Server struct {
 	// restart and multiplied by the replica count, which is not a limit on a
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
+
+	// No scanner field. It is built per use from the effective address,
+	// because the address is an operator setting and a scanner constructed
+	// once at startup would ignore it — the setting would validate, store,
+	// return 204, and change nothing. That is the defect this file already
+	// documents for the ticket prefix, and it is worse on a security control:
+	// an operator moves ClamAV, saves the new address, and scanning silently
+	// stops.
+	//
+	// Constructing is three struct fields and no I/O, so there is nothing to
+	// cache and no invalidation to get wrong.
 
 	// guestResendLimiter is per ticket, and much tighter than the credential
 	// budget: a resend rotates, so anyone who can guess a sequential tracking
@@ -529,3 +541,19 @@ var (
 	_ = time.Now
 	_ = uuid.Nil
 )
+
+// scanner returns a Scanner for wherever the scanner currently lives.
+//
+// The saved setting wins over the environment, matching SAML and the rest: the
+// environment is what the instance starts with, and an administrator can move
+// it without a redeploy.
+//
+// Never nil. An unconfigured one answers Unavailable to every scan, which the
+// policy then decides about — rather than a nil check a caller can forget,
+// turning "no scanner" into a dereference instead of a decision.
+func (s *Server) scanner(ctx context.Context) *antivirus.Scanner {
+	if addr := s.adminSvc.AttachmentScanAddress(ctx); addr != "" {
+		return antivirus.New(addr)
+	}
+	return antivirus.New(s.cfg.ClamAVAddr)
+}
