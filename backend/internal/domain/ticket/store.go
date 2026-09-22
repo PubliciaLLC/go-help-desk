@@ -49,6 +49,20 @@ type Store interface {
 	ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 
+	// Guest access tokens.
+	//
+	// On Store rather than an interface of their own because rotation has to
+	// happen in the same transaction as the change that caused it — a status
+	// change that rolls back must not leave the customer holding a dead link.
+	// InTx hands the caller a Store, so that is where these have to live.
+	//
+	// Only hashes cross this boundary. The raw token exists in one email.
+	CreateGuestToken(ctx context.Context, id, ticketID uuid.UUID, hash string, expiresAt time.Time) error
+	TicketByGuestToken(ctx context.Context, hash string) (Ticket, error)
+	TouchGuestToken(ctx context.Context, hash string) error
+	DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
+	TicketIDByTrackingAndGuestEmail(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error)
+
 	// Search — ILIKE across tracking_number, subject, description
 	SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
 	SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)

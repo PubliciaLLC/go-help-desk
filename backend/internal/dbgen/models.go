@@ -99,6 +99,15 @@ type GroupScope struct {
 	TypeID     uuid.NullUUID `json:"type_id"`
 }
 
+type GuestAccessToken struct {
+	ID         uuid.UUID    `json:"id"`
+	TicketID   uuid.UUID    `json:"ticket_id"`
+	TokenHash  string       `json:"token_hash"`
+	ExpiresAt  time.Time    `json:"expires_at"`
+	CreatedAt  time.Time    `json:"created_at"`
+	LastUsedAt sql.NullTime `json:"last_used_at"`
+}
+
 type Item struct {
 	ID        uuid.UUID `json:"id"`
 	TypeID    uuid.UUID `json:"type_id"`
@@ -225,14 +234,13 @@ type TicketLink struct {
 }
 
 type TicketReply struct {
-	ID             uuid.UUID      `json:"id"`
-	TicketID       uuid.UUID      `json:"ticket_id"`
-	AuthorID       uuid.NullUUID  `json:"author_id"`
-	GuestToken     sql.NullString `json:"guest_token"`
-	Body           string         `json:"body"`
-	Internal       bool           `json:"internal"`
-	CreatedAt      time.Time      `json:"created_at"`
-	NotifyCustomer bool           `json:"notify_customer"`
+	ID             uuid.UUID     `json:"id"`
+	TicketID       uuid.UUID     `json:"ticket_id"`
+	AuthorID       uuid.NullUUID `json:"author_id"`
+	Body           string        `json:"body"`
+	Internal       bool          `json:"internal"`
+	CreatedAt      time.Time     `json:"created_at"`
+	NotifyCustomer bool          `json:"notify_customer"`
 }
 
 type TicketStatusHistory struct {

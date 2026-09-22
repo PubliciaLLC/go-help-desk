@@ -3,6 +3,7 @@ package ticket_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +31,9 @@ var errNotFound = errors.New("not found")
 
 type fakeStore struct {
 	forUpdateReads int
+
+	guestTokens   map[string]guestTokenRow
+	errGuestToken error
 
 	// onRead rewrites what a read returns, so a test can tell a value that came
 	// back from the store apart from the identical-looking one the caller
@@ -409,4 +413,82 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 
 	a.commits++
 	return nil
+}
+
+// ── guest access tokens ──────────────────────────────────────────────────────
+//
+// Keyed by hash, exactly as the real store is: a test that could look a token
+// up by its raw value would not notice the day the hashing stopped happening.
+
+type guestTokenRow struct {
+	ticketID  uuid.UUID
+	expiresAt time.Time
+	usedAt    *time.Time
+}
+
+func (f *fakeStore) CreateGuestToken(_ context.Context, _, ticketID uuid.UUID, hash string, expiresAt time.Time) error {
+	if f.errGuestToken != nil {
+		return f.errGuestToken
+	}
+	if f.guestTokens == nil {
+		f.guestTokens = map[string]guestTokenRow{}
+	}
+	f.guestTokens[hash] = guestTokenRow{ticketID: ticketID, expiresAt: expiresAt}
+	return nil
+}
+
+func (f *fakeStore) TicketByGuestToken(ctx context.Context, hash string) (ticket.Ticket, error) {
+	row, ok := f.guestTokens[hash]
+	// Expiry and closure decided here, as the query decides them, so a test
+	// cannot pass against a fake that is more permissive than the database.
+	if !ok || !row.expiresAt.After(time.Now()) {
+		return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
+	}
+	t, err := f.GetByID(ctx, row.ticketID)
+	if err != nil || t.ClosedAt != nil {
+		return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
+	}
+	return t, nil
+}
+
+func (f *fakeStore) TouchGuestToken(_ context.Context, hash string) error {
+	row, ok := f.guestTokens[hash]
+	if !ok || row.usedAt != nil {
+		return nil
+	}
+	now := time.Now()
+	row.usedAt = &now
+	f.guestTokens[hash] = row
+	return nil
+}
+
+func (f *fakeStore) DeleteGuestTokensForTicket(_ context.Context, ticketID uuid.UUID) error {
+	for h, row := range f.guestTokens {
+		if row.ticketID == ticketID {
+			delete(f.guestTokens, h)
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) TicketIDByTrackingAndGuestEmail(_ context.Context, tn ticket.TrackingNumber, email string) (uuid.UUID, error) {
+	for _, t := range f.tickets {
+		if t.TrackingNumber == tn && t.GuestEmail != nil &&
+			strings.EqualFold(*t.GuestEmail, email) && t.ClosedAt == nil {
+			return t.ID, nil
+		}
+	}
+	return uuid.Nil, ticket.ErrGuestTokenNotFound
+}
+
+// guestTokenCount reports how many tokens a ticket holds, so a test can assert
+// that rotation replaced rather than accumulated.
+func (f *fakeStore) guestTokenCount(ticketID uuid.UUID) int {
+	n := 0
+	for _, row := range f.guestTokens {
+		if row.ticketID == ticketID {
+			n++
+		}
+	}
+	return n
 }

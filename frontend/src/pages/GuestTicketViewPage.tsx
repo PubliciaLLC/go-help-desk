@@ -1,0 +1,181 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+
+import { addGuestReply, getGuestTicket, GuestLinkInvalid } from '@/api/guest'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+
+// The ticket a guest reached by link.
+//
+// The token arrives in the URL FRAGMENT, which browsers never send to a
+// server. It was briefly a path segment, and that put it in this application's
+// own request log at INFO on the first load of the shell — before any proxy or
+// CDN in front of us got a turn. A fragment cannot be logged by any of them,
+// and is not sent in Referer either.
+//
+// Read once on mount, then cleared from the address bar and from history, so
+// it does not survive a screenshot or a shared URL. It lives in component
+// state from then on and goes back as an Authorization header.
+export function GuestTicketViewPage() {
+  const qc = useQueryClient()
+  const [reply, setReply] = useState('')
+
+  // useMemo, not useState+useEffect: the value has to exist for the first
+  // render's query, and the effect below wipes the source it is read from.
+  const token = useMemo(() => window.location.hash.replace(/^#/, ''), [])
+
+  useEffect(() => {
+    // replaceState, not pushState: the token must not survive in history
+    // either, and the back button should leave the page rather than return to
+    // a URL that still carries it.
+    window.history.replaceState(null, '', '/g')
+  }, [])
+
+  const { data: ticket, isLoading, error } = useQuery({
+    queryKey: ['guest-ticket', token],
+    queryFn: () => getGuestTicket(token),
+    retry: false,
+    // No token, no request. A bare /g with nothing after the hash is someone
+    // who lost the fragment, and the error branch below is the right answer.
+    enabled: token !== '',
+  })
+
+  const send = useMutation({
+    mutationFn: () => addGuestReply(token, reply.trim()),
+    onSuccess: () => {
+      setReply('')
+      qc.invalidateQueries({ queryKey: ['guest-ticket', token] })
+    },
+  })
+
+  if (isLoading) {
+    return <Shell><p className="text-sm text-gray-500">Loading…</p></Shell>
+  }
+
+  // One message for every reason. The server does not say which, deliberately,
+  // and repeating a guess back to the visitor would undo that.
+  // Two different situations, and telling them apart matters.
+  //
+  // No token means the address bar has been cleared — a reload, a bookmark, a
+  // shared URL. The link in the email almost certainly still works, so saying
+  // "this link no longer works" would be false and would push the customer at
+  // /track, which ROTATES: they would destroy the working link they still have
+  // in order to be sent another.
+  if (token === '') {
+    return (
+      <Shell>
+        <Card>
+          <CardHeader><CardTitle className="text-lg">Open the link from your email</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm text-gray-700">
+            <p>
+              This page needs the full link we emailed you. Reloading or
+              bookmarking it drops the part that identifies your ticket, which
+              is deliberate — it keeps that part out of browser history and
+              server logs.
+            </p>
+            <p>
+              Your emailed link still works. If you cannot find it, you can{' '}
+              <a href="/track" className="text-blue-600 underline">ask for a new one</a>.
+            </p>
+          </CardContent>
+        </Card>
+      </Shell>
+    )
+  }
+
+  if (error || !ticket) {
+    return (
+      <Shell>
+        <Card>
+          <CardHeader><CardTitle className="text-lg">This link no longer works</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm text-gray-700">
+            <p>
+              {error instanceof GuestLinkInvalid
+                ? 'Links are replaced each time we update your ticket, and stop working once a ticket is closed.'
+                : 'We could not open that ticket.'}
+            </p>
+            <p>
+              If your ticket is still open, you can{' '}
+              <a href="/track" className="text-blue-600 underline">request a new link</a>{' '}
+              with your tracking number and email address.
+            </p>
+          </CardContent>
+        </Card>
+      </Shell>
+    )
+  }
+
+  return (
+    <Shell>
+      <Card>
+        <CardHeader>
+          <div className="flex items-baseline justify-between gap-3 flex-wrap">
+            <CardTitle className="text-lg">{ticket.subject}</CardTitle>
+            <span className="text-xs font-mono text-gray-500">{ticket.tracking_number}</span>
+          </div>
+          <p className="text-sm text-gray-500 mt-1">Status: {ticket.status}</p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm whitespace-pre-wrap text-gray-800">{ticket.description}</p>
+
+          <div className="space-y-3 border-t pt-4">
+            {ticket.replies.length === 0 && (
+              <p className="text-sm text-gray-500">No replies yet.</p>
+            )}
+            {ticket.replies.map((r) => (
+              <div
+                key={r.id}
+                className={
+                  r.from_you
+                    ? 'rounded-md bg-blue-50 p-3 text-sm'
+                    : 'rounded-md bg-gray-100 p-3 text-sm'
+                }
+              >
+                <p className="text-xs text-gray-500 mb-1">
+                  {/* Staff are described, never named: the server sends no
+                      identity for a reply that is not the guest's own. */}
+                  {r.from_you ? 'You' : 'Support'} ·{' '}
+                  {new Date(r.created_at).toLocaleString()}
+                </p>
+                <p className="whitespace-pre-wrap text-gray-800">{r.body}</p>
+              </div>
+            ))}
+          </div>
+
+          <form
+            className="space-y-2 border-t pt-4"
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (reply.trim()) send.mutate()
+            }}
+          >
+            <Textarea
+              value={reply}
+              onChange={(e) => setReply(e.target.value)}
+              rows={4}
+              placeholder="Add a reply…"
+              aria-label="Add a reply"
+            />
+            {send.isError && (
+              <p className="text-sm text-red-600">
+                We could not add your reply. The ticket may have been closed.
+              </p>
+            )}
+            <Button type="submit" disabled={!reply.trim() || send.isPending}>
+              {send.isPending ? 'Sending…' : 'Send reply'}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </Shell>
+  )
+}
+
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen bg-gray-50 flex items-start justify-center p-4">
+      <div className="max-w-2xl w-full mt-8">{children}</div>
+    </div>
+  )
+}

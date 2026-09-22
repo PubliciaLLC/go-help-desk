@@ -421,7 +421,6 @@ func (s *Store) CreateReply(ctx context.Context, r ticket.Reply) error {
 		ID:             r.ID,
 		TicketID:       r.TicketID,
 		AuthorID:       database.NullUUID(r.AuthorID),
-		GuestToken:     database.NullString(r.GuestToken),
 		Body:           r.Body,
 		Internal:       r.Internal,
 		NotifyCustomer: r.NotifyCustomer,
@@ -440,7 +439,6 @@ func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.R
 			ID:             r.ID,
 			TicketID:       r.TicketID,
 			AuthorID:       database.UUIDPtr(r.AuthorID),
-			GuestToken:     database.StringPtr(r.GuestToken),
 			Body:           r.Body,
 			Internal:       r.Internal,
 			NotifyCustomer: r.NotifyCustomer,
@@ -761,4 +759,63 @@ func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Tic
 		out[i] = fromRow(ticketRow(r))
 	}
 	return out, nil
+}
+
+// ── Guest access tokens ──────────────────────────────────────────────────────
+//
+// Only hashes reach this file. The raw token is generated in the domain layer,
+// returned to the caller for the one email that carries it, and never stored.
+
+func (s *Store) CreateGuestToken(ctx context.Context, id, ticketID uuid.UUID, hash string, expiresAt time.Time) error {
+	if err := s.q.CreateGuestAccessToken(ctx, dbgen.CreateGuestAccessTokenParams{
+		ID:        id,
+		TicketID:  ticketID,
+		TokenHash: hash,
+		ExpiresAt: expiresAt,
+	}); err != nil {
+		return fmt.Errorf("creating guest access token: %w", err)
+	}
+	return nil
+}
+
+// TicketByGuestToken returns ticket.ErrGuestTokenNotFound for every reason a
+// token does not resolve, so the caller has one case to answer and cannot leak
+// which one it was.
+func (s *Store) TicketByGuestToken(ctx context.Context, hash string) (ticket.Ticket, error) {
+	row, err := s.q.GetTicketByGuestToken(ctx, hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
+		}
+		return ticket.Ticket{}, fmt.Errorf("resolving guest token: %w", err)
+	}
+	return fromRow(ticketRow(row)), nil
+}
+
+func (s *Store) TouchGuestToken(ctx context.Context, hash string) error {
+	if err := s.q.TouchGuestAccessToken(ctx, hash); err != nil {
+		return fmt.Errorf("stamping guest token use: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UUID) error {
+	if err := s.q.DeleteGuestAccessTokensForTicket(ctx, ticketID); err != nil {
+		return fmt.Errorf("deleting guest access tokens: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) TicketIDByTrackingAndGuestEmail(ctx context.Context, tn ticket.TrackingNumber, email string) (uuid.UUID, error) {
+	id, err := s.q.GetTicketIDByTrackingAndGuestEmail(ctx, dbgen.GetTicketIDByTrackingAndGuestEmailParams{
+		TrackingNumber: string(tn),
+		Lower:          email,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return uuid.Nil, ticket.ErrGuestTokenNotFound
+		}
+		return uuid.Nil, fmt.Errorf("resolving guest ticket: %w", err)
+	}
+	return id, nil
 }

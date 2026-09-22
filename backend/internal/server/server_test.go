@@ -77,6 +77,7 @@ type harness struct {
 	categorySvc     *category.Service
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
+	ticketStore     *ticketstore.Store
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
@@ -271,6 +272,7 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 		categorySvc:     categorySvc,
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
+		ticketStore:     tStore,
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,

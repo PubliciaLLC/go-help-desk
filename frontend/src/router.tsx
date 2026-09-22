@@ -21,6 +21,8 @@ import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
+import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
+import { GuestTrackPage } from '@/pages/GuestTrackPage'
 import { SignupPage } from '@/pages/SignupPage'
 import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
 
@@ -184,6 +186,20 @@ const adminOAuthClientsRoute = createRoute({
 })
 
 // ── Guest ─────────────────────────────────────────────────────────────────────
+const guestViewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  // No token in the path: it rides in the fragment, which is never sent to a
+  // server and so cannot be logged by ours or by anything in front of it.
+  path: '/g',
+  component: GuestTicketViewPage,
+})
+
+const guestTrackRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/track',
+  component: GuestTrackPage,
+})
+
 const submitRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/submit',
@@ -222,6 +238,8 @@ export const router = createRouter({
     verifyEmailRoute,
     dashboardRoute,
     submitRoute,
+    guestViewRoute,
+    guestTrackRoute,
     ticketsRoute,
     newTicketRoute,
     ticketDetailRoute,

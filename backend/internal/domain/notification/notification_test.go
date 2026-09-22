@@ -58,3 +58,21 @@ func TestNoop_AcceptsEveryEventType(t *testing.T) {
 		require.NoError(t, Noop{}.Dispatch(t.Context(), Event{Type: ty}))
 	}
 }
+
+// GuestToken is the customer's whole access to their own ticket. A webhook
+// subscriber receiving one would hold it.
+func TestEvent_GuestTokenStaysOutOfTheWebhookPayload(t *testing.T) {
+	raw, err := json.Marshal(Event{
+		Type:           EventTicketReplied,
+		TicketID:       uuid.MustParse("11111111-2222-3333-4444-555555555555"),
+		OccurredAt:     time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC),
+		TrackingNumber: "GHD-2026-000001",
+		Recipient:      "guest@example.com",
+		GuestToken:     "a-secret-access-token",
+	})
+	require.NoError(t, err)
+
+	require.NotContains(t, string(raw), "a-secret-access-token",
+		"a subscriber must not be handed the guest's credential")
+	require.NotContains(t, string(raw), "GuestToken")
+}

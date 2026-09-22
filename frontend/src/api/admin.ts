@@ -8,6 +8,8 @@ export interface SiteConfig {
   name: string
   logo_url: string
   version: string
+  // Whether the instance accepts tickets from visitors with no account.
+  guest_submission_enabled?: boolean
 }
 
 export async function getSiteConfig(): Promise<SiteConfig> {

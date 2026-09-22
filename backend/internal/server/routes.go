@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -345,4 +347,38 @@ func (s *Server) meRouter() *chi.Mux {
 	})
 
 	return r
+}
+
+// guestRouter is the whole surface a per-ticket token reaches.
+//
+// Mounted at /api/v1/guest, outside ticketRouter. Submission and re-request are
+// public and throttled; the other two require a token, which the middleware
+// resolves to exactly one ticket. There is no id parameter anywhere below, so
+// there is nothing for a guest to change in order to reach a different ticket.
+func (s *Server) guestRouter() *chi.Mux {
+	r := chi.NewRouter()
+
+	// Public, gated on the instance setting inside the handler so that an
+	// instance with guest submission off answers 404 rather than advertising a
+	// route it will not serve.
+	r.Post("/tickets", s.handleGuestCreateTicket)
+	r.Post("/resend", s.handleGuestResend)
+
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.GuestAuth(s.resolveGuestToken))
+		r.Get("/ticket", s.handleGuestGetTicket)
+		r.Post("/replies", s.handleGuestAddReply)
+	})
+	return r
+}
+
+// resolveGuestToken hashes and looks up a raw token, returning the id of the
+// one ticket it names. Every failure is the same error; the middleware turns
+// all of them into the same 404.
+func (s *Server) resolveGuestToken(ctx context.Context, raw string) (string, error) {
+	t, err := s.tickets.TicketForGuestToken(ctx, raw)
+	if err != nil {
+		return "", err
+	}
+	return t.ID.String(), nil
 }

@@ -9,7 +9,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), guest ticket submission and a tokenised guest view (#154) |
+| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
@@ -53,7 +53,7 @@ Core fields (all editions):
 - **Attachments** (file uploads)
 - **Replies/thread** (staff and user messages)
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
-- **Tracking number** (for guest access, once guest submission ships — #154)
+- **Tracking number** (quoted in notification email, and one half of a guest link re-request)
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
 
 SLA fields (optional feature toggle, all editions):
@@ -186,18 +186,17 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 - Google Workspace
 - (Standard SAML 2.0 — additional IdPs should work via metadata import)
 
-### Guest Submission (Coming Soon — #154)
+### Guest Submission (Optional, Off by Default)
 
-**Not available yet.** The pieces exist and do not connect: `POST /api/v1/tickets`
-sits behind `RequireRole`, so the handler's guest branch (`isGuest := a == nil`)
-is unreachable, the `/submit` page posts to that same authenticated endpoint, and
-the admin toggle changes nothing. An authenticated caller's `guest_email` is
-discarded rather than stored.
+A visitor with no account files a ticket and is sent a per-ticket link. The link
+is the whole credential, so it is treated like one: stored as a hash, replaced
+whenever the ticket changes in a way the guest is told about, revoked when the
+ticket closes, and expiring after thirty days if nothing happens at all.
 
-The design below is the intent, tracked in #154 together with the tokenised view
-a guest needs in order to read replies — the two have to land together, because
-notification email carries no ticket content, so a guest with no way to sign in
-would receive a link to a page they cannot open.
+Submission is a separate public route rather than a relaxation of the ticket
+router. Every route under `/tickets/{id}` would otherwise have to re-derive
+whether the caller is a guest, which is the shape of the authorisation bug fixed
+in 1.2.0.
 
 - Toggle in admin settings
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
@@ -206,8 +205,6 @@ would receive a link to a page they cannot open.
 - No account creation required
 
 ### Ticket Submission by Role
-
-The Guest column describes the planned behaviour; see "Guest Submission" above.
 
 | Field | Guest | User (logged in) | Staff / Admin |
 |-------|-------|-----------------|---------------|
@@ -437,10 +434,10 @@ denied, and must be re-issued.
 
 ## Notifications (v1)
 
-- **Email** — a reply on a ticket, to the reporter. There is also an
-  acknowledgement for a ticket filed with a guest address, which sends to
-  nobody today: the acknowledgement goes to the guest address only, and guest
-  submission is not reachable yet (#154).
+- **Email** — a reply on a ticket, to the reporter. A guest additionally gets
+  the acknowledgement, and a note on each status change, resolution and reopen,
+  because each of those replaces the link they hold and the mail is how the
+  replacement reaches them.
 - Email is a notification, not a copy of the ticket. A message says what
   happened, names the ticket by its tracking number, and links to it. It does
   not carry the ticket subject or the reply text, and the recipient's own
@@ -451,10 +448,8 @@ denied, and must be re-issued.
   and anyone who can file a ticket chooses that text. Recipients read the
   content in the application, where the existing access rules apply to it.
 
-  **Guest tickets:** a guest recipient would have nowhere to read the reply,
-  since there is no guest ticket view. Nothing is affected today because guest
-  submission does not work yet — see "Guest Submission" above and #154, which
-  covers the submission path and the tokenised view together.
+  **Guest tickets** carry a per-ticket link instead of a ticket id, so a
+  recipient with no account reaches their own thread and nothing else.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
@@ -490,7 +485,7 @@ The fields available on a ticket are the union of all fields assigned to its sel
 
 Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
 
-Guests will see and be able to fill only category-level fields with `visible_on_new = true`, once guest submission ships (#154). Regular authenticated users see category + type fields. Staff/admin see all levels.
+Guests see and can fill only category-level fields with `visible_on_new = true`. Regular authenticated users see category + type fields. Staff/admin see all levels.
 
 ---
 

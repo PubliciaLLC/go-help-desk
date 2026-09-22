@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { createTicket, listPublicCategories, resolveFieldsForCTI } from '@/api/tickets'
+import { listPublicCategories, resolveFieldsForCTI } from '@/api/tickets'
+import { createGuestTicket } from '@/api/guest'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -91,16 +92,18 @@ export function GuestTicketPage() {
 
     setLoading(true)
     try {
-      const t = await createTicket({
+      // The guest endpoint, not the authenticated one. This page posted to
+      // /tickets for as long as it has existed, which sits behind a role check,
+      // so every submission from a visitor answered 401.
+      const trackingNumber = await createGuestTicket({
         subject,
         description,
         category_id: categoryId,
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
-        custom_fields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
       })
-      setSuccess({ trackingNumber: t.tracking_number })
+      setSuccess({ trackingNumber })
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -124,7 +127,9 @@ export function GuestTicketPage() {
                 {success.trackingNumber}
               </p>
               <p className="text-gray-500">
-                Keep this number — you can use it to follow up with the help desk.
+                We have emailed you a link to follow the ticket. Keep this
+                number too — with your email address it will get you a fresh
+                link if you lose the first one.
               </p>
               <Button
                 type="button"

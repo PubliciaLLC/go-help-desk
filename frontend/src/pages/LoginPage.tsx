@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
 import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus, getAuthProviders } from '@/api/auth'
+import { getSiteConfig } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
@@ -24,6 +25,7 @@ export function LoginPage() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
+  const [guestEnabled, setGuestEnabled] = useState(false)
   const [providers, setProviders] = useState({
     password: true,
     saml: false,
@@ -32,6 +34,13 @@ export function LoginPage() {
 
   useEffect(() => {
     getSignupStatus().then(({ enabled }) => setSignupEnabled(enabled)).catch(() => {})
+
+    // Only offered when the instance actually accepts guest tickets. Linking
+    // to /submit unconditionally would send visitors to a form that answers
+    // 404 on submit, which is worse than not offering it.
+    getSiteConfig()
+      .then((c) => setGuestEnabled(c.guest_submission_enabled ?? false))
+      .catch(() => {})
 
     getAuthProviders()
       .then((data) => {
@@ -162,6 +171,18 @@ export function LoginPage() {
                   Don't have an account?{' '}
                   <Link to="/signup" className="text-blue-600 hover:underline">
                     Create one
+                  </Link>
+                </p>
+              )}
+              {guestEnabled && (
+                <p className="text-center text-sm text-gray-500">
+                  No account?{' '}
+                  <Link to="/submit" className="text-blue-600 hover:underline">
+                    Submit a ticket
+                  </Link>
+                  {' · '}
+                  <Link to="/track" className="text-blue-600 hover:underline">
+                    Find an existing one
                   </Link>
                 </p>
               )}
