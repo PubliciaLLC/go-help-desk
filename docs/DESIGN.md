@@ -253,6 +253,34 @@ The admin UI does not render that yet — it shows only the insecure-secrets
 warning — so today this is visible to an administrator who asks the API. The UI
 is the obvious follow-up and is not in this change.
 
+**Attachments are download-only. There is no previewer, and there will not be
+one.**
+
+No inline rendering of any attachment, images included: no lightbox, no
+thumbnail, no `<img>` pointing at the download route, no PDF viewer. Every link
+to an attachment downloads it. The download response carries
+`Content-Disposition: attachment`, and that header is a contract rather than a
+convenience — a test fails if it is removed.
+
+This is a deliberate trade of a small convenience for a whole class of bug.
+Rendering attachment content on the help desk origin means any file that
+reaches a browser is a candidate for stored XSS against the staff sessions that
+live there, and the defence becomes a content sanitiser that has to be right
+forever. A previewer would also need either a separate origin or a sandboxing
+CSP — the shape the logo route already uses, being the one place this
+application does render an uploaded file inline. Real complexity, for a feature
+nobody has asked for.
+
+The corollary is that the **ticket attachment** allowlist does not have to be a
+sanitiser: types a browser will execute — HTML, JavaScript, XML, SVG — are
+refused outright rather than cleaned.
+
+Two caveats, both tracked in #165. The refusal is by extension, so a `.txt`
+containing HTML is accepted today — harmless while nothing renders it, and the
+reason the rule above is load-bearing rather than belt-and-braces. And the logo
+uploader is the exception in both directions: it accepts SVG and *does* clean
+it with a regex filter, which is the approach this section argues against.
+
 ---
 
 ## API

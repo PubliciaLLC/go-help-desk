@@ -48,6 +48,14 @@ check whether it is listed here.
   test pins this so it does not get "fixed".
 - **`ticket.Atomic` takes both a `Store` and an `audit.Store`.** An audit entry
   committed apart from the change it describes is not an audit trail.
+- **Attachments are download-only; there is no previewer.** Not an oversight
+  and not a backlog item. Rendering attachment content on the help desk origin
+  makes every uploaded file a candidate for stored XSS against the staff
+  sessions that live there — and the upload allowlist refuses by extension, so
+  a `.txt` full of HTML is accepted and harmless only because nothing renders
+  it. `Content-Disposition: attachment` on the download response is
+  load-bearing and has a test. See docs/DESIGN.md and #165 before adding a
+  thumbnail, a lightbox or an inline PDF view.
 
 ### No breaking changes
 
