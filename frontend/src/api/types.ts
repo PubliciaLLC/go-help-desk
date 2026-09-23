@@ -105,6 +105,26 @@ export interface Attachment {
   mime_type: string
   size_bytes: number
   created_at: string
+  // What the content detector made of the uploaded bytes, the hash of those
+  // bytes, and the scanner's verdict. All null on an attachment that predates
+  // detection: null is "not recorded", never "nothing wrong".
+  detected_mime: string | null
+  sha256: string | null
+  // Non-null means the scanner identified the file as malicious, and this is
+  // its name for the detection.
+  virus_name: string | null
+  // The content contradicted the filename. Independent of virus_name: a
+  // mismatch alone is not a detection.
+  mismatch: boolean | null
+  // Where a person can look this hash up, built by the server from whichever
+  // reputation provider the instance is configured for.
+  //
+  // The URL arrives finished rather than the provider's name, because the
+  // provider is a session-gated admin setting that staff cannot read — and
+  // because a frontend that assembled the URL itself would need each
+  // provider's format duplicated here, where it would drift. null when there
+  // is no hash to look up.
+  reputation_url: string | null
 }
 
 export interface Reply {

@@ -38,6 +38,17 @@ type Attachment struct {
 	ContentMismatch sql.NullBool   `json:"content_mismatch"`
 }
 
+type AttachmentReputation struct {
+	Sha256     string         `json:"sha256"`
+	Provider   string         `json:"provider"`
+	State      string         `json:"state"`
+	Detected   sql.NullInt32  `json:"detected"`
+	Total      sql.NullInt32  `json:"total"`
+	ThreatName sql.NullString `json:"threat_name"`
+	AnalysedAt sql.NullTime   `json:"analysed_at"`
+	FetchedAt  time.Time      `json:"fetched_at"`
+}
+
 type AuditLog struct {
 	ID         uuid.UUID             `json:"id"`
 	ActorID    uuid.NullUUID         `json:"actor_id"`

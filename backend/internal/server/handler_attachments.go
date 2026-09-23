@@ -2,8 +2,8 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 	"hash/crc32"
 	"image"
 	"image/jpeg"
@@ -16,6 +16,9 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -397,6 +400,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s.addReputationURL(r.Context(), &att)
 	JSON(w, http.StatusCreated, att)
 }
 
@@ -423,6 +427,9 @@ func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleError(w, err)
 		return
+	}
+	for i := range atts {
+		s.addReputationURL(r.Context(), &atts[i])
 	}
 	JSON(w, http.StatusOK, atts)
 }
@@ -726,4 +733,36 @@ func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte,
 		return "", false
 	}
 	return "", true
+}
+
+// addReputationURL fills in where a person can look this file's hash up.
+//
+// Built here rather than stored, because it is derived from a setting the
+// operator can change: a stored URL would outlive the choice that produced it
+// and point at a service this instance no longer uses.
+//
+// No key is needed and no request is made — a link is a string. An instance
+// that has never configured a lookup still gives staff somewhere to click.
+func (s *Server) addReputationURL(ctx context.Context, att *ticket.Attachment) {
+	if att.SHA256 == nil || *att.SHA256 == "" {
+		return
+	}
+	url := s.reputationProvider(ctx).LinkURL(*att.SHA256)
+	if url == "" {
+		return
+	}
+	att.ReputationURL = &url
+}
+
+// reputationProvider is the service this instance looks hashes up at.
+//
+// Built per call rather than once at startup, for the same reason the scanner
+// is: the setting can change while the server is running, and a value captured
+// in NewServer would leave an operator's change doing nothing until a restart.
+// No API key is passed — this is only ever used for the link, which needs none.
+func (s *Server) reputationProvider(ctx context.Context) reputation.Provider {
+	if s.adminSvc.ReputationProvider(ctx) == reputation.ProviderMetaDefender {
+		return reputation.NewMetaDefender("")
+	}
+	return reputation.NewVirusTotal("")
 }

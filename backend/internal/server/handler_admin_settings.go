@@ -29,6 +29,11 @@ var secretSettingKeys = map[string]struct{}{
 	admin.KeyOIDCClientSecret:   {},
 	admin.KeySAMLKeyPEM:         {},
 	admin.KeyAttachmentVTAPIKey: {},
+
+	// The reputation provider's API key. Accepted on PATCH, never echoed by
+	// the settings dump: an admin session that can read it back can exfiltrate
+	// the operator's key to whatever the provider's terms attach to it.
+	admin.KeyAttachmentReputationAPIKey: {},
 }
 
 // attachmentExtPattern is what an entry in the attachment allowlist may look

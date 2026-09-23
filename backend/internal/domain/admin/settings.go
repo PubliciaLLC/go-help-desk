@@ -47,6 +47,31 @@ const (
 	// in handler_admin_settings.go.
 	KeyAttachmentVTAPIKey = "attachment_vt_api_key"
 
+	// Which reputation service this instance uses for attachment hashes.
+	// "virustotal" (the default) or "metadefender".
+	//
+	// One setting with two effects: it picks the server-side lookup, and it
+	// picks the service the SHA-256 in the UI links to. Keeping them together
+	// is the point — an operator who chose MetaDefender should never find a
+	// VirusTotal link next to a MetaDefender verdict.
+	//
+	// The link half needs no key and makes no server call, so this setting
+	// does something useful on an instance that never configures a lookup at
+	// all. An unrecognised value falls back to virustotal, and the settings
+	// endpoint refuses the write outright with invalid_reputation_provider —
+	// same rule, and the same reason, as the scan policy.
+	KeyAttachmentReputationProvider = "attachment_reputation_provider" // virustotal | metadefender
+
+	// The API key for whichever provider is selected. Write-only over the API:
+	// see secretSettingKeys in handler_admin_settings.go.
+	//
+	// This is also the on/off switch. There is deliberately no separate
+	// "enabled" boolean: no key means no lookup, which removes the setting and
+	// with it every invalid combination it could be in — there is no such
+	// thing as enabled-with-no-key, so there is no rule to write and no way
+	// for an operator to get it wrong.
+	KeyAttachmentReputationAPIKey = "attachment_reputation_api_key"
+
 	// Registration settings.
 	KeyAllowedEmailDomains     = "allowed_email_domains"     // []string — empty = unrestricted for SAML JIT
 	KeySelfSignupEnabled       = "self_signup_enabled"       // bool
@@ -128,5 +153,10 @@ func AuthCriticalKeys() []string {
 		// they go.
 		KeyAttachmentVTLookup,
 		KeyAttachmentVTAPIKey,
+		// And both halves of the provider-agnostic replacement, for the same
+		// reason: the provider decides where customers' file hashes go, and
+		// the key decides whether they go anywhere.
+		KeyAttachmentReputationProvider,
+		KeyAttachmentReputationAPIKey,
 	}
 }

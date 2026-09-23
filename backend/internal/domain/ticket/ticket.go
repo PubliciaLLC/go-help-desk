@@ -180,6 +180,20 @@ type Attachment struct {
 	// so recomputing compares ".zip" against the content and reports a
 	// truthfully named file as lying. nil means nothing was inspected.
 	ContentMismatch *bool `json:"mismatch"`
+
+	// ReputationURL is where a person can look this file's hash up, at
+	// whichever reputation service the instance is configured for.
+	//
+	// Filled in at the HTTP boundary rather than read from storage: it is
+	// derived from a setting that can change, so storing it would leave old
+	// rows pointing at a service the operator has since switched away from.
+	// nil when there is no hash to look up.
+	//
+	// The finished URL is sent rather than the provider's name because the
+	// provider is a session-gated admin setting staff cannot read, and because
+	// a frontend that built the URL itself would need each provider's format
+	// duplicated there, where it would drift.
+	ReputationURL *string `json:"reputation_url"`
 }
 
 // DefaultTrackingPrefix is used when an instance has not set one.
