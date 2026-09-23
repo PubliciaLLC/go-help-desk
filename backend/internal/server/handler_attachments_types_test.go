@@ -81,7 +81,9 @@ func TestUpload_RefusesContentThatContradictsTheExtension(t *testing.T) {
 
 	// The documented gap, asserted so that closing it in #165 is a deliberate
 	// change to a test rather than a surprise. A .txt has no signature, so its
-	// content is not checked; it is served as text/plain and displays.
+	// content is never looked at. Since #165 step 1 it downloads as an opaque
+	// blob like every other attachment, so nothing renders it here; what is
+	// left is that the saved file is HTML and the name says otherwise.
 	t.Run("html named .txt is accepted, which is the known gap", func(t *testing.T) {
 		res := uploadNamed(t, h, tk.ID.String(), "notes.txt", html)
 		defer res.Body.Close()

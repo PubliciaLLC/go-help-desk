@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -356,6 +357,12 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	// gets. It would otherwise set Content-Type by sniffing the body, which is
 	// exactly what this function has just decided against — so the header is
 	// set above and ServeContent leaves an existing one alone.
+	//
+	// With one exception, checked rather than assumed: a request for several
+	// ranges at once gets Content-Type: multipart/byteranges, because that is
+	// what the body then is. Each part inside it still carries the blob type,
+	// and no browser renders a byteranges response, so this is not a way back
+	// to rendering — but the header on the response is not the one set above.
 	http.ServeContent(w, r, att.Filename, att.CreatedAt, f)
 }
 
@@ -367,9 +374,12 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 // named "café.pdf" rather than "caf.pdf" or worse.
 //
 // This previously used fmt.Sprintf("%q"), which is Go quoting rather than HTTP
-// quoting. It escaped quotes and control characters, so it was not a way in —
-// but it renders a non-ASCII name as backslash escapes, and DESIGN.md promises
-// the original filename on download.
+// quoting. It escaped quotes and non-printable characters, so it was not a way
+// in, and a name like "café.pdf" did come out with the accent intact — %q
+// leaves printable non-ASCII alone. What it did not do is follow the spec: a
+// bare filename= is defined over a character set that has no room for UTF-8,
+// so what a client makes of raw bytes there is up to the client. filename*=
+// says which encoding is in use instead of hoping.
 func contentDisposition(filename string) string {
 	// Strip anything that cannot appear in a header value, and any path
 	// separator: the name comes from an upload, and it decides what a browser
@@ -382,6 +392,27 @@ func contentDisposition(filename string) string {
 	}, filename)
 	if clean == "" {
 		clean = "attachment"
+	}
+
+	// A ceiling on the name. Nothing limits the length of an uploaded
+	// filename — the column is TEXT and the multipart reader allows a 10 MB
+	// part header — and the name goes out in a response header twice, once
+	// percent-encoded. A 300 KB filename produced a 600 KB header, which is
+	// past what browsers and proxies accept, so the download would simply
+	// fail for everyone. Truncated on a rune boundary so the encoded form
+	// stays valid UTF-8; the extension is kept, since that is what decides
+	// what opens the file.
+	const maxName = 200
+	if len(clean) > maxName {
+		ext := filepath.Ext(clean)
+		if len(ext) > 32 {
+			ext = ""
+		}
+		head := clean[:maxName-len(ext)]
+		for len(head) > 0 && !utf8.ValidString(head) {
+			head = head[:len(head)-1]
+		}
+		clean = head + ext
 	}
 
 	// The ASCII fallback. Anything outside ASCII becomes an underscore so the
@@ -405,10 +436,11 @@ func contentDisposition(filename string) string {
 
 // rfc5987 percent-encodes a filename for the filename*= form.
 //
-// Not url.PathEscape, which was the first attempt: a URL path may hold ":",
-// ";", ",", "(" and ")" unescaped and RFC 5987 may not, so PathEscape produced
-// a header that a strict parser refuses. "report(1).pdf" is enough to trigger
-// it — the name a browser picks by itself when the file is already there.
+// Not url.PathEscape, which was the first attempt. It lets exactly three
+// characters through that RFC 5987 forbids — ":", "=" and "@" — and Go's own
+// mime.ParseMediaType then refuses the header. A saved email named
+// "user@example.com.eml" is enough to trigger it, which is not an exotic thing
+// for a help desk to be handed.
 //
 // Encoded byte by byte rather than rune by rune, so a multi-byte character
 // comes out as the percent-encoded UTF-8 the header claims to carry.

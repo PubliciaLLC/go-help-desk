@@ -277,16 +277,22 @@ refused outright rather than cleaned.
 
 The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
 browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
-rendered inline would execute on this origin. It is `Content-Disposition:
-attachment` that stops that today, which is why the header has a test.
+rendered inline would execute on this origin. Two headers stop that: the
+response says `Content-Type: application/octet-stream`, which no browser
+renders, and `Content-Disposition: attachment`, which tells it to save the file
+and supplies the name. Both have tests. Until #165 step 1 the type header was
+`application/pdf`, so the disposition header was carrying this alone.
 
 Two caveats, both tracked in #165:
 
 - **Content is only checked for types with a recognisable signature.** A `.pdf`
   must begin `%PDF`, a `.png` must have the PNG header, and so on — but `.txt`
   and `.log` have no signature to check, so a `.txt` containing HTML is
-  accepted. It displays as text rather than running, so this is untidy rather
-  than dangerous; the PDF above is the dangerous one.
+  accepted. It is stored under a name that says what it is and downloaded as an
+  opaque blob like everything else, so nothing on this origin renders it — but
+  the file on disk is still HTML, and whoever opens it afterwards is opening
+  HTML. Step 2 of #165 records what the file actually is alongside what it
+  claims to be, so at least the difference is visible.
 - **The logo is the exception**, and the only upload this application renders
   inline. It is served under its own sandboxing policy (`sandbox; script-src
   'none'`), and an SVG is parsed and *refused* if it contains scripts, event

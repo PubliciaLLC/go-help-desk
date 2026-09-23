@@ -132,13 +132,17 @@ func attachmentIDNamed(t *testing.T, h *harness, ticketID, filename string) stri
 	return ""
 }
 
-// DESIGN.md promises the original filename on download. Go's %q quoting
-// rendered a non-ASCII name as backslash escapes, so "café.pdf" arrived with
-// the accent mangled.
+// DESIGN.md promises the original filename on download.
 //
-// RFC 6266 wants two forms in the header: a plain ASCII one for old clients,
-// and filename*= carrying the real name as percent-encoded UTF-8 for everything
-// current. Both are sent.
+// The old %q quoting did not actually mangle "café.pdf" — %q leaves printable
+// non-ASCII alone, so the bytes went out as they came in. It just had no way
+// to say what those bytes were: a bare filename= is defined over a character
+// set with no room for UTF-8, and what a client does with raw bytes there is
+// the client's business.
+//
+// RFC 6266 answers that with two forms: a plain ASCII one for old clients, and
+// filename*= carrying the real name as percent-encoded UTF-8, labelled, for
+// everything current. Both are sent.
 func TestAttachmentDownload_KeepsANonASCIIFilename(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -161,8 +165,6 @@ func TestAttachmentDownload_KeepsANonASCIIFilename(t *testing.T) {
 	disposition := dl.Header.Get("Content-Disposition")
 	require.Contains(t, disposition, "filename*=UTF-8''",
 		"the real name needs the encoded form; the ASCII one cannot carry it")
-	require.NotContains(t, disposition, `\u`,
-		"Go escapes are not an encoding any browser understands")
 
 	// What a client that understands the header ends up with. Go's parser
 	// decodes filename*= and returns it under "filename", preferring it over
@@ -190,19 +192,18 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	// A quote to close the quoted string, and a Windows path to escape the
-	// directory the browser saves into.
+	// Everything in this name is here because it survives a real upload.
 	//
-	// The backslash path is deliberate. A forward-slash one proves nothing
-	// here: Go's multipart reader runs filepath.Base over every uploaded
-	// filename, so "../../etc/passwd.txt" is already "passwd.txt" before any
-	// of our code sees it, and on Linux filepath.Base leaves backslashes
-	// alone. So this is the path that actually reaches the header — and a
-	// browser on Windows reads it as a path. Control characters are not here
-	// for the same reason: Go's MIME header parser refuses the whole request
-	// rather than passing them on. TestContentDisposition covers those
-	// against the function directly.
-	const hostile = `a"b..\..\windows\system32\evil.txt`
+	// A quote, which closes the quoted string if it is escaped wrongly. A
+	// backslash path, which is what a Windows browser reads as a directory to
+	// save into — a forward-slash one would prove nothing, because Go's
+	// multipart reader runs filepath.Base over every uploaded filename and
+	// "../../etc/passwd.txt" is already "passwd.txt" before our code sees it,
+	// while filepath.Base on Linux leaves backslashes alone. And a tab, which
+	// is the one control character Go's MIME header parser lets through; it
+	// refuses the request outright for the rest, which is why the others are
+	// checked against contentDisposition directly instead.
+	const hostile = "a\"b\t..\\..\\windows\\system32\\evil.txt"
 	res := uploadNamed(t, h, tk.ID.String(), hostile, []byte("contents"))
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
@@ -235,4 +236,6 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 		"a path separator must not survive to the browser")
 	require.Contains(t, params["filename"], "evil.txt",
 		"the name itself should still be recognisable")
+	require.NotContains(t, params["filename"], "\t",
+		"a tab reaches us through the upload and must not reach the header")
 }

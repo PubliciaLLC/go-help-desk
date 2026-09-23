@@ -11,15 +11,18 @@ import (
 // header, so it is attacker-controlled input on both counts.
 //
 // This tests contentDisposition directly rather than through an upload,
-// because the upload path is not the only guard and most of these strings
-// never get that far: Go's multipart reader runs filepath.Base over the
-// filename, which removes a forward-slash path on Linux, and its MIME header
-// parser refuses a request outright if the filename holds a control
-// character. A backslash path is the one that does survive an upload today —
-// filepath.Base leaves it alone on Linux, and a Windows browser saving the
-// file would read it as a path. The rest are checked here so this function is
-// correct on its own terms, and stays correct if it is ever called with a
-// name from somewhere other than a multipart upload.
+// because the upload path is not the only guard and several of these strings
+// never get that far. Go's multipart reader runs filepath.Base over the
+// filename, so a forward-slash path is already gone on Linux, and its MIME
+// header parser refuses the whole request if the filename holds a control
+// character — with one exception: a tab gets through, which the end-to-end
+// test covers. A backslash path also survives, because filepath.Base leaves
+// backslashes alone on Linux and a Windows browser then reads the name as a
+// path.
+//
+// The rest are here so this function is correct on its own terms, and stays
+// correct if it is ever handed a name from somewhere other than a multipart
+// upload.
 func TestContentDisposition(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -42,9 +45,25 @@ func TestContentDisposition(t *testing.T) {
 			want:     `a"b.txt`,
 		},
 		{
-			// The name a browser gives a second copy of a download. It broke
-			// the header when the extended form was percent-encoded as a URL
-			// path, because "(" and ")" are legal there and not here.
+			// A saved email, named after who sent it. This is the case that
+			// broke the header when the extended form was percent-encoded as
+			// a URL path: url.PathEscape lets ":", "=" and "@" through, and
+			// RFC 5987 allows none of the three.
+			name:     "an address in the name",
+			filename: "user@example.com.eml",
+			want:     "user@example.com.eml",
+		},
+		{
+			name:     "an equals sign in the name",
+			filename: "invoice=2026-09.pdf",
+			want:     "invoice=2026-09.pdf",
+		},
+		{
+			name:     "a colon in the name",
+			filename: "meeting: notes.txt",
+			want:     "meeting: notes.txt",
+		},
+		{
 			name:     "a name a browser itself would pick",
 			filename: "report(1).pdf",
 			want:     "report(1).pdf",
@@ -74,6 +93,16 @@ func TestContentDisposition(t *testing.T) {
 			filename: "",
 			want:     "attachment",
 		},
+		{
+			// Nothing limits the length of an uploaded filename, and the name
+			// goes into the header twice — once percent-encoded, so three
+			// bytes per character. Left alone, one upload produces a response
+			// header no browser or proxy will accept, and the download fails
+			// for everybody.
+			name:     "an absurd name is cut down, keeping the extension",
+			filename: strings.Repeat("é", 5000) + ".pdf",
+			want:     strings.Repeat("é", 98) + ".pdf",
+		},
 	}
 
 	for _, tc := range cases {
@@ -85,6 +114,13 @@ func TestContentDisposition(t *testing.T) {
 				if r < 0x20 || r == 0x7f {
 					t.Fatalf("control character %q in header %q", r, got)
 				}
+			}
+
+			// Short enough that a browser and anything in front of it will
+			// accept the response. Both forms plus the percent-encoding, so
+			// the header is several times the name.
+			if len(got) > 2000 {
+				t.Fatalf("header is %d bytes, too long to be delivered", len(got))
 			}
 
 			typ, params, err := mime.ParseMediaType(got)
@@ -111,6 +147,43 @@ func TestContentDisposition(t *testing.T) {
 			if !strings.Contains(got, "filename=") || !strings.Contains(got, "filename*=UTF-8''") {
 				t.Fatalf("header is missing one of the two RFC 6266 forms: %q", got)
 			}
+
+			// And the extended form has to hold only what RFC 5987 allows.
+			//
+			// Checking that the header parses is not enough to catch a loose
+			// encoder: Go's own mime.ParseMediaType accepts "(" and ")" in
+			// the extended value, so "report(1).pdf" parsed perfectly well
+			// while being encoded wrongly. Other parsers are stricter. This
+			// reads the grammar off the RFC instead of off a parser.
+			_, star, ok := strings.Cut(got, "filename*=UTF-8''")
+			if !ok {
+				t.Fatalf("no extended form in %q", got)
+			}
+			for i := 0; i < len(star); i++ {
+				if star[i] == '%' {
+					if i+2 >= len(star) || !isHex(star[i+1]) || !isHex(star[i+2]) {
+						t.Fatalf("truncated percent escape at %d in %q", i, star)
+					}
+					i += 2
+					continue
+				}
+				if !isAttrChar(star[i]) {
+					t.Fatalf("%q is not an RFC 5987 attr-char, in %q", star[i], star)
+				}
+			}
 		})
 	}
+}
+
+// isAttrChar is RFC 5987 attr-char, written out from the RFC rather than
+// shared with the encoder under test: a table both sides read proves nothing.
+func isAttrChar(c byte) bool {
+	if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+		return true
+	}
+	return strings.IndexByte("!#$&+-.^_`|~", c) >= 0
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'A' && c <= 'F' || c >= 'a' && c <= 'f'
 }
