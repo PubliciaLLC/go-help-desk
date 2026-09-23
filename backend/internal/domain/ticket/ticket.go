@@ -151,6 +151,35 @@ type Attachment struct {
 	SizeBytes   int64     `json:"size_bytes"`
 	StoragePath string    `json:"-"` // never sent to clients
 	CreatedAt   time.Time `json:"created_at"`
+
+	// What the upload actually was, recorded when it arrived. All three are
+	// pointers because nil is a fact: the file predates the inspection, and
+	// "not recorded" must never be rendered as "nothing wrong".
+
+	// DetectedMime is what the content sniffs as, independent of the claimed
+	// extension. Compared against the filename to flag a mismatch, which is
+	// shown and never blocks.
+	DetectedMime *string `json:"detected_mime"`
+
+	// SHA256 is of the bytes as uploaded — before image recompression and
+	// before quarantine wrapping — hex encoded. For a recompressed image it is
+	// therefore not the hash of the file on disk.
+	SHA256 *string `json:"sha256"`
+
+	// VirusName is the scanner's name for the detection on a quarantined
+	// upload, e.g. Eicar-Test-Signature. nil means the file was not identified
+	// as malicious.
+	VirusName *string `json:"virus_name"`
+
+	// ContentMismatch is whether the content contradicted the name the file
+	// was uploaded under, decided when it arrived.
+	//
+	// Recorded rather than recomputed on read. The comparison needs the name
+	// the uploader claimed, and for any file we renamed — a suspicious wrap,
+	// or an infected file stored as sample.pdf.zip — the stored name is ours,
+	// so recomputing compares ".zip" against the content and reports a
+	// truthfully named file as lying. nil means nothing was inspected.
+	ContentMismatch *bool `json:"mismatch"`
 }
 
 // DefaultTrackingPrefix is used when an instance has not set one.

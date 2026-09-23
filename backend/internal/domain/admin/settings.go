@@ -26,6 +26,27 @@ const (
 	KeySiteName               = "site_name"
 	KeySiteLogoURL            = "site_logo_url"
 
+	// What this instance accepts as an attachment: a JSON array of lowercase
+	// extensions with the leading dot, e.g. [".pdf", ".png"]. An empty array
+	// is a legitimate choice and means no attachments at all, not "unset".
+	KeyAttachmentAllowedTypes = "attachment_allowed_types" // []string
+
+	// What happens to an upload the scanner calls infected: refuse it, or
+	// accept it wrapped and loudly labelled. Default refuse — an ordinary help
+	// desk should not start storing malware because nobody said otherwise.
+	KeyAttachmentInfectedHandling = "attachment_infected_handling" // refuse | quarantine
+
+	// Whether the server itself queries VirusTotal for a stored hash. Default
+	// off: a hash is not the file, but it identifies it exactly, so sending
+	// customers' file hashes to a third party is an operator's decision. The
+	// hash-as-a-link shown in the UI is not governed by this — that is the
+	// analyst's own browser, and nothing leaves this server.
+	KeyAttachmentVTLookup = "attachment_vt_lookup" // bool
+
+	// The VirusTotal API key. Write-only over the API: see secretSettingKeys
+	// in handler_admin_settings.go.
+	KeyAttachmentVTAPIKey = "attachment_vt_api_key"
+
 	// Registration settings.
 	KeyAllowedEmailDomains     = "allowed_email_domains"     // []string — empty = unrestricted for SAML JIT
 	KeySelfSignupEnabled       = "self_signup_enabled"       // bool
@@ -46,6 +67,26 @@ const (
 	KeyAutoAssignGroupID = "auto_assign_group_id" // string UUID — assign new tickets to this group
 	KeyAutoAssignUserIDs = "auto_assign_user_ids" // []string UUIDs — round-robin among these users
 )
+
+// The two values KeyAttachmentInfectedHandling takes.
+//
+// Spelled out as constants rather than compared against literals because the
+// difference between them is whether this instance stores malware, and a typo
+// in a string comparison there fails silently in the permissive direction.
+const (
+	InfectedHandlingRefuse     = "refuse"
+	InfectedHandlingQuarantine = "quarantine"
+)
+
+// ValidInfectedHandling reports whether v is a value the setting accepts.
+//
+// Used by the settings endpoint to refuse a write, not by the reader: the
+// reader falls back to "refuse", so an unrecognised value is safe but
+// baffling. Refusing it at save time says what is wrong instead. Same shape,
+// and the same reasoning, as antivirus.ValidPolicy.
+func ValidInfectedHandling(v string) bool {
+	return v == InfectedHandlingRefuse || v == InfectedHandlingQuarantine
+}
 
 // Store is the persistence interface for the key/value settings table.
 type Store interface {
@@ -76,5 +117,16 @@ func AuthCriticalKeys() []string {
 		// And the policy, since "off" reaches the same outcome by a shorter
 		// path.
 		KeyAttachmentScanPolicy,
+		// What the instance accepts at all. A leaked API key must not be able
+		// to widen the type list and then upload what it has just allowed.
+		KeyAttachmentAllowedTypes,
+		// Whether an infected upload is refused or stored. Same reasoning as
+		// the scan policy: it decides what this instance will hold.
+		KeyAttachmentInfectedHandling,
+		// Both halves of the VirusTotal lookup. Turning it on decides that
+		// customers' file hashes leave this server, and the key decides where
+		// they go.
+		KeyAttachmentVTLookup,
+		KeyAttachmentVTAPIKey,
 	}
 }

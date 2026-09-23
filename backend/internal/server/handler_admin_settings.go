@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"fmt"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -23,9 +26,17 @@ import (
 // PATCH /admin/settings but never returned by the settings dump. The dedicated
 // endpoints blank them for the same reason (see handleGetOIDCConfig).
 var secretSettingKeys = map[string]struct{}{
-	admin.KeyOIDCClientSecret: {},
-	admin.KeySAMLKeyPEM:       {},
+	admin.KeyOIDCClientSecret:   {},
+	admin.KeySAMLKeyPEM:         {},
+	admin.KeyAttachmentVTAPIKey: {},
 }
+
+// attachmentExtPattern is what an entry in the attachment allowlist may look
+// like. Deliberately narrow: an extension is compared against
+// strings.ToLower(filepath.Ext(name)), so an entry with no leading dot, an
+// uppercase letter or an inner space can never match any upload. Accepting one
+// would leave the setting doing nothing while reporting success.
+var attachmentExtPattern = regexp.MustCompile(`^\.[a-z0-9]{1,16}$`)
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	all, err := s.adminSvc.ListAll(r.Context())
@@ -121,6 +132,48 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "invalid_scanner_address",
 				`scanner address must look like "tcp://host:port" or "unix:///path/to/socket"`)
 			return
+		}
+	}
+
+	// And what happens to an upload the scanner calls infected. The reader
+	// falls back to "refuse", so a typo here would quietly refuse malware an
+	// infosec team had deliberately asked to keep — safe, and baffling for
+	// exactly the operator who went looking for this setting.
+	if raw, ok := body[admin.KeyAttachmentInfectedHandling]; ok {
+		var handling string
+		if err := json.Unmarshal(raw, &handling); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "infected attachment handling must be a string")
+			return
+		}
+		if !admin.ValidInfectedHandling(handling) {
+			Error(w, http.StatusBadRequest, "invalid_infected_handling",
+				"infected attachment handling must be one of: refuse, quarantine")
+			return
+		}
+	}
+
+	// What this instance accepts as an attachment. Same reasoning again, and
+	// here the ignored value decides what the deployment will hold: an
+	// operator who types "exe" instead of ".exe" and sees a 204 has been told
+	// their instance now takes executables when it does not.
+	//
+	// The whole write is refused rather than the bad entry dropped, because a
+	// list silently missing one of its entries is the same lie in a quieter
+	// form.
+	if raw, ok := body[admin.KeyAttachmentAllowedTypes]; ok {
+		var types []string
+		if err := json.Unmarshal(raw, &types); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request",
+				`allowed attachment types must be a JSON array of extension strings, e.g. [".pdf", ".png"]`)
+			return
+		}
+		for _, ext := range types {
+			if !attachmentExtPattern.MatchString(ext) {
+				Error(w, http.StatusBadRequest, "invalid_allowed_types",
+					fmt.Sprintf("%q is not an attachment extension: each entry is a leading dot "+
+						"followed by 1-16 lowercase letters or digits, e.g. \".pdf\"", ext))
+				return
+			}
 		}
 	}
 

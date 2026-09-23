@@ -457,6 +457,11 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 		SizeBytes:   a.SizeBytes,
 		StoragePath: a.StoragePath,
 		CreatedAt:   a.CreatedAt,
+
+		DetectedMime:    database.NullString(a.DetectedMime),
+		Sha256:          database.NullString(a.SHA256),
+		VirusName:       database.NullString(a.VirusName),
+		ContentMismatch: database.NullBool(a.ContentMismatch),
 	})
 }
 
@@ -473,6 +478,11 @@ func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Att
 		SizeBytes:   r.SizeBytes,
 		StoragePath: r.StoragePath,
 		CreatedAt:   r.CreatedAt,
+
+		DetectedMime:    database.StringPtr(r.DetectedMime),
+		SHA256:          database.StringPtr(r.Sha256),
+		VirusName:       database.StringPtr(r.VirusName),
+		ContentMismatch: database.BoolPtr(r.ContentMismatch),
 	}, nil
 }
 
@@ -491,6 +501,11 @@ func (s *Store) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]tick
 			SizeBytes:   r.SizeBytes,
 			StoragePath: r.StoragePath,
 			CreatedAt:   r.CreatedAt,
+
+			DetectedMime:    database.StringPtr(r.DetectedMime),
+			SHA256:          database.StringPtr(r.Sha256),
+			VirusName:       database.StringPtr(r.VirusName),
+			ContentMismatch: database.BoolPtr(r.ContentMismatch),
 		}
 	}
 	return out, nil

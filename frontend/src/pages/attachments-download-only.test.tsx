@@ -81,48 +81,60 @@ function hasDownloadAttribute(element: string): boolean {
 }
 
 describe('attachments are never rendered inline', () => {
-  // Every element in the frontend that renders remote content, with the reason
-  // it is allowed to exist. This is deliberately a list and not a rule: the
-  // point is that adding one is a decision someone makes on purpose, in a
-  // review, rather than something that slips in.
+  // Every file in the frontend allowed to render remote content, and how many
+  // such elements it may hold. Deliberately a list and not a rule: the point
+  // is that adding one is a decision someone makes on purpose, in review,
+  // rather than something that slips in.
+  //
+  // Counted per file rather than pinned to a line number, which is how the
+  // first version worked. That version went stale the moment an unrelated edit
+  // above a renderer shifted it down — a false failure that teaches people to
+  // "fix" the list without reading it, which is exactly how a guard stops
+  // guarding. A count still fails on a new renderer, and survives the file
+  // being reordered.
   //
   // Layout.tsx and SettingsPage.tsx are the instance logo: an admin-uploaded
   // image served from its own route under a policy that blocks scripts (see
   // logoCSP in security_headers.go). LoginPage.tsx is the TOTP enrolment QR
-  // code, which is a data: URL the server generates during MFA setup — not an
-  // upload at all.
-  const allowedRenderers = new Set([
-    'src/components/Layout.tsx:69',
-    'src/pages/LoginPage.tsx:235',
-    'src/pages/admin/SettingsPage.tsx:594',
-  ])
+  // code, a data: URL the server generates during MFA setup — not an upload at
+  // all.
+  const allowedRenderers: Record<string, number> = {
+    'src/components/Layout.tsx': 1,
+    'src/pages/LoginPage.tsx': 1,
+    'src/pages/admin/SettingsPage.tsx': 1,
+  }
 
   it('renders nothing that is not on the list', () => {
-    // JSX allows whitespace and a newline between "<" and the tag name, and
-    // a component can be built without JSX at all, so normalise first and
-    // look for the other spellings too. createElement('img', …) renders just
-    // as well as <img>, and so does an innerHTML string or a CSS url().
+    // JSX allows whitespace and a newline between "<" and the tag name, and a
+    // component can be built without JSX at all, so normalise and look for the
+    // other spellings too. createElement('img', …) renders just as well as
+    // <img>, and so does an innerHTML string or a CSS url().
     const renderer =
       /<\s*(img|image|object|embed|iframe|frame|video|audio|source|track)\b|createElement\s*\(\s*['"`](img|image|object|embed|iframe|frame|video|audio|source|track)['"`]|dangerouslySetInnerHTML|\burl\s*\(/i
 
-    const found = files.flatMap(({ path, source }) =>
-      [...source.matchAll(new RegExp(renderer.source, 'gi'))].map(
+    const found: Record<string, string[]> = {}
+    for (const { path, source } of files) {
+      const hits = [...source.matchAll(new RegExp(renderer.source, 'gi'))].map(
         (m) => `${path}:${lineAt(source, m.index)}`,
-      ),
-    )
+      )
+      if (hits.length) found[path] = hits
+    }
 
-    const unexpected = found.filter((site) => !allowedRenderers.has(site))
-    expect(
-      unexpected,
-      `A new element that renders remote content. If it renders an attachment ` +
-        `it contradicts docs/DESIGN.md and is stored XSS against staff sessions. ` +
-        `If it does not, add it to allowedRenderers with the reason.`,
-    ).toEqual([])
+    for (const [path, hits] of Object.entries(found)) {
+      expect(
+        hits.length,
+        `${path} renders remote content in ${hits.length} place(s), expected ${
+          allowedRenderers[path] ?? 0
+        }. If one of these renders an attachment it contradicts docs/DESIGN.md ` +
+          `and is stored XSS against staff sessions. If not, update ` +
+          `allowedRenderers with the reason.\n  ${hits.join('\n  ')}`,
+      ).toBe(allowedRenderers[path] ?? 0)
+    }
 
-    // The other direction: a line that moves or disappears leaves the list
-    // stale, and a stale list quietly stops guarding anything.
-    const gone = [...allowedRenderers].filter((site) => !found.includes(site))
-    expect(gone, 'allowedRenderers is out of date — these no longer exist').toEqual([])
+    // The other direction: a file that stops rendering anything leaves the
+    // list stale, and a stale list quietly stops guarding.
+    const gone = Object.keys(allowedRenderers).filter((p) => !found[p])
+    expect(gone, 'allowedRenderers is out of date — these render nothing now').toEqual([])
   })
 
   // Anything that addresses an attachment has to go through one function, or

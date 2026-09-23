@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"hash/crc32"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/attachment"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"golang.org/x/image/bmp"
@@ -45,29 +48,6 @@ var allowedExt = map[string]string{
 // imageExt lists extensions that are treated as raster images and recompressed.
 var imageExt = map[string]bool{
 	".jpg": true, ".jpeg": true, ".png": true, ".bmp": true,
-}
-
-// magicOK does a quick sanity check on the first bytes for known binary types.
-// For text types (txt, log) we skip magic checks.
-func magicOK(data []byte, ext string) bool {
-	if len(data) < 4 {
-		return false
-	}
-	switch ext {
-	case ".pdf":
-		return bytes.HasPrefix(data, []byte("%PDF"))
-	case ".docx", ".xlsx":
-		// Both are ZIP-based Office Open XML formats.
-		return bytes.HasPrefix(data, []byte("PK\x03\x04"))
-	case ".jpg", ".jpeg":
-		return data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF
-	case ".png":
-		return bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n"))
-	case ".bmp":
-		return data[0] == 'B' && data[1] == 'M'
-	default:
-		return true // txt, log: no magic
-	}
 }
 
 // compressImage decodes any supported raster image and re-encodes it as
@@ -213,11 +193,24 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// What this instance accepts is the operator's setting, not a map in this
+	// file, and it is read per upload rather than once at startup — the defect
+	// the scanner address had, where a saved value was never consulted again.
+	//
+	// Checked here on the claimed extension: after the filename is known to be
+	// storable, and before the body is read, the content is detected or the
+	// scanner is asked. A type this instance does not take is refused as a
+	// type, rather than later as a bad image or as malware, and a refusal
+	// costs nothing.
 	ext := strings.ToLower(filepath.Ext(origName))
-	mime, ok := allowedExt[ext]
-	if !ok {
+	allowed := s.adminSvc.AllowedTypes(r.Context())
+	if !allowed[ext] {
+		what := ext + " files"
+		if ext == "" {
+			what = "files with no extension"
+		}
 		Error(w, http.StatusUnsupportedMediaType, "unsupported_type",
-			"allowed types: PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP")
+			"this instance does not accept "+what)
 		return
 	}
 
@@ -231,20 +224,126 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Magic-byte validation.
-	if !magicOK(data, ext) {
-		Error(w, http.StatusUnsupportedMediaType, "invalid_file",
-			"file content does not match the expected type")
+	// What the bytes actually are, and what they hash to.
+	//
+	// Both are taken here, on the upload exactly as it arrived: before
+	// recompression rewrites an image and before a wrap puts it inside an
+	// archive. They answer the same question — what did this person send us —
+	// which is what identifies a sample to an analyst and what a
+	// chain-of-custody record has to state. For a recompressed image the
+	// stored file's hash is therefore not this hash, which is a fact the UI
+	// has to say rather than leave to be discovered.
+	//
+	// This replaced magicOK, which checked a hard-coded signature per
+	// extension and ended in `default: return true`. That was not a text
+	// special case but a default, so every extension without an entry — .txt
+	// and .log then, anything an operator adds now — was never looked at.
+	detectedExt, detectedMime := attachment.Detect(data)
+	sha := attachment.SHA256(data)
+
+	// A content contradiction is recorded, never refused. Legitimate ones
+	// exist — a .log holding a captured HTML response is an ordinary help desk
+	// attachment — and since every download is an octet-stream blob with an
+	// attachment disposition, a mismatch is not a risk to this server. It is a
+	// deception risk for the person about to open the file, which is why they
+	// are told instead of the upload being rejected.
+	mismatch := attachment.IsMismatch(ext, detectedExt)
+
+	// What the scanner made of it, and what the operator chose to do with
+	// that. An empty name means the file was not identified as malicious —
+	// either it was scanned and found clean, or the policy meant it was never
+	// scanned at all. scanUpload has already written the response and
+	// returned false for everything that is refused.
+	virusName, ok := s.scanUpload(w, r, data, origName, ticketID)
+	if !ok {
 		return
 	}
 
-	if !s.scanUpload(w, r, data, origName, ticketID) {
-		return
+	// The stored mime_type is data about what the file claims to be, not a
+	// decision about how it is served: every download is octet-stream with an
+	// attachment disposition (#165 step 1). Once an operator can allow .exe,
+	// the built-in map has no answer for the extension, so the content
+	// detector answers instead — and octet-stream stands in when it cannot
+	// place the bytes either. A blank type column is not an answer.
+	//
+	// It describes the file as stored, which is why the wrap below overwrites
+	// it: detected_mime keeps the answer for the bytes that arrived.
+	mime, known := allowedExt[ext]
+	if !known {
+		mime = detectedMime
 	}
 
-	// Image recompression: pick whichever of JPEG/PNG is smaller.
+	// The two things that can rewrite an upload before it is stored, and they
+	// are alternatives: a wrapped file is an archive, so recompressing it
+	// would mean asking the JPEG encoder to read a ZIP.
+	storedName := origName
 	storedExt := ext
-	if imageExt[ext] {
+	switch {
+	case virusName != "":
+		// Quarantine: the operator chose to keep a file the scanner
+		// identified, so it is stored wrapped rather than refused.
+		//
+		// Unlike the tier below this one carries a password, and the password
+		// is published — it protects nothing and is not meant to. Its only
+		// jobs are that the stored bytes are not directly double-clickable,
+		// and that an on-access scanner, on our storage or the downloader's,
+		// does not eat the sample out from under the ticket a day later.
+		//
+		// Wrapped here, on the way in, rather than at download time. The
+		// alternative leaves live malware sitting in the attachment directory
+		// of a deployment that very likely runs host AV over it.
+		archive, err := attachment.Wrap(data, origName, attachment.QuarantinePassword)
+		if err != nil {
+			Error(w, http.StatusInternalServerError, "storage_error",
+				"could not wrap the file")
+			return
+		}
+		// The uploaded name plus .zip, so nothing downstream double-clicks a
+		// .exe. Appended after the allowlist has already had its say on the
+		// uploaded name, and after the hash and the detected type were taken
+		// from the uploaded bytes: .zip describes our wrapper, not the sample,
+		// and it does not need to be an accepted type for this to work.
+		storedName = origName + ".zip"
+		data = archive
+		storedExt = ".zip"
+		mime = "application/zip"
+
+	case mismatch && !allowed[detectedExt]:
+		// A file whose content contradicts its name, where the content is not
+		// something this instance accepts, is wrapped rather than refused or
+		// merely flagged.
+		//
+		// Refusing it closes off the case a help desk is otherwise good at:
+		// the suspicious file a user reported is exactly the file a ticket is
+		// about. Flagging it alone is too quiet — it still lands on someone's
+		// disk named report.pdf. The archive name is the warning, and unlike
+		// our UI it survives being forwarded or saved to a share.
+		//
+		// Not every mismatch: an HTML response saved as a .log is ordinary,
+		// and wrapping it would be a warning on an ordinary file. The
+		// operator's own allowlist is the judgement, so there is no second
+		// list to keep correct.
+		//
+		// No password, unlike an infected file. That password stops an
+		// on-access scanner eating a known sample; this file is not known-bad,
+		// we could not identify it, and blinding the recipient's antivirus
+		// over a wrong extension would be the wrong trade.
+		archive, err := attachment.Wrap(data, origName, "")
+		if err != nil {
+			Error(w, http.StatusInternalServerError, "storage_error",
+				"could not wrap the file")
+			return
+		}
+		// Named after the CRC32 of the file inside it — the checksum the
+		// archive already carries for its one entry, so the name refers to a
+		// value a recipient can verify and costs nothing to produce.
+		storedName = fmt.Sprintf("suspicious-%08x.zip", crc32.ChecksumIEEE(data))
+		data = archive
+		storedExt = ".zip"
+		mime = "application/zip"
+
+	case imageExt[ext]:
+		// Image recompression: pick whichever of JPEG/PNG is smaller.
 		compressed, newExt, err := compressImage(data, ext)
 		if err != nil {
 			Error(w, http.StatusUnprocessableEntity, "invalid_image",
@@ -276,11 +375,21 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	att := ticket.Attachment{
 		ID:          storageID,
 		TicketID:    ticketID,
-		Filename:    origName, // original name preserved for display
+		Filename:    storedName, // the uploaded name, unless the file was wrapped
 		MimeType:    mime,
 		SizeBytes:   int64(len(data)),
 		StoragePath: diskPath,
 		CreatedAt:   time.Now(),
+
+		// Of the bytes as uploaded, both of them.
+		DetectedMime:    &detectedMime,
+		SHA256:          &sha,
+		ContentMismatch: &mismatch,
+	}
+	// NULL on everything else, and there it is a fact rather than an absence:
+	// it means this file was not identified as malicious.
+	if virusName != "" {
+		att.VirusName = &virusName
 	}
 	if err := s.tickets.CreateAttachment(r.Context(), att); err != nil {
 		_ = os.Remove(diskPath)
@@ -553,8 +662,13 @@ func rfc5987(s string) string {
 }
 
 // scanUpload scans the file and applies the configured policy, reporting
-// whether the upload may proceed. It has written the response when it returns
-// false.
+// whether the upload may proceed and, when it does, the scanner's name for
+// whatever it found. It has written the response when it returns false.
+//
+// A non-empty name is how the caller knows to quarantine, and it is only ever
+// non-empty when the scanner returned a verdict: the setting is not a second
+// opinion about files nobody looked at, so an instance with scanning off
+// quarantines nothing however it is configured.
 //
 // The distinction this exists for: "scanned and clean" and "could not scan"
 // used to be the same value. scanClamAV returned (infected bool, …) and every
@@ -568,29 +682,38 @@ func rfc5987(s string) string {
 // and the caller should try again. Retry-After says so, which also covers the
 // first few minutes after a fresh `docker compose up`, where clamav is still
 // downloading its signature database and the application is already serving.
-func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte, filename string, ticketID uuid.UUID) bool {
+func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte, filename string, ticketID uuid.UUID) (string, bool) {
 	ctx := r.Context()
 	sc := s.scanner(ctx)
 	policy := s.adminSvc.AttachmentScanPolicy(ctx, sc.Configured())
 	if policy == antivirus.PolicyOff {
-		return true
+		return "", true
 	}
 
 	res := sc.Scan(ctx, data)
 	switch res.Verdict {
 	case antivirus.Infected:
+		if s.adminSvc.InfectedHandling(ctx) == admin.InfectedHandlingQuarantine {
+			// The operator asked for the sample. An IT security team triaging
+			// the suspicious .exe a user reported needs to attach precisely
+			// the file the ticket is about, and refusing it is refusing the
+			// case.
+			slog.WarnContext(ctx, "quarantining an infected upload",
+				"virus", res.Virus, "filename", filename, "ticket", ticketID)
+			return res.Virus, true
+		}
 		slog.WarnContext(ctx, "infected upload refused",
 			"virus", res.Virus, "filename", filename, "ticket", ticketID)
 		Error(w, http.StatusUnprocessableEntity, "infected",
 			fmt.Sprintf("file rejected: %s", res.Virus))
-		return false
+		return "", false
 
 	case antivirus.Unavailable:
 		if policy == antivirus.PolicyPermissive {
 			// The old behaviour, now reachable only by choosing it.
 			slog.WarnContext(ctx, "accepting an unscanned upload: scan policy is permissive",
 				"filename", filename, "ticket", ticketID, "reason", res.Reason)
-			return true
+			return "", true
 		}
 		slog.ErrorContext(ctx, "refusing an upload that could not be scanned",
 			"filename", filename, "ticket", ticketID, "reason", res.Reason)
@@ -600,7 +723,7 @@ func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte,
 		w.Header().Set("Retry-After", "60")
 		Error(w, http.StatusServiceUnavailable, "scanner_unavailable",
 			"attachments cannot be accepted right now because the virus scanner is unavailable; please try again shortly")
-		return false
+		return "", false
 	}
-	return true
+	return "", true
 }

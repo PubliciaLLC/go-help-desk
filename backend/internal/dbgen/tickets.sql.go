@@ -14,18 +14,23 @@ import (
 )
 
 const createAttachment = `-- name: CreateAttachment :exec
-INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
+                         detected_mime, sha256, virus_name, content_mismatch)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 `
 
 type CreateAttachmentParams struct {
-	ID          uuid.UUID `json:"id"`
-	TicketID    uuid.UUID `json:"ticket_id"`
-	Filename    string    `json:"filename"`
-	MimeType    string    `json:"mime_type"`
-	SizeBytes   int64     `json:"size_bytes"`
-	StoragePath string    `json:"storage_path"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID              uuid.UUID      `json:"id"`
+	TicketID        uuid.UUID      `json:"ticket_id"`
+	Filename        string         `json:"filename"`
+	MimeType        string         `json:"mime_type"`
+	SizeBytes       int64          `json:"size_bytes"`
+	StoragePath     string         `json:"storage_path"`
+	CreatedAt       time.Time      `json:"created_at"`
+	DetectedMime    sql.NullString `json:"detected_mime"`
+	Sha256          sql.NullString `json:"sha256"`
+	VirusName       sql.NullString `json:"virus_name"`
+	ContentMismatch sql.NullBool   `json:"content_mismatch"`
 }
 
 func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error {
@@ -37,6 +42,10 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		arg.SizeBytes,
 		arg.StoragePath,
 		arg.CreatedAt,
+		arg.DetectedMime,
+		arg.Sha256,
+		arg.VirusName,
+		arg.ContentMismatch,
 	)
 	return err
 }
@@ -166,7 +175,7 @@ func (q *Queries) DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkPara
 }
 
 const getAttachmentByID = `-- name: GetAttachmentByID :one
-SELECT id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at FROM attachments WHERE id = $1
+SELECT id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at, detected_mime, sha256, virus_name, content_mismatch FROM attachments WHERE id = $1
 `
 
 func (q *Queries) GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error) {
@@ -180,6 +189,10 @@ func (q *Queries) GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachme
 		&i.SizeBytes,
 		&i.StoragePath,
 		&i.CreatedAt,
+		&i.DetectedMime,
+		&i.Sha256,
+		&i.VirusName,
+		&i.ContentMismatch,
 	)
 	return i, err
 }
@@ -439,7 +452,7 @@ func (q *Queries) ListAllTickets(ctx context.Context, arg ListAllTicketsParams) 
 }
 
 const listAttachments = `-- name: ListAttachments :many
-SELECT id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC
+SELECT id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at, detected_mime, sha256, virus_name, content_mismatch FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC
 `
 
 func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error) {
@@ -459,6 +472,10 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 			&i.SizeBytes,
 			&i.StoragePath,
 			&i.CreatedAt,
+			&i.DetectedMime,
+			&i.Sha256,
+			&i.VirusName,
+			&i.ContentMismatch,
 		); err != nil {
 			return nil, err
 		}

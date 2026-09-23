@@ -158,7 +158,7 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
-- **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF, SVG. Max 2 MB. Raster images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG; SVGs are validated as well-formed XML and scanned for disallowed content (scripts, event handlers, `javascript:` URIs). When set, the logo replaces the site name text in the sidebar.
+- **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the instance falls back to no logo and the settings page says so.
 - Both settings are stored in the database and managed via **Admin → Settings → Branding**.
 - A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
@@ -215,7 +215,7 @@ in 1.2.0.
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
 
-Attachment upload is available to all authenticated (non-guest) users. Accepted formats: PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+Attachment upload is available to all authenticated (non-guest) users. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
 
 ### Attachment scanning
 
@@ -271,9 +271,12 @@ CSP — the shape the logo route already uses, being the one place this
 application does render an uploaded file inline. Real complexity, for a feature
 nobody has asked for.
 
-The corollary is that the **ticket attachment** allowlist does not have to be a
-sanitiser: types a browser will execute — HTML, JavaScript, XML, SVG — are
-refused outright rather than cleaned.
+The corollary is that the **ticket attachment** allowlist is not a security
+boundary and does not have to be a sanitiser. Nothing is rendered, so what the
+list decides is which files this deployment is willing to hold — a policy
+choice, which is why it belongs to the operator rather than to a Go file. An IT
+team triaging a suspicious `.exe` has a real reason to accept one; a deployment
+that wants PDF and nothing else has an equally real reason to say so.
 
 The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
 browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
@@ -321,11 +324,14 @@ Two caveats, both tracked in #165:
   HTML. Step 2 of #165 records what the file actually is alongside what it
   claims to be, so at least the difference is visible.
 - **The logo is the exception**, and the only upload this application renders
-  inline. It is served under its own sandboxing policy (`sandbox; script-src
-  'none'`), and an SVG is parsed and *refused* if it contains scripts, event
-  handlers or `javascript:` URIs — refused, not stripped. #165 removes SVG from
-  that uploader anyway: pattern-matching for dangerous SVG is a game you have
-  to keep winning, and the 1.2.0 advisory already contains one escape from it.
+  inline. #165 removed SVG from that uploader: it was accepted after being
+  parsed and pattern-matched for scripts, event handlers and `javascript:`
+  URIs, and pattern-matching for dangerous SVG is a game you have to keep
+  winning — the 1.2.0 advisory already contains one escape from it. PNG, JPEG
+  and GIF are accepted, all re-encoded as PNG. The route keeps its own
+  sandboxing policy (`sandbox; script-src 'none'`) on top of that, because what
+  decides those bytes are an image is a four-byte magic check rather than a
+  proof.
 
 ---
 
@@ -494,8 +500,8 @@ so they are not removed as dead weight:
   expand, and a 169 KB PNG decodes to 142 MB.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
-  with a stricter, sandboxed policy so an SVG cannot execute whatever it
-  contains.
+  with a stricter, sandboxed policy, so a file that got past the upload check
+  still cannot execute.
 - **Webhook targets are address-checked** at the moment of connection, so a
   hostname resolving to an internal address, a redirect to one, and DNS
   rebinding are all refused. The SAML metadata and OIDC issuer URLs are

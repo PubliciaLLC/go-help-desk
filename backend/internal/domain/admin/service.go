@@ -372,3 +372,80 @@ func (s *Service) AttachmentScanAddress(ctx context.Context) string {
 	v, _ := s.GetString(ctx, KeyAttachmentScanAddress)
 	return strings.TrimSpace(v)
 }
+
+// DefaultAllowedTypes is what an instance accepts as an attachment when the
+// operator has never said otherwise.
+//
+// It is exactly the set that was hard-coded in the upload handler before this
+// setting existed, neither trimmed to look safer nor extended from memory: an
+// instance that upgrades and never touches the setting must accept precisely
+// what it accepted before. The extension-to-MIME map in the server package
+// still needs an entry for every extension here.
+func DefaultAllowedTypes() []string {
+	return []string{".pdf", ".docx", ".xlsx", ".txt", ".log", ".jpg", ".jpeg", ".png", ".bmp"}
+}
+
+// AllowedTypes is what this instance accepts as an attachment, as a set of
+// lowercase extensions with the leading dot, ready for a membership test.
+//
+// It stopped being a security boundary when every download became
+// application/octet-stream with an attachment disposition and nothing is
+// rendered (#165 step 1). What is left is a policy choice about what a
+// deployment is willing to hold, which belongs to the operator: an IT team
+// triaging a suspicious .exe has a real reason to attach one, and a deployment
+// that wants PDF and nothing else has an equally real reason to say so.
+//
+// An absent, null or unparseable value means unset and falls back to the
+// default. An empty array does not: it is an operator saying this instance
+// takes no attachments at all, which is a legitimate choice.
+func (s *Service) AllowedTypes(ctx context.Context) map[string]bool {
+	list := DefaultAllowedTypes()
+	if raw, err := s.store.Get(ctx, KeyAttachmentAllowedTypes); err == nil {
+		var stored []string
+		if err := json.Unmarshal(raw, &stored); err == nil && stored != nil {
+			list = stored
+		}
+	}
+
+	set := make(map[string]bool, len(list)+1)
+	for _, ext := range list {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		set[ext] = true
+		// .jpg and .jpeg name one format, so allowing either allows both —
+		// the same normalisation attachment.IsMismatch applies, for the same
+		// reason. An operator who writes ".jpg" means JPEG images, and being
+		// surprised that ".jpeg" also works is a far smaller problem than
+		// being surprised that it does not, which reads as a broken setting.
+		switch ext {
+		case ".jpg":
+			set[".jpeg"] = true
+		case ".jpeg":
+			set[".jpg"] = true
+		}
+	}
+	return set
+}
+
+// InfectedHandling decides what happens to an upload the scanner identified as
+// malicious: InfectedHandlingRefuse or InfectedHandlingQuarantine.
+//
+// Defaults to "refuse", which is what every instance that upgrades into this
+// feature has. An ordinary help desk fielding printer problems should not
+// start storing malware because nobody said otherwise; an operator who wants
+// it should have said so.
+//
+// An unrecognised stored value falls back to "refuse" as well, never to
+// "quarantine" — the same rule as the scan policy, and here the value being
+// misread decides whether malware is written to disk.
+//
+// It only ever decides what to do with a verdict the scanner actually
+// returned. With the scan policy "off", or the scanner unreachable under
+// "permissive", nothing is ever identified as infected and this setting does
+// nothing at all.
+func (s *Service) InfectedHandling(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentInfectedHandling)
+	if v == InfectedHandlingQuarantine {
+		return InfectedHandlingQuarantine
+	}
+	return InfectedHandlingRefuse
+}

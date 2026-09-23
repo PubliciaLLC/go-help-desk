@@ -139,8 +139,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7);
 SELECT * FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC;
 
 -- name: CreateAttachment :exec
-INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
+                         detected_mime, sha256, virus_name, content_mismatch)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 
 -- name: GetAttachmentByID :one
 SELECT * FROM attachments WHERE id = $1;

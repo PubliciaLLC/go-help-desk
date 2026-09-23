@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"hash/crc32"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -55,10 +57,23 @@ func TestUpload_RefusesTypesABrowserWouldExecute(t *testing.T) {
 	}
 }
 
-// And a file whose content does not match its name is refused for the types
-// that have a signature to check — which is the other half of what the docs
-// claim, and the half that has a documented gap for .txt and .log.
-func TestUpload_RefusesContentThatContradictsTheExtension(t *testing.T) {
+// And a file whose content does not match its name is wrapped rather than
+// refused.
+//
+// This used to require a 415 for both cases below, and that was right until
+// #165: "Today an HTML file named report.pdf is refused with a 415. That
+// closes off the case this product is otherwise good at — an IT team triaging
+// the suspicious file a user reported cannot attach it, and a file that lies
+// about its type is exactly the file a ticket is about. But simply accepting
+// it and painting a warning on the row is too quiet: the file still lands on
+// someone's disk named report.pdf. So: accept it, and wrap it in a ZIP named
+// suspicious-<crc32>.zip."
+//
+// So the assertion moves from the status code to the stored name. The name is
+// the warning: it cannot be double-clicked into whatever the file actually is,
+// and it survives being forwarded or saved to a share, which our UI does not.
+// A relaxation of shipped behaviour, deliberately made visible here.
+func TestUpload_WrapsContentThatContradictsTheExtension(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
@@ -69,17 +84,23 @@ func TestUpload_RefusesContentThatContradictsTheExtension(t *testing.T) {
 	require.NoError(t, err)
 
 	html := []byte("<html><script>alert(1)</script></html>")
+	// The archive is named after the CRC32 of the file inside it, which every
+	// ZIP entry carries anyway. Computed here with the standard library so it
+	// is an independent answer.
+	wantName := fmt.Sprintf("suspicious-%08x.zip", crc32.ChecksumIEEE(html))
 
-	t.Run("html named .png is refused", func(t *testing.T) {
+	t.Run("html named .png is wrapped", func(t *testing.T) {
 		res := uploadNamed(t, h, tk.ID.String(), "image.png", html)
 		defer res.Body.Close()
-		require.Equal(t, http.StatusUnsupportedMediaType, res.StatusCode)
+		require.Equal(t, http.StatusCreated, res.StatusCode)
+		require.Equal(t, wantName, storedFilename(t, res))
 	})
 
-	t.Run("html named .pdf is refused", func(t *testing.T) {
+	t.Run("html named .pdf is wrapped", func(t *testing.T) {
 		res := uploadNamed(t, h, tk.ID.String(), "doc.pdf", html)
 		defer res.Body.Close()
-		require.Equal(t, http.StatusUnsupportedMediaType, res.StatusCode)
+		require.Equal(t, http.StatusCreated, res.StatusCode)
+		require.Equal(t, wantName, storedFilename(t, res))
 	})
 
 	// The documented gap, asserted so that closing it in #165 is a deliberate
@@ -93,6 +114,16 @@ func TestUpload_RefusesContentThatContradictsTheExtension(t *testing.T) {
 		require.Equal(t, http.StatusCreated, res.StatusCode,
 			"if this starts failing, #165 has closed the gap and DESIGN.md needs updating")
 	})
+}
+
+// storedFilename reads the name the upload was stored under out of the 201.
+func storedFilename(t *testing.T, res *http.Response) string {
+	t.Helper()
+	var att struct {
+		Filename string `json:"filename"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&att))
+	return att.Filename
 }
 
 func uploadNamed(t *testing.T, h *harness, ticketID, filename string, content []byte) *http.Response {
