@@ -51,19 +51,19 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	// this is exactly what an attacker uploads — and it is only harmless
 	// because of the header asserted below.
 	const payload = `<html><script>alert(document.cookie)</script></html>`
-	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", []byte(payload))
+	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", []byte(payload), "text/plain")
 
 	// The case with an engine behind it. A minimal but structurally real PDF,
 	// because magicOK checks the %PDF prefix and a fake one would be refused
 	// before reaching the download path this is about.
 	pdf := []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
-	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", pdf)
+	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", pdf, "application/pdf")
 }
 
 // assertDownloadsRatherThanRenders uploads a file and requires the download to
 // be inert: forced to disk, with the browser forbidden from second-guessing
 // the type, and byte-identical on the way back.
-func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name string, content []byte) {
+func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name string, content []byte, wantContentType string) {
 	t.Helper()
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
@@ -93,6 +93,18 @@ func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name s
 		"attachments are download-only: Content-Disposition must be attachment, got %q", disposition)
 	require.Equal(t, "nosniff", res.Header.Get("X-Content-Type-Options"),
 		"without nosniff a browser may decide for itself that this is HTML")
+
+	// The type the file is served as. A mutant changing this to text/html
+	// survived an earlier version of this test, because with the header above
+	// the response still downloads — so this is not load-bearing for safety.
+	// It is here because DESIGN.md says a file is served as what it claims to
+	// be, and an undocumented claim is one that quietly stops being true.
+	//
+	// Step 1 of #165 changes this to application/octet-stream for everything.
+	// This assertion is meant to fail then: that is the signal to update it,
+	// not a nuisance.
+	require.Equal(t, wantContentType, res.Header.Get("Content-Type"),
+		"a file is served as the type it was stored as")
 
 	got, _ := io.ReadAll(res.Body)
 	require.Equal(t, content, got,

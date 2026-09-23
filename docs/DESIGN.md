@@ -275,11 +275,24 @@ The corollary is that the **ticket attachment** allowlist does not have to be a
 sanitiser: types a browser will execute — HTML, JavaScript, XML, SVG — are
 refused outright rather than cleaned.
 
-Two caveats, both tracked in #165. The refusal is by extension, so a `.txt`
-containing HTML is accepted today — harmless while nothing renders it, and the
-reason the rule above is load-bearing rather than belt-and-braces. And the logo
-uploader is the exception in both directions: it accepts SVG and *does* clean
-it with a regex filter, which is the approach this section argues against.
+The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
+browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
+rendered inline would execute on this origin. It is `Content-Disposition:
+attachment` that stops that today, which is why the header has a test.
+
+Two caveats, both tracked in #165:
+
+- **Content is only checked for types with a recognisable signature.** A `.pdf`
+  must begin `%PDF`, a `.png` must have the PNG header, and so on — but `.txt`
+  and `.log` have no signature to check, so a `.txt` containing HTML is
+  accepted. It displays as text rather than running, so this is untidy rather
+  than dangerous; the PDF above is the dangerous one.
+- **The logo is the exception**, and the only upload this application renders
+  inline. It is served under its own sandboxing policy (`sandbox; script-src
+  'none'`), and an SVG is parsed and *refused* if it contains scripts, event
+  handlers or `javascript:` URIs — refused, not stripped. #165 removes SVG from
+  that uploader anyway: pattern-matching for dangerous SVG is a game you have
+  to keep winning, and the 1.2.0 advisory already contains one escape from it.
 
 ---
 
