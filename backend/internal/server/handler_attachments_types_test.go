@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -108,4 +109,48 @@ func uploadNamed(t *testing.T, h *harness, ticketID, filename string, content []
 	rec := httptest.NewRecorder()
 	h.srv.ServeHTTP(rec, req)
 	return rec.Result()
+}
+
+// A filename is raw bytes off the wire. Multipart declares no encoding for it,
+// so nothing guarantees it is text at all — and the column it is stored in is
+// TEXT, which Postgres will only accept as valid UTF-8.
+//
+// Before this check the bad name went all the way through: allowed extension,
+// content scanned, file written to disk, and then the insert failed. The
+// caller got 500 db_error, which blames the server for a malformed request,
+// and the handler was left removing a file it should never have written.
+func TestUpload_RefusesAFilenameThatIsNotText(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Filename bytes", Description: "x", CategoryID: h.catID,
+		ReporterUserID: &h.staffID,
+	})
+	require.NoError(t, err)
+
+	// 0xff and 0xfe never appear in valid UTF-8. Written as a raw multipart
+	// body because Go's own writer would not produce this.
+	var body bytes.Buffer
+	body.WriteString("--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a\xff\xfeb.txt\"\r\n")
+	body.WriteString("Content-Type: text/plain\r\n\r\nhello\r\n--B--\r\n")
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/tickets/"+tk.ID.String()+"/attachments", &body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=B")
+	req.Header.Set("Authorization", "ApiKey "+h.apiKey)
+	rec := httptest.NewRecorder()
+	h.srv.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code,
+		"a filename that cannot be stored is a bad request, not a server fault: %s",
+		rec.Body.String())
+	require.Contains(t, rec.Body.String(), "invalid_filename")
+
+	// And nothing was kept. A refused upload must not leave a file behind.
+	list := h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/attachments", nil)
+	defer list.Body.Close()
+	var attachments []struct{}
+	require.NoError(t, json.NewDecoder(list.Body).Decode(&attachments))
+	require.Empty(t, attachments)
 }

@@ -183,6 +183,23 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	origName := header.Filename
+
+	// The filename has to be text before anything else happens to it.
+	//
+	// It is stored in a TEXT column, and Postgres refuses bytes that are not
+	// valid UTF-8 — so a name like "a\xff\xfe.txt" used to travel the whole
+	// way through, get written to disk, and then fail at the insert. That came
+	// back as 500 db_error, which says the server broke when in fact the
+	// request was malformed, and it left the handler unwinding a file it had
+	// already written. A multipart filename is raw bytes off the wire with no
+	// encoding declared, so this is the one field that can arrive like that;
+	// JSON bodies cannot, because the decoder replaces bad bytes itself.
+	if !utf8.ValidString(origName) {
+		Error(w, http.StatusBadRequest, "invalid_filename",
+			"filename must be valid UTF-8")
+		return
+	}
+
 	ext := strings.ToLower(filepath.Ext(origName))
 	mime, ok := allowedExt[ext]
 	if !ok {
