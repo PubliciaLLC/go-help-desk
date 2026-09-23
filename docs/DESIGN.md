@@ -253,6 +253,80 @@ The admin UI does not render that yet — it shows only the insecure-secrets
 warning — so today this is visible to an administrator who asks the API. The UI
 is the obvious follow-up and is not in this change.
 
+**Attachments are download-only. There is no previewer, and there will not be
+one.**
+
+No inline rendering of any attachment, images included: no lightbox, no
+thumbnail, no `<img>` pointing at the download route, no PDF viewer. Every link
+to an attachment downloads it. The download response carries
+`Content-Disposition: attachment`, and that header is a contract rather than a
+convenience — a test fails if it is removed.
+
+This is a deliberate trade of a small convenience for a whole class of bug.
+Rendering attachment content on the help desk origin means any file that
+reaches a browser is a candidate for stored XSS against the staff sessions that
+live there, and the defence becomes a content sanitiser that has to be right
+forever. A previewer would also need either a separate origin or a sandboxing
+CSP — the shape the logo route already uses, being the one place this
+application does render an uploaded file inline. Real complexity, for a feature
+nobody has asked for.
+
+The corollary is that the **ticket attachment** allowlist does not have to be a
+sanitiser: types a browser will execute — HTML, JavaScript, XML, SVG — are
+refused outright rather than cleaned.
+
+The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
+browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
+rendered inline would execute on this origin.
+
+Three things stop it, all of them tested:
+
+- `Content-Type: application/octet-stream` on every attachment, whatever the
+  file claims to be. No browser renders that. Until #165 step 1 the type came
+  from the filename, so a PDF went out as `application/pdf`.
+- `Content-Disposition: attachment`, which tells the browser to save rather
+  than open, and carries the original filename (RFC 6266, both forms).
+- The download route **refuses** a request whose `Sec-Fetch-Dest` says the
+  browser intends to render the response, and sends `Vary: Sec-Fetch-Dest` so
+  the browser cache cannot answer a rendering request out of an allowed one.
+  The two headers above are obeyed for a navigation and ignored for a
+  subresource, so `<img src>` or a CSS `url()` would otherwise render an
+  attachment regardless of what the server said. An allow list of `document`,
+  `empty` and absent, so a destination nobody has invented yet is refused.
+
+Two limits, stated because they are easy to forget:
+
+- **Absent is allowed**, so the check does not apply to command-line clients or
+  to browsers older than Chrome 80, Firefox 90, Safari 16.4. Refusing an absent
+  header would break every one of those, which is worse; the check protects
+  what it can reach.
+- **Script can fetch the bytes itself** — `Sec-Fetch-Dest: empty`, which has to
+  be allowed or downloading stops working, because an `<a download>` click
+  sends `empty` too — and render them without asking again. The server cannot
+  tell that apart from a download. The same goes for a service worker, which
+  never sees these headers at all and can replay a cached response to an
+  `<img>`; it is same-origin page script, so it adds no capability script did
+  not already have. A frontend test fails on the obvious shapes of that
+  mistake, but it reads source text and cannot follow a value between files,
+  so it catches carelessness at review time rather than being a control.
+
+Two caveats, both tracked in #165:
+
+- **Content is only checked for types with a recognisable signature.** A `.pdf`
+  must begin `%PDF`, a `.png` must have the PNG header, and so on — but `.txt`
+  and `.log` have no signature to check, so a `.txt` containing HTML is
+  accepted. It is stored under a name that says what it is and downloaded as an
+  opaque blob like everything else, so nothing on this origin renders it — but
+  the file on disk is still HTML, and whoever opens it afterwards is opening
+  HTML. Step 2 of #165 records what the file actually is alongside what it
+  claims to be, so at least the difference is visible.
+- **The logo is the exception**, and the only upload this application renders
+  inline. It is served under its own sandboxing policy (`sandbox; script-src
+  'none'`), and an SVG is parsed and *refused* if it contains scripts, event
+  handlers or `javascript:` URIs — refused, not stripped. #165 removes SVG from
+  that uploader anyway: pattern-matching for dangerous SVG is a game you have
+  to keep winning, and the 1.2.0 advisory already contains one escape from it.
+
 ---
 
 ## API

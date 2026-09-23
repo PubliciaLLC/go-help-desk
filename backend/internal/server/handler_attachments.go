@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -182,6 +183,36 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	origName := header.Filename
+
+	// The filename has to be something the database can hold, before anything
+	// else happens to it.
+	//
+	// It is stored in a TEXT column, and Postgres is stricter about that than
+	// Go is. It rejects bytes that are not valid UTF-8, and it also rejects a
+	// NUL — which *is* valid UTF-8, so utf8.ValidString alone was not enough;
+	// the first version of this check let "a\x00b.txt" through and it 500'd at
+	// the insert exactly as before.
+	//
+	// Both arrive the same way. A multipart filename is raw bytes off the wire
+	// with no encoding declared, and the RFC 5987 form (filename*=UTF-8'') is
+	// percent-decoded by the MIME parser, which is how a NUL gets past a
+	// parser that would otherwise refuse a raw control character.
+	//
+	// Without this, the bad name travelled the whole handler — extension
+	// checked, content scanned, file written to disk — and failed at the
+	// insert, returning 500 db_error. That blames the server for a malformed
+	// request. See #169.
+	//
+	// This is not the only place a string can reach Postgres in a state it
+	// refuses: a NUL inside a JSON string survives Go's decoder and 500s the
+	// same way on ticket creation. That is a wider problem than attachments
+	// and is not fixed here.
+	if !utf8.ValidString(origName) || strings.ContainsRune(origName, 0) {
+		Error(w, http.StatusBadRequest, "invalid_filename",
+			"filename must be valid UTF-8 and contain no NUL")
+		return
+	}
+
 	ext := strings.ToLower(filepath.Ext(origName))
 	mime, ok := allowedExt[ext]
 	if !ok {
@@ -323,6 +354,53 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Refuse to answer a request that wants to render this.
+	//
+	// The headers below tell a browser to save the file, and a browser obeys
+	// them for a navigation. It does not obey them for a subresource: put an
+	// uploaded image behind <img src>, or behind a CSS url(), and it renders
+	// on this origin no matter what Content-Type and Content-Disposition say.
+	// Nothing here or in the frontend was stopping that; what stood in its
+	// place was a test that reads our own source and hopes nobody writes an
+	// <img>. Two rounds of adversarial review walked past that test five
+	// different ways — a CSS background, an aliased import, createElement, an
+	// innerHTML string, a tag name split over two lines — and each one was a
+	// pattern a regular expression missed rather than a hole in the argument.
+	// A check that has to keep up with how code can be written is a check
+	// that loses.
+	//
+	// So ask the browser instead. Sec-Fetch-Dest says what the response is
+	// going to be used for, the browser fills it in and page script cannot
+	// forge it — a fetch() that sets the header itself has it dropped.
+	//
+	// Two values have to be allowed. "empty" is a script fetch and, less
+	// obviously, an <a download> click: the HTML spec gives a hyperlink being
+	// downloaded an empty destination, so the app's own download link arrives
+	// as "empty" with mode "navigate". "document" is a plain <a href> with no
+	// download attribute, or the URL typed into the address bar. Every
+	// rendering context is something else.
+	//
+	// Allow list, not a block list: a destination nobody has invented yet
+	// should be refused rather than served.
+	//
+	// Absent is allowed. Every command-line client sends nothing, and so do
+	// browsers older than Chrome 80, Firefox 90 and Safari 16.4 — and for
+	// those browsers this check simply does not apply. That is a gap, not a
+	// reason the gap is harmless: Safari 16.3 renders an <img> like anything
+	// else. Refusing an absent header would break curl and every older client
+	// instead, which is worse, so the check protects what it can reach.
+	//
+	// And it only stops a request the browser makes for a rendering context.
+	// Page script can fetch the bytes itself — Sec-Fetch-Dest: empty, which
+	// has to be allowed — and render them without asking again. Nothing on
+	// the server can tell that apart from a download. What stops that is not
+	// writing it, which is what the frontend test is for.
+	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" && dest != "document" && dest != "empty" {
+		Error(w, http.StatusForbidden, "not_downloadable",
+			"attachments can only be downloaded, not rendered in the page")
+		return
+	}
+
 	f, err := os.Open(att.StoragePath)
 	if err != nil {
 		Error(w, http.StatusNotFound, "not_found", "file not found on disk")
@@ -330,11 +408,148 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	}
 	defer f.Close()
 
-	w.Header().Set("Content-Type", att.MimeType)
-	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename=%q`, att.Filename))
+	// Every attachment is served as an unknown blob, whatever it claims to be.
+	//
+	// This used to send att.MimeType — the type derived from the uploaded
+	// filename — so a PDF went out as application/pdf. Browsers open that in
+	// their built-in viewer, and those viewers run JavaScript, so a malicious
+	// PDF only stayed harmless because Content-Disposition told the browser to
+	// save it instead. One header was holding the whole thing up.
+	//
+	// application/octet-stream is not a type any browser renders, so now
+	// nothing is asking it to. Not a list of dangerous types either: such a
+	// list has to stay correct as formats change, and it will not. The type is
+	// no use on this response anyway — the operating system picks what opens a
+	// downloaded file from its extension, not from a header it already obeyed
+	// by saving the file.
+	//
+	// The stored mime_type stays what it was. It is a record of what the file
+	// claims to be, so the attachment list can show "PDF"; it is no longer a
+	// decision about how a browser should treat it.
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", contentDisposition(att.Filename))
+	// Vary, or the check above is decoration.
+	//
+	// That check runs per request; this response is cacheable for an hour and
+	// a browser cache is keyed by URL. So once the URL has been fetched in a
+	// way the check allows — the user's own download click, or any fetch() —
+	// an <img> pointing at the same URL is answered from the cache and the
+	// server never sees it. Measured in Chrome: without this header the image
+	// loads and no second request arrives; with it, the image request reaches
+	// the server and is refused.
+	//
+	// Naming the header here makes the cache key include it, so a request
+	// with a different Sec-Fetch-Dest is a different entry and has to ask.
+	w.Header().Set("Vary", "Sec-Fetch-Dest")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
+
+	// ServeContent, not io.Copy: it handles range requests and conditional
+	// gets. It would otherwise set Content-Type by sniffing the body, which is
+	// exactly what this function has just decided against — so the header is
+	// set above and ServeContent leaves an existing one alone.
+	//
+	// With one exception, checked rather than assumed: a request for several
+	// ranges at once gets Content-Type: multipart/byteranges, because that is
+	// what the body then is. Each part inside it still carries the blob type,
+	// and no browser renders a byteranges response, so this is not a way back
+	// to rendering — but the header on the response is not the one set above.
 	http.ServeContent(w, r, att.Filename, att.CreatedAt, f)
+}
+
+// contentDisposition builds the header that names the downloaded file.
+//
+// Two forms, per RFC 6266. The plain filename= is ASCII only and is what old
+// clients read; filename*= carries the real name as percent-encoded UTF-8 and
+// is what everything current reads. Sending both means "café.pdf" arrives
+// named "café.pdf" rather than "caf.pdf" or worse.
+//
+// This previously used fmt.Sprintf("%q"), which is Go quoting rather than HTTP
+// quoting. It escaped quotes and non-printable characters, so it was not a way
+// in, and a name like "café.pdf" did come out with the accent intact — %q
+// leaves printable non-ASCII alone. What it did not do is follow the spec: a
+// bare filename= is defined over a character set that has no room for UTF-8,
+// so what a client makes of raw bytes there is up to the client. filename*=
+// says which encoding is in use instead of hoping.
+func contentDisposition(filename string) string {
+	// Strip anything that cannot appear in a header value, and any path
+	// separator: the name comes from an upload, and it decides what a browser
+	// writes to disk.
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+			return -1
+		}
+		return r
+	}, filename)
+	if clean == "" {
+		clean = "attachment"
+	}
+
+	// A ceiling on the name. Nothing limits the length of an uploaded
+	// filename — the column is TEXT and the multipart reader allows a 10 MB
+	// part header — and the name goes out in a response header twice, once
+	// percent-encoded. A 300 KB filename produced a 600 KB header, which is
+	// past what browsers and proxies accept, so the download would simply
+	// fail for everyone. Truncated on a rune boundary so the encoded form
+	// stays valid UTF-8; the extension is kept, since that is what decides
+	// what opens the file.
+	const maxName = 200
+	if len(clean) > maxName {
+		ext := filepath.Ext(clean)
+		if len(ext) > 32 {
+			ext = ""
+		}
+		head := clean[:maxName-len(ext)]
+		for len(head) > 0 && !utf8.ValidString(head) {
+			head = head[:len(head)-1]
+		}
+		clean = head + ext
+	}
+
+	// The ASCII fallback. Anything outside ASCII becomes an underscore so the
+	// plain form stays a legal quoted-string, while filename*= below carries
+	// the real thing.
+	ascii := strings.Map(func(r rune) rune {
+		if r > 0x7e {
+			return '_'
+		}
+		return r
+	}, clean)
+	// Escape what a quoted-string cannot hold bare. The backslash rule cannot
+	// fire today because the map above removes backslashes, but it is here so
+	// that stays a choice about path separators rather than the only thing
+	// keeping this header well-formed.
+	ascii = strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(ascii)
+
+	return fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
+		ascii, rfc5987(clean))
+}
+
+// rfc5987 percent-encodes a filename for the filename*= form.
+//
+// Not url.PathEscape, which was the first attempt. It lets exactly three
+// characters through that RFC 5987 forbids — ":", "=" and "@" — and Go's own
+// mime.ParseMediaType then refuses the header. A saved email named
+// "user@example.com.eml" is enough to trigger it, which is not an exotic thing
+// for a help desk to be handed.
+//
+// Encoded byte by byte rather than rune by rune, so a multi-byte character
+// comes out as the percent-encoded UTF-8 the header claims to carry.
+func rfc5987(s string) string {
+	// RFC 5987 attr-char: letters, digits and these. Note "%", "*" and "\'"
+	// are excluded on purpose — they are the encoding's own syntax.
+	const attrChar = "!#$&+-.^_`|~"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			strings.IndexByte(attrChar, c) >= 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // scanUpload scans the file and applies the configured policy, reporting

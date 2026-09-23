@@ -48,6 +48,18 @@ check whether it is listed here.
   test pins this so it does not get "fixed".
 - **`ticket.Atomic` takes both a `Store` and an `audit.Store`.** An audit entry
   committed apart from the change it describes is not an audit trail.
+- **Attachments are download-only; there is no previewer.** Not an oversight
+  and not a backlog item. Rendering attachment content on the help desk origin
+  makes every uploaded file a candidate for stored XSS against the staff
+  sessions that live there. The case that bites is PDF: browsers open it in a
+  viewer that runs JavaScript. Three things hold it, each with a test: the
+  blob content type, `Content-Disposition: attachment`, and the download
+  route refusing any request whose `Sec-Fetch-Dest` says it is going to be
+  rendered (with `Vary` on it, or the cache answers the second request) — the
+  headers are ignored for a subresource, so `<img src>` would render an
+  attachment without that third check. It does not cover script fetching the
+  bytes and rendering them itself; nothing on the server can. See docs/DESIGN.md and #165 before adding a
+  thumbnail, a lightbox or an inline PDF view.
 
 ### No breaking changes
 
