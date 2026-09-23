@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -198,11 +198,22 @@ func assertUploadLeftNothingBehind(t *testing.T, h *harness, ticketID string) {
 	require.NoError(t, json.NewDecoder(list.Body).Decode(&attachments))
 	require.Empty(t, attachments, "a refused upload must not be recorded")
 
-	dir := filepath.Join(h.attachDir, "tickets", ticketID)
-	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return
-	}
+	// Walked rather than looked up by path. The first version joined
+	// attachDir with the subdirectory layout the handler happens to use and
+	// returned early if that directory did not exist — so changing the layout
+	// made the check pass while a file sat on disk, which is the exact
+	// weakness it was written to close. Nothing here knows where uploads go;
+	// it just requires that nothing arrived anywhere.
+	var found []string
+	err := filepath.WalkDir(h.attachDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			found = append(found, path)
+		}
+		return nil
+	})
 	require.NoError(t, err)
-	require.Empty(t, entries, "a refused upload must not leave a file in %s", dir)
+	require.Empty(t, found, "a refused upload must not leave a file under %s", h.attachDir)
 }

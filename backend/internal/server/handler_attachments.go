@@ -371,8 +371,14 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	//
 	// So ask the browser instead. Sec-Fetch-Dest says what the response is
 	// going to be used for, the browser fills it in and page script cannot
-	// forge it. A download is a navigation ("document") or a script fetch
-	// ("empty"); every rendering context is something else.
+	// forge it — a fetch() that sets the header itself has it dropped.
+	//
+	// Two values have to be allowed. "empty" is a script fetch and, less
+	// obviously, an <a download> click: the HTML spec gives a hyperlink being
+	// downloaded an empty destination, so the app's own download link arrives
+	// as "empty" with mode "navigate". "document" is a plain <a href> with no
+	// download attribute, or the URL typed into the address bar. Every
+	// rendering context is something else.
 	//
 	// Allow list, not a block list: a destination nobody has invented yet
 	// should be refused rather than served.

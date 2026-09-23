@@ -89,10 +89,15 @@ func TestAttachmentDownload_RefusesToBeRendered(t *testing.T) {
 			"a cached response must not be reusable for a different destination")
 	})
 
-	// And the ways an attachment is actually fetched still work. "document" is
-	// a link click or an <a download>; "empty" is fetch or XHR; absent is an
-	// older browser or any command-line client, none of which has a renderer
-	// to protect.
+	// And the ways an attachment is actually fetched still work.
+	//
+	// "empty" is the one that matters: it is fetch and XHR, and it is also an
+	// <a download> click, because the HTML spec gives a hyperlink being
+	// downloaded an empty destination rather than "document". Measured in
+	// Chrome, the app's own download link arrives as dest=empty,
+	// mode=navigate. "document" is a plain <a href> or a typed URL. Absent is
+	// a command-line client, or a browser older than Chrome 80 / Firefox 90 /
+	// Safari 16.4 — which this check simply cannot reach.
 	for _, dest := range []string{"document", "empty", ""} {
 		name := dest
 		if name == "" {

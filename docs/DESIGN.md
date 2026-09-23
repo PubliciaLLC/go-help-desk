@@ -301,11 +301,14 @@ Two limits, stated because they are easy to forget:
   header would break every one of those, which is worse; the check protects
   what it can reach.
 - **Script can fetch the bytes itself** — `Sec-Fetch-Dest: empty`, which has to
-  be allowed or downloading stops working — and render them without asking
-  again. The server cannot tell that apart from a download. A frontend test
-  fails on the obvious shapes of that mistake, but it reads source text and
-  cannot follow a value between files, so it catches carelessness at review
-  time rather than being a control.
+  be allowed or downloading stops working, because an `<a download>` click
+  sends `empty` too — and render them without asking again. The server cannot
+  tell that apart from a download. The same goes for a service worker, which
+  never sees these headers at all and can replay a cached response to an
+  `<img>`; it is same-origin page script, so it adds no capability script did
+  not already have. A frontend test fails on the obvious shapes of that
+  mistake, but it reads source text and cannot follow a value between files,
+  so it catches carelessness at review time rather than being a control.
 
 Two caveats, both tracked in #165:
 
