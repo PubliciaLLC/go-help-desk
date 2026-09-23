@@ -74,6 +74,21 @@ func TestAttachmentDownload_RefusesToBeRendered(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, res.StatusCode)
 	})
 
+	// The check is per request; the response is cacheable for an hour and a
+	// browser cache is keyed by URL. Without naming this header, a URL
+	// fetched once in a way the check allows is then served to an <img> from
+	// cache and the server never sees the second request — measured in
+	// Chrome, where the image loaded and no request arrived. Naming it makes
+	// a different Sec-Fetch-Dest a different cache entry.
+	t.Run("the cache cannot serve a rendering request from an allowed one", func(t *testing.T) {
+		res := h.doWithHeaders(t, http.MethodGet, url, nil,
+			map[string]string{"Sec-Fetch-Dest": "document"})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode)
+		require.Contains(t, res.Header.Values("Vary"), "Sec-Fetch-Dest",
+			"a cached response must not be reusable for a different destination")
+	})
+
 	// And the ways an attachment is actually fetched still work. "document" is
 	// a link click or an <a download>; "empty" is fetch or XHR; absent is an
 	// older browser or any command-line client, none of which has a renderer

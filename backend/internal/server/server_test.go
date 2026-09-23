@@ -81,6 +81,7 @@ type harness struct {
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
+	attachDir       string // where uploads land, so a test can check the disk
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -291,6 +292,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,
+		attachDir:       cfg.AttachmentDir,
 	}
 	cleanup := func() {
 		rollback()

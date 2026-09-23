@@ -184,19 +184,32 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 
 	origName := header.Filename
 
-	// The filename has to be text before anything else happens to it.
+	// The filename has to be something the database can hold, before anything
+	// else happens to it.
 	//
-	// It is stored in a TEXT column, and Postgres refuses bytes that are not
-	// valid UTF-8 — so a name like "a\xff\xfe.txt" used to travel the whole
-	// way through, get written to disk, and then fail at the insert. That came
-	// back as 500 db_error, which says the server broke when in fact the
-	// request was malformed, and it left the handler unwinding a file it had
-	// already written. A multipart filename is raw bytes off the wire with no
-	// encoding declared, so this is the one field that can arrive like that;
-	// JSON bodies cannot, because the decoder replaces bad bytes itself.
-	if !utf8.ValidString(origName) {
+	// It is stored in a TEXT column, and Postgres is stricter about that than
+	// Go is. It rejects bytes that are not valid UTF-8, and it also rejects a
+	// NUL — which *is* valid UTF-8, so utf8.ValidString alone was not enough;
+	// the first version of this check let "a\x00b.txt" through and it 500'd at
+	// the insert exactly as before.
+	//
+	// Both arrive the same way. A multipart filename is raw bytes off the wire
+	// with no encoding declared, and the RFC 5987 form (filename*=UTF-8'') is
+	// percent-decoded by the MIME parser, which is how a NUL gets past a
+	// parser that would otherwise refuse a raw control character.
+	//
+	// Without this, the bad name travelled the whole handler — extension
+	// checked, content scanned, file written to disk — and failed at the
+	// insert, returning 500 db_error. That blames the server for a malformed
+	// request. See #169.
+	//
+	// This is not the only place a string can reach Postgres in a state it
+	// refuses: a NUL inside a JSON string survives Go's decoder and 500s the
+	// same way on ticket creation. That is a wider problem than attachments
+	// and is not fixed here.
+	if !utf8.ValidString(origName) || strings.ContainsRune(origName, 0) {
 		Error(w, http.StatusBadRequest, "invalid_filename",
-			"filename must be valid UTF-8")
+			"filename must be valid UTF-8 and contain no NUL")
 		return
 	}
 
@@ -362,9 +375,20 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	// ("empty"); every rendering context is something else.
 	//
 	// Allow list, not a block list: a destination nobody has invented yet
-	// should be refused rather than served. Absent is allowed, because older
-	// browsers and every command-line client send nothing at all, and those
-	// have no renderer to protect.
+	// should be refused rather than served.
+	//
+	// Absent is allowed. Every command-line client sends nothing, and so do
+	// browsers older than Chrome 80, Firefox 90 and Safari 16.4 — and for
+	// those browsers this check simply does not apply. That is a gap, not a
+	// reason the gap is harmless: Safari 16.3 renders an <img> like anything
+	// else. Refusing an absent header would break curl and every older client
+	// instead, which is worse, so the check protects what it can reach.
+	//
+	// And it only stops a request the browser makes for a rendering context.
+	// Page script can fetch the bytes itself — Sec-Fetch-Dest: empty, which
+	// has to be allowed — and render them without asking again. Nothing on
+	// the server can tell that apart from a download. What stops that is not
+	// writing it, which is what the frontend test is for.
 	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" && dest != "document" && dest != "empty" {
 		Error(w, http.StatusForbidden, "not_downloadable",
 			"attachments can only be downloaded, not rendered in the page")
@@ -398,6 +422,19 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	// decision about how a browser should treat it.
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", contentDisposition(att.Filename))
+	// Vary, or the check above is decoration.
+	//
+	// That check runs per request; this response is cacheable for an hour and
+	// a browser cache is keyed by URL. So once the URL has been fetched in a
+	// way the check allows — the user's own download click, or any fetch() —
+	// an <img> pointing at the same URL is answered from the cache and the
+	// server never sees it. Measured in Chrome: without this header the image
+	// loads and no second request arrives; with it, the image request reaches
+	// the server and is refused.
+	//
+	// Naming the header here makes the cache key include it, so a request
+	// with a different Sec-Fetch-Dest is a different entry and has to ask.
+	w.Header().Set("Vary", "Sec-Fetch-Dest")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 
 	// ServeContent, not io.Copy: it handles range requests and conditional

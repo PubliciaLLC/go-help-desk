@@ -7,6 +7,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -147,10 +149,60 @@ func TestUpload_RefusesAFilenameThatIsNotText(t *testing.T) {
 		rec.Body.String())
 	require.Contains(t, rec.Body.String(), "invalid_filename")
 
-	// And nothing was kept. A refused upload must not leave a file behind.
-	list := h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/attachments", nil)
+	assertUploadLeftNothingBehind(t, h, tk.ID.String())
+}
+
+// A NUL is valid UTF-8, so utf8.ValidString accepts it — and Postgres does
+// not. It arrives through the RFC 5987 form of the header, which the MIME
+// parser percent-decodes, so a parser that refuses a raw control character
+// hands this one straight over.
+func TestUpload_RefusesANULInTheFilename(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "NUL", Description: "x", CategoryID: h.catID,
+		ReporterUserID: &h.staffID,
+	})
+	require.NoError(t, err)
+
+	var body bytes.Buffer
+	body.WriteString("--B\r\nContent-Disposition: form-data; name=\"file\"; filename*=UTF-8''a%00b.txt\r\n")
+	body.WriteString("Content-Type: text/plain\r\n\r\nhello\r\n--B--\r\n")
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/tickets/"+tk.ID.String()+"/attachments", &body)
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=B")
+	req.Header.Set("Authorization", "ApiKey "+h.apiKey)
+	rec := httptest.NewRecorder()
+	h.srv.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code,
+		"a NUL cannot be stored, so this is a bad request: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "invalid_filename")
+	assertUploadLeftNothingBehind(t, h, tk.ID.String())
+}
+
+// assertUploadLeftNothingBehind checks both places a refused upload could
+// leave something: the attachment list, and the disk.
+//
+// The disk half is the point. An earlier version only read the list, and
+// returning the 400 *after* os.WriteFile still passed it — so the test did
+// not hold the property its own comment claimed.
+func assertUploadLeftNothingBehind(t *testing.T, h *harness, ticketID string) {
+	t.Helper()
+
+	list := h.do(t, http.MethodGet, "/api/v1/tickets/"+ticketID+"/attachments", nil)
 	defer list.Body.Close()
 	var attachments []struct{}
 	require.NoError(t, json.NewDecoder(list.Body).Decode(&attachments))
-	require.Empty(t, attachments)
+	require.Empty(t, attachments, "a refused upload must not be recorded")
+
+	dir := filepath.Join(h.attachDir, "tickets", ticketID)
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return
+	}
+	require.NoError(t, err)
+	require.Empty(t, entries, "a refused upload must not leave a file in %s", dir)
 }

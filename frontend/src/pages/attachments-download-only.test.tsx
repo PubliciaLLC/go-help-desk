@@ -4,25 +4,28 @@ import { describe, expect, it } from 'vitest'
 // rendering of any attachment, images included: no lightbox, no thumbnail, no
 // <img> pointing at the download route, no PDF viewer."
 //
-// What actually enforces that is the server. It refuses a request for an
-// attachment whose Sec-Fetch-Dest says the browser is going to render the
-// response — see handler_attachments.go and its test. That check cannot be
-// written around from here, which is the point: an earlier version of this
-// file was the only thing standing between an <img> and a rendered
-// attachment, and two rounds of adversarial review walked past it five
-// different ways.
+// The server does most of the work. It refuses a request for an attachment
+// whose Sec-Fetch-Dest says the browser is going to render the response — see
+// handler_attachments.go and its test — which covers every direct subresource
+// load: <img src>, a CSS url(), <iframe>, <embed>. Page script cannot forge
+// that header, so an earlier version of this file, which was the only thing
+// standing between an <img> and a rendered attachment, no longer has to be.
 //
-// So these tests are not the control. They are here to keep the frontend
-// honest about its own design, and to fail loudly at review time rather than
-// at runtime: someone who adds an attachment preview should find out from a
-// red test, not from a 403 in the browser.
+// It does not cover everything, and this is the part worth being precise
+// about. Script can fetch the bytes itself — Sec-Fetch-Dest: empty, which has
+// to be allowed or downloading breaks — and then render them with no further
+// request. Nothing on the server can tell that apart from a download. A
+// preview written that way is caught by nothing except somebody noticing.
 //
-// What text matching can and cannot do, said plainly so nobody trusts it
-// further than it goes. It CAN list every JSX element in this frontend that
-// renders remote content, and every place an attachment URL is spelled out.
-// It CANNOT follow a value between files, and it cannot see a URL assembled
-// from pieces or an element built by a function call. Anything it misses, the
-// server still refuses.
+// So these tests are worth keeping and are not a wall. They catch the obvious
+// shapes at review time rather than at runtime, and they say out loud what
+// the design is. What text matching CAN do: list every JSX element in this
+// frontend that renders remote content, and every place an attachment URL is
+// spelled out. What it CANNOT do: follow a value between files, see a URL
+// assembled from pieces, or see an element built by a function call. Three
+// rounds of adversarial review got past earlier versions twelve different
+// ways, so treat a green run as "nobody did the obvious thing", not as
+// proof.
 //
 // A note on <iframe>, since an earlier version of this comment got it wrong:
 // an iframe load is a navigation, and browsers do honour

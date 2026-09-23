@@ -287,16 +287,25 @@ Three things stop it, all of them tested:
 - `Content-Disposition: attachment`, which tells the browser to save rather
   than open, and carries the original filename (RFC 6266, both forms).
 - The download route **refuses** a request whose `Sec-Fetch-Dest` says the
-  browser intends to render the response. The two headers above are obeyed for
-  a navigation; they are ignored for a subresource, so `<img src>` or a CSS
-  `url()` pointed at an attachment would render it regardless of what the
-  server said. An allow list of `document`, `empty` and absent — a destination
-  nobody has invented yet is refused, and clients that send no header at all
-  (older browsers, anything on a command line) have no renderer to protect.
+  browser intends to render the response, and sends `Vary: Sec-Fetch-Dest` so
+  the browser cache cannot answer a rendering request out of an allowed one.
+  The two headers above are obeyed for a navigation and ignored for a
+  subresource, so `<img src>` or a CSS `url()` would otherwise render an
+  attachment regardless of what the server said. An allow list of `document`,
+  `empty` and absent, so a destination nobody has invented yet is refused.
 
-A frontend test also fails if the application starts asking for an attachment
-to be rendered, but it reads source text and cannot follow a value between
-files. It is there to catch a mistake at review time, not to be the control.
+Two limits, stated because they are easy to forget:
+
+- **Absent is allowed**, so the check does not apply to command-line clients or
+  to browsers older than Chrome 80, Firefox 90, Safari 16.4. Refusing an absent
+  header would break every one of those, which is worse; the check protects
+  what it can reach.
+- **Script can fetch the bytes itself** — `Sec-Fetch-Dest: empty`, which has to
+  be allowed or downloading stops working — and render them without asking
+  again. The server cannot tell that apart from a download. A frontend test
+  fails on the obvious shapes of that mistake, but it reads source text and
+  cannot follow a value between files, so it catches carelessness at review
+  time rather than being a control.
 
 Two caveats, both tracked in #165:
 
