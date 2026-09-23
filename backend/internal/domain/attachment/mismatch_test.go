@@ -21,7 +21,14 @@ func TestIsMismatch(t *testing.T) {
 		name        string
 		claimedExt  string
 		detectedExt string
-		want        bool
+		// detectedMIME is what Detect returned alongside the extension. Left
+		// empty in most cases and derived from the extension, because for
+		// every format with a signature the two are interchangeable. It is set
+		// explicitly only where the media type is the thing under test — the
+		// textual formats, where the extension alone cannot say whether the
+		// content displays or runs.
+		detectedMIME string
+		want         bool
 	}{
 		// --- The ordinary case: content agrees with the name. ---
 		{
@@ -152,10 +159,14 @@ func TestIsMismatch(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := attachment.IsMismatch(tc.claimedExt, tc.detectedExt)
+			mime := tc.detectedMIME
+			if mime == "" {
+				mime = mimeForExt(tc.detectedExt)
+			}
+			got := attachment.IsMismatch(tc.claimedExt, tc.detectedExt, mime)
 			if got != tc.want {
-				t.Errorf("IsMismatch(%q, %q) = %v, want %v",
-					tc.claimedExt, tc.detectedExt, got, tc.want)
+				t.Errorf("IsMismatch(%q, %q, %q) = %v, want %v",
+					tc.claimedExt, tc.detectedExt, mime, got, tc.want)
 			}
 		})
 	}
@@ -173,7 +184,7 @@ func TestIsMismatch_NormalisesBothArguments(t *testing.T) {
 
 	for _, claimed := range spellings {
 		for _, detected := range spellings {
-			if attachment.IsMismatch(claimed, detected) {
+			if attachment.IsMismatch(claimed, detected, "application/pdf") {
 				t.Errorf("IsMismatch(%q, %q) = true: these are the same extension",
 					claimed, detected)
 			}
@@ -183,10 +194,35 @@ func TestIsMismatch_NormalisesBothArguments(t *testing.T) {
 	// And normalisation must not flatten a real difference into a match.
 	for _, claimed := range spellings {
 		for _, detected := range []string{".html", "html", ".HTML", "HTML"} {
-			if !attachment.IsMismatch(claimed, detected) {
+			if !attachment.IsMismatch(claimed, detected, "text/html") {
 				t.Errorf("IsMismatch(%q, %q) = false: HTML is not a PDF",
 					claimed, detected)
 			}
 		}
 	}
+}
+
+// mimeForExt is what Detect returns alongside each extension the table uses.
+// Written out rather than calling Detect, so a change in the library cannot
+// quietly change what this test means.
+func mimeForExt(ext string) string {
+	switch ext {
+	case ".pdf":
+		return "application/pdf"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".zip":
+		return "application/zip"
+	case ".html":
+		return "text/html"
+	case ".txt":
+		return "text/plain"
+	case "":
+		return "application/octet-stream"
+	}
+	return "application/octet-stream"
 }

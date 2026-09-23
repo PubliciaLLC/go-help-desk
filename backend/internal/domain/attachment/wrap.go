@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/yeka/zip"
 )
@@ -43,7 +45,7 @@ func Wrap(data []byte, filename, password string) ([]byte, error) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
 
-	w, err := newEntry(zw, filename, password)
+	w, err := newEntry(zw, entryName(filename), password)
 	if err != nil {
 		return nil, fmt.Errorf("creating the archive entry: %w", err)
 	}
@@ -56,6 +58,31 @@ func Wrap(data []byte, filename, password string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// entryName is the uploaded filename reduced to something that cannot be read
+// as a path by whatever unpacks the archive.
+//
+// Go's multipart reader runs filepath.Base over an uploaded name, which on
+// Linux removes a forward-slash path and leaves backslashes alone — so
+// `..\..\Users\Public\evil.exe` arrives intact and, without this, goes
+// into the archive verbatim. Modern extractors sanitise it; WinRAR has had
+// traversal bugs as recently as 2025, and an archive we built is not the
+// place to find out which extractor the reader has.
+//
+// The same strip that contentDisposition applies to the download header, for
+// the same reason: the name decides where somebody's machine puts the file.
+func entryName(filename string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' {
+			return -1
+		}
+		return r
+	}, filename)
+	if clean == "" {
+		return "attachment"
+	}
+	return clean
+}
+
 // newEntry starts the single entry, encrypted or not.
 //
 // StandardEncryption is PKWARE's original stream cipher — "ZipCrypto" —
@@ -63,9 +90,37 @@ func Wrap(data []byte, filename, password string) ([]byte, error) {
 // there is no confidentiality to protect, and AES-256 ZIP is opaque to
 // Windows Explorer and macOS Archive Utility. Removing that friction for an
 // analyst is the entire reason the password exists.
+//
+// Built through CreateHeader rather than the library's Create/Encrypt
+// shortcuts, because those leave two fields unset that a reader outside Go
+// needs:
+//
+// Bit 11 says the name is UTF-8. Without it the name has no declared
+// encoding and a spec-following tool reads it as CP437, so "reçu — facture.exe"
+// unpacks as mojibake. The library has had an open issue for this since 2024;
+// setting the flag ourselves costs one line and does not depend on that being
+// fixed.
+//
+// The MS-DOS timestamp is not optional in this format. Zero is not "no date",
+// it decodes to day-of-month zero, which some tools display and some reject.
 func newEntry(zw *zip.Writer, filename, password string) (io.Writer, error) {
-	if password == "" {
-		return zw.Create(filename)
+	fh := &zip.FileHeader{
+		Name:   filename,
+		Method: zip.Deflate,
 	}
-	return zw.Encrypt(filename, password, zip.StandardEncryption)
+	// SetModTime, not a Modified field: this package forked archive/zip
+	// before that field existed, which is its own small argument for pinning
+	// what we depend on rather than assuming a fork keeps pace.
+	fh.SetModTime(time.Now().UTC())
+	for i := 0; i < len(filename); i++ {
+		if filename[i] >= 0x80 {
+			fh.Flags |= 0x800
+			break
+		}
+	}
+	if password != "" {
+		fh.SetPassword(password)
+		fh.SetEncryptionMethod(zip.StandardEncryption)
+	}
+	return zw.CreateHeader(fh)
 }

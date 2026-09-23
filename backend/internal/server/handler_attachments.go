@@ -31,8 +31,12 @@ import (
 
 const (
 	attachMaxBytes = 25 << 20 // 25 MB
-	attachSubdir   = "tickets"
-	jpegQuality    = 85
+
+	// maxFilenameBytes is the longest uploaded name that is stored. See the
+	// check in handleUploadAttachment for why the ceiling exists at all.
+	maxFilenameBytes = 255
+	attachSubdir     = "tickets"
+	jpegQuality      = 85
 )
 
 // allowedExt maps lowercase extensions to the MIME type we store.
@@ -196,6 +200,24 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// And it has to be a length something downstream can hold.
+	//
+	// Nothing bounded this before, and the multipart reader allows a 10 MB
+	// part header, so a filename of any length reached storage. A ZIP entry
+	// name is a 16-bit field: over 65,535 bytes the writer we wrap with
+	// silently truncates the length rather than refusing, which produced an
+	// archive no tool could open — accepted with a 201 and written to disk,
+	// so the ticket carried a file nobody could ever read back.
+	//
+	// 255 bytes is the limit almost every filesystem the download lands on
+	// imposes anyway, so this refuses at the door what the reader's own
+	// machine would refuse at the end.
+	if len(origName) > maxFilenameBytes {
+		Error(w, http.StatusBadRequest, "invalid_filename",
+			fmt.Sprintf("filename must be %d bytes or fewer", maxFilenameBytes))
+		return
+	}
+
 	// What this instance accepts is the operator's setting, not a map in this
 	// file, and it is read per upload rather than once at startup — the defect
 	// the scanner address had, where a saved value was never consulted again.
@@ -250,7 +272,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// attachment disposition, a mismatch is not a risk to this server. It is a
 	// deception risk for the person about to open the file, which is why they
 	// are told instead of the upload being rejected.
-	mismatch := attachment.IsMismatch(ext, detectedExt)
+	mismatch := attachment.IsMismatch(ext, detectedExt, detectedMime)
 
 	// What the scanner made of it, and what the operator chose to do with
 	// that. An empty name means the file was not identified as malicious —
