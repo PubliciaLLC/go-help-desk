@@ -330,11 +330,104 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	}
 	defer f.Close()
 
-	w.Header().Set("Content-Type", att.MimeType)
-	w.Header().Set("Content-Disposition",
-		fmt.Sprintf(`attachment; filename=%q`, att.Filename))
+	// Every attachment is served as an unknown blob, whatever it claims to be.
+	//
+	// This used to send att.MimeType — the type derived from the uploaded
+	// filename — so a PDF went out as application/pdf. Browsers open that in
+	// their built-in viewer, and those viewers run JavaScript, so a malicious
+	// PDF only stayed harmless because Content-Disposition told the browser to
+	// save it instead. One header was holding the whole thing up.
+	//
+	// application/octet-stream is not a type any browser renders, so now
+	// nothing is asking it to. Not a list of dangerous types either: such a
+	// list has to stay correct as formats change, and it will not. The type is
+	// no use on this response anyway — the operating system picks what opens a
+	// downloaded file from its extension, not from a header it already obeyed
+	// by saving the file.
+	//
+	// The stored mime_type stays what it was. It is a record of what the file
+	// claims to be, so the attachment list can show "PDF"; it is no longer a
+	// decision about how a browser should treat it.
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", contentDisposition(att.Filename))
 	w.Header().Set("Cache-Control", "private, max-age=3600")
+
+	// ServeContent, not io.Copy: it handles range requests and conditional
+	// gets. It would otherwise set Content-Type by sniffing the body, which is
+	// exactly what this function has just decided against — so the header is
+	// set above and ServeContent leaves an existing one alone.
 	http.ServeContent(w, r, att.Filename, att.CreatedAt, f)
+}
+
+// contentDisposition builds the header that names the downloaded file.
+//
+// Two forms, per RFC 6266. The plain filename= is ASCII only and is what old
+// clients read; filename*= carries the real name as percent-encoded UTF-8 and
+// is what everything current reads. Sending both means "café.pdf" arrives
+// named "café.pdf" rather than "caf.pdf" or worse.
+//
+// This previously used fmt.Sprintf("%q"), which is Go quoting rather than HTTP
+// quoting. It escaped quotes and control characters, so it was not a way in —
+// but it renders a non-ASCII name as backslash escapes, and DESIGN.md promises
+// the original filename on download.
+func contentDisposition(filename string) string {
+	// Strip anything that cannot appear in a header value, and any path
+	// separator: the name comes from an upload, and it decides what a browser
+	// writes to disk.
+	clean := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == '/' || r == '\\' {
+			return -1
+		}
+		return r
+	}, filename)
+	if clean == "" {
+		clean = "attachment"
+	}
+
+	// The ASCII fallback. Anything outside ASCII becomes an underscore so the
+	// plain form stays a legal quoted-string, while filename*= below carries
+	// the real thing.
+	ascii := strings.Map(func(r rune) rune {
+		if r > 0x7e {
+			return '_'
+		}
+		return r
+	}, clean)
+	// Escape what a quoted-string cannot hold bare. The backslash rule cannot
+	// fire today because the map above removes backslashes, but it is here so
+	// that stays a choice about path separators rather than the only thing
+	// keeping this header well-formed.
+	ascii = strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(ascii)
+
+	return fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
+		ascii, rfc5987(clean))
+}
+
+// rfc5987 percent-encodes a filename for the filename*= form.
+//
+// Not url.PathEscape, which was the first attempt: a URL path may hold ":",
+// ";", ",", "(" and ")" unescaped and RFC 5987 may not, so PathEscape produced
+// a header that a strict parser refuses. "report(1).pdf" is enough to trigger
+// it — the name a browser picks by itself when the file is already there.
+//
+// Encoded byte by byte rather than rune by rune, so a multi-byte character
+// comes out as the percent-encoded UTF-8 the header claims to carry.
+func rfc5987(s string) string {
+	// RFC 5987 attr-char: letters, digits and these. Note "%", "*" and "\'"
+	// are excluded on purpose — they are the encoding's own syntax.
+	const attrChar = "!#$&+-.^_`|~"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			strings.IndexByte(attrChar, c) >= 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
 }
 
 // scanUpload scans the file and applies the configured policy, reporting
