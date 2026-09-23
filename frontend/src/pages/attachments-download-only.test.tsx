@@ -4,25 +4,31 @@ import { describe, expect, it } from 'vitest'
 // rendering of any attachment, images included: no lightbox, no thumbnail, no
 // <img> pointing at the download route, no PDF viewer."
 //
-// The server sends headers that stop a browser rendering an attachment, and
-// those have a Go test. But a browser ignores Content-Disposition for a
-// subresource: point an <img> or an <iframe> at the download route from our
-// own pages and it renders anyway, on our origin, where the staff sessions
-// live. So the first line of defence is that this application never asks for
-// an attachment to be rendered, and that is what these tests hold.
+// What actually enforces that is the server. It refuses a request for an
+// attachment whose Sec-Fetch-Dest says the browser is going to render the
+// response — see handler_attachments.go and its test. That check cannot be
+// written around from here, which is the point: an earlier version of this
+// file was the only thing standing between an <img> and a rendered
+// attachment, and two rounds of adversarial review walked past it five
+// different ways.
 //
-// They read source text rather than rendering components, because the claim is
-// about the whole frontend and not one page.
+// So these tests are not the control. They are here to keep the frontend
+// honest about its own design, and to fail loudly at review time rather than
+// at runtime: someone who adds an attachment preview should find out from a
+// red test, not from a 403 in the browser.
 //
-// What text-matching can and cannot do, stated plainly so nobody trusts this
-// further than it goes. It CAN tell you every element in this frontend that
-// renders remote content, and every place an attachment URL is built. It
-// CANNOT follow a value across files — if a component builds an attachment URL
-// and passes it as a prop to an <img> somewhere else, no regular expression
-// here is going to see it. The first test closes that gap by listing every
-// renderer in the frontend rather than only the ones in files that mention
-// attachments: a new <img> anywhere fails, and a person has to look at it and
-// say why it is allowed.
+// What text matching can and cannot do, said plainly so nobody trusts it
+// further than it goes. It CAN list every JSX element in this frontend that
+// renders remote content, and every place an attachment URL is spelled out.
+// It CANNOT follow a value between files, and it cannot see a URL assembled
+// from pieces or an element built by a function call. Anything it misses, the
+// server still refuses.
+//
+// A note on <iframe>, since an earlier version of this comment got it wrong:
+// an iframe load is a navigation, and browsers do honour
+// Content-Disposition: attachment on a navigation — that is the old
+// hidden-iframe download trick. <img> and CSS url() are the ones that render
+// regardless, because a subresource fetch ignores the disposition entirely.
 
 // Source files as text. import.meta.glob is Vite's, so this needs no Node
 // types — which is not a stylistic preference: importing node:fs here broke
@@ -37,8 +43,38 @@ const files = Object.entries(modules)
   .filter(([path]) => !/\.test\.tsx?$/.test(path))
   .map(([path, source]) => ({ path: path.replace(/^\//, ''), source }))
 
-function lines(source: string): { n: number; text: string }[] {
-  return source.split('\n').map((text, i) => ({ n: i + 1, text }))
+// The 1-based line a character offset falls on, for a message someone can
+// click.
+function lineAt(source: string, offset: number): number {
+  return source.slice(0, offset).split('\n').length
+}
+
+// Where the URL builder is called, by character position. Import lines are
+// skipped — naming it is not calling it — and an alias counts, because
+// `import { attachmentDownloadUrl as dl }` is a rename, not a loophole.
+function callSites(source: string): number[] {
+  const names = ['attachmentDownloadUrl']
+  const alias = source.match(/attachmentDownloadUrl\s+as\s+(\w+)/)
+  if (alias) names.push(alias[1])
+
+  const sites: number[] = []
+  for (const name of names) {
+    const re = new RegExp(`\\b${name}\\s*\\(`, 'g')
+    for (const m of source.matchAll(re)) {
+      const lineStart = source.lastIndexOf('\n', m.index) + 1
+      const lineEnd = source.indexOf('\n', m.index)
+      const line = source.slice(lineStart, lineEnd === -1 ? undefined : lineEnd)
+      if (/^\s*(import|export)\b/.test(line)) continue
+      sites.push(m.index)
+    }
+  }
+  return sites
+}
+
+// A download attribute, not the word "download" anywhere in the element. A
+// className of "download-link" was passing this.
+function hasDownloadAttribute(element: string): boolean {
+  return /[\s{]download(\s|=|\/|>|$)/.test(element)
 }
 
 describe('attachments are never rendered inline', () => {
@@ -47,8 +83,11 @@ describe('attachments are never rendered inline', () => {
   // point is that adding one is a decision someone makes on purpose, in a
   // review, rather than something that slips in.
   //
-  // All three are the instance logo, which is an admin-uploaded image served
-  // from its own route under a CSP that blocks scripts — see handler_logo.go.
+  // Layout.tsx and SettingsPage.tsx are the instance logo: an admin-uploaded
+  // image served from its own route under a policy that blocks scripts (see
+  // logoCSP in security_headers.go). LoginPage.tsx is the TOTP enrolment QR
+  // code, which is a data: URL the server generates during MFA setup — not an
+  // upload at all.
   const allowedRenderers = new Set([
     'src/components/Layout.tsx:69',
     'src/pages/LoginPage.tsx:235',
@@ -56,12 +95,17 @@ describe('attachments are never rendered inline', () => {
   ])
 
   it('renders nothing that is not on the list', () => {
-    const renderer = /<(img|image|object|embed|iframe|video|audio|source|track)\b/i
+    // JSX allows whitespace and a newline between "<" and the tag name, and
+    // a component can be built without JSX at all, so normalise first and
+    // look for the other spellings too. createElement('img', …) renders just
+    // as well as <img>, and so does an innerHTML string or a CSS url().
+    const renderer =
+      /<\s*(img|image|object|embed|iframe|frame|video|audio|source|track)\b|createElement\s*\(\s*['"`](img|image|object|embed|iframe|frame|video|audio|source|track)['"`]|dangerouslySetInnerHTML|\burl\s*\(/i
 
     const found = files.flatMap(({ path, source }) =>
-      lines(source)
-        .filter((l) => renderer.test(l.text))
-        .map((l) => `${path}:${l.n}`),
+      [...source.matchAll(new RegExp(renderer.source, 'gi'))].map(
+        (m) => `${path}:${lineAt(source, m.index)}`,
+      ),
     )
 
     const unexpected = found.filter((site) => !allowedRenderers.has(site))
@@ -83,14 +127,18 @@ describe('attachments are never rendered inline', () => {
   // the URL text in any form — a template literal, a concatenation, a plain
   // string — because the way the URL is spelled is not the point.
   it('has exactly one way to build an attachment URL', () => {
+    // Matched on the path text in any spelling — template literal,
+    // concatenation, a plain string, with or without the trailing slash —
+    // because how the URL is written is not the point. The trailing slash
+    // used to be required, which let ['…/attachments', id].join('/') past.
     const builders = files
-      .filter(({ source }) => /['"`][^'"`]*\/attachments\//.test(source))
+      .filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
       .map(({ path }) => path)
     expect(builders).toEqual(['src/api/tickets.ts'])
   })
 
-  // And the one place that uses it has to ask the browser to save. The header
-  // says so too; this is here so losing one does not lose both.
+  // And the one place that uses it has to ask the browser to save. The
+  // server says so too; this is here so losing one does not lose both.
   it('uses the attachment URL only on a link that downloads', () => {
     const callers = files.filter(
       ({ path, source }) =>
@@ -99,15 +147,18 @@ describe('attachments are never rendered inline', () => {
     expect(callers.length, 'nothing links to an attachment any more').toBeGreaterThan(0)
 
     for (const { path, source } of callers) {
-      for (const l of lines(source)) {
-        if (!l.text.includes('attachmentDownloadUrl(')) continue
-        // The href and the download attribute are written across several
-        // lines, so look at the element around the call rather than the line.
-        const start = source.lastIndexOf('<', source.indexOf(l.text))
-        const element = source.slice(start, source.indexOf('>', start) + 1)
+      // Every call site by character position, not by line. Searching from
+      // the start of the line found the last "<" before the line's leading
+      // whitespace, which is a different element: it rejected a correct
+      // single-line <a download> and accepted a multi-line <a target="_blank">
+      // whose className happened to contain the word "download".
+      for (const call of callSites(source)) {
+        const open = source.lastIndexOf('<', call)
+        const element = source.slice(open, source.indexOf('>', open) + 1)
+        const line = lineAt(source, call)
         expect(
-          /^<a\b/.test(element) && /\bdownload\b/.test(element),
-          `${path}:${l.n} uses an attachment URL outside an <a download>:\n${element}`,
+          /^<\s*a\b/.test(element) && hasDownloadAttribute(element),
+          `${path}:${line} uses an attachment URL outside an <a download>:\n${element}`,
         ).toBe(true)
       }
     }

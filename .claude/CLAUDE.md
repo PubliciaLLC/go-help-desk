@@ -52,8 +52,11 @@ check whether it is listed here.
   and not a backlog item. Rendering attachment content on the help desk origin
   makes every uploaded file a candidate for stored XSS against the staff
   sessions that live there. The case that bites is PDF: browsers open it in a
-  viewer that runs JavaScript, so `Content-Disposition: attachment` on the
-  download response is load-bearing and has a test. See docs/DESIGN.md and #165 before adding a
+  viewer that runs JavaScript. Three things hold it, each with a test: the
+  blob content type, `Content-Disposition: attachment`, and the download
+  route refusing any request whose `Sec-Fetch-Dest` says it is going to be
+  rendered — the headers are ignored for a subresource, so `<img src>` would
+  render an attachment without that third check. See docs/DESIGN.md and #165 before adding a
   thumbnail, a lightbox or an inline PDF view.
 
 ### No breaking changes

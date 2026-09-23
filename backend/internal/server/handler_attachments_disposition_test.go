@@ -64,6 +64,14 @@ func TestContentDisposition(t *testing.T) {
 			want:     "meeting: notes.txt",
 		},
 		{
+			// The three characters Go's parser lets through bare: "%", "*"
+			// and "'". A loose encoder that emits them is not caught by
+			// asking whether the header parses, because it does.
+			name:     "the encoding's own syntax in the name",
+			filename: "it's a 100% *draft*.txt",
+			want:     "it's a 100% *draft*.txt",
+		},
+		{
 			name:     "a name a browser itself would pick",
 			filename: "report(1).pdf",
 			want:     "report(1).pdf",
@@ -150,11 +158,15 @@ func TestContentDisposition(t *testing.T) {
 
 			// And the extended form has to hold only what RFC 5987 allows.
 			//
-			// Checking that the header parses is not enough to catch a loose
-			// encoder: Go's own mime.ParseMediaType accepts "(" and ")" in
-			// the extended value, so "report(1).pdf" parsed perfectly well
-			// while being encoded wrongly. Other parsers are stricter. This
-			// reads the grammar off the RFC instead of off a parser.
+			// Checking that the header parses is not enough to catch a
+			// loose encoder. Measured, because the first two guesses at
+			// which characters those are were both wrong: Go's parser
+			// refuses a bare "(", ")", ":", "=" and "@", and accepts a bare
+			// "%", "*" and "'" — the three that are the encoding's own
+			// syntax. A bare "%" is the nastiest, because the header still
+			// parses and the client quietly falls back to the ASCII name.
+			// So this reads the grammar off the RFC rather than off a
+			// parser, and the cases below include all three.
 			_, star, ok := strings.Cut(got, "filename*=UTF-8''")
 			if !ok {
 				t.Fatalf("no extended form in %q", got)

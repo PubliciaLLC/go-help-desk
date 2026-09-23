@@ -277,11 +277,26 @@ refused outright rather than cleaned.
 
 The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
 browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
-rendered inline would execute on this origin. Two headers stop that: the
-response says `Content-Type: application/octet-stream`, which no browser
-renders, and `Content-Disposition: attachment`, which tells it to save the file
-and supplies the name. Both have tests. Until #165 step 1 the type header was
-`application/pdf`, so the disposition header was carrying this alone.
+rendered inline would execute on this origin.
+
+Three things stop it, all of them tested:
+
+- `Content-Type: application/octet-stream` on every attachment, whatever the
+  file claims to be. No browser renders that. Until #165 step 1 the type came
+  from the filename, so a PDF went out as `application/pdf`.
+- `Content-Disposition: attachment`, which tells the browser to save rather
+  than open, and carries the original filename (RFC 6266, both forms).
+- The download route **refuses** a request whose `Sec-Fetch-Dest` says the
+  browser intends to render the response. The two headers above are obeyed for
+  a navigation; they are ignored for a subresource, so `<img src>` or a CSS
+  `url()` pointed at an attachment would render it regardless of what the
+  server said. An allow list of `document`, `empty` and absent — a destination
+  nobody has invented yet is refused, and clients that send no header at all
+  (older browsers, anything on a command line) have no renderer to protect.
+
+A frontend test also fails if the application starts asking for an attachment
+to be rendered, but it reads source text and cannot follow a value between
+files. It is there to catch a mistake at review time, not to be the control.
 
 Two caveats, both tracked in #165:
 

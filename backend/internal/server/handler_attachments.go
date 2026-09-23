@@ -324,6 +324,36 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Refuse to answer a request that wants to render this.
+	//
+	// The headers below tell a browser to save the file, and a browser obeys
+	// them for a navigation. It does not obey them for a subresource: put an
+	// uploaded image behind <img src>, or behind a CSS url(), and it renders
+	// on this origin no matter what Content-Type and Content-Disposition say.
+	// Nothing here or in the frontend was stopping that; what stood in its
+	// place was a test that reads our own source and hopes nobody writes an
+	// <img>. Two rounds of adversarial review walked past that test five
+	// different ways — a CSS background, an aliased import, createElement, an
+	// innerHTML string, a tag name split over two lines — and each one was a
+	// pattern a regular expression missed rather than a hole in the argument.
+	// A check that has to keep up with how code can be written is a check
+	// that loses.
+	//
+	// So ask the browser instead. Sec-Fetch-Dest says what the response is
+	// going to be used for, the browser fills it in and page script cannot
+	// forge it. A download is a navigation ("document") or a script fetch
+	// ("empty"); every rendering context is something else.
+	//
+	// Allow list, not a block list: a destination nobody has invented yet
+	// should be refused rather than served. Absent is allowed, because older
+	// browsers and every command-line client send nothing at all, and those
+	// have no renderer to protect.
+	if dest := r.Header.Get("Sec-Fetch-Dest"); dest != "" && dest != "document" && dest != "empty" {
+		Error(w, http.StatusForbidden, "not_downloadable",
+			"attachments can only be downloaded, not rendered in the page")
+		return
+	}
+
 	f, err := os.Open(att.StoragePath)
 	if err != nil {
 		Error(w, http.StatusNotFound, "not_found", "file not found on disk")
