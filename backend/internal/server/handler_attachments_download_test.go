@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -18,13 +19,23 @@ import (
 // Attachments are download-only. There is no previewer in Go Help Desk and
 // there is not going to be one — see docs/DESIGN.md.
 //
-// That decision rests entirely on this header. Nothing renders attachment
-// content today, so nothing has been enforcing it; the day someone adds an
-// inline image preview or drops the header for a "view in browser" link, every
-// uploaded file becomes a candidate for stored XSS against the staff sessions
-// that live on this origin.
+// Today Content-Type comes from the claimed extension, so each allowlisted
+// type is served as itself, and Content-Disposition is what stops the browser
+// acting on that. The case that actually bites is PDF: application/pdf renders
+// in the browser's built-in viewer, and those viewers run JavaScript. Drop the
+// header and a malicious PDF executes on this origin, where the staff sessions
+// live.
 //
-// So this test exists to fail at that moment rather than after it.
+// The uploads below are a .txt whose content is HTML and a real PDF. The first
+// is served as text/plain and would only display — it is here because it also
+// shows that the type check does not look at content, which is #165's problem.
+// The second is the one with an engine behind it.
+//
+// Once #165 serves everything as application/octet-stream this header becomes
+// defence in depth rather than the control, and this test should grow an
+// octet-stream assertion at that point. It does not shrink: octet-stream stops
+// the rendering, Content-Disposition still supplies the filename, and neither
+// is free to remove.
 func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -40,29 +51,40 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	// this is exactly what an attacker uploads — and it is only harmless
 	// because of the header asserted below.
 	const payload = `<html><script>alert(document.cookie)</script></html>`
+	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", []byte(payload))
+
+	// The case with an engine behind it. A minimal but structurally real PDF,
+	// because magicOK checks the %PDF prefix and a fake one would be refused
+	// before reaching the download path this is about.
+	pdf := []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
+	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", pdf)
+}
+
+// assertDownloadsRatherThanRenders uploads a file and requires the download to
+// be inert: forced to disk, with the browser forbidden from second-guessing
+// the type, and byte-identical on the way back.
+func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name string, content []byte) {
+	t.Helper()
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
-	fw, err := mw.CreateFormFile("file", "notes.txt")
+	fw, err := mw.CreateFormFile("file", name)
 	require.NoError(t, err)
-	_, err = fw.Write([]byte(payload))
+	_, err = fw.Write(content)
 	require.NoError(t, err)
 	require.NoError(t, mw.Close())
 
 	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/tickets/"+tk.ID.String()+"/attachments", body)
+		"/api/v1/tickets/"+ticketID+"/attachments", body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("Authorization", "ApiKey "+h.apiKey)
 	rec := httptest.NewRecorder()
 	h.srv.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusCreated, rec.Code, "upload: %s", rec.Body.String())
 
-	list := h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/attachments", nil)
-	raw, _ := io.ReadAll(list.Body)
-	list.Body.Close()
-	id := attachmentIDFrom(t, string(raw))
+	id := attachmentIDNamed(t, h, ticketID, name)
 
 	res := h.do(t, http.MethodGet,
-		"/api/v1/tickets/"+tk.ID.String()+"/attachments/"+id, nil)
+		"/api/v1/tickets/"+ticketID+"/attachments/"+id, nil)
 	defer res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
@@ -73,17 +95,32 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 		"without nosniff a browser may decide for itself that this is HTML")
 
 	got, _ := io.ReadAll(res.Body)
-	require.Equal(t, payload, string(got),
+	require.Equal(t, content, got,
 		"the file is served verbatim, which is safe only because it is never rendered")
 }
 
-func attachmentIDFrom(t *testing.T, listJSON string) string {
+// attachmentIDNamed finds the attachment with this filename.
+//
+// Decoded rather than string-searched. The first version of this took the
+// first "id":" in the response, which was fine while a ticket had one
+// attachment and silently returned the wrong one the moment it had two — the
+// PDF case above failed with the .txt's bytes, which is a confusing way to
+// learn that a test helper is lying to you.
+func attachmentIDNamed(t *testing.T, h *harness, ticketID, filename string) string {
 	t.Helper()
-	const key = `"id":"`
-	i := strings.Index(listJSON, key)
-	require.GreaterOrEqual(t, i, 0, "no attachment in %s", listJSON)
-	rest := listJSON[i+len(key):]
-	j := strings.Index(rest, `"`)
-	require.GreaterOrEqual(t, j, 0)
-	return rest[:j]
+	res := h.do(t, http.MethodGet, "/api/v1/tickets/"+ticketID+"/attachments", nil)
+	defer res.Body.Close()
+
+	var list []struct {
+		ID       string `json:"id"`
+		Filename string `json:"filename"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&list))
+	for _, a := range list {
+		if a.Filename == filename {
+			return a.ID
+		}
+	}
+	t.Fatalf("no attachment named %q on ticket %s; got %+v", filename, ticketID, list)
+	return ""
 }
