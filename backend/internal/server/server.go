@@ -116,7 +116,12 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	//
 	// Outermost, so the log line records the status the client actually saw,
 	// including the 401s and 403s the auth chain produces.
-	return chimw.RequestID(chimw.Recoverer(requestLogger(chain)))
+	//
+	// securityHeaders is here for the same reason the logger is: this mux sits
+	// outside the chi chain, so nothing else was setting them. DESIGN.md says
+	// "security headers on every response", and /mcp/ was one of the two
+	// places that was not true.
+	return securityHeaders(chimw.RequestID(chimw.Recoverer(requestLogger(chain))))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -149,6 +154,10 @@ type Server struct {
 	// restart and multiplied by the replica count, which is not a limit on a
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
+
+	// loginThrottleDelay is how long an over-budget login waits before the
+	// password is checked. See config.AuthThrottleDelay.
+	loginThrottleDelay time.Duration
 
 	// No scanner field. It is built per use from the effective address,
 	// because the address is an operator setting and a scanner constructed
@@ -275,6 +284,7 @@ func New(
 		// Built here rather than injected: derived entirely from config, no
 		// other collaborators.
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
@@ -602,4 +612,14 @@ func (s *Server) scanner(ctx context.Context) *antivirus.Scanner {
 		return antivirus.New(addr)
 	}
 	return antivirus.New(s.cfg.ClamAVAddr)
+}
+
+// SetLoginThrottleDelayForTest sets how long an over-budget login waits.
+//
+// Exported for tests only, and named so that is unmistakable. The suite runs
+// with a delay of a millisecond — the queueing and the bound still apply, and
+// nothing spends a second per login proving that time passes — while the two
+// tests about the delay itself need one long enough to measure.
+func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
+	s.loginThrottleDelay = d
 }

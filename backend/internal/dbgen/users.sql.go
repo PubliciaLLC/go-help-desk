@@ -27,6 +27,66 @@ func (q *Queries) AdminSetPassword(ctx context.Context, arg AdminSetPasswordPara
 	return err
 }
 
+const claimMFAAttempt = `-- name: ClaimMFAAttempt :one
+UPDATE users
+SET mfa_failed_attempts = CASE
+        WHEN mfa_locked_until IS NOT NULL AND mfa_locked_until <= now() THEN 1
+        ELSE mfa_failed_attempts + 1
+    END,
+    mfa_locked_until = CASE
+        WHEN mfa_locked_until IS NOT NULL AND mfa_locked_until <= now() THEN NULL
+        WHEN mfa_locked_until IS NOT NULL THEN mfa_locked_until
+        WHEN mfa_failed_attempts + 1 >= $2::int
+            THEN now() + make_interval(secs => $3::int)
+        ELSE mfa_locked_until
+    END,
+    updated_at = now()
+WHERE id = $1
+RETURNING mfa_failed_attempts, mfa_locked_until
+`
+
+type ClaimMFAAttemptParams struct {
+	ID          uuid.UUID `json:"id"`
+	MaxAttempts int32     `json:"max_attempts"`
+	LockSeconds int32     `json:"lock_seconds"`
+}
+
+type ClaimMFAAttemptRow struct {
+	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
+	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
+}
+
+// Takes one attempt off the account's TOTP budget, and reports what is left.
+//
+// Called BEFORE the code is checked, which is the whole point. The previous
+// order was read the lock, check the code, then count a failure -- three
+// statements, and every request that started before the first UPDATE landed
+// read "not locked" and went on to verify. Measured against the real server:
+// forty parallel wrong codes, thirty-six of them verified, limit five. An
+// attacker holding the password -- the exact case MFA exists for -- got a few
+// hundred guesses per window instead of five.
+//
+// One UPDATE has no such window. Concurrent updates of one row serialise in
+// Postgres and each re-reads the row it is updating, so forty requests take
+// the numbers one to forty and the caller refuses everything past the budget.
+//
+// Three cases, in the order the CASE tests them:
+//
+//	locked and still locked   the count keeps rising and the deadline does
+//	                          NOT move, so an attacker hammering a locked
+//	                          account cannot hold the owner out forever by
+//	                          pushing the lock further away.
+//	locked and expired        the window is over: back to one, lock cleared.
+//	                          Without this the count stays at the maximum and
+//	                          the next single attempt re-locks immediately.
+//	not locked                count it, and lock once the budget is spent.
+func (q *Queries) ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams) (ClaimMFAAttemptRow, error) {
+	row := q.db.QueryRowContext(ctx, claimMFAAttempt, arg.ID, arg.MaxAttempts, arg.LockSeconds)
+	var i ClaimMFAAttemptRow
+	err := row.Scan(&i.MfaFailedAttempts, &i.MfaLockedUntil)
+	return i, err
+}
+
 const clearMFA = `-- name: ClearMFA :exec
 UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE id = $1
 `
@@ -47,6 +107,29 @@ WHERE id = $1
 func (q *Queries) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, clearMFAFailures, id)
 	return err
+}
+
+const countAllUsers = `-- name: CountAllUsers :one
+SELECT COUNT(*) FROM users
+`
+
+// Every row, including disabled and soft-deleted accounts.
+//
+// This is what gates /setup, and the filtered count above is why it had to
+// exist. Soft-delete or disable every account -- which an administrator can do
+// to their own, sole, admin account, since nothing stops them -- and the
+// filtered count returns zero, /setup/status answers {"needed": true}, and
+// anyone on the internet can POST /setup and be handed an administrator over
+// the existing data: every ticket, every customer, every attachment.
+//
+// "Setup is permanently blocked once complete" is what the design says. A
+// count of live accounts cannot express "permanently"; a count of rows can,
+// because nothing in this system hard-deletes a user.
+func (q *Queries) CountAllUsers(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAllUsers)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const countUsers = `-- name: CountUsers :one

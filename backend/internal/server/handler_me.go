@@ -119,8 +119,10 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	// Same durable budget as verification: this also takes a six-digit code.
-	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+	// Same durable budget as verification, and spent the same way: before the
+	// code is checked, so concurrent attempts cannot all pass an unchanged
+	// count.
+	if err := s.users.ClaimMFAAttempt(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
 			tooManyAttempts(w, user.MFALockDuration)
 			return
@@ -132,10 +134,6 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
 
 	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code); err != nil {
-		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
-			handleError(w, lockErr)
-			return
-		}
 		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
 		return
 	}

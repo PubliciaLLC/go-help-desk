@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"sync"
@@ -39,6 +40,11 @@ type RateLimiter struct {
 	mu      sync.Mutex
 	counts  map[string]int
 	resetAt time.Time
+
+	// slots holds one queue per over-budget key. Created on first use and
+	// emptied as waiters leave, so an instance nobody is attacking carries
+	// nothing.
+	slots map[string]*tarpitSlot
 }
 
 // NewRateLimiter returns a limiter permitting limit attempts per window for a
@@ -70,6 +76,101 @@ func (rl *RateLimiter) Allow(key string) bool {
 	}
 	rl.counts[key]++
 	return rl.counts[key] <= rl.limit
+}
+
+// Exceeded reports whether a key has already spent its budget, WITHOUT
+// counting an attempt against it.
+//
+// Allow both counts and decides, which is right where an attempt has already
+// happened. This is for asking the question first, so a caller can slow a
+// request down before doing the expensive part of it.
+func (rl *RateLimiter) Exceeded(key string) bool {
+	if rl.limit <= 0 {
+		return false
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if time.Now().After(rl.resetAt) {
+		return false
+	}
+	return rl.counts[key] >= rl.limit
+}
+
+// Tarpit holds an over-budget key for delay, one at a time, and reports
+// whether the caller should go on.
+//
+// The point is throughput, which a counter alone does not control. Password
+// verification runs before the counter is consulted — deliberately, so that a
+// correct password is always honoured and nobody can be locked out of their
+// own account by someone else's guessing — and the counter then only changes
+// the status code on a wrong guess. An attacker who ignores 429 therefore had
+// unlimited online guesses, bounded only by how fast this server computes
+// bcrypt: measured elsewhere at ten to fifteen a second per core.
+//
+// A delay fixes that without reintroducing the lockout, because a legitimate
+// user with the right password still gets in — a second later. Serialised per
+// key, because a delay that requests can take in parallel is not a limit on
+// anything: fifty at once would each sleep a second and still make fifty
+// guesses in a second.
+//
+// maxWaiters bounds the queue so the tarpit cannot become the memory and
+// goroutine exhaustion it exists to prevent. Past it the caller is refused
+// outright, which is the one case where a flood does cost the account's owner
+// a retry.
+//
+// Returns false only when the queue is full, or the request was cancelled
+// while waiting.
+func (rl *RateLimiter) Tarpit(ctx context.Context, key string, delay time.Duration, maxWaiters int) bool {
+	if rl.limit <= 0 || delay <= 0 {
+		return true
+	}
+
+	rl.mu.Lock()
+	if rl.slots == nil {
+		rl.slots = make(map[string]*tarpitSlot)
+	}
+	slot, ok := rl.slots[key]
+	if !ok {
+		slot = &tarpitSlot{}
+		rl.slots[key] = slot
+	}
+	if slot.waiting >= maxWaiters {
+		rl.mu.Unlock()
+		return false
+	}
+	slot.waiting++
+	rl.mu.Unlock()
+
+	// Released whichever way this returns, and the slot is dropped once the
+	// last waiter leaves. Keys are partly attacker-chosen — any email address
+	// can be submitted — so a map that only grows is a leak.
+	defer func() {
+		rl.mu.Lock()
+		slot.waiting--
+		if slot.waiting == 0 {
+			delete(rl.slots, key)
+		}
+		rl.mu.Unlock()
+	}()
+
+	slot.turn.Lock()
+	defer slot.turn.Unlock()
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// tarpitSlot is one key's queue: a lock that makes the waits sequential, and
+// a count so the queue can be bounded and the slot freed when it empties.
+type tarpitSlot struct {
+	turn    sync.Mutex
+	waiting int
 }
 
 // Reset clears a key's budget, and is called after a successful

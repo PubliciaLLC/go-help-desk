@@ -52,6 +52,21 @@ SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY creat
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 
+-- name: CountAllUsers :one
+-- Every row, including disabled and soft-deleted accounts.
+--
+-- This is what gates /setup, and the filtered count above is why it had to
+-- exist. Soft-delete or disable every account -- which an administrator can do
+-- to their own, sole, admin account, since nothing stops them -- and the
+-- filtered count returns zero, /setup/status answers {"needed": true}, and
+-- anyone on the internet can POST /setup and be handed an administrator over
+-- the existing data: every ticket, every customer, every attachment.
+--
+-- "Setup is permanently blocked once complete" is what the design says. A
+-- count of live accounts cannot express "permanently"; a count of rows can,
+-- because nothing in this system hard-deletes a user.
+SELECT COUNT(*) FROM users;
+
 -- name: GetUserByIDAdmin :one
 SELECT * FROM users WHERE id = $1;
 
@@ -66,6 +81,47 @@ UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE 
 
 -- name: AdminSetPassword :exec
 UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
+
+-- name: ClaimMFAAttempt :one
+-- Takes one attempt off the account's TOTP budget, and reports what is left.
+--
+-- Called BEFORE the code is checked, which is the whole point. The previous
+-- order was read the lock, check the code, then count a failure -- three
+-- statements, and every request that started before the first UPDATE landed
+-- read "not locked" and went on to verify. Measured against the real server:
+-- forty parallel wrong codes, thirty-six of them verified, limit five. An
+-- attacker holding the password -- the exact case MFA exists for -- got a few
+-- hundred guesses per window instead of five.
+--
+-- One UPDATE has no such window. Concurrent updates of one row serialise in
+-- Postgres and each re-reads the row it is updating, so forty requests take
+-- the numbers one to forty and the caller refuses everything past the budget.
+--
+-- Three cases, in the order the CASE tests them:
+--
+--   locked and still locked   the count keeps rising and the deadline does
+--                             NOT move, so an attacker hammering a locked
+--                             account cannot hold the owner out forever by
+--                             pushing the lock further away.
+--   locked and expired        the window is over: back to one, lock cleared.
+--                             Without this the count stays at the maximum and
+--                             the next single attempt re-locks immediately.
+--   not locked                count it, and lock once the budget is spent.
+UPDATE users
+SET mfa_failed_attempts = CASE
+        WHEN mfa_locked_until IS NOT NULL AND mfa_locked_until <= now() THEN 1
+        ELSE mfa_failed_attempts + 1
+    END,
+    mfa_locked_until = CASE
+        WHEN mfa_locked_until IS NOT NULL AND mfa_locked_until <= now() THEN NULL
+        WHEN mfa_locked_until IS NOT NULL THEN mfa_locked_until
+        WHEN mfa_failed_attempts + 1 >= sqlc.arg(max_attempts)::int
+            THEN now() + make_interval(secs => sqlc.arg(lock_seconds)::int)
+        ELSE mfa_locked_until
+    END,
+    updated_at = now()
+WHERE id = $1
+RETURNING mfa_failed_attempts, mfa_locked_until;
 
 -- name: RecordMFAFailure :one
 -- Counts a failed TOTP attempt and locks the account once the threshold is

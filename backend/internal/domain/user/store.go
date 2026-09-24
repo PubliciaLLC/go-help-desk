@@ -19,9 +19,15 @@ var ErrNotFound = errors.New("not found")
 type Store interface {
 	// MFA attempt tracking. Durable rather than in memory, because a counter
 	// that a restart clears is not a limit on a six-digit secret.
+	ClaimMFAAttempt(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (attempts int, lockedUntil *time.Time, err error)
 	RecordMFAFailure(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (attempts int, lockedUntil *time.Time, err error)
 	ClearMFAFailures(ctx context.Context, id uuid.UUID) error
 	GetMFALock(ctx context.Context, id uuid.UUID) (attempts int, lockedUntil *time.Time, err error)
+
+	// CountAll counts every row, including disabled and soft-deleted
+	// accounts. Count, which excludes them, is the wrong question for
+	// "has this instance ever been set up".
+	CountAll(ctx context.Context) (int64, error)
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)

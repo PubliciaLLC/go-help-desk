@@ -98,6 +98,16 @@ func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func())
 	return newHarnessWith(t, authRateLimit, "")
 }
 
+// newHarnessWithThrottle builds a harness with both halves of the credential
+// throttle set: the per-minute budget and the delay an over-budget login
+// waits. Only the tarpit tests need a delay long enough to measure.
+func newHarnessWithThrottle(t *testing.T, authRateLimit int, delay time.Duration) (*harness, func()) {
+	t.Helper()
+	h, cleanup := newHarnessWith(t, authRateLimit, "")
+	h.srv.SetLoginThrottleDelayForTest(delay)
+	return h, cleanup
+}
+
 // newHarnessWith builds a harness with a scanner address, so a test can tell
 // "an address is configured" apart from "a scanner answers" — which is the
 // whole difference between reporting scanner health and reporting settings.
@@ -237,6 +247,11 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		// times from one address in a few seconds, which is not an attack;
 		// TestAuthRateLimit covers the limiter with it switched on.
 		AuthRateLimitPerMinute: authRateLimit,
+		// The tarpit's duration, not its existence: the queueing and the
+		// bound still apply at 1ms, and the suite does not spend a second per
+		// over-budget login proving that time passes.
+		// TestLoginTarpit_SlowsAnOverBudgetAccount sets a measurable one.
+		AuthThrottleDelay: time.Millisecond,
 	}
 	// Derived exactly as main.go does, so tests exercise the real store rather
 	// than a shape production never uses.

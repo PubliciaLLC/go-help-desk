@@ -47,8 +47,29 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// anyone their own account, because the correct password always works.
 	//
 	// (TOTP is the opposite case: verification is a cheap HMAC, so there the
-	// count has to gate before the check. It does — see CheckMFALock below.)
+	// count has to gate before the check. It does — see ClaimMFAAttempt.)
+	//
+	// What the counter could NOT do on its own is limit guessing, and
+	// measuring it said so: with a limit of three, eight wrong guesses
+	// answered 401 401 401 429 429 429 429 429, and every one of those 429s
+	// had still run the password check. Ignore the status code and the
+	// guesses were unlimited, bounded only by bcrypt — ten to fifteen a
+	// second per core. MFA is off by default, so on most instances that was
+	// the whole of the online defence.
+	//
+	// So an account over its budget waits, one request at a time, before the
+	// password is checked. That bounds guesses per second instead of just
+	// slowing each one down, and it keeps the property this ordering exists
+	// for: the right password still works, a second later. Only a flood deep
+	// enough to fill the queue is refused outright.
 	loginKey := "login:" + loginRateKey(body.Email)
+
+	if s.loginLimiter.Exceeded(loginKey) {
+		if !s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay, maxLoginWaiters) {
+			tooManyAttempts(w, time.Minute)
+			return
+		}
+	}
 
 	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
 	if err != nil {
@@ -126,7 +147,11 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	// session that already passed the password, so burning someone's budget
 	// means you already hold their password — an alarm, not a denial of
 	// service.
-	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+	//
+	// Spent before the code is checked, not counted after it. The old order
+	// left a window: forty parallel wrong codes all read "not locked" and
+	// thirty-six of them were verified, against a limit of five.
+	if err := s.users.ClaimMFAAttempt(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
 			tooManyAttempts(w, user.MFALockDuration)
 			return
@@ -136,10 +161,6 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.users.VerifyMFACode(r.Context(), a.UserID, body.Code); err != nil {
-		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
-			handleError(w, lockErr)
-			return
-		}
 		Error(w, http.StatusUnauthorized, "invalid_mfa_code", "invalid TOTP code")
 		return
 	}
@@ -406,3 +427,12 @@ func loginRateKey(email string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
 	return hex.EncodeToString(sum[:])
 }
+
+// maxLoginWaiters bounds how many requests may queue in the login tarpit for
+// one account at once.
+//
+// The queue is the tarpit's own cost: a delay that holds a goroutine and a
+// connection is a thing an attacker can accumulate, so without a bound the
+// defence becomes the exhaustion it exists to prevent. Eight is comfortably
+// more than a real person retrying and far less than a flood.
+const maxLoginWaiters = 8

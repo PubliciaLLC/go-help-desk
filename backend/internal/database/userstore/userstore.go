@@ -114,6 +114,20 @@ func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
 	return s.q.ClearMFA(ctx, id)
 }
 
+// ClaimMFAAttempt takes one attempt off the account's TOTP budget before the
+// code is checked, and reports the count and the lock afterwards.
+func (s *Store) ClaimMFAAttempt(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
+	row, err := s.q.ClaimMFAAttempt(ctx, dbgen.ClaimMFAAttemptParams{
+		ID:          id,
+		MaxAttempts: int32(maxAttempts),
+		LockSeconds: int32(lockFor / time.Second),
+	})
+	if err != nil {
+		return 0, nil, fmt.Errorf("claiming MFA attempt: %w", err)
+	}
+	return int(row.MfaFailedAttempts), database.TimePtr(row.MfaLockedUntil), nil
+}
+
 // RecordMFAFailure counts a failed TOTP attempt and locks the account once the
 // threshold is reached, in one statement so concurrent attempts cannot both
 // read the same count and both decide they are under the limit.
@@ -177,6 +191,11 @@ func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, 
 
 func (s *Store) Count(ctx context.Context) (int64, error) {
 	return s.q.CountUsers(ctx)
+}
+
+// CountAll counts every user row, disabled and soft-deleted included.
+func (s *Store) CountAll(ctx context.Context) (int64, error) {
+	return s.q.CountAllUsers(ctx)
 }
 
 // fromRow converts a dbgen.User to domain user.User.

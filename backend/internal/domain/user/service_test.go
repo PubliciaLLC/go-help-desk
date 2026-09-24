@@ -205,6 +205,13 @@ func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
 }
 
+// CountAll counts every row. This fake never removes one, so it is the same
+// number — which is the point: the real store's two counts differ, and that
+// difference is what reopened the setup route.
+func (f *fakeUserStore) CountAll(_ context.Context) (int64, error) {
+	return int64(len(f.byID)), nil
+}
+
 func (f *fakeUserStore) ClearMFA(_ context.Context, id uuid.UUID) error {
 	u, ok := f.byID[id]
 	if !ok {
@@ -482,6 +489,27 @@ func TestVerifyPassword_MissCostsTheSameAsAHit(t *testing.T) {
 
 // MFA attempt tracking. The fake keeps it in the struct so a test can assert
 // that failures are counted and cleared.
+// ClaimMFAAttempt mirrors the real statement: an expired lock resets the
+// window, a live one holds its deadline while the count keeps rising, and
+// otherwise the attempt is counted and the lock set once the budget is spent.
+func (f *fakeUserStore) ClaimMFAAttempt(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
+	if until := f.mfaLocks[id]; until != nil {
+		if time.Now().After(*until) {
+			f.mfaFailures[id] = 1
+			f.mfaLocks[id] = nil
+			return 1, nil, nil
+		}
+		f.mfaFailures[id]++
+		return f.mfaFailures[id], until, nil
+	}
+	f.mfaFailures[id]++
+	if f.mfaFailures[id] >= maxAttempts {
+		lockedUntil := time.Now().Add(lockFor)
+		f.mfaLocks[id] = &lockedUntil
+	}
+	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
 func (f *fakeUserStore) RecordMFAFailure(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
 	f.mfaFailures[id]++
 	if f.mfaFailures[id] >= maxAttempts {

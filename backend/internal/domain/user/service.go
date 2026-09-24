@@ -520,9 +520,21 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 	})
 }
 
-// HasUsers returns true when at least one user record exists.
+// HasUsers returns true when at least one user record exists, in the sense
+// that decides whether first-run setup is still open.
+//
+// Every row, not every usable account. Counting only live accounts made the
+// setup route reopen the moment the last one was disabled or soft-deleted —
+// and an administrator can do that to their own, sole, admin account, because
+// nothing stops them. The route then answered {"needed": true} to anyone on
+// the internet, and a POST handed them an administrator over the existing
+// data: every ticket, every customer, every attachment. Proven against the
+// real server.
+//
+// Nothing hard-deletes a user, so a row count is a durable record that this
+// instance was set up once.
 func (s *Service) HasUsers(ctx context.Context) (bool, error) {
-	n, err := s.store.Count(ctx)
+	n, err := s.store.CountAll(ctx)
 	if err != nil {
 		return false, fmt.Errorf("counting users: %w", err)
 	}
@@ -606,8 +618,55 @@ const (
 // ErrMFALocked reports that an account has spent its TOTP attempts.
 var ErrMFALocked = errors.New("too many incorrect codes; try again later")
 
+// ClaimMFAAttempt spends one of the account's TOTP attempts and reports
+// ErrMFALocked when there are none left.
+//
+// Called BEFORE the code is checked, and that ordering is the control. The
+// previous shape was CheckMFALock, then VerifyMFACode, then RecordMFAFailure:
+// three statements with a window between the first and the last, so every
+// request that started before the first UPDATE landed read "not locked" and
+// went on to verify a guess. Measured against the real server: forty parallel
+// wrong codes, thirty-six verified, limit five. An attacker who already holds
+// the password — the exact case MFA exists for — got a few hundred guesses per
+// fifteen-minute window instead of five.
+//
+// Counting before verifying means a correct code also costs an attempt. It
+// does not matter: success clears the counter, so a legitimate user never
+// meets the limit, and the alternative is a window an attacker can drive a
+// bus through.
+//
+// The lock is time-based rather than administrator-cleared on purpose: it
+// expires on its own, so a user locked out by a wrong code gets back in
+// without needing anyone, and an administrator is not drawn into clearing MFA
+// — which would leave the account open to whoever already knows the password
+// until the legitimate user re-enrols.
+func (s *Service) ClaimMFAAttempt(ctx context.Context, id uuid.UUID) error {
+	attempts, lockedUntil, err := s.store.ClaimMFAAttempt(ctx, id, MFAMaxFailedAttempts, MFALockDuration)
+	if err != nil {
+		return err
+	}
+	// Strictly greater than: the attempt that spends the last of the budget
+	// is still allowed to verify — it is the fifth of five, not the sixth —
+	// and it is the one that sets the lock for everything after it.
+	if attempts > MFAMaxFailedAttempts {
+		return ErrMFALocked
+	}
+	if lockedUntil != nil && attempts >= MFAMaxFailedAttempts && time.Now().After(*lockedUntil) {
+		// Cannot happen: the statement clears an expired lock and resets the
+		// count in the same breath. Here so that a future edit to that SQL
+		// which breaks the reset fails closed rather than open.
+		return ErrMFALocked
+	}
+	return nil
+}
+
 // CheckMFALock reports whether the account is currently locked out of TOTP
 // verification.
+//
+// Deprecated: racy when used as a gate. It reads the lock and returns, so
+// several requests can pass it at once and each go on to check a code — see
+// ClaimMFAAttempt, which is what the handlers use. Kept because removing an
+// exported method is a separate commit; it has no callers outside tests.
 func (s *Service) CheckMFALock(ctx context.Context, id uuid.UUID) error {
 	_, lockedUntil, err := s.store.GetMFALock(ctx, id)
 	if err != nil {
@@ -621,6 +680,9 @@ func (s *Service) CheckMFALock(ctx context.Context, id uuid.UUID) error {
 
 // RecordMFAFailure counts a wrong code and reports ErrMFALocked once the
 // account has spent its attempts.
+//
+// Deprecated: counting after the check is the half of the race that let
+// concurrent guesses through. Use ClaimMFAAttempt, which counts first.
 //
 // The lock is time-based rather than administrator-cleared on purpose: it
 // expires on its own, so a user locked out by a wrong code gets back in
