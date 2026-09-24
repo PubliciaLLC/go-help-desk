@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { attachmentDownloadUrl } from '@/api/tickets'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { attachmentDownloadUrl, recheckAttachmentReputation } from '@/api/tickets'
+import { apiRefusal, extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
-import type { Attachment } from '@/api/types'
+import type { Attachment, AttachmentReputation } from '@/api/types'
 
 // Published on purpose, and stated wherever a quarantined file is shown. The
 // password protects nothing: its only jobs are that the stored bytes are not
@@ -34,6 +36,55 @@ const CONTENT_LABELS: Record<string, string> = {
 
 function contentLabel(mime: string): string {
   return CONTENT_LABELS[mime] ?? mime
+}
+
+// The two services this build knows about, keyed on a lowercased value so
+// both spellings the server may send resolve: the setting's identifier
+// ("virustotal") and the display name it already maps that to ("VirusTotal").
+const PROVIDER_NAMES: Record<string, string> = {
+  virustotal: 'VirusTotal',
+  metadefender: 'MetaDefender',
+}
+
+/**
+ * The provider's name as a person reads it, or null when this build does not
+ * recognise it.
+ *
+ * Null is the important half. The value reaches here from a setting an
+ * operator typed, and a build that meets a provider it was released before
+ * must fall back to the generic wording rather than print a raw setting value
+ * at a reader — "polyswarm-v3 has never seen this file" names nothing.
+ */
+function providerName(provider: string | undefined): string | null {
+  if (!provider) return null
+  return PROVIDER_NAMES[provider.toLowerCase()] ?? null
+}
+
+// Staff may ask the provider again once every seven days per hash, whatever
+// the instance's automatic refresh interval says — including when it says
+// `never`. A floor, not an override: the server enforces the same number, and
+// the daily budget still applies on top of it.
+const MANUAL_REFRESH_FLOOR_DAYS = 7
+
+function formatDate(at: Date): string {
+  return at.toLocaleDateString(undefined, { dateStyle: 'medium' })
+}
+
+/**
+ * The earliest a verdict fetched at `fetchedAt` may be asked about again, or
+ * null when there is no usable fetch time.
+ *
+ * Null means "no reason to hold it back": a verdict whose age nobody knows
+ * gets a live control, and the server — which is the authority on the floor
+ * and answers with the date it clears — refuses it if that turns out to be
+ * wrong. Disabling it forever on an unknown date would be a control that can
+ * never be used and a date that cannot be printed.
+ */
+function nextCheckAt(fetchedAt: string | null | undefined): Date | null {
+  if (!fetchedAt) return null
+  const at = new Date(fetchedAt)
+  if (Number.isNaN(at.getTime())) return null
+  return new Date(at.getTime() + MANUAL_REFRESH_FLOOR_DAYS * 24 * 60 * 60 * 1000)
 }
 
 interface RowProps {
@@ -138,7 +189,7 @@ function QuarantinedRow({ ticketId, attachment }: RowProps) {
           </p>
           <ContentLine attachment={attachment} />
           <HashLine attachment={attachment} />
-          <ReputationLine attachment={attachment} />
+          <ReputationLine ticketId={ticketId} attachment={attachment} />
           <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
             Download…
           </Button>
@@ -242,33 +293,30 @@ function analysedStamp(iso: string | null): string {
   if (!iso) return ''
   const at = new Date(iso)
   if (Number.isNaN(at.getTime())) return ''
-  return ` Last analysed by the service on ${at.toLocaleDateString(undefined, { dateStyle: 'medium' })}.`
+  return ` Last analysed by the service on ${formatDate(at)}.`
 }
 
 /**
- * What the configured reputation service says about this file's hash.
+ * What the configured reputation service says about this file's hash, and the
+ * control for asking it again.
  *
  * On the quarantined tier only, because that is the only tier the server looks
  * anything up for — an allowance spent on holiday-request PDFs is an allowance
  * that is gone when a real sample arrives. It is additive: nothing a third
  * party says moves a file out of quarantine, so the detection, the password
  * and the confirmation above are unaffected by anything here.
- *
- * Nothing in here names the provider. Which one an instance uses is a
- * session-gated admin setting staff cannot read, so the claim is attributed
- * the way the scanner's is — what the service said, never what the file is.
- *
- * The four states are four different facts and none is a synonym for another.
- * "Never seen" is the one that must not slip: for a file the local scanner has
- * already flagged, being unknown to the provider is a fact worth noticing, not
- * a shrug, and certainly not reassurance.
  */
-function ReputationLine({ attachment }: { attachment: Attachment }) {
+function ReputationLine({ ticketId, attachment }: RowProps) {
   const rep = attachment.reputation
   // Absent or null means no lookup completed: no API key configured, a spent
   // budget, a provider that was down, a request that failed. Not a verdict and
   // not a clean bill of health, and the one thing it must never do is read as
   // either.
+  //
+  // No re-check control either: there is nothing to refresh, and the ordinary
+  // lazy lookup covers this file on the next page render. A "check again" here
+  // would be a second way to spend the day's allowance with none of the rules
+  // on it.
   if (!rep) {
     return (
       <p className="text-xs text-gray-500">
@@ -276,6 +324,44 @@ function ReputationLine({ attachment }: { attachment: Attachment }) {
       </p>
     )
   }
+
+  // The three states that decay. `detected` is stable — engines do not un-flag
+  // a file, the server refuses a re-check of one, and spending an allowance
+  // re-confirming known malware is the lookup guaranteed to tell nobody
+  // anything. An unrecognised state is not a verdict at all, so it gets no
+  // control either.
+  const refreshable = rep.state === 'clean' || rep.state === 'unseen' || rep.state === 'unscanned'
+
+  return (
+    <div className="space-y-1">
+      <ReputationVerdict rep={rep} />
+      {refreshable && <CheckAgain ticketId={ticketId} attachment={attachment} />}
+    </div>
+  )
+}
+
+/**
+ * The verdict in words, attributed to whoever made the claim.
+ *
+ * The provider's name is the attribution: "VirusTotal has never seen this
+ * file" is a claim with a source and "the reputation service has never seen
+ * this file" is a claim from nowhere. The frontend does not work the name out
+ * for itself — which service an instance uses is a session-gated admin setting
+ * staff cannot read, which is why the server sends both the name and a
+ * finished lookup URL — and a name this build does not recognise falls back to
+ * the generic wording rather than printing an operator's setting at a reader.
+ *
+ * The four states are four different facts and none is a synonym for another.
+ * "Never seen" is the one that must not slip: for a file the local scanner has
+ * already flagged, being unknown to the provider is a fact worth noticing, not
+ * a shrug, and certainly not reassurance.
+ */
+function ReputationVerdict({ rep }: { rep: AttachmentReputation }) {
+  const named = providerName(rep.provider)
+  // Two shapes of the same attribution: one that opens a sentence, one that
+  // labels a line of numbers.
+  const who = named ?? 'The reputation service'
+  const label = named ?? 'Reputation service'
 
   // Only the two states that represent an analysis carry the date. Neither
   // provider sends one for `unseen` or `unscanned` today — there was no
@@ -295,7 +381,7 @@ function ReputationLine({ attachment }: { attachment: Attachment }) {
       if (!counted) {
         return (
           <p className="text-xs font-medium text-amber-700">
-            The reputation service returned no engine counts, so there is no verdict to show.
+            {who} returned no engine counts, so there is no verdict to show.
             {analysed}
           </p>
         )
@@ -305,13 +391,13 @@ function ReputationLine({ attachment }: { attachment: Attachment }) {
       if (rep.state === 'clean') {
         return (
           <p className="text-xs text-gray-600">
-            Reputation service: {counts} flagged this file.{analysed}
+            {label}: {counts} flagged this file.{analysed}
           </p>
         )
       }
       return (
         <p className="text-xs font-medium text-red-800">
-          Reputation service: {counts} flagged this file
+          {label}: {counts} flagged this file
           {/* The provider's consensus name, which a malware author has a hand
               in choosing. A text node, like virus_name above it. */}
           {rep.threat_name !== '' && (
@@ -328,16 +414,16 @@ function ReputationLine({ attachment }: { attachment: Attachment }) {
     case 'unseen':
       return (
         <p className="text-xs font-medium text-amber-700">
-          The reputation service has never seen this file. That is not a clean result: nobody has
-          ever submitted it for analysis.
+          {who} has never seen this file. That is not a clean result: nobody has ever submitted it
+          for analysis.
         </p>
       )
 
     case 'unscanned':
       return (
         <p className="text-xs font-medium text-amber-700">
-          The reputation service knows this file but holds no verdict for it — it has not been
-          analysed. That is not a clean result.
+          {who} knows this file but holds no verdict for it — it has not been analysed. That is not
+          a clean result.
         </p>
       )
 
@@ -346,6 +432,92 @@ function ReputationLine({ attachment }: { attachment: Attachment }) {
       // frontend does not recognise is not a verdict, and the safe reading of
       // one is the same as no lookup at all.
       return <p className="text-xs text-gray-500">Reputation service: not checked.</p>
+  }
+}
+
+/**
+ * "Check again": ask the provider about this hash now.
+ *
+ * Disabled rather than hidden inside the seven-day floor, because a control
+ * that vanishes teaches nobody anything — the reader is left wondering whether
+ * the feature exists. It says when it clears instead, which is the only form
+ * of "no" a reader can act on.
+ *
+ * The answer replaces the row's attachment rather than invalidating the list:
+ * the response IS the updated attachment, so a refetch would ask the server
+ * for something it has just sent. A verdict that came back unchanged still
+ * carries a new fetch time, which re-locks this control — otherwise the next
+ * reader asks again for nothing.
+ */
+function CheckAgain({ ticketId, attachment }: RowProps) {
+  const qc = useQueryClient()
+  const [refusal, setRefusal] = useState<string | null>(null)
+
+  const recheck = useMutation({
+    mutationFn: () => recheckAttachmentReputation(ticketId, attachment.id),
+    onSuccess: (updated) => {
+      setRefusal(null)
+      qc.setQueryData<Attachment[]>(['attachments', ticketId], (list) =>
+        (list ?? []).map((a) => (a.id === updated.id ? updated : a))
+      )
+    },
+    onError: (err) => setRefusal(refusalMessage(err)),
+  })
+
+  // Read once, when the row mounts. A clock read during render is impure —
+  // the same render would produce different output on a re-render — and a
+  // control that arms itself mid-read would be surprising anyway. The page is
+  // open for minutes; the floor is seven days.
+  const [now] = useState(() => Date.now())
+
+  const next = nextCheckAt(attachment.reputation?.fetched_at)
+  const ready = next === null || next.getTime() <= now
+
+  return (
+    <div className="space-y-1">
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={!ready || recheck.isPending}
+        onClick={() => recheck.mutate()}
+      >
+        {recheck.isPending ? 'Checking…' : 'Check again'}
+      </Button>
+      {!ready && (
+        <p className="text-xs text-gray-500">
+          Checked within the last seven days. It can be checked again on {formatDate(next)}.
+        </p>
+      )}
+      {refusal && (
+        <p role="status" className="text-xs font-medium text-amber-700">
+          {refusal}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Why the server said no, in words a reader can act on.
+ *
+ * Our handler always sends one, and it is better than anything that could be
+ * written here — the too-soon refusal names the date it clears. The fallbacks
+ * are for a refusal that arrives with no API error body at all, which is what
+ * a proxy in front of the app produces: "Request failed with status code 503"
+ * is not a sentence to show anybody, and the two statuses mean different
+ * things — one clears by waiting, the other needs an operator.
+ */
+function refusalMessage(err: unknown): string {
+  const { status, message } = apiRefusal(err)
+  if (message) return message
+
+  switch (status) {
+    case 429:
+      return 'This file was checked too recently to ask again. A file can be re-checked once every seven days.'
+    case 503:
+      return 'The reputation lookup could not be made: it is either not configured on this instance, or the day’s allowance is spent. It is worth trying again later.'
+    default:
+      return extractError(err)
   }
 }
 

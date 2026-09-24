@@ -74,7 +74,19 @@ func DisplayName(provider string) string {
 	case ProviderMetaDefender:
 		return "MetaDefender"
 	}
-	return provider
+	// Empty, not the raw value.
+	//
+	// The setting is operator-typed, and the reader is staff looking at a
+	// malware verdict. Passing an unrecognised value through puts whatever was
+	// typed into a sentence that attributes a claim — "xyzzy has never seen
+	// this file" — which reads as a service that exists. An empty name lets
+	// the caller fall back to unattributed wording, which is true: we do not
+	// know who said it, so we do not say.
+	//
+	// Not reachable while the settings handler refuses an unknown provider,
+	// but this function is exported and that validation was itself missing
+	// until recently.
+	return ""
 }
 
 // ValidProvider reports whether name is a provider this build can talk to.

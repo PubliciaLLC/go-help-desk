@@ -165,6 +165,23 @@ export interface AttachmentReputation {
   // When the PROVIDER analysed the file, not when we asked. What tells a
   // reader whether a clean verdict predates the sample appearing in the wild.
   analysed_at: string | null
+  // Which service gave this verdict, so the claim can be attributed:
+  // "VirusTotal has never seen this file" has a source, "the reputation
+  // service has never seen this file" is a claim from nowhere.
+  //
+  // The frontend must not work this out for itself — the provider is a
+  // session-gated admin setting staff cannot read, which is why the server
+  // also sends a finished reputation_url. Anything this build does not
+  // recognise falls back to the generic wording rather than printing an
+  // operator's raw setting value at a reader.
+  provider?: string
+  // When WE last asked, as against analysed_at, which is when the PROVIDER
+  // last looked. Staff may ask again once every seven days, and this is what
+  // that control is armed on.
+  //
+  // Optional, like provider: a verdict stored before either field existed
+  // carries neither.
+  fetched_at?: string | null
 }
 
 export interface Reply {
