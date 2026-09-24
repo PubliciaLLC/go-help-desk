@@ -379,6 +379,11 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Use(chimw.Recoverer)
 	r.Use(requestLogger)
 	r.Use(securityHeaders)
+	// Stamps the request with the instant after which no attachment
+	// reputation lookup may start. Outermost of the handler-facing layers,
+	// because the budget it carries is measured from the start of the
+	// request; see reputationRequestBudget in reputation.go.
+	r.Use(reputationDeadline)
 
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))

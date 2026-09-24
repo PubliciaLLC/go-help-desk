@@ -260,8 +260,17 @@ function expectNoEngineClaim(text: string, context: string) {
   }
 }
 
-/** Placeholders that mean a field leaked instead of rendering. */
-const PLACEHOLDER = /undefined|\bnull\b|NaN|Invalid Date|\[object Object\]/i
+/**
+ * Placeholders that mean a field leaked instead of rendering.
+ *
+ * `NaN` is word-bounded and case-sensitive, unlike everything else here, and
+ * both are deliberate. Case-insensitive and unanchored it matches "finance"
+ * and "maintenance" — ordinary words in copy about files and services — so the
+ * first person to write a sentence containing one would get a failure claiming
+ * a number had leaked. A trap in a helper is worse than no helper: it fails on
+ * correct work, and the fix a reader reaches for is to delete the check.
+ */
+const PLACEHOLDER = /undefined|\bnull\b|\bNaN\b|Invalid Date|\[object Object\]/
 
 // ── The feed is the claim ─────────────────────────────────────────────────────
 
@@ -541,5 +550,103 @@ describe('a known verdict on a quarantined file', () => {
       within(row).queryByRole('button', { name: /download/i }),
       'a known verdict removed the download confirmation',
     ).not.toBeNull()
+  })
+})
+
+// ── A local detection outranks any catalogue ──────────────────────────────────
+
+/**
+ * Colours this page uses to say "this is fine".
+ *
+ * A family rather than one Tailwind shade, because the requirement is about
+ * what the line communicates: a rewrite that swaps emerald for green has
+ * changed nothing.
+ */
+const REASSURING = ['emerald', 'green', 'teal', 'lime']
+
+/**
+ * The colour family of the line carrying a given piece of wording.
+ *
+ * The treatment is half the finding, not only the words — a sentence that
+ * reads as context is still reassurance if it is painted in the colour this
+ * page reserves for good news.
+ */
+function verdictColour(row: HTMLElement, wording: RegExp): string {
+  const lines = Array.from(row.querySelectorAll<HTMLElement>('p')).filter((el) =>
+    wording.test(el.textContent ?? ''),
+  )
+  expect(lines.length, `expected exactly one line on the row matching ${wording}`).toBe(1)
+
+  const colour = (lines[0].getAttribute('class') ?? '').match(/\btext-([a-z]+)-\d{3}\b/)
+  expect(colour, 'the verdict line carries no text colour at all').not.toBeNull()
+  return colour![1]
+}
+
+describe('a catalogue entry on a file our own scanner named', () => {
+  // EICAR is in NSRL. So on an instance with CIRCL enabled, the file ClamAV
+  // quarantined — wrapped, password-protected, with the whole loud treatment
+  // above it — carried an emerald line reading "CIRCL: known file —
+  // catalogued by NSRL". That is the product reassuring staff about a file it
+  // has itself identified as malicious.
+  //
+  // NSRL cataloguing means the file appeared in a known software
+  // distribution; NSRL catalogues hacking tools and test files. It was never a
+  // statement that a file is safe. The rule: a local scanner detection
+  // outranks any external catalogue, so the entry is still shown — "NSRL has
+  // this on file" is real information about a sample an analyst is triaging —
+  // and shown as context rather than as a second opinion that overrules the
+  // scanner.
+  const nsrl = () => known(['nsrl'], { provider: 'circl' })
+
+  it('does not render the catalogue hit as reassurance', async () => {
+    await renderTicket([quarantined(nsrl()), OTHER])
+    const colour = verdictColour(quarantinedRow(), /\bknown\b/i)
+
+    expect(
+      REASSURING,
+      'a file the scanner quarantined carries a reassuring catalogue line — EICAR itself ' +
+        'is in NSRL, so this is the product vouching for its own detection',
+    ).not.toContain(colour)
+  })
+
+  // The row already has a treatment for a `known` verdict that has not earned
+  // reassurance: the one with no feed named. This is the same situation from
+  // the other direction — the claim is sourced, and the scanner outranks it —
+  // so it is the same treatment and not a third one.
+  it('renders it in the treatment the row already uses for a known verdict that is not reassurance', async () => {
+    await renderTicket([quarantined(nsrl()), OTHER])
+    const named = verdictColour(quarantinedRow(), /\bknown\b/i)
+    cleanup()
+
+    await renderTicket([quarantined(known([], { provider: 'circl' })), OTHER])
+    const nameless = verdictColour(quarantinedRow(), /\bknown\b/i)
+
+    expect(
+      named,
+      'the two known verdicts a quarantined row can carry are painted differently',
+    ).toBe(nameless)
+  })
+
+  // Demoted, not deleted. An analyst triaging a sample wants to know a
+  // catalogue has the hash on file, and which one — a fix that drops the line
+  // throws away the information along with the reassurance.
+  it('still names the catalogue and who reported it', async () => {
+    const text = await textFor(nsrl())
+
+    expect(text, 'the catalogue entry was dropped rather than demoted').toMatch(/NSRL/i)
+    expect(text, 'the catalogue entry lost the service that reported it').toContain('CIRCL')
+    expect(text, 'the demoted line rendered a placeholder').not.toMatch(PLACEHOLDER)
+  })
+
+  // Context, not a verdict on the file. Nothing here may say the file is all
+  // right: our own scanner said the opposite and it is the one that ran on
+  // these bytes.
+  it('does not word the catalogue entry as an acquittal', async () => {
+    const text = await textFor(nsrl())
+
+    expect(
+      text,
+      'the line reads as a verdict on the file rather than as context on the sample',
+    ).not.toMatch(/\bsafe\b|\bharmless\b|\bbenign\b|\btrusted\b|\bknown good\b|not malicious/i)
   })
 })

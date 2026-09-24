@@ -336,16 +336,28 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		storedExt = ".zip"
 		mime = "application/zip"
 
-	case mismatch && !allowed[detectedExt]:
-		// A file whose content contradicts its name, where the content is not
-		// something this instance accepts. What happens to it is the
-		// operator's decision, and the default is the refusal every release
-		// before this one gave.
+	case mismatch && !attachment.IsTextExtension(ext) && !allowed[detectedExt]:
+		// A file whose content contradicts its name, where the name claims a
+		// binary format and the content is not something this instance
+		// accepts. What happens to it is the operator's decision, and the
+		// default is a refusal with the same status, code and message 1.2.0
+		// refused with. Not the same *set* of files, though: DESIGN.md has
+		// the measured table of what an upgrade moves in each direction.
 		//
-		// Not every mismatch reaches here: an HTML response saved as a .log
-		// is ordinary, and acting on it either way would be a warning on an
-		// ordinary file. The operator's own allowlist is the judgement, so
-		// there is no second list to keep correct — and a mismatch of an
+		// Two conditions keep ordinary files out of this arm, and both are
+		// load-bearing.
+		//
+		// A claimed text extension never reaches here at all. Wrapping
+		// contains a file by taking away the name that decides how it opens,
+		// and a file named .log already opens in a text editor whatever is
+		// inside it — so there is nothing to contain, only something to say.
+		// Refusing one was the regression that made a NUL-padded crash log, a
+		// UTF-16 .txt and a gzipped rotated log all answer 415 on an instance
+		// that had changed no setting. Such a file is still flagged and still
+		// recorded; it is simply stored under its own name.
+		//
+		// The operator's own allowlist is the judgement for everything else,
+		// so there is no second list to keep correct — a mismatch of an
 		// accepted type falls past this arm untouched by the setting.
 		//
 		// Reached only after the quarantine arm above has had its say. A file
@@ -600,8 +612,16 @@ func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *htt
 		default:
 			// The reason goes to the operator's log and not to the caller;
 			// nothing here carries an API key — see reputationServices.
+			// WARN is for something the operator has to fix — a rejected key,
+			// a provider that is down. A refusal we made ourselves is not
+			// that: a spent allowance, or a request that ran out of the time
+			// budget before this provider's turn, are both the system working
+			// as configured, and logging them at WARN buries the one line
+			// that is worth reading.
 			level := slog.LevelWarn
-			if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
+			if errors.Is(err, reputation.ErrRateLimited) ||
+				errors.Is(err, reputation.ErrQuotaExceeded) ||
+				errors.Is(err, reputation.ErrDeadlinePassed) {
 				level = slog.LevelDebug
 			}
 			slog.Log(r.Context(), level, "attachment reputation re-check did not complete",

@@ -30,9 +30,11 @@ import type { Attachment, AttachmentProviderVerdict, AttachmentReputation } from
 //                      providers. An implementation that de-duplicates by state
 //                      passes every happy-path assertion and loses half the
 //                      payload.
-//   the VirusTotal     unconditional now, whatever is enabled — a link is not a
-//   link               lookup — which is a surprise that has to be explained on
-//                      the page or it reads as a broken setting.
+//   the VirusTotal     goes to VirusTotal whatever is enabled — a link is not
+//   link               a lookup — which is a surprise that has to be explained
+//                      on the page or it reads as a broken setting. WHICH rows
+//                      carry one is a separate rule and a separate suite:
+//                      every fixture here is quarantined, which is one of them.
 //   nothing enabled    no block at all. Not "not checked": nothing was
 //                      attempted, and saying otherwise invents a failure.
 //
@@ -61,8 +63,10 @@ const EICAR_SHA = '275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651f
 const DETECTION = 'Eicar-Test-Signature'
 const THREAT_NAME = 'Win32.Trojan.Agent.ABCD'
 
-// The unconditional link. Every attachment with a hash carries it now, whatever
-// the toggles say, because a link sends nothing from this server.
+// The hash link. It goes to VirusTotal whatever the toggles say, because a link
+// sends nothing from this server — and the server puts one on this row because
+// the scanner named the file. See attachments-hash-link.test.tsx for which rows
+// get one at all.
 const VT_HASH_LINK = `https://www.virustotal.com/gui/file/${EICAR_SHA}`
 
 // A provider's own page for the hash, which is a different thing: it sits next
@@ -188,7 +192,8 @@ function quarantined(reputation: AttachmentReputation | null): Attachment {
     sha256: EICAR_SHA,
     virus_name: DETECTION,
     mismatch: false,
-    // Unconditionally VirusTotal now, whatever is enabled.
+    // The scanner named this file, so the server sends a link — and it goes
+    // to VirusTotal whatever the toggles say.
     reputation_url: VT_HASH_LINK,
     reputation,
   })
@@ -862,7 +867,7 @@ describe('an instance with a single provider enabled', () => {
   })
 })
 
-// ── The VirusTotal link is unconditional, and says so ─────────────────────────
+// ── The link goes to VirusTotal whatever is enabled, and says so ─────────────
 
 describe('the hash link', () => {
   // The correction in #168: a link is not a lookup. Disabling VirusTotal means
@@ -884,7 +889,7 @@ describe('the hash link', () => {
     const row = quarantinedRow()
 
     const links = Array.from(row.querySelectorAll('a')).map((a) => a.getAttribute('href'))
-    expect(links, 'the unconditional VirusTotal link is missing from the row').toContain(
+    expect(links, 'the hash link is missing from the row').toContain(
       VT_HASH_LINK,
     )
   })
@@ -906,8 +911,8 @@ describe('the hash link', () => {
     ).toMatch(/sends? nothing|nothing is sent/i)
   })
 
-  // Two different things that happen to share a host. The unconditional one is
-  // a fact about the hash; a provider's own link is part of that provider's
+  // Two different things that happen to share a host. The hash link is a fact
+  // about the file; a provider's own link is part of that provider's
   // verdict, and putting the first inside the provider list would attribute it
   // to whichever service it landed next to.
   it('is not inside the list of per-service links', async () => {
@@ -925,10 +930,10 @@ describe('the hash link', () => {
     const hashLink = Array.from(quarantinedRow().querySelectorAll('a')).find(
       (a) => a.getAttribute('href') === VT_HASH_LINK,
     )
-    expect(hashLink, 'the unconditional link is gone').toBeDefined()
+    expect(hashLink, 'the hash link is gone').toBeDefined()
     expect(
       providerLines().some((el) => el.contains(hashLink!)),
-      'the unconditional VirusTotal link sits inside a provider line, where it reads as that service’s own',
+      'the hash link sits inside a provider line, where it reads as that service’s own',
     ).toBe(false)
   })
 })

@@ -26,10 +26,12 @@ const (
 // MetaDefender is OPSWAT's service, offered because the operator supplies the
 // API key and should therefore be the one choosing whose terms they accept.
 //
-// Free tier is 4,000 lookups a day with no per-minute cap on single hashes, so
-// it needs a daily counter and no token bucket. It has a state VirusTotal does
-// not — 404011, a file scanned privately and not stored — which maps to
-// Unscanned.
+// OPSWAT publish no free-tier figure — their public-API documentation says
+// only "a limited number of API calls per day" — so the 4,000 a day in
+// budget.go is a cap WE chose, not a limit they gave. They do not throttle
+// single hash lookups by the minute, so it needs a daily counter and no token
+// bucket. It has a state VirusTotal does not — 404011, a file scanned
+// privately and not stored — which maps to Unscanned.
 type MetaDefender struct {
 	client
 }

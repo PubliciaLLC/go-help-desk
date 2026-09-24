@@ -409,3 +409,58 @@ describe('which rows get a link', () => {
     ).not.toBeNull()
   })
 })
+
+// ── What the note claims about sending ────────────────────────────────────────
+
+/**
+ * Wording that makes "nothing is sent" conditional on a setting.
+ *
+ * A union rather than one sentence, because what must not appear on a mismatch
+ * row is the condition however it is phrased.
+ */
+const CONDITIONED_ON_A_SETTING = /\bunless\b|switched on|turned on|\benabled\b|\bswitch(ed)? off\b/i
+
+describe('the note under the link', () => {
+  // Only files the scanner named are ever looked up — see addReputation in
+  // handler_attachments.go, which returns early on a nil VirusName. So on a
+  // mismatch row nothing is sent from this instance whatever the VirusTotal
+  // toggle says, and a note conditioning that on the toggle describes a lookup
+  // that cannot happen: it sends an operator to the admin settings to switch on
+  // something that will change nothing about this row.
+  it('does not make it conditional on a setting, on a row nothing is ever sent for', async () => {
+    await renderTicket([WRAPPED_MISMATCH, ORDINARY])
+    const text = rowFor(WRAPPED_MISMATCH.filename, ORDINARY.filename).textContent ?? ''
+
+    expect(text, 'the note that explains the link went with the condition').toMatch(NOTE_WORDING)
+    expect(
+      text,
+      'the note ties "nothing is sent" to a setting — on this row nothing is sent either way, ' +
+        'so the sentence promises a lookup that cannot happen',
+    ).not.toMatch(CONDITIONED_ON_A_SETTING)
+  })
+
+  // The flagged mismatch is the same fact through the other door: stored under
+  // its own name rather than wrapped, still never looked up.
+  it('does not make it conditional on a setting on a flagged mismatch either', async () => {
+    await renderTicket([FLAGGED_MISMATCH, ORDINARY])
+    const text = rowFor(FLAGGED_MISMATCH.filename, ORDINARY.filename).textContent ?? ''
+
+    expect(text, 'the note that explains the link went with the condition').toMatch(NOTE_WORDING)
+    expect(text, 'the note promises a lookup that cannot happen on this row').not.toMatch(
+      CONDITIONED_ON_A_SETTING,
+    )
+  })
+
+  // And the quarantined row keeps it, because that is the row the toggle
+  // actually governs: this file IS sent to every enabled service. Dropping the
+  // condition everywhere would fix the wrong half.
+  it('keeps the condition on the row the setting governs', async () => {
+    await renderTicket([QUARANTINED, ORDINARY])
+    const text = rowFor(QUARANTINED.filename, ORDINARY.filename).textContent ?? ''
+
+    expect(
+      text,
+      'the quarantined row no longer says the toggle decides whether its hash leaves this instance',
+    ).toMatch(CONDITIONED_ON_A_SETTING)
+  })
+})

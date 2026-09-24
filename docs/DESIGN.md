@@ -372,21 +372,37 @@ hash is **not** the hash of the file on disk; for everything else the two are
 the same.
 
 Content nothing recognises is an answer and not a failure. It is recorded as
-`application/octet-stream` with no extension, and it counts as a contradiction,
-because saying nothing there would make an unidentifiable file look like a
-verified one.
+`application/octet-stream` with no extension. Under a name that claims a binary
+format it counts as a contradiction, because saying nothing there would make an
+unidentifiable file look like a verified one. Under a text extension it does
+not — see the third relaxation below.
 
 **A content mismatch** is the detected extension differing from the claimed
-one, after two relaxations and no others:
+one, after three relaxations and no others:
 
 - `.jpeg` and `.jpg` collapse into one. The only synonym, and it is there
   because the two spellings name a single format — the same normalisation the
   allowlist applies, so allowing either allows both.
 - A text extension — `.txt`, `.log`, `.csv`, `.md` — matches any content that
   is inert text: anything `text/*`, plus JSON and NDJSON, which are text that
-  the IANA registry happens to file under `application/`. `text/html` is the
-  deliberate exception, because a browser is what opens HTML, and HTML wearing
-  a `.txt` is still worth telling somebody about.
+  the IANA registry happens to file under `application/`. **`text/html` is
+  included**, and used not to be. The exclusion was argued from "HTML runs when
+  it is opened", which is false in the way that decides this: what opens a file
+  is chosen by its name, not by its content, so `notes.log` opens in a text
+  editor whatever bytes are inside it. Nothing here renders an attachment
+  either. The exclusion protected nothing and flagged a captured HTTP response
+  saved as a `.log` — this document's own example of an ordinary attachment.
+- Content nothing recognised at all, under a text extension, is not a
+  contradiction. The detector failing to place a file is a limitation of the
+  detector rather than evidence of deception, and it takes very little: one NUL
+  byte from a process that died mid-write, UTF-16 with no BOM. Under a claimed
+  binary format an unplaceable file stays a mismatch — a PDF that cannot be
+  identified as a PDF is worth a sentence.
+
+A text extension is not a blanket pass: a rotated log compressed in place and
+still named `.log` is detected as `application/gzip`, which is not inert text,
+so it is flagged — and, being text-named, it is stored under its own name
+rather than wrapped or refused.
 
 The second rule is decided on the media type and not on a list of detected
 extensions, and the difference is not cosmetic. Measured: a container log
@@ -427,13 +443,21 @@ encoder. The upload handler takes the first of these that applies.
    with a verdict the scanner actually returned: with the scan policy `off`, or
    the scanner unreachable under `permissive`, nothing is ever identified as
    infected and `quarantine` does nothing at all.
-2. **The content contradicts the name, and the detected type is not on the
-   operator's allowlist**, and the operator set `attachment_mismatch_handling`
-   to `wrap`. The file is wrapped with no password and stored as
-   `suspicious-<crc32>.zip` — the CRC32 of the file inside, which every ZIP
-   entry already carries, so the archive is named after a value its recipient
-   can verify and it costs nothing to produce. Under the default, `refuse`, the
-   upload is rejected with `415` `invalid_file` and never reaches this tier.
+2. **The name claims a binary format, the content contradicts it, and the
+   detected type is not on the operator's allowlist**, and the operator set
+   `attachment_mismatch_handling` to `wrap`. The file is wrapped with no
+   password and stored as `suspicious-<crc32>.zip` — the CRC32 of the file
+   inside, which every ZIP entry already carries, so the archive is named after
+   a value its recipient can verify and it costs nothing to produce. Under the
+   default, `refuse`, the upload is rejected with `415` `invalid_file` and
+   never reaches this tier.
+
+   **A claimed text extension never reaches this tier at all**, under either
+   value of the setting. Wrapping contains a file by taking away the name that
+   decides how it opens; `crash.log` already opens in a text editor whatever is
+   inside it, so there is nothing to contain, only something to say. Such a
+   file is flagged if its content contradicts the name, recorded either way,
+   and stored under its own name.
 3. **It is an image** — `.jpg`, `.jpeg`, `.png` or `.bmp` — and neither of the
    above. It is recompressed to whichever of JPEG (quality 85) or PNG is
    smaller, under the name it was uploaded with.
@@ -444,20 +468,21 @@ Anything else is stored exactly as it arrived.
 people will get wrong.** Not every mismatch is wrapped. The judgement is the
 operator's own allowlist, which means there is no second list to keep correct:
 a file is wrapped when the type it turned out to be is not a type this instance
-accepts. So HTML inside a `.pdf` is wrapped on
-a default instance, because `.html` is not an accepted type. HTML inside a
-`.log` on an instance that has allowed `.html` is a mislabelled file of an
-accepted type: flagged on the row, stored under its own name, not wrapped. A
-`.log` holding a captured HTML response is an ordinary help desk attachment,
-and wrapping it would be the warning-on-ordinary-files problem in physical
-form.
+accepts — and then only under a name claiming a binary format. So HTML inside a
+`.pdf` is wrapped on an instance set to `wrap`, because `.html` is not an
+accepted type; on a default instance it is refused with `415` instead, which is
+the same condition and the other action. A real PNG inside a `.pdf` is a
+mislabelled file of an accepted type: flagged on the row, stored under its own
+name, not wrapped, under either value. And a `.log` holding a captured HTML
+response is an ordinary help desk attachment — neither flagged nor wrapped nor
+refused, because `.log` is a text name and `text/html` is inert text.
 
 **Wrapped or refused is an operator setting, and refusing is the default.**
 `attachment_mismatch_handling` takes `refuse` (the default) or `wrap`:
 
 | Value | Behaviour |
 |---|---|
-| `refuse` | **Default.** `415` `invalid_file`, as every release before this one. |
+| `refuse` | **Default.** `415` `invalid_file` — the same status, code and message 1.2.0 refused with, so whatever an operator has wired into that response still reads it. |
 | `wrap` | Accepted, stored as `suspicious-<crc32>.zip`, flagged. |
 
 Deliberately the same shape, the same words and the same default as
@@ -469,9 +494,41 @@ instance will hold — an unrecognised value falls back to `refuse` rather than
 to the permissive option, and the settings endpoint refuses the write outright
 with `invalid_mismatch_handling`, following `invalid_scan_policy`.
 
-Default `refuse`, so upgrading and touching nothing changes nothing. Relaxing a
-security control in an upgrade nobody opted into is the wrong default for a
-behaviour only some deployments want.
+`refuse` is the default because relaxing a security control in an upgrade
+nobody opted into is the wrong default for a behaviour only some deployments
+want.
+
+**What an upgrade actually changes.** It is not parity with 1.2.0, and this
+document used to claim it was. 1.2.0 checked a hard-coded signature against the
+claimed extension and had no entry for `.txt` or `.log`, so it was strict about
+a handful of names and blind to the rest; this release detects the content and
+judges it against the operator's allowlist. That moves rows in both directions.
+Measured through the upload handler on a default instance:
+
+| Upload | 1.2.0 | Now |
+|---|---|---|
+| plain text named `.pdf`, `.docx` or `.xlsx` | `415` | `201`, stored under its own name, flagged |
+| a real PNG named `.jpg`, or a real PNG named `.pdf` | `415` | `201` |
+| a plain ZIP named `.docx` | `201` | `415` |
+| any upload under four bytes | `415` | `201` |
+| text named `.png` or `.jpg` | `415` | `422` `invalid_image` |
+| a `.txt` or `.log`, whatever is inside it | `201` | `201` |
+| HTML named `.pdf` | `415` | `415` |
+
+The first row is the one to understand rather than to fix. A `.pdf` holding
+plain text is a contradiction and is flagged, and it is neither wrapped nor
+refused, because the judgement for tier 2 is the operator's own allowlist and
+`.txt` is on it: the content is something this instance would have accepted
+under its own name, so there is nothing to contain — only something to say.
+Refusing it would need a second list of "types that may not hide inside other
+types", which is the second list this design exists to avoid keeping correct.
+1.2.0 caught that one case by looking for `%PDF`, and the same rule let HTML
+into a `.txt` completely unexamined — the two rows are the same trade seen from
+either end.
+
+The third row is the stricter direction and is deliberate: 1.2.0 accepted any
+ZIP under a `.docx` name because both start `PK\x03\x04`, and an Office
+document is now identified as an Office document.
 
 **Why `wrap` exists at all.** Refusing closes off the case this product is
 otherwise good at — the suspicious file a user reported is exactly the file a
@@ -583,7 +640,9 @@ something either alone would hide. The cache is already keyed
 `(sha256, provider)`, so this needs no schema change — one row per provider per
 file, each with its own expiry clock and its own re-check. The cost is real:
 four enabled providers means four lookups per quarantined file on first view,
-against free tiers of 500/day, 4,000/day, 60/hour and CIRCL unmetered.
+against caps of 500/day (VirusTotal's own published figure), 4,000/day and
+300/hour (ours — OPSWAT and CIRCL publish no number), and 60/hour
+(PolySwarm's own).
 
 **The row shows the worst verdict; one click shows them all.** Inline, staff see
 the single most serious answer across every provider that replied:
@@ -688,7 +747,9 @@ What the lookup does:
   its own expiry clock and its own *Check again*.
 - **Budgeted.** Each provider is metered at its own published free-tier
   ceiling, in that provider's own shape: 500 a day for VirusTotal plus a
-  four-a-minute bucket, 4,000 a day for MetaDefender with no bucket, and 60 an
+  four-a-minute bucket, 4,000 a day for MetaDefender with no bucket — a
+  courtesy cap of ours, since OPSWAT publish only "a limited number of API
+  calls per day" — and 60 an
   hour for PolySwarm, which publishes no daily figure at all and so is given
   none. CIRCL publishes no ceiling of any kind, so its 300 an hour is a
   politeness cap of ours rather than a limit of theirs — a free best-effort
@@ -774,6 +835,14 @@ mistake that has already been made twice in the virus scanner:
   arrives and never revisited, so a file that was clean last month and would be
   recognised today still reads as it did on the day it was uploaded. The
   reputation lookup is the only part of this that expires.
+- A slow provider cannot hold a page open. The whole of one request's
+  reputation work shares a five-second budget, not five seconds each: lookups
+  run one after another, so without a shared bound three quarantined
+  attachments and two unreachable providers is six fifteen-second timeouts and
+  a response the server can no longer write. Measured at ninety seconds before
+  the bound and five after. What the budget covers is the outbound call and
+  nothing else — a verdict already in the cache is still served after the time
+  is gone, because a hung provider must not erase answers we already hold.
 
 The verdict carries the provider's name so the UI can attribute it —
 "VirusTotal has never seen this file" is a claim with a source, and the generic

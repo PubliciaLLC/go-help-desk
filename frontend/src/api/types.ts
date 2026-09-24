@@ -288,8 +288,11 @@ export interface AttachmentProviderVerdict {
   fetched_at: string | null
   // This provider's own page for the hash, beside its own verdict, and null
   // for one that has no per-hash page — CIRCL, whose root serves a Swagger
-  // document. Distinct from Attachment.reputation_url, which is the
-  // unconditional VirusTotal link every hash carries whatever is enabled.
+  // document. Distinct from Attachment.reputation_url, which is the VirusTotal
+  // link the server puts on the rows this instance itself found something on:
+  // the scanner named the file, or the content contradicts the name. The
+  // per-provider toggles do not govern that link either — what decides it is
+  // which row it is on, and that is the server's call. See its own comment.
   link_url: string | null
   // Whether a re-check of THIS provider would be attempted rather than
   // refused: the verdict can still change and the seven-day floor has passed.

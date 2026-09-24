@@ -32,18 +32,22 @@ import (
 // says not to guess the type from the content, which is what would otherwise
 // undo the first.
 //
-// The uploads are a .txt whose content is HTML and a real PDF. The PDF is the
-// one that used to matter: it was served as application/pdf, which browsers
-// open in a viewer that runs JavaScript, so before the blob change a single
-// missing header meant a malicious PDF running on this origin — where the
-// staff sessions live.
+// Three uploads. A .txt whose content is HTML, the same HTML named .pdf, and
+// a real PDF. The real PDF is the one that used to matter: it was served as
+// application/pdf, which browsers open in a viewer that runs JavaScript, so
+// before the blob change a single missing header meant a malicious PDF running
+// on this origin — where the staff sessions live.
 //
-// The .txt used to be here to show the upload check never looked inside text
-// files. #165 closed that: its content is detected as HTML, HTML is not an
-// accepted type, so it is now stored wrapped as suspicious-<crc32>.zip. It
-// stays in this test because the two protections are independent and both
-// have to hold. Wrapping is what a person sees; the headers are what a
-// browser obeys. Neither is allowed to be the only one.
+// The .txt is the case where the headers are the *only* defence, which is why
+// it is first. It is not wrapped: a file named notes.txt opens in a text
+// editor on the reader's machine whatever is inside it, so there is nothing
+// for a wrap to take away, and the release that wrapped it also refused
+// ordinary crash logs for the same reason. What is left is this server's own
+// promise, and these headers are all of it.
+//
+// The .pdf is the wrapped case, and it is here so that both protections are
+// asserted. Wrapping is what a person sees; the headers are what a browser
+// obeys. Neither is allowed to be the only one.
 func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -61,13 +65,20 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetString(ctx,
 		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
-	// A .txt whose content is HTML: exactly what an attacker uploads. Since
-	// #165 it is stored wrapped, so this asserts the stored name as well —
-	// the wrap and the headers are separate defences and a test that checked
-	// only one would go quiet if the other were removed.
+	// A .txt whose content is HTML: exactly what an attacker uploads, and the
+	// file this server hands back under its own name and its own bytes. A
+	// text-named file is neither wrapped nor refused for its content, so
+	// everything that stops this rendering is in the response headers below.
 	const payload = `<html><script>alert(document.cookie)</script></html>`
+	asText := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", "notes.txt", []byte(payload))
+	require.Equal(t, payload, string(asText),
+		"stored as it arrived, which is safe only because it is never rendered")
+
+	// The same HTML under a name that claims a binary format. That is a
+	// mismatch of a type this instance does not accept, so it is the one the
+	// setting governs and the one that gets wrapped.
 	wrapped := fmt.Sprintf("suspicious-%08x.zip", crc32.ChecksumIEEE([]byte(payload)))
-	got := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", wrapped, []byte(payload))
+	got := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "invoice.pdf", wrapped, []byte(payload))
 
 	// What downloads is the archive, not the HTML. The payload must still be
 	// in there intact — wrapping is containment, not censorship; a help desk
@@ -76,7 +87,7 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	zr, err := zip.NewReader(bytes.NewReader(got), int64(len(got)))
 	require.NoError(t, err, "a wrapped attachment must download as a readable archive")
 	require.Len(t, zr.File, 1)
-	require.Equal(t, "notes.txt", zr.File[0].Name,
+	require.Equal(t, "invoice.pdf", zr.File[0].Name,
 		"the sample keeps the name it was uploaded under, inside the archive")
 	rc, err := zr.File[0].Open()
 	require.NoError(t, err)

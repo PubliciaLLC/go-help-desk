@@ -61,11 +61,24 @@ func TestUpload_RecordsWhetherTheContentMatchedTheName(t *testing.T) {
 			storedAs: "report.pdf",
 		},
 		{
+			// HTML is inert text like any other text/*, and a .txt is a text
+			// name: what opens the file is decided by the name, so notes.txt
+			// opens in an editor whatever is inside it. Nothing to say, so
+			// nothing is said.
 			name:     "HTML wearing a .txt",
 			filename: "notes.txt",
 			content:  []byte(`<html><body><p>not a text file</p></body></html>`),
+			want:     false,
+			storedAs: "notes.txt",
+		},
+		{
+			// The same HTML under a name that claims a binary format, which
+			// is a contradiction and is wrapped, because .html is not a type
+			// this instance accepts.
+			name:     "HTML wearing a .pdf",
+			filename: "invoice.pdf",
+			content:  []byte(`<html><body><p>not a text file</p></body></html>`),
 			want:     true,
-			// HTML is not an accepted type, so this one is also wrapped.
 			storedAs: fmt.Sprintf("suspicious-%08x.zip",
 				crc32.ChecksumIEEE([]byte(`<html><body><p>not a text file</p></body></html>`))),
 		},

@@ -411,8 +411,9 @@ func hasSecretValue(raw []byte) bool {
 	return strings.TrimSpace(v) != ""
 }
 
-// validateReputationConfig refuses a settings write that would leave a
-// commercial reputation provider enabled with no API key.
+// validateReputationConfig refuses two settings writes: one that would leave a
+// commercial reputation provider enabled with no API key, and one whose toggle
+// is not a boolean at all.
 //
 // It reads the STORED value for anything the write does not mention, because a
 // PATCH is a patch: enabling VirusTotal in one request when its key was pasted
@@ -421,15 +422,15 @@ func hasSecretValue(raw []byte) bool {
 // refuse the first, and validating the stored settings alone would refuse the
 // second.
 //
-// It reads the STORED value for anything the write does not mention, because a
-// PATCH is a patch: enabling VirusTotal in one request when its key was pasted
-// in a previous one has to be allowed, and pasting the key and the toggle in
-// the same request has to be allowed too. Validating the body alone would
-// refuse the first, and validating the settings alone would refuse the second.
-//
-// CIRCL has no clause here because it has no key: hashlookup authenticates
+// EVERY provider's toggle is type-checked, including CIRCL's, and that is the
+// part it is easy to skip. CIRCL has no key clause — hashlookup authenticates
 // nobody, and a rule demanding one would leave the one keyless provider
-// permanently unusable.
+// permanently unusable — but skipping the whole provider to reach that
+// conclusion skipped the type check with it. The reader is GetBool, which
+// answers false for anything that is not a JSON boolean, so a CIRCL toggle of
+// "yes" was stored, answered 204, and read back as off: the operator is told
+// their provider is on and the provider is never asked. A setting accepted and
+// then ignored is the failure this handler refuses everywhere else.
 //
 // The error message names the PROVIDER and never the key. There are three keys
 // now, and an error string is the easiest place for a write-only secret to
@@ -437,7 +438,7 @@ func hasSecretValue(raw []byte) bool {
 func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body map[string]json.RawMessage) error {
 	for _, p := range reputation.ProviderNames() {
 		enabledKey, apiKeyKey, ok := admin.ReputationSettingKeys(p)
-		if !ok || apiKeyKey == "" || !reputation.NeedsKey(p) {
+		if !ok {
 			continue
 		}
 
@@ -447,7 +448,9 @@ func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body
 				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
 			}
 		}
-		if !enabled {
+		// Past the type check, the rest is the key rule, and it applies only
+		// to a provider that is on and has a key to be missing.
+		if !enabled || apiKeyKey == "" || !reputation.NeedsKey(p) {
 			continue
 		}
 

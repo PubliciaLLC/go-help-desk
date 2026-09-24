@@ -21,6 +21,16 @@ var (
 	ErrRateLimited   = errors.New("reputation: rate limited")
 	ErrQuotaExceeded = errors.New("reputation: quota exceeded")
 	ErrNoAPIKey      = errors.New("reputation: no api key configured")
+
+	// ErrDeadlinePassed: the caller's whole-request allowance for reputation
+	// lookups was already spent when this one was reached, so no request went
+	// out at all.
+	//
+	// Distinct from a lookup that timed out mid-flight, and the difference is
+	// what a reader of the log needs. One of those is the provider that hung;
+	// the rest are the consequences of it, and they are the ones there can be
+	// dozens of. See Service.Deadline.
+	ErrDeadlinePassed = errors.New("reputation: lookup deadline already passed")
 )
 
 // Option configures a provider. The shape matches user.NewService(store,

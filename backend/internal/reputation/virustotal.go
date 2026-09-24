@@ -74,6 +74,22 @@ func (s vtStats) total() int {
 		s.Timeout + s.ConfirmedTimeout + s.Failure + s.TypeUnsupported
 }
 
+// verdicts counts the engines that actually decided something.
+//
+// The other four keys are engines that did not: timeout and confirmed-timeout
+// gave up, failure crashed, and type-unsupported is an engine that does not
+// handle the file at all. None of them looked at this file and found nothing
+// wrong with it — they did not look.
+//
+// Separate from total() because the two answer different questions and the
+// package needs both. total() is the number staff read, and it has to include
+// the engines that gave up or "1 of 81" silently becomes "1 of 6". This one
+// decides whether there is an answer to render at all: a report where it is
+// zero is Unavailable, never Clean.
+func (s vtStats) verdicts() int {
+	return s.Malicious + s.Suspicious + s.Undetected + s.Harmless
+}
+
 // vtFile is the slice of the v3 file object we read. Premium-only fields are
 // absent on a free key, so every optional field is a pointer: a zero value
 // decoded from a missing field would be rendered as a fact.
@@ -169,9 +185,15 @@ func vtVerdict(body []byte) (Reputation, error) {
 		Detected: stats.Malicious,
 		Total:    stats.total(),
 	}
-	if rep.Total == 0 {
-		// 0 of 0 is a missing lookup wearing a clean verdict's clothes.
-		return unavailable(fmt.Errorf("virustotal: no engine ran"))
+	if stats.verdicts() == 0 {
+		// Nothing was determined. Two shapes reach this and both are the same
+		// fact: an all-zero stats block (no engine ran at all), and a block
+		// whose only numbers are in timeout, confirmed-timeout, failure and
+		// type-unsupported — seventy-five engines that were handed a file type
+		// none of them parses. Rendered from Total alone, the second one reads
+		// "0 of 75 engines flagged this file", which is a clean verdict
+		// assembled entirely out of engines that never gave one.
+		return unavailable(fmt.Errorf("virustotal: no engine returned a verdict (%d engines ran)", rep.Total))
 	}
 	if rep.Detected > 0 {
 		rep.State = Detected

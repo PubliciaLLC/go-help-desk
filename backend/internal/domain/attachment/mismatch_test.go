@@ -106,21 +106,33 @@ func TestIsMismatch(t *testing.T) {
 			want: true,
 		},
 		{
-			// The documented gap this step closes. It stays a 201 — the file
-			// is accepted and the fact is recorded.
+			// HTML was excluded from rule 2 on the argument that HTML runs
+			// when it is opened. That is false in the way that decides this
+			// case: what opens a file is chosen by its name, and a thing
+			// called notes.txt opens in a text editor whatever is inside it.
+			// The exclusion protected nothing and flagged ordinary files.
 			name:       "HTML named .txt",
 			claimedExt: ".txt", detectedExt: ".html",
-			want: true,
+			want: false,
 		},
 		{
-			// A legitimate mismatch: a captured HTML response saved as a log
-			// is an ordinary help desk attachment. It is still flagged,
-			// because the flag says what the file is, not that someone did
-			// something wrong. Rule 2 does not reach it — the content was
-			// identified as HTML, not as plain text.
+			// The design's own canonical ordinary attachment, named as such
+			// in #165 and in DESIGN.md: a captured HTTP response saved out of
+			// devtools. Flagging it was the product warning about its own
+			// documented example.
 			name:       "a .log holding a captured HTML response",
 			claimedExt: ".log", detectedExt: ".html",
-			want: true,
+			want: false,
+		},
+		{
+			// Rule 2 is about inert text, not about text extensions being a
+			// blanket pass. A rotated log compressed in place is ordinary
+			// too, but gzip is not text and the row should say so.
+			name:         "a gzipped log still named .log",
+			claimedExt:   ".log",
+			detectedExt:  ".gz",
+			detectedMIME: "application/gzip",
+			want:         true,
 		},
 		{
 			name:       "HTML named .png",
@@ -140,20 +152,36 @@ func TestIsMismatch(t *testing.T) {
 			want: true,
 		},
 
-		// --- Nothing recognisable is a mismatch, not a pass. ---
+		// --- Nothing recognisable, under a claimed binary format, is a
+		// mismatch. Under a claimed text extension it is not. ---
 		{
 			// Saying nothing here would make an unidentifiable file look
-			// exactly like a verified one.
+			// exactly like a verified one. A PDF that cannot be identified as
+			// a PDF is worth a sentence.
 			name:       "content that could not be identified, named .pdf",
 			claimedExt: ".pdf", detectedExt: "",
 			want: true,
 		},
 		{
-			// Including under a text extension, where "we could not confirm
-			// this" is the honest answer rather than "close enough to text".
+			name:       "content that could not be identified, named .png",
+			claimedExt: ".png", detectedExt: "",
+			want: true,
+		},
+		{
+			// And the case the whole regression was: one NUL byte, one UTF-16
+			// code unit, anything the detector treats as binary, and an
+			// ordinary log came back unplaceable. The detector failing to
+			// place a file is a limitation of the detector, not evidence that
+			// the uploader lied — and under a text name there is nothing the
+			// flag could usefully warn about anyway.
 			name:       "content that could not be identified, named .txt",
 			claimedExt: ".txt", detectedExt: "",
-			want: true,
+			want: false,
+		},
+		{
+			name:       "content that could not be identified, named .log",
+			claimedExt: ".log", detectedExt: "",
+			want: false,
 		},
 	}
 

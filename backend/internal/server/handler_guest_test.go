@@ -511,8 +511,13 @@ func TestGuest_AnExpiredRowIsRefusedByTheQuery(t *testing.T) {
 
 	raw, hashed, err := auth.GenerateToken()
 	require.NoError(t, err)
+	// An hour, not a second. The row's expiry comes from this process's clock
+	// and the query compares it against Postgres's, so a one-second margin is
+	// a race between two machines' idea of now — it passes almost always and
+	// fails in CI for reasons nobody can reproduce. An hour is as expired as a
+	// second for what this test asks, and it is not a race.
 	require.NoError(t, h.ticketStore.CreateGuestToken(ctx, uuid.New(), tk.ID, hashed,
-		time.Now().Add(-time.Second)))
+		time.Now().Add(-time.Hour)))
 
 	res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", raw, nil)
 	defer res.Body.Close()

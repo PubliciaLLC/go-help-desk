@@ -73,6 +73,27 @@ type Service struct {
 	// setting can change while the server runs.
 	RefreshAfter time.Duration
 
+	// Deadline is the instant after which this service will not START an
+	// outbound lookup, and before which any lookup it does start must finish.
+	// Zero means no bound beyond the caller's context and the HTTP client's
+	// own timeout.
+	//
+	// It exists because the per-client timeout bounds ONE call and the thing
+	// that has to be bounded is a request. A page render asks every enabled
+	// provider about every quarantined attachment, one after another, and
+	// nothing is cached for a lookup that failed — so four providers and three
+	// files against an endpoint that accepts connections and never answers is
+	// twelve timeouts end to end, which outlasts the server's write timeout
+	// and turns a slow page into a page that never arrives. The caller passes
+	// the SAME instant for every service and every attachment in one request,
+	// which is what makes the total bounded rather than the parts.
+	//
+	// It covers the provider call and nothing else. A cached verdict is read
+	// on the caller's own context, so a blown deadline still renders every
+	// answer already on file — the whole point of the cache — and costs only
+	// the lookups that would have gone out.
+	Deadline time.Time
+
 	provider Provider
 	store    Store
 	budget   *Budget
@@ -219,6 +240,19 @@ func (s *Service) now() time.Time {
 // "unavailable is never cached" to be forgotten.
 func (s *Service) lookup(ctx context.Context, sha256 string) (Reputation, error) {
 	provider := s.provider.Name()
+
+	if !s.Deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, s.Deadline)
+		defer cancel()
+		if ctx.Err() != nil {
+			// Already spent by an earlier provider or an earlier attachment in
+			// the same request. Nothing goes out, and nothing is taken off the
+			// operator's allowance for a call that was never made — the budget
+			// counts requests to a third party, and there is no request here.
+			return unavailable(fmt.Errorf("reputation: %s was not asked: %w", provider, ErrDeadlinePassed))
+		}
+	}
 
 	if err := s.budget.Spend(provider); err != nil {
 		// The page says "not checked yet" and renders; an exhausted budget is

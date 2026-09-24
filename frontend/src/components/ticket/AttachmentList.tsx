@@ -359,14 +359,26 @@ function HashLine({ attachment }: { attachment: Attachment }) {
           who deliberately switched VirusTotal off and still sees a VirusTotal
           link on every attachment will reasonably conclude the setting does
           not work.
+          Two sentences, because the toggle only governs one of these rows.
+          Only a file the scanner named is ever sent anywhere — addReputation
+          returns early on a nil VirusName — so on a mismatch row nothing
+          leaves this instance whatever the setting says, and the toggle
+          wording there would describe a lookup that cannot happen and send an
+          operator to switch on something that changes nothing about the row
+          they are reading. Split on virus_name rather than on the link,
+          which is the server's decision and stays the server's: this is about
+          which rows get LOOKED UP, which is a different rule and a simpler
+          one.
           Deliberately avoids the words "lookup", "provider" and "reputation
           service": the sibling suites match on those to prove a verdict was
           attributed, and a line of boilerplate carrying them on every row
           would satisfy those assertions for free. */}
       {attachment.reputation_url && (
         <p className="text-[11px] text-gray-400">
-          Opens in your browser. Nothing is sent from this instance unless VirusTotal is switched
-          on in the admin settings.
+          Opens in your browser.{' '}
+          {isQuarantined(attachment)
+            ? 'Nothing is sent from this instance unless VirusTotal is switched on in the admin settings.'
+            : 'Nothing is sent from this instance for this file whatever the admin settings say — only a file the scanner identifies is ever sent to a service.'}
         </p>
       )}
     </>
@@ -432,7 +444,11 @@ function ReputationLine({ ticketId, attachment }: RowProps) {
 
   return (
     <div className="space-y-1">
-      <ReputationVerdict verdict={rep} who={who} label={label} />
+      <ReputationVerdict
+        verdict={rep}
+        who={who}
+        label={label}
+      />
 
       {/* The inline control asks every enabled service at once, which is right
           for a row showing one merged answer and wrong the moment the reader
@@ -498,7 +514,11 @@ function ProviderLine({
 
   return (
     <li className="space-y-1">
-      <ReputationVerdict verdict={verdict} who={who} label={label} />
+      <ReputationVerdict
+        verdict={verdict}
+        who={who}
+        label={label}
+      />
       <p className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400">
         {askedStamp(verdict.fetched_at)}
         {/* This service's own page for the hash, beside its own verdict.
@@ -583,6 +603,13 @@ interface Verdict {
  * seen" is the one that must not slip: for a file the local scanner has
  * already flagged, being unknown to the provider is a fact worth noticing, not
  * a shrug, and certainly not reassurance.
+ *
+ * Nothing here takes the row's own scanner verdict as a parameter, and it does
+ * not need to: the server looks up only files the scanner has already
+ * identified, so every row reaching this function is one it flagged. That is
+ * why `known` never renders as reassurance — the local scanner ran on these
+ * bytes, while a catalogue only ever matched a hash, and there is no case left
+ * where the catalogue is the stronger claim.
  */
 function ReputationVerdict({
   verdict: rep,
@@ -653,9 +680,35 @@ function ReputationVerdict({
       // far weaker claim than "a catalogue has this exact file on record".
       const feeds = rep.known_feeds ?? []
       if (feeds.length > 0) {
+        // Unless our own scanner already named the file, in which case the
+        // scanner wins and the catalogue is context. EICAR is in NSRL, and so
+        // are hacking tools: NSRL says a hash turned up in a software
+        // distribution, never that the file is safe. Without this branch an
+        // instance with CIRCL enabled paints an emerald "known file —
+        // catalogued by NSRL" directly under the wrap, the password and the
+        // confirmation — the product reassuring staff about a file it
+        // identified as malicious itself.
+        //
+        // Still shown, and still named. "NSRL has this on file" is real
+        // information about a sample somebody is triaging; it is the
+        // reassurance that is wrong here, not the fact. So it takes the
+        // treatment the no-feed case below already uses, and says out loud
+        // what it is and is not.
+        // No reassuring alternative below, and that is deliberate rather than
+        // an omission. The server looks up only files its own scanner has
+        // identified, so every row that can carry a verdict at all is a row
+        // the scanner already flagged — a reassuring rendering would have been
+        // unreachable code, untested by construction, sitting here looking
+        // like a supported case.
+        //
+        // If a lookup is ever run on a file the scanner passed, this is the
+        // decision to revisit: a named feed is the one thing in this feature
+        // that would have earned the green.
         return (
-          <p className="text-xs font-medium text-emerald-700">
-            {label}: known file — {feedPhrases(feeds)}.
+          <p className="text-xs font-medium text-amber-700">
+            {label}: known file — {feedPhrases(feeds)}. Context on the sample, not a second
+            opinion: a catalogue records where a file has been distributed, and our own scanner
+            identified this one.
           </p>
         )
       }

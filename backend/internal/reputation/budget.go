@@ -6,11 +6,22 @@ import (
 	"time"
 )
 
-// Free-tier ceilings, per provider.
+// Free-tier ceilings, per provider. Some are figures the provider published
+// and some are figures we chose, and which is which is recorded next to each:
+// a number of ours, printed as a number of theirs, attributes a commitment to
+// them they never made.
 //
-// VirusTotal publishes 4 requests a minute and 500 a day; OPSWAT publishes
-// 4,000 a day and does not throttle single hash lookups, so it needs the daily
-// counter and no bucket. Both quotas reset at 00:00 UTC.
+// VirusTotal publishes 4 requests a minute and 500 a day, resetting at 00:00
+// UTC. That one is theirs.
+//
+// OPSWAT publish NO figure. Their public-API documentation says only "a
+// limited number of API calls per day", and 4,000 is OURS — a courtesy cap we
+// picked, generous for a help desk and low enough not to become somebody's
+// incident, enforced daily because OPSWAT do not throttle single hash lookups
+// by the minute. The admin UI says exactly this to the operator (see the
+// MetaDefender terms panel in SettingsPage.tsx) and this comment used to
+// contradict it. Nobody may treat 4,000 as a published limit, in either
+// direction.
 //
 // PolySwarm publishes neither of those shapes: 60 calls an HOUR, and no daily
 // figure at all. Its bucket is therefore the hour, and it has no daily entry
@@ -28,7 +39,7 @@ import (
 const (
 	virusTotalDailyLimit     = 500
 	virusTotalPerMinuteLimit = 4
-	metaDefenderDailyLimit   = 4000
+	metaDefenderDailyLimit   = 4000 // ours, not theirs
 	polySwarmPerHourLimit    = 60
 	circlPerHourLimit        = 300 // ours, not theirs
 )
@@ -144,9 +155,12 @@ func (b *Budget) now() time.Time {
 	return time.Now().UTC()
 }
 
-// dailyLimit is the provider's published daily ceiling, and whether it has
-// one. False means "no daily cap to enforce", not "unknown provider": Spend
-// refuses a provider that has neither this nor an hourly limit.
+// dailyLimit is the provider's daily ceiling, and whether it has one. False
+// means "no daily cap to enforce", not "unknown provider": Spend refuses a
+// provider that has neither this nor an hourly limit.
+//
+// "Published" would be wrong for half of this table: VirusTotal's 500 is their
+// figure, MetaDefender's 4,000 is ours. See the constants for which is which.
 func dailyLimit(provider string) (int, bool) {
 	switch provider {
 	case ProviderVirusTotal:
