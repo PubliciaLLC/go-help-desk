@@ -25,13 +25,29 @@ type ApiKey struct {
 }
 
 type Attachment struct {
-	ID          uuid.UUID `json:"id"`
-	TicketID    uuid.UUID `json:"ticket_id"`
-	Filename    string    `json:"filename"`
-	MimeType    string    `json:"mime_type"`
-	SizeBytes   int64     `json:"size_bytes"`
-	StoragePath string    `json:"storage_path"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID              uuid.UUID      `json:"id"`
+	TicketID        uuid.UUID      `json:"ticket_id"`
+	Filename        string         `json:"filename"`
+	MimeType        string         `json:"mime_type"`
+	SizeBytes       int64          `json:"size_bytes"`
+	StoragePath     string         `json:"storage_path"`
+	CreatedAt       time.Time      `json:"created_at"`
+	DetectedMime    sql.NullString `json:"detected_mime"`
+	Sha256          sql.NullString `json:"sha256"`
+	VirusName       sql.NullString `json:"virus_name"`
+	ContentMismatch sql.NullBool   `json:"content_mismatch"`
+}
+
+type AttachmentReputation struct {
+	Sha256     string         `json:"sha256"`
+	Provider   string         `json:"provider"`
+	State      string         `json:"state"`
+	Detected   sql.NullInt32  `json:"detected"`
+	Total      sql.NullInt32  `json:"total"`
+	KnownFeeds []string       `json:"known_feeds"`
+	ThreatName sql.NullString `json:"threat_name"`
+	AnalysedAt sql.NullTime   `json:"analysed_at"`
+	FetchedAt  time.Time      `json:"fetched_at"`
 }
 
 type AuditLog struct {

@@ -100,6 +100,13 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Post("/attachments", s.handleUploadAttachment)
 		r.Get("/attachments/{attachId}", s.handleDownloadAttachment)
 
+		// Asking a third party about a file again costs the operator's API
+		// allowance, which is why the lazy lookup on the list above is staff
+		// only. A control that spends it is the same decision, so it is gated
+		// the same way.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+			Post("/attachments/{attachId}/reputation", s.handleRecheckAttachmentReputation)
+
 		r.Get("/custom-fields", s.handleListTicketCustomFields)
 		r.Put("/custom-fields", s.handlePutTicketCustomFields)
 	})

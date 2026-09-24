@@ -3,10 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"fmt"
 	"net"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -23,9 +28,33 @@ import (
 // PATCH /admin/settings but never returned by the settings dump. The dedicated
 // endpoints blank them for the same reason (see handleGetOIDCConfig).
 var secretSettingKeys = map[string]struct{}{
-	admin.KeyOIDCClientSecret: {},
-	admin.KeySAMLKeyPEM:       {},
+	admin.KeyOIDCClientSecret:   {},
+	admin.KeySAMLKeyPEM:         {},
+	admin.KeyAttachmentVTAPIKey: {},
+
+	// The deprecated single reputation key. Read by nothing, still writable,
+	// and still never echoed: a secret does not stop being a secret on its way
+	// to being deleted.
+	admin.KeyAttachmentReputationAPIKey: {},
+
+	// One key per commercial reputation provider. Accepted on PATCH, never
+	// echoed by the settings dump: an admin session that can read one back can
+	// exfiltrate the operator's key to whatever the provider's terms attach to
+	// it. There are three of them now, and a provider added here and forgotten
+	// is a key the settings dump hands out.
+	//
+	// CIRCL has no entry because it has no key setting at all.
+	admin.KeyAttachmentReputationVirusTotalKey:   {},
+	admin.KeyAttachmentReputationMetaDefenderKey: {},
+	admin.KeyAttachmentReputationPolySwarmKey:    {},
 }
+
+// attachmentExtPattern is what an entry in the attachment allowlist may look
+// like. Deliberately narrow: an extension is compared against
+// strings.ToLower(filepath.Ext(name)), so an entry with no leading dot, an
+// uppercase letter or an inner space can never match any upload. Accepting one
+// would leave the setting doing nothing while reporting success.
+var attachmentExtPattern = regexp.MustCompile(`^\.[a-z0-9]{1,16}$`)
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	all, err := s.adminSvc.ListAll(r.Context())
@@ -34,9 +63,31 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Convert raw bytes to JSON-parseable map, omitting secrets.
-	out := make(map[string]json.RawMessage, len(all))
+	//
+	// A secret is replaced by a "<key>_set" boolean rather than simply
+	// dropped. Dropping it alone leaves the administration UI unable to tell
+	// a configured key from an absent one — the key is missing from the dump
+	// either way — so the page can only say "we cannot show you whether this
+	// is set", which is useless to the person deciding whether to paste a new
+	// one. The dedicated OIDC and SAML endpoints already report a `configured`
+	// flag for exactly this reason; the settings dump had no equivalent.
+	//
+	// The flag says whether a non-empty value is stored and nothing else. It
+	// cannot be used to confirm a guess at the value, which is what echoing
+	// the secret itself would allow.
+	out := make(map[string]json.RawMessage, len(all)+len(secretSettingKeys))
+
+	// Every declared secret gets a flag, whether or not a row exists. Emitting
+	// one only for keys already in the table leaves an unset secret with no
+	// flag at all — which is the state this exists to describe, and would put
+	// the UI back where it started, unable to tell "not configured" from
+	// "the server did not say".
+	for k := range secretSettingKeys {
+		out[k+"_set"] = json.RawMessage("false")
+	}
 	for k, v := range all {
 		if _, secret := secretSettingKeys[k]; secret {
+			out[k+"_set"] = json.RawMessage(strconv.FormatBool(hasSecretValue(v)))
 			continue
 		}
 		out[k] = json.RawMessage(v)
@@ -65,6 +116,32 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 					"an API key or OAuth client cannot change "+k+"; this requires a signed-in session")
 				return
 			}
+		}
+	}
+
+	// The settings dump emits a synthetic "<key>_set" boolean for every
+	// write-only secret, so the UI can tell a stored key from an absent one
+	// without the key itself ever being returned. It is a fact about the
+	// table, not a row in it.
+	//
+	// Nothing stopped a client sending it straight back. A page that reads the
+	// dump, edits one field and PATCHes the whole object wrote real settings
+	// rows called oidc_client_secret_set, saml_key_pem_set and
+	// attachment_reputation_virustotal_key_set — rows nothing ever reads,
+	// sitting in the settings table looking like configuration. The frontend
+	// has been doing exactly that since the flags landed.
+	//
+	// So the "_set" suffix is reserved: no declared setting key ends in it,
+	// and none may, because the dump would then be unable to tell the flag
+	// from the setting. A key ending in "_set" is refused by name rather than
+	// dropped, for the same reason as everything else in this handler — a
+	// value accepted and then ignored is worse than a refusal.
+	for k := range body {
+		if strings.HasSuffix(k, "_set") {
+			Error(w, http.StatusBadRequest, "readonly_setting",
+				k+" is a read-only presence flag from the settings dump, not a setting; "+
+					"send the key itself to change it")
+			return
 		}
 	}
 
@@ -121,6 +198,101 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "invalid_scanner_address",
 				`scanner address must look like "tcp://host:port" or "unix:///path/to/socket"`)
 			return
+		}
+	}
+
+	// And what happens to an upload the scanner calls infected. The reader
+	// falls back to "refuse", so a typo here would quietly refuse malware an
+	// infosec team had deliberately asked to keep — safe, and baffling for
+	// exactly the operator who went looking for this setting.
+	if raw, ok := body[admin.KeyAttachmentInfectedHandling]; ok {
+		var handling string
+		if err := json.Unmarshal(raw, &handling); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "infected attachment handling must be a string")
+			return
+		}
+		if !admin.ValidInfectedHandling(handling) {
+			Error(w, http.StatusBadRequest, "invalid_infected_handling",
+				"infected attachment handling must be one of: refuse, quarantine")
+			return
+		}
+	}
+
+	// And what happens to a file whose content contradicts its name. Same
+	// reasoning as the setting above, which this deliberately mirrors: the
+	// reader falls back to "refuse", so a typo would quietly go on refusing
+	// the mislabelled files a triage team had just asked to keep — safe, and
+	// baffling for exactly the operator who went looking for this setting.
+	//
+	// "quarantine" is the value most likely to be typed here by mistake,
+	// because it is the other setting's word, and it is refused rather than
+	// charitably read as "wrap": guessing at intent is how an operator ends
+	// up with a policy nobody wrote.
+	if raw, ok := body[admin.KeyAttachmentMismatchHandling]; ok {
+		var handling string
+		if err := json.Unmarshal(raw, &handling); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "mismatched attachment handling must be a string")
+			return
+		}
+		if !admin.ValidMismatchHandling(handling) {
+			Error(w, http.StatusBadRequest, "invalid_mismatch_handling",
+				"mismatched attachment handling must be one of: refuse, wrap")
+			return
+		}
+	}
+
+	// Enabling a provider requires its key, and the whole write is refused
+	// when one is missing.
+	//
+	// Same rule as every other setting in this handler — a value accepted and
+	// then ignored is worse than a refusal — and here the ignored value is a
+	// provider an operator believes is answering. "Enabled with no key" was a
+	// reachable state under the setting this replaced, and it looked exactly
+	// like a provider that had nothing to say.
+	if err := validateReputationConfig(r.Context(), s.adminSvc, body); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_reputation_config", err.Error())
+		return
+	}
+
+	// And how often a stored verdict is re-checked. The reader falls back to
+	// biweekly, so a typo would leave an operator who chose "never" to save
+	// quota still spending it, or one who chose "weekly" reading a verdict a
+	// fortnight old — and in both cases the page looks exactly as it should.
+	if raw, ok := body[admin.KeyAttachmentReputationRefresh]; ok {
+		var refresh string
+		if err := json.Unmarshal(raw, &refresh); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "reputation refresh must be a string")
+			return
+		}
+		if !admin.ValidReputationRefresh(refresh) {
+			Error(w, http.StatusBadRequest, "invalid_reputation_refresh",
+				"reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never")
+			return
+		}
+	}
+
+	// What this instance accepts as an attachment. Same reasoning again, and
+	// here the ignored value decides what the deployment will hold: an
+	// operator who types "exe" instead of ".exe" and sees a 204 has been told
+	// their instance now takes executables when it does not.
+	//
+	// The whole write is refused rather than the bad entry dropped, because a
+	// list silently missing one of its entries is the same lie in a quieter
+	// form.
+	if raw, ok := body[admin.KeyAttachmentAllowedTypes]; ok {
+		var types []string
+		if err := json.Unmarshal(raw, &types); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request",
+				`allowed attachment types must be a JSON array of extension strings, e.g. [".pdf", ".png"]`)
+			return
+		}
+		for _, ext := range types {
+			if !attachmentExtPattern.MatchString(ext) {
+				Error(w, http.StatusBadRequest, "invalid_allowed_types",
+					fmt.Sprintf("%q is not an attachment extension: each entry is a leading dot "+
+						"followed by 1-16 lowercase letters or digits, e.g. \".pdf\"", ext))
+				return
+			}
 		}
 	}
 
@@ -222,4 +394,80 @@ func validScannerAddr(addr string) bool {
 	default:
 		return false
 	}
+}
+
+// hasSecretValue reports whether a stored secret holds anything.
+//
+// A JSON string is stored, so "" and a value of only whitespace both mean
+// unset — an operator who pasted a stray space has not configured a key, and
+// telling them they have would send them looking for a fault somewhere else.
+func hasSecretValue(raw []byte) bool {
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		// Not a string: something wrote this key by another route. Present,
+		// whatever it is.
+		return len(raw) > 0
+	}
+	return strings.TrimSpace(v) != ""
+}
+
+// validateReputationConfig refuses two settings writes: one that would leave a
+// commercial reputation provider enabled with no API key, and one whose toggle
+// is not a boolean at all.
+//
+// It reads the STORED value for anything the write does not mention, because a
+// PATCH is a patch: enabling VirusTotal in one request when its key was pasted
+// in a previous one has to be allowed, and pasting the key and the toggle in
+// the same request has to be allowed too. Validating the body alone would
+// refuse the first, and validating the stored settings alone would refuse the
+// second.
+//
+// EVERY provider's toggle is type-checked, including CIRCL's, and that is the
+// part it is easy to skip. CIRCL has no key clause — hashlookup authenticates
+// nobody, and a rule demanding one would leave the one keyless provider
+// permanently unusable — but skipping the whole provider to reach that
+// conclusion skipped the type check with it. The reader is GetBool, which
+// answers false for anything that is not a JSON boolean, so a CIRCL toggle of
+// "yes" was stored, answered 204, and read back as off: the operator is told
+// their provider is on and the provider is never asked. A setting accepted and
+// then ignored is the failure this handler refuses everywhere else.
+//
+// The error message names the PROVIDER and never the key. There are three keys
+// now, and an error string is the easiest place for a write-only secret to
+// escape into a log.
+func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body map[string]json.RawMessage) error {
+	for _, p := range reputation.ProviderNames() {
+		enabledKey, apiKeyKey, ok := admin.ReputationSettingKeys(p)
+		if !ok {
+			continue
+		}
+
+		enabled := adminSvc.ReputationEnabled(ctx, p)
+		if raw, present := body[enabledKey]; present {
+			if err := json.Unmarshal(raw, &enabled); err != nil {
+				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
+			}
+		}
+		// Past the type check, the rest is the key rule, and it applies only
+		// to a provider that is on and has a key to be missing.
+		if !enabled || apiKeyKey == "" || !reputation.NeedsKey(p) {
+			continue
+		}
+
+		key := adminSvc.ReputationKey(ctx, p)
+		if raw, present := body[apiKeyKey]; present {
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return fmt.Errorf("the %s API key must be a string", reputation.DisplayName(p))
+			}
+			// Trimmed for the same reason the reader trims: a setting holding
+			// nothing but spaces is not a key, and accepting it would put the
+			// instance back in the state this rule exists to remove.
+			key = strings.TrimSpace(v)
+		}
+		if key == "" {
+			return fmt.Errorf("%s cannot be enabled without an API key", reputation.DisplayName(p))
+		}
+	}
+	return nil
 }

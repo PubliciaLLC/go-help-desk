@@ -41,10 +41,17 @@ const defaultCSP = "default-src 'self'; " +
 
 // logoCSP makes an uploaded logo inert whatever it contains.
 //
-// An SVG is markup, and markup served from this origin runs with this origin's
-// cookies if a browser is pointed straight at it. The upload path rejects
-// scripts by matching patterns, and pattern matching on markup gets bypassed —
-// XML character references defeated the first version. This does not depend on
-// catching the content: sandbox drops the file into an opaque origin and
-// script-src 'none' stops it executing there either way.
+// The logo route now serves PNG and nothing else — SVG left the uploader in
+// #165 step 3, because pattern-matching markup for scripts is a losing game
+// and XML character references defeated the first attempt. That removed the
+// case this policy was written for; it did not remove the reason to keep it.
+//
+// What is served here is still bytes an uploader chose, from this origin,
+// reachable directly in a browser, and what decides they are a PNG is a
+// four-byte magic check rather than a proof. A file that satisfies that check
+// and is also valid markup to a sniffing browser is the shape this closes:
+// sandbox drops the response into an opaque origin and script-src 'none' stops
+// it executing there, without depending on having recognised the content.
+// Two header bytes on a cached image, for a class of bug that has already been
+// found here once.
 const logoCSP = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'none'"

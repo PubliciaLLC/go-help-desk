@@ -98,6 +98,12 @@ type Querier interface {
 	FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (SlaPolicy, error)
 	GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiKey, error)
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
+	// The cached verdict for one hash from one provider.
+	//
+	// Both halves of the key are required. Reading by hash alone would return
+	// whichever provider happened to answer first and attribute it to the one the
+	// operator has configured.
+	GetAttachmentReputation(ctx context.Context, arg GetAttachmentReputationParams) (AttachmentReputation, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
@@ -280,6 +286,33 @@ type Querier interface {
 	UpdateType(ctx context.Context, arg UpdateTypeParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error
+	// Records a completed lookup.
+	//
+	// An upsert rather than an insert because two staff members can open the same
+	// ticket at once: without ON CONFLICT the second lookup fails on the primary
+	// key and an ordinary page render errors.
+	//
+	// fetched_at is the database's clock, not Go's, for the same reason sessions
+	// stopped passing a timestamp in: one clock decides one timeline.
+	//
+	// clock_timestamp() rather than now(): #168 made this value the one two
+	// refresh rules are decided on, and now() is the transaction's start time, not
+	// the statement's. Two writes inside one transaction get the same stamp, and a
+	// verdict written late in a long transaction is backdated to whenever that
+	// transaction opened. Both errors point the same way — a row that looks older
+	// than it is, re-checked sooner than it should be, out of an allowance that is
+	// not ours.
+	//
+	// Every write re-stamps it, including one that changes nothing, which is what
+	// makes a re-check that comes back with the same answer still count as a
+	// re-check.
+	//
+	// known_feeds is COALESCEd because the column is NOT NULL while the parameter
+	// is optional: only a "known" verdict has feeds, and every other caller passes
+	// nothing. A nil parameter therefore has to mean "no feeds"
+	// rather than violating the constraint — the column's DEFAULT does not apply
+	// when a value is given explicitly, even a null one.
+	UpsertAttachmentReputation(ctx context.Context, arg UpsertAttachmentReputationParams) (AttachmentReputation, error)
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
 	UpsertPendingRegistration(ctx context.Context, arg UpsertPendingRegistrationParams) (PendingRegistration, error)

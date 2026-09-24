@@ -10,13 +10,13 @@ import {
   closeTicket,
   updateTicket,
   listAttachments,
-  attachmentDownloadUrl,
   listTicketCustomFields,
   putTicketCustomFields,
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
+import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listStatuses, listUsers } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -410,6 +410,8 @@ export function TicketDetailPage() {
   return (
     <Layout>
       <div className="space-y-6">
+        <QuarantineBanner attachments={attachments} />
+
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -617,18 +619,8 @@ export function TicketDetailPage() {
                     Attachments
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-1">
-                  {attachments.map((a) => (
-                    <a
-                      key={a.id}
-                      href={attachmentDownloadUrl(id, a.id)}
-                      className="flex items-center gap-2 text-sm text-blue-600 hover:underline truncate"
-                      download={a.filename}
-                    >
-                      <span className="shrink-0 text-gray-400">↓</span>
-                      <span className="truncate">{a.filename}</span>
-                    </a>
-                  ))}
+                <CardContent>
+                  <AttachmentList ticketId={id} attachments={attachments} />
                 </CardContent>
               </Card>
             )}

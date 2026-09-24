@@ -171,6 +171,32 @@ export async function uploadAttachment(ticketId: string, file: File): Promise<At
   return res.data
 }
 
+/**
+ * Asks the configured reputation service about this attachment again.
+ *
+ * Returns the attachment with its refreshed verdict. Refused with 409 on a
+ * detection (engines do not un-flag a file), 429 when the same hash was
+ * checked inside the last seven days, and 503 when there is no lookup
+ * configured or the day's allowance is spent — each carrying a message that
+ * says which.
+ */
+// `provider` re-checks one service rather than every enabled one. The expanded
+// attachment row gives each service its own control, because each verdict has
+// its own expiry clock; omitting it keeps the original behaviour, which the
+// row's own merged control still wants.
+export async function recheckAttachmentReputation(
+  ticketId: string,
+  attachmentId: string,
+  provider?: string
+): Promise<Attachment> {
+  const path = `/tickets/${ticketId}/attachments/${attachmentId}/reputation`
+  const res = await api.post<Attachment>(
+    provider ? `${path}?provider=${encodeURIComponent(provider)}` : path,
+    {}
+  )
+  return res.data
+}
+
 export function attachmentDownloadUrl(ticketId: string, attachmentId: string): string {
   return `/api/v1/tickets/${ticketId}/attachments/${attachmentId}`
 }

@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"encoding/xml"
 	"fmt"
 	"image"
 	"image/gif"
@@ -13,9 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -26,15 +22,6 @@ const (
 	logoSubdir    = "site"
 	logoBasename  = "logo"
 )
-
-// svgForbidden rejects SVG content that could execute code when rendered.
-var svgForbidden = []*regexp.Regexp{
-	regexp.MustCompile(`(?i)<\s*script[\s>/]`),
-	regexp.MustCompile(`(?i)\bon\w+\s*=`),
-	regexp.MustCompile(`(?i)javascript\s*:`),
-	regexp.MustCompile(`(?i)<\s*foreignObject[\s>/]`),
-	regexp.MustCompile(`(?i)expression\s*\(`),
-}
 
 // detectLogoType inspects magic bytes and returns the canonical kind and
 // file extension. Returns an error if the format is not allowed.
@@ -48,63 +35,15 @@ func detectLogoType(data []byte) (kind, ext string, _ error) {
 	if len(data) >= 6 && (bytes.HasPrefix(data, []byte("GIF87a")) || bytes.HasPrefix(data, []byte("GIF89a"))) {
 		return "gif", "gif", nil
 	}
-	// SVG: look for <svg within the first 512 bytes (handles BOM and XML declarations).
-	sniff := data
-	if len(sniff) > 512 {
-		sniff = sniff[:512]
-	}
-	if strings.Contains(strings.ToLower(string(sniff)), "<svg") {
-		return "svg", "svg", nil
-	}
-	return "", "", fmt.Errorf("unsupported file type: must be PNG, JPG, GIF, or SVG")
+	// No SVG. The logo is the one uploaded file this application renders
+	// inline in its own origin, where the staff sessions live, so none of the
+	// download-only reasoning that makes attachments safe applies to it. SVG
+	// is XML with a scripting model, the defence was a set of regexes, and the
+	// 1.2.0 advisory already contains one escape from them through XML
+	// character references the raw match never saw. There is no safe subset
+	// worth maintaining; raster covers every real use.
+	return "", "", fmt.Errorf("unsupported file type: must be PNG, JPG, or GIF")
 }
-
-// sanitizeSVG rejects SVGs that are not well-formed XML or contain patterns
-// that could execute code (scripts, event handlers, javascript: URIs, etc.).
-func sanitizeSVG(data []byte) error {
-	dec := xml.NewDecoder(bytes.NewReader(data))
-	for {
-		_, err := dec.Token()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("SVG is not well-formed XML: %w", err)
-		}
-	}
-	// Match against the decoded text as well as the raw bytes. XML lets
-	// "javascript:" be written as "java&#115;cript:" or "&#x6A;avascript:",
-	// which the raw match misses entirely, and an attribute value is decoded by
-	// the browser before it is followed.
-	for _, candidate := range [][]byte{data, decodeXMLRefs(data)} {
-		for _, re := range svgForbidden {
-			if re.Match(candidate) {
-				return fmt.Errorf("SVG contains disallowed content (scripts or event handlers are not permitted)")
-			}
-		}
-	}
-	return nil
-}
-
-// decodeXMLRefs expands numeric character references so the patterns above see
-// what a browser would see. Named entities are left alone: XML predefines only
-// five and none of them spell anything dangerous.
-func decodeXMLRefs(data []byte) []byte {
-	return xmlNumericRef.ReplaceAllFunc(data, func(m []byte) []byte {
-		body := string(m[2 : len(m)-1]) // strip "&#" and ";"
-		base := 10
-		if len(body) > 0 && (body[0] == 'x' || body[0] == 'X') {
-			base, body = 16, body[1:]
-		}
-		n, err := strconv.ParseInt(body, base, 32)
-		if err != nil || n <= 0 || n > 0x10FFFF {
-			return m
-		}
-		return []byte(string(rune(n)))
-	})
-}
-
-var xmlNumericRef = regexp.MustCompile(`&#[xX]?[0-9a-fA-F]+;`)
 
 // fitWithin returns the largest dimensions that fit inside maxW×maxH while
 // preserving the aspect ratio of srcW×srcH. If the source already fits,
@@ -181,7 +120,10 @@ func resizeRasterLogo(data []byte, kind string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// deleteLogoFile removes any existing logo files (png and svg) from logoDir.
+// deleteLogoFile removes any existing logo files from logoDir. "svg" is still
+// in the list although nothing writes one any more: an instance upgrading from
+// a release that accepted SVG has one on disk, and the next upload or delete
+// is what finally clears it.
 func deleteLogoFile(logoDir string) {
 	for _, ext := range []string{"png", "svg"} {
 		path := filepath.Join(logoDir, logoBasename+"."+ext)
@@ -192,8 +134,8 @@ func deleteLogoFile(logoDir string) {
 }
 
 // handleUploadLogo accepts a multipart/form-data POST with a "logo" file field,
-// validates the type, resizes raster images to fit within 320×64, sanitizes
-// SVGs, stores the result, and records the URL in settings.
+// validates the type, resizes the image to fit within 320×64, stores the
+// result as PNG, and records the URL in settings.
 func (s *Server) handleUploadLogo(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, logoMaxBytes+4096)
 	if err := r.ParseMultipartForm(logoMaxBytes); err != nil {
@@ -224,26 +166,14 @@ func (s *Server) handleUploadLogo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var finalData []byte
-	var finalExt string
-
-	switch kind {
-	case "svg":
-		if err := sanitizeSVG(data); err != nil {
-			Error(w, http.StatusBadRequest, "invalid_svg", err.Error())
-			return
-		}
-		finalData = data
-		finalExt = "svg"
-	default:
-		resized, err := resizeRasterLogo(data, kind)
-		if err != nil {
-			Error(w, http.StatusBadRequest, "invalid_image", fmt.Sprintf("processing %s: %s", ext, err))
-			return
-		}
-		finalData = resized
-		finalExt = "png"
+	// Every accepted format is raster and is re-encoded as PNG, which also
+	// strips whatever metadata came with it.
+	finalData, err := resizeRasterLogo(data, kind)
+	if err != nil {
+		Error(w, http.StatusBadRequest, "invalid_image", fmt.Sprintf("processing %s: %s", ext, err))
+		return
 	}
+	const finalExt = "png"
 
 	logoDir := filepath.Join(s.cfg.AttachmentDir, logoSubdir)
 	if err := os.MkdirAll(logoDir, 0o755); err != nil {
@@ -287,9 +217,13 @@ func (s *Server) handleDeleteLogo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleServeLogo(w http.ResponseWriter, r *http.Request) {
 	logoDir := filepath.Join(s.cfg.AttachmentDir, logoSubdir)
 
+	// PNG only. An SVG left by an older release is deliberately not served:
+	// it was accepted by the sanitiser this change deletes, and continuing to
+	// render it inline would be not believing our own reasoning about that
+	// sanitiser. The instance falls back to no logo, and the settings page
+	// says why.
 	for _, entry := range []struct{ ext, mime string }{
 		{"png", "image/png"},
-		{"svg", "image/svg+xml"},
 	} {
 		path := filepath.Join(logoDir, logoBasename+"."+entry.ext)
 		data, err := os.ReadFile(path)
@@ -298,11 +232,7 @@ func (s *Server) handleServeLogo(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", entry.mime)
 		w.Header().Set("Cache-Control", "public, max-age=300")
-		// Stricter than the site-wide policy. An SVG is markup; served from
-		// this origin and opened directly, it would run with this origin's
-		// cookies. Pattern matching on the upload catches known shapes and has
-		// already been bypassed once with XML character references, so the file
-		// is made inert here instead of relying on that.
+		// Stricter than the site-wide policy: see logoCSP.
 		w.Header().Set("Content-Security-Policy", logoCSP)
 		_, _ = w.Write(data)
 		return

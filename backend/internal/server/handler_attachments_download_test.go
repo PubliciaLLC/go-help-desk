@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"hash/crc32"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -28,12 +32,22 @@ import (
 // says not to guess the type from the content, which is what would otherwise
 // undo the first.
 //
-// The uploads are a .txt whose content is HTML and a real PDF. The PDF is the
-// one that used to matter: it was served as application/pdf, which browsers
-// open in a viewer that runs JavaScript, so before the blob change a single
-// missing header meant a malicious PDF running on this origin — where the
-// staff sessions live. The .txt is here because it shows the upload check does
-// not look inside text files, which is the known gap #165 still carries.
+// Three uploads. A .txt whose content is HTML, the same HTML named .pdf, and
+// a real PDF. The real PDF is the one that used to matter: it was served as
+// application/pdf, which browsers open in a viewer that runs JavaScript, so
+// before the blob change a single missing header meant a malicious PDF running
+// on this origin — where the staff sessions live.
+//
+// The .txt is the case where the headers are the *only* defence, which is why
+// it is first. It is not wrapped: a file named notes.txt opens in a text
+// editor on the reader's machine whatever is inside it, so there is nothing
+// for a wrap to take away, and the release that wrapped it also refused
+// ordinary crash logs for the same reason. What is left is this server's own
+// promise, and these headers are all of it.
+//
+// The .pdf is the wrapped case, and it is here so that both protections are
+// asserted. Wrapping is what a person sees; the headers are what a browser
+// obeys. Neither is allowed to be the only one.
 func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -45,23 +59,62 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// A .txt whose content is HTML. magicOK does not check text content, so
-	// this is exactly what an attacker uploads — and it is only harmless
-	// because of the header asserted below.
-	const payload = `<html><script>alert(document.cookie)</script></html>`
-	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", []byte(payload))
+	// Storing a mismatch rather than refusing it is an operator setting, and
+	// it defaults to refusing. This test needs the file stored to have
+	// anything to download, so it is the instance that chose to store it.
+	require.NoError(t, h.adminSvc.SetString(ctx,
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
-	// The case with an engine behind it. A minimal but structurally real PDF,
-	// because magicOK checks the %PDF prefix and a fake one would be refused
-	// before reaching the download path this is about.
+	// A .txt whose content is HTML: exactly what an attacker uploads, and the
+	// file this server hands back under its own name and its own bytes. A
+	// text-named file is neither wrapped nor refused for its content, so
+	// everything that stops this rendering is in the response headers below.
+	const payload = `<html><script>alert(document.cookie)</script></html>`
+	asText := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", "notes.txt", []byte(payload))
+	require.Equal(t, payload, string(asText),
+		"stored as it arrived, which is safe only because it is never rendered")
+
+	// The same HTML under a name that claims a binary format. That is a
+	// mismatch of a type this instance does not accept, so it is the one the
+	// setting governs and the one that gets wrapped.
+	wrapped := fmt.Sprintf("suspicious-%08x.zip", crc32.ChecksumIEEE([]byte(payload)))
+	got := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "invoice.pdf", wrapped, []byte(payload))
+
+	// What downloads is the archive, not the HTML. The payload must still be
+	// in there intact — wrapping is containment, not censorship; a help desk
+	// that quietly altered an attachment would be worse than one that refused
+	// it.
+	zr, err := zip.NewReader(bytes.NewReader(got), int64(len(got)))
+	require.NoError(t, err, "a wrapped attachment must download as a readable archive")
+	require.Len(t, zr.File, 1)
+	require.Equal(t, "invoice.pdf", zr.File[0].Name,
+		"the sample keeps the name it was uploaded under, inside the archive")
+	rc, err := zr.File[0].Open()
+	require.NoError(t, err)
+	defer rc.Close()
+	inner, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	require.Equal(t, payload, string(inner))
+	require.NotContains(t, string(got), "<script",
+		"the payload must not sit in the clear in the stored archive")
+
+	// The case with an engine behind it. A minimal but structurally real PDF.
+	// It is not a mismatch, so it keeps its own name and is stored as it
+	// arrived — which is what makes the byte-for-byte assertion meaningful.
 	pdf := []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
-	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", pdf)
+	served := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", "report.pdf", pdf)
+	require.Equal(t, pdf, served,
+		"a file whose content matches its name is served verbatim, which is safe only because it is never rendered")
 }
 
 // assertDownloadsRatherThanRenders uploads a file and requires the download to
 // be inert: forced to disk, with the browser forbidden from second-guessing
 // the type, and byte-identical on the way back.
-func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name string, content []byte) {
+// storedAs is the filename the attachment is expected to carry once stored,
+// which is not the uploaded name for a file #165 wrapped. Returns the
+// downloaded bytes: what those should be differs between a wrapped file and
+// one stored as it arrived, so the caller asserts it.
+func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name, storedAs string, content []byte) []byte {
 	t.Helper()
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
@@ -79,7 +132,7 @@ func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name s
 	h.srv.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusCreated, rec.Code, "upload: %s", rec.Body.String())
 
-	id := attachmentIDNamed(t, h, ticketID, name)
+	id := attachmentIDNamed(t, h, ticketID, storedAs)
 
 	res := h.do(t, http.MethodGet,
 		"/api/v1/tickets/"+ticketID+"/attachments/"+id, nil)
@@ -101,9 +154,9 @@ func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name s
 	require.Equal(t, "application/octet-stream", res.Header.Get("Content-Type"),
 		"no attachment may be served as a type a browser would render")
 
-	got, _ := io.ReadAll(res.Body)
-	require.Equal(t, content, got,
-		"the file is served verbatim, which is safe only because it is never rendered")
+	got, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	return got
 }
 
 // attachmentIDNamed finds the attachment with this filename.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -371,4 +372,213 @@ func (s *Service) AttachmentScanPolicy(ctx context.Context, addrConfigured bool)
 func (s *Service) AttachmentScanAddress(ctx context.Context) string {
 	v, _ := s.GetString(ctx, KeyAttachmentScanAddress)
 	return strings.TrimSpace(v)
+}
+
+// DefaultAllowedTypes is what an instance accepts as an attachment when the
+// operator has never said otherwise.
+//
+// It is exactly the set that was hard-coded in the upload handler before this
+// setting existed, neither trimmed to look safer nor extended from memory: an
+// instance that upgrades and never touches the setting must accept precisely
+// what it accepted before. The extension-to-MIME map in the server package
+// still needs an entry for every extension here.
+func DefaultAllowedTypes() []string {
+	return []string{".pdf", ".docx", ".xlsx", ".txt", ".log", ".jpg", ".jpeg", ".png", ".bmp"}
+}
+
+// AllowedTypes is what this instance accepts as an attachment, as a set of
+// lowercase extensions with the leading dot, ready for a membership test.
+//
+// It stopped being a security boundary when every download became
+// application/octet-stream with an attachment disposition and nothing is
+// rendered (#165 step 1). What is left is a policy choice about what a
+// deployment is willing to hold, which belongs to the operator: an IT team
+// triaging a suspicious .exe has a real reason to attach one, and a deployment
+// that wants PDF and nothing else has an equally real reason to say so.
+//
+// An absent, null or unparseable value means unset and falls back to the
+// default. An empty array does not: it is an operator saying this instance
+// takes no attachments at all, which is a legitimate choice.
+func (s *Service) AllowedTypes(ctx context.Context) map[string]bool {
+	list := DefaultAllowedTypes()
+	if raw, err := s.store.Get(ctx, KeyAttachmentAllowedTypes); err == nil {
+		var stored []string
+		if err := json.Unmarshal(raw, &stored); err == nil && stored != nil {
+			list = stored
+		}
+	}
+
+	set := make(map[string]bool, len(list)+1)
+	for _, ext := range list {
+		ext = strings.ToLower(strings.TrimSpace(ext))
+		set[ext] = true
+		// .jpg and .jpeg name one format, so allowing either allows both —
+		// the same normalisation attachment.IsMismatch applies, for the same
+		// reason. An operator who writes ".jpg" means JPEG images, and being
+		// surprised that ".jpeg" also works is a far smaller problem than
+		// being surprised that it does not, which reads as a broken setting.
+		switch ext {
+		case ".jpg":
+			set[".jpeg"] = true
+		case ".jpeg":
+			set[".jpg"] = true
+		}
+	}
+	return set
+}
+
+// InfectedHandling decides what happens to an upload the scanner identified as
+// malicious: InfectedHandlingRefuse or InfectedHandlingQuarantine.
+//
+// Defaults to "refuse", which is what every instance that upgrades into this
+// feature has. An ordinary help desk fielding printer problems should not
+// start storing malware because nobody said otherwise; an operator who wants
+// it should have said so.
+//
+// An unrecognised stored value falls back to "refuse" as well, never to
+// "quarantine" — the same rule as the scan policy, and here the value being
+// misread decides whether malware is written to disk.
+//
+// It only ever decides what to do with a verdict the scanner actually
+// returned. With the scan policy "off", or the scanner unreachable under
+// "permissive", nothing is ever identified as infected and this setting does
+// nothing at all.
+// ReputationEnabled reports whether this instance asks the named provider
+// about quarantined attachment hashes.
+//
+// False for every provider by default, and false for a name this build does
+// not know. All four off is a supported configuration and not a broken one:
+// it means attachments are judged by this instance's own scanner alone, which
+// is a complete answer and the deliberate choice of an operator who cannot
+// send customer file hashes to a third party.
+//
+// Whether the provider can actually run is a second question — a commercial
+// one still needs its key — and it is asked by reputation.CanLookup. The
+// settings endpoint refuses the combination that makes the two disagree, so
+// "enabled and silently doing nothing" is not a state an operator can reach
+// through the API.
+func (s *Service) ReputationEnabled(ctx context.Context, provider string) bool {
+	enabledKey, _, ok := ReputationSettingKeys(provider)
+	if !ok {
+		return false
+	}
+	v, _ := s.GetBool(ctx, enabledKey)
+	return v
+}
+
+// ReputationKey is the API key for one provider.
+//
+// Per provider, which the single key this replaced could not do: switching
+// from VirusTotal to MetaDefender used to destroy the key you had already
+// pasted, and an operator holding keys for two services had to choose between
+// them.
+//
+// Empty for CIRCL, always, because there is no such setting: it authenticates
+// nobody. Empty is also the answer for a provider this build does not know.
+//
+// The value is stored write-only — the settings endpoint accepts it and never
+// echoes it back — and it must stay that way on this side too: never logged,
+// never wrapped into an error, never returned to a client. The only thing it
+// is for is an outbound request header.
+//
+// Trimmed because an operator pasting a key picks up a trailing newline often
+// enough to matter, and because a setting containing nothing but spaces should
+// read as unconfigured rather than as a key the provider will reject.
+func (s *Service) ReputationKey(ctx context.Context, provider string) string {
+	_, apiKeyKey, ok := ReputationSettingKeys(provider)
+	if !ok || apiKeyKey == "" {
+		return ""
+	}
+	v, _ := s.GetString(ctx, apiKeyKey)
+	return strings.TrimSpace(v)
+}
+
+// EnabledReputationProviders is every provider this instance asks, in
+// ReputationProviders order.
+//
+// Ordered rather than a set, because the order decides which provider's answer
+// summarises the row when two are equally serious, and an order that came out
+// of map iteration would make that summary change between renders.
+//
+// An empty slice is the ordinary state of a fresh instance and means the
+// reputation block is absent from the payload entirely — not "not checked
+// yet", which describes a lookup that was attempted and did not finish.
+func (s *Service) EnabledReputationProviders(ctx context.Context) []string {
+	var out []string
+	for _, p := range ReputationProviders() {
+		if s.ReputationEnabled(ctx, p) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (s *Service) InfectedHandling(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentInfectedHandling)
+	if v == InfectedHandlingQuarantine {
+		return InfectedHandlingQuarantine
+	}
+	return InfectedHandlingRefuse
+}
+
+// MismatchHandling decides what happens to an upload whose content contradicts
+// its extension, where the detected type is not on the allowlist either:
+// MismatchHandlingRefuse or MismatchHandlingWrap.
+//
+// Defaults to "refuse", which is what every release before this feature did.
+// A file that lied about its type was answered with a 415, and an upgrade
+// nobody opted into must not quietly start storing one instead.
+//
+// An unrecognised stored value falls back to "refuse" as well, never to
+// "wrap" — the same rule, and the same direction, as InfectedHandling: a typo
+// must not land on the permissive option.
+//
+// It governs one condition and swaps only the action taken on it. A mismatch
+// whose detected type IS accepted is flagged and stored under its own name
+// either way, and a file the scanner identified is governed by
+// InfectedHandling instead; this setting never applies to it.
+func (s *Service) MismatchHandling(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentMismatchHandling)
+	if v == MismatchHandlingWrap {
+		return MismatchHandlingWrap
+	}
+	return MismatchHandlingRefuse
+}
+
+// ReputationRefresh is how often this instance re-checks a stored verdict:
+// "weekly", "biweekly" (the default), "monthly", "quarterly" or "never".
+//
+// Anything unrecognised falls back to the default rather than to "never", and
+// the direction matters: a typo must not silently switch automatic re-checking
+// off, because the symptom is a verdict that stays on screen looking current
+// for as long as the instance lives.
+func (s *Service) ReputationRefresh(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentReputationRefresh)
+	if ValidReputationRefresh(v) {
+		return v
+	}
+	return ReputationRefreshBiweekly
+}
+
+// ReputationRefreshInterval is the same setting as a duration: how old a
+// non-detected verdict may be before the next lookup re-fetches it.
+//
+// Zero means "never", and it is the caller's job to read it that way. An
+// interval of zero compared against an age would make every verdict stale on
+// every render — the exact opposite of the setting, spending the operator's
+// allowance to do it.
+func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
+	const day = 24 * time.Hour
+	switch s.ReputationRefresh(ctx) {
+	case ReputationRefreshWeekly:
+		return 7 * day
+	case ReputationRefreshMonthly:
+		return 30 * day
+	case ReputationRefreshQuarterly:
+		return 90 * day
+	case ReputationRefreshNever:
+		return 0
+	default:
+		return 14 * day
+	}
 }
