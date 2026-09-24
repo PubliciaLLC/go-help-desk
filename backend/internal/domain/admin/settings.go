@@ -36,16 +36,26 @@ const (
 	// desk should not start storing malware because nobody said otherwise.
 	KeyAttachmentInfectedHandling = "attachment_infected_handling" // refuse | quarantine
 
-	// Whether the server itself queries VirusTotal for a stored hash. Default
-	// off: a hash is not the file, but it identifies it exactly, so sending
-	// customers' file hashes to a third party is an operator's decision. The
-	// hash-as-a-link shown in the UI is not governed by this — that is the
-	// analyst's own browser, and nothing leaves this server.
-	KeyAttachmentVTLookup = "attachment_vt_lookup" // bool
-
-	// The VirusTotal API key. Write-only over the API: see secretSettingKeys
-	// in handler_admin_settings.go.
-	KeyAttachmentVTAPIKey = "attachment_vt_api_key"
+	// Deprecated: replaced by KeyAttachmentReputationProvider and
+	// KeyAttachmentReputationAPIKey, and read by nothing.
+	//
+	// These named VirusTotal because it was the only service considered. It is
+	// now one of two an operator can choose between, so a key called
+	// "attachment_vt_api_key" holding a MetaDefender key would be a lie in the
+	// settings table.
+	//
+	// Kept declared for one release rather than deleted outright. An instance
+	// that set either still has the row, and a constant that no longer exists
+	// makes that row unexplainable to the next person who finds it. They are
+	// removed, with a migration that deletes the rows, in the release after
+	// this one.
+	//
+	// Nothing reads them. An operator who set a VirusTotal key before this
+	// change has to paste it into the new field, which is stated in the
+	// release notes; silently copying a secret from one key to another is not
+	// something to do on somebody's behalf.
+	KeyAttachmentVTLookup = "attachment_vt_lookup"  // Deprecated: unused.
+	KeyAttachmentVTAPIKey = "attachment_vt_api_key" // Deprecated: unused.
 
 	// Which reputation service this instance uses for attachment hashes.
 	// "virustotal" (the default) or "metadefender".
@@ -166,9 +176,10 @@ func AuthCriticalKeys() []string {
 		// Whether an infected upload is refused or stored. Same reasoning as
 		// the scan policy: it decides what this instance will hold.
 		KeyAttachmentInfectedHandling,
-		// Both halves of the VirusTotal lookup. Turning it on decides that
-		// customers' file hashes leave this server, and the key decides where
-		// they go.
+		// The deprecated VirusTotal pair. Nothing reads them, so gating them
+		// protects nothing — they stay listed because they are still
+		// writable, and a key that used to require a session should not
+		// quietly stop requiring one on the way to being deleted.
 		KeyAttachmentVTLookup,
 		KeyAttachmentVTAPIKey,
 		// And both halves of the provider-agnostic replacement, for the same
