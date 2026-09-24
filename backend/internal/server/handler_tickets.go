@@ -341,6 +341,39 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	} else if !isStaffOrAdmin {
 		// Regular authenticated user: no item allowed
 		body.ItemID = nil
+
+		// And no priority. A reporter setting their own ticket to critical is
+		// a queue every account holder can jump, which is why the guest form
+		// has never taken it from the request either — the only difference
+		// here was that this handler forgot. DESIGN.md's role table says
+		// "— (defaults to Medium)" for User, and now it does.
+		body.Priority = ""
+
+		// Active categories only, the same rule the guest form applies. An
+		// archived category is one an administrator has taken out of
+		// circulation; anyone who kept the id could still file into it.
+		if err := s.categoryIsOpen(r.Context(), body.CategoryID); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	}
+
+	// A type has to belong to the category it is filed under, and this is
+	// checked before anything is written.
+	//
+	// The database says so too — there is a foreign key on the pair — but it
+	// says so at the INSERT, which happens after the tracking number has
+	// already been taken from the sequence. So a mismatched pair answered 500
+	// with a constraint name in the log and left a gap in the ticket numbers:
+	// GHD-2026-000001, a failure, then GHD-2026-000003. The guest handler
+	// already checked its own one id up front for exactly this reason.
+	if body.TypeID != nil {
+		ty, err := s.categories.GetType(r.Context(), *body.TypeID)
+		if err != nil || ty.CategoryID != body.CategoryID {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"type_id does not belong to category_id")
+			return
+		}
 	}
 
 	in := ticket.CreateInput{
@@ -387,16 +420,30 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor)
 	}
 
-	// Set any custom field values supplied on creation (best-effort; skip invalid IDs).
-	for fieldDefIDStr, value := range body.CustomFields {
-		if value == "" {
-			continue
+	// Set any custom field values supplied on creation.
+	//
+	// Best-effort — the ticket exists and is not going to be refused over a
+	// field — but only for fields this ticket actually has. Without the
+	// check, any field id supplied on creation was stored, including one
+	// assigned to no scope and therefore offered to nobody.
+	if len(body.CustomFields) > 0 {
+		allowed, err := s.customFields.ResolveFieldsForCTI(r.Context(), t.CategoryID, t.TypeID, t.ItemID)
+		if err == nil {
+			onTicket := make(map[uuid.UUID]bool, len(allowed))
+			for _, a := range allowed {
+				onTicket[a.FieldDefID] = true
+			}
+			for fieldDefIDStr, value := range body.CustomFields {
+				if value == "" {
+					continue
+				}
+				fieldDefID, parseErr := uuid.Parse(fieldDefIDStr)
+				if parseErr != nil || !onTicket[fieldDefID] {
+					continue
+				}
+				_ = s.customFields.SetValue(r.Context(), t.ID, fieldDefID, value)
+			}
 		}
-		fieldDefID, parseErr := uuid.Parse(fieldDefIDStr)
-		if parseErr != nil {
-			continue
-		}
-		_ = s.customFields.SetValue(r.Context(), t.ID, fieldDefID, value)
 	}
 
 	JSON(w, http.StatusCreated, t)
@@ -733,6 +780,33 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid target ID")
 		return
 	}
+	// The same check the other end of this pair makes, and for the same
+	// reason: the link lives on the TARGET's thread too, so removing one
+	// touches a ticket this request has not been authorised for. Without it a
+	// reporting user could delete a link staff had put on their ticket —
+	// "duplicate of GHD-2026-000123" is a staff judgement about the queue,
+	// not something the reporter gets to overrule — and could tell a real
+	// target id from an invented one by the difference between 204 and a
+	// failure.
+	ok, err := s.canViewTicketID(r, targetID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !ok {
+		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return
+	}
+
+	// And it is a staff decision to make. handleAddLink is reachable by a
+	// reporter only for two tickets they own; removal had no role check at
+	// all, so staff classification on a reporter's own ticket was theirs to
+	// undo.
+	if a := authmw.GetActor(r); a == nil || (a.Role != user.RoleAdmin && a.Role != user.RoleStaff) {
+		Error(w, http.StatusForbidden, "forbidden", "only staff can remove a ticket link")
+		return
+	}
+
 	lt := ticket.LinkType(chi.URLParam(r, "linkType"))
 	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
 		handleError(w, err)
@@ -824,4 +898,27 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		}
 	}
 	return uuid.Nil, nil
+}
+
+// categoryIsOpen reports whether a category is one a reporter may file into.
+//
+// Active categories only. An archived category is one an administrator has
+// deliberately taken out of circulation, and the list a reporter is offered
+// does not contain it — so filing into one means the id came from somewhere
+// else, which is not a thing to accept silently.
+//
+// Staff are not held to this: reclassifying an old ticket into the category
+// it actually belongs to is ordinary work, and that category may well be
+// archived.
+func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
+	cats, err := s.categories.ListCategories(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, c := range cats {
+		if c.ID == id {
+			return nil
+		}
+	}
+	return errors.New("category_id is not an active category")
 }

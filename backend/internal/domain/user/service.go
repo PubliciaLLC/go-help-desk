@@ -107,6 +107,14 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 	}
 	switch {
 	case in.Password != "":
+		// The same minimum every other path applies. Admin create and
+		// first-run setup accepted one character; a one-character password on
+		// an administrator account created during setup is the worst case of
+		// the four and was the least guarded.
+		if len(in.Password) < MinPasswordLength {
+			return User{}, fmt.Errorf("%w: password must be at least %d characters",
+				ErrValidation, MinPasswordLength)
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.hashCost)
 		if err != nil {
 			return User{}, fmt.Errorf("hashing password: %w", err)
@@ -123,6 +131,13 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 
 // SetPassword hashes and stores a new password for the given user.
 func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain string) error {
+	// The fourth path, held to the same minimum as the other three. The
+	// handler checks it too; this is the check that cannot be bypassed by a
+	// future caller that forgets.
+	if len(plain) < MinPasswordLength {
+		return fmt.Errorf("%w: password must be at least %d characters",
+			ErrValidation, MinPasswordLength)
+	}
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return err
@@ -593,7 +608,13 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID) error {
 // AdminSetPassword hashes and stores a new password without requiring the old one.
 func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string) error {
 	if strings.TrimSpace(plain) == "" {
-		return fmt.Errorf("password is required")
+		return fmt.Errorf("%w: password is required", ErrValidation)
+	}
+	// Reset was the loosest of the four paths: it refused only a blank
+	// password, so an administrator could reset an account to "b".
+	if len(plain) < MinPasswordLength {
+		return fmt.Errorf("%w: password must be at least %d characters",
+			ErrValidation, MinPasswordLength)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -614,6 +635,16 @@ const (
 	MFAMaxFailedAttempts = 5
 	MFALockDuration      = 15 * time.Minute
 )
+
+// MinPasswordLength is the shortest password this application will store,
+// wherever it is set.
+//
+// One number, because it was three: self-service change required eight, and
+// admin create, admin reset and first-run setup each required one character —
+// an administrator could create an account with the password "a", and did not
+// have to be trying to. A minimum that applies on one of four paths is not a
+// minimum.
+const MinPasswordLength = 8
 
 // ErrMFALocked reports that an account has spent its TOTP attempts.
 var ErrMFALocked = errors.New("too many incorrect codes; try again later")

@@ -296,12 +296,12 @@ func TestUserService_VerifyPassword_InactiveUser(t *testing.T) {
 		Email:       "dave@example.com",
 		DisplayName: "Dave",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.SoftDelete(context.Background(), u.ID))
 
-	_, err = svc.VerifyPassword(context.Background(), "dave@example.com", "pass")
+	_, err = svc.VerifyPassword(context.Background(), "dave@example.com", "a-passphrase")
 	require.Error(t, err)
 }
 
@@ -311,16 +311,16 @@ func TestUserService_SetPassword(t *testing.T) {
 		Email:       "eve@example.com",
 		DisplayName: "Eve",
 		Role:        user.RoleUser,
-		Password:    "oldpass",
+		Password:    "old-passphrase",
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, svc.SetPassword(context.Background(), u.ID, "newpass"))
+	require.NoError(t, svc.SetPassword(context.Background(), u.ID, "new-passphrase"))
 
-	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "oldpass")
+	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "old-passphrase")
 	require.Error(t, err, "old password should no longer work")
 
-	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "newpass")
+	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "new-passphrase")
 	require.NoError(t, err, "new password should work")
 }
 
@@ -330,7 +330,7 @@ func TestUserService_EnrollMFA(t *testing.T) {
 		Email:       "frank@example.com",
 		DisplayName: "Frank",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -346,7 +346,7 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 		Email:       "grace@example.com",
 		DisplayName: "Grace",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -424,7 +424,7 @@ func TestUserService_EnrollMFA_RefusesSilentReEnrolment(t *testing.T) {
 		Email:       "heidi@example.com",
 		DisplayName: "Heidi",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 

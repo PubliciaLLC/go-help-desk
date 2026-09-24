@@ -75,6 +75,7 @@ type harness struct {
 	groupSvc        *group.Service
 	userSvc         *user.Service
 	categorySvc     *category.Service
+	customFieldSvc  *customfield.Service
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
 	ticketStore     *ticketstore.Store
@@ -301,6 +302,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		groupSvc:        groupSvc,
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
+		customFieldSvc:  customFieldSvc,
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
 		ticketStore:     tStore,
@@ -1056,7 +1058,7 @@ func TestChangePassword_AsStaff(t *testing.T) {
 
 	sess := loggedIn(t, h)
 	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
-		"password": "newpassword123",
+		"current_password": "password", "new_password": "newpassword123",
 	})
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 }
@@ -1067,7 +1069,7 @@ func TestChangePassword_TooShort(t *testing.T) {
 
 	sess := loggedIn(t, h)
 	res, _ := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
-		"password": "short",
+		"current_password": "password", "new_password": "short",
 	})
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
