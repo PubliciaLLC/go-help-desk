@@ -69,7 +69,29 @@ func newClient(apiKey, baseURL string, opts ...Option) client {
 		baseURL: baseURL,
 		// An explicit timeout as well as the caller's context: the context
 		// bounds the handler, this bounds a caller that forgot to set one.
-		http: &http.Client{Timeout: 15 * time.Second},
+		http: &http.Client{
+			Timeout: 15 * time.Second,
+
+			// Redirects are not followed, and the reason is the API key.
+			//
+			// Go strips Authorization across a host change but not a custom
+			// header, so VirusTotal's x-apikey and MetaDefender's apikey
+			// travel with a redirected request — to whatever host the
+			// redirect names, over plain http if it says so. Only a provider
+			// that is itself hostile or compromised can send one, and it
+			// already has the key; the point is that it must not be able to
+			// pass the key on to a third party, or use this server to fetch
+			// an address on the operator's own network.
+			//
+			// None of the four APIs redirects on a hash lookup, so this
+			// cannot fire on an ordinary answer. Returning the redirect
+			// response itself rather than an error means the body fails to
+			// decode and the lookup comes back Unavailable, which is the
+			// right reading of "the provider did not answer the question".
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 	for _, opt := range opts {
 		opt(&c)

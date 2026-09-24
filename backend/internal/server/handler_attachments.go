@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -34,6 +35,23 @@ import (
 
 const (
 	attachMaxBytes = 25 << 20 // 25 MB
+
+	// bodyTransferTimeout is how long one attachment body may take to arrive
+	// or to leave, replacing the server-wide 15s read and 30s write deadlines
+	// for these two routes alone.
+	//
+	// Those deadlines cover a whole request, body included, and the app is
+	// exposed directly in docker-compose with no proxy in front. At 15
+	// seconds, a 25 MB upload needs a sustained 13 Mbit/s uplink and a 10 MB
+	// one needs 5.3 — and a user below that got "could not parse upload",
+	// which blames their request for their connection. Downloads were cut off
+	// mid-stream below about 7 Mbit/s.
+	//
+	// Five minutes is 25 MB at roughly 700 kbit/s: a bad hotel connection
+	// still finishes, and a connection that has genuinely stopped is still
+	// closed. The short deadlines stay everywhere else, where a body is a
+	// JSON document and slow means something is wrong.
+	bodyTransferTimeout = 5 * time.Minute
 
 	// maxFilenameBytes is the longest uploaded name that is stored. See the
 	// check in handleUploadAttachment for why the ceiling exists at all.
@@ -76,10 +94,56 @@ var imageExt = map[string]bool{
 // camera, a 5K display) and far below what it takes to exhaust a server.
 const maxImagePixels = 25 << 20
 
-// decodedSizeWithin reports whether the image's dimensions are within budget,
-// reading only the header. This is the whole defence: it must happen before any
-// full decode, because the allocation is the attack.
-func decodedSizeWithin(data []byte, limit int64) error {
+// maxDecodedBytes is the real budget, and the pixel cap above is the second
+// half of it.
+//
+// Counting pixels alone was wrong, and wrong in the direction that matters: it
+// assumed four bytes each. A 16-bit RGBA PNG decodes to EIGHT, so a 5120x5120
+// image — 26.2 megapixels, which passes the pixel cap — is 210 MB decoded, and
+// both encoders then run on it. Measured: one such file is 214 KB on the wire
+// and left 403 MB live on the heap, and five concurrent uploads of it reached
+// 1,990 MB. A reporting-role user uploading to their own ticket could do it,
+// which makes a 214 KB request a way to have the help desk killed for running
+// out of memory.
+//
+// 100 MB is what 25 megapixels was always meant to cost. Both caps are kept
+// because they bound different things: this one bounds the pixel buffer, and
+// the pixel count still bounds the per-pixel work the encoders do on a cheap
+// format — a 100-megapixel greyscale image is only 100 MB but is not something
+// a help desk receives.
+const maxDecodedBytes = 100 << 20
+
+// bytesPerPixel is how much heap one pixel of this colour model costs once
+// decoded.
+//
+// Unknown models get the worst case rather than a guess. The point of this
+// function is to be pessimistic where it is unsure: an underestimate is the
+// bug it exists to fix.
+func bytesPerPixel(m color.Model) int64 {
+	switch m {
+	case color.GrayModel, color.AlphaModel:
+		return 1
+	case color.Gray16Model, color.Alpha16Model:
+		return 2
+	case color.YCbCrModel:
+		// Three planes. 4:4:4 is the worst case and the only one worth
+		// budgeting for; a subsampled JPEG costs less.
+		return 3
+	case color.RGBAModel, color.NRGBAModel, color.CMYKModel:
+		return 4
+	case color.RGBA64Model, color.NRGBA64Model:
+		return 8
+	}
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	return 8
+}
+
+// decodedSizeWithin reports whether the image fits in budget, reading only the
+// header. This is the whole defence: it must happen before any full decode,
+// because the allocation is the attack.
+func decodedSizeWithin(data []byte, maxPixels, maxBytes int64) error {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("reading image header: %w", err)
@@ -87,17 +151,39 @@ func decodedSizeWithin(data []byte, limit int64) error {
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return fmt.Errorf("image reports a non-positive size (%dx%d)", cfg.Width, cfg.Height)
 	}
-	if px := int64(cfg.Width) * int64(cfg.Height); px > limit {
-		return fmt.Errorf("image is %dx%d (%d pixels); the limit is %d", cfg.Width, cfg.Height, px, limit)
+	px := int64(cfg.Width) * int64(cfg.Height)
+	if px > maxPixels {
+		return fmt.Errorf("image is %dx%d (%d pixels); the limit is %d", cfg.Width, cfg.Height, px, maxPixels)
+	}
+	if b := px * bytesPerPixel(cfg.ColorModel); b > maxBytes {
+		return fmt.Errorf("image is %dx%d and would need %d MB to decode; the limit is %d MB",
+			cfg.Width, cfg.Height, b>>20, maxBytes>>20)
 	}
 	return nil
 }
 
+// imageWork bounds how many images are decoded and re-encoded at once.
+//
+// The size check above bounds ONE request. Nothing bounds how many arrive
+// together, and the handler has no other concurrency limit — the rate limiter
+// covers login, signup and guest resend, not uploads. Five requests each
+// legitimately inside the budget still add up, so the budget has to be a
+// budget for the process, not for a request.
+//
+// A package-level value rather than a field on Server, deliberately and
+// against the usual rule: what this protects is the machine's memory. Two
+// Servers in one test process share one heap, and a limiter each would not
+// bound it.
+var imageWork = make(chan struct{}, 4)
+
 func compressImage(data []byte, ext string) ([]byte, string, error) {
 	// Before the decode, never after.
-	if err := decodedSizeWithin(data, maxImagePixels); err != nil {
+	if err := decodedSizeWithin(data, maxImagePixels, maxDecodedBytes); err != nil {
 		return nil, "", err
 	}
+
+	imageWork <- struct{}{}
+	defer func() { <-imageWork }()
 
 	var img image.Image
 	var err error
@@ -112,13 +198,37 @@ func compressImage(data []byte, ext string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("decoding image: %w", err)
 	}
 
-	var jpegBuf, pngBuf bytes.Buffer
-
-	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
-		return nil, "", fmt.Errorf("encoding JPEG: %w", err)
-	}
+	var pngBuf bytes.Buffer
 	if err := png.Encode(&pngBuf, img); err != nil {
 		return nil, "", fmt.Errorf("encoding PNG: %w", err)
+	}
+
+	// JPEG is only a candidate for an image with nothing transparent in it.
+	//
+	// JPEG has no alpha channel, so encoding a transparent image to it does
+	// not compress the transparency — it deletes it, replacing every
+	// see-through pixel with opaque black. Measured: a 313 KB PNG with a
+	// fully transparent half came back 37 KB, "smaller", and every pixel that
+	// had been invisible was black. The file kept its .png name, so the
+	// person who uploaded a logo or an annotated screenshot got back a
+	// different picture under the name they chose, with nothing said.
+	//
+	// Smaller is the wrong question when the two candidates are not the same
+	// image. Every type the standard library decodes answers Opaque; an
+	// unknown one is assumed to have transparency, because the cost of being
+	// wrong that way is a larger file and the cost of being wrong the other
+	// way is a destroyed one.
+	opaque := false
+	if o, ok := img.(interface{ Opaque() bool }); ok {
+		opaque = o.Opaque()
+	}
+	if !opaque {
+		return pngBuf.Bytes(), ".png", nil
+	}
+
+	var jpegBuf bytes.Buffer
+	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+		return nil, "", fmt.Errorf("encoding JPEG: %w", err)
 	}
 
 	if jpegBuf.Len() <= pngBuf.Len() {
@@ -154,8 +264,42 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Parse the multipart body. Limit memory; spill to temp files.
+	// This body is up to 25 MB and the server-wide read deadline assumes a
+	// body is a JSON document. See bodyTransferTimeout.
+	//
+	// Best effort: SetReadDeadline fails on a connection that does not
+	// support one, which in this codebase means a test using an unusual
+	// transport. Failing the upload over it would be worse than keeping the
+	// shorter deadline.
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
+	}
+
+	// Cap the body before parsing it, not after.
+	//
+	// ParseMultipartForm's argument is a MEMORY limit, not a body limit:
+	// everything past it spills to a temp file with no ceiling, so a 120 MB
+	// body was read to completion and written to disk in full before the
+	// handler answered 413. Any authenticated user could run several at once
+	// and fill the container's writable layer. MaxBytesReader stops the read
+	// at the limit instead, which is what the logo handler already does.
+	//
+	// The extra megabyte is for the multipart framing — boundaries, part
+	// headers, the field name — so that a file of exactly attachMaxBytes is
+	// refused by the size check below, with the message about the size, and
+	// not by the reader with a parse error.
+	r.Body = http.MaxBytesReader(w, r.Body, attachMaxBytes+(1<<20))
+
 	if err := r.ParseMultipartForm(attachMaxBytes); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			// The same status, code and message the two size checks further
+			// down already return, so a client that handles one handles all
+			// three. The only difference is where it is decided: here, before
+			// the body has been read, rather than after.
+			Error(w, http.StatusRequestEntityTooLarge, "too_large", "file exceeds 25 MB limit")
+			return
+		}
 		Error(w, http.StatusBadRequest, "bad_request", "could not parse upload")
 		return
 	}
@@ -200,6 +344,27 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	if !utf8.ValidString(origName) || strings.ContainsRune(origName, 0) {
 		Error(w, http.StatusBadRequest, "invalid_filename",
 			"filename must be valid UTF-8 and contain no NUL")
+		return
+	}
+
+	// And no character whose job is to make the name display as something
+	// other than what it is.
+	//
+	// Three families, all accepted before this and all stored verbatim:
+	// C0 and C1 control characters, including ESC — so a name carrying a
+	// terminal escape sequence coloured or moved the cursor in any log or
+	// shell that printed it, and CR LF split it across lines; and the bidi
+	// overrides, where U+202E turns "invoice<U+202E>txt.pdf" into
+	// "invoicefdp.txt" on screen, which is the oldest trick there is for
+	// making an executable look like a document.
+	//
+	// The download header already strips ASCII controls, so this is not about
+	// the header. It is about every other place the name is shown — the
+	// ticket page, a log line, the entry name inside a quarantine archive —
+	// none of which can sanitise a name they were handed as truth.
+	if i := strings.IndexFunc(origName, deceptiveRune); i >= 0 {
+		Error(w, http.StatusBadRequest, "invalid_filename",
+			"filename contains a control or text-direction character")
 		return
 	}
 
@@ -456,12 +621,23 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// Write to disk with obfuscated filename: <uuid><ext>
 	storageID := uuid.New()
 	subdir := filepath.Join(s.cfg.AttachmentDir, attachSubdir, ticketID.String())
-	if err := os.MkdirAll(subdir, 0o755); err != nil {
+	// 0700 and 0600, not 0755 and 0644. Nothing but this process ever reads
+	// these files — they are served through a handler that checks who is
+	// asking — and on a host where the help desk shares a machine with other
+	// accounts, world-readable meant every local user could read every
+	// customer's attachments, quarantined malware included. Inside the Docker
+	// image this changes nothing; outside it, it is the difference.
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
 		Error(w, http.StatusInternalServerError, "storage_error", "could not create storage directory")
 		return
 	}
 	diskPath := filepath.Join(subdir, storageID.String()+storedExt)
-	if err := os.WriteFile(diskPath, data, 0o644); err != nil {
+	if err := os.WriteFile(diskPath, data, 0o600); err != nil {
+		// A partial write leaves a file behind, and nothing in this system
+		// ever deletes an attachment file — so an orphan is permanent. The
+		// database-failure path below already cleans up after itself; this
+		// one did not.
+		_ = os.Remove(diskPath)
 		Error(w, http.StatusInternalServerError, "storage_error", "could not write file")
 		return
 	}
@@ -875,6 +1051,13 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Vary", "Sec-Fetch-Dest")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 
+	// The same reasoning as the upload, pointing the other way: a 25 MB file
+	// leaving over a slow link outlasts the server-wide 30s write deadline
+	// and the download is cut off part-written. See bodyTransferTimeout.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+		slog.DebugContext(r.Context(), "could not extend the download write deadline", "error", err)
+	}
+
 	// ServeContent, not io.Copy: it handles range requests and conditional
 	// gets. It would otherwise set Content-Type by sniffing the body, which is
 	// exactly what this function has just decided against — so the header is
@@ -1181,4 +1364,30 @@ func (s *Server) newReputationProvider(name, apiKey string) reputation.Provider 
 func shippedExt(ext string) bool {
 	_, ok := allowedExt[ext]
 	return ok
+}
+
+// deceptiveRune reports whether a rune's purpose is to make text display as
+// something other than what it is.
+//
+// The C0 and C1 control blocks, plus the bidirectional formatting characters.
+// Tab, carriage return and newline are in C0 and are refused with the rest:
+// none of them belongs in a filename, and a name that splits across two lines
+// in a log is exactly the problem.
+//
+// The bidi set is the whole of it, not just U+202E. An override can be opened
+// with LRO or RLO and closed with PDF, and the isolates (U+2066-U+2069) do the
+// same job with different characters — leaving any one of them in means the
+// trick still works, with one more keystroke.
+func deceptiveRune(r rune) bool {
+	switch {
+	case r < 0x20, r == 0x7F: // C0 and DEL
+		return true
+	case r >= 0x80 && r <= 0x9F: // C1
+		return true
+	case r >= 0x202A && r <= 0x202E: // LRE, RLE, PDF, LRO, RLO
+		return true
+	case r >= 0x2066 && r <= 0x2069: // LRI, RLI, FSI, PDI
+		return true
+	}
+	return false
 }

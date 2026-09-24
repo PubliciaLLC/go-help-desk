@@ -245,21 +245,48 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 	})
 	require.NoError(t, err)
 
-	// Everything in this name is here because it survives a real upload.
+	// A tab in the name is refused outright now, and that is the stronger
+	// answer.
 	//
-	// A quote, which closes the quoted string if it is escaped wrongly. A
+	// Tab was the one control character Go's MIME header parser let through,
+	// so it was the one that reached us; the header builder stripped it on
+	// the way out. Stripping is a repair, and a repair means the name on the
+	// ticket page, in a log line and inside a quarantine archive is still the
+	// one the uploader chose. The upload is now refused instead — along with
+	// every other C0 and C1 character and the bidi overrides, which is where
+	// the real trick lives: U+202E turns "invoice<RLO>txt.pdf" into
+	// "invoicefdp.txt" on screen.
+	{
+		const withTab = "a\tb.txt"
+		res := uploadNamed(t, h, tk.ID.String(), withTab, []byte("contents"))
+		body, _ := readAllBody(res)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode,
+			"a control character in a filename is refused, not repaired: %s", body)
+		require.Contains(t, body, "invalid_filename")
+	}
+	{
+		const bidi = "invoice\u202Etxt.pdf"
+		res := uploadNamed(t, h, tk.ID.String(), bidi, []byte("contents"))
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode,
+			"a right-to-left override makes the name display as something else")
+	}
+
+	// What is left is a name that is genuinely accepted, and still hostile.
+	//
+	// A quote, which closes the quoted string if it is escaped wrongly. And a
 	// backslash path, which is what a Windows browser reads as a directory to
 	// save into — a forward-slash one would prove nothing, because Go's
 	// multipart reader runs filepath.Base over every uploaded filename and
 	// "../../etc/passwd.txt" is already "passwd.txt" before our code sees it,
-	// while filepath.Base on Linux leaves backslashes alone. And a tab, which
-	// is the one control character Go's MIME header parser lets through; it
-	// refuses the request outright for the rest, which is why the others are
-	// checked against contentDisposition directly instead.
-	const hostile = "a\"b\t..\\..\\windows\\system32\\evil.txt"
+	// while filepath.Base on Linux leaves backslashes alone.
+	const hostile = "a\"b..\\..\\windows\\system32\\evil.txt"
 	res := uploadNamed(t, h, tk.ID.String(), hostile, []byte("contents"))
+	body, _ := readAllBody(res)
 	res.Body.Close()
-	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Equal(t, http.StatusCreated, res.StatusCode,
+		"nothing in this name is a control character, so it is stored: %s", body)
 
 	list := h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/attachments", nil)
 	defer list.Body.Close()
@@ -290,5 +317,5 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 	require.Contains(t, params["filename"], "evil.txt",
 		"the name itself should still be recognisable")
 	require.NotContains(t, params["filename"], "\t",
-		"a tab reaches us through the upload and must not reach the header")
+		"no control character may reach the header, whatever got past the upload check")
 }

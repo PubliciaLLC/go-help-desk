@@ -12,8 +12,14 @@ services:
       POSTGRES_DB: helpdesk
       POSTGRES_USER: helpdesk
       POSTGRES_PASSWORD: helpdesk
+    # Loopback only. Published as "5432:5432" this binds every interface, and
+    # a published Docker port is handled before the host firewall sees it — so
+    # on a machine with a public address, ufw or firewalld closed and this
+    # database still answered the internet, with the password three lines
+    # above. The port is here so the suite can run from the host; that works
+    # over loopback, and nothing else needs it.
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
@@ -21,23 +27,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - backend
-
-  test:
-    build:
-      context: ..
-      dockerfile: backend/Dockerfile
-      target: gobuilder
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      TEST_DATABASE_URL: postgres://helpdesk:helpdesk@db:5432/helpdesk?sslmode=disable
-    working_dir: /build
-    command: go test ./...
-    profiles:
-      - test
     networks:
       - backend
 
