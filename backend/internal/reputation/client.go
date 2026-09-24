@@ -42,10 +42,11 @@ func WithBaseURL(u string) Option {
 	}
 }
 
-// client is the HTTP half both providers share: one endpoint, one header, one
-// decode. No third-party library — neither service has a Go client worth the
-// dependency, and vt-go in particular has no context support and a default
-// client with no timeout, which is disqualifying for a server.
+// client is the HTTP half every provider shares: one endpoint, one header, one
+// decode. No third-party library — none of the three services has a Go client
+// worth the dependency: vt-go has no context support and a default client with
+// no timeout, which is disqualifying for a server, and PolySwarm's own Go
+// repositories have been archived since 2018.
 type client struct {
 	apiKey  string
 	baseURL string
@@ -71,18 +72,25 @@ func newClient(apiKey, baseURL string, opts ...Option) client {
 // far beyond any real answer and well short of anything that could hurt us.
 const maxBody = 1 << 20
 
-// get performs the single GET both providers make.
+// get performs the single GET each provider makes.
 //
 // The key travels in header, never in the URL: a key in a query string lands
 // in every access log and proxy between here and there, which defeats storing
 // it write-only. Nothing in the returned error carries the key either — the
 // error is logged at the boundary.
+//
+// An empty header name is a provider that authenticates nobody — CIRCL — and
+// sends no credential header at all. Not the same as an empty key in a named
+// header, which is a credential-shaped value in every log between here and
+// them that identifies no account.
 func (c *client) get(ctx context.Context, path, header string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return 0, nil, fmt.Errorf("building request: %w", err)
 	}
-	req.Header.Set(header, c.apiKey)
+	if header != "" {
+		req.Header.Set(header, c.apiKey)
+	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)

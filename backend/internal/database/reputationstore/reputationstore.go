@@ -50,6 +50,11 @@ func (s *Store) Get(ctx context.Context, sha256, provider string) (reputation.Re
 		Detected:   int(row.Detected.Int32),
 		Total:      int(row.Total.Int32),
 		ThreatName: row.ThreatName.String,
+		// The feeds that carry a "known" file. NOT NULL in the column and
+		// empty on every other state, so nothing here has to distinguish "no
+		// feeds" from "not recorded": an empty list cannot be misread as a
+		// finding the way an engine count of zero can.
+		KnownFeeds: row.KnownFeeds,
 		// When WE fetched, as against when the provider analysed. NOT NULL in
 		// the column and always set, because there is no row without a lookup
 		// behind it — and it is what both refresh rules are decided on, so a
@@ -95,6 +100,12 @@ func (s *Store) Put(ctx context.Context, sha256, provider string, rep reputation
 		Total:      total,
 		ThreatName: sql.NullString{String: rep.ThreatName, Valid: rep.ThreatName != ""},
 		AnalysedAt: analysed,
+		// Written on every state, not only "known". A provider only ever sets
+		// these alongside Known, and writing what it gave us keeps the upsert
+		// from carrying a previous verdict's feeds forward onto a verdict that
+		// has none — which would attach the one positive claim this system can
+		// make to a file nothing has on record.
+		KnownFeeds: rep.KnownFeeds,
 	})
 	if err != nil {
 		// The state and the provider are ours or the operator's; nothing here

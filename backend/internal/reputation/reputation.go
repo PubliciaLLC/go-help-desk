@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-// State is what the provider was able to say. Five cases, and the distinctions
+// State is what the provider was able to say. Six cases, and the distinctions
 // between them are the whole value of the type.
 type State string
 
@@ -48,6 +48,40 @@ const (
 	// which forgets to check err still cannot render a failure as "no
 	// detections".
 	Unavailable State = "unavailable"
+
+	// Known: a named feed has this exact hash in its catalogue — Microsoft
+	// Windows, NSRL, a golden image, a commercial software database. The file
+	// is not scanned at all; the answer comes straight from the hash match.
+	//
+	// Not Clean, and the difference is the reason this state exists. Clean
+	// means engines ran and none of them flagged it. This means somebody
+	// already knows the file and will say so by name. For the case this
+	// product is good at — an IT team triaging the suspicious .exe a user
+	// reported — "this is the signed Microsoft binary it claims to be" is the
+	// answer they want and "0 of 12 engines flagged it" is a much weaker one.
+	//
+	// It is also the ONE state in this feature where reassurance is the
+	// correct rendering. Everywhere else the rule is that an absence must
+	// never read as safety; this is an exception because a named feed made a
+	// positive claim, which is precisely what Clean, Unseen and Unscanned do
+	// not have behind them.
+	//
+	// "known" and NOT "known good", deliberately, and the distinction is the
+	// whole reason for the feed names in KnownFeeds. How strong the claim is
+	// varies by feed and the state name must not overclaim on the weakest of
+	// them:
+	//
+	//   - PolySwarm's "microsoft_windows" feed is an Authenticode signature
+	//     assertion — a positive claim that the file is signed and trusted.
+	//   - NSRL cataloguing means only that the file appeared in a known
+	//     software distribution. NSRL catalogues hacking tools too, so it is
+	//     emphatically not a statement that the file is safe.
+	//
+	// One state, and the feeds carry the weight. A renderer must show WHICH
+	// feed is speaking — "known file, signed by Microsoft Windows" against
+	// "known file, catalogued by NSRL" — because those two sentences are not
+	// worth the same and neither of them is "known good".
+	Known State = "known"
 )
 
 // Provider names. These are the values stored in
@@ -58,21 +92,89 @@ const (
 const (
 	ProviderVirusTotal   = "virustotal"
 	ProviderMetaDefender = "metadefender"
+	ProviderPolySwarm    = "polyswarm"
+	ProviderCIRCL        = "circl"
 )
+
+// providerFacts is everything this package knows about one service by name
+// alone, in one place.
+//
+// One table rather than three switches, deliberately. The facts below were a
+// switch each, and the one that was missing — whether a lookup is possible
+// without a key — was missing because nothing forced the question to be asked
+// when a provider was added. Adding a fifth here means answering it: a name
+// with no entry is not a valid setting value, has no display name and cannot
+// look anything up, so a half-added provider fails closed rather than
+// silently.
+type providerFacts struct {
+	// displayName is the name as a person reads it, and it is what attributes
+	// a verdict on screen.
+	displayName string
+
+	// needsKey is whether a lookup is possible at all without an API key.
+	//
+	// True for the three commercial services, where the key is the operator's
+	// account and there is nothing to ask without one. False for CIRCL, which
+	// is a public catalogue with no authentication: requiring a key there
+	// would disable it forever, since there is no key an operator could
+	// possibly supply.
+	needsKey bool
+}
+
+// providerByName is the table. Unexported and read-only; see CanLookup,
+// DisplayName and ValidProvider, which are the only readers.
+func providerByName(name string) (providerFacts, bool) {
+	switch name {
+	case ProviderVirusTotal:
+		return providerFacts{displayName: "VirusTotal", needsKey: true}, true
+	case ProviderMetaDefender:
+		return providerFacts{displayName: "MetaDefender", needsKey: true}, true
+	case ProviderPolySwarm:
+		return providerFacts{displayName: "PolySwarm", needsKey: true}, true
+	case ProviderCIRCL:
+		// "CIRCL" and not "CIRCL hashlookup", because this name goes into
+		// sentences that attribute a claim — "CIRCL has no record of this
+		// SHA-256" — and the organisation is what is making it. The full
+		// attribution the CC-BY licence asks for ("Hash reputation data from
+		// CIRCL hashlookup, Computer Incident Response Center Luxembourg,
+		// CC-BY-4.0") is UI copy, not a display name.
+		return providerFacts{displayName: "CIRCL", needsKey: false}, true
+	}
+	return providerFacts{}, false
+}
+
+// CanLookup reports whether the configured provider can make a request at all.
+//
+// This is the rule that replaced "the key is the on switch": a lookup runs
+// when the configured provider CAN run. A key for the three commercial ones,
+// nothing for CIRCL, and never for a name this build cannot talk to.
+//
+// Stated once, here, because the old rule was stated at the call site — the
+// lookup was refused on an empty key before anything had asked WHICH provider
+// was configured, which is correct for three of the four and leaves the fourth
+// permanently dead.
+//
+// The key is passed in rather than read here: this package has no access to
+// settings, and the caller already holds the value. Nothing is done with it
+// but compare it against "" — it is not stored, logged or wrapped into an
+// error.
+func CanLookup(providerName, apiKey string) bool {
+	p, ok := providerByName(providerName)
+	if !ok {
+		return false
+	}
+	return !p.needsKey || apiKey != ""
+}
 
 // DisplayName is the provider's name as a person reads it.
 //
 // Here rather than on the Provider interface because it is a property of the
 // name, not of a configured client: the payload needs it wherever a verdict
 // came from, including one read straight out of the cache with no client
-// built. An unknown name comes back unchanged, which is the honest rendering
-// of a row written by a version of this that knew something we do not.
-func DisplayName(provider string) string {
-	switch provider {
-	case ProviderVirusTotal:
-		return "VirusTotal"
-	case ProviderMetaDefender:
-		return "MetaDefender"
+// built.
+func DisplayName(providerName string) string {
+	if p, ok := providerByName(providerName); ok {
+		return p.displayName
 	}
 	// Empty, not the raw value.
 	//
@@ -89,26 +191,28 @@ func DisplayName(provider string) string {
 	return ""
 }
 
-// ValidProvider reports whether name is a provider this build can talk to.
+// ValidProvider reports whether name is a provider this build can talk to, and
+// so whether the attachment_reputation_provider setting accepts it.
 //
-// Next to the constants rather than in the settings handler, so a third
+// Next to the constants rather than in the settings handler, so a fourth
 // implementation cannot leave the validation behind. That is the failure this
 // function exists for: the setting shipped with no validation at all — it was
 // accepted on write, fell back to the default on read, and told the operator
 // nothing, which is the same "accepted and then ignored" shape the rest of
 // this handler refuses.
 func ValidProvider(name string) bool {
-	return name == ProviderVirusTotal || name == ProviderMetaDefender
+	_, ok := providerByName(name)
+	return ok
 }
 
-// known reports whether s is one of the five declared states.
+// known reports whether s is one of the six declared states.
 //
 // The zero value is not one of them, which is the case that matters: an
 // uninitialised Reputation has State "" and would otherwise travel all the way
 // to a renderer that has no branch for it and draws it as safe.
 func (s State) known() bool {
 	switch s {
-	case Unseen, Unscanned, Clean, Detected, Unavailable:
+	case Unseen, Unscanned, Clean, Detected, Known, Unavailable:
 		return true
 	}
 	return false
@@ -117,14 +221,37 @@ func (s State) known() bool {
 // Reputation is one provider's answer about one hash.
 //
 // Detected, Total and ThreatName are meaningful only when State is Detected or
-// Clean; for the other three the provider gave us no numbers, and zeroes here
+// Clean; for the other four the provider gave us no numbers, and zeroes here
 // mean "not recorded", never "nothing found". The database column is NULL in
-// that case for the same reason.
+// that case for the same reason. Known is one of the four: a file answered out
+// of a catalogue is never scanned, so "0 of 0 engines" there would be a
+// fabricated analysis attached to the one verdict staff are entitled to find
+// reassuring.
 type Reputation struct {
 	State      State
 	Detected   int    // engines flagging it
 	Total      int    // engines that ran
 	ThreatName string // the provider's name for it, may be empty
+
+	// KnownFeeds names the feeds that carry the file, and is set only when
+	// State is Known.
+	//
+	// The names are the evidence, and they are not decoration: the state says
+	// only that somebody has the hash on file, and these say who — which is
+	// what decides how much the claim is worth. An Authenticode signature
+	// assertion from a vendor feed and an NSRL catalogue entry are different
+	// things, and NSRL catalogues hacking tools. A bare "known" with no feed
+	// named is a claim from nowhere, which is the shape this feature refuses
+	// everywhere else.
+	//
+	// Sorted and de-duplicated by the provider, because two catalogue entries
+	// can match the same hash and the order is the server's. The strings are
+	// the feed identifiers as the provider spells them; rendering them for a
+	// person is the caller's job.
+	//
+	// Empty on every other state, and empty is the honest rendering of
+	// "nobody vouched for this file".
+	KnownFeeds []string
 
 	// AnalysedAt is when the PROVIDER last analysed the file, not when we
 	// asked. Nil when they never did, or did not say. When we asked is

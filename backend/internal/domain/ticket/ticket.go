@@ -252,6 +252,22 @@ type AttachmentReputation struct {
 	// nowhere.
 	Provider string `json:"provider"`
 
+	// KnownFeeds names the feeds that carry a file whose State is "known", and
+	// is empty on every other state.
+	//
+	// "known" is the one verdict in this feature that renders as reassurance,
+	// and it earns that by having a source: a named feed has this exact hash
+	// on file. The state deliberately stops there, because how much that is
+	// worth depends entirely on which feed — an Authenticode signature
+	// assertion is a claim that the file is signed and trusted, while an NSRL
+	// catalogue entry means only that it appeared in a software distribution,
+	// and NSRL catalogues hacking tools.
+	//
+	// So a renderer MUST name the feed: "known file, signed by Microsoft
+	// Windows" and "known file, catalogued by NSRL" are not the same sentence,
+	// and "known good" is neither of them.
+	KnownFeeds []string `json:"known_feeds"`
+
 	// FetchedAt is when WE last asked, as against AnalysedAt, when the
 	// provider last looked. It is what the "check again" control is enabled
 	// on: a verdict may be re-checked by hand once every seven days.

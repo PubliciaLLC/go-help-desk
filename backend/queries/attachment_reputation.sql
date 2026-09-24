@@ -28,14 +28,22 @@ WHERE sha256 = $1 AND provider = $2;
 -- Every write re-stamps it, including one that changes nothing, which is what
 -- makes a re-check that comes back with the same answer still count as a
 -- re-check.
+--
+-- known_feeds is COALESCEd because the column is NOT NULL while the parameter
+-- is optional: only a "known" verdict has feeds, and every other caller passes
+-- nothing. A nil parameter therefore has to mean "no feeds"
+-- rather than violating the constraint — the column's DEFAULT does not apply
+-- when a value is given explicitly, even a null one.
 INSERT INTO attachment_reputation (
-    sha256, provider, state, detected, total, threat_name, analysed_at, fetched_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp())
+    sha256, provider, state, detected, total, threat_name, analysed_at,
+    known_feeds, fetched_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE(sqlc.narg(known_feeds)::text[], '{}'), clock_timestamp())
 ON CONFLICT (sha256, provider) DO UPDATE
-SET state       = EXCLUDED.state,
-    detected    = EXCLUDED.detected,
-    total       = EXCLUDED.total,
-    threat_name = EXCLUDED.threat_name,
-    analysed_at = EXCLUDED.analysed_at,
-    fetched_at  = EXCLUDED.fetched_at
+SET state            = EXCLUDED.state,
+    detected         = EXCLUDED.detected,
+    total            = EXCLUDED.total,
+    threat_name      = EXCLUDED.threat_name,
+    analysed_at      = EXCLUDED.analysed_at,
+    known_feeds = EXCLUDED.known_feeds,
+    fetched_at       = EXCLUDED.fetched_at
 RETURNING *;

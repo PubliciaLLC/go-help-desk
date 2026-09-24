@@ -44,6 +44,7 @@ type AttachmentReputation struct {
 	State      string         `json:"state"`
 	Detected   sql.NullInt32  `json:"detected"`
 	Total      sql.NullInt32  `json:"total"`
+	KnownFeeds []string       `json:"known_feeds"`
 	ThreatName sql.NullString `json:"threat_name"`
 	AnalysedAt sql.NullTime   `json:"analysed_at"`
 	FetchedAt  time.Time      `json:"fetched_at"`

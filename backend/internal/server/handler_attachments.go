@@ -529,9 +529,23 @@ func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *htt
 		return
 
 	case errors.Is(err, reputation.ErrDetectionIsFinal):
-		Error(w, http.StatusConflict, "detection_is_final",
-			"this file is already identified as malicious; engines do not un-flag a file, "+
-				"so re-checking it would tell nobody anything")
+		// Two verdicts are final and they are opposites, so one sentence
+		// cannot serve both: telling a person that a file NSRL has on file is
+		// "already identified as malicious" is false, alarming, and about the
+		// one verdict here they are entitled to find reassuring.
+		//
+		// The CODE stays the same for both. To a client this is one outcome —
+		// the verdict cannot change, so the control is not armed — and
+		// splitting it would make every caller learn a second code to handle
+		// identically.
+		msg := "this file is already identified as malicious; engines do not un-flag a file, " +
+			"so re-checking it would tell nobody anything"
+		if rep.State == reputation.Known {
+			msg = "this file is already known: a named feed has this exact hash in its " +
+				"catalogue, and a catalogue entry does not decay, so re-checking it " +
+				"would tell nobody anything"
+		}
+		Error(w, http.StatusConflict, "detection_is_final", msg)
 		return
 
 	case errors.Is(err, reputation.ErrTooSoon):
@@ -897,6 +911,9 @@ func (s *Server) addReputationURL(ctx context.Context, att *ticket.Attachment) {
 	}
 	url := s.reputationProvider(ctx).LinkURL(*att.SHA256)
 	if url == "" {
+		// A provider with no per-hash web UI — CIRCL — and the field is
+		// omitted rather than filled with a page that cannot answer the
+		// question the reader clicked it with.
 		return
 	}
 	att.ReputationURL = &url
@@ -914,14 +931,24 @@ func (s *Server) reputationProvider(ctx context.Context) reputation.Provider {
 
 // newReputationProvider is the same choice with a key attached, for the half
 // of the feature that makes a request. An empty key builds a provider that can
-// only ever produce a link; see reputationLookup for why one is never asked to
-// look anything up.
+// only ever produce a link; see reputationLookup for which of them are ever
+// asked to look anything up.
 //
-// s.repOpts is empty in production, so both providers point at the real
+// s.repOpts is empty in production, so every provider points at the real
 // service. A test passes reputation.WithBaseURL through WithReputationLookup.
 func (s *Server) newReputationProvider(ctx context.Context, apiKey string) reputation.Provider {
-	if s.adminSvc.ReputationProvider(ctx) == reputation.ProviderMetaDefender {
+	switch s.adminSvc.ReputationProvider(ctx) {
+	case reputation.ProviderMetaDefender:
 		return reputation.NewMetaDefender(apiKey, s.repOpts...)
+	case reputation.ProviderPolySwarm:
+		return reputation.NewPolySwarm(apiKey, s.repOpts...)
+	case reputation.ProviderCIRCL:
+		// No key, because there is none to give it: hashlookup authenticates
+		// nobody. Whatever is stored in the key setting is not passed here,
+		// which is how a leftover VirusTotal key cannot leave for Luxembourg.
+		return reputation.NewCIRCL(s.repOpts...)
 	}
+	// Anything else is the shipped default. ReputationProvider already falls
+	// back, so this arm is reached only for virustotal itself.
 	return reputation.NewVirusTotal(apiKey, s.repOpts...)
 }

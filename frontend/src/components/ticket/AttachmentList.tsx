@@ -38,12 +38,16 @@ function contentLabel(mime: string): string {
   return CONTENT_LABELS[mime] ?? mime
 }
 
-// The two services this build knows about, keyed on a lowercased value so
-// both spellings the server may send resolve: the setting's identifier
+// The services this build knows about, keyed on a lowercased value so both
+// spellings the server may send resolve: the setting's identifier
 // ("virustotal") and the display name it already maps that to ("VirusTotal").
 const PROVIDER_NAMES: Record<string, string> = {
   virustotal: 'VirusTotal',
   metadefender: 'MetaDefender',
+  // PolySwarm is the only provider that answers `known`, so leaving it out
+  // would mean the one verdict staff may read as reassurance is the one
+  // verdict that names nobody.
+  polyswarm: 'PolySwarm',
 }
 
 /**
@@ -58,6 +62,45 @@ const PROVIDER_NAMES: Record<string, string> = {
 function providerName(provider: string | undefined): string | null {
   if (!provider) return null
   return PROVIDER_NAMES[provider.toLowerCase()] ?? null
+}
+
+/**
+ * What a named feed actually asserts, as a phrase that completes "this file
+ * is …".
+ *
+ * The verb is the point and it differs per feed, which is the whole reason
+ * the state is "known" and not "known good". A vendor signing feed is an
+ * Authenticode assertion — the file is signed and trusted. NSRL catalogues
+ * files found in known software distributions, hacking tools included, so
+ * "catalogued by NSRL" is the strongest thing that may honestly be said about
+ * an NSRL hit and "signed" would be a fabrication.
+ */
+const KNOWN_FEED_PHRASES: Record<string, string> = {
+  microsoft_windows: 'signed by Microsoft Windows',
+  nsrl: 'catalogued by NSRL',
+}
+
+/**
+ * One feed as a person reads it.
+ *
+ * A feed this build has no phrase for is shown rather than dropped, which is
+ * the opposite of the rule for an unrecognised provider name above — and the
+ * difference is where the value comes from. A provider is an operator-typed
+ * setting, so printing an unknown one invents a service. A feed name comes
+ * from the provider's own API, and it is the entire evidence behind the claim:
+ * drop it and "known file" becomes the claim from nowhere this state exists
+ * to avoid. The weaker verb is used for it, because an unrecognised feed has
+ * not earned the stronger one.
+ */
+function feedPhrase(feed: string): string {
+  return KNOWN_FEED_PHRASES[feed.toLowerCase()] ?? `catalogued by ${feed.replace(/_/g, ' ')}`
+}
+
+/** Every feed, in the order the server sorted them. */
+function feedPhrases(feeds: string[]): string {
+  const phrases = feeds.map(feedPhrase)
+  if (phrases.length === 1) return phrases[0]
+  return `${phrases.slice(0, -1).join(', ')} and ${phrases[phrases.length - 1]}`
 }
 
 // Staff may ask the provider again once every seven days per hash, whatever
@@ -325,11 +368,12 @@ function ReputationLine({ ticketId, attachment }: RowProps) {
     )
   }
 
-  // The three states that decay. `detected` is stable — engines do not un-flag
-  // a file, the server refuses a re-check of one, and spending an allowance
-  // re-confirming known malware is the lookup guaranteed to tell nobody
-  // anything. An unrecognised state is not a verdict at all, so it gets no
-  // control either.
+  // The three states that decay. `detected` and `known` are both final and
+  // for opposite reasons — engines do not un-flag a file, and a file does not
+  // stop being the signed Microsoft binary a catalogue has on record — so the
+  // server refuses a re-check of either, and a control on one would be a
+  // button that always fails. An unrecognised state is not a verdict at all,
+  // so it gets no control either.
   const refreshable = rep.state === 'clean' || rep.state === 'unseen' || rep.state === 'unscanned'
 
   return (
@@ -407,6 +451,39 @@ function ReputationVerdict({ rep }: { rep: AttachmentReputation }) {
             </>
           )}
           .{analysed}
+        </p>
+      )
+    }
+
+    case 'known': {
+      // The one verdict in this feature that may read as reassurance, and the
+      // feeds are what earn it: a named catalogue made a positive claim,
+      // which is exactly what clean, unseen and unscanned have nothing of.
+      //
+      // Deliberately none of the clean tier's vocabulary. Nothing was scanned
+      // — the answer came straight from the hash match — so engines and
+      // counts here would be a fabricated analysis attached to the one line
+      // staff are entitled to trust, and "engines ran and found nothing" is a
+      // far weaker claim than "a catalogue has this exact file on record".
+      const feeds = rep.known_feeds ?? []
+      if (feeds.length > 0) {
+        return (
+          <p className="text-xs font-medium text-emerald-700">
+            {label}: known file — {feedPhrases(feeds)}.
+          </p>
+        )
+      }
+
+      // Reachable: the provider answers with a catalogue hit whose entries
+      // carry no feed name, and the server sends the empty list rather than
+      // inventing one. The state then says somebody has the hash on file and
+      // cannot say who, which is a claim from nowhere — so it loses the
+      // reassuring rendering, because the source is what the reassurance was
+      // resting on.
+      return (
+        <p className="text-xs font-medium text-amber-700">
+          {who} reports this file as known but names no catalogue, so there is nothing behind the
+          claim. That is not a clean result.
         </p>
       )
     }

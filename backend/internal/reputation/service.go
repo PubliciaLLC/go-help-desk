@@ -25,9 +25,15 @@ var (
 	// ErrTooSoon: this hash was checked inside the floor above.
 	ErrTooSoon = errors.New("reputation: checked too recently")
 
-	// ErrDetectionIsFinal: the stored verdict is a detection. Engines do not
-	// un-flag a file, so there is nothing to learn and a lookup to be spent
-	// learning it.
+	// ErrDetectionIsFinal: the stored verdict is one there is nothing to learn
+	// from re-asking about — a detection, because engines do not un-flag a
+	// file, or a "known" file, because a named feed's catalogue entry does not
+	// decay either. Both would spend a lookup to be told the same thing.
+	//
+	// Named for the detection because that was the only final verdict when it
+	// was written, and it is compared with errors.Is by the handler and by
+	// tests that must keep passing. Renaming it would be a breaking change for
+	// no gain.
 	ErrDetectionIsFinal = errors.New("reputation: a detection is not re-checked")
 )
 
@@ -77,14 +83,21 @@ func NewService(provider Provider, store Store, budget *Budget) *Service {
 	return &Service{provider: provider, store: store, budget: budget}
 }
 
+// final reports whether a verdict is one there is nothing left to learn from
+// re-asking about. Both automatic expiry and the manual re-check are decided
+// on it, so the two cannot drift apart.
+func final(s State) bool { return s == Detected || s == Known }
+
 // GetOrLookup returns the stored verdict for sha256, fetching one if there is
 // none, or if the one on file has passed RefreshAfter and the budget allows
 // it.
 //
 // Expiry is the whole reason this is not a plain cache read. A verdict decays:
 // new signatures catch old malware, and the sample nobody had submitted when
-// we asked is precisely the one that gets submitted a week later. A detection
-// is the exception and never expires — engines do not un-flag a file.
+// we asked is precisely the one that gets submitted a week later. Two verdicts
+// are the exception and never expire: a detection, because engines do not
+// un-flag a file, and a "known" file, because a hash does not fall out of a
+// vendor catalogue.
 func (s *Service) GetOrLookup(ctx context.Context, sha256 string) (Reputation, error) {
 	provider := s.provider.Name()
 
@@ -117,8 +130,9 @@ func (s *Service) GetOrLookup(ctx context.Context, sha256 string) (Reputation, e
 //
 // Three refusals, and each has a reason: there is nothing to refresh on a file
 // nobody has looked up (ErrNotCached — the ordinary lazy lookup covers that),
-// nothing to learn from re-confirming a detection (ErrDetectionIsFinal), and
-// nothing to be gained from asking twice inside a week (ErrTooSoon). The
+// nothing to learn from re-confirming a verdict that cannot change
+// (ErrDetectionIsFinal — a detection or a "known" file), and nothing to be
+// gained from asking twice inside a week (ErrTooSoon). The
 // budget applies on top of all three, because a button is not a reason to risk
 // getting an operator's API key banned.
 //
@@ -135,7 +149,7 @@ func (s *Service) Refresh(ctx context.Context, sha256 string) (Reputation, error
 		return unavailable(fmt.Errorf("reading cached verdict: %w", err))
 	}
 
-	if stored.State == Detected {
+	if final(stored.State) {
 		return stored, ErrDetectionIsFinal
 	}
 	// A zero FetchedAt is a verdict whose age nobody recorded. It cannot come
@@ -164,14 +178,18 @@ func (s *Service) Refresh(ctx context.Context, sha256 string) (Reputation, error
 
 // stale reports whether a stored verdict has passed its refresh interval.
 //
-// Three ways to be exempt, in order: automatic re-checking is off, the verdict
-// is a detection, or nobody recorded when it was fetched. The last is not
-// pedantry — read as "fetched in year one" it makes every such row stale on
-// every render, which is the allowance-burning failure the cache exists to
-// prevent.
+// Four ways to be exempt, in order: automatic re-checking is off, the verdict
+// is final, or nobody recorded when it was fetched. The last is not pedantry —
+// read as "fetched in year one" it makes every such row stale on every render,
+// which is the allowance-burning failure the cache exists to prevent.
+//
+// Two states are final. Detected, because engines do not un-flag a file. And
+// Known, for the same reason pointing the other way: a hash does not fall out
+// of NSRL's catalogue, and re-confirming a catalogue entry out of an allowance
+// of sixty an hour is the lookup guaranteed to tell nobody anything.
 func (s *Service) stale(rep Reputation) bool {
 	switch {
-	case s.RefreshAfter <= 0, rep.State == Detected, rep.FetchedAt.IsZero():
+	case s.RefreshAfter <= 0, final(rep.State), rep.FetchedAt.IsZero():
 		return false
 	}
 	return s.now().Sub(rep.FetchedAt) >= s.RefreshAfter
@@ -212,7 +230,7 @@ func (s *Service) lookup(ctx context.Context, sha256 string) (Reputation, error)
 		// The constraint would have produced exactly the outcome it exists to
 		// prevent.
 		//
-		// Today both providers return one of the five and a test pins that, so
+		// Today every provider returns one of the six and a test pins that, so
 		// this guards a future provider or a forgotten return path rather than
 		// a live bug. It is one comparison, and the failure it prevents is a
 		// file silently shown as safe.

@@ -137,7 +137,7 @@ export interface Attachment {
 /**
  * One provider's verdict on a file's hash.
  *
- * The four states are not four shades of the same thing, and collapsing any of
+ * The five states are not five shades of the same thing, and collapsing any of
  * them into "clean" is the mistake this type exists to make visible:
  *
  *   detected   at least one engine flagged it.
@@ -148,12 +148,17 @@ export interface Attachment {
  *              and arguably more interesting than a clean one.
  *   unscanned  the provider knows the hash and holds no verdict for it. Also
  *              not a verdict.
+ *   known      a named catalogue has this exact hash on file. Nothing was
+ *              scanned — the answer comes straight from the hash match — so
+ *              it carries no counts at all, and what it carries instead is
+ *              known_feeds. The one state here that may read as reassurance,
+ *              and only because a named feed made a positive claim.
  *
  * "unavailable" never arrives: a lookup that failed leaves the whole object
  * null, so there is one absence to render rather than two.
  */
 export interface AttachmentReputation {
-  state: 'unseen' | 'unscanned' | 'clean' | 'detected'
+  state: 'unseen' | 'unscanned' | 'clean' | 'detected' | 'known'
   // Engines that flagged the file and engines that ran. null together, and
   // only ever non-null for a completed analysis — nil is a fact, because 0 of
   // 0 reads as "nothing found anything".
@@ -182,6 +187,21 @@ export interface AttachmentReputation {
   // Optional, like provider: a verdict stored before either field existed
   // carries neither.
   fetched_at?: string | null
+  // Which catalogues have this hash on file. Set only on `known`, and empty
+  // on every other state.
+  //
+  // Not decoration and not optional to render. `known` says only that
+  // somebody has the file on record; these say who, and who is what decides
+  // how much that is worth. An entry in a vendor's signing feed is an
+  // Authenticode assertion that the file is signed and trusted; an NSRL entry
+  // means only that the file turned up in a known software distribution, and
+  // NSRL catalogues hacking tools. A renderer that shows the state without
+  // naming the feed makes a claim the data does not support.
+  //
+  // Sorted and de-duplicated by the server. The strings are the feed
+  // identifiers as the provider spells them — lowercase, underscored —
+  // because turning one into a phrase for a person is the frontend's job.
+  known_feeds?: string[] | null
 }
 
 export interface Reply {

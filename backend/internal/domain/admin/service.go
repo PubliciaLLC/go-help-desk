@@ -444,19 +444,25 @@ func (s *Service) AllowedTypes(ctx context.Context) map[string]bool {
 // "permissive", nothing is ever identified as infected and this setting does
 // nothing at all.
 // ReputationProvider is the service this instance looks attachment hashes up
-// at: "virustotal" (the default) or "metadefender".
+// at: "virustotal" (the default), "metadefender", "polyswarm" or "circl".
 //
 // Anything unrecognised falls back to the default rather than disabling the
 // feature, on the same reasoning as the scan policy: a typo in a setting must
 // land somewhere predictable, and here the safe landing is the shipped default
 // rather than no link at all.
 //
-// The spellings are reputation.ProviderVirusTotal and ProviderMetaDefender.
-// They are not referenced by name here because internal/domain may not import
-// an infrastructure package; a test pins that the two agree.
+// The spellings are reputation.ProviderVirusTotal, ProviderMetaDefender,
+// ProviderPolySwarm and ProviderCIRCL. They are not referenced by name here
+// because internal/domain may not import an infrastructure package; a test
+// pins that the two agree.
 func (s *Service) ReputationProvider(ctx context.Context) string {
-	if v, _ := s.GetString(ctx, KeyAttachmentReputationProvider); v == "metadefender" {
+	switch v, _ := s.GetString(ctx, KeyAttachmentReputationProvider); v {
+	case "metadefender":
 		return "metadefender"
+	case "polyswarm":
+		return "polyswarm"
+	case "circl":
+		return "circl"
 	}
 	return "virustotal"
 }

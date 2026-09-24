@@ -77,6 +77,10 @@ func (s *Server) attachmentReputation(ctx context.Context, rep reputation.Reputa
 		ThreatName: rep.ThreatName,
 		AnalysedAt: rep.AnalysedAt,
 		Provider:   reputation.DisplayName(s.adminSvc.ReputationProvider(ctx)),
+		// Empty on every state but "known", where they are the evidence behind
+		// the only reassuring verdict this feature produces — and where they
+		// are what says how much that reassurance is worth.
+		KnownFeeds: rep.KnownFeeds,
 	}
 
 	// When we last asked. A verdict read from the cache carries the row's
@@ -94,10 +98,23 @@ func (s *Server) attachmentReputation(ctx context.Context, rep reputation.Reputa
 	case reputation.Detected, reputation.Clean:
 		detected, total := rep.Detected, rep.Total
 		out.Detected, out.Total = &detected, &total
-	case reputation.Unseen, reputation.Unscanned:
+	case reputation.Unseen, reputation.Unscanned, reputation.Known:
 		// No analysis, so no numbers: the pointers stay nil rather than
 		// carrying 0, because "0 of 0 engines" reads as a clean result and
 		// this is the opposite of one.
+		//
+		// "known" belongs here rather than with the counted states even
+		// though it is the reassuring one: a file answered out of a catalogue
+		// is never scanned at all — the answer comes straight from the hash
+		// match — so a count would be a fabricated analysis attached to the
+		// one verdict staff are entitled to find reassuring. What it carries
+		// instead is the feeds, above, which are what says how much the
+		// reassurance is worth.
+		//
+		// It also has to be named explicitly. The default arm below returns
+		// nil for anything it does not recognise, which is right for
+		// Unavailable and would silently turn the strongest positive signal
+		// this system can produce into "not checked yet".
 	default:
 		// Unavailable, and the zero State a future provider might return.
 		// Both mean nobody has an answer, and the wire says that by carrying
@@ -122,10 +139,17 @@ func (s *Server) attachmentReputation(ctx context.Context, rep reputation.Reputa
 // Constructing the rest is a handful of struct fields and no I/O, so there is
 // nothing to cache and no invalidation to get wrong.
 //
-// nil is returned for both halves of "off": no store to cache verdicts in, and
-// no API key. The key IS the on switch — there is no separate enabled flag, so
-// there is no such thing as enabled-with-no-key and no invalid combination for
-// an operator to land in.
+// nil is returned when there is nothing to cache verdicts in, and when the
+// configured provider cannot run.
+//
+// That second test used to be "is the key empty", and it was asked BEFORE
+// anything looked at which provider was configured — correct while every
+// provider needed a key, and it makes a keyless one permanently dead. The rule
+// now is that a lookup runs when the configured provider can run: a key for
+// the three commercial services, nothing for CIRCL. Today's behaviour is
+// unchanged by it — virustotal with no key is still a link and no lookup — and
+// the question is asked in one place, reputation.CanLookup, so the next
+// provider cannot answer it by accident.
 func (s *Server) reputationLookup(ctx context.Context) *reputation.Service {
 	if s.repStore == nil {
 		return nil
@@ -133,7 +157,7 @@ func (s *Server) reputationLookup(ctx context.Context) *reputation.Service {
 	// Never logged, never wrapped into an error, never returned to a client.
 	// It is stored write-only, and this is the only place it is read.
 	key := s.adminSvc.ReputationAPIKey(ctx)
-	if key == "" {
+	if !reputation.CanLookup(s.adminSvc.ReputationProvider(ctx), key) {
 		return nil
 	}
 	svc := reputation.NewService(s.newReputationProvider(ctx, key), s.repStore, s.repBudget)

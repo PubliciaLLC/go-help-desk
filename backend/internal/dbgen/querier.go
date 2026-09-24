@@ -306,6 +306,12 @@ type Querier interface {
 	// Every write re-stamps it, including one that changes nothing, which is what
 	// makes a re-check that comes back with the same answer still count as a
 	// re-check.
+	//
+	// known_feeds is COALESCEd because the column is NOT NULL while the parameter
+	// is optional: only a "known" verdict has feeds, and every other caller passes
+	// nothing. A nil parameter therefore has to mean "no feeds"
+	// rather than violating the constraint — the column's DEFAULT does not apply
+	// when a value is given explicitly, even a null one.
 	UpsertAttachmentReputation(ctx context.Context, arg UpsertAttachmentReputationParams) (AttachmentReputation, error)
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error

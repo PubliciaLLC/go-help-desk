@@ -8,10 +8,12 @@ package dbgen
 import (
 	"context"
 	"database/sql"
+
+	"github.com/lib/pq"
 )
 
 const getAttachmentReputation = `-- name: GetAttachmentReputation :one
-SELECT sha256, provider, state, detected, total, threat_name, analysed_at, fetched_at FROM attachment_reputation
+SELECT sha256, provider, state, detected, total, known_feeds, threat_name, analysed_at, fetched_at FROM attachment_reputation
 WHERE sha256 = $1 AND provider = $2
 `
 
@@ -34,6 +36,7 @@ func (q *Queries) GetAttachmentReputation(ctx context.Context, arg GetAttachment
 		&i.State,
 		&i.Detected,
 		&i.Total,
+		pq.Array(&i.KnownFeeds),
 		&i.ThreatName,
 		&i.AnalysedAt,
 		&i.FetchedAt,
@@ -43,16 +46,18 @@ func (q *Queries) GetAttachmentReputation(ctx context.Context, arg GetAttachment
 
 const upsertAttachmentReputation = `-- name: UpsertAttachmentReputation :one
 INSERT INTO attachment_reputation (
-    sha256, provider, state, detected, total, threat_name, analysed_at, fetched_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp())
+    sha256, provider, state, detected, total, threat_name, analysed_at,
+    known_feeds, fetched_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::text[], '{}'), clock_timestamp())
 ON CONFLICT (sha256, provider) DO UPDATE
-SET state       = EXCLUDED.state,
-    detected    = EXCLUDED.detected,
-    total       = EXCLUDED.total,
-    threat_name = EXCLUDED.threat_name,
-    analysed_at = EXCLUDED.analysed_at,
-    fetched_at  = EXCLUDED.fetched_at
-RETURNING sha256, provider, state, detected, total, threat_name, analysed_at, fetched_at
+SET state            = EXCLUDED.state,
+    detected         = EXCLUDED.detected,
+    total            = EXCLUDED.total,
+    threat_name      = EXCLUDED.threat_name,
+    analysed_at      = EXCLUDED.analysed_at,
+    known_feeds = EXCLUDED.known_feeds,
+    fetched_at       = EXCLUDED.fetched_at
+RETURNING sha256, provider, state, detected, total, known_feeds, threat_name, analysed_at, fetched_at
 `
 
 type UpsertAttachmentReputationParams struct {
@@ -63,6 +68,7 @@ type UpsertAttachmentReputationParams struct {
 	Total      sql.NullInt32  `json:"total"`
 	ThreatName sql.NullString `json:"threat_name"`
 	AnalysedAt sql.NullTime   `json:"analysed_at"`
+	KnownFeeds []string       `json:"known_feeds"`
 }
 
 // Records a completed lookup.
@@ -85,6 +91,12 @@ type UpsertAttachmentReputationParams struct {
 // Every write re-stamps it, including one that changes nothing, which is what
 // makes a re-check that comes back with the same answer still count as a
 // re-check.
+//
+// known_feeds is COALESCEd because the column is NOT NULL while the parameter
+// is optional: only a "known" verdict has feeds, and every other caller passes
+// nothing. A nil parameter therefore has to mean "no feeds"
+// rather than violating the constraint — the column's DEFAULT does not apply
+// when a value is given explicitly, even a null one.
 func (q *Queries) UpsertAttachmentReputation(ctx context.Context, arg UpsertAttachmentReputationParams) (AttachmentReputation, error) {
 	row := q.db.QueryRowContext(ctx, upsertAttachmentReputation,
 		arg.Sha256,
@@ -94,6 +106,7 @@ func (q *Queries) UpsertAttachmentReputation(ctx context.Context, arg UpsertAtta
 		arg.Total,
 		arg.ThreatName,
 		arg.AnalysedAt,
+		pq.Array(arg.KnownFeeds),
 	)
 	var i AttachmentReputation
 	err := row.Scan(
@@ -102,6 +115,7 @@ func (q *Queries) UpsertAttachmentReputation(ctx context.Context, arg UpsertAtta
 		&i.State,
 		&i.Detected,
 		&i.Total,
+		pq.Array(&i.KnownFeeds),
 		&i.ThreatName,
 		&i.AnalysedAt,
 		&i.FetchedAt,

@@ -40,7 +40,7 @@ const (
 	// KeyAttachmentReputationAPIKey, and read by nothing.
 	//
 	// These named VirusTotal because it was the only service considered. It is
-	// now one of two an operator can choose between, so a key called
+	// now one of three an operator can choose between, so a key called
 	// "attachment_vt_api_key" holding a MetaDefender key would be a lie in the
 	// settings table.
 	//
@@ -58,7 +58,7 @@ const (
 	KeyAttachmentVTAPIKey = "attachment_vt_api_key" // Deprecated: unused.
 
 	// Which reputation service this instance uses for attachment hashes.
-	// "virustotal" (the default) or "metadefender".
+	// "virustotal" (the default), "metadefender", "polyswarm" or "circl".
 	//
 	// One setting with two effects: it picks the server-side lookup, and it
 	// picks the service the SHA-256 in the UI links to. Keeping them together
@@ -70,16 +70,18 @@ const (
 	// all. An unrecognised value falls back to virustotal, and the settings
 	// endpoint refuses the write outright with invalid_reputation_provider —
 	// same rule, and the same reason, as the scan policy.
-	KeyAttachmentReputationProvider = "attachment_reputation_provider" // virustotal | metadefender
+	KeyAttachmentReputationProvider = "attachment_reputation_provider" // virustotal | metadefender | polyswarm | circl
 
 	// The API key for whichever provider is selected. Write-only over the API:
 	// see secretSettingKeys in handler_admin_settings.go.
 	//
-	// This is also the on/off switch. There is deliberately no separate
-	// "enabled" boolean: no key means no lookup, which removes the setting and
-	// with it every invalid combination it could be in — there is no such
-	// thing as enabled-with-no-key, so there is no rule to write and no way
-	// for an operator to get it wrong.
+	// For the three commercial providers this is also the on switch: no key,
+	// no lookup, and there is deliberately no separate "enabled" boolean, so
+	// there is no such thing as enabled-with-no-key. CIRCL is the exception
+	// that made the rule insufficient rather than wrong — it authenticates
+	// nobody, so there is no key that could switch it on or off. The rule that
+	// covers all four: a lookup runs when the configured provider CAN run. See
+	// reputation.CanLookup.
 	KeyAttachmentReputationAPIKey = "attachment_reputation_api_key"
 
 	// How often a stored verdict is re-checked: weekly, biweekly (the

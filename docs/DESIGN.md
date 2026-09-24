@@ -515,12 +515,15 @@ looked up at a third-party reputation service. Three settings, all
 session-gated like the scanner keys — an API key must not be able to decide
 where customers' file hashes go, or how often:
 
-- `attachment_reputation_provider` — `virustotal` (the default) or
-  `metadefender`. One setting with two effects: it picks the service the server
-  queries and the service the hash on a ticket links to, so an operator who
-  chose one never finds the other's link beside its verdict. An unrecognised
-  value is refused at save time with `invalid_reputation_provider` and read as
-  the default.
+- `attachment_reputation_provider` — `virustotal` (the default),
+  `metadefender`, `polyswarm` or `circl`. One setting with two effects: it
+  picks the service the server queries and the service the hash on a ticket
+  links to, so an operator who chose one never finds the other's link beside
+  its verdict. An unrecognised value is refused at save time with
+  `invalid_reputation_provider` and read as the default. CIRCL is the exception
+  to both halves: it needs no API key, and it has no per-hash page to link to,
+  so it is a lookup and no link where the three commercial services with no key
+  are a link and no lookup.
 - `attachment_reputation_api_key` — write-only over the API, like the OIDC
   client secret and the SAML key, and never logged.
 - `attachment_reputation_refresh` — how often a stored verdict is asked about
@@ -535,11 +538,33 @@ removed a release later, and an operator has to paste their key into the new
 field: copying somebody's secret from one setting to another on their behalf is
 not something to do quietly.
 
-**The key is the on switch.** There is deliberately no separate enabled
-boolean, which removes the whole class of invalid combination: there is no such
-thing as enabled-with-no-key, so there is no rule for it and no way to get it
-wrong. The **link** needs no key and makes no request, so an instance that
-never configures a lookup still gives staff a hash and somewhere to click.
+**A lookup runs when the configured provider can run.** A key for the three
+commercial services, nothing for CIRCL. The key is still the on switch for the
+three that have one, and there is still no separate enabled boolean, which
+removes the whole class of invalid combination — enabled-with-no-key is not a
+state this instance can be in. What the key can no longer express is "off",
+because CIRCL authenticates nobody: selecting it turns the lookup on and no key
+could switch it off again. Per-provider enable toggles are how that will be
+said; until they land, an operator who wants no lookups selects one of the
+three commercial providers and leaves its key empty. Nothing else changes:
+`virustotal` with no key is still a link and no lookup, and the **link** needs
+no key and makes no request, so an instance that never configures a lookup
+still gives staff a hash and somewhere to click.
+
+CIRCL is a **catalogue and not a scanner**, which is why it answers with fewer
+states than the others: `known` when a hash set it re-publishes carries the
+hash, `unseen` when none does, and `unavailable` when it could not be asked. It
+never says `clean`, `detected` or `unscanned`, because no engine runs there and
+there is nothing for one to have found or missed. Two things follow that the UI
+has to respect. Its `unseen` is **weaker** than the others' — NSRL's legacy
+sets are SHA-1 indexed and the SHA-256 mapping was added afterwards, so a file
+can be in NSRL and still answer 404 — which is why it reads as "CIRCL has no
+record of this SHA-256" and not "this file is unknown". And asking it is a
+**disclosure of a different kind**: it records the caller's IP and User-Agent,
+and its public instance serves a leaderboard of the most-queried hashes with
+filenames, where VirusTotal and OPSWAT log but do not publish. Hash reputation
+data from CIRCL hashlookup, Computer Incident Response Center Luxembourg,
+CC-BY-4.0.
 
 What the lookup does:
 
@@ -553,9 +578,14 @@ What the lookup does:
   the same file on five tickets costs one lookup. Two rows per hash rather than
   one is what stops an operator who switched provider from being shown the
   other service's answer attributed to the one they chose.
-- **Budgeted.** A daily counter per provider at that provider's own free-tier
-  ceiling — 500 for VirusTotal, 4,000 for MetaDefender — resetting at 00:00
-  UTC, plus a four-a-minute bucket for VirusTotal, which publishes one.
+- **Budgeted.** Each provider is metered at its own published free-tier
+  ceiling, in that provider's own shape: 500 a day for VirusTotal plus a
+  four-a-minute bucket, 4,000 a day for MetaDefender with no bucket, and 60 an
+  hour for PolySwarm, which publishes no daily figure at all and so is given
+  none. CIRCL publishes no ceiling of any kind, so its 300 an hour is a
+  politeness cap of ours rather than a limit of theirs — a free best-effort
+  service run by a CERT should not be metered by nothing. The daily counters
+  reset at 00:00 UTC and the hourly ones on the hour.
   In memory and per process: it is a courtesy cap rather than an accounting
   record, and a restart spending a handful of extra lookups is cheaper than a
   table.
@@ -564,25 +594,52 @@ What the lookup does:
   `quarterly` or `never`. A verdict decays, which is the whole reason this
   exists — new signatures catch old malware, and the sample nobody had
   submitted when we asked is precisely the one submitted a week later.
-- **Except a detection, which never expires.** Engines do not un-flag a file,
-  so re-confirming known malware is the one lookup guaranteed to tell nobody
-  anything, and it would be spent out of the same 500 a day as the lookups that
-  would.
-- **Re-checkable by hand.** Staff get a *Check again* control on a non-detected
-  verdict, and the server allows one re-check per hash every seven days
+- **Except a detection or a `known` file, which never expire.** Engines do not
+  un-flag a file, so re-confirming known malware is the one lookup guaranteed
+  to tell nobody anything; and a hash does not fall out of a vendor catalogue,
+  so re-confirming a catalogue entry is the other. Both would be spent out of
+  the same allowance as the lookups that would tell somebody something.
+- **Re-checkable by hand.** Staff get a *Check again* control on a verdict that
+  can still change, and the server allows one re-check per hash every seven days
   whatever the interval says — including when it says `never`, because an
   operator who turned automatic checking off to save quota did not mean that
   nobody may ever ask. It is a floor and not an override: the daily budget
   still applies, a re-check inside the week is refused with the date it clears,
-  and a re-check of a detection is refused outright. The control is disabled
+  and a re-check of a verdict that cannot change — a detection or a `known`
+  file — is refused outright. The control is disabled
   rather than hidden while the week runs, because a control that vanishes
   teaches nobody anything, and it is absent where there is no verdict to
   refresh.
 
-A verdict is one of four things a provider can tell us apart from failure:
+A verdict is one of five things a provider can tell us apart from failure:
 never seen this hash, seen it but holding no verdict, seen it and no engine
-flagged it, or seen it and some did. The distinctions are the value of the
-feature and none of them may collapse into the others.
+flagged it, seen it and some did, or **known** — a named vendor feed has this
+exact hash in its catalogue. The distinctions are the value of the feature and
+none of them may collapse into the others.
+
+**`known` is the one verdict here that renders as reassurance**, and it is an
+exception for a reason worth stating: a named feed made a positive claim about
+the file. Everywhere else in this feature an absence must never read as safety
+— `clean` only means engines ran and found nothing, `unseen` only means nobody
+has submitted it — and none of those has anybody standing behind it.
+
+It is `known` and deliberately **not** `known_good`, because how much the claim
+is worth depends entirely on which feed is speaking, and the state name must
+not overclaim on the weakest of them. PolySwarm's `microsoft_windows` feed is
+an Authenticode signature assertion — a positive claim that the file is signed
+and trusted. An NSRL catalogue entry means only that the file appeared in a
+known software distribution, and NSRL catalogues hacking tools; that is not a
+statement that the file is safe.
+
+So one state, and the feed names travel with the verdict and carry the weight.
+A renderer must say which feed is speaking — "known file, signed by Microsoft
+Windows" against "known file, catalogued by NSRL" — because those two sentences
+are not worth the same and neither of them is "known good". A bare `known` with
+no feed named would be a claim from nowhere, which is the shape this feature
+refuses everywhere else.
+
+Only PolySwarm can produce it today, from its `KNOWN_GOOD` state; the other two
+providers never return it.
 
 **What it does not do**, stated plainly because every one of these is the
 mistake that has already been made twice in the virus scanner:

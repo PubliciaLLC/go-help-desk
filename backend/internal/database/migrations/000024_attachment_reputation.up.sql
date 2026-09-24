@@ -17,20 +17,21 @@ CREATE TABLE attachment_reputation (
     -- hash has been deleted.
     sha256      TEXT        NOT NULL,
 
-    -- Which service said it: "virustotal" or "metadefender". Stored rather
-    -- than assumed from the current setting, because the setting can change
-    -- after the row is written and the row would then be mislabelled.
+    -- Which service said it: "virustotal", "metadefender", "polyswarm" or
+    -- "circl". Stored rather than assumed from the current setting, because
+    -- the setting can change after the row is written and the row would then
+    -- be mislabelled.
     --
     -- Constrained, because the column and internal/reputation's provider
     -- constants have to agree on the spelling: a row written under a
     -- misspelled provider is a cached verdict nothing can ever read back, and
     -- every page render then spends a fresh lookup to rediscover it.
     provider    TEXT        NOT NULL
-        CHECK (provider IN ('virustotal', 'metadefender')),
+        CHECK (provider IN ('virustotal', 'metadefender', 'polyswarm', 'circl')),
 
-    -- unseen | unscanned | clean | detected | unavailable.
+    -- unseen | unscanned | clean | detected | known | unavailable.
     --
-    -- NOT NULL, and every row records one of the five. "unavailable" is a
+    -- NOT NULL, and every row records one of the six. "unavailable" is a
     -- state and not an absence: a lookup that failed, timed out or was
     -- rate-limited must never come back as clean. This is the same mistake
     -- the ClamAV scanner has now had fixed twice, and storing it as a real
@@ -43,17 +44,38 @@ CREATE TABLE attachment_reputation (
     -- database is the last place the value can be wrong, and that is where it
     -- should be refused.
     state       TEXT        NOT NULL
-        CHECK (state IN ('unseen', 'unscanned', 'clean', 'detected', 'unavailable')),
+        CHECK (state IN ('unseen', 'unscanned', 'clean', 'detected', 'known', 'unavailable')),
 
     -- How many engines flagged it, and how many ran.
     --
     -- Both nullable, and NULL is a fact rather than a default: only a
-    -- completed analysis has counts. For unseen, unscanned and unavailable the
-    -- provider gave us no numbers at all, and 0 of 0 would render as "no
-    -- engine found anything" — which is precisely the false reassurance the
-    -- whole feature exists to avoid. NULL means "not recorded".
+    -- completed analysis has counts. For unseen, unscanned, known and
+    -- unavailable the provider gave us no numbers at all, and 0 of 0 would
+    -- render as "no engine found anything" — which is precisely the false
+    -- reassurance the whole feature exists to avoid. NULL means "not
+    -- recorded". known is the one worth spelling out: a file answered out of a
+    -- catalogue is never scanned at all, so a count there would be a
+    -- fabricated analysis attached to the one verdict staff are entitled to
+    -- find reassuring.
     detected    INTEGER,
     total       INTEGER,
+
+    -- The feeds that carry a "known" file: "nsrl", "microsoft_windows", a
+    -- commercial software catalogue. Empty on every other state.
+    --
+    -- Carried because the names ARE the evidence, and because the state on its
+    -- own deliberately does not say how strong the claim is. An Authenticode
+    -- signature assertion and an NSRL catalogue entry are different things —
+    -- NSRL catalogues hacking tools — and "known" is the one verdict in this
+    -- feature that renders as reassurance, so the claim has to have a source
+    -- attached, like every other claim here does.
+    --
+    -- NOT NULL DEFAULT '{}' rather than nullable, unlike the counts above. The
+    -- reason the counts are nullable does not apply: an empty list cannot be
+    -- misread as a finding the way 0 of 0 can. An empty array says nobody has
+    -- this file catalogued, which is exactly true of every row that is not
+    -- "known".
+    known_feeds TEXT[] NOT NULL DEFAULT '{}',
 
     -- The provider's name for what it found, e.g. Trojan.GenericKD.12345.
     -- NULL when nothing was detected or no analysis exists.

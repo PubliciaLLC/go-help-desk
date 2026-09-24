@@ -61,6 +61,22 @@ check whether it is listed here.
   bytes and rendering them itself; nothing on the server can. See docs/DESIGN.md and #165 before adding a
   thumbnail, a lightbox or an inline PDF view.
 
+- **CIRCL hashlookup's `KnownMalicious` field is read by nothing, on purpose.**
+  It is a field named `KnownMalicious`, sitting in a response we parse, holding
+  the string `"malshare.com"`, and wiring it to the `detected` verdict would be
+  a one-line change that reports jQuery to staff as malware. Measured against
+  the live service, the files carrying it include `jquery-1.12.4.min.js`,
+  `fontawesome-webfont.woff2`, a 1x1 spacer GIF and the hash of the two bytes
+  `1\n`. MalShare's corpus is everything ever submitted to it, benign assets
+  carved out of malware samples included, so the field means "these bytes have
+  appeared in MalShare" and nothing else. It is left undecoded rather than
+  decoded and ignored, so nothing can start branching on it by accident.
+  `hashlookup:trust` is not a verdict either: it starts at 50, adds 5 per
+  parent archive, subtracts 20 for `KnownMalicious` and caps at 100, so EICAR
+  scores 100 — a breadth counter, not an opinion. Both are documented at the
+  `clRecord` type in `internal/reputation/circl.go`, and tests pin that neither
+  changes a verdict.
+
 ### No breaking changes
 
 When extending a feature, existing behavior must not change. Tests that pass before your change must still pass after it. If something must be removed, deprecate with an explicit comment explaining why, then remove in a separate commit.

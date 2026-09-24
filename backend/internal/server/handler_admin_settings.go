@@ -194,7 +194,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if !reputation.ValidProvider(provider) {
 			Error(w, http.StatusBadRequest, "invalid_reputation_provider",
-				"reputation provider must be one of: virustotal, metadefender")
+				"reputation provider must be one of: virustotal, metadefender, polyswarm, circl")
 			return
 		}
 	}
