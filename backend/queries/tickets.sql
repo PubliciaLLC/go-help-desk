@@ -136,7 +136,21 @@ INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_cus
 VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: ListReplies :many
-SELECT * FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC;
+-- The author's display name comes back with the reply.
+--
+-- Without it the ticket page had nothing but author_id to render, and rendered
+-- it: every reply from a registered account showed as a bare UUID, so a staff
+-- member reading a thread could not tell who had said what. A join here rather
+-- than a lookup in the browser, because the page cannot do the lookup for a
+-- reporting user -- it is not allowed to list users, and should not be.
+--
+-- LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+-- where there is genuinely no account behind the message.
+SELECT r.*, u.display_name AS author_display_name
+FROM ticket_replies r
+LEFT JOIN users u ON u.id = r.author_id
+WHERE r.ticket_id = $1
+ORDER BY r.created_at ASC;
 
 -- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,

@@ -422,10 +422,24 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets),
 				authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
 			Get("/tags", s.handleListActiveTags)
-		// Public category/type/item listing (active only, no admin required).
-		r.Get("/categories", s.handleListPublicCategories)
-		r.Get("/categories/{id}/types", s.handleListPublicTypes)
-		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
+		// Category/type/item listing, active only.
+		//
+		// Open to anyone signed in, and to nobody else unless this instance
+		// takes guest submissions. It used to be open to everyone outright:
+		// an unauthenticated GET returned the whole catalogue, whatever the
+		// guest setting said. That is an operator's own structure — team
+		// names, service names, the shape of what they support — published to
+		// the internet by a deployment that had deliberately switched guest
+		// submission off.
+		//
+		// The guest form needs it, which is why it cannot simply require a
+		// session; when guests are enabled, the operator has chosen to make
+		// this list public, and that is the same choice.
+		r.With(s.requireSignedInOrGuestsEnabled).Group(func(r chi.Router) {
+			r.Get("/categories", s.handleListPublicCategories)
+			r.Get("/categories/{id}/types", s.handleListPublicTypes)
+			r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
+		})
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
@@ -622,4 +636,22 @@ func (s *Server) scanner(ctx context.Context) *antivirus.Scanner {
 // tests about the delay itself need one long enough to measure.
 func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
 	s.loginThrottleDelay = d
+}
+
+// requireSignedInOrGuestsEnabled admits any authenticated caller, and an
+// anonymous one only when this instance takes guest submissions.
+//
+// The catalogue is the one list both the signed-in ticket form and the public
+// guest form need, so it cannot simply require a session. What it can do is
+// stop being public on an instance that has turned guests off — which is an
+// operator saying they do not want anonymous people filing tickets here, and
+// therefore do not want the anonymous internet reading their category tree.
+func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authmw.GetActor(r) != nil || s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+	})
 }

@@ -491,18 +491,43 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 }
 
 const listReplies = `-- name: ListReplies :many
-SELECT id, ticket_id, author_id, body, internal, created_at, notify_customer FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC
+SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, u.display_name AS author_display_name
+FROM ticket_replies r
+LEFT JOIN users u ON u.id = r.author_id
+WHERE r.ticket_id = $1
+ORDER BY r.created_at ASC
 `
 
-func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error) {
+type ListRepliesRow struct {
+	ID                uuid.UUID      `json:"id"`
+	TicketID          uuid.UUID      `json:"ticket_id"`
+	AuthorID          uuid.NullUUID  `json:"author_id"`
+	Body              string         `json:"body"`
+	Internal          bool           `json:"internal"`
+	CreatedAt         time.Time      `json:"created_at"`
+	NotifyCustomer    bool           `json:"notify_customer"`
+	AuthorDisplayName sql.NullString `json:"author_display_name"`
+}
+
+// The author's display name comes back with the reply.
+//
+// Without it the ticket page had nothing but author_id to render, and rendered
+// it: every reply from a registered account showed as a bare UUID, so a staff
+// member reading a thread could not tell who had said what. A join here rather
+// than a lookup in the browser, because the page cannot do the lookup for a
+// reporting user -- it is not allowed to list users, and should not be.
+//
+// LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+// where there is genuinely no account behind the message.
+func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRepliesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listReplies, ticketID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []TicketReply
+	var items []ListRepliesRow
 	for rows.Next() {
-		var i TicketReply
+		var i ListRepliesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TicketID,
@@ -511,6 +536,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]Ticket
 			&i.Internal,
 			&i.CreatedAt,
 			&i.NotifyCustomer,
+			&i.AuthorDisplayName,
 		); err != nil {
 			return nil, err
 		}

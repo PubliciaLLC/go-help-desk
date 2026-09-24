@@ -310,11 +310,30 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
 	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)
 	if err != nil {
-		if errors.Is(err, user.ErrDomainNotAllowed) {
+		// Every refusal the upsert can make, not just the one. Only
+		// ErrDomainNotAllowed was mapped, so a disabled user's SAML login —
+		// and a provider that sent no subject, or no email — answered 500
+		// "an internal error occurred" and was logged as a fault on this
+		// server. Nothing is wrong with this server in any of those cases;
+		// the login was refused, and the person needs to be told which.
+		//
+		// The OIDC handler has mapped all of these since it was written.
+		// This is the same list, redirected rather than JSON because this
+		// endpoint is reached by a browser following the identity provider.
+		switch {
+		case errors.Is(err, user.ErrDomainNotAllowed):
 			http.Redirect(w, r, "/login?error=domain_not_allowed", http.StatusSeeOther)
-			return
+		case errors.Is(err, user.ErrUserDisabled):
+			http.Redirect(w, r, "/login?error=account_disabled", http.StatusSeeOther)
+		case errors.Is(err, user.ErrAccountLinkRefused):
+			http.Redirect(w, r, "/login?error=account_link_refused", http.StatusSeeOther)
+		case errors.Is(err, user.ErrSubjectRequired):
+			http.Redirect(w, r, "/login?error=invalid_assertion", http.StatusSeeOther)
+		case errors.Is(err, user.ErrEmailRequired):
+			http.Redirect(w, r, "/login?error=email_not_verified", http.StatusSeeOther)
+		default:
+			handleError(w, err)
 		}
-		handleError(w, err)
 		return
 	}
 

@@ -241,7 +241,17 @@ type Querier interface {
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
 	ListOAuthClients(ctx context.Context) ([]OauthClient, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
-	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error)
+	// The author's display name comes back with the reply.
+	//
+	// Without it the ticket page had nothing but author_id to render, and rendered
+	// it: every reply from a registered account showed as a bare UUID, so a staff
+	// member reading a thread could not tell who had said what. A join here rather
+	// than a lookup in the browser, because the page cannot do the lookup for a
+	// reporting user -- it is not allowed to list users, and should not be.
+	//
+	// LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+	// where there is genuinely no account behind the message.
+	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRepliesRow, error)
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
 	ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error)
 	ListSettings(ctx context.Context) ([]Setting, error)

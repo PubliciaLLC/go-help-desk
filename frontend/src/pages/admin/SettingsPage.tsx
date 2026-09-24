@@ -1695,7 +1695,7 @@ function AttachmentsPanel({
               switched VirusTotal off and still sees VirusTotal links will
               reasonably conclude the setting does not work. */}
           <p>
-            A hash on a ticket always links to VirusTotal, whatever these toggles say. That link opens in the
+            A flagged attachment always links to VirusTotal, whatever these toggles say. That link opens in the
             reader's own browser and this instance sends nothing there unless VirusTotal is switched on
             below; the toggles govern what this server discloses, not where staff may look.
           </p>

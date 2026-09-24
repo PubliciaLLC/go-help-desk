@@ -43,7 +43,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Live ticket search — tracking number (prefix), plus relevance-ranked full-text search across subject and description (Postgres FTS, word-prefix matched as you type); staff/admin can jump directly to a ticket by tracking number or UUID
 - Email and webhook notifications
 - Optional SLA tracking
-- Configurable branding — site name and logo upload (PNG, SVG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI
+- Configurable branding — site name and logo upload (PNG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
@@ -85,9 +85,13 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA, SLA and guest submission are toggled in the Admin UI.
-> The matching environment variables still exist and set the value the instance
-> starts with; the Admin UI setting takes precedence once it has been saved.
+> **Note:** SAML, MFA, SLA and guest submission are toggled in the Admin UI,
+> and that setting is the switch. Only SLA has a matching environment variable
+> (`SLA_ENABLED`), which starts the background scheduler; there has never been
+> a SAML one, and the MFA and guest-submission variables were removed in
+> 1.3.0-beta because nothing read them — an operator setting
+> `GUEST_SUBMISSION_ENABLED=true` and expecting guests to be able to file
+> tickets got no error and no guests.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 

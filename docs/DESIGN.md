@@ -215,13 +215,21 @@ in 1.2.0.
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
 
-Attachment upload is available to all authenticated (non-guest) users. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+Attachment upload is available to all authenticated (non-guest) users on the
+API. The reply composer currently offers the control to staff only, so a
+reporter can attach a file when they create a ticket and not when they reply
+to it; nothing refuses them, the button is simply absent. Tracked as an issue. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
 
 ### Attachment scanning
 
-The scanner is configured with `CLAMAV_ADDR`, which an administrator can
-override under **Admin → Settings**; the environment value is what the instance
-starts with. Docker Compose ships ClamAV by default.
+The scanner is configured with `CLAMAV_ADDR`. Docker Compose ships ClamAV by
+default.
+
+The setting `attachment_scan_address` overrides it and takes precedence once
+saved — but **there is no field for it in the admin UI yet**, so the only way
+to set it is a PATCH to `/api/v1/admin/settings`. This document said an
+administrator could change it under Admin → Settings, which sent operators
+looking for a control that is not there. Tracked as an issue.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -746,9 +754,15 @@ key failing.
 
 The expanded view carries each provider on its own line — named, with its own
 verdict, its own `analysed_at`, its own `fetched_at`, its own link and its own
-*Check again* control where the state allows one. The line the summary was taken
-from is marked, or the row's single sentence looks as though it came from
-nowhere.
+*Check again* control where the state allows one.
+
+The wire carries an `inline` flag saying which of those lines the one-line
+summary was taken from, and **nothing renders it yet**. The intent is that the
+summary's source is marked, so the row's single sentence does not look as
+though it came from nowhere; today a reader has to work it out from the
+verdict ordering. Tracked as an issue. Stated here rather than left implied
+because this document is what the next person builds from, and a sentence
+describing a marker that does not exist is how a gap becomes invisible.
 
 **All four off is a supported configuration, not a broken one.** It means
 attachments are judged by this instance's own scanner alone, which is a complete
@@ -870,11 +884,17 @@ flagged it, seen it and some did, or **known** — a named vendor feed has this
 exact hash in its catalogue. The distinctions are the value of the feature and
 none of them may collapse into the others.
 
-**`known` is the one verdict here that renders as reassurance**, and it is an
-exception for a reason worth stating: a named feed made a positive claim about
-the file. Everywhere else in this feature an absence must never read as safety
-— `clean` only means engines ran and found nothing, `unseen` only means nobody
-has submitted it — and none of those has anybody standing behind it.
+**`known` is the one verdict here with somebody standing behind it**, and it
+is an exception for a reason worth stating: a named feed made a positive claim
+about the file. Everywhere else in this feature an absence must never read as
+safety — `clean` only means engines ran and found nothing, `unseen` only means
+nobody has submitted it — and none of those has anybody behind it.
+
+It does not render as reassurance, and that is deliberate. Only a file the
+local scanner has already flagged is ever looked up, so a catalogue hit is
+never the stronger claim: it is context on a sample somebody has already
+called malicious, which is a reason to look harder rather than a reason to
+relax. The row says so — amber, with the caveat attached — and a test pins it.
 
 It is `known` and deliberately **not** `known_good`, because how much the claim
 is worth depends entirely on which feed is speaking, and the state name must
@@ -891,8 +911,9 @@ are not worth the same and neither of them is "known good". A bare `known` with
 no feed named would be a claim from nowhere, which is the shape this feature
 refuses everywhere else.
 
-Only PolySwarm can produce it today, from its `KNOWN_GOOD` state; the other two
-providers never return it.
+Two providers produce it today: PolySwarm, from its `KNOWN_GOOD` state, and
+CIRCL, when a hash set it re-publishes carries the file. VirusTotal and
+MetaDefender never return it.
 
 **What it does not do**, stated plainly because every one of these is the
 mistake that has already been made twice in the virus scanner:
@@ -969,7 +990,14 @@ caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
 not see reports "not found" rather than "forbidden", so tracking numbers cannot
-be probed.
+be probed **over MCP**.
+
+The REST API answers `403` for a ticket that exists and `404` for one that does
+not, which is the opposite of that and lets a signed-in reporter walk the
+sequential numbers to learn which exist. It reveals no content. It is not
+changed here because the status code is the REST contract — a dozen tests pin
+it and a client may branch on it — so tightening it belongs to a major version
+rather than a beta's bug fixes. Tracked as an issue.
 
 ### Authentication Methods
 

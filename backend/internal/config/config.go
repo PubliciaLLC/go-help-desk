@@ -61,11 +61,7 @@ type Config struct {
 	SMTPUser     string `envconfig:"SMTP_USER"`
 	SMTPPassword string `envconfig:"SMTP_PASSWORD"`
 	SMTPFrom     string `envconfig:"SMTP_FROM"`
-
-	// Features
-	GuestSubmissionEnabled bool `envconfig:"GUEST_SUBMISSION_ENABLED" default:"false"`
-	SLAEnabled             bool `envconfig:"SLA_ENABLED" default:"false"`
-	MFAEnabled             bool `envconfig:"MFA_ENABLED" default:"false"`
+	SLAEnabled   bool   `envconfig:"SLA_ENABLED" default:"false"`
 
 	// Storage
 	AttachmentDir string `envconfig:"ATTACHMENT_DIR" default:"/data/attachments"`

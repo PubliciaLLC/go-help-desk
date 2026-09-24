@@ -21,7 +21,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -322,7 +324,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		t, err = s.tickets.GetByTrackingNumber(ctx, ticket.TrackingNumber(id))
 	}
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "get ticket", err)
 	}
 	if !s.visible(ctx, t) {
 		return errResult(notFoundFor(id))
@@ -336,7 +338,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 	if includeReplies {
 		replies, err := s.tickets.ListReplies(ctx, t.ID)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "get ticket", err)
 		}
 		out.Replies = ticket.VisibleReplies(replies, caller.Role)
 
@@ -346,7 +348,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		// applies its own visibility check.
 		links, err := s.tickets.ListLinks(ctx, t.ID)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "get ticket", err)
 		}
 		out.Links = links
 	}
@@ -420,7 +422,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "create ticket", err)
 	}
 	return jsonResult(t)
 }
@@ -443,7 +445,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	t, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "add reply", err)
 	}
 	if !s.visible(ctx, t) {
 		return errResult(notFoundFor(tidStr))
@@ -471,7 +473,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	reply, err := s.tickets.AddReply(ctx, tid, body, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "add reply", err)
 	}
 	return jsonResult(reply)
 }
@@ -542,16 +544,16 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 
 	vis, err := s.authz.TicketVisibility(ctx, caller)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 	f, err := buildListFilter(req.GetArguments(), vis, caller.UserID)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 
 	tickets, err := s.tickets.ListFiltered(ctx, f)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 	return jsonResult(tickets)
 }
@@ -573,7 +575,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "assign ticket", err)
 	}
 	if !s.visible(ctx, existing) {
 		return errResult(notFoundFor(tidStr))
@@ -595,7 +597,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	actor := ticket.Actor{UserID: &actorID, Role: caller.Role}
 	t, err := s.tickets.Assign(ctx, tid, assigneeUserID, assigneeGroupID, actor)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "assign ticket", err)
 	}
 	return jsonResult(t)
 }
@@ -620,7 +622,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "update ticket status", err)
 	}
 	if !s.visible(ctx, existing) {
 		return errResult(notFoundFor(str(args, "ticket_id")))
@@ -631,7 +633,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	// caller's real role is what makes that check mean anything.
 	t, err := s.tickets.UpdateStatus(ctx, tid, statusID, ticket.Actor{UserID: &actorID, Role: caller.Role})
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "update ticket status", err)
 	}
 	return jsonResult(t)
 }
@@ -661,19 +663,19 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 
 	cats, err := s.categories.ListCategories(ctx, activeOnly)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list categories", err)
 	}
 	out := make([]catalogCategory, 0, len(cats))
 	for _, c := range cats {
 		types, err := s.categories.ListTypes(ctx, c.ID, activeOnly)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "list categories", err)
 		}
 		node := catalogCategory{Category: c, Types: make([]catalogType, 0, len(types))}
 		for _, ty := range types {
 			items, err := s.categories.ListItems(ctx, ty.ID, activeOnly)
 			if err != nil {
-				return errResult(err.Error())
+				return storeErr(ctx, "list categories", err)
 			}
 			node.Types = append(node.Types, catalogType{Type: ty, Items: items})
 		}
@@ -688,7 +690,7 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 	}
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list statuses", err)
 	}
 	return jsonResult(statuses)
 }
@@ -709,4 +711,25 @@ func jsonResult(v any) (*mcpgo.CallToolResult, error) {
 
 func errResult(msg string) (*mcpgo.CallToolResult, error) {
 	return mcpgo.NewToolResultError(msg), nil
+}
+
+// storeErr turns a failure from below into something a tool caller can be
+// told, and logs the rest.
+//
+// The raw error text was handed straight to the caller, and store errors carry
+// the database's own words: create_ticket with an unknown reporter id
+// answered `violates foreign key constraint "tickets_reporter_user_id_fkey"
+// (SQLSTATE 23503)`. That names a table, a column and a constraint to anyone
+// with a staff MCP client, and it is the sort of detail that makes the next
+// probe cheaper.
+//
+// Validation refusals are different and pass through unchanged: they are
+// about what the caller sent, the caller can act on them, and a tool that
+// answers "something went wrong" to a bad argument is a tool nobody can use.
+func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult, error) {
+	if errors.Is(err, ticket.ErrValidation) {
+		return storeErr(ctx, "list statuses", err)
+	}
+	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)
+	return errResult(op + " failed")
 }

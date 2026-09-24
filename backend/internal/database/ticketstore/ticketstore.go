@@ -439,6 +439,7 @@ func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.R
 			ID:             r.ID,
 			TicketID:       r.TicketID,
 			AuthorID:       database.UUIDPtr(r.AuthorID),
+			AuthorName:     r.AuthorDisplayName.String,
 			Body:           r.Body,
 			Internal:       r.Internal,
 			NotifyCustomer: r.NotifyCustomer,
