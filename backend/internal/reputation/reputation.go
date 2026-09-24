@@ -60,6 +60,35 @@ const (
 	ProviderMetaDefender = "metadefender"
 )
 
+// DisplayName is the provider's name as a person reads it.
+//
+// Here rather than on the Provider interface because it is a property of the
+// name, not of a configured client: the payload needs it wherever a verdict
+// came from, including one read straight out of the cache with no client
+// built. An unknown name comes back unchanged, which is the honest rendering
+// of a row written by a version of this that knew something we do not.
+func DisplayName(provider string) string {
+	switch provider {
+	case ProviderVirusTotal:
+		return "VirusTotal"
+	case ProviderMetaDefender:
+		return "MetaDefender"
+	}
+	return provider
+}
+
+// ValidProvider reports whether name is a provider this build can talk to.
+//
+// Next to the constants rather than in the settings handler, so a third
+// implementation cannot leave the validation behind. That is the failure this
+// function exists for: the setting shipped with no validation at all — it was
+// accepted on write, fell back to the default on read, and told the operator
+// nothing, which is the same "accepted and then ignored" shape the rest of
+// this handler refuses.
+func ValidProvider(name string) bool {
+	return name == ProviderVirusTotal || name == ProviderMetaDefender
+}
+
 // known reports whether s is one of the five declared states.
 //
 // The zero value is not one of them, which is the case that matters: an
@@ -90,6 +119,18 @@ type Reputation struct {
 	// attachment_reputation.fetched_at, which is our own clock and always
 	// known.
 	AnalysedAt *time.Time
+
+	// FetchedAt is when WE last fetched this verdict, as opposed to when the
+	// provider analysed the file. It is the field both expiry rules are
+	// decided on: the automatic re-check compares it against the configured
+	// interval, and the manual one against ManualRefreshFloor.
+	//
+	// Read-side only. A Store fills it in on Get; Put ignores it, because the
+	// row's fetched_at is the database's own clock — one clock decides one
+	// timeline. A provider never sets it, and the zero value means the age of
+	// this verdict is unknown, which is treated as "do not re-fetch" rather
+	// than "fetched in year one".
+	FetchedAt time.Time
 }
 
 // Provider is one reputation service.

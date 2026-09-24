@@ -125,6 +125,46 @@ export interface Attachment {
   // provider's format duplicated here, where it would drift. null when there
   // is no hash to look up.
   reputation_url: string | null
+  // What the configured reputation service said about sha256, when it was
+  // asked. Only ever filled in for a quarantined attachment — the server does
+  // not spend a daily allowance on holiday-request PDFs.
+  //
+  // Optional as well as nullable: absent and null mean the same thing here,
+  // and an attachment built before this field existed is not a verdict.
+  reputation?: AttachmentReputation | null
+}
+
+/**
+ * One provider's verdict on a file's hash.
+ *
+ * The four states are not four shades of the same thing, and collapsing any of
+ * them into "clean" is the mistake this type exists to make visible:
+ *
+ *   detected   at least one engine flagged it.
+ *   clean      the provider analysed it and no engine flagged it. Only ever
+ *              meaningful with the denominator: "0 of 78" is a result, "0 of
+ *              0" is a missing lookup wearing one's clothes.
+ *   unseen     the provider has never encountered this file. Not a verdict,
+ *              and arguably more interesting than a clean one.
+ *   unscanned  the provider knows the hash and holds no verdict for it. Also
+ *              not a verdict.
+ *
+ * "unavailable" never arrives: a lookup that failed leaves the whole object
+ * null, so there is one absence to render rather than two.
+ */
+export interface AttachmentReputation {
+  state: 'unseen' | 'unscanned' | 'clean' | 'detected'
+  // Engines that flagged the file and engines that ran. null together, and
+  // only ever non-null for a completed analysis — nil is a fact, because 0 of
+  // 0 reads as "nothing found anything".
+  detected: number | null
+  total: number | null
+  // The provider's own consensus name for what it found; often empty.
+  // Attacker-influenced, like virus_name: render it as text, never as markup.
+  threat_name: string
+  // When the PROVIDER analysed the file, not when we asked. What tells a
+  // reader whether a clean verdict predates the sample appearing in the wild.
+  analysed_at: string | null
 }
 
 export interface Reply {

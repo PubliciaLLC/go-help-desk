@@ -15,12 +15,22 @@ WHERE sha256 = $1 AND provider = $2;
 -- key and an ordinary page render errors.
 --
 -- fetched_at is the database's clock, not Go's, for the same reason sessions
--- stopped passing a timestamp in: one clock decides one timeline. now() rather
--- than clock_timestamp() is fine here — nothing compares this value against an
--- expiry, it is only shown to a person.
+-- stopped passing a timestamp in: one clock decides one timeline.
+--
+-- clock_timestamp() rather than now(): #168 made this value the one two
+-- refresh rules are decided on, and now() is the transaction's start time, not
+-- the statement's. Two writes inside one transaction get the same stamp, and a
+-- verdict written late in a long transaction is backdated to whenever that
+-- transaction opened. Both errors point the same way — a row that looks older
+-- than it is, re-checked sooner than it should be, out of an allowance that is
+-- not ours.
+--
+-- Every write re-stamps it, including one that changes nothing, which is what
+-- makes a re-check that comes back with the same answer still count as a
+-- re-check.
 INSERT INTO attachment_reputation (
     sha256, provider, state, detected, total, threat_name, analysed_at, fetched_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+) VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp())
 ON CONFLICT (sha256, provider) DO UPDATE
 SET state       = EXCLUDED.state,
     detected    = EXCLUDED.detected,

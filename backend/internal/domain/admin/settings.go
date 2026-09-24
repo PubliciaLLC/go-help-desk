@@ -72,6 +72,24 @@ const (
 	// for an operator to get it wrong.
 	KeyAttachmentReputationAPIKey = "attachment_reputation_api_key"
 
+	// How often a stored verdict is re-checked: weekly, biweekly (the
+	// default), monthly, quarterly or never.
+	//
+	// A verdict decays, which is the whole reason this exists. New signatures
+	// catch old malware, and a sample nobody had submitted when we asked is
+	// precisely the one that gets submitted a week later — so a quarantined
+	// attachment could sit on a ticket reading "0 of 78 engines" indefinitely
+	// while the real answer changed months ago.
+	//
+	// It governs only the automatic re-check, and only for a non-detected
+	// verdict: a detection never expires, and staff can always ask again by
+	// hand. "never" turns the automatic half off and nothing else.
+	//
+	// An unrecognised value falls back to biweekly, and the settings endpoint
+	// refuses the write outright with invalid_reputation_refresh — same rule,
+	// and the same reason, as the scan policy.
+	KeyAttachmentReputationRefresh = "attachment_reputation_refresh" // weekly | biweekly | monthly | quarterly | never
+
 	// Registration settings.
 	KeyAllowedEmailDomains     = "allowed_email_domains"     // []string — empty = unrestricted for SAML JIT
 	KeySelfSignupEnabled       = "self_signup_enabled"       // bool
@@ -158,5 +176,39 @@ func AuthCriticalKeys() []string {
 		// the key decides whether they go anywhere.
 		KeyAttachmentReputationProvider,
 		KeyAttachmentReputationAPIKey,
+		// And how often they go. Stretching the interval to "never" from a
+		// leaked API key is a quiet way to freeze every verdict on the
+		// instance at whatever it said the day the key was stolen.
+		KeyAttachmentReputationRefresh,
 	}
+}
+
+// The five values KeyAttachmentReputationRefresh takes.
+//
+// Constants rather than literals for the same reason as the infected-handling
+// pair: the reader, the validator and the interval table all have to agree on
+// the spelling, and a typo in any of them fails silently — as a verdict that
+// never refreshes, or an allowance that drains four times too fast.
+const (
+	ReputationRefreshWeekly    = "weekly"
+	ReputationRefreshBiweekly  = "biweekly"
+	ReputationRefreshMonthly   = "monthly"
+	ReputationRefreshQuarterly = "quarterly"
+	ReputationRefreshNever     = "never"
+)
+
+// ValidReputationRefresh reports whether v is a value the setting accepts.
+//
+// Used by the settings endpoint to refuse a write, not by the reader: the
+// reader falls back to biweekly, so an unrecognised value is safe but
+// baffling — an operator who typed "fortnightly", saw a 204 and expected their
+// quarterly instance to have stopped re-checking has been told nothing. Same
+// shape, and the same reasoning, as ValidInfectedHandling.
+func ValidReputationRefresh(v string) bool {
+	switch v {
+	case ReputationRefreshWeekly, ReputationRefreshBiweekly, ReputationRefreshMonthly,
+		ReputationRefreshQuarterly, ReputationRefreshNever:
+		return true
+	}
+	return false
 }

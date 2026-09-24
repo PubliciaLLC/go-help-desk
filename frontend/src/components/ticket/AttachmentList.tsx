@@ -138,6 +138,7 @@ function QuarantinedRow({ ticketId, attachment }: RowProps) {
           </p>
           <ContentLine attachment={attachment} />
           <HashLine attachment={attachment} />
+          <ReputationLine attachment={attachment} />
           <Button size="sm" variant="destructive" onClick={() => setConfirming(true)}>
             Download…
           </Button>
@@ -227,6 +228,125 @@ function HashLine({ attachment }: { attachment: Attachment }) {
       )}
     </p>
   )
+}
+
+/**
+ * When the provider analysed the file — not when we asked it.
+ *
+ * Empty for a verdict that carries no date, which is most of them: a provider
+ * that has never analysed a file has no date to give, and inventing one from
+ * the time of our request would answer a different question than the one a
+ * reader is asking.
+ */
+function analysedStamp(iso: string | null): string {
+  if (!iso) return ''
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return ''
+  return ` Last analysed by the service on ${at.toLocaleDateString(undefined, { dateStyle: 'medium' })}.`
+}
+
+/**
+ * What the configured reputation service says about this file's hash.
+ *
+ * On the quarantined tier only, because that is the only tier the server looks
+ * anything up for — an allowance spent on holiday-request PDFs is an allowance
+ * that is gone when a real sample arrives. It is additive: nothing a third
+ * party says moves a file out of quarantine, so the detection, the password
+ * and the confirmation above are unaffected by anything here.
+ *
+ * Nothing in here names the provider. Which one an instance uses is a
+ * session-gated admin setting staff cannot read, so the claim is attributed
+ * the way the scanner's is — what the service said, never what the file is.
+ *
+ * The four states are four different facts and none is a synonym for another.
+ * "Never seen" is the one that must not slip: for a file the local scanner has
+ * already flagged, being unknown to the provider is a fact worth noticing, not
+ * a shrug, and certainly not reassurance.
+ */
+function ReputationLine({ attachment }: { attachment: Attachment }) {
+  const rep = attachment.reputation
+  // Absent or null means no lookup completed: no API key configured, a spent
+  // budget, a provider that was down, a request that failed. Not a verdict and
+  // not a clean bill of health, and the one thing it must never do is read as
+  // either.
+  if (!rep) {
+    return (
+      <p className="text-xs text-gray-500">
+        Reputation service: not checked — no lookup was made for this file.
+      </p>
+    )
+  }
+
+  // Only the two states that represent an analysis carry the date. Neither
+  // provider sends one for `unseen` or `unscanned` today — there was no
+  // analysis to date — and printing one there would have the line contradict
+  // itself in its own second sentence.
+  const analysed =
+    rep.state === 'detected' || rep.state === 'clean' ? analysedStamp(rep.analysed_at) : ''
+
+  switch (rep.state) {
+    case 'detected':
+    case 'clean': {
+      // Both states are claims about engines, and a claim about engines
+      // without the numbers is not one. "0 of 0 engines" in particular is a
+      // lookup that returned nothing, wearing a clean verdict's clothes.
+      const counted =
+        typeof rep.detected === 'number' && typeof rep.total === 'number' && rep.total > 0
+      if (!counted) {
+        return (
+          <p className="text-xs font-medium text-amber-700">
+            The reputation service returned no engine counts, so there is no verdict to show.
+            {analysed}
+          </p>
+        )
+      }
+
+      const counts = `${rep.detected} of ${rep.total} engines`
+      if (rep.state === 'clean') {
+        return (
+          <p className="text-xs text-gray-600">
+            Reputation service: {counts} flagged this file.{analysed}
+          </p>
+        )
+      }
+      return (
+        <p className="text-xs font-medium text-red-800">
+          Reputation service: {counts} flagged this file
+          {/* The provider's consensus name, which a malware author has a hand
+              in choosing. A text node, like virus_name above it. */}
+          {rep.threat_name !== '' && (
+            <>
+              {' as '}
+              <span className="break-all font-mono font-semibold">{rep.threat_name}</span>
+            </>
+          )}
+          .{analysed}
+        </p>
+      )
+    }
+
+    case 'unseen':
+      return (
+        <p className="text-xs font-medium text-amber-700">
+          The reputation service has never seen this file. That is not a clean result: nobody has
+          ever submitted it for analysis.
+        </p>
+      )
+
+    case 'unscanned':
+      return (
+        <p className="text-xs font-medium text-amber-700">
+          The reputation service knows this file but holds no verdict for it — it has not been
+          analysed. That is not a clean result.
+        </p>
+      )
+
+    default:
+      // Unreachable through the type and handled anyway. A state this
+      // frontend does not recognise is not a verdict, and the safe reading of
+      // one is the same as no lookup at all.
+      return <p className="text-xs text-gray-500">Reputation service: not checked.</p>
+  }
 }
 
 interface ConfirmationProps extends RowProps {

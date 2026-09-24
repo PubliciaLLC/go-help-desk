@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
@@ -126,6 +127,7 @@ func run() error {
 	cfStore := customfieldstore.New(q)
 	regStore := registrationstore.New(q)
 	crStore := cannedresponsestore.New(q)
+	repStore := reputationstore.New(q)
 
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
@@ -237,6 +239,12 @@ func run() error {
 		authStore,
 		registrationSvc,
 		cannedResponseSvc,
+		// The verdict cache. The provider and the API key are not passed:
+		// both are settings an operator can change while this process runs,
+		// so they are read per request. The Budget that holds the counters is
+		// built inside New and lives as long as the server, which is the half
+		// that must not be per request.
+		server.WithReputationLookup(repStore),
 	)
 
 	srv.InitSAML(ctx)

@@ -194,6 +194,73 @@ type Attachment struct {
 	// a frontend that built the URL itself would need each provider's format
 	// duplicated there, where it would drift.
 	ReputationURL *string `json:"reputation_url"`
+
+	// Reputation is what that service actually said, when anybody has asked.
+	//
+	// nil means nobody has an answer to show — the lookup is not configured,
+	// this file was never a candidate for one, or the attempt did not
+	// complete. All three render as "not checked yet", which is the only
+	// honest thing to say about a file nobody looked up, and none of them may
+	// ever render as a clean result.
+	//
+	// Filled in at the HTTP boundary like ReputationURL, and for the same
+	// reason: the verdict belongs to whichever provider is configured now.
+	Reputation *AttachmentReputation `json:"reputation"`
+}
+
+// AttachmentReputation is one provider's verdict on a file, as the API sends
+// it.
+//
+// A second struct rather than internal/reputation's own because this package
+// is domain and may not import infrastructure. The five states are spelled
+// there; a test pins that the two agree.
+type AttachmentReputation struct {
+	// State is "unseen", "unscanned", "clean" or "detected".
+	//
+	// "unavailable" never reaches here: a lookup that failed leaves the whole
+	// struct nil, so a renderer has one absence to handle rather than two, and
+	// no way to mistake a failure for a finding.
+	State string `json:"state"`
+
+	// Detected and Total are the engines that flagged the file and the engines
+	// that ran. Pointers because nil is a fact: only a completed analysis has
+	// numbers, and 0 of 0 reads as "nothing found anything" — the false
+	// reassurance this feature exists to avoid.
+	Detected *int `json:"detected"`
+	Total    *int `json:"total"`
+
+	// ThreatName is the provider's own consensus name for what it found, and
+	// is often empty. Attacker-influenced text — a malware author picks the
+	// filename the engines name it after — so it is escaped on the way to a
+	// browser like any other untrusted string.
+	ThreatName string `json:"threat_name"`
+
+	// AnalysedAt is when the PROVIDER last analysed the file, not when we
+	// asked. Staff read it to judge whether a clean verdict predates the
+	// sample's first appearance in the wild.
+	AnalysedAt *time.Time `json:"analysed_at"`
+
+	// Provider is the service that gave this verdict, as a person reads it:
+	// "VirusTotal", "MetaDefender".
+	//
+	// Here because the UI cannot work it out for itself and must not try. The
+	// provider is a session-gated admin setting staff cannot read, and a
+	// frontend that guessed it from the link's host would be holding a second
+	// copy of provider knowledge to drift from this one. Attribution is the
+	// point: "VirusTotal has never seen this file" is a claim with a source,
+	// and "the reputation service has never seen this file" is a claim from
+	// nowhere.
+	Provider string `json:"provider"`
+
+	// FetchedAt is when WE last asked, as against AnalysedAt, when the
+	// provider last looked. It is what the "check again" control is enabled
+	// on: a verdict may be re-checked by hand once every seven days.
+	//
+	// A pointer because nil is a fact here too — a verdict from a cache that
+	// records no fetch time has an age nobody knows — though against the
+	// database it is always set, because attachment_reputation.fetched_at is
+	// NOT NULL.
+	FetchedAt *time.Time `json:"fetched_at"`
 }
 
 // DefaultTrackingPrefix is used when an instance has not set one.

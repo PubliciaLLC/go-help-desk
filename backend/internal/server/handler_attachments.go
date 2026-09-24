@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"image"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,6 +27,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/attachment"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"golang.org/x/image/bmp"
 )
@@ -450,10 +453,133 @@ func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// The verdict is a staff triage tool and it costs an operator's quota, so
+	// a customer refreshing their own ticket does not spend one. The link
+	// beside it is free and everybody gets that.
+	staff := a != nil && a.Role != user.RoleUser
 	for i := range atts {
 		s.addReputationURL(r.Context(), &atts[i])
+		if staff {
+			// r.Context(), so a reader who closes the tab takes the lookup
+			// with them. Nothing here can fail the response: see
+			// addReputation.
+			s.addReputation(r.Context(), &atts[i])
+		}
 	}
 	JSON(w, http.StatusOK, atts)
+}
+
+// POST /api/v1/tickets/{id}/attachments/{attachId}/reputation
+//
+// Re-checks one file's verdict because a person asked, rather than because a
+// page was rendered. Somebody looking at a quarantined sample and wondering
+// whether the world has caught up since is exactly who should be able to find
+// out, and an operator who set the automatic interval to "never" to save quota
+// did not mean "nobody may ever ask".
+//
+// Staff only, at the route, for the reason the lazy lookup checks the role
+// before spending one: a reporting customer refreshing their own ticket must
+// not cost the operator a third party's allowance. Everything else — the
+// weekly floor, the refusal on a detection, the budget — belongs to
+// reputation.Service, which is where the same rules already govern the
+// automatic half.
+func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *http.Request) {
+	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
+		return
+	}
+	attID, err := uuid.Parse(chi.URLParam(r, "attachId"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "invalid_id", "invalid attachment id")
+		return
+	}
+
+	att, err := s.tickets.GetAttachment(r.Context(), attID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if att.TicketID != ticketID {
+		Error(w, http.StatusNotFound, "not_found", "attachment not found on this ticket")
+		return
+	}
+
+	// No hash is the same answer as no verdict: there is nothing to look up
+	// and nothing to re-check. Attachments that predate the inspection are the
+	// case, and they render with no reputation row at all.
+	if att.SHA256 == nil || *att.SHA256 == "" {
+		noVerdictToRecheck(w)
+		return
+	}
+
+	svc := s.reputationLookup(r.Context())
+	if svc == nil {
+		// No cache wired, or no API key: the feature is off, and a control
+		// that cannot work should say so rather than report a refusal that
+		// sounds temporary.
+		reputationUnavailable(w, "the reputation lookup is not configured on this instance")
+		return
+	}
+
+	rep, err := svc.Refresh(r.Context(), *att.SHA256)
+	switch {
+	case errors.Is(err, reputation.ErrNotCached):
+		noVerdictToRecheck(w)
+		return
+
+	case errors.Is(err, reputation.ErrDetectionIsFinal):
+		Error(w, http.StatusConflict, "detection_is_final",
+			"this file is already identified as malicious; engines do not un-flag a file, "+
+				"so re-checking it would tell nobody anything")
+		return
+
+	case errors.Is(err, reputation.ErrTooSoon):
+		// The floor is a week per hash. A refusal that does not say when it
+		// clears is not actionable, so both the header and the message carry
+		// it.
+		next := rep.FetchedAt.Add(reputation.ManualRefreshFloor)
+		if wait := time.Until(next); wait > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		}
+		Error(w, http.StatusTooManyRequests, "checked_recently",
+			"this file was checked less than seven days ago; it can be checked again on "+
+				next.UTC().Format("2 January 2006"))
+		return
+
+	case err != nil:
+		// A re-check that did not happen, and the reader asked for it, so it
+		// gets a refusal rather than a page that silently shows the old
+		// answer. The reason goes to the operator's log and not to the
+		// caller; nothing here carries the API key — see reputationLookup.
+		level := slog.LevelWarn
+		if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
+			level = slog.LevelDebug
+		}
+		slog.Log(r.Context(), level, "attachment reputation re-check did not complete",
+			"error", err, "provider", s.adminSvc.ReputationProvider(r.Context()))
+		reputationUnavailable(w, "the reputation service could not be asked right now; please try again shortly")
+		return
+	}
+
+	s.addReputationURL(r.Context(), &att)
+	att.Reputation = s.attachmentReputation(r.Context(), rep)
+	JSON(w, http.StatusOK, att)
+}
+
+// noVerdictToRecheck is the refusal for a file nobody has looked up.
+//
+// Deliberately not a lookup: the ordinary lazy one covers a file with no
+// verdict, and a re-check that quietly became a first lookup would be a second
+// way to spend the allowance with none of the rules on it.
+func noVerdictToRecheck(w http.ResponseWriter) {
+	Error(w, http.StatusConflict, "no_verdict",
+		"nothing has been looked up for this file yet, so there is nothing to re-check")
+}
+
+func reputationUnavailable(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "60")
+	Error(w, http.StatusServiceUnavailable, "reputation_unavailable", message)
 }
 
 // GET /api/v1/tickets/{id}/attachments/{attachId}
@@ -783,8 +909,19 @@ func (s *Server) addReputationURL(ctx context.Context, att *ticket.Attachment) {
 // in NewServer would leave an operator's change doing nothing until a restart.
 // No API key is passed — this is only ever used for the link, which needs none.
 func (s *Server) reputationProvider(ctx context.Context) reputation.Provider {
+	return s.newReputationProvider(ctx, "")
+}
+
+// newReputationProvider is the same choice with a key attached, for the half
+// of the feature that makes a request. An empty key builds a provider that can
+// only ever produce a link; see reputationLookup for why one is never asked to
+// look anything up.
+//
+// s.repOpts is empty in production, so both providers point at the real
+// service. A test passes reputation.WithBaseURL through WithReputationLookup.
+func (s *Server) newReputationProvider(ctx context.Context, apiKey string) reputation.Provider {
 	if s.adminSvc.ReputationProvider(ctx) == reputation.ProviderMetaDefender {
-		return reputation.NewMetaDefender("")
+		return reputation.NewMetaDefender(apiKey, s.repOpts...)
 	}
-	return reputation.NewVirusTotal("")
+	return reputation.NewVirusTotal(apiKey, s.repOpts...)
 }

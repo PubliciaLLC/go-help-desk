@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -153,6 +154,41 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if !admin.ValidInfectedHandling(handling) {
 			Error(w, http.StatusBadRequest, "invalid_infected_handling",
 				"infected attachment handling must be one of: refuse, quarantine")
+			return
+		}
+	}
+
+	// Which service hashes are looked up at, and which one the link on a
+	// ticket points to. The reader falls back to VirusTotal, so a typo would
+	// silently send an operator who chose MetaDefender somewhere else — and
+	// the only symptom is a link they did not expect, on a page they may not
+	// look at.
+	if raw, ok := body[admin.KeyAttachmentReputationProvider]; ok {
+		var provider string
+		if err := json.Unmarshal(raw, &provider); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "reputation provider must be a string")
+			return
+		}
+		if !reputation.ValidProvider(provider) {
+			Error(w, http.StatusBadRequest, "invalid_reputation_provider",
+				"reputation provider must be one of: virustotal, metadefender")
+			return
+		}
+	}
+
+	// And how often a stored verdict is re-checked. The reader falls back to
+	// biweekly, so a typo would leave an operator who chose "never" to save
+	// quota still spending it, or one who chose "weekly" reading a verdict a
+	// fortnight old — and in both cases the page looks exactly as it should.
+	if raw, ok := body[admin.KeyAttachmentReputationRefresh]; ok {
+		var refresh string
+		if err := json.Unmarshal(raw, &refresh); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "reputation refresh must be a string")
+			return
+		}
+		if !admin.ValidReputationRefresh(refresh) {
+			Error(w, http.StatusBadRequest, "invalid_reputation_refresh",
+				"reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never")
 			return
 		}
 	}

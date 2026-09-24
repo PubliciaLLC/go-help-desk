@@ -32,6 +32,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
 )
 
@@ -201,6 +202,37 @@ type Server struct {
 
 	// rrIdx is the round-robin counter for auto-assigning tickets to users.
 	rrIdx atomic.Uint64
+
+	// The attachment reputation lookup. See reputation.go for what each of
+	// these is and, for repBudget, why it is a field here rather than built
+	// per call like the provider beside it.
+	repStore  reputation.Store
+	repBudget *reputation.Budget
+	repOpts   []reputation.Option
+}
+
+// Option adjusts a Server after its collaborators are in place.
+//
+// Variadic rather than another positional parameter: New already takes
+// sixteen, and a seventeenth would make every caller state a dependency most
+// of them do not have. The shape matches user.NewService(store,
+// user.WithBcryptCost(...)).
+type Option func(*Server)
+
+// WithReputationLookup turns the attachment reputation lookup on by giving the
+// server somewhere to cache verdicts.
+//
+// Without it the server still builds the link an analyst clicks — that needs
+// no key, no cache and no request — and simply never looks anything up.
+//
+// providerOpts are passed to whichever provider the operator has configured.
+// Production passes none and gets the real endpoints; a test passes
+// reputation.WithBaseURL to point at an httptest server.
+func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Option) Option {
+	return func(s *Server) {
+		s.repStore = store
+		s.repOpts = providerOpts
+	}
 }
 
 // New constructs a Server and registers all routes.
@@ -221,6 +253,7 @@ func New(
 	authStore AuthStoreIface,
 	registrationSvc *registration.Service,
 	cannedResponses *cannedresponse.Service,
+	opts ...Option,
 ) *Server {
 	s := &Server{
 		cfg:              cfg,
@@ -243,6 +276,14 @@ func New(
 		// other collaborators.
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
+		// One Budget for the life of the process, always — even when no
+		// lookup is wired, so that nothing has to check for nil later. A
+		// Budget built per request is a fresh allowance per request, which is
+		// no cap at all.
+		repBudget: reputation.NewBudget(),
+	}
+	for _, opt := range opts {
+		opt(s)
 	}
 	s.router = s.buildRouter()
 	return s

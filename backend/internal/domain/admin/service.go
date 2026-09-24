@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -460,10 +461,66 @@ func (s *Service) ReputationProvider(ctx context.Context) string {
 	return "virustotal"
 }
 
+// ReputationAPIKey is the key for whichever provider is configured, and with
+// it the feature's on/off switch: empty means no lookup at all. There is
+// deliberately no separate enabled flag, so "enabled with no key" is not a
+// state this instance can be in.
+//
+// The value is stored write-only — the settings endpoint accepts it and never
+// echoes it back — and it must stay that way on this side too: it is never
+// logged, never wrapped into an error, and never returned to a client. The
+// only thing it is for is an outbound request header.
+//
+// Trimmed because an operator pasting a key picks up a trailing newline often
+// enough to matter, and because a setting containing nothing but spaces should
+// read as unconfigured rather than as a key the provider will reject.
+func (s *Service) ReputationAPIKey(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentReputationAPIKey)
+	return strings.TrimSpace(v)
+}
+
 func (s *Service) InfectedHandling(ctx context.Context) string {
 	v, _ := s.GetString(ctx, KeyAttachmentInfectedHandling)
 	if v == InfectedHandlingQuarantine {
 		return InfectedHandlingQuarantine
 	}
 	return InfectedHandlingRefuse
+}
+
+// ReputationRefresh is how often this instance re-checks a stored verdict:
+// "weekly", "biweekly" (the default), "monthly", "quarterly" or "never".
+//
+// Anything unrecognised falls back to the default rather than to "never", and
+// the direction matters: a typo must not silently switch automatic re-checking
+// off, because the symptom is a verdict that stays on screen looking current
+// for as long as the instance lives.
+func (s *Service) ReputationRefresh(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentReputationRefresh)
+	if ValidReputationRefresh(v) {
+		return v
+	}
+	return ReputationRefreshBiweekly
+}
+
+// ReputationRefreshInterval is the same setting as a duration: how old a
+// non-detected verdict may be before the next lookup re-fetches it.
+//
+// Zero means "never", and it is the caller's job to read it that way. An
+// interval of zero compared against an age would make every verdict stale on
+// every render — the exact opposite of the setting, spending the operator's
+// allowance to do it.
+func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
+	const day = 24 * time.Hour
+	switch s.ReputationRefresh(ctx) {
+	case ReputationRefreshWeekly:
+		return 7 * day
+	case ReputationRefreshMonthly:
+		return 30 * day
+	case ReputationRefreshQuarterly:
+		return 90 * day
+	case ReputationRefreshNever:
+		return 0
+	default:
+		return 14 * day
+	}
 }
