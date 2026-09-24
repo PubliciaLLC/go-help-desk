@@ -86,6 +86,17 @@ func TestUpload_AnOperatorAddedTypeIsNotRefusedForMatchingItsName(t *testing.T) 
 					got := attachmentOverHTTP(t, h, tk.ID.String(), tc.filename)
 					require.Equal(t, tc.filename, got.Filename,
 						"a type the operator added must not be renamed into an archive")
+
+					// And not accused, either. The flag is the half staff
+					// read, so leaving it asserting a contradiction would be
+					// the same false claim in the place it is actually seen:
+					// "Content looks like HTML, not a .htm file", about a
+					// genuine HTML page under a spelling the operator chose.
+					require.Nil(t, got.ContentMismatch,
+						"we cannot judge a spelling we did not ship, and saying so is "+
+							"not the same as saying nothing is wrong")
+					require.NotNil(t, got.DetectedMime,
+						"what the content is, is still recorded — that is the part we know")
 				})
 			}
 		})

@@ -518,8 +518,8 @@ Measured through the upload handler on a default instance:
 | a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` | `201` |
 | HTML named `.pdf` | `415` | `415` |
 
-**Containment only applies to the nine extensions this project ships.** Their
-spellings are the detector's own, so a contradiction under one of those names
+**Containment only applies to the nine extensions this project ships.** Each
+was checked against the detector, so a contradiction under one of those names
 is one we can stand behind. An extension an operator adds is flagged at most,
 never wrapped or refused — the detector reports one canonical spelling per
 format, so `.htm` is HTML and `.tif` is TIFF but it calls them `.html` and
@@ -530,6 +530,31 @@ involved do not agree on a name for the same format — Go's standard library
 calls a Windows executable `application/x-msdownload` where the detector calls
 it `application/vnd.microsoft.portable-executable` — so there is no canonical
 mapping to build one from.
+
+The invariant is narrower than "their spellings are the detector's own", and
+the difference is worth stating because it is what a future reader would check:
+the detector calls a `.log` a `.txt` and a `.jpeg` a `.jpg`, so two of the nine
+are not its spelling at all. They survive because the relaxations above cover
+them. The real rule is that every shipped extension is either the detector's
+spelling **or** covered by a relaxation, and a test walks the shipped list and
+fails on any entry that is neither — because adding `.tif` to the defaults is
+an entirely reasonable thing to do, and would otherwise contain and refuse
+every genuine TIFF.
+
+**What this gives up.** An operator-added extension is no longer contained even
+when the content genuinely contradicts it. The case worth naming: an instance
+that has allowed `.xml`, receiving an XHTML document carrying a script under
+the name `report.xml`. It is stored under that name, and a browser opening it
+from disk will run the script. That is bounded — allowing `.xml` already allows
+XSLT-bearing XML, which does the same — and it is the price of not refusing
+genuine files with a false explanation. An operator who wants containment for a
+type gets it by that type being one we ship.
+
+Neither the containment nor the flag applies to an extension we did not ship.
+"No contradiction" is a claim too, and it is not one we can make about a
+spelling we cannot check: the row carries the detected type and no verdict,
+which reads as "we looked and could not judge" and is distinguishable from a
+row that predates detection and has neither.
 
 The first row is the one to understand rather than to fix. A `.pdf` holding
 plain text is a contradiction and is flagged, and it is neither wrapped nor

@@ -277,6 +277,26 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// are told instead of the upload being rejected.
 	mismatch := attachment.IsMismatch(ext, detectedExt, detectedMime)
 
+	// And judged only where we can judge.
+	//
+	// The same reasoning that stops containment firing on an operator-added
+	// extension applies to the flag, and the flag is the half staff actually
+	// read. On an instance that added .htm, every genuine HTML page was
+	// recorded as a contradiction and shown as "Content looks like HTML, not
+	// a .htm file" — a false sentence about an ordinary file, which is the
+	// failure this whole rule exists to avoid. The detector spells the format
+	// .html; the operator spelled it .htm; nobody lied.
+	//
+	// nil rather than false: "no contradiction" is also a claim, and we cannot
+	// make it either. What we can say is what the content is, and
+	// detected_mime carries that — a row with a detected type and no verdict
+	// is legible as "we looked and could not judge", which is the truth, and
+	// is distinguishable from a row that predates detection and has neither.
+	var judged *bool
+	if shippedExt(ext) {
+		judged = &mismatch
+	}
+
 	// What the scanner made of it, and what the operator chose to do with
 	// that. An empty name means the file was not identified as malicious —
 	// either it was scanned and found clean, or the policy meant it was never
@@ -445,7 +465,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		// Of the bytes as uploaded, both of them.
 		DetectedMime:    &detectedMime,
 		SHA256:          &sha,
-		ContentMismatch: &mismatch,
+		ContentMismatch: judged,
 	}
 	// NULL on everything else, and there it is a fact rather than an absence:
 	// it means this file was not identified as malicious.
@@ -1112,7 +1132,16 @@ func (s *Server) newReputationProvider(name, apiKey string) reputation.Provider 
 }
 
 // shippedExt reports whether this extension is one of the nine this project
-// ships, whose spelling is known to be the detector's own.
+// ships, each of which was checked against the detector.
+//
+// Not the same claim as "their spelling is the detector's own", which is
+// false for two of the nine: the detector calls a .log a .txt and a .jpeg a
+// .jpg. Those two survive because IsMismatch relaxes for them — .jpeg and
+// .jpg collapse to one spelling, and a .log matches any inert text — not
+// because the names agree. The invariant is therefore that every shipped
+// extension is either the detector's spelling or covered by one of those
+// relaxations, and TestShippedExtensions_AreNeverAContradictionOfThemselves
+// walks the shipped list and fails on any entry that is neither.
 //
 // Containment means being confident the name lied, and for an extension an
 // operator added we cannot establish what it promised. The detector reports

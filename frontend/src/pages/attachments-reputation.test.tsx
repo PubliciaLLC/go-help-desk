@@ -91,7 +91,7 @@ function quarantined(reputation: AttachmentReputation | null): Attachment {
     id: 'att-bad',
     filename: 'invoice.exe.zip',
     mime_type: 'application/zip',
-    detected_mime: 'application/x-dosexec',
+    detected_mime: 'application/vnd.microsoft.portable-executable',
     sha256: EICAR_SHA,
     virus_name: DETECTION,
     mismatch: false,

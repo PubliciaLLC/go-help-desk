@@ -24,7 +24,13 @@ function isQuarantined(a: Attachment): boolean {
 // types fall through to the MIME string itself, which is ugly but true — an
 // invented label would be worse than no label.
 const CONTENT_LABELS: Record<string, string> = {
-  'application/x-dosexec': 'a Windows executable',
+  // The spelling the detector actually emits. It was 'application/x-dosexec'
+  // — a name from a third vocabulary that the backend never produces, so the
+  // label never rendered and the raw type was shown instead. Every fixture
+  // used the wrong spelling too, so no test could notice.
+  'application/vnd.microsoft.portable-executable': 'a Windows executable',
+  'application/x-elf': 'a Linux executable',
+  'application/x-ole-storage': 'a legacy Office or installer container',
   'application/zip': 'a ZIP archive',
   'application/pdf': 'a PDF',
   'application/octet-stream': 'unrecognised data',
