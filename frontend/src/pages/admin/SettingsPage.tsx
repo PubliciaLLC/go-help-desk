@@ -404,13 +404,14 @@ function OIDCSection() {
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type Tab = 'general' | 'branding' | 'auth' | 'features'
+type Tab = 'general' | 'branding' | 'auth' | 'features' | 'attachments'
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: 'general',  label: 'General' },
-  { id: 'branding', label: 'Branding' },
-  { id: 'auth',     label: 'Authentication' },
-  { id: 'features', label: 'Features' },
+  { id: 'general',     label: 'General' },
+  { id: 'branding',    label: 'Branding' },
+  { id: 'auth',        label: 'Authentication' },
+  { id: 'features',    label: 'Features' },
+  { id: 'attachments', label: 'Attachments' },
 ]
 
 // ── Tab panels ────────────────────────────────────────────────────────────────
@@ -527,6 +528,12 @@ function BrandingPanel({
   const [deleting, setDeleting] = useState(false)
   const [confirmDeleteLogo, setConfirmDeleteLogo] = useState(false)
   const [logoKey, setLogoKey] = useState(0)
+  /* A stored logo URL that will not load. On this branch that has one likely
+     cause: handleServeLogo serves logo.png and nothing else, so an SVG left by
+     a release that still accepted them 404s, the sidebar falls back to the
+     site name, and nothing anywhere says why. The server's own comment says
+     "the settings page says why" — this is that. */
+  const [logoUnavailable, setLogoUnavailable] = useState(false)
 
   const { data: siteConfig } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig })
   const currentLogoURL = siteConfig?.logo_url ?? ''
@@ -584,27 +591,44 @@ function BrandingPanel({
           <div>
             <div className="text-sm font-medium text-gray-900">Logo</div>
             <div className="mt-0.5 text-sm text-gray-500">
-              Target size: <span className="font-medium">320 × 64 px</span> · PNG, SVG, JPG, or GIF · Max 2 MB.
+              Target size: <span className="font-medium">320 × 64 px</span> · PNG, JPG, or GIF · Max 2 MB.
               Larger images are scaled proportionally to fit. The logo replaces the site name in the sidebar.
+            </div>
+            {/* One sentence, not a warning: an operator who used an SVG logo
+                and finds the option gone should know it was deliberate. */}
+            <div className="mt-0.5 text-sm text-gray-500">
+              SVG is not accepted. The logo is the one uploaded file this application renders inside its own
+              origin, and an SVG is a document that can carry script.
             </div>
           </div>
 
           {currentLogoURL && (
-            <div className="flex items-center gap-3">
-              <img
-                src={`${currentLogoURL}?v=${logoKey}`}
-                alt="Current logo"
-                className="h-8 max-w-[200px] rounded border object-contain p-1"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirmDeleteLogo(true)}
-                disabled={deleting || uploading}
-              >
-                {deleting ? 'Removing…' : 'Remove logo'}
-              </Button>
-            </div>
+            <>
+              <div className="flex items-center gap-3">
+                <img
+                  src={`${currentLogoURL}?v=${logoKey}`}
+                  alt="Current logo"
+                  className="h-8 max-w-[200px] rounded border object-contain p-1"
+                  onLoad={() => setLogoUnavailable(false)}
+                  onError={() => setLogoUnavailable(true)}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDeleteLogo(true)}
+                  disabled={deleting || uploading}
+                >
+                  {deleting ? 'Removing…' : 'Remove logo'}
+                </Button>
+              </div>
+              {logoUnavailable && (
+                <p className="text-sm text-amber-700">
+                  This instance has a logo stored, but it cannot be loaded and is no longer served — an SVG
+                  uploaded by an earlier version is the usual reason. The sidebar is showing the site name
+                  instead. Upload a PNG, JPG or GIF to replace it.
+                </p>
+              )}
+            </>
           )}
           <ConfirmDialog
             open={confirmDeleteLogo}
@@ -628,7 +652,7 @@ function BrandingPanel({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".png,.jpg,.jpeg,.gif,.svg"
+              accept=".png,.jpg,.jpeg,.gif"
               className="hidden"
               onChange={handleFileChange}
             />
@@ -1081,6 +1105,380 @@ function FeaturesPanel({
   )
 }
 
+// ── Attachments panel ─────────────────────────────────────────────────────────
+
+/**
+ * The settings key for the reputation provider's API key.
+ *
+ * Write-only over the API: it is in secretSettingKeys, so the settings dump
+ * never returns it and it is never part of `local`. Sending it has to be
+ * something the operator asked for — see the key field below.
+ */
+const REPUTATION_API_KEY = 'attachment_reputation_api_key'
+
+/**
+ * What the server accepts when the operator has never set a list, from
+ * admin.DefaultAllowedTypes().
+ *
+ * Duplicated here because the API does not send it: an instance that has never
+ * set the list has no row, so the field would otherwise be empty — and an
+ * empty list is itself a valid setting meaning "no attachments at all", which
+ * is the opposite of what an unset instance does. Display only. An untouched
+ * list is never written back, so an instance that never chose one keeps
+ * following whatever the server's default becomes.
+ */
+const DEFAULT_ALLOWED_TYPES = ['.pdf', '.docx', '.xlsx', '.txt', '.log', '.jpg', '.jpeg', '.png', '.bmp']
+
+/** Extensions out of the textarea: whitespace or commas, in any combination. */
+function parseAllowedTypes(text: string): string[] {
+  return text
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+/**
+ * What the chosen provider says about their own free tier, in their words.
+ *
+ * Four rules from #168, all deliberate:
+ *
+ *   not dismissible      "a warning with an × becomes a warning nobody sees
+ *                        twice". There is no control in here at all.
+ *   always shown         including when no key is configured. Someone reading
+ *                        this page to decide whether to switch it on is
+ *                        exactly the person who needs it.
+ *   quoted, attributed   we are not the licensing authority and must not read
+ *                        as one. Quote them; let the operator judge their own
+ *                        deployment.
+ *   once                 no second warning elsewhere, and no confirmation
+ *                        dialog on the provider. That is reserved for
+ *                        downloading an infected file, where the risk is
+ *                        immediate.
+ *
+ * Both halves are here for both providers because they answer different
+ * questions: the limit decides whether the feature works for them, the licence
+ * decides whether they should switch it on at all.
+ *
+ * role="alert" follows InsecureConfigBanner, the one existing banner in this
+ * codebase — consistency with the precedent, and the content does warrant
+ * interrupting somebody who is about to paste a key in.
+ */
+function ReputationWarning({ provider }: { provider: string }) {
+  // Unrecognised falls back to VirusTotal, matching what the Go reader does
+  // with the same value. Showing MetaDefender's licence under VirusTotal's
+  // lookup would be worse than showing the default.
+  const metaDefender = provider === 'metadefender'
+
+  return (
+    <div
+      role="alert"
+      className="space-y-2 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+    >
+      {metaDefender ? <MetaDefenderTerms /> : <VirusTotalTerms />}
+    </div>
+  )
+}
+
+/* The VirusTotal copy is specified word for word in #168 and is quoted rather
+   than summarised. Softening it is the failure mode it exists to prevent: the
+   penalty VirusTotal state is a ban on the operator's whole organisation, not
+   on the key they pasted in here. */
+function VirusTotalTerms() {
+  return (
+    <>
+      <p className="font-semibold">
+        ⚠ VirusTotal's free API has limits, and is not licensed for commercial use
+      </p>
+      <p>
+        The free public API allows <strong>4 requests per minute and 500 per day</strong>. Go Help Desk
+        looks up each infected attachment once and stores the result, but on a busy instance some lookups
+        will be skipped until the quota resets at 00:00 UTC. Skipped lookups show as <em>not checked</em> —
+        never as clean.
+      </p>
+      <p>
+        VirusTotal state that the public API “must not be used in commercial products or services”, and
+        “must not be used in business workflows that do not contribute new files”. This feature only looks
+        hashes up; it never uploads a file. If you are running Go Help Desk commercially, you need a paid
+        VirusTotal API key. VirusTotal state the penalty for non-compliance as a permanent ban of the
+        individual or organization.
+      </p>
+      <p>
+        <a
+          className="font-medium underline"
+          href="https://docs.virustotal.com/reference/public-vs-premium-api"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          VirusTotal: public vs premium API ↗
+        </a>
+      </p>
+    </>
+  )
+}
+
+/* MetaDefender's terms are not VirusTotal's, so the copy is not VirusTotal's
+   either — the same shape, their numbers, their words.
+
+   The quoted clause is from OPSWAT's current Terms of Service, section 6,
+   read live rather than from #168: the issue quotes "personal, non-commercial
+   use" with a carve-out for a "non-commercial personal or organizational
+   capacity", and neither phrase appears in the published terms today. What
+   they do say about free access is quoted here verbatim, and it is narrower
+   than the issue's wording rather than broader, so the operator is not being
+   told they have more room than they have. */
+function MetaDefenderTerms() {
+  return (
+    <>
+      <p className="font-semibold">
+        ⚠ MetaDefender's free API has limits, and is licensed for personal use
+      </p>
+      <p>
+        The free API allows <strong>4,000 requests per day</strong>, and OPSWAT do not throttle single hash
+        lookups, so there is no per-minute limit. Go Help Desk looks up each infected attachment once and
+        stores the result, but on a busy instance some lookups will be skipped until the quota resets at
+        00:00 UTC. Skipped lookups show as <em>not checked</em> — never as clean.
+      </p>
+      <p>
+        OPSWAT state that free access to their services is licensed “solely for Your personal use”. This
+        feature only looks hashes up; it never uploads a file. A help desk is not a personal use of the
+        service, so read their terms against your own deployment before switching this on; OPSWAT sell paid
+        MetaDefender Cloud plans for organizational use.
+      </p>
+      <p className="flex flex-wrap gap-x-4">
+        <a
+          className="font-medium underline"
+          href="https://www.opswat.com/legal/terms-of-service"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          OPSWAT Terms of Service ↗
+        </a>
+        <a
+          className="font-medium underline"
+          href="https://docs.opswat.com/mdcloud"
+          target="_blank"
+          rel="noreferrer noopener"
+        >
+          MetaDefender Cloud documentation ↗
+        </a>
+      </p>
+    </>
+  )
+}
+
+function AttachmentsPanel({
+  str, strArr, has,
+  setStr, setStrArr,
+  apiKey, setApiKey, clearAPIKey, setClearAPIKey,
+  onSave, isPending, error, saved,
+}: {
+  str: (k: string) => string
+  strArr: (k: string) => string[]
+  has: (k: string) => boolean
+  setStr: (k: string, v: string) => void
+  setStrArr: (k: string, v: string[]) => void
+  apiKey: string
+  setApiKey: (v: string) => void
+  clearAPIKey: boolean
+  setClearAPIKey: (v: boolean) => void
+  onSave: () => void
+  isPending: boolean
+  error: string
+  saved: boolean
+}) {
+  const typesSet = has('attachment_allowed_types')
+  const [typesText, setTypesText] = useState(
+    (typesSet ? strArr('attachment_allowed_types') : DEFAULT_ALLOWED_TYPES).join('\n'),
+  )
+  const [confirmClearKey, setConfirmClearKey] = useState(false)
+
+  const scanPolicy = str('attachment_scan_policy')
+  const handling = str('attachment_infected_handling') || 'refuse'
+  const provider = str('attachment_reputation_provider') || 'virustotal'
+  const refresh = str('attachment_reputation_refresh') || 'biweekly'
+
+  function editTypes(v: string) {
+    // Lowercased as it is typed, the way the tracking prefix is uppercased:
+    // the server compares against strings.ToLower(filepath.Ext(name)) and
+    // refuses an uppercase entry outright, so ".PDF" is only ever a refusal
+    // waiting to happen.
+    const lower = v.toLowerCase()
+    setTypesText(lower)
+    setStrArr('attachment_allowed_types', parseAllowedTypes(lower))
+  }
+
+  return (
+    <div className="space-y-6">
+      <Section title="Uploads">
+        <div className="space-y-2 px-5 py-4">
+          <label htmlFor="attachment-allowed-types" className="block text-sm font-medium text-gray-900">
+            Allowed file types
+          </label>
+          <div className="text-sm text-gray-500">
+            One extension per line, with the leading dot — <span className="font-mono">.pdf</span>. Anything
+            else is refused at upload, before the file is read. An empty list means this instance accepts no
+            attachments at all.
+          </div>
+          <textarea
+            id="attachment-allowed-types"
+            rows={9}
+            className="w-full max-w-xs rounded border border-gray-300 p-2 font-mono text-sm"
+            value={typesText}
+            onChange={(e) => editTypes(e.target.value)}
+          />
+          {!typesSet && (
+            <p className="text-xs text-gray-500">
+              This instance has never set a list, so the built-in default is shown. It is saved only if you
+              change it.
+            </p>
+          )}
+        </div>
+      </Section>
+
+      <Section title="Malware scanning">
+        <SettingRow
+          label="Scan attachments for malware"
+          description="Uploads are passed to the configured ClamAV daemon before they are stored."
+        >
+          <Select
+            className="w-72"
+            aria-label="Scan attachments for malware"
+            value={scanPolicy}
+            onChange={(e) => setStr('attachment_scan_policy', e.target.value)}
+          >
+            {/* Unset is not one of the three values: with no setting the
+                server scans if a scanner address is configured and does not
+                if one is not, and this page cannot see the address when it
+                comes from the environment. Showing "Do not scan" for that
+                would be a guess, and half the time a wrong one. */}
+            {!has('attachment_scan_policy') && (
+              <option value="" disabled>
+                Not set — follows the scanner address
+              </option>
+            )}
+            <option value="off">Do not scan</option>
+            <option value="required">Scan, and refuse uploads while the scanner is down</option>
+            <option value="permissive">Scan, but accept uploads while the scanner is down</option>
+          </Select>
+        </SettingRow>
+
+        <SettingRow
+          label="When a scan finds malware"
+          description="Quarantined files are stored inside a password-protected ZIP (password: infected), labelled on the ticket, and confirmed before download. For an IT security team triaging a reported sample; an ordinary help desk should leave this on Refuse."
+        >
+          <Select
+            className="w-72"
+            aria-label="When a scan finds malware"
+            value={handling}
+            onChange={(e) => setStr('attachment_infected_handling', e.target.value)}
+          >
+            <option value="refuse">Refuse the upload</option>
+            <option value="quarantine">Store it in a password-protected archive</option>
+          </Select>
+        </SettingRow>
+
+        {/* The combination reads as though it does something, which is exactly
+            why it has to be said: with no scan there is never an Infected
+            verdict for this setting to act on. */}
+        {scanPolicy === 'off' && handling === 'quarantine' && (
+          <div className="px-5 py-3 text-sm text-gray-600">
+            Nothing is scanned on this instance, so nothing is ever identified as malware and nothing is
+            ever quarantined. Turn scanning on for this setting to do anything.
+          </div>
+        )}
+      </Section>
+
+      <Section title="Reputation lookup">
+        <SettingRow
+          label="Reputation service"
+          description="Where an attachment's SHA-256 is looked up, and which service the hash on a ticket links to. The link needs no key and no server call, so this setting does something even with no lookup configured. A hash is not the file: nothing here ever uploads one."
+        >
+          <Select
+            className="w-44"
+            aria-label="Reputation service"
+            value={provider}
+            onChange={(e) => setStr('attachment_reputation_provider', e.target.value)}
+          >
+            <option value="virustotal">VirusTotal</option>
+            <option value="metadefender">MetaDefender</option>
+          </Select>
+        </SettingRow>
+
+        <div className="space-y-2 px-5 py-4">
+          <label htmlFor="reputation-api-key" className="block text-sm font-medium text-gray-900">
+            API key
+          </label>
+          <div className="text-sm text-gray-500">
+            No key means no lookup. The hash still links to the service; this instance simply never asks it
+            anything.
+          </div>
+          <Input
+            id="reputation-api-key"
+            type="password"
+            autoComplete="off"
+            className="max-w-lg font-mono text-sm"
+            placeholder={clearAPIKey ? 'The stored key will be removed' : 'Paste a key to set or replace one'}
+            value={apiKey}
+            disabled={clearAPIKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+          <p className="text-xs text-gray-500">
+            Write-only: the server never sends a stored key back, so this page cannot show whether one is
+            set. Leaving this blank leaves whatever is stored untouched — saving an empty field never
+            removes a working key.
+          </p>
+
+          {clearAPIKey ? (
+            <div className="flex items-center gap-3">
+              <p className="text-sm text-amber-700">The stored key will be removed when you save.</p>
+              <Button variant="outline" size="sm" onClick={() => setClearAPIKey(false)}>
+                Keep the stored key
+              </Button>
+            </div>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => setConfirmClearKey(true)}>
+              Remove the stored key
+            </Button>
+          )}
+          <ConfirmDialog
+            open={confirmClearKey}
+            onOpenChange={setConfirmClearKey}
+            title="Remove the stored API key?"
+            description="Lookups stop until a new key is saved; hashes on tickets still link to the service, and stored verdicts are kept. Nothing is removed until you save."
+            confirmLabel="Remove the key"
+            onConfirm={() => {
+              setClearAPIKey(true)
+              setConfirmClearKey(false)
+            }}
+          />
+
+          <ReputationWarning provider={provider} />
+        </div>
+
+        <SettingRow
+          label="Re-check stored verdicts"
+          description="How long a clean, never-seen or unscanned verdict is trusted before it is looked up again. A detection is never re-checked — engines do not un-flag a file — and staff can ask again by hand once every seven days whatever this says."
+        >
+          <Select
+            className="w-64"
+            aria-label="Re-check stored verdicts"
+            value={refresh}
+            onChange={(e) => setStr('attachment_reputation_refresh', e.target.value)}
+          >
+            <option value="weekly">After 7 days</option>
+            <option value="biweekly">After 14 days</option>
+            <option value="monthly">After 30 days</option>
+            <option value="quarterly">After 90 days</option>
+            <option value="never">Never re-check automatically</option>
+          </Select>
+        </SettingRow>
+      </Section>
+
+      <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
@@ -1089,6 +1487,14 @@ export function SettingsPage() {
   const [local, setLocal] = useState<Record<string, unknown>>({})
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
+
+  /* The reputation API key is write-only, so it is never in `local` and never
+     travels with an ordinary save. It is sent only when the operator typed one
+     or asked for the stored one to be removed — a blank field PATCHed as ""
+     would wipe a working key on an unrelated change, and nothing would report
+     it: the lookups would simply stop. */
+  const [apiKey, setApiKey] = useState('')
+  const [clearAPIKey, setClearAPIKey] = useState(false)
 
   const { data: settings, isLoading } = useQuery({
     queryKey: ['admin', 'settings'],
@@ -1109,10 +1515,19 @@ export function SettingsPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
-    mutationFn: () => updateSettings(local),
+    mutationFn: () => {
+      const patch = { ...local }
+      if (clearAPIKey) patch[REPUTATION_API_KEY] = ''
+      else if (apiKey.trim() !== '') patch[REPUTATION_API_KEY] = apiKey.trim()
+      return updateSettings(patch)
+    },
     onSuccess: () => {
       setSaved(true)
       setSaveError('')
+      // Only on success: a refused save leaves every edit where it was,
+      // including a key typed but not yet accepted.
+      setApiKey('')
+      setClearAPIKey(false)
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
       qc.invalidateQueries({ queryKey: ['site-config'] })
@@ -1121,6 +1536,10 @@ export function SettingsPage() {
   })
 
   function bool(key: string) { return Boolean(local[key]) }
+  // Whether this instance has ever stored a value for the key, as opposed to
+  // what the value is. The difference matters where an unset setting does not
+  // mean the zero value — see the allowed attachment types.
+  function has(key: string) { return key in local }
   function num(key: string) { return Number(local[key] ?? 0) }
   function str(key: string) { return String(local[key] ?? '') }
   function strArr(key: string): string[] {
@@ -1142,8 +1561,9 @@ export function SettingsPage() {
   }
 
   const panelProps = {
-    bool, num, str, strArr,
+    bool, num, str, strArr, has,
     setBool, setNum, setStr, setStrArr, toggleStrArr,
+    apiKey, setApiKey, clearAPIKey, setClearAPIKey,
     onSave: () => saveMutation.mutate(),
     isPending: saveMutation.isPending,
     error: saveError,
@@ -1188,6 +1608,7 @@ export function SettingsPage() {
           {activeTab === 'branding' && <BrandingPanel {...panelProps} />}
           {activeTab === 'auth'     && <AuthPanel     {...panelProps} />}
           {activeTab === 'features' && <FeaturesPanel {...panelProps} />}
+          {activeTab === 'attachments' && <AttachmentsPanel {...panelProps} />}
         </div>
       </div>
     </Layout>

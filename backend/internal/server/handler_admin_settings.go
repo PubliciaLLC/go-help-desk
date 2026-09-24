@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
@@ -51,9 +52,31 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Convert raw bytes to JSON-parseable map, omitting secrets.
-	out := make(map[string]json.RawMessage, len(all))
+	//
+	// A secret is replaced by a "<key>_set" boolean rather than simply
+	// dropped. Dropping it alone leaves the administration UI unable to tell
+	// a configured key from an absent one — the key is missing from the dump
+	// either way — so the page can only say "we cannot show you whether this
+	// is set", which is useless to the person deciding whether to paste a new
+	// one. The dedicated OIDC and SAML endpoints already report a `configured`
+	// flag for exactly this reason; the settings dump had no equivalent.
+	//
+	// The flag says whether a non-empty value is stored and nothing else. It
+	// cannot be used to confirm a guess at the value, which is what echoing
+	// the secret itself would allow.
+	out := make(map[string]json.RawMessage, len(all)+len(secretSettingKeys))
+
+	// Every declared secret gets a flag, whether or not a row exists. Emitting
+	// one only for keys already in the table leaves an unset secret with no
+	// flag at all — which is the state this exists to describe, and would put
+	// the UI back where it started, unable to tell "not configured" from
+	// "the server did not say".
+	for k := range secretSettingKeys {
+		out[k+"_set"] = json.RawMessage("false")
+	}
 	for k, v := range all {
 		if _, secret := secretSettingKeys[k]; secret {
+			out[k+"_set"] = json.RawMessage(strconv.FormatBool(hasSecretValue(v)))
 			continue
 		}
 		out[k] = json.RawMessage(v)
@@ -316,4 +339,19 @@ func validScannerAddr(addr string) bool {
 	default:
 		return false
 	}
+}
+
+// hasSecretValue reports whether a stored secret holds anything.
+//
+// A JSON string is stored, so "" and a value of only whitespace both mean
+// unset — an operator who pasted a stray space has not configured a key, and
+// telling them they have would send them looking for a fault somewhere else.
+func hasSecretValue(raw []byte) bool {
+	var v string
+	if err := json.Unmarshal(raw, &v); err != nil {
+		// Not a string: something wrote this key by another route. Present,
+		// whatever it is.
+		return len(raw) > 0
+	}
+	return strings.TrimSpace(v) != ""
 }

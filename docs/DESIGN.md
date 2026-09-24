@@ -158,7 +158,7 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
-- **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the instance falls back to no logo and the settings page says so.
+- **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
 - Both settings are stored in the database and managed via **Admin → Settings → Branding**.
 - A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
@@ -278,6 +278,14 @@ choice, which is why it belongs to the operator rather than to a Go file. An IT
 team triaging a suspicious `.exe` has a real reason to accept one; a deployment
 that wants PDF and nothing else has an equally real reason to say so.
 
+That is what made the list safe to hand over. While `Content-Type` came from
+the claimed extension, the list *was* the boundary and widening it was a
+security decision rather than a policy one — an operator allowing `.html` would
+have been allowing this origin to serve `text/html`. Once every download is an
+opaque blob with an attachment disposition, there is no set of types that is
+dangerous to the server, so there is nothing left for a code-side list to be
+the outer bound of.
+
 The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
 browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
 rendered inline would execute on this origin.
@@ -313,16 +321,17 @@ Two limits, stated because they are easy to forget:
   mistake, but it reads source text and cannot follow a value between files,
   so it catches carelessness at review time rather than being a control.
 
-Two caveats, both tracked in #165:
+Three caveats:
 
-- **Content is only checked for types with a recognisable signature.** A `.pdf`
-  must begin `%PDF`, a `.png` must have the PNG header, and so on — but `.txt`
-  and `.log` have no signature to check, so a `.txt` containing HTML is
-  accepted. It is stored under a name that says what it is and downloaded as an
-  opaque blob like everything else, so nothing on this origin renders it — but
-  the file on disk is still HTML, and whoever opens it afterwards is opening
-  HTML. Step 2 of #165 records what the file actually is alongside what it
-  claims to be, so at least the difference is visible.
+- **Content detection, described in full below, reads a prefix rather than the
+  whole file.** It is confident about formats that declare themselves in their
+  first bytes, and it is not a parser: a file that is a valid one thing and a
+  usable other thing is beyond it. Content it cannot place at all is recorded
+  as unidentified, which counts as a contradiction rather than as a pass.
+- **Attachments uploaded before any of this carry none of it** — no detected
+  type, no hash, no mismatch answer. That renders as an absence and never as a
+  finding: nobody looked, and "not recorded" and "nothing wrong" are different
+  statements. Nothing is backfilled and nothing is re-scanned.
 - **The logo is the exception**, and the only upload this application renders
   inline. #165 removed SVG from that uploader: it was accepted after being
   parsed and pattern-matched for scripts, event handlers and `javascript:`
@@ -332,6 +341,279 @@ Two caveats, both tracked in #165:
   sandboxing policy (`sandbox; script-src 'none'`) on top of that, because what
   decides those bytes are an image is a four-byte magic check rather than a
   proof.
+
+### What an upload actually is
+
+Every upload is inspected as it arrives, and what is found is recorded beside
+what the file claimed.
+
+**The detected type** comes from a content detector that reads a prefix of the
+file and returns its own canonical extension for the format it recognised —
+`.docx`, `.html`, `.exe` — together with the bare media type (`text/html`,
+never `text/html; charset=utf-8`; the parameters are noise in a column the UI
+renders). Returning an extension is the point of it: the comparison against the
+claimed extension is then extension against extension, with no table mapping
+one detector's MIME vocabulary onto another's for somebody to keep correct.
+It replaced a hand-written check that matched a signature per extension and
+ended in `default: return true`. That was not a text special case but a
+default, so every extension without an entry was never looked at — `.txt` and
+`.log` then, and whatever an operator adds now, which is what made the default
+a hole rather than a gap.
+
+**The SHA-256** is the hex digest of the same bytes. It is what an analyst
+looks a sample up by, what a chain-of-custody record has to state, and the key
+the reputation cache below is kept under.
+
+Both are computed on the bytes as uploaded — before an image is recompressed,
+before a wrap puts the file inside an archive — because both answer the same
+question: what did this person actually send us. The consequence is stated
+rather than left to be discovered. For a recompressed image the stored file's
+hash is **not** the hash of the file on disk; for everything else the two are
+the same.
+
+Content nothing recognises is an answer and not a failure. It is recorded as
+`application/octet-stream` with no extension, and it counts as a contradiction,
+because saying nothing there would make an unidentifiable file look like a
+verified one.
+
+**A content mismatch** is the detected extension differing from the claimed
+one, after two relaxations and no others:
+
+- `.jpeg` and `.jpg` collapse into one. The only synonym, and it is there
+  because the two spellings name a single format — the same normalisation the
+  allowlist applies, so allowing either allows both.
+- A text extension — `.txt`, `.log`, `.csv`, `.md` — matches any content that
+  is inert text: anything `text/*`, plus JSON and NDJSON, which are text that
+  the IANA registry happens to file under `application/`. `text/html` is the
+  deliberate exception, because a browser is what opens HTML, and HTML wearing
+  a `.txt` is still worth telling somebody about.
+
+The second rule is decided on the media type and not on a list of detected
+extensions, and the difference is not cosmetic. Measured: a container log
+detects as `application/x-ndjson`, a config file as `text/xml`, an exported
+contact as `text/vcard`. A list of acceptable detected extensions called every
+one of them a file lying about itself, and a Kubernetes log arriving on a
+ticket renamed and wrapped is exactly the failure this control exists to avoid.
+A warning that fires on ordinary files is one staff learn to click past, which
+is worse than no warning at all — so where a legitimate case fires, the fix is
+to widen one of these two rules and never to soften the flag.
+
+The answer is recorded at upload rather than recomputed on read, because a file
+this application renamed has lost the name the uploader claimed: recomputing
+would compare `.zip` against the content and report a truthfully named sample
+as lying about itself.
+
+A mismatch never refuses an upload. Nothing is rendered and every download is
+an opaque blob, so it is not a risk to this server — it is a deception risk for
+the person about to open the file, which is why they are told. What it does
+decide is how the file is stored.
+
+### The three tiers an upload is stored in
+
+Wrapping and recompression are alternatives rather than steps: a wrapped file
+is an archive, so recompressing one would mean handing a ZIP to the JPEG
+encoder. The upload handler takes the first of these that applies.
+
+1. **The scanner identified it**, and the operator set
+   `attachment_infected_handling` to `quarantine`. The sample is wrapped in a
+   ZIP with the password `infected` and stored under the uploaded name plus
+   `.zip` — `sample.exe` becomes `sample.exe.zip`, so nothing downstream
+   double-clicks an executable. The scanner's name for the detection is stored
+   with it. Under the default, `refuse`, an infected upload is rejected with
+   `422` and never reaches this tier. The setting only ever decides what to do
+   with a verdict the scanner actually returned: with the scan policy `off`, or
+   the scanner unreachable under `permissive`, nothing is ever identified as
+   infected and `quarantine` does nothing at all.
+2. **The content contradicts the name, and the detected type is not on the
+   operator's allowlist.** The file is wrapped with no password and stored as
+   `suspicious-<crc32>.zip` — the CRC32 of the file inside, which every ZIP
+   entry already carries, so the archive is named after a value its recipient
+   can verify and it costs nothing to produce.
+3. **It is an image** — `.jpg`, `.jpeg`, `.png` or `.bmp` — and neither of the
+   above. It is recompressed to whichever of JPEG (quality 85) or PNG is
+   smaller, under the name it was uploaded with.
+
+Anything else is stored exactly as it arrived.
+
+**Which mismatches are wrapped and which are only flagged is the distinction
+people will get wrong.** Not every mismatch is wrapped. The judgement is the
+operator's own allowlist, which means there is no second list to keep correct:
+a file is wrapped when the type it turned out to be is not a type this instance
+accepts. So HTML inside a `.pdf` is wrapped on
+a default instance, because `.html` is not an accepted type. HTML inside a
+`.log` on an instance that has allowed `.html` is a mislabelled file of an
+accepted type: flagged on the row, stored under its own name, not wrapped. A
+`.log` holding a captured HTML response is an ordinary help desk attachment,
+and wrapping it would be the warning-on-ordinary-files problem in physical
+form.
+
+**Why wrapped rather than refused.** Refusing closes off the case this product
+is otherwise good at — the suspicious file a user reported is exactly the file
+a ticket is about — and merely flagging it is too quiet, because the file still
+lands on somebody's disk called `report.pdf`. The archive name is the warning,
+it cannot be double-clicked into whatever the file actually is, and unlike our
+UI it survives being forwarded or saved to a share. **This is a relaxation of
+shipped behaviour**: a file whose content contradicted its extension used to be
+refused with `415`, and is now stored, wrapped and flagged.
+
+**Why the password is published.** `infected` is in this document, in the issue
+and in the UI beside every quarantined file. It protects nothing and is not
+meant to. Its only two jobs are that the stored bytes are not directly
+double-clickable, and that an on-access scanner — on our storage or the
+downloader's — does not eat the sample out from under the ticket a day later.
+It is the long-standing convention for moving samples, so an analyst's tooling
+already knows what to do with it. The encryption is ZipCrypto rather than AES
+for the same reason: weak is fine when the password is public, and an AES-256
+ZIP is opaque to Windows Explorer and macOS Archive Utility, which is precisely
+the friction this is meant to remove. A wrong password does not reliably fail
+to open a ZipCrypto archive either, which is irrelevant here and must not be
+read as confidentiality.
+
+**Why the second tier has no password.** A mismatched file is not known-bad; we
+could not identify it, which is a different claim. It is undouble-clickable
+either way, and blinding the recipient's own antivirus over a wrong extension
+would be the wrong trade.
+
+The sample keeps its own name inside the archive, so unwrapping produces the
+file the ticket is about rather than our wrapper's name. The appended `.zip`
+describes the wrapper and not the sample: it is added after the allowlist has
+had its say on the uploaded name and after the hash and detected type were
+taken, so `.zip` does not have to be an accepted type for either tier to work.
+Wrapping is not optional per file — when the setting says `quarantine`, every
+infected upload is wrapped, because a setting that can be bypassed for one file
+is a setting nobody can reason about. Neither tier is retroactive in either
+direction: turning quarantine on does not rewrap what is already stored, and
+turning it off does not unwrap it.
+
+What the row says afterwards. `mime_type` describes the file as stored;
+`detected_mime` describes the bytes that arrived; `size_bytes` is the stored
+file, because that is what a download costs:
+
+| | stored name | `mime_type` | `detected_mime` |
+|---|---|---|---|
+| ordinary PDF | `report.pdf` | `application/pdf` | `application/pdf` |
+| PNG recompressed to JPEG | `shot.png` | `image/jpeg` | `image/png` |
+| HTML named `.pdf`, wrapped | `suspicious-4f2a91c3.zip` | `application/zip` | `text/html` |
+| infected `.exe`, quarantined | `sample.exe.zip` | `application/zip` | `application/vnd.microsoft.portable-executable` |
+
+A recompressed PNG is not a mismatch: detection ran on the uploaded bytes,
+which were a PNG, under a claimed `.png`. An infected file that was named
+truthfully is not a mismatch either — the two tiers answer different questions,
+and a file can be both, in which case it is quarantined and the mismatch is an
+extra line on the row rather than a replacement for the malware warning.
+
+Where the built-in extension-to-MIME map has no entry — which is every type an
+operator adds — `mime_type` falls back to what the detector said, and to
+`application/octet-stream` when it could not place the bytes either. A blank
+type column is not an answer. None of this is a decision about how the file is
+served: every download is `application/octet-stream` regardless.
+
+### Reputation lookup
+
+A quarantined sample is worth asking the world about, so the SHA-256 can be
+looked up at a third-party reputation service. Three settings, all
+session-gated like the scanner keys — an API key must not be able to decide
+where customers' file hashes go, or how often:
+
+- `attachment_reputation_provider` — `virustotal` (the default) or
+  `metadefender`. One setting with two effects: it picks the service the server
+  queries and the service the hash on a ticket links to, so an operator who
+  chose one never finds the other's link beside its verdict. An unrecognised
+  value is refused at save time with `invalid_reputation_provider` and read as
+  the default.
+- `attachment_reputation_api_key` — write-only over the API, like the OIDC
+  client secret and the SAML key, and never logged.
+- `attachment_reputation_refresh` — how often a stored verdict is asked about
+  again. An unrecognised value is refused at save time with
+  `invalid_reputation_refresh` and read as the default, never as `never`: a
+  typo must not silently switch re-checking off, because the symptom is a
+  verdict that looks current for as long as the instance lives.
+
+An instance that set the earlier `attachment_vt_lookup` and
+`attachment_vt_api_key` keys is not migrated. Nothing reads them, they are
+removed a release later, and an operator has to paste their key into the new
+field: copying somebody's secret from one setting to another on their behalf is
+not something to do quietly.
+
+**The key is the on switch.** There is deliberately no separate enabled
+boolean, which removes the whole class of invalid combination: there is no such
+thing as enabled-with-no-key, so there is no rule for it and no way to get it
+wrong. The **link** needs no key and makes no request, so an instance that
+never configures a lookup still gives staff a hash and somewhere to click.
+
+What the lookup does:
+
+- **Lazy, and only where it is worth spending.** A lookup happens when staff
+  open a ticket carrying a quarantined attachment with no current verdict —
+  never at upload, never on the ordinary attachments, and never for a reporting
+  customer looking at their own ticket, because that would spend an operator's
+  allowance on a page refresh. There is no queue, because this project has no
+  background job runner (#126) and a queue would be a table nothing drains.
+- **Cached against the hash and the provider**, not against the attachment, so
+  the same file on five tickets costs one lookup. Two rows per hash rather than
+  one is what stops an operator who switched provider from being shown the
+  other service's answer attributed to the one they chose.
+- **Budgeted.** A daily counter per provider at that provider's own free-tier
+  ceiling — 500 for VirusTotal, 4,000 for MetaDefender — resetting at 00:00
+  UTC, plus a four-a-minute bucket for VirusTotal, which publishes one.
+  In memory and per process: it is a courtesy cap rather than an accounting
+  record, and a restart spending a handful of extra lookups is cheaper than a
+  table.
+- **Expiring.** `attachment_reputation_refresh` decides when a stored verdict
+  is asked about again: `weekly`, `biweekly` (the default), `monthly`,
+  `quarterly` or `never`. A verdict decays, which is the whole reason this
+  exists — new signatures catch old malware, and the sample nobody had
+  submitted when we asked is precisely the one submitted a week later.
+- **Except a detection, which never expires.** Engines do not un-flag a file,
+  so re-confirming known malware is the one lookup guaranteed to tell nobody
+  anything, and it would be spent out of the same 500 a day as the lookups that
+  would.
+- **Re-checkable by hand.** Staff get a *Check again* control on a non-detected
+  verdict, and the server allows one re-check per hash every seven days
+  whatever the interval says — including when it says `never`, because an
+  operator who turned automatic checking off to save quota did not mean that
+  nobody may ever ask. It is a floor and not an override: the daily budget
+  still applies, a re-check inside the week is refused with the date it clears,
+  and a re-check of a detection is refused outright. The control is disabled
+  rather than hidden while the week runs, because a control that vanishes
+  teaches nobody anything, and it is absent where there is no verdict to
+  refresh.
+
+A verdict is one of four things a provider can tell us apart from failure:
+never seen this hash, seen it but holding no verdict, seen it and no engine
+flagged it, or seen it and some did. The distinctions are the value of the
+feature and none of them may collapse into the others.
+
+**What it does not do**, stated plainly because every one of these is the
+mistake that has already been made twice in the virus scanner:
+
+- No key means no lookup at all. The page renders, the hash and the link are
+  still there, and no request is made.
+- A lookup that failed, timed out, was rate-limited or ran out of daily budget
+  renders as **not checked**. Never as clean. "Clean" is reachable only from a
+  completed lookup that came back with no detections, and an unavailable answer
+  is never written to the cache — caching a transient failure against a verdict
+  that is kept would freeze it permanently.
+- A verdict that has passed its interval but could not be re-checked stays on
+  screen rather than disappearing. A re-check that cannot be made — no budget,
+  provider down — must not delete a real answer from the page, and "clean,
+  and here is when the service last analysed it" is worth more to the reader
+  than "not checked yet".
+- Nothing is uploaded. A hash lookup tells a provider that somebody has seen a
+  file they already hold; submitting the file hands them a customer's document,
+  which is a different feature with different terms attached and is
+  deliberately not built.
+- Nothing is re-scanned locally. The ClamAV verdict is recorded when the file
+  arrives and never revisited, so a file that was clean last month and would be
+  recognised today still reads as it did on the day it was uploaded. The
+  reputation lookup is the only part of this that expires.
+
+The verdict carries the provider's name so the UI can attribute it —
+"VirusTotal has never seen this file" is a claim with a source, and the generic
+version is a claim from nowhere. The name and the finished link URL are built
+by the server, because the provider is an admin-only setting staff cannot read
+and a frontend that rebuilt the URL itself would hold a second copy of provider
+knowledge to drift from the first.
 
 ---
 

@@ -69,10 +69,19 @@ CREATE TABLE attachment_reputation (
     -- the sample's first appearance in the wild.
     analysed_at TIMESTAMPTZ,
 
-    -- When WE fetched it. NOT NULL, because we always know this: it is our own
-    -- clock and there is no row without a lookup behind it. A stored verdict
-    -- is never re-fetched on a page render, so this is how old the answer on
-    -- screen is.
+    -- When WE fetched it, as distinct from analysed_at, which is when the
+    -- provider analysed. NOT NULL, because we always know this: it is our own
+    -- clock and there is no row without a lookup behind it.
+    --
+    -- Both expiry rules read this column. A verdict older than the configured
+    -- refresh interval is re-fetched instead of returned, except a detection,
+    -- which never expires — engines do not un-flag a file. And a staff member
+    -- can force a re-check once per hash per seven days whatever that setting
+    -- says, measured from here.
+    --
+    -- Which is why a re-check that comes back with the same answer must still
+    -- re-stamp this: otherwise the control re-arms immediately and the next
+    -- reader spends a lookup learning nothing.
     fetched_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     PRIMARY KEY (sha256, provider)
