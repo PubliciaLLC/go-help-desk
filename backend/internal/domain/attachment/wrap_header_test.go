@@ -110,7 +110,7 @@ func localHeaderFlags(t *testing.T, archive []byte) uint16 {
 	return binary.LittleEndian.Uint16(archive[6:8])
 }
 
-// The timestamp reads as the server's wall clock, not five hours off it.
+// The timestamp reads as the server's wall clock, not some other zone's.
 //
 // The MS-DOS date and time fields carry no zone and never have; the format
 // defines them as local wall-clock time and every reader outside Go treats
@@ -120,22 +120,46 @@ func localHeaderFlags(t *testing.T, archive []byte) uint16 {
 // in unzip, bsdtar and python, five hours in the future to whoever opened the
 // quarantine archive.
 //
-// Passes trivially on a server running UTC, which is most of them. It is the
-// ones that are not that this pins.
+// The zone is set here rather than left to the machine. The first version of
+// this test read whatever zone the host happened to be in, which made it pass
+// against the broken code on every UTC machine — including CI, which is the
+// only place it was ever going to run unattended. A test that cannot fail
+// where it runs is not a test.
 func TestWrap_TheTimestampIsTheServersWallClock(t *testing.T) {
-	archive, err := attachment.Wrap([]byte("payload"), "sample.exe", attachment.QuarantinePassword)
-	require.NoError(t, err)
+	// Half-hour offsets and a date that crosses midnight are where the
+	// packing arithmetic would show a carry bug, so they are worth the two
+	// extra cases.
+	for _, zone := range []struct {
+		name   string
+		offset int
+	}{
+		{"UTC", 0},
+		{"five hours behind, like Chicago in summer", -5 * 3600},
+		{"five and a half ahead, like Kolkata", 5*3600 + 30*60},
+		{"twelve and three quarters ahead, like the Chathams", 12*3600 + 45*60},
+	} {
+		t.Run(zone.name, func(t *testing.T) {
+			// time.Local is process-wide. Nothing in this package runs in
+			// parallel, and it is put back either way.
+			saved := time.Local
+			t.Cleanup(func() { time.Local = saved })
+			time.Local = time.FixedZone("TEST", zone.offset)
 
-	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
-	require.NoError(t, err)
-	require.Len(t, zr.File, 1)
+			archive, err := attachment.Wrap([]byte("payload"), "sample.exe", attachment.QuarantinePassword)
+			require.NoError(t, err)
 
-	// Go's reader decodes the MS-DOS fields and labels the result UTC, having
-	// no zone to label it with. Comparing the digits is therefore the whole
-	// test: it is what any other reader will show the person who downloaded
-	// the archive.
-	require.WithinDuration(t, wallClock(time.Now()), wallClock(zr.File[0].Modified), 2*time.Minute,
-		"the archive is stamped in a different zone from the server that made it")
+			zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+			require.NoError(t, err)
+			require.Len(t, zr.File, 1)
+
+			// Go's reader decodes the MS-DOS fields and labels the result
+			// UTC, having no zone to label it with. Comparing the digits is
+			// therefore the whole test: they are what any other reader shows
+			// the person who downloaded the archive.
+			require.WithinDuration(t, wallClock(time.Now()), wallClock(zr.File[0].Modified), 2*time.Minute,
+				"the archive is stamped in a different zone from the server that made it")
+		})
+	}
 }
 
 // wallClock strips the zone, leaving the digits a reader would display.

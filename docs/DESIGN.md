@@ -384,9 +384,18 @@ one, after three relaxations and no others:
   because the two spellings name a single format — the same normalisation the
   allowlist applies, so allowing either allows both.
 - A text extension — `.txt`, `.log`, `.csv`, `.md` — matches any content that
-  is inert text: anything `text/*`, plus JSON and NDJSON, which are text that
-  the IANA registry happens to file under `application/`. **`text/html` is
-  included**, and used not to be. The exclusion was argued from "HTML runs when
+  is inert text, and *inert text is whatever the detector says it is*. The
+  library arranges every type it knows into a tree; a type whose ancestry
+  passes through `text/plain` is one it is willing to call text. That covers
+  `text/*`, and also `application/json`, `application/x-ndjson`,
+  `application/geo+json`, `image/svg+xml`, `application/xhtml+xml` and
+  `application/x-subrip` — text the IANA registry happens to file elsewhere.
+  It does not cover a ZIP or anything packaged inside one, which is the case
+  that decided it: a Visio drawing is registered as
+  `application/vnd.ms-visio.drawing.main+xml`, so any rule reading the name
+  rather than the ancestry lets an archive through under a `.txt` name while
+  flagging a plain ZIP under the identical one. **`text/html` is included**,
+  and used not to be. The exclusion was argued from "HTML runs when
   it is opened", which is false in the way that decides this: what opens a file
   is chosen by its name, not by its content, so `notes.log` opens in a text
   editor whatever bytes are inside it. Nothing here renders an attachment
@@ -404,12 +413,19 @@ still named `.log` is detected as `application/gzip`, which is not inert text,
 so it is flagged — and, being text-named, it is stored under its own name
 rather than wrapped or refused.
 
-The second rule is decided on the media type and not on a list of detected
-extensions, and the difference is not cosmetic. Measured: a container log
-detects as `application/x-ndjson`, a config file as `text/xml`, an exported
-contact as `text/vcard`. A list of acceptable detected extensions called every
-one of them a file lying about itself, and a Kubernetes log arriving on a
-ticket renamed and wrapped is exactly the failure this control exists to avoid.
+The second rule is decided by asking the detector, not by a list of our own,
+and the difference is not cosmetic. Three earlier versions were each right for
+the cases in front of them and wrong for the family they were generalised to.
+A list of acceptable detected *extensions* called a container log
+(`application/x-ndjson`), a config file (`text/xml`) and an exported contact
+(`text/vcard`) files lying about themselves — a Kubernetes log arriving on a
+ticket renamed and wrapped is exactly the failure this control exists to
+avoid. A list of media types — `text/*` plus JSON and NDJSON — flagged a
+GeoJSON document, which the registry files under its own name. Accepting
+anything whose name ends `+json` or `+xml` admitted the Visio drawing above,
+which is an archive. The tree has no such gap, because it is the same source
+that produced the media type being judged: a rule written from the detector's
+own answers cannot disagree with the detector.
 A warning that fires on ordinary files is one staff learn to click past, which
 is worse than no warning at all — so where a legitimate case fires, the fix is
 to widen one of these two rules and never to soften the flag.
@@ -611,7 +627,7 @@ contradiction stops being contained. The error runs in the strict direction: a
 file only reaches this question by already lying about its name, and the worst
 outcome is that a lying file is contained on one instance and merely flagged on
 another. The spellings where it bites are the ones where the detector differs —
-`.htm`, `.tif`, `.yml`, `.mpg` — and an operator who wants the lenient answer
+`.htm`, `.tif`, `.mpg` — and an operator who wants the lenient answer
 gets it by adding the spelling the detector uses.
 
 **Why the password is published.** `infected` is in this document, in the issue

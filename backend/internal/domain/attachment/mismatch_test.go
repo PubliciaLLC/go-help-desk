@@ -1,6 +1,8 @@
 package attachment_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"testing"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/attachment"
@@ -308,6 +310,70 @@ func TestIsMismatch_StructuredJSONAndXMLAreTextUnderATextName(t *testing.T) {
 			// entirely. The relaxation is for text names, not a blanket pass.
 			if !attachment.IsMismatch(".pdf", detectedExt, detectedMIME) {
 				t.Errorf("%s under .pdf should still be a contradiction", tc.name)
+			}
+		})
+	}
+}
+
+// An archive under a text name is a contradiction whatever the archive is
+// called.
+//
+// The companion to the test above, and the reason the rule asks the detector
+// rather than reading the media type's name. A Visio drawing is a ZIP package
+// and the registry calls it application/vnd.ms-visio.drawing.main+xml, so a
+// rule that trusted the +xml ending stored a ZIP archive named notes.txt with
+// an affirmative "no contradiction" on the row — while a plain ZIP under the
+// identical name was flagged. Same bytes-under-a-lying-name, opposite
+// answers, decided by how the format's registered name happens to end.
+//
+// Both halves are asserted together so that neither can drift on its own.
+func TestIsMismatch_AnArchiveUnderATextNameIsStillAContradiction(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []string
+		wantExt string
+	}{
+		{
+			// The entry named visio/ is what the detector looks for; the
+			// content of the parts does not matter to it.
+			name:    "a Visio drawing, whose registered name ends in +xml",
+			entries: []string{"visio/document.xml", "[Content_Types].xml"},
+			wantExt: ".vsdx",
+		},
+		{
+			name:    "a plain ZIP, which has always been flagged",
+			entries: []string{"notes.txt"},
+			wantExt: ".zip",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			zw := zip.NewWriter(&buf)
+			for _, name := range tc.entries {
+				w, err := zw.Create(name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := w.Write([]byte("<xml/>")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			detectedExt, detectedMIME := attachment.Detect(buf.Bytes())
+			if detectedExt != tc.wantExt {
+				t.Fatalf("the detector now calls this %q, not %q — fix the fixture",
+					detectedExt, tc.wantExt)
+			}
+			for _, claimed := range []string{".txt", ".log", ".csv", ".md"} {
+				if !attachment.IsMismatch(claimed, detectedExt, detectedMIME) {
+					t.Errorf("an archive named %s is reported as matching its name (detected %s)",
+						claimed, detectedMIME)
+				}
 			}
 		})
 	}

@@ -1,6 +1,10 @@
 package attachment
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/gabriel-vasile/mimetype"
+)
 
 // textExt is the set of extensions a person uses when they mean "this is
 // text": the ones whose legitimate contents carry no signature of any kind.
@@ -14,59 +18,61 @@ var textExt = map[string]bool{
 // isInertText reports whether a detected media type is text that displays
 // rather than runs when somebody opens it.
 //
-// Decided from the media type and not from a list of extensions, and that is
-// the point of this function existing at all. The list version was wrong: the
-// settled design claimed the detector "leaves exactly two false positives,
-// .js and .log", which was never measured and is not true. Measured, a
-// container log is application/x-ndjson, a config file is text/xml, an
-// exported contact is text/vcard — none of which were in the text set, so
-// every one of them was treated as a file lying about itself and stored as
-// suspicious-<crc32>.zip. A Kubernetes log arriving on a ticket renamed and
-// wrapped is exactly the warning-on-ordinary-files failure this control
-// exists to avoid.
+// Answered by asking the detector, not by a rule of our own. The library
+// arranges every type it knows into a tree, and a type whose ancestry passes
+// through text/plain is one the library is willing to call text: text/html,
+// text/vcard, application/json, application/x-ndjson, application/geo+json,
+// image/svg+xml, application/xhtml+xml and application/x-subrip all do. A ZIP
+// and everything packaged inside one do not — they descend from
+// application/zip.
 //
-// A media type rule does not drift the way a list does. Anything text/* is
-// text by definition, and JSON is text that the IANA registry happens to file
-// under application/*.
+// Three earlier versions of this got it wrong in the same way each time, by
+// writing a rule that was right for the cases in front of it and wrong for
+// the family it was generalised to:
 //
-// The +json and +xml endings are the same statement made by the registry
-// itself. IANA calls them structured syntax suffixes, and the whole point of
-// one is to say "whatever else this format is, it is JSON" or "it is XML" to
-// a reader that has never heard of the format. Named types were not enough:
-// measured against this detector, a GeoJSON document under notes.txt is
-// application/geo+json and was flagged as lying about itself, as was a
-// subtitle file and an SVG. GeoJSON is JSON. Matching on the ending catches
-// every future member of both families without another round of adding one
-// name at a time, which is the drift this function was written to stop.
+//   - A list of extensions. Measured, a container log is
+//     application/x-ndjson, a config file is text/xml and an exported contact
+//     is text/vcard, none of which were on it, so every one of them was
+//     treated as a file lying about itself and stored as
+//     suspicious-<crc32>.zip. A Kubernetes log arriving on a ticket renamed
+//     and wrapped is the warning-on-ordinary-files failure this control
+//     exists to avoid.
+//   - A list of media types — text/* plus JSON and NDJSON. It flagged a
+//     GeoJSON document under notes.txt, because the registry files that under
+//     its own name.
+//   - Anything ending +json or +xml, which those endings do mean. But a Visio
+//     drawing is application/vnd.ms-visio.drawing.main+xml and is a ZIP
+//     archive, so a ZIP under a .txt name came back with an affirmative "no
+//     contradiction" while a plain ZIP under the identical name was flagged.
 //
-// Formats that are plainly text and carry neither ending — application/
-// x-subrip is the one measured — are still flagged under a text name. That is
-// the long tail, and chasing it by name is exactly the list this rule
-// replaced.
+// The tree has no such gap, because it is the same source that produced the
+// media type being judged. A rule written from the detector's own answers
+// cannot disagree with the detector.
 //
-// text/html used to be excluded here, on the argument that HTML is the one
-// textual type that runs when it is opened. That argument is false in the way
-// that matters: what opens a file is chosen by its name, not by its content. A
-// thing called notes.log opens in a text editor whatever bytes are inside it,
-// and this application never renders an attachment at all — every download is
-// an octet-stream blob with an attachment disposition. The exclusion protected
-// nothing, and it flagged an ordinary help desk attachment: a captured HTTP
-// response saved as a .log, which is the example DESIGN.md and #165 both use
-// for "ordinary".
+// text/html is in, and used to be excluded on the argument that HTML is the
+// one textual type that runs when it is opened. That argument is false in the
+// way that matters: what opens a file is chosen by its name, not by its
+// content. A thing called notes.log opens in a text editor whatever bytes are
+// inside it, and this application never renders an attachment at all — every
+// download is an octet-stream blob with an attachment disposition. The
+// exclusion protected nothing, and it flagged an ordinary help desk
+// attachment: a captured HTTP response saved as a .log, which is the example
+// DESIGN.md and #165 both use for "ordinary".
 func isInertText(mediaType string) bool {
-	// The parameters, if any, are not part of the name: text/plain arrives as
-	// "text/plain; charset=utf-8" from some sources, and a suffix test against
-	// that string would never match.
-	if i := strings.IndexByte(mediaType, ';'); i >= 0 {
-		mediaType = strings.TrimSpace(mediaType[:i])
+	m := mimetype.Lookup(mediaType)
+	if m == nil {
+		// A name the tree does not hold. Only reachable if this is called
+		// with something Detect did not produce, since Detect's answers all
+		// come from the tree. text/* is text by definition whatever the tree
+		// knows, and anything else we cannot vouch for.
+		return strings.HasPrefix(mediaType, "text/")
 	}
-	switch {
-	case mediaType == "application/json", mediaType == "application/x-ndjson":
-		return true
-	case strings.HasSuffix(mediaType, "+json"), strings.HasSuffix(mediaType, "+xml"):
-		return true
+	for ; m != nil; m = m.Parent() {
+		if m.Is("text/plain") {
+			return true
+		}
 	}
-	return strings.HasPrefix(mediaType, "text/")
+	return false
 }
 
 // IsTextExtension reports whether an extension is one a person uses when they
