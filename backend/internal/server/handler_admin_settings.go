@@ -119,6 +119,32 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The settings dump emits a synthetic "<key>_set" boolean for every
+	// write-only secret, so the UI can tell a stored key from an absent one
+	// without the key itself ever being returned. It is a fact about the
+	// table, not a row in it.
+	//
+	// Nothing stopped a client sending it straight back. A page that reads the
+	// dump, edits one field and PATCHes the whole object wrote real settings
+	// rows called oidc_client_secret_set, saml_key_pem_set and
+	// attachment_reputation_virustotal_key_set — rows nothing ever reads,
+	// sitting in the settings table looking like configuration. The frontend
+	// has been doing exactly that since the flags landed.
+	//
+	// So the "_set" suffix is reserved: no declared setting key ends in it,
+	// and none may, because the dump would then be unable to tell the flag
+	// from the setting. A key ending in "_set" is refused by name rather than
+	// dropped, for the same reason as everything else in this handler — a
+	// value accepted and then ignored is worse than a refusal.
+	for k := range body {
+		if strings.HasSuffix(k, "_set") {
+			Error(w, http.StatusBadRequest, "readonly_setting",
+				k+" is a read-only presence flag from the settings dump, not a setting; "+
+					"send the key itself to change it")
+			return
+		}
+	}
+
 	// Validate before writing anything. ticket.go documents the prefix as
 	// "enforced where the setting is saved rather than where a ticket is
 	// created" — nothing enforced it, so an invalid prefix was accepted with a
@@ -188,6 +214,29 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if !admin.ValidInfectedHandling(handling) {
 			Error(w, http.StatusBadRequest, "invalid_infected_handling",
 				"infected attachment handling must be one of: refuse, quarantine")
+			return
+		}
+	}
+
+	// And what happens to a file whose content contradicts its name. Same
+	// reasoning as the setting above, which this deliberately mirrors: the
+	// reader falls back to "refuse", so a typo would quietly go on refusing
+	// the mislabelled files a triage team had just asked to keep — safe, and
+	// baffling for exactly the operator who went looking for this setting.
+	//
+	// "quarantine" is the value most likely to be typed here by mistake,
+	// because it is the other setting's word, and it is refused rather than
+	// charitably read as "wrap": guessing at intent is how an operator ends
+	// up with a policy nobody wrote.
+	if raw, ok := body[admin.KeyAttachmentMismatchHandling]; ok {
+		var handling string
+		if err := json.Unmarshal(raw, &handling); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "mismatched attachment handling must be a string")
+			return
+		}
+		if !admin.ValidMismatchHandling(handling) {
+			Error(w, http.StatusBadRequest, "invalid_mismatch_handling",
+				"mismatched attachment handling must be one of: refuse, wrap")
 			return
 		}
 	}

@@ -354,6 +354,50 @@ describe('a quarantined attachment a named catalogue vouches for', () => {
   })
 })
 
+// ── The feed name arrives in more than one spelling ───────────────────────────
+
+describe('the spelling of a feed name', () => {
+  // We do not know with certainty which spelling the wire carries. PolySwarm's
+  // own API documentation gives the example list as `['Microsoft Windows']` —
+  // spaces and capitals — while the research this build was written against
+  // recorded `microsoft_windows`. Neither has been seen on a live response, so
+  // both are pinned: a renderer that handles only the one it happened to be
+  // written against is a coin flip.
+  //
+  // And it misses in the damaging direction. The fallback arm says "catalogued
+  // by Microsoft Windows", which is deliberately the weaker verb — right for a
+  // feed nobody recognises, and wrong here, because an Authenticode signature
+  // assertion silently downgraded to a catalogue entry is exactly the
+  // information loss the feed names exist to prevent. It is invisible, too:
+  // the sentence still names the feed and still reads plausibly.
+  const spellings = ['microsoft_windows', 'Microsoft Windows', 'microsoft-windows']
+
+  for (const feed of spellings) {
+    it(`reads ${feed} as a signature, not a catalogue entry`, async () => {
+      const text = await textFor(known([feed]))
+
+      expect(text, `${feed} was not recognised, so the claim lost its verb`).toMatch(/\bsigned\b/i)
+      expect(text, `${feed} fell through to the weaker fallback wording`).not.toMatch(
+        /catalogued by Microsoft/i,
+      )
+      expect(text, 'the feed name is missing from the sentence').toMatch(/Microsoft Windows/i)
+    })
+  }
+
+  // The normalisation must not swallow genuinely unknown feeds into a
+  // recognised one, and the fallback for those is right as it stands.
+  it('still falls back for a feed that is not one of the known ones', async () => {
+    const text = await textFor(known(['Acme Golden Image']))
+
+    expect(text, 'an unrecognised feed borrowed a signature claim it has not earned').not.toMatch(
+      /\bsigned\b|\bsignature\b/i,
+    )
+    expect(text, 'an unrecognised feed was dropped, leaving a claim with no source').toMatch(
+      /Acme Golden Image/i,
+    )
+  })
+})
+
 // ── It is not `clean`, and must never read like it ────────────────────────────
 
 describe('a known file against a clean one', () => {

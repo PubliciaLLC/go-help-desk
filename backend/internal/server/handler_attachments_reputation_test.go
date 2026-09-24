@@ -1,8 +1,11 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/png"
 	"net/http"
 	"testing"
 
@@ -36,8 +39,16 @@ func TestAttachments_CarryAHashLinkWhateverIsEnabled(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	pdf := []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
-	res := uploadNamed(t, h, tk.ID.String(), "report.pdf", pdf)
+	// A real PNG under a .pdf name: the content contradicts the name, so this
+	// instance flagged it, so it earns the link. An ordinary attachment does
+	// not — see TestAttachments_OrdinaryFilesCarryNoLookupLink — and using one
+	// here would make this test about the wrong thing.
+	//
+	// PNG is on the allowlist, so it is flagged rather than wrapped and keeps
+	// its own name.
+	var img bytes.Buffer
+	require.NoError(t, png.Encode(&img, image.NewRGBA(image.Rect(0, 0, 4, 4))))
+	res := uploadNamed(t, h, tk.ID.String(), "report.pdf", img.Bytes())
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 
@@ -78,6 +89,57 @@ func TestAttachments_CarryAHashLinkWhateverIsEnabled(t *testing.T) {
 			require.NotNil(t, got.ReputationURL,
 				"the hash link needs no key, no toggle and no server call")
 			require.Equal(t, want+*got.SHA256, *got.ReputationURL)
+		})
+	}
+}
+
+// A file this instance found nothing wrong with carries no link.
+//
+// The link used to go on every attachment with a hash, which since detection
+// landed is all of them — so a holiday-request PDF on a printer ticket carried
+// a VirusTotal link and a line of explanatory text under it. That is noise on
+// the rows where nothing is wrong, and noise is what teaches people to stop
+// reading the rows where something is.
+//
+// Note what is not consulted: any reputation verdict. Only quarantined files
+// are ever looked up, so an ordinary attachment could not have one — the
+// decision is this instance's own finding about the file, not a third party's.
+func TestAttachments_OrdinaryFilesCarryNoLookupLink(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Ordinary", Description: "x", CategoryID: h.catID,
+		ReporterUserID: &h.staffID,
+	})
+	require.NoError(t, err)
+
+	cases := []struct {
+		name, filename string
+		content        []byte
+	}{
+		{
+			name:     "a PDF that really is a PDF",
+			filename: "report.pdf",
+			content:  []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n"),
+		},
+		{
+			name:     "a log that really is text",
+			filename: "app.log",
+			content:  []byte("2026-09-23 10:00:00 INFO started\n"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := uploadNamed(t, h, tk.ID.String(), tc.filename, tc.content)
+			res.Body.Close()
+			require.Equal(t, http.StatusCreated, res.StatusCode)
+
+			got := attachmentOverHTTP(t, h, tk.ID.String(), tc.filename)
+			require.NotNil(t, got.SHA256, "the hash is still recorded and still shown")
+			require.Nil(t, got.ReputationURL,
+				"nothing about this file invites investigation, so nothing invites the reader to investigate it")
 		})
 	}
 }

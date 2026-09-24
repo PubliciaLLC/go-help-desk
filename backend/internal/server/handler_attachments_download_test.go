@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -53,6 +54,12 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 		ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
+
+	// Storing a mismatch rather than refusing it is an operator setting, and
+	// it defaults to refusing. This test needs the file stored to have
+	// anything to download, so it is the instance that chose to store it.
+	require.NoError(t, h.adminSvc.SetString(ctx,
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
 	// A .txt whose content is HTML: exactly what an attacker uploads. Since
 	// #165 it is stored wrapped, so this asserts the stored name as well —

@@ -15,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -82,6 +83,13 @@ func TestUpload_WrapsContentThatContradictsTheExtension(t *testing.T) {
 		ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
+
+	// The wrap is an operator setting and it defaults to refusing, which is
+	// the 415 every release before this one gave. This test is the wrap half;
+	// the default half is pinned in
+	// handler_attachments_mismatch_handling_test.go.
+	require.NoError(t, h.adminSvc.SetString(context.Background(),
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
 	html := []byte("<html><script>alert(1)</script></html>")
 	// The archive is named after the CRC32 of the file inside it, which every

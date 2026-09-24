@@ -432,26 +432,75 @@ describe('a quarantined attachment the reputation service holds no verdict for',
   })
 })
 
-// ── Nobody asked ──────────────────────────────────────────────────────────────
+// ── Nobody asked, and nobody answered ─────────────────────────────────────────
+//
+// These were one case and are now two, and #168 splits them deliberately:
+//
+//   null           nothing was attempted. Every provider toggle is off, which
+//                  is a supported configuration and a complete answer — the
+//                  local scanner decided this file's fate on its own.
+//   unavailable    a lookup WAS attempted and did not finish: no key, a spent
+//                  budget, a provider that was down, a request that failed.
+//
+// The wording this suite used to require of the first — "not checked" — is
+// what the second says, and saying it of the first invents a failure on every
+// instance that never wanted the feature. So the requirement did not soften;
+// it moved.
 
-describe('a quarantined attachment with no lookup at all', () => {
-  // null means no request completed: no API key, a spent budget, a provider
-  // that was down. Absence of evidence, and the failure mode in both
-  // directions — a missing lookup shown as clean is false comfort, shown as a
-  // finding is a false alarm on every instance that never configured a key.
-  it('reads as not checked — neither a clean result nor a finding', async () => {
+describe('a quarantined attachment nobody asked about', () => {
+  // The whole reputation block is absent, the same as it is for an attachment
+  // with no verdict today. No warning, no banner, no "not configured" notice:
+  // an operator who wants no third-party involvement, or who cannot send
+  // customer file hashes anywhere, has made a legitimate choice and the
+  // product should not nag them about it.
+  it('carries no reputation wording at all', async () => {
     await renderTicket([quarantined(null), OTHER])
     const text = quarantinedRowText()
 
-    expect(text, 'a file nobody looked up does not say so').toMatch(
-      /not checked|no lookup|was not looked up|wasn't looked up/i,
-    )
-    expectNoReassurance(text, 'an attachment nobody looked up')
     expect(
       text,
-      'a missing lookup is being reported as a reputation-service finding',
-    ).not.toMatch(/flagged|detected by|never seen|no record/i)
+      'a row nothing was attempted for claims a lookup was made and did not finish',
+    ).not.toMatch(VERDICT_WORDING)
+    expectNoReassurance(text, 'an attachment nobody looked up')
+    expect(text, 'a missing lookup is being reported as a finding').not.toMatch(
+      /flagged|detected by|never seen|no record/i,
+    )
     expect(text, 'a missing lookup rendered a date or a placeholder').not.toMatch(
+      /undefined|\bnull\b|NaN|Invalid Date/i,
+    )
+  })
+
+  // And the block being absent must not have taken anything of the local
+  // scanner's with it, because that is the entire argument for the
+  // configuration being supported.
+  it('still shows everything the local scanner said', async () => {
+    await renderTicket([quarantined(null), OTHER])
+    const text = quarantinedRowText()
+
+    expect(text, 'the scanner detection went with the reputation block').toContain(DETECTION)
+    expect(text, 'the archive password went with the reputation block').toMatch(
+      /password[^a-z0-9]{0,20}infected/i,
+    )
+  })
+})
+
+describe('a quarantined attachment whose lookup did not finish', () => {
+  // Absence of evidence, and the failure mode runs in both directions — a
+  // failed lookup shown as clean is false comfort, and shown as a finding it
+  // is a false alarm on every instance whose key has expired.
+  it('reads as not checked — neither a clean result nor a finding', async () => {
+    await renderTicket([quarantined(verdict({ state: 'unavailable' })), OTHER])
+    const text = quarantinedRowText()
+
+    expect(text, 'a lookup that failed does not say so').toMatch(
+      /not checked|no lookup|did not complete|no verdict came back|could not/i,
+    )
+    expectNoReassurance(text, 'an attachment whose lookup failed')
+    expect(
+      text,
+      'a failed lookup is being reported as a reputation-service finding',
+    ).not.toMatch(/flagged|detected by|never seen|no record/i)
+    expect(text, 'a failed lookup rendered a date or a placeholder').not.toMatch(
       /undefined|\bnull\b|NaN|Invalid Date/i,
     )
   })

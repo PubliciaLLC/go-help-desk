@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { attachmentDownloadUrl, recheckAttachmentReputation } from '@/api/tickets'
 import { apiRefusal, extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
-import type { Attachment, AttachmentReputation } from '@/api/types'
+import type { Attachment, AttachmentProviderVerdict } from '@/api/types'
 
 // Published on purpose, and stated wherever a quarantined file is shown. The
 // password protects nothing: its only jobs are that the stored bytes are not
@@ -44,10 +44,13 @@ function contentLabel(mime: string): string {
 const PROVIDER_NAMES: Record<string, string> = {
   virustotal: 'VirusTotal',
   metadefender: 'MetaDefender',
-  // PolySwarm is the only provider that answers `known`, so leaving it out
+  // PolySwarm and CIRCL are the two that answer `known`, so leaving either out
   // would mean the one verdict staff may read as reassurance is the one
-  // verdict that names nobody.
+  // verdict that names nobody. CIRCL and not "CIRCL hashlookup", because the
+  // name goes into a sentence attributing a claim and the organisation is what
+  // is making it.
   polyswarm: 'PolySwarm',
+  circl: 'CIRCL',
 }
 
 /**
@@ -93,7 +96,26 @@ const KNOWN_FEED_PHRASES: Record<string, string> = {
  * not earned the stronger one.
  */
 function feedPhrase(feed: string): string {
-  return KNOWN_FEED_PHRASES[feed.toLowerCase()] ?? `catalogued by ${feed.replace(/_/g, ' ')}`
+  return KNOWN_FEED_PHRASES[feedKey(feed)] ?? `catalogued by ${feed.replace(/_/g, ' ')}`
+}
+
+/**
+ * A feed name reduced to the one spelling the table above is keyed on.
+ *
+ * Case AND separator, because the providers do not agree with each other or
+ * with themselves: PolySwarm's API documentation gives the example list as
+ * `['Microsoft Windows']` while the research this build was written against
+ * recorded `microsoft_windows`, and neither has been seen on a live response.
+ *
+ * Matching only one of them fails in the damaging direction. The fallback verb
+ * is deliberately the weaker "catalogued by", which is right for a feed nobody
+ * recognises and wrong for a signing feed — an Authenticode assertion silently
+ * downgraded to a catalogue entry is the exact information loss `known` plus
+ * its feeds exists to prevent, and it is invisible, because the sentence still
+ * names the feed and still reads plausibly.
+ */
+function feedKey(feed: string): string {
+  return feed.toLowerCase().replace(/[\s-]+/g, '_')
 }
 
 /** Every feed, in the order the server sorted them. */
@@ -295,32 +317,59 @@ function HashLine({ attachment }: { attachment: Attachment }) {
   if (hash === null) return null
 
   return (
-    <p className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-      <span className="text-gray-400">SHA-256</span>
-      <code className="font-mono" title={hash}>
-        {hash.slice(0, 12)}…
-      </code>
-      <button
-        type="button"
-        aria-label="Copy SHA-256"
-        onClick={() => void navigator.clipboard?.writeText(hash)}
-        className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100"
-      >
-        Copy
-      </button>
-      {/* Built by the server from whichever provider the instance is
-          configured for, so nothing here knows which one that is. */}
-      {attachment.reputation_url && (
-        <a
-          href={attachment.reputation_url}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="text-blue-600 hover:underline"
+    <>
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+        <span className="text-gray-400">SHA-256</span>
+        <code className="font-mono" title={hash}>
+          {hash.slice(0, 12)}…
+        </code>
+        <button
+          type="button"
+          aria-label="Copy SHA-256"
+          onClick={() => void navigator.clipboard?.writeText(hash)}
+          className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100"
         >
-          Look up ↗
-        </a>
+          Copy
+        </button>
+        {/* Built by the server, and VirusTotal whatever the per-provider
+            toggles say. Named here rather than left anonymous because it IS
+            one service's page and a reader is entitled to know which before
+            clicking. A provider's own link is a different thing and lives next
+            to that provider's own verdict.
+            Absent on a row this instance found nothing on — the server sends
+            no URL there — and that condition is the server's to decide: the
+            rule is three findings on the Go side and it will grow a fourth,
+            and a copy of it here would go stale without either half looking
+            wrong. The hash above stays either way. */}
+        {attachment.reputation_url && (
+          <a
+            href={attachment.reputation_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-blue-600 hover:underline"
+          >
+            Look up on VirusTotal ↗
+          </a>
+        )}
+      </p>
+      {/* The sentence that stops the link looking like a bug.
+          A link is not a lookup: a lookup is this server sending a customer's
+          hash to a third party, which is what the toggles govern; this is an
+          anchor the reader clicks themselves. Without saying so, an operator
+          who deliberately switched VirusTotal off and still sees a VirusTotal
+          link on every attachment will reasonably conclude the setting does
+          not work.
+          Deliberately avoids the words "lookup", "provider" and "reputation
+          service": the sibling suites match on those to prove a verdict was
+          attributed, and a line of boilerplate carrying them on every row
+          would satisfy those assertions for free. */}
+      {attachment.reputation_url && (
+        <p className="text-[11px] text-gray-400">
+          Opens in your browser. Nothing is sent from this instance unless VirusTotal is switched
+          on in the admin settings.
+        </p>
       )}
-    </p>
+    </>
   )
 }
 
@@ -340,8 +389,8 @@ function analysedStamp(iso: string | null): string {
 }
 
 /**
- * What the configured reputation service says about this file's hash, and the
- * control for asking it again.
+ * What every enabled reputation service says about this file's hash: the worst
+ * single answer for the row, and each service's own answer behind one click.
  *
  * On the quarantined tier only, because that is the only tier the server looks
  * anything up for — an allowance spent on holiday-request PDFs is an allowance
@@ -350,38 +399,173 @@ function analysedStamp(iso: string | null): string {
  * and the confirmation above are unaffected by anything here.
  */
 function ReputationLine({ ticketId, attachment }: RowProps) {
+  const [expanded, setExpanded] = useState(false)
+  const listId = useId()
   const rep = attachment.reputation
-  // Absent or null means no lookup completed: no API key configured, a spent
-  // budget, a provider that was down, a request that failed. Not a verdict and
-  // not a clean bill of health, and the one thing it must never do is read as
-  // either.
-  //
-  // No re-check control either: there is nothing to refresh, and the ordinary
-  // lazy lookup covers this file on the next page render. A "check again" here
-  // would be a second way to spend the day's allowance with none of the rules
-  // on it.
-  if (!rep) {
-    return (
-      <p className="text-xs text-gray-500">
-        Reputation service: not checked — no lookup was made for this file.
-      </p>
-    )
-  }
 
-  // The three states that decay. `detected` and `known` are both final and
-  // for opposite reasons — engines do not un-flag a file, and a file does not
-  // stop being the signed Microsoft binary a catalogue has on record — so the
+  // Absent or null means NOTHING WAS ATTEMPTED: no provider is enabled on this
+  // instance. That is a supported configuration and a complete answer — the
+  // local scanner decided this file's fate on its own — so there is nothing to
+  // say and the block is absent entirely.
+  //
+  // Specifically not "not checked yet". That phrase describes a lookup that
+  // was attempted and did not finish, which is the `unavailable` state below,
+  // and printing it here would invent a failure on every instance that never
+  // wanted the feature.
+  if (!rep) return null
+
+  // One provider — or a server old enough to send a verdict and no list — is
+  // the row this feature started as. Expanding into a list of one would show
+  // the reader the same sentence twice behind a control.
+  const providers = rep.providers ?? []
+  const separable = providers.length > 1
+
+  // The three states that decay. `detected` and `known` are both final and for
+  // opposite reasons — engines do not un-flag a file, and a file does not stop
+  // being the signed Microsoft binary a catalogue has on record — so the
   // server refuses a re-check of either, and a control on one would be a
-  // button that always fails. An unrecognised state is not a verdict at all,
-  // so it gets no control either.
+  // button that always fails. `unavailable` has nothing cached behind it to
+  // refresh, and an unrecognised state is not a verdict at all.
   const refreshable = rep.state === 'clean' || rep.state === 'unseen' || rep.state === 'unscanned'
+
+  const { who, label } = attribution(rep.provider_key, rep.provider)
 
   return (
     <div className="space-y-1">
-      <ReputationVerdict rep={rep} />
-      {refreshable && <CheckAgain ticketId={ticketId} attachment={attachment} />}
+      <ReputationVerdict verdict={rep} who={who} label={label} />
+
+      {/* The inline control asks every enabled service at once, which is right
+          for a row showing one merged answer and wrong the moment the reader
+          can see them separately: it would sit beside a per-service control
+          for the same service, unattributed. */}
+      {refreshable && !(separable && expanded) && (
+        <CheckAgain ticketId={ticketId} attachment={attachment} fetchedAt={rep.fetched_at} />
+      )}
+
+      {separable && (
+        <>
+          <button
+            type="button"
+            aria-expanded={expanded}
+            aria-controls={listId}
+            onClick={() => setExpanded((open) => !open)}
+            className="text-xs font-medium text-blue-700 underline-offset-2 hover:underline"
+          >
+            {expanded ? 'Hide' : 'Show'} all {providers.length} services {expanded ? '▴' : '▾'}
+          </button>
+          {expanded && (
+            <ul id={listId} className="space-y-2 border-l-2 border-red-200 pl-2">
+              {providers.map((p) => (
+                <ProviderLine
+                  key={p.provider_key}
+                  ticketId={ticketId}
+                  attachment={attachment}
+                  verdict={p}
+                />
+              ))}
+            </ul>
+          )}
+        </>
+      )}
     </div>
   )
+}
+
+/**
+ * One service's own statement, on its own line, in the expanded view.
+ *
+ * Every line is attributed, and that is the whole reason the list exists: a
+ * verdict is one service's claim about one file at one time, and four of them
+ * flattened into an unattributed summary throws away exactly what made the
+ * second, third and fourth lookup worth making.
+ *
+ * Each also carries its own dates and its own re-check control, because each
+ * is genuinely separate — the verdict cache is keyed by hash AND provider, so
+ * every answer expires on its own clock.
+ */
+function ProviderLine({
+  ticketId,
+  attachment,
+  verdict,
+}: RowProps & { verdict: AttachmentProviderVerdict }) {
+  const { named, who, label } = attribution(verdict.provider_key, verdict.provider)
+
+  // Same rule as the summary, minus `unavailable`, which the server already
+  // reports as not re-checkable — it is stated here as well so the control's
+  // ABSENCE is this build's decision and not a flag it was handed.
+  const decays =
+    verdict.state === 'clean' || verdict.state === 'unseen' || verdict.state === 'unscanned'
+
+  return (
+    <li className="space-y-1">
+      <ReputationVerdict verdict={verdict} who={who} label={label} />
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400">
+        {askedStamp(verdict.fetched_at)}
+        {/* This service's own page for the hash, beside its own verdict.
+            Absent for one with no per-hash page — CIRCL — because a link to a
+            page that cannot answer the question the reader clicked it with is
+            worse than no link. */}
+        {verdict.link_url && (
+          <a
+            href={verdict.link_url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="text-blue-600 hover:underline"
+          >
+            Open {named ?? 'the report'} ↗
+          </a>
+        )}
+      </p>
+      {decays && (
+        <CheckAgain
+          ticketId={ticketId}
+          attachment={attachment}
+          provider={verdict.provider_key}
+          fetchedAt={verdict.fetched_at}
+          armed={verdict.recheckable}
+        />
+      )}
+    </li>
+  )
+}
+
+/**
+ * The two shapes of one attribution: one that opens a sentence, one that
+ * labels a line of numbers.
+ *
+ * The key is preferred over the display name because it is the stable
+ * identifier; the name is the fallback for a payload that carries only it. A
+ * service this build does not recognise gets the generic wording rather than
+ * having a string from the wire printed at a reader.
+ */
+function attribution(key: string | undefined, name: string | undefined) {
+  const named = providerName(key) ?? providerName(name)
+  return { named, who: named ?? 'The reputation service', label: named ?? 'Reputation service' }
+}
+
+/** When WE last asked this service, as against when it last analysed. */
+function askedStamp(iso: string | null | undefined) {
+  if (!iso) return null
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return null
+  return <span>Asked on {formatDate(at)}.</span>
+}
+
+/**
+ * The verdict a renderer of any one answer produces, summary or provider line.
+ *
+ * `state` is a plain string rather than the union so that the two payload
+ * shapes share one renderer: the alternative is two copies of six states'
+ * wording, which is two copies to drift apart — and the drift that matters
+ * would be the row's sentence disagreeing with the line it was copied from.
+ */
+interface Verdict {
+  state: string
+  detected: number | null
+  total: number | null
+  threat_name: string
+  analysed_at: string | null
+  known_feeds?: string[] | null
 }
 
 /**
@@ -390,27 +574,29 @@ function ReputationLine({ ticketId, attachment }: RowProps) {
  * The provider's name is the attribution: "VirusTotal has never seen this
  * file" is a claim with a source and "the reputation service has never seen
  * this file" is a claim from nowhere. The frontend does not work the name out
- * for itself — which service an instance uses is a session-gated admin setting
- * staff cannot read, which is why the server sends both the name and a
- * finished lookup URL — and a name this build does not recognise falls back to
- * the generic wording rather than printing an operator's setting at a reader.
+ * for itself — which services an instance uses is session-gated admin
+ * configuration staff cannot read, which is why the server sends the name —
+ * and one this build does not recognise falls back to the generic wording
+ * rather than printing a value from the wire at a reader.
  *
- * The four states are four different facts and none is a synonym for another.
- * "Never seen" is the one that must not slip: for a file the local scanner has
+ * The states are different facts and none is a synonym for another. "Never
+ * seen" is the one that must not slip: for a file the local scanner has
  * already flagged, being unknown to the provider is a fact worth noticing, not
  * a shrug, and certainly not reassurance.
  */
-function ReputationVerdict({ rep }: { rep: AttachmentReputation }) {
-  const named = providerName(rep.provider)
-  // Two shapes of the same attribution: one that opens a sentence, one that
-  // labels a line of numbers.
-  const who = named ?? 'The reputation service'
-  const label = named ?? 'Reputation service'
-
-  // Only the two states that represent an analysis carry the date. Neither
-  // provider sends one for `unseen` or `unscanned` today — there was no
-  // analysis to date — and printing one there would have the line contradict
-  // itself in its own second sentence.
+function ReputationVerdict({
+  verdict: rep,
+  who,
+  label,
+}: {
+  verdict: Verdict
+  who: string
+  label: string
+}) {
+  // Only the two states that represent an analysis carry the date. No provider
+  // sends one for `unseen`, `unscanned` or `known` — there was no analysis to
+  // date — and printing one there would have the line contradict itself in its
+  // own second sentence.
   const analysed =
     rep.state === 'detected' || rep.state === 'clean' ? analysedStamp(rep.analysed_at) : ''
 
@@ -504,21 +690,50 @@ function ReputationVerdict({ rep }: { rep: AttachmentReputation }) {
         </p>
       )
 
+    case 'unavailable':
+      // A lookup that was ATTEMPTED and did not finish: a spent allowance, a
+      // service that is down, a key that was rejected. It is not a verdict and
+      // it never displaces one — the server keeps it out of the severity
+      // ordering, so it reaches the summary only when nothing answered at all.
+      //
+      // It is on the wire, and rendered, because an operator whose key has
+      // been rejected has to be able to see that. Hiding it behind a sibling's
+      // good answer is how a dead integration goes unnoticed for a month.
+      return (
+        <p className="text-xs text-gray-500">
+          {label}: the lookup did not complete, so no verdict came back. It is worth checking the
+          service’s key and allowance.
+        </p>
+      )
+
     default:
       // Unreachable through the type and handled anyway. A state this
       // frontend does not recognise is not a verdict, and the safe reading of
-      // one is the same as no lookup at all.
-      return <p className="text-xs text-gray-500">Reputation service: not checked.</p>
+      // one is the same as a lookup that did not finish.
+      return <p className="text-xs text-gray-500">{label}: not checked.</p>
   }
 }
 
 /**
- * "Check again": ask the provider about this hash now.
+ * "Check again": ask a service about this hash now.
  *
  * Disabled rather than hidden inside the seven-day floor, because a control
  * that vanishes teaches nobody anything — the reader is left wondering whether
  * the feature exists. It says when it clears instead, which is the only form
  * of "no" a reader can act on.
+ *
+ * `provider` names one service, which is what the expanded view's controls do:
+ * each verdict has its own expiry clock, so asking all four to answer one
+ * question would spend three allowances for nothing. Omitted on the row's own
+ * control, where its absence means "every enabled service" — the behaviour
+ * there was before there was more than one.
+ *
+ * `armed` is the server's own per-service answer to "would a re-check be
+ * attempted", and it wins where it is given: the floor and the finality rules
+ * live there, and this is deliberately not a second copy of them. Where it is
+ * not given the floor is worked out from the fetch time, which is what the
+ * row's merged control has to do — the summary is one service's timestamp and
+ * the server does not compute a merged verdict's eligibility.
  *
  * The answer replaces the row's attachment rather than invalidating the list:
  * the response IS the updated attachment, so a refetch would ask the server
@@ -526,12 +741,18 @@ function ReputationVerdict({ rep }: { rep: AttachmentReputation }) {
  * carries a new fetch time, which re-locks this control — otherwise the next
  * reader asks again for nothing.
  */
-function CheckAgain({ ticketId, attachment }: RowProps) {
+function CheckAgain({
+  ticketId,
+  attachment,
+  provider,
+  fetchedAt,
+  armed,
+}: RowProps & { provider?: string; fetchedAt: string | null | undefined; armed?: boolean }) {
   const qc = useQueryClient()
   const [refusal, setRefusal] = useState<string | null>(null)
 
   const recheck = useMutation({
-    mutationFn: () => recheckAttachmentReputation(ticketId, attachment.id),
+    mutationFn: () => recheckAttachmentReputation(ticketId, attachment.id, provider),
     onSuccess: (updated) => {
       setRefusal(null)
       qc.setQueryData<Attachment[]>(['attachments', ticketId], (list) =>
@@ -547,8 +768,8 @@ function CheckAgain({ ticketId, attachment }: RowProps) {
   // open for minutes; the floor is seven days.
   const [now] = useState(() => Date.now())
 
-  const next = nextCheckAt(attachment.reputation?.fetched_at)
-  const ready = next === null || next.getTime() <= now
+  const next = nextCheckAt(fetchedAt)
+  const ready = armed ?? (next === null || next.getTime() <= now)
 
   return (
     <div className="space-y-1">
@@ -560,7 +781,12 @@ function CheckAgain({ ticketId, attachment }: RowProps) {
       >
         {recheck.isPending ? 'Checking…' : 'Check again'}
       </Button>
-      {!ready && (
+      {/* `next` is null only for a verdict carrying no usable fetch time,
+          which also leaves the control armed — so the pair below cannot both
+          be false. Held shut by the server's `armed` with no date to print is
+          the one case that can, and a sentence with a blank in it is worse
+          than no sentence. */}
+      {!ready && next && (
         <p className="text-xs text-gray-500">
           Checked within the last seven days. It can be checked again on {formatDate(next)}.
         </p>

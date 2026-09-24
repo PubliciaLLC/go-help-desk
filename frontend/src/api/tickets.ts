@@ -180,12 +180,18 @@ export async function uploadAttachment(ticketId: string, file: File): Promise<At
  * configured or the day's allowance is spent — each carrying a message that
  * says which.
  */
+// `provider` re-checks one service rather than every enabled one. The expanded
+// attachment row gives each service its own control, because each verdict has
+// its own expiry clock; omitting it keeps the original behaviour, which the
+// row's own merged control still wants.
 export async function recheckAttachmentReputation(
   ticketId: string,
-  attachmentId: string
+  attachmentId: string,
+  provider?: string
 ): Promise<Attachment> {
+  const path = `/tickets/${ticketId}/attachments/${attachmentId}/reputation`
   const res = await api.post<Attachment>(
-    `/tickets/${ticketId}/attachments/${attachmentId}/reputation`,
+    provider ? `${path}?provider=${encodeURIComponent(provider)}` : path,
     {}
   )
   return res.data

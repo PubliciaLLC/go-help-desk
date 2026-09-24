@@ -521,6 +521,30 @@ func (s *Service) InfectedHandling(ctx context.Context) string {
 	return InfectedHandlingRefuse
 }
 
+// MismatchHandling decides what happens to an upload whose content contradicts
+// its extension, where the detected type is not on the allowlist either:
+// MismatchHandlingRefuse or MismatchHandlingWrap.
+//
+// Defaults to "refuse", which is what every release before this feature did.
+// A file that lied about its type was answered with a 415, and an upgrade
+// nobody opted into must not quietly start storing one instead.
+//
+// An unrecognised stored value falls back to "refuse" as well, never to
+// "wrap" — the same rule, and the same direction, as InfectedHandling: a typo
+// must not land on the permissive option.
+//
+// It governs one condition and swaps only the action taken on it. A mismatch
+// whose detected type IS accepted is flagged and stored under its own name
+// either way, and a file the scanner identified is governed by
+// InfectedHandling instead; this setting never applies to it.
+func (s *Service) MismatchHandling(ctx context.Context) string {
+	v, _ := s.GetString(ctx, KeyAttachmentMismatchHandling)
+	if v == MismatchHandlingWrap {
+		return MismatchHandlingWrap
+	}
+	return MismatchHandlingRefuse
+}
+
 // ReputationRefresh is how often this instance re-checks a stored verdict:
 // "weekly", "biweekly" (the default), "monthly", "quarterly" or "never".
 //

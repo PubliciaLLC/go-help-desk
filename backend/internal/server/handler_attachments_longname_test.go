@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -35,7 +36,11 @@ func TestUpload_RefusesAFilenameNoArchiveCouldHold(t *testing.T) {
 	require.NoError(t, err)
 
 	// HTML content, so this would have taken the wrapping path — which is
-	// where the corruption happened.
+	// where the corruption happened. That path is now an operator setting
+	// that defaults to refusing, and a name the ZIP writer cannot hold is
+	// only reachable through it.
+	require.NoError(t, h.adminSvc.SetString(context.Background(),
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 	html := []byte("<html><body>x</body></html>")
 
 	t.Run("far past what a zip header can hold", func(t *testing.T) {

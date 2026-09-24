@@ -77,11 +77,8 @@ func sampleBMP(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-// samplePDF and sampleZIP carry the signatures the upload path looks for.
+// samplePDF carries the signature the upload path detects.
 func samplePDF() []byte { return []byte("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n") }
-
-// DOCX and XLSX are both ZIP containers, which is all the magic check knows.
-func sampleZIP() []byte { return append([]byte("PK\x03\x04"), bytes.Repeat([]byte{0}, 60)...) }
 
 // A Windows executable: the type an IT team triaging a suspicious file wants
 // to attach, and the reason the list is being opened up at all.
@@ -112,8 +109,15 @@ func TestUpload_DefaultAllowedTypesAreExactlyTodaysSet(t *testing.T) {
 		content []byte
 	}{
 		{"report.pdf", samplePDF()},
-		{"report.docx", sampleZIP()},
-		{"sheet.xlsx", sampleZIP()},
+		// Real OOXML packages, reusing the fixtures the detection tests
+		// build. sampleZIP used to stand in for both — four bytes of
+		// "PK\x03\x04" and sixty zeroes, which was all the old magic-byte
+		// check looked at. Content detection looks inside, and that fixture
+		// detects as an Android package, so a test about the extension
+		// allowlist was quietly exercising the content-mismatch path and
+		// began failing the moment a mismatch stopped being wrapped.
+		{"report.docx", detDOCX(t)},
+		{"sheet.xlsx", detXLSX(t)},
 		{"notes.txt", []byte("plain text")},
 		{"server.log", []byte("2026-09-23 boot")},
 		{"photo.jpg", sampleJPEG(t)},

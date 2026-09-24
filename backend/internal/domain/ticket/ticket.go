@@ -182,7 +182,17 @@ type Attachment struct {
 	ContentMismatch *bool `json:"mismatch"`
 
 	// ReputationURL is where a person can read a public report on this file's
-	// hash. VirusTotal, unconditionally, whenever there is a hash at all.
+	// hash. VirusTotal, on the attachments worth a second opinion.
+	//
+	// Two separate rules decide it, and conflating them is how one of them
+	// gets deleted. It does NOT follow the per-provider toggles — see below.
+	// It DOES follow whether this instance found anything about the file
+	// worth investigating: the scanner named it, or the content contradicts
+	// its name. An ordinary attachment whose content matches its name and
+	// which the scanner passed carries the hash and no link, because a link
+	// and a line of explanatory text under every holiday-request PDF is the
+	// noise that teaches people to stop reading the rows that matter. See
+	// worthLookingUp in the server package.
 	//
 	// NOT a function of which providers are enabled, and the distinction is
 	// the whole reason this field is not gated. A LOOKUP is this server
@@ -390,8 +400,9 @@ type AttachmentProviderVerdict struct {
 	// whose root serves a Swagger document. A link to a page that cannot
 	// answer the question the reader clicked it with is worse than no link.
 	//
-	// Distinct from Attachment.ReputationURL, which is the unconditional
-	// VirusTotal link every hash carries whatever is enabled.
+	// Distinct from Attachment.ReputationURL, which is the VirusTotal link
+	// carried by any attachment this instance found worth a second opinion,
+	// whatever is enabled.
 	LinkURL *string `json:"link_url"`
 
 	// Recheckable reports whether the Check again control should be armed for

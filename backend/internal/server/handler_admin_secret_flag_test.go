@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -84,4 +85,51 @@ func TestSettings_ReportWhetherASecretIsSetWithoutReturningIt(t *testing.T) {
 			require.NotContains(t, got, k)
 		}
 	})
+}
+
+// The flag is read-only, and a client that PATCHes the dump back must be told
+// so rather than quietly creating a settings row named after it.
+//
+// The dump emits a synthetic <key>_set boolean for every write-only secret.
+// The write handler had no allowlist at all, so any client that read the dump,
+// edited one field and sent the whole object back wrote real rows called
+// oidc_client_secret_set, saml_key_pem_set and so on — rows nothing reads,
+// sitting in the settings table looking like configuration. The frontend has
+// been doing exactly that since the flags landed.
+func TestSettings_RefuseAWriteToASecretPresenceFlag(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	s := adminSession(t, h)
+
+	const flag = admin.KeyOIDCClientSecret + "_set"
+
+	res, body := s.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{flag: true})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "%s", body)
+
+	var errBody struct {
+		Error struct{ Code, Message string } `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(body, &errBody))
+	require.Equal(t, "readonly_setting", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, flag,
+		"the message has to name the key, or the operator cannot find it in what they sent")
+
+	// Nothing was written under that name.
+	all, err := h.adminSvc.ListAll(context.Background())
+	require.NoError(t, err)
+	require.NotContains(t, all, flag, "a refused key must not reach the settings table")
+
+	// And it takes the whole write down with it, the way every other
+	// validation failure here does. An operator changing three things and
+	// accidentally including a flag must not get two of them.
+	res, body = s.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
+		admin.KeySiteName: "Changed By A Rejected Write",
+		flag:              true,
+	})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "%s", body)
+
+	name, _ := h.adminSvc.GetString(context.Background(), admin.KeySiteName)
+	require.NotEqual(t, "Changed By A Rejected Write", name,
+		"the valid half of a refused write must not land")
 }

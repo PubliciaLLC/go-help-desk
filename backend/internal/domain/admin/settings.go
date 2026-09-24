@@ -36,6 +36,25 @@ const (
 	// desk should not start storing malware because nobody said otherwise.
 	KeyAttachmentInfectedHandling = "attachment_infected_handling" // refuse | quarantine
 
+	// What happens to an upload whose content contradicts the extension it
+	// arrived under, when the type it turned out to be is not one this
+	// instance accepts: refuse it, or accept it wrapped and loudly renamed.
+	//
+	// Default refuse, which is what every release before this one did — a
+	// 415. Relaxing a security control in an upgrade nobody opted into is the
+	// wrong default for a behaviour only some deployments want. The wrap
+	// exists for the IT or security team whose tickets are *about* suspicious
+	// files, where refusing the attachment refuses the ticket's whole point.
+	//
+	// Deliberately the same shape, the same words and the same default as
+	// KeyAttachmentInfectedHandling above, because it is the same decision
+	// about a different question: does this instance store a file it has
+	// reason to distrust, or turn it away? The two stay independent — "the
+	// scanner named this" and "the content is not what the name says" are not
+	// the same claim, and an operator may reasonably keep one and refuse the
+	// other.
+	KeyAttachmentMismatchHandling = "attachment_mismatch_handling" // refuse | wrap
+
 	// Deprecated: replaced by the per-provider settings below, and read by
 	// nothing.
 	//
@@ -192,6 +211,28 @@ func ValidInfectedHandling(v string) bool {
 	return v == InfectedHandlingRefuse || v == InfectedHandlingQuarantine
 }
 
+// The two values KeyAttachmentMismatchHandling takes.
+//
+// Constants rather than literals for the same reason as the infected-handling
+// pair: the difference between them is whether this instance stores a file it
+// has decided it cannot identify, and a typo in a string comparison there
+// fails silently in the permissive direction.
+const (
+	MismatchHandlingRefuse = "refuse"
+	MismatchHandlingWrap   = "wrap"
+)
+
+// ValidMismatchHandling reports whether v is a value the setting accepts.
+//
+// Used by the settings endpoint to refuse a write, not by the reader: the
+// reader falls back to "refuse", so an unrecognised value is safe but
+// baffling — an operator who typed "zip", saw a 204 and expected their
+// triage instance to start accepting mislabelled files has been told nothing.
+// Same shape, and the same reasoning, as ValidInfectedHandling.
+func ValidMismatchHandling(v string) bool {
+	return v == MismatchHandlingRefuse || v == MismatchHandlingWrap
+}
+
 // Store is the persistence interface for the key/value settings table.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
@@ -227,6 +268,11 @@ func AuthCriticalKeys() []string {
 		// Whether an infected upload is refused or stored. Same reasoning as
 		// the scan policy: it decides what this instance will hold.
 		KeyAttachmentInfectedHandling,
+		// And whether a file whose content contradicts its name is refused or
+		// stored wrapped. Same reasoning again: it decides what this instance
+		// will hold, and a leaked API key must not be able to switch an
+		// instance into accepting files it had decided to turn away.
+		KeyAttachmentMismatchHandling,
 		// The deprecated VirusTotal pair. Nothing reads them, so gating them
 		// protects nothing — they stay listed because they are still
 		// writable, and a key that used to require a session should not

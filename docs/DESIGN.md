@@ -403,10 +403,13 @@ this application renamed has lost the name the uploader claimed: recomputing
 would compare `.zip` against the content and report a truthfully named sample
 as lying about itself.
 
-A mismatch never refuses an upload. Nothing is rendered and every download is
-an opaque blob, so it is not a risk to this server — it is a deception risk for
-the person about to open the file, which is why they are told. What it does
-decide is how the file is stored.
+Recording a mismatch never refuses an upload, and the recording is not
+optional: `detected_mime`, `sha256` and `content_mismatch` are written on every
+file this instance stores, whatever the operator's settings say. They are facts
+about what arrived rather than enforcement.
+
+Whether a mismatch is then refused or stored is a separate decision, and it is
+the operator's: see the second tier below.
 
 ### The three tiers an upload is stored in
 
@@ -425,10 +428,12 @@ encoder. The upload handler takes the first of these that applies.
    the scanner unreachable under `permissive`, nothing is ever identified as
    infected and `quarantine` does nothing at all.
 2. **The content contradicts the name, and the detected type is not on the
-   operator's allowlist.** The file is wrapped with no password and stored as
+   operator's allowlist**, and the operator set `attachment_mismatch_handling`
+   to `wrap`. The file is wrapped with no password and stored as
    `suspicious-<crc32>.zip` — the CRC32 of the file inside, which every ZIP
    entry already carries, so the archive is named after a value its recipient
-   can verify and it costs nothing to produce.
+   can verify and it costs nothing to produce. Under the default, `refuse`, the
+   upload is rejected with `415` `invalid_file` and never reaches this tier.
 3. **It is an image** — `.jpg`, `.jpeg`, `.png` or `.bmp` — and neither of the
    above. It is recompressed to whichever of JPEG (quality 85) or PNG is
    smaller, under the name it was uploaded with.
@@ -447,14 +452,44 @@ accepted type: flagged on the row, stored under its own name, not wrapped. A
 and wrapping it would be the warning-on-ordinary-files problem in physical
 form.
 
-**Why wrapped rather than refused.** Refusing closes off the case this product
-is otherwise good at — the suspicious file a user reported is exactly the file
-a ticket is about — and merely flagging it is too quiet, because the file still
-lands on somebody's disk called `report.pdf`. The archive name is the warning,
-it cannot be double-clicked into whatever the file actually is, and unlike our
-UI it survives being forwarded or saved to a share. **This is a relaxation of
-shipped behaviour**: a file whose content contradicted its extension used to be
-refused with `415`, and is now stored, wrapped and flagged.
+**Wrapped or refused is an operator setting, and refusing is the default.**
+`attachment_mismatch_handling` takes `refuse` (the default) or `wrap`:
+
+| Value | Behaviour |
+|---|---|
+| `refuse` | **Default.** `415` `invalid_file`, as every release before this one. |
+| `wrap` | Accepted, stored as `suspicious-<crc32>.zip`, flagged. |
+
+Deliberately the same shape, the same words and the same default as
+`attachment_infected_handling`, because it is the same decision about a
+different question: does this instance store a file it has reason to distrust,
+or turn it away? An operator who has reasoned about one does not have to start
+over on the other. Both are session-gated — an API key cannot change what this
+instance will hold — an unrecognised value falls back to `refuse` rather than
+to the permissive option, and the settings endpoint refuses the write outright
+with `invalid_mismatch_handling`, following `invalid_scan_policy`.
+
+Default `refuse`, so upgrading and touching nothing changes nothing. Relaxing a
+security control in an upgrade nobody opted into is the wrong default for a
+behaviour only some deployments want.
+
+**Why `wrap` exists at all.** Refusing closes off the case this product is
+otherwise good at — the suspicious file a user reported is exactly the file a
+ticket is about — and merely flagging it would be too quiet, because the file
+still lands on somebody's disk called `report.pdf`. The archive name is the
+warning, it cannot be double-clicked into whatever the file actually is, and
+unlike our UI it survives being forwarded or saved to a share. That is a real
+scenario for an IT or security team whose tickets are *about* suspicious files,
+and a minority one, which is exactly what a setting is for.
+
+**What the setting does not govern.** It swaps the action on one condition and
+changes nothing else. A mismatch whose detected type *is* on the allowlist — a
+real PNG named `.jpg` — is flagged and stored under its own name under both
+values: there is nothing to contain there, only something to say. And a file
+the scanner identified is governed by `attachment_infected_handling`; this
+setting never applies to it. The two are independent because the claims are
+different — "the scanner named this" and "the content is not what the name
+says" are not the same fact — and a file that is both is quarantined.
 
 **Why the password is published.** `infected` is in this document, in the issue
 and in the UI beside every quarantined file. It protects nothing and is not
@@ -479,11 +514,11 @@ file the ticket is about rather than our wrapper's name. The appended `.zip`
 describes the wrapper and not the sample: it is added after the allowlist has
 had its say on the uploaded name and after the hash and detected type were
 taken, so `.zip` does not have to be an accepted type for either tier to work.
-Wrapping is not optional per file — when the setting says `quarantine`, every
-infected upload is wrapped, because a setting that can be bypassed for one file
-is a setting nobody can reason about. Neither tier is retroactive in either
-direction: turning quarantine on does not rewrap what is already stored, and
-turning it off does not unwrap it.
+Wrapping is not optional per file — when the setting says `quarantine`, or
+`wrap`, every upload that meets the condition is wrapped, because a setting
+that can be bypassed for one file is a setting nobody can reason about. Neither
+tier is retroactive in either direction: turning quarantine or the wrap on does
+not rewrap what is already stored, and turning either off does not unwrap it.
 
 What the row says afterwards. `mime_type` describes the file as stored;
 `detected_mime` describes the bytes that arrived; `size_bytes` is the stored
@@ -493,7 +528,7 @@ file, because that is what a download costs:
 |---|---|---|---|
 | ordinary PDF | `report.pdf` | `application/pdf` | `application/pdf` |
 | PNG recompressed to JPEG | `shot.png` | `image/jpeg` | `image/png` |
-| HTML named `.pdf`, wrapped | `suspicious-4f2a91c3.zip` | `application/zip` | `text/html` |
+| HTML named `.pdf`, under `wrap` | `suspicious-4f2a91c3.zip` | `application/zip` | `text/html` |
 | infected `.exe`, quarantined | `sample.exe.zip` | `application/zip` | `application/vnd.microsoft.portable-executable` |
 
 A recompressed PNG is not a mismatch: detection ran on the uploaded bytes,
@@ -584,7 +619,9 @@ payload entirely. The admin settings page says so plainly where the toggles are:
 *with none enabled, attachments are judged by this instance's own scanner
 alone.*
 
-**The VirusTotal hash link is unconditional**, whatever the toggles say,
+**The VirusTotal hash link does not follow the toggles**, and it is not on
+every attachment either — those are two separate rules and both matter. On the
+rows that carry it, it carries
 `rel="noreferrer noopener"`. A link is not a lookup. A lookup is this server
 sending a customer's file hash to a third party — the operator's decision, their
 allowance, and what the toggles govern. A link sends nothing from this server:
@@ -601,6 +638,18 @@ link opens in the reader's own browser and that this instance sends nothing
 there unless VirusTotal is enabled above; without it, an operator who switched
 VirusTotal off and still sees the link will reasonably conclude the setting does
 not work.
+
+**It is not on every attachment, though.** A link goes only where this instance
+itself found something worth a second opinion: the scanner named the file, or
+its content contradicts the name it arrived under. An ordinary attachment —
+content matching its name, scanner passed — carries the hash and no link,
+because a link and a line of explanatory text under every holiday-request PDF
+is the noise that teaches people to stop reading the rows that matter.
+
+Note what is deliberately not consulted: the reputation verdict. Only
+quarantined files are ever looked up, so an ordinary attachment could not have
+one — and on a quarantined file, hiding the link because some provider said
+"clean" would be second-guessing the analyst doing the triage.
 
 An instance that set the earlier `attachment_vt_lookup` / `attachment_vt_api_key`
 keys, or the `attachment_reputation_provider` / `attachment_reputation_api_key`

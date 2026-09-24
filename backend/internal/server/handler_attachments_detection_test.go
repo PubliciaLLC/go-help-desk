@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -50,6 +51,13 @@ import (
 func TestUpload_RecordsWhatTheContentActuallyIs(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
+
+	// Two of the rows below are content this instance would otherwise turn
+	// away: attachment_mismatch_handling defaults to "refuse", and a 415
+	// records nothing. This test is about what is recorded, so it runs on an
+	// instance that stores them.
+	require.NoError(t, h.adminSvc.SetString(context.Background(),
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
 	cases := []struct {
 		name         string

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -97,6 +98,13 @@ func TestUpload_TextThatIsNotInertIsStillFlagged(t *testing.T) {
 		ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
+
+	// The wrap is what this asserts, and it is an operator setting that
+	// defaults to refusing instead. On a default instance the upload below is
+	// a 415, which is the other half of the same control and is pinned in
+	// handler_attachments_mismatch_handling_test.go.
+	require.NoError(t, h.adminSvc.SetString(context.Background(),
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
 	// HTML is the one textual type that runs when it is opened, because a
 	// browser is what opens it.

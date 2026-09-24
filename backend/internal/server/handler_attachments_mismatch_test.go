@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -36,6 +37,12 @@ func TestUpload_RecordsWhetherTheContentMatchedTheName(t *testing.T) {
 		ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
+
+	// One row below is content this instance refuses by default, and a 415
+	// records nothing at all. What is recorded is the subject here, so this
+	// runs on an instance that stores it.
+	require.NoError(t, h.adminSvc.SetString(context.Background(),
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
 	cases := []struct {
 		name     string

@@ -338,19 +338,40 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 
 	case mismatch && !allowed[detectedExt]:
 		// A file whose content contradicts its name, where the content is not
-		// something this instance accepts, is wrapped rather than refused or
-		// merely flagged.
+		// something this instance accepts. What happens to it is the
+		// operator's decision, and the default is the refusal every release
+		// before this one gave.
 		//
-		// Refusing it closes off the case a help desk is otherwise good at:
-		// the suspicious file a user reported is exactly the file a ticket is
-		// about. Flagging it alone is too quiet — it still lands on someone's
-		// disk named report.pdf. The archive name is the warning, and unlike
-		// our UI it survives being forwarded or saved to a share.
+		// Not every mismatch reaches here: an HTML response saved as a .log
+		// is ordinary, and acting on it either way would be a warning on an
+		// ordinary file. The operator's own allowlist is the judgement, so
+		// there is no second list to keep correct — and a mismatch of an
+		// accepted type falls past this arm untouched by the setting.
 		//
-		// Not every mismatch: an HTML response saved as a .log is ordinary,
-		// and wrapping it would be a warning on an ordinary file. The
-		// operator's own allowlist is the judgement, so there is no second
-		// list to keep correct.
+		// Reached only after the quarantine arm above has had its say. A file
+		// the scanner identified is governed by attachment_infected_handling
+		// and never by this setting: "the scanner named this" and "the
+		// content is not what the name says" are different claims, and an
+		// operator may reasonably keep one and refuse the other.
+		if s.adminSvc.MismatchHandling(r.Context()) != admin.MismatchHandlingWrap {
+			// The same 415 as before this feature existed, verbatim, so an
+			// operator who was relying on that response still gets it.
+			//
+			// detected_mime, sha256 and content_mismatch were computed above
+			// regardless — they are facts about what arrived rather than
+			// enforcement — and are simply not written, because nothing is
+			// stored.
+			Error(w, http.StatusUnsupportedMediaType, "invalid_file",
+				"file content does not match the expected type")
+			return
+		}
+
+		// Wrapped rather than refused, because the operator asked for it.
+		// Refusing closes off the case a help desk is otherwise good at: the
+		// suspicious file a user reported is exactly the file a ticket is
+		// about. Flagging it alone would be too quiet — it still lands on
+		// someone's disk named report.pdf. The archive name is the warning,
+		// and unlike our UI it survives being forwarded or saved to a share.
 		//
 		// No password, unlike an infected file. That password stops an
 		// on-access scanner eating a known sample; this file is not known-bad,
@@ -980,8 +1001,11 @@ func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte,
 // addReputationURL fills in where a person can read a public report on this
 // file's hash.
 //
-// Unconditional, and that is the correction this replaced a setting-driven
-// version with. A link is not a lookup. A lookup is this server sending a
+// Not a function of which providers are enabled, and that is the correction
+// this replaced a setting-driven version with. Which rows get one at all is a
+// separate question, answered by worthLookingUp below.
+//
+// A link is not a lookup. A lookup is this server sending a
 // customer's file hash to a third party — the operator's decision, their API
 // allowance, and what the per-provider toggles govern. A link sends nothing
 // from here: it is an anchor the analyst clicks in their own browser, under
@@ -1001,7 +1025,7 @@ func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte,
 // expanded view, where a link and a verdict from the same service belong
 // together.
 func (s *Server) addReputationURL(ctx context.Context, att *ticket.Attachment) {
-	if att.SHA256 == nil || *att.SHA256 == "" {
+	if att.SHA256 == nil || *att.SHA256 == "" || !worthLookingUp(att) {
 		return
 	}
 	url := reputation.HashLink(*att.SHA256)
@@ -1009,6 +1033,44 @@ func (s *Server) addReputationURL(ctx context.Context, att *ticket.Attachment) {
 		return
 	}
 	att.ReputationURL = &url
+}
+
+// worthLookingUp reports whether this instance found anything about the file
+// worth a second opinion.
+//
+// The link used to go on every attachment with a hash, which since detection
+// landed is all of them — so a holiday-request PDF on a printer ticket carried
+// a link to VirusTotal and a line of explanatory text underneath it. That is
+// noise on the rows where nothing is wrong, and noise is what teaches people
+// to stop reading the rows where something is.
+//
+// Three conditions earn it, and they are all this instance's own findings
+// rather than anyone else's opinion:
+//
+//   - the scanner named it, so an analyst is working this row already
+//   - the content contradicts the name and was not a type this instance
+//     accepts, so it was wrapped — and nothing looked it up, because only
+//     quarantined files are looked up, which makes the link the only outside
+//     opinion available on that file
+//   - the content contradicts the name but the type was allowed, so it was
+//     stored under its own name. A weaker signal, and still the row where a
+//     curious person would check.
+//
+// A file whose content matches its name and which the scanner passed gets
+// nothing. Note what is NOT consulted: the reputation verdict. Only
+// quarantined files are ever looked up (see addReputation), so five of these
+// six conditions can never carry one — and on the sixth, suppressing the link
+// because a provider said "clean" or "known" would be second-guessing the
+// person doing the triage.
+//
+// The hash itself is still shown wherever it was recorded. It is a fact about
+// the file rather than a claim by anybody, it costs nothing, and an analyst
+// with their own account can paste it where they like.
+func worthLookingUp(att *ticket.Attachment) bool {
+	if att.VirusName != nil {
+		return true
+	}
+	return att.ContentMismatch != nil && *att.ContentMismatch
 }
 
 // newReputationProvider builds one named provider with the key it needs.
