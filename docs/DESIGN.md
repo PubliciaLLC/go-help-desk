@@ -512,10 +512,24 @@ Measured through the upload handler on a default instance:
 | a plain ZIP named `.docx` | `201` | `415` |
 | under four bytes, text-looking, under a text or document name | `415` | `201` |
 | under four bytes, unplaceable, under a binary name | `415` | `415` |
-| under four bytes, under an image name | `415` | `422` |
+| under four bytes, text-looking, under an image name | `415` | `422` |
+| under four bytes, unplaceable, under an image name | `415` | `415` |
 | text named `.png` or `.jpg` | `415` | `422` `invalid_image` |
 | a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` | `201` |
 | HTML named `.pdf` | `415` | `415` |
+
+**Containment only applies to the nine extensions this project ships.** Their
+spellings are the detector's own, so a contradiction under one of those names
+is one we can stand behind. An extension an operator adds is flagged at most,
+never wrapped or refused — the detector reports one canonical spelling per
+format, so `.htm` is HTML and `.tif` is TIFF but it calls them `.html` and
+`.tiff`, and an operator who allowed `.htm` and received genuine HTML would
+otherwise be refused with a message saying the content did not match the name.
+It matched exactly. A bigger synonym table is not the fix: the two libraries
+involved do not agree on a name for the same format — Go's standard library
+calls a Windows executable `application/x-msdownload` where the detector calls
+it `application/vnd.microsoft.portable-executable` — so there is no canonical
+mapping to build one from.
 
 The first row is the one to understand rather than to fix. A `.pdf` holding
 plain text is a contradiction and is flagged, and it is neither wrapped nor

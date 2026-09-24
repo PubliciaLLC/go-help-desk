@@ -100,14 +100,15 @@ func IsMismatch(claimedExt, detectedExt, detectedMIME string) bool {
 	if claimed == "" {
 		return true
 	}
-	// Rule 3, and note what it tests: the media type, not the extension.
+	// Rule 3: unplaceable content under a text name is the detector's limit,
+	// not a deception. Note what it tests — the media type, not the extension.
 	//
 	// application/octet-stream is what this detector says when it cannot place
 	// a file at all. An empty extension is NOT the same statement — the
-	// library returns none for nine media types, eight of which it recognised
+	// library returns none for eight media types, seven of which it recognised
 	// perfectly well and simply has no filename extension for:
 	// application/x-elf, x-ole-storage, x-executable, x-object, x-coredump,
-	// tzif and zlib among them.
+	// tzif and zlib.
 	//
 	// Written against the extension, this rule said a Linux executable or an
 	// OLE2 compound document — the container for macro-bearing legacy Office

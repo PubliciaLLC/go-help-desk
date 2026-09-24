@@ -336,7 +336,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		storedExt = ".zip"
 		mime = "application/zip"
 
-	case mismatch && !attachment.IsTextExtension(ext) && !allowed[detectedExt]:
+	case mismatch && shippedExt(ext) && !attachment.IsTextExtension(ext) && !allowed[detectedExt]:
 		// A file whose content contradicts its name, where the name claims a
 		// binary format and the content is not something this instance
 		// accepts. What happens to it is the operator's decision, and the
@@ -1109,4 +1109,32 @@ func (s *Server) newReputationProvider(name, apiKey string) reputation.Provider 
 		return reputation.NewCIRCL(s.repOpts...)
 	}
 	return reputation.NewVirusTotal(apiKey, s.repOpts...)
+}
+
+// shippedExt reports whether this extension is one of the nine this project
+// ships, whose spelling is known to be the detector's own.
+//
+// Containment means being confident the name lied, and for an extension an
+// operator added we cannot establish what it promised. The detector reports
+// one canonical spelling per format: ".htm" is HTML and ".tif" is TIFF, but it
+// calls them ".html" and ".tiff", so an operator who allowed ".htm" and
+// received genuine HTML got a 415 reading "file content does not match the
+// expected type" — a sentence that is false about a file matching its name
+// exactly, refusing a type they had explicitly allowed.
+//
+// A synonym table is not the fix, and it was tried: ".jpeg" is in one and it
+// only ever covered the set we ship. The two libraries involved do not agree
+// on names for the same format either — the standard library calls a Windows
+// executable application/x-msdownload where the detector calls it
+// application/vnd.microsoft.portable-executable — so there is no canonical
+// mapping to build a bigger table out of.
+//
+// What we can say honestly is narrower: the nine we ship were checked against
+// the detector, so a contradiction under one of those names is a contradiction
+// we can stand behind. Anything else is flagged and stored under its own name.
+// The operator asked for the type; the least we owe them is not to refuse it
+// while telling them something untrue about why.
+func shippedExt(ext string) bool {
+	_, ok := allowedExt[ext]
+	return ok
 }

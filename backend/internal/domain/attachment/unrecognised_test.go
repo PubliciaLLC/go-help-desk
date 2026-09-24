@@ -19,8 +19,10 @@ import (
 //
 // The library returns no extension for application/x-elf,
 // application/x-ole-storage, application/x-executable, application/x-object,
-// application/x-coredump, application/x-mach-binary variants, application/tzif
-// and application/zlib, as well as for application/octet-stream. So a Linux
+// application/x-coredump, application/tzif and application/zlib, as well as
+// for application/octet-stream — eight in total, and only the last of them is
+// a file it failed to place. (application/x-mach-binary is not among them; it
+// has ".macho".) So a Linux
 // executable or an OLE2 compound document — the container for macro-bearing
 // legacy Office files, MSI installers and .msg mail — arrived under a .txt
 // name and was recorded as matching it, while a Windows executable under the
