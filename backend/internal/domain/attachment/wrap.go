@@ -108,10 +108,25 @@ func newEntry(zw *zip.Writer, filename, password string) (io.Writer, error) {
 		Name:   filename,
 		Method: zip.Deflate,
 	}
-	// SetModTime, not a Modified field: this package forked archive/zip
-	// before that field existed, which is its own small argument for pinning
-	// what we depend on rather than assuming a fork keeps pace.
-	fh.SetModTime(time.Now().UTC())
+	// The two MS-DOS fields, packed here rather than through the package's
+	// SetModTime.
+	//
+	// This field is defined as local wall-clock time; it carries no zone and
+	// never has, and every reader outside Go treats it that way. SetModTime
+	// converts to UTC first, so a wrap made at 07:28 in Chicago listed as
+	// 12:28 in unzip, bsdtar and python — five hours in the future to whoever
+	// opened the quarantine archive on a machine in the server's own zone.
+	// Go's own archive/zip converts too, but also writes an extended-timestamp
+	// extra field carrying the true instant, which modern tools prefer; this
+	// fork predates that field and writes no extra field, so nothing corrects
+	// the record.
+	//
+	// The packing is two lines straight out of the format spec. On a server
+	// running UTC — which is most of them — it produces exactly what
+	// SetModTime produced.
+	now := time.Now()
+	fh.ModifiedDate = uint16(now.Day() + int(now.Month())<<5 + (now.Year()-1980)<<9)
+	fh.ModifiedTime = uint16(now.Second()/2 + now.Minute()<<5 + now.Hour()<<11)
 	for i := 0; i < len(filename); i++ {
 		if filename[i] >= 0x80 {
 			fh.Flags |= 0x800

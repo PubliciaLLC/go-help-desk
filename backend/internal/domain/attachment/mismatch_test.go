@@ -254,3 +254,61 @@ func mimeForExt(ext string) string {
 	}
 	return "application/octet-stream"
 }
+
+// JSON and XML keep their promise whatever else the format is called.
+//
+// Measured against the real detector, not asserted from the registry: a
+// GeoJSON document is application/geo+json and an SVG is image/svg+xml, and
+// under a .txt name both were flagged as contradicting themselves. Both are
+// text, and both say so in the only part of the name a reader that has never
+// heard of them can act on — the ending IANA calls a structured syntax
+// suffix. This is the same false positive the rule already fixed for NDJSON,
+// text/xml and vCard, one family further out.
+//
+// Run through Detect rather than with hand-written media types so it fails if
+// the detector's spelling changes under us, which is how every previous
+// version of this rule went wrong.
+func TestIsMismatch_StructuredJSONAndXMLAreTextUnderATextName(t *testing.T) {
+	cases := []struct {
+		name    string
+		content []byte
+		wantExt string
+	}{
+		{
+			name:    "GeoJSON, which is JSON",
+			content: []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}`),
+			wantExt: ".geojson",
+		},
+		{
+			name:    "SVG, which is XML",
+			content: []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"><rect width="4" height="4"/></svg>`),
+			wantExt: ".svg",
+		},
+		{
+			name:    "XHTML, which is XML",
+			content: []byte(`<?xml version="1.0"?><!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>x</title></head><body>hi</body></html>`),
+			wantExt: ".html",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			detectedExt, detectedMIME := attachment.Detect(tc.content)
+			if detectedExt != tc.wantExt {
+				t.Fatalf("the detector now calls this %q, not %q — the test is about %s, so fix the fixture",
+					detectedExt, tc.wantExt, tc.name)
+			}
+			for _, claimed := range []string{".txt", ".log", ".csv", ".md"} {
+				if attachment.IsMismatch(claimed, detectedExt, detectedMIME) {
+					t.Errorf("%s under %s is reported as lying about itself (detected %s)",
+						tc.name, claimed, detectedMIME)
+				}
+			}
+			// Still a contradiction under a name that promises something else
+			// entirely. The relaxation is for text names, not a blanket pass.
+			if !attachment.IsMismatch(".pdf", detectedExt, detectedMIME) {
+				t.Errorf("%s under .pdf should still be a contradiction", tc.name)
+			}
+		})
+	}
+}

@@ -29,6 +29,21 @@ var textExt = map[string]bool{
 // text by definition, and JSON is text that the IANA registry happens to file
 // under application/*.
 //
+// The +json and +xml endings are the same statement made by the registry
+// itself. IANA calls them structured syntax suffixes, and the whole point of
+// one is to say "whatever else this format is, it is JSON" or "it is XML" to
+// a reader that has never heard of the format. Named types were not enough:
+// measured against this detector, a GeoJSON document under notes.txt is
+// application/geo+json and was flagged as lying about itself, as was a
+// subtitle file and an SVG. GeoJSON is JSON. Matching on the ending catches
+// every future member of both families without another round of adding one
+// name at a time, which is the drift this function was written to stop.
+//
+// Formats that are plainly text and carry neither ending — application/
+// x-subrip is the one measured — are still flagged under a text name. That is
+// the long tail, and chasing it by name is exactly the list this rule
+// replaced.
+//
 // text/html used to be excluded here, on the argument that HTML is the one
 // textual type that runs when it is opened. That argument is false in the way
 // that matters: what opens a file is chosen by its name, not by its content. A
@@ -39,8 +54,16 @@ var textExt = map[string]bool{
 // response saved as a .log, which is the example DESIGN.md and #165 both use
 // for "ordinary".
 func isInertText(mediaType string) bool {
-	switch mediaType {
-	case "application/json", "application/x-ndjson":
+	// The parameters, if any, are not part of the name: text/plain arrives as
+	// "text/plain; charset=utf-8" from some sources, and a suffix test against
+	// that string would never match.
+	if i := strings.IndexByte(mediaType, ';'); i >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:i])
+	}
+	switch {
+	case mediaType == "application/json", mediaType == "application/x-ndjson":
+		return true
+	case strings.HasSuffix(mediaType, "+json"), strings.HasSuffix(mediaType, "+xml"):
 		return true
 	}
 	return strings.HasPrefix(mediaType, "text/")

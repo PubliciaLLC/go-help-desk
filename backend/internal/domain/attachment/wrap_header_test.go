@@ -64,7 +64,7 @@ func TestWrap_HeaderFieldsAReaderOutsideGoNeeds(t *testing.T) {
 				require.Len(t, zr.File, 1)
 				require.False(t, zr.File[0].Modified.IsZero(),
 					"an entry with no timestamp decodes to an impossible date")
-				require.WithinDuration(t, time.Now().UTC(), zr.File[0].Modified.UTC(), time.Hour)
+				require.WithinDuration(t, wallClock(time.Now()), wallClock(zr.File[0].Modified), time.Hour)
 			}
 		})
 	}
@@ -108,4 +108,37 @@ func localHeaderFlags(t *testing.T, archive []byte) uint16 {
 	require.Greater(t, len(archive), 8)
 	require.Equal(t, []byte("PK\x03\x04"), archive[:4], "not a local file header")
 	return binary.LittleEndian.Uint16(archive[6:8])
+}
+
+// The timestamp reads as the server's wall clock, not five hours off it.
+//
+// The MS-DOS date and time fields carry no zone and never have; the format
+// defines them as local wall-clock time and every reader outside Go treats
+// them that way. The zip package we use converts to UTC before packing them,
+// and unlike Go's own archive/zip it writes no extended-timestamp extra field
+// to correct the record — so a wrap made at 07:28 in Chicago listed as 12:28
+// in unzip, bsdtar and python, five hours in the future to whoever opened the
+// quarantine archive.
+//
+// Passes trivially on a server running UTC, which is most of them. It is the
+// ones that are not that this pins.
+func TestWrap_TheTimestampIsTheServersWallClock(t *testing.T) {
+	archive, err := attachment.Wrap([]byte("payload"), "sample.exe", attachment.QuarantinePassword)
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	require.NoError(t, err)
+	require.Len(t, zr.File, 1)
+
+	// Go's reader decodes the MS-DOS fields and labels the result UTC, having
+	// no zone to label it with. Comparing the digits is therefore the whole
+	// test: it is what any other reader will show the person who downloaded
+	// the archive.
+	require.WithinDuration(t, wallClock(time.Now()), wallClock(zr.File[0].Modified), 2*time.Minute,
+		"the archive is stamped in a different zone from the server that made it")
+}
+
+// wallClock strips the zone, leaving the digits a reader would display.
+func wallClock(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
 }

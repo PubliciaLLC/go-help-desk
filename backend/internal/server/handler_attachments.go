@@ -380,6 +380,19 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		// so there is no second list to keep correct — a mismatch of an
 		// accepted type falls past this arm untouched by the setting.
 		//
+		// That lookup is the detector's extension against a list of the
+		// operator's spellings, which are two vocabularies, and the answer
+		// differs where they disagree: an instance allowing .pdf and .htm
+		// contains genuine HTML named report.pdf, where one allowing .pdf and
+		// .html only flags it. Both operators allowed HTML; one spelled it
+		// the way the detector does. Deliberate, and not a synonym table for
+		// the same reason shippedExt is not one — but the reason it is
+		// tolerable here is the direction of the error. A file only reaches
+		// this line by already lying about its name, so the strict answer is
+		// containment of something that was lying, not a refusal of an
+		// ordinary file. DESIGN.md names it under "Accepted there means the
+		// detector's spelling".
+		//
 		// Reached only after the quarantine arm above has had its say. A file
 		// the scanner identified is governed by attachment_infected_handling
 		// and never by this setting: "the scanner named this" and "the
@@ -1160,9 +1173,11 @@ func (s *Server) newReputationProvider(name, apiKey string) reputation.Provider 
 //
 // What we can say honestly is narrower: the nine we ship were checked against
 // the detector, so a contradiction under one of those names is a contradiction
-// we can stand behind. Anything else is flagged and stored under its own name.
-// The operator asked for the type; the least we owe them is not to refuse it
-// while telling them something untrue about why.
+// we can stand behind. Anything else is stored under its own name, with the
+// detected type recorded and no verdict — neither contained nor flagged, since
+// both would be claims we cannot make. The operator asked for the type; the
+// least we owe them is not to refuse it while telling them something untrue
+// about why.
 func shippedExt(ext string) bool {
 	_, ok := allowedExt[ext]
 	return ok

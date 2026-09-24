@@ -456,7 +456,9 @@ encoder. The upload handler takes the first of these that applies.
    value of the setting. Wrapping contains a file by taking away the name that
    decides how it opens; `crash.log` already opens in a text editor whatever is
    inside it, so there is nothing to contain, only something to say. Such a
-   file is flagged if its content contradicts the name, recorded either way,
+   file is flagged if its content contradicts the name — when the name is one
+   this project ships, which `.txt` and `.log` are and `.csv` and `.md` are
+   not; see the paragraph on shipped extensions below — recorded either way,
    and stored under its own name.
 3. **It is an image** — `.jpg`, `.jpeg`, `.png` or `.bmp` — and neither of the
    above. It is recompressed to whichever of JPEG (quality 85) or PNG is
@@ -468,7 +470,8 @@ Anything else is stored exactly as it arrived.
 people will get wrong.** Not every mismatch is wrapped. The judgement is the
 operator's own allowlist, which means there is no second list to keep correct:
 a file is wrapped when the type it turned out to be is not a type this instance
-accepts — and then only under a name claiming a binary format. So HTML inside a
+accepts, in the detector's spelling of that type — and then only under a name
+claiming a binary format. So HTML inside a
 `.pdf` is wrapped on an instance set to `wrap`, because `.html` is not an
 accepted type; on a default instance it is refused with `415` instead, which is
 the same condition and the other action. A real PNG inside a `.pdf` is a
@@ -520,8 +523,8 @@ Measured through the upload handler on a default instance:
 
 **Containment only applies to the nine extensions this project ships.** Each
 was checked against the detector, so a contradiction under one of those names
-is one we can stand behind. An extension an operator adds is flagged at most,
-never wrapped or refused — the detector reports one canonical spelling per
+is one we can stand behind. An extension an operator adds is neither contained
+nor flagged — the detector reports one canonical spelling per
 format, so `.htm` is HTML and `.tif` is TIFF but it calls them `.html` and
 `.tiff`, and an operator who allowed `.htm` and received genuine HTML would
 otherwise be refused with a message saying the content did not match the name.
@@ -583,11 +586,33 @@ and a minority one, which is exactly what a setting is for.
 **What the setting does not govern.** It swaps the action on one condition and
 changes nothing else. A mismatch whose detected type *is* on the allowlist — a
 real PNG named `.jpg` — is flagged and stored under its own name under both
-values: there is nothing to contain there, only something to say. And a file
+values: there is nothing to contain there, only something to say — with the
+spelling caveat below. And a file
 the scanner identified is governed by `attachment_infected_handling`; this
 setting never applies to it. The two are independent because the claims are
 different — "the scanner named this" and "the content is not what the name
 says" are not the same fact — and a file that is both is quarantined.
+
+**"Accepted" there means the detector's spelling.** The question the escape
+asks is whether the format the file turned out to be is one this instance
+accepts, and it is answered by looking the detector's extension up in the
+operator's list. Those are two vocabularies. An instance that allows `.pdf`
+and `.htm`, receiving genuine HTML named `report.pdf`, refuses it under
+`refuse` and wraps it under `wrap`; an instance that allows `.pdf` and `.html`
+flags the same file and stores it under its own name. Both operators allowed
+HTML. Only one spelled it the way the detector does.
+
+This is deliberate and it is not a synonym table. The same table was tried and
+rejected for containment itself, for the reason given above — the two libraries
+involved do not agree on names for one format, so there is nothing canonical to
+build it out of — and a table here would have the same problem with a worse
+consequence, since guessing that two spellings mean one format is how a real
+contradiction stops being contained. The error runs in the strict direction: a
+file only reaches this question by already lying about its name, and the worst
+outcome is that a lying file is contained on one instance and merely flagged on
+another. The spellings where it bites are the ones where the detector differs —
+`.htm`, `.tif`, `.yml`, `.mpg` — and an operator who wants the lenient answer
+gets it by adding the spelling the detector uses.
 
 **Why the password is published.** `infected` is in this document, in the issue
 and in the UI beside every quarantined file. It protects nothing and is not
