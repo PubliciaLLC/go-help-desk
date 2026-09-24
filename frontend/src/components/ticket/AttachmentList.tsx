@@ -377,7 +377,7 @@ function HashLine({ attachment }: { attachment: Attachment }) {
         <p className="text-[11px] text-gray-400">
           Opens in your browser.{' '}
           {isQuarantined(attachment)
-            ? 'Nothing is sent from this instance unless VirusTotal is switched on in the admin settings.'
+            ? 'This instance sends the hash only to the services switched on in the admin settings, which may be none.'
             : 'Nothing is sent from this instance for this file whatever the admin settings say — only a file the scanner identifies is ever sent to a service.'}
         </p>
       )}

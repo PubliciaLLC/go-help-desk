@@ -241,6 +241,16 @@ func (s *Service) now() time.Time {
 func (s *Service) lookup(ctx context.Context, sha256 string) (Reputation, error) {
 	provider := s.provider.Name()
 
+	// The caller's context, kept apart from the deadline-bound one below.
+	//
+	// The deadline exists to stop a hung third party holding a page open, so
+	// it binds the call to the third party and nothing else. Writing the
+	// verdict to our own database is not that call: under the bound, a verdict
+	// arriving just inside the budget was rendered and then failed to cache,
+	// logged as a fault, and re-fetched on the next render — spending the
+	// operator's allowance a second time for an answer we already had.
+	store := ctx
+
 	if !s.Deadline.IsZero() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, s.Deadline)
@@ -289,7 +299,7 @@ func (s *Service) lookup(ctx context.Context, sha256 string) (Reputation, error)
 		return unavailable(err)
 	}
 
-	if err := s.store.Put(ctx, sha256, provider, rep); err != nil {
+	if err := s.store.Put(store, sha256, provider, rep); err != nil {
 		// The verdict is good even though we failed to keep it, so it is
 		// returned; the operator still gets the reason the cache did not take.
 		return rep, fmt.Errorf("caching verdict: %w", err)

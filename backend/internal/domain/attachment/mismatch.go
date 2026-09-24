@@ -100,8 +100,28 @@ func IsMismatch(claimedExt, detectedExt, detectedMIME string) bool {
 	if claimed == "" {
 		return true
 	}
-	// Rule 3.
-	if detected == "" {
+	// Rule 3, and note what it tests: the media type, not the extension.
+	//
+	// application/octet-stream is what this detector says when it cannot place
+	// a file at all. An empty extension is NOT the same statement — the
+	// library returns none for nine media types, eight of which it recognised
+	// perfectly well and simply has no filename extension for:
+	// application/x-elf, x-ole-storage, x-executable, x-object, x-coredump,
+	// tzif and zlib among them.
+	//
+	// Written against the extension, this rule said a Linux executable or an
+	// OLE2 compound document — the container for macro-bearing legacy Office
+	// files, MSI installers and .msg mail — matched a .txt name, while a
+	// Windows executable under that same name was flagged. The same deception,
+	// opposite answers, decided by whether the library happened to know a file
+	// extension for the format.
+	//
+	// This is the fourth time a relaxation here has been written in the
+	// detector's extension vocabulary when the fact lives in its MIME
+	// vocabulary; rule 2 above was moved off an extension list for the same
+	// reason. Extensions are for the claimed side, where they come from a
+	// filename and are all anyone has.
+	if detectedMIME == "application/octet-stream" {
 		return !textExt[claimed]
 	}
 	if claimed == detected {

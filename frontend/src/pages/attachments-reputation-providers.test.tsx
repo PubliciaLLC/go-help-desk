@@ -905,10 +905,22 @@ describe('the hash link', () => {
     expect(text, 'the link does not say it opens in the reader’s own browser').toMatch(
       /your (own )?browser/i,
     )
+    // Not "nothing is sent". This row is quarantined and CIRCL is enabled, so
+    // the hash IS sent — to CIRCL. The sentence this used to require said
+    // nothing leaves the instance unless VirusTotal is on, which is false for
+    // an operator running any of the other three, and the assertion encoded
+    // that falsehood rather than merely tolerating it.
+    //
+    // What the note owes the reader is where the hash goes: only to the
+    // services they switched on, which may be none of them.
     expect(
       text,
-      'the link does not say this instance sends nothing there unless VirusTotal is enabled',
-    ).toMatch(/sends? nothing|nothing is sent/i)
+      'the note does not say where the hash actually goes',
+    ).toMatch(/only to the services switched on|which may be none/i)
+    expect(
+      text,
+      'the note claims nothing is sent, on a row where a hash is sent to an enabled provider',
+    ).not.toMatch(/nothing is sent from this instance unless/i)
   })
 
   // Two different things that happen to share a host. The hash link is a fact

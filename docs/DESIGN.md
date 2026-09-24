@@ -510,9 +510,11 @@ Measured through the upload handler on a default instance:
 | plain text named `.pdf`, `.docx` or `.xlsx` | `415` | `201`, stored under its own name, flagged |
 | a real PNG named `.jpg`, or a real PNG named `.pdf` | `415` | `201` |
 | a plain ZIP named `.docx` | `201` | `415` |
-| any upload under four bytes | `415` | `201` |
+| under four bytes, text-looking, under a text or document name | `415` | `201` |
+| under four bytes, unplaceable, under a binary name | `415` | `415` |
+| under four bytes, under an image name | `415` | `422` |
 | text named `.png` or `.jpg` | `415` | `422` `invalid_image` |
-| a `.txt` or `.log`, whatever is inside it | `201` | `201` |
+| a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` | `201` |
 | HTML named `.pdf` | `415` | `415` |
 
 The first row is the one to understand rather than to fix. A `.pdf` holding

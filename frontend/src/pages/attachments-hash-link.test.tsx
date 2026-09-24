@@ -463,4 +463,24 @@ describe('the note under the link', () => {
       'the quarantined row no longer says the toggle decides whether its hash leaves this instance',
     ).toMatch(CONDITIONED_ON_A_SETTING)
   })
+
+  // And the condition must not name one provider.
+  //
+  // This sentence said "unless VirusTotal is switched on", which is false the
+  // moment any other provider is enabled: with VirusTotal off and CIRCL on,
+  // the hash of a quarantined file is sent. The test above did not catch it
+  // because it only asked for *a* condition, and "unless VirusTotal is
+  // switched on" is one — an assertion loose enough to pass a false sentence
+  // is the shape of a test that looks like coverage and is not.
+  it('does not name one provider as the thing that decides', async () => {
+    await renderTicket([QUARANTINED, ORDINARY])
+    const text = rowFor(QUARANTINED.filename, ORDINARY.filename).textContent ?? ''
+
+    const note = text.slice(text.indexOf('Opens in your browser'))
+    expect(
+      note,
+      'four providers can send this hash; naming one of them as the condition is false ' +
+        'for an instance running any of the other three',
+    ).not.toMatch(/unless VirusTotal|VirusTotal is switched|only if VirusTotal/i)
+  })
 })
