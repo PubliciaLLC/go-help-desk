@@ -513,22 +513,91 @@ func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *htt
 		return
 	}
 
-	svc := s.reputationLookup(r.Context())
-	if svc == nil {
-		// No cache wired, or no API key: the feature is off, and a control
-		// that cannot work should say so rather than report a refusal that
-		// sounds temporary.
+	svcs := s.reputationServices(r.Context())
+
+	// ?provider=virustotal re-checks one service rather than all of them.
+	//
+	// Optional, and its absence means "every enabled provider", which is what
+	// the single-provider control did before there was more than one. The UI
+	// gives each provider its own Check again control, because each verdict
+	// has its own expiry clock, so it names the one the reader clicked.
+	if want := r.URL.Query().Get("provider"); want != "" {
+		svcs = onlyProvider(svcs, want)
+		if len(svcs) == 0 {
+			// Misspelled, or switched off since the page was rendered. Both
+			// mean the same thing to the caller — there is no such lookup on
+			// this instance — and splitting them would make a client learn a
+			// second code to handle identically.
+			Error(w, http.StatusBadRequest, "invalid_provider",
+				"that reputation provider is not enabled on this instance")
+			return
+		}
+	}
+
+	if len(svcs) == 0 {
+		// No cache wired, or no provider enabled: the feature is off, and a
+		// control that cannot work should say so rather than report a refusal
+		// that sounds temporary.
 		reputationUnavailable(w, "the reputation lookup is not configured on this instance")
 		return
 	}
 
-	rep, err := svc.Refresh(r.Context(), *att.SHA256)
-	switch {
-	case errors.Is(err, reputation.ErrNotCached):
-		noVerdictToRecheck(w)
-		return
+	// Every selected provider is asked, and the refusals are collected rather
+	// than returned from the first one. An exhausted VirusTotal allowance must
+	// not stop CIRCL being re-checked, for the same reason it does not stop
+	// CIRCL being looked up: the budgets are per provider because the
+	// allowances are.
+	var (
+		refreshed bool
+		final     int // refused because the verdict cannot change
+		notCached int // refused because nothing has been looked up yet
+		tooSoon   time.Time
+		lastState reputation.State
+	)
+	for _, svc := range svcs {
+		rep, err := svc.Refresh(r.Context(), *att.SHA256)
+		switch {
+		case err == nil:
+			refreshed = true
 
-	case errors.Is(err, reputation.ErrDetectionIsFinal):
+		case errors.Is(err, reputation.ErrNotCached):
+			notCached++
+
+		case errors.Is(err, reputation.ErrDetectionIsFinal):
+			final++
+			lastState = rep.State
+
+		case errors.Is(err, reputation.ErrTooSoon):
+			// The earliest clearing time across the refused providers, so the
+			// Retry-After a reader waits out is one that actually clears
+			// something.
+			next := rep.FetchedAt.Add(reputation.ManualRefreshFloor)
+			if tooSoon.IsZero() || next.Before(tooSoon) {
+				tooSoon = next
+			}
+
+		default:
+			// The reason goes to the operator's log and not to the caller;
+			// nothing here carries an API key — see reputationServices.
+			level := slog.LevelWarn
+			if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
+				level = slog.LevelDebug
+			}
+			slog.Log(r.Context(), level, "attachment reputation re-check did not complete",
+				"error", err, "provider", svc.Provider())
+		}
+	}
+
+	// The refusal reported is the one that is true of EVERY provider asked,
+	// which is why these are counted rather than returned from the first
+	// failure. Telling a reader "already identified as malicious" because one
+	// of four said so, while the other three were merely checked yesterday,
+	// would be false about three of them.
+	switch {
+	case refreshed:
+		// At least one answer changed hands, so the page is rebuilt below.
+
+	case final == len(svcs):
 		// Two verdicts are final and they are opposites, so one sentence
 		// cannot serve both: telling a person that a file NSRL has on file is
 		// "already identified as malicious" is false, alarming, and about the
@@ -540,7 +609,7 @@ func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *htt
 		// identically.
 		msg := "this file is already identified as malicious; engines do not un-flag a file, " +
 			"so re-checking it would tell nobody anything"
-		if rep.State == reputation.Known {
+		if lastState == reputation.Known {
 			msg = "this file is already known: a named feed has this exact hash in its " +
 				"catalogue, and a catalogue entry does not decay, so re-checking it " +
 				"would tell nobody anything"
@@ -548,37 +617,48 @@ func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *htt
 		Error(w, http.StatusConflict, "detection_is_final", msg)
 		return
 
-	case errors.Is(err, reputation.ErrTooSoon):
-		// The floor is a week per hash. A refusal that does not say when it
-		// clears is not actionable, so both the header and the message carry
-		// it.
-		next := rep.FetchedAt.Add(reputation.ManualRefreshFloor)
-		if wait := time.Until(next); wait > 0 {
+	case notCached == len(svcs):
+		noVerdictToRecheck(w)
+		return
+
+	case !tooSoon.IsZero():
+		// The floor is a week per hash per provider. A refusal that does not
+		// say when it clears is not actionable, so both the header and the
+		// message carry it.
+		if wait := time.Until(tooSoon); wait > 0 {
 			w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		}
 		Error(w, http.StatusTooManyRequests, "checked_recently",
 			"this file was checked less than seven days ago; it can be checked again on "+
-				next.UTC().Format("2 January 2006"))
+				tooSoon.UTC().Format("2 January 2006"))
 		return
 
-	case err != nil:
+	default:
 		// A re-check that did not happen, and the reader asked for it, so it
 		// gets a refusal rather than a page that silently shows the old
-		// answer. The reason goes to the operator's log and not to the
-		// caller; nothing here carries the API key — see reputationLookup.
-		level := slog.LevelWarn
-		if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
-			level = slog.LevelDebug
-		}
-		slog.Log(r.Context(), level, "attachment reputation re-check did not complete",
-			"error", err, "provider", s.adminSvc.ReputationProvider(r.Context()))
+		// answer.
 		reputationUnavailable(w, "the reputation service could not be asked right now; please try again shortly")
 		return
 	}
 
+	// Rebuilt through the ordinary render path so the re-checked provider and
+	// its siblings are described by exactly the same code. Refresh has already
+	// stored the fresh verdict, so this reads it back from the cache rather
+	// than spending a second lookup on it.
 	s.addReputationURL(r.Context(), &att)
-	att.Reputation = s.attachmentReputation(r.Context(), rep)
+	s.addReputation(r.Context(), &att)
 	JSON(w, http.StatusOK, att)
+}
+
+// onlyProvider narrows a set of lookup services to the one named, or to none
+// when that provider is not among them.
+func onlyProvider(svcs []*reputation.Service, name string) []*reputation.Service {
+	for _, svc := range svcs {
+		if svc.Provider() == name {
+			return []*reputation.Service{svc}
+		}
+	}
+	return nil
 }
 
 // noVerdictToRecheck is the refusal for a file nobody has looked up.
@@ -897,58 +977,54 @@ func (s *Server) scanUpload(w http.ResponseWriter, r *http.Request, data []byte,
 	return "", true
 }
 
-// addReputationURL fills in where a person can look this file's hash up.
+// addReputationURL fills in where a person can read a public report on this
+// file's hash.
 //
-// Built here rather than stored, because it is derived from a setting the
-// operator can change: a stored URL would outlive the choice that produced it
-// and point at a service this instance no longer uses.
+// Unconditional, and that is the correction this replaced a setting-driven
+// version with. A link is not a lookup. A lookup is this server sending a
+// customer's file hash to a third party — the operator's decision, their API
+// allowance, and what the per-provider toggles govern. A link sends nothing
+// from here: it is an anchor the analyst clicks in their own browser, under
+// their own account or none, exactly as if they had copied the hash off the
+// page and pasted it themselves, which they can do anyway because the hash is
+// right there with a copy control.
 //
-// No key is needed and no request is made — a link is a string. An instance
-// that has never configured a lookup still gives staff somewhere to click.
+// Switching VirusTotal off means "do not send my customers' hashes to
+// VirusTotal from my server". It does not mean "my staff may never look at
+// VirusTotal", and treating the two as one thing takes a decision away from
+// the analyst that was never the operator's to make — while achieving
+// nothing, because the hash is on the page either way.
+//
+// VirusTotal and not another service because its page is the one every analyst
+// already knows: no account needed, and the complete report renders logged
+// out. An enabled provider's own link sits next to its own verdict in the
+// expanded view, where a link and a verdict from the same service belong
+// together.
 func (s *Server) addReputationURL(ctx context.Context, att *ticket.Attachment) {
 	if att.SHA256 == nil || *att.SHA256 == "" {
 		return
 	}
-	url := s.reputationProvider(ctx).LinkURL(*att.SHA256)
+	url := reputation.HashLink(*att.SHA256)
 	if url == "" {
-		// A provider with no per-hash web UI — CIRCL — and the field is
-		// omitted rather than filled with a page that cannot answer the
-		// question the reader clicked it with.
 		return
 	}
 	att.ReputationURL = &url
 }
 
-// reputationProvider is the service this instance looks hashes up at.
-//
-// Built per call rather than once at startup, for the same reason the scanner
-// is: the setting can change while the server is running, and a value captured
-// in NewServer would leave an operator's change doing nothing until a restart.
-// No API key is passed — this is only ever used for the link, which needs none.
-func (s *Server) reputationProvider(ctx context.Context) reputation.Provider {
-	return s.newReputationProvider(ctx, "")
-}
-
-// newReputationProvider is the same choice with a key attached, for the half
-// of the feature that makes a request. An empty key builds a provider that can
-// only ever produce a link; see reputationLookup for which of them are ever
-// asked to look anything up.
+// newReputationProvider builds one named provider with the key it needs.
 //
 // s.repOpts is empty in production, so every provider points at the real
 // service. A test passes reputation.WithBaseURL through WithReputationLookup.
-func (s *Server) newReputationProvider(ctx context.Context, apiKey string) reputation.Provider {
-	switch s.adminSvc.ReputationProvider(ctx) {
+func (s *Server) newReputationProvider(name, apiKey string) reputation.Provider {
+	switch name {
 	case reputation.ProviderMetaDefender:
 		return reputation.NewMetaDefender(apiKey, s.repOpts...)
 	case reputation.ProviderPolySwarm:
 		return reputation.NewPolySwarm(apiKey, s.repOpts...)
 	case reputation.ProviderCIRCL:
 		// No key, because there is none to give it: hashlookup authenticates
-		// nobody. Whatever is stored in the key setting is not passed here,
-		// which is how a leftover VirusTotal key cannot leave for Luxembourg.
+		// nobody, and there is no CIRCL key setting for one to come from.
 		return reputation.NewCIRCL(s.repOpts...)
 	}
-	// Anything else is the shipped default. ReputationProvider already falls
-	// back, so this arm is reached only for virustotal itself.
 	return reputation.NewVirusTotal(apiKey, s.repOpts...)
 }

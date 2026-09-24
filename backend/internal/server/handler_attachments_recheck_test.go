@@ -333,10 +333,14 @@ func newRecheckRig(t *testing.T, h *harness, respond http.HandlerFunc) *recheckR
 	return &recheckRig{srv: srv, store: store, hits: &hits, h: h}
 }
 
+// setKey enables VirusTotal and gives it a key, which is what "the lookup is
+// configured" means on this instance.
 func (r *recheckRig) setKey(t *testing.T, key string) {
 	t.Helper()
 	require.NoError(t, r.h.adminSvc.SetRaw(context.Background(),
-		admin.KeyAttachmentReputationAPIKey, []byte(`"`+key+`"`)))
+		admin.KeyAttachmentReputationVirusTotalKey, []byte(`"`+key+`"`)))
+	require.NoError(t, r.h.adminSvc.SetRaw(context.Background(),
+		admin.KeyAttachmentReputationVirusTotalEnabled, []byte(`true`)))
 }
 
 // seed writes a verdict for the rig's hash as though it had been fetched ago
@@ -385,8 +389,18 @@ func (r *recheckRig) quarantined(t *testing.T, name string) (uuid.UUID, uuid.UUI
 
 func (r *recheckRig) recheck(t *testing.T, apiKey string, ticketID, attID uuid.UUID) (*http.Response, []byte) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost,
-		"/api/v1/tickets/"+ticketID.String()+"/attachments/"+attID.String()+"/reputation", nil)
+	return r.recheckProvider(t, apiKey, ticketID, attID, "")
+}
+
+// recheckProvider names one provider's Check again control, or every enabled
+// one when provider is empty.
+func (r *recheckRig) recheckProvider(t *testing.T, apiKey string, ticketID, attID uuid.UUID, provider string) (*http.Response, []byte) {
+	t.Helper()
+	url := "/api/v1/tickets/" + ticketID.String() + "/attachments/" + attID.String() + "/reputation"
+	if provider != "" {
+		url += "?provider=" + provider
+	}
+	req := httptest.NewRequest(http.MethodPost, url, nil)
 	req.Header.Set("Authorization", "ApiKey "+apiKey)
 	rr := httptest.NewRecorder()
 	r.srv.ServeHTTP(rr, req)

@@ -83,6 +83,16 @@ func NewService(provider Provider, store Store, budget *Budget) *Service {
 	return &Service{provider: provider, store: store, budget: budget}
 }
 
+// Provider is the name of the service this one asks, as stored in
+// attachment_reputation.provider.
+//
+// Exported because the caller now holds several of these at once — one per
+// enabled provider — and has to attribute each answer to the service that gave
+// it. A caller tracking that in a parallel slice is a caller that can get the
+// two out of step, which is a verdict rendered under the wrong provider's
+// name.
+func (s *Service) Provider() string { return s.provider.Name() }
+
 // final reports whether a verdict is one there is nothing left to learn from
 // re-asking about. Both automatic expiry and the manual re-check are decided
 // on it, so the two cannot drift apart.

@@ -119,8 +119,11 @@ func TestListAttachments_AProviderFailureDoesNotFailThePage(t *testing.T) {
 
 			got := rig.list(t, h.apiKey, tk)
 			require.Len(t, got, 1, "the attachment is still listed")
-			require.Nil(t, got[0].Reputation,
+			require.NotNil(t, got[0].Reputation)
+			require.Equal(t, "unavailable", got[0].Reputation.State,
 				"a failed lookup renders as not checked, never as clean")
+			require.Nil(t, got[0].Reputation.Detected, "no lookup, no numbers")
+			require.Nil(t, got[0].Reputation.Total)
 			require.NotNil(t, got[0].ReputationURL)
 		})
 	}
@@ -242,10 +245,14 @@ func newVerdictRig(t *testing.T, h *harness, respond http.HandlerFunc) *verdictR
 	return &verdictRig{srv: srv, admin: h.adminSvc, hits: &hits, h: h}
 }
 
+// setKey enables VirusTotal and gives it a key, which is what "the lookup is
+// configured" means on this instance.
 func (r *verdictRig) setKey(t *testing.T, key string) {
 	t.Helper()
 	require.NoError(t, r.admin.SetRaw(context.Background(),
-		admin.KeyAttachmentReputationAPIKey, []byte(`"`+key+`"`)))
+		admin.KeyAttachmentReputationVirusTotalKey, []byte(`"`+key+`"`)))
+	require.NoError(t, r.admin.SetRaw(context.Background(),
+		admin.KeyAttachmentReputationVirusTotalEnabled, []byte(`true`)))
 }
 
 func (r *verdictRig) ticketFor(t *testing.T, reporter uuid.UUID) uuid.UUID {

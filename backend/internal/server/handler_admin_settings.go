@@ -32,10 +32,21 @@ var secretSettingKeys = map[string]struct{}{
 	admin.KeySAMLKeyPEM:         {},
 	admin.KeyAttachmentVTAPIKey: {},
 
-	// The reputation provider's API key. Accepted on PATCH, never echoed by
-	// the settings dump: an admin session that can read it back can exfiltrate
-	// the operator's key to whatever the provider's terms attach to it.
+	// The deprecated single reputation key. Read by nothing, still writable,
+	// and still never echoed: a secret does not stop being a secret on its way
+	// to being deleted.
 	admin.KeyAttachmentReputationAPIKey: {},
+
+	// One key per commercial reputation provider. Accepted on PATCH, never
+	// echoed by the settings dump: an admin session that can read one back can
+	// exfiltrate the operator's key to whatever the provider's terms attach to
+	// it. There are three of them now, and a provider added here and forgotten
+	// is a key the settings dump hands out.
+	//
+	// CIRCL has no entry because it has no key setting at all.
+	admin.KeyAttachmentReputationVirusTotalKey:   {},
+	admin.KeyAttachmentReputationMetaDefenderKey: {},
+	admin.KeyAttachmentReputationPolySwarmKey:    {},
 }
 
 // attachmentExtPattern is what an entry in the attachment allowlist may look
@@ -181,22 +192,17 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Which service hashes are looked up at, and which one the link on a
-	// ticket points to. The reader falls back to VirusTotal, so a typo would
-	// silently send an operator who chose MetaDefender somewhere else — and
-	// the only symptom is a link they did not expect, on a page they may not
-	// look at.
-	if raw, ok := body[admin.KeyAttachmentReputationProvider]; ok {
-		var provider string
-		if err := json.Unmarshal(raw, &provider); err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", "reputation provider must be a string")
-			return
-		}
-		if !reputation.ValidProvider(provider) {
-			Error(w, http.StatusBadRequest, "invalid_reputation_provider",
-				"reputation provider must be one of: virustotal, metadefender, polyswarm, circl")
-			return
-		}
+	// Enabling a provider requires its key, and the whole write is refused
+	// when one is missing.
+	//
+	// Same rule as every other setting in this handler — a value accepted and
+	// then ignored is worse than a refusal — and here the ignored value is a
+	// provider an operator believes is answering. "Enabled with no key" was a
+	// reachable state under the setting this replaced, and it looked exactly
+	// like a provider that had nothing to say.
+	if err := validateReputationConfig(r.Context(), s.adminSvc, body); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_reputation_config", err.Error())
+		return
 	}
 
 	// And how often a stored verdict is re-checked. The reader falls back to
@@ -354,4 +360,62 @@ func hasSecretValue(raw []byte) bool {
 		return len(raw) > 0
 	}
 	return strings.TrimSpace(v) != ""
+}
+
+// validateReputationConfig refuses a settings write that would leave a
+// commercial reputation provider enabled with no API key.
+//
+// It reads the STORED value for anything the write does not mention, because a
+// PATCH is a patch: enabling VirusTotal in one request when its key was pasted
+// in a previous one has to be allowed, and pasting the key and the toggle in
+// the same request has to be allowed too. Validating the body alone would
+// refuse the first, and validating the stored settings alone would refuse the
+// second.
+//
+// It reads the STORED value for anything the write does not mention, because a
+// PATCH is a patch: enabling VirusTotal in one request when its key was pasted
+// in a previous one has to be allowed, and pasting the key and the toggle in
+// the same request has to be allowed too. Validating the body alone would
+// refuse the first, and validating the settings alone would refuse the second.
+//
+// CIRCL has no clause here because it has no key: hashlookup authenticates
+// nobody, and a rule demanding one would leave the one keyless provider
+// permanently unusable.
+//
+// The error message names the PROVIDER and never the key. There are three keys
+// now, and an error string is the easiest place for a write-only secret to
+// escape into a log.
+func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body map[string]json.RawMessage) error {
+	for _, p := range reputation.ProviderNames() {
+		enabledKey, apiKeyKey, ok := admin.ReputationSettingKeys(p)
+		if !ok || apiKeyKey == "" || !reputation.NeedsKey(p) {
+			continue
+		}
+
+		enabled := adminSvc.ReputationEnabled(ctx, p)
+		if raw, present := body[enabledKey]; present {
+			if err := json.Unmarshal(raw, &enabled); err != nil {
+				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
+			}
+		}
+		if !enabled {
+			continue
+		}
+
+		key := adminSvc.ReputationKey(ctx, p)
+		if raw, present := body[apiKeyKey]; present {
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return fmt.Errorf("the %s API key must be a string", reputation.DisplayName(p))
+			}
+			// Trimmed for the same reason the reader trims: a setting holding
+			// nothing but spaces is not a key, and accepting it would put the
+			// instance back in the state this rule exists to remove.
+			key = strings.TrimSpace(v)
+		}
+		if key == "" {
+			return fmt.Errorf("%s cannot be enabled without an API key", reputation.DisplayName(p))
+		}
+	}
+	return nil
 }

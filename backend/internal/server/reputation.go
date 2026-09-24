@@ -10,20 +10,32 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 )
 
-// addReputation fills in what the configured reputation service says about a
-// quarantined attachment, looking it up once if nobody has yet.
+// providerVerdict is one enabled provider's answer on its way to the wire.
+//
+// The provider name travels WITH the verdict rather than beside it in a
+// parallel slice, because the two getting out of step is a verdict rendered
+// under another service's name — which is the mislabelling the cache's
+// composite key already exists to prevent at the other end.
+type providerVerdict struct {
+	provider string
+	rep      reputation.Reputation
+}
+
+// addReputation asks every enabled reputation service what it knows about a
+// quarantined attachment, looking each one up once if nobody has yet.
 //
 // Lazy, on a page render, because this project has no background job runner
 // (#126): anything queued at upload time would be a table nothing drains. The
-// cost that makes that safe is one lookup per hash per refresh interval — a
-// fortnight by default, never for a detection — and a budget in front of it
-// for the rest.
+// cost that makes that safe is one lookup per hash PER PROVIDER per refresh
+// interval — a fortnight by default, never for a detection — and a per-
+// provider budget in front of each.
 //
-// It cannot fail. Every outcome other than a completed lookup leaves
-// att.Reputation nil, which renders as "not checked yet": no key, no cache, a
-// spent budget, a provider that is down, a reader who closed the tab. An
-// attachment list that 500s because somebody else's free tier ran out is a
-// worse help desk than one that shows a file without a verdict.
+// It cannot fail. With no provider enabled att.Reputation stays nil and the
+// attachment renders exactly as it does today, which is a complete answer and
+// not a degraded one: the local scanner decided this file's fate on its own.
+// A provider that IS enabled and could not be asked leaves an "unavailable"
+// entry instead, because an operator whose key has been rejected has to be
+// able to see that.
 func (s *Server) addReputation(ctx context.Context, att *ticket.Attachment) {
 	// A hash is what is looked up, and quarantine is what makes it worth
 	// looking up. Every attachment carries a hash now, and asking about all of
@@ -32,138 +44,199 @@ func (s *Server) addReputation(ctx context.Context, att *ticket.Attachment) {
 		return
 	}
 
-	svc := s.reputationLookup(ctx)
-	if svc == nil {
+	svcs := s.reputationServices(ctx)
+	if len(svcs) == 0 {
+		// Nothing is enabled, or nothing enabled can run. Nothing was
+		// attempted, so nothing is said — and specifically not "not checked
+		// yet", which describes an attempt that did not finish.
 		return
 	}
 
-	rep, err := svc.GetOrLookup(ctx, *att.SHA256)
-	if err != nil {
-		// The operator is the audience: they configured a key and a provider,
-		// and a lookup that never completes is theirs to fix. Nothing here
-		// carries the key — see reputationLookup.
-		//
-		// Except when the budget refused it, which is not an incident and
-		// clears on its own — within the minute, or at 00:00 UTC. At WARN
-		// that is a line per quarantined attachment per page view for the
-		// rest of the day, and the lines that do matter drown in it. The
-		// comment above scanUpload is about precisely that failure: a warning
-		// nobody reads is not a warning.
-		level := slog.LevelWarn
-		if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
-			level = slog.LevelDebug
+	verdicts := make([]providerVerdict, 0, len(svcs))
+	for _, svc := range svcs {
+		rep, err := svc.GetOrLookup(ctx, *att.SHA256)
+		if err != nil {
+			// The operator is the audience: they enabled a provider and gave
+			// it a key, and a lookup that never completes is theirs to fix.
+			// Nothing here carries the key — see reputationServices.
+			//
+			// Except when the budget refused it, which is not an incident and
+			// clears on its own — within the minute, or at 00:00 UTC. At WARN
+			// that is a line per provider per quarantined attachment per page
+			// view for the rest of the day, and the lines that do matter
+			// drown in it.
+			level := slog.LevelWarn
+			if errors.Is(err, reputation.ErrRateLimited) || errors.Is(err, reputation.ErrQuotaExceeded) {
+				level = slog.LevelDebug
+			}
+			slog.Log(ctx, level, "attachment reputation lookup did not complete",
+				"error", err, "provider", svc.Provider())
+			// Deliberately no continue: GetOrLookup reports a verdict it could
+			// not cache, and a stale verdict it could not re-check, as a
+			// verdict plus an error — and those verdicts are worth showing.
+			// Everything else arrives as Unavailable, which is its own entry.
 		}
-		slog.Log(ctx, level, "attachment reputation lookup did not complete",
-			"error", err, "provider", s.adminSvc.ReputationProvider(ctx))
-		// Deliberately no return: GetOrLookup reports a verdict it could not
-		// cache, and a stale verdict it could not re-check, as a verdict plus
-		// an error — and those verdicts are worth showing. Every other error
-		// arrives with State Unavailable, which the switch below drops.
+		verdicts = append(verdicts, providerVerdict{provider: svc.Provider(), rep: rep})
 	}
 
-	att.Reputation = s.attachmentReputation(ctx, rep)
+	att.Reputation = s.attachmentReputation(*att.SHA256, verdicts)
 }
 
-// attachmentReputation is one verdict as the API sends it, or nil when there
-// is nothing honest to send.
+// attachmentReputation turns one verdict per enabled provider into the payload
+// the API sends: every answer, plus the worst of them for the row.
 //
 // Shared by the page render and the manual re-check so that the two cannot
-// describe the same verdict differently — the difference that would matter
-// being the fetch time, which decides whether the control the re-check lives
-// on is armed.
-func (s *Server) attachmentReputation(ctx context.Context, rep reputation.Reputation) *ticket.AttachmentReputation {
-	out := &ticket.AttachmentReputation{
-		State:      string(rep.State),
-		ThreatName: rep.ThreatName,
-		AnalysedAt: rep.AnalysedAt,
-		Provider:   reputation.DisplayName(s.adminSvc.ReputationProvider(ctx)),
+// describe the same verdicts differently — the difference that would matter
+// being the fetch time, which decides whether the Check again control is
+// armed.
+//
+// nil when nothing was attempted, which is how "no provider is enabled"
+// reaches the wire. It is never nil merely because a lookup failed: that is an
+// "unavailable" entry, because an operator whose key has been rejected has to
+// be able to see it.
+func (s *Server) attachmentReputation(sha256 string, verdicts []providerVerdict) *ticket.AttachmentReputation {
+	if len(verdicts) == 0 {
+		return nil
+	}
+	now := time.Now()
+
+	states := make([]reputation.State, len(verdicts))
+	lines := make([]ticket.AttachmentProviderVerdict, len(verdicts))
+	for i, v := range verdicts {
+		states[i] = v.rep.State
+		lines[i] = s.providerLine(sha256, v, now)
+	}
+	out := &ticket.AttachmentReputation{Providers: lines}
+
+	worst := reputation.Worst(states)
+	if worst < 0 {
+		// Nothing answered. "unavailable" is the honest summary of a row whose
+		// every provider is failing, and the block stays on the wire rather
+		// than disappearing, because four dead providers is exactly the thing
+		// an operator has to be shown. The summary is attributed to nobody,
+		// because nobody said it.
+		out.State = string(reputation.Unavailable)
+		return out
+	}
+	lines[worst].Inline = true
+
+	// The summary is a COPY of one line rather than an aggregate of all of
+	// them, and that is what keeps it honest. 62 of 81 engines is a fact about
+	// VirusTotal's analysis; combined with a catalogue hit from CIRCL it would
+	// become a number no service ever said. ProviderKey and the Inline flag
+	// say which line this is, so the row's single sentence can be traced to
+	// the service that said it.
+	w := lines[worst]
+	out.State = w.State
+	out.Detected, out.Total = w.Detected, w.Total
+	out.ThreatName = w.ThreatName
+	out.KnownFeeds = w.KnownFeeds
+	out.AnalysedAt = w.AnalysedAt
+	out.FetchedAt = w.FetchedAt
+	out.Provider, out.ProviderKey = w.Provider, w.ProviderKey
+	return out
+}
+
+// providerLine is one provider's answer as the expanded view shows it.
+func (s *Server) providerLine(sha256 string, v providerVerdict, now time.Time) ticket.AttachmentProviderVerdict {
+	rep := v.rep
+	line := ticket.AttachmentProviderVerdict{
+		Provider:    reputation.DisplayName(v.provider),
+		ProviderKey: v.provider,
+		State:       string(rep.State),
+		ThreatName:  rep.ThreatName,
+		AnalysedAt:  rep.AnalysedAt,
 		// Empty on every state but "known", where they are the evidence behind
 		// the only reassuring verdict this feature produces — and where they
 		// are what says how much that reassurance is worth.
 		KnownFeeds: rep.KnownFeeds,
+	}
+	if rep.State == "" {
+		// The zero State, which a future provider could return and which has
+		// no branch anywhere downstream. Rendered as what it actually is: an
+		// answer nobody gave.
+		line.State = string(reputation.Unavailable)
+	}
+
+	if rep.State == reputation.Detected || rep.State == reputation.Clean {
+		// Only a completed analysis has numbers. Everywhere else the pointers
+		// stay nil rather than carrying 0, because "0 of 0 engines" reads as a
+		// clean result — including for "known", where the file was answered
+		// out of a catalogue and never scanned at all, so a count would be a
+		// fabricated analysis attached to the one verdict staff are entitled
+		// to find reassuring.
+		detected, total := rep.Detected, rep.Total
+		line.Detected, line.Total = &detected, &total
 	}
 
 	// When we last asked. A verdict read from the cache carries the row's
 	// fetched_at; one fetched by the call that just returned it carries none,
 	// because a provider has no idea when we asked — and that is now, to
 	// within the length of an HTTP request. Sending null there would leave the
-	// "check again" control looking armed a second after a lookup.
+	// Check again control looking armed a second after a lookup.
 	fetched := rep.FetchedAt
 	if fetched.IsZero() {
-		fetched = time.Now()
+		fetched = now
 	}
-	out.FetchedAt = &fetched
+	line.FetchedAt = &fetched
+	line.Recheckable = reputation.Recheckable(rep.State, fetched, now)
 
-	switch rep.State {
-	case reputation.Detected, reputation.Clean:
-		detected, total := rep.Detected, rep.Total
-		out.Detected, out.Total = &detected, &total
-	case reputation.Unseen, reputation.Unscanned, reputation.Known:
-		// No analysis, so no numbers: the pointers stay nil rather than
-		// carrying 0, because "0 of 0 engines" reads as a clean result and
-		// this is the opposite of one.
-		//
-		// "known" belongs here rather than with the counted states even
-		// though it is the reassuring one: a file answered out of a catalogue
-		// is never scanned at all — the answer comes straight from the hash
-		// match — so a count would be a fabricated analysis attached to the
-		// one verdict staff are entitled to find reassuring. What it carries
-		// instead is the feeds, above, which are what says how much the
-		// reassurance is worth.
-		//
-		// It also has to be named explicitly. The default arm below returns
-		// nil for anything it does not recognise, which is right for
-		// Unavailable and would silently turn the strongest positive signal
-		// this system can produce into "not checked yet".
-	default:
-		// Unavailable, and the zero State a future provider might return.
-		// Both mean nobody has an answer, and the wire says that by carrying
-		// nothing at all.
-		return nil
+	// This provider's own page for the hash, beside its own verdict. Empty for
+	// a provider with no per-hash web UI, and the field is then omitted rather
+	// than pointed at a page that cannot answer the question the reader
+	// clicked it with. No key is passed: a link needs none.
+	if url := s.newReputationProvider(v.provider, "").LinkURL(sha256); url != "" {
+		line.LinkURL = &url
 	}
-	return out
+	return line
 }
 
-// reputationLookup builds the get-or-lookup service for this request, or
-// returns nil when the feature is off.
+// reputationServices builds one get-or-lookup service per enabled provider, in
+// canonical order.
 //
-// The split here is the one thing in this file worth reading twice. The
-// provider and the key are read per call, because both are settings an
+// The toggles and the keys are read per call, because both are settings an
 // operator can change while the server runs and a value captured in New would
 // leave their change doing nothing until a restart — the defect this codebase
 // already documents for the ticket prefix and the scanner address. The Budget
 // is the opposite: it holds the counters, so it must be the same instance
-// every time. Built per call it would hand every request a fresh allowance,
-// and the cap would mean nothing at all.
+// every time, and it is deliberately shared across every service built here.
+// Its counters are per provider, which is what keeps an exhausted VirusTotal
+// allowance from stopping CIRCL answering.
 //
 // Constructing the rest is a handful of struct fields and no I/O, so there is
 // nothing to cache and no invalidation to get wrong.
 //
-// nil is returned when there is nothing to cache verdicts in, and when the
-// configured provider cannot run.
-//
-// That second test used to be "is the key empty", and it was asked BEFORE
-// anything looked at which provider was configured — correct while every
-// provider needed a key, and it makes a keyless one permanently dead. The rule
-// now is that a lookup runs when the configured provider can run: a key for
-// the three commercial services, nothing for CIRCL. Today's behaviour is
-// unchanged by it — virustotal with no key is still a link and no lookup — and
-// the question is asked in one place, reputation.CanLookup, so the next
-// provider cannot answer it by accident.
-func (s *Server) reputationLookup(ctx context.Context) *reputation.Service {
+// An empty slice is returned when there is nowhere to cache verdicts, when no
+// provider is enabled, and — per provider — when an enabled one cannot run.
+// That last case is unreachable through the settings endpoint, which refuses
+// to enable a commercial provider without a key; it fails closed here rather
+// than sending an unauthenticated request to a service the operator has an
+// account with.
+func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
 	if s.repStore == nil {
 		return nil
 	}
-	// Never logged, never wrapped into an error, never returned to a client.
-	// It is stored write-only, and this is the only place it is read.
-	key := s.adminSvc.ReputationAPIKey(ctx)
-	if !reputation.CanLookup(s.adminSvc.ReputationProvider(ctx), key) {
+	enabled := s.adminSvc.EnabledReputationProviders(ctx)
+	if len(enabled) == 0 {
 		return nil
 	}
-	svc := reputation.NewService(s.newReputationProvider(ctx, key), s.repStore, s.repBudget)
-	// Read per call for the same reason as the provider and the key: an
-	// operator who changes how often verdicts are re-checked should not have
-	// to restart the server to mean it.
-	svc.RefreshAfter = s.adminSvc.ReputationRefreshInterval(ctx)
-	return svc
+	// Read per call for the same reason as the toggles: an operator who
+	// changes how often verdicts are re-checked should not have to restart the
+	// server to mean it.
+	refreshAfter := s.adminSvc.ReputationRefreshInterval(ctx)
+
+	out := make([]*reputation.Service, 0, len(enabled))
+	for _, name := range enabled {
+		// Never logged, never wrapped into an error, never returned to a
+		// client. There are three of these now, and this is the only place any
+		// of them is read.
+		key := s.adminSvc.ReputationKey(ctx, name)
+		if !reputation.CanLookup(name, key) {
+			continue
+		}
+		svc := reputation.NewService(s.newReputationProvider(name, key), s.repStore, s.repBudget)
+		svc.RefreshAfter = refreshAfter
+		out = append(out, svc)
+	}
+	return out
 }

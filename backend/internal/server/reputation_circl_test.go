@@ -70,18 +70,32 @@ func TestReputationLookup_ACommercialProviderWithNoKeyStillLinks(t *testing.T) {
 	require.Contains(t, *att.ReputationURL, "virustotal.com")
 }
 
-// CIRCL is the other way round: a lookup, and no link.
+// CIRCL is the other way round: a lookup, and no link OF ITS OWN.
 //
 // There is no per-hash web UI to send anybody to — the root serves a Swagger
-// page — so the field is omitted rather than pointed at a page that cannot
-// answer the question.
-func TestReputationLookup_CIRCLHasNoLinkToOffer(t *testing.T) {
+// page — so its entry in the expanded view carries no link rather than one
+// pointed at a page that cannot answer the question.
+//
+// The attachment's own VirusTotal link is there regardless, and that is not a
+// contradiction: a link is not a lookup. Nothing is sent to VirusTotal by an
+// instance that has only CIRCL enabled; the anchor is the analyst's own act in
+// their own browser, on a hash that is on the page with a copy control beside
+// it either way.
+func TestReputationLookup_CIRCLHasNoLinkOfItsOwn(t *testing.T) {
 	rig := newRepRig(t, repRespond(http.StatusOK, clKnownRecord))
 	rig.setProvider(t, "circl")
+	ctx := context.Background()
 
 	att := quarantinedAttachment(repTestHash)
-	rig.srv.addReputationURL(context.Background(), &att)
+	rig.srv.addReputation(ctx, &att)
+	rig.srv.addReputationURL(ctx, &att)
 
-	require.Nil(t, att.ReputationURL,
+	require.NotNil(t, att.Reputation)
+	require.Len(t, att.Reputation.Providers, 1)
+	require.Nil(t, att.Reputation.Providers[0].LinkURL,
 		"a link to a page with no per-hash view is worse than no link")
+
+	require.NotNil(t, att.ReputationURL,
+		"the hash link is the analyst's own act and does not follow the toggles")
+	require.Contains(t, *att.ReputationURL, "virustotal.com")
 }

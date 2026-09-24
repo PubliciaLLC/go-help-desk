@@ -36,13 +36,19 @@ const (
 	// desk should not start storing malware because nobody said otherwise.
 	KeyAttachmentInfectedHandling = "attachment_infected_handling" // refuse | quarantine
 
-	// Deprecated: replaced by KeyAttachmentReputationProvider and
-	// KeyAttachmentReputationAPIKey, and read by nothing.
+	// Deprecated: replaced by the per-provider settings below, and read by
+	// nothing.
 	//
-	// These named VirusTotal because it was the only service considered. It is
-	// now one of three an operator can choose between, so a key called
+	// These named VirusTotal because it was the only service considered. There
+	// are now four, each with its own toggle and its own key, so a key called
 	// "attachment_vt_api_key" holding a MetaDefender key would be a lie in the
 	// settings table.
+	//
+	// Note this pair was superseded twice: first by
+	// KeyAttachmentReputationProvider and KeyAttachmentReputationAPIKey, which
+	// are themselves now deprecated a few lines below. Pointing a reader at a
+	// replacement that is also dead is worse than pointing at nothing, so this
+	// names the live settings instead.
 	//
 	// Kept declared for one release rather than deleted outright. An instance
 	// that set either still has the row, and a constant that no longer exists
@@ -57,32 +63,75 @@ const (
 	KeyAttachmentVTLookup = "attachment_vt_lookup"  // Deprecated: unused.
 	KeyAttachmentVTAPIKey = "attachment_vt_api_key" // Deprecated: unused.
 
-	// Which reputation service this instance uses for attachment hashes.
-	// "virustotal" (the default), "metadefender", "polyswarm" or "circl".
+	// Deprecated: replaced by the seven per-provider settings below, and read
+	// by nothing.
 	//
-	// One setting with two effects: it picks the server-side lookup, and it
-	// picks the service the SHA-256 in the UI links to. Keeping them together
-	// is the point — an operator who chose MetaDefender should never find a
-	// VirusTotal link next to a MetaDefender verdict.
+	// One selected provider could not express the thing operators actually
+	// wanted — two services answering different questions about the same file
+	// — and the single key it went with destroyed the key you had already
+	// pasted every time you switched. Worse, it carried a state that could not
+	// be refused: a commercial provider selected with no key was "configured"
+	// and silently did nothing.
 	//
-	// The link half needs no key and makes no server call, so this setting
-	// does something useful on an instance that never configures a lookup at
-	// all. An unrecognised value falls back to virustotal, and the settings
-	// endpoint refuses the write outright with invalid_reputation_provider —
-	// same rule, and the same reason, as the scan policy.
-	KeyAttachmentReputationProvider = "attachment_reputation_provider" // virustotal | metadefender | polyswarm | circl
+	// Kept declared for one release rather than deleted outright, exactly as
+	// the attachment_vt_* pair above is. An instance that set either still has
+	// the row, and a constant that no longer exists makes that row
+	// unexplainable to the next person who finds it. They are removed, with a
+	// migration that deletes the rows, in the release after this one.
+	//
+	// Nothing reads them. An operator who configured a provider and a key
+	// before this change has to re-enter that key against the provider they
+	// want, which is stated in the release notes; silently copying a secret
+	// from one key to another is not something to do on somebody's behalf.
+	KeyAttachmentReputationProvider = "attachment_reputation_provider" // Deprecated: unused.
+	KeyAttachmentReputationAPIKey   = "attachment_reputation_api_key"  // Deprecated: unused.
 
-	// The API key for whichever provider is selected. Write-only over the API:
-	// see secretSettingKeys in handler_admin_settings.go.
+	// Whether this instance asks each reputation service about a quarantined
+	// attachment's SHA-256, and the key it asks with.
 	//
-	// For the three commercial providers this is also the on switch: no key,
-	// no lookup, and there is deliberately no separate "enabled" boolean, so
-	// there is no such thing as enabled-with-no-key. CIRCL is the exception
-	// that made the rule insufficient rather than wrong — it authenticates
-	// nobody, so there is no key that could switch it on or off. The rule that
-	// covers all four: a lookup runs when the configured provider CAN run. See
-	// reputation.CanLookup.
-	KeyAttachmentReputationAPIKey = "attachment_reputation_api_key"
+	// Four independent toggles rather than one selected provider, because the
+	// four answer different questions and neither subsumes another: VirusTotal
+	// counts engines, CIRCL says whether a catalogue has the file on record. A
+	// sample one calls "detected" and another calls "known" is telling staff
+	// something either alone would hide. Every enabled provider is queried and
+	// every answer is stored; the row shows the worst of them and expands to
+	// all.
+	//
+	// All four off is how the lookup is off, and it is a supported
+	// configuration rather than a broken one: it means this instance judges
+	// attachments by its own scanner alone, which is a complete answer and the
+	// legitimate choice of an operator who cannot send customer file hashes
+	// anywhere.
+	//
+	// ENABLING A PROVIDER REQUIRES ITS KEY. The settings endpoint refuses the
+	// write with invalid_reputation_config, naming the provider that lacks
+	// one. That is the same rule as everywhere else in that handler — a
+	// setting accepted and then ignored is worse than a refusal — and it
+	// disposes of the old "enabled but silently doing nothing" state by making
+	// it unreachable.
+	//
+	// The keys are write-only over the API: see secretSettingKeys in
+	// handler_admin_settings.go. They are never logged, never wrapped into an
+	// error and never returned to a client. There are three of them now, which
+	// is three times the number of places that rule can be broken.
+	//
+	// All seven are session-gated: see AuthCriticalKeys. The toggles decide
+	// where customers' file hashes go and the keys decide whether they go
+	// anywhere, and neither is a decision a leaked API key may make.
+	KeyAttachmentReputationVirusTotalEnabled   = "attachment_reputation_virustotal_enabled"   // bool
+	KeyAttachmentReputationVirusTotalKey       = "attachment_reputation_virustotal_key"       // write-only
+	KeyAttachmentReputationMetaDefenderEnabled = "attachment_reputation_metadefender_enabled" // bool
+	KeyAttachmentReputationMetaDefenderKey     = "attachment_reputation_metadefender_key"     // write-only
+	KeyAttachmentReputationPolySwarmEnabled    = "attachment_reputation_polyswarm_enabled"    // bool
+	KeyAttachmentReputationPolySwarmKey        = "attachment_reputation_polyswarm_key"        // write-only
+
+	// CIRCL has no key setting at all, and the absence is the decision.
+	//
+	// hashlookup authenticates nobody, so there is no key an operator could
+	// supply. An empty box beside the other three is a box somebody feels
+	// obliged to fill, and then goes looking for a fault when the feature
+	// works without it.
+	KeyAttachmentReputationCIRCLEnabled = "attachment_reputation_circl_enabled" // bool
 
 	// How often a stored verdict is re-checked: weekly, biweekly (the
 	// default), monthly, quarterly or never.
@@ -184,11 +233,24 @@ func AuthCriticalKeys() []string {
 		// quietly stop requiring one on the way to being deleted.
 		KeyAttachmentVTLookup,
 		KeyAttachmentVTAPIKey,
-		// And both halves of the provider-agnostic replacement, for the same
-		// reason: the provider decides where customers' file hashes go, and
-		// the key decides whether they go anywhere.
+		// The deprecated single-provider pair, for the same reason as the
+		// attachment_vt_* one: nothing reads them, they are still writable,
+		// and a key that used to require a session should not quietly stop
+		// requiring one on the way out.
 		KeyAttachmentReputationProvider,
 		KeyAttachmentReputationAPIKey,
+		// And all seven of the per-provider settings that replaced them. A
+		// toggle decides where customers' file hashes go; a key decides
+		// whether they go anywhere. Neither is a decision a leaked API key may
+		// make, and leaving one of the seven off this list is a way to turn a
+		// provider on without a session.
+		KeyAttachmentReputationVirusTotalEnabled,
+		KeyAttachmentReputationVirusTotalKey,
+		KeyAttachmentReputationMetaDefenderEnabled,
+		KeyAttachmentReputationMetaDefenderKey,
+		KeyAttachmentReputationPolySwarmEnabled,
+		KeyAttachmentReputationPolySwarmKey,
+		KeyAttachmentReputationCIRCLEnabled,
 		// And how often they go. Stretching the interval to "never" from a
 		// leaked API key is a quiet way to freeze every verdict on the
 		// instance at whatever it said the day the key was stolen.
@@ -224,4 +286,38 @@ func ValidReputationRefresh(v string) bool {
 		return true
 	}
 	return false
+}
+
+// ReputationProviders is every provider the per-provider settings cover, in
+// the order the product presents them.
+//
+// The spellings are internal/reputation's ProviderVirusTotal,
+// ProviderMetaDefender, ProviderPolySwarm and ProviderCIRCL. They are not
+// referenced by name here because internal/domain may not import an
+// infrastructure package; a test pins that the two lists agree, which is the
+// only thing standing between a renamed constant and a setting nobody reads.
+func ReputationProviders() []string {
+	return []string{"virustotal", "metadefender", "polyswarm", "circl"}
+}
+
+// ReputationSettingKeys is the pair of setting names that govern one provider:
+// the toggle, and the key it looks up with.
+//
+// apiKeyKey is empty for a provider that authenticates nobody — CIRCL — and
+// that emptiness is the fact callers branch on rather than a special case they
+// hard-code. ok is false for a name this build does not cover, so an
+// unrecognised provider reads as nothing configured rather than as a lookup
+// against settings that do not exist.
+func ReputationSettingKeys(provider string) (enabledKey, apiKeyKey string, ok bool) {
+	switch provider {
+	case "virustotal":
+		return KeyAttachmentReputationVirusTotalEnabled, KeyAttachmentReputationVirusTotalKey, true
+	case "metadefender":
+		return KeyAttachmentReputationMetaDefenderEnabled, KeyAttachmentReputationMetaDefenderKey, true
+	case "polyswarm":
+		return KeyAttachmentReputationPolySwarmEnabled, KeyAttachmentReputationPolySwarmKey, true
+	case "circl":
+		return KeyAttachmentReputationCIRCLEnabled, "", true
+	}
+	return "", "", false
 }

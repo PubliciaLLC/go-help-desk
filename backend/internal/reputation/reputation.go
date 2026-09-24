@@ -85,10 +85,10 @@ const (
 )
 
 // Provider names. These are the values stored in
-// attachment_reputation.provider and accepted by the
-// attachment_reputation_provider setting, so they are constants rather than
-// literals: the column and the setting have to agree on the spelling, and a
-// typo in either silently makes a cached verdict unreachable.
+// attachment_reputation.provider and the names the per-provider settings are
+// spelled with, so they are constants rather than literals: the column and the
+// settings have to agree on the spelling, and a typo in either silently makes
+// a cached verdict unreachable.
 const (
 	ProviderVirusTotal   = "virustotal"
 	ProviderMetaDefender = "metadefender"
@@ -143,16 +143,21 @@ func providerByName(name string) (providerFacts, bool) {
 	return providerFacts{}, false
 }
 
-// CanLookup reports whether the configured provider can make a request at all.
+// CanLookup reports whether a provider can make a request at all.
 //
-// This is the rule that replaced "the key is the on switch": a lookup runs
-// when the configured provider CAN run. A key for the three commercial ones,
-// nothing for CIRCL, and never for a name this build cannot talk to.
+// The toggles decide who is ASKED; this decides who CAN be asked. A key for
+// the three commercial ones, nothing for CIRCL, and never for a name this
+// build cannot talk to.
 //
-// Stated once, here, because the old rule was stated at the call site — the
-// lookup was refused on an empty key before anything had asked WHICH provider
-// was configured, which is correct for three of the four and leaves the fourth
-// permanently dead.
+// The settings endpoint refuses to enable a commercial provider with no key,
+// so an enabled provider that fails here is one somebody wrote into the
+// settings table by hand. It fails closed rather than sending an
+// unauthenticated request to a service the operator has an account with.
+//
+// Stated once, here, because this question used to be asked at the call site —
+// the lookup was refused on an empty key before anything had asked WHICH
+// provider it was for, which is correct for three of the four and leaves the
+// fourth permanently dead.
 //
 // The key is passed in rather than read here: this package has no access to
 // settings, and the caller already holds the value. Nothing is done with it
@@ -191,15 +196,12 @@ func DisplayName(providerName string) string {
 	return ""
 }
 
-// ValidProvider reports whether name is a provider this build can talk to, and
-// so whether the attachment_reputation_provider setting accepts it.
+// ValidProvider reports whether name is a provider this build can talk to.
 //
-// Next to the constants rather than in the settings handler, so a fourth
-// implementation cannot leave the validation behind. That is the failure this
-// function exists for: the setting shipped with no validation at all — it was
-// accepted on write, fell back to the default on read, and told the operator
-// nothing, which is the same "accepted and then ignored" shape the rest of
-// this handler refuses.
+// Next to the constants rather than in a caller, so a fifth implementation
+// cannot leave the question behind. It is the predicate ProviderNames is
+// checked against: a name in that list that this returns false for is a
+// provider the settings reach and no lookup can serve.
 func ValidProvider(name string) bool {
 	_, ok := providerByName(name)
 	return ok
@@ -275,9 +277,10 @@ type Reputation struct {
 // Provider is one reputation service.
 //
 // LinkURL takes no key and makes no request: it is a string the UI renders so
-// an analyst can read the full report in their own browser. It is therefore
-// useful on an instance that has configured no API key at all, which is why
-// the provider setting is meaningful even with the lookup switched off.
+// an analyst can read the full report in their own browser, beside that
+// provider's own verdict. It is therefore useful on an instance that has
+// configured no API key at all. The unconditional hash link every attachment
+// carries whatever is enabled is a different thing — see HashLink.
 //
 // Lookup returns Unavailable rather than failing open on any error. The error
 // is for the operator; the State is what the caller renders.

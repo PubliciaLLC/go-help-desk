@@ -181,45 +181,83 @@ type Attachment struct {
 	// truthfully named file as lying. nil means nothing was inspected.
 	ContentMismatch *bool `json:"mismatch"`
 
-	// ReputationURL is where a person can look this file's hash up, at
-	// whichever reputation service the instance is configured for.
+	// ReputationURL is where a person can read a public report on this file's
+	// hash. VirusTotal, unconditionally, whenever there is a hash at all.
 	//
-	// Filled in at the HTTP boundary rather than read from storage: it is
-	// derived from a setting that can change, so storing it would leave old
-	// rows pointing at a service the operator has since switched away from.
-	// nil when there is no hash to look up.
+	// NOT a function of which providers are enabled, and the distinction is
+	// the whole reason this field is not gated. A LOOKUP is this server
+	// sending a customer's file hash to a third party: the operator's
+	// decision, their API allowance, and what the per-provider toggles govern.
+	// A LINK sends nothing from this server. It is an anchor the analyst
+	// clicks in their own browser, under their own account or none, exactly as
+	// if they had copied the hash off the page and pasted it themselves —
+	// which they can do anyway, because the hash is right there with a copy
+	// control. Switching VirusTotal off means "do not send my customers'
+	// hashes to VirusTotal from my server", not "my staff may never look at
+	// VirusTotal", and collapsing the two takes a decision away from the
+	// analyst that was never the operator's to make.
 	//
-	// The finished URL is sent rather than the provider's name because the
-	// provider is a session-gated admin setting staff cannot read, and because
-	// a frontend that built the URL itself would need each provider's format
-	// duplicated there, where it would drift.
+	// VirusTotal specifically because its page is the one every analyst
+	// already knows: no account needed and the full report renders logged out.
+	// MetaDefender's public page announces itself as a reduced view, and CIRCL
+	// has no per-hash web UI at all. An enabled provider's own link sits next
+	// to its own verdict in Reputation.Providers instead, where a link and a
+	// verdict from the same service belong together.
+	//
+	// Filled in at the HTTP boundary rather than read from storage, and nil
+	// when there is no hash to look up.
 	ReputationURL *string `json:"reputation_url"`
 
-	// Reputation is what that service actually said, when anybody has asked.
+	// Reputation is what the enabled reputation services said, when this file
+	// was a candidate for a lookup at all.
 	//
-	// nil means nobody has an answer to show — the lookup is not configured,
-	// this file was never a candidate for one, or the attempt did not
-	// complete. All three render as "not checked yet", which is the only
-	// honest thing to say about a file nobody looked up, and none of them may
-	// ever render as a clean result.
+	// nil means NOTHING WAS ATTEMPTED: no provider is enabled, or this file
+	// was never a candidate — an ordinary attachment, or one with no hash. It
+	// does NOT mean a lookup failed. A failed lookup is a provider entry with
+	// state "unavailable", because an operator whose key has been rejected
+	// needs to see that, and a reader needs to be able to tell "we could not
+	// ask" from "we did not ask".
+	//
+	// With every toggle off the block is absent and that is the complete
+	// answer, not a degraded one: the local scanner's verdict stands on its
+	// own. No warning, no banner, and specifically no "not checked yet" —
+	// that phrase belongs to a lookup that was attempted and did not finish.
 	//
 	// Filled in at the HTTP boundary like ReputationURL, and for the same
-	// reason: the verdict belongs to whichever provider is configured now.
+	// reason: the verdicts belong to whichever providers are enabled now.
 	Reputation *AttachmentReputation `json:"reputation"`
 }
 
-// AttachmentReputation is one provider's verdict on a file, as the API sends
-// it.
+// AttachmentReputation is what the enabled reputation services said about one
+// file: the worst single answer, for the row, and every provider's own answer
+// under it, for the expanded view.
 //
 // A second struct rather than internal/reputation's own because this package
-// is domain and may not import infrastructure. The five states are spelled
-// there; a test pins that the two agree.
+// is domain and may not import infrastructure. The states are spelled there; a
+// test pins that the two agree.
+//
+// The summary fields repeat one entry of Providers rather than aggregating
+// across them, and that is deliberate: 62 of 81 engines is a fact about
+// VirusTotal's analysis, and averaging it with a catalogue hit from CIRCL
+// would produce a number no service ever said. Which entry is repeated is
+// named by ProviderKey and marked by AttachmentProviderVerdict.Inline, so the
+// summary is never a claim from nowhere.
 type AttachmentReputation struct {
-	// State is "unseen", "unscanned", "clean" or "detected".
+	// State is the worst verdict across every provider that answered:
 	//
-	// "unavailable" never reaches here: a lookup that failed leaves the whole
-	// struct nil, so a renderer has one absence to handle rather than two, and
-	// no way to mistake a failure for a finding.
+	//	detected  >  unseen  >  unscanned  >  clean  >  known
+	//
+	// "unseen" outranks "clean" because only quarantined files reach here —
+	// every hash is one the local scanner already called malicious — so a file
+	// no service has ever seen is a novel sample, and more concerning than one
+	// seventy engines examined and passed.
+	//
+	// "unavailable" is not in that ordering at all: it is a failed lookup
+	// rather than a verdict, and it must never displace a real answer, so
+	// VirusTotal timing out while CIRCL says "known" reads "known" here. It
+	// appears as this field's value only when NOTHING answered, which is the
+	// honest summary of a row whose every provider is failing. It is always
+	// present in Providers either way.
 	State string `json:"state"`
 
 	// Detected and Total are the engines that flagged the file and the engines
@@ -240,17 +278,22 @@ type AttachmentReputation struct {
 	// sample's first appearance in the wild.
 	AnalysedAt *time.Time `json:"analysed_at"`
 
-	// Provider is the service that gave this verdict, as a person reads it:
-	// "VirusTotal", "MetaDefender".
+	// Provider is the service whose verdict is summarised above, as a person
+	// reads it: "VirusTotal", "MetaDefender". ProviderKey is the same service
+	// as a machine reads it: "virustotal", "metadefender".
 	//
-	// Here because the UI cannot work it out for itself and must not try. The
-	// provider is a session-gated admin setting staff cannot read, and a
-	// frontend that guessed it from the link's host would be holding a second
+	// Here because the UI cannot work it out for itself and must not try. Which
+	// providers are enabled is session-gated configuration staff cannot read,
+	// and a frontend that guessed from a link's host would be holding a second
 	// copy of provider knowledge to drift from this one. Attribution is the
 	// point: "VirusTotal has never seen this file" is a claim with a source,
 	// and "the reputation service has never seen this file" is a claim from
 	// nowhere.
-	Provider string `json:"provider"`
+	//
+	// Both are empty when nothing answered, because then the summary belongs
+	// to no one.
+	Provider    string `json:"provider"`
+	ProviderKey string `json:"provider_key"`
 
 	// KnownFeeds names the feeds that carry a file whose State is "known", and
 	// is empty on every other state.
@@ -277,6 +320,91 @@ type AttachmentReputation struct {
 	// database it is always set, because attachment_reputation.fetched_at is
 	// NOT NULL.
 	FetchedAt *time.Time `json:"fetched_at"`
+
+	// Providers is every enabled provider's own answer, in a fixed order, one
+	// entry each — including the ones that failed.
+	//
+	// The list is the reason for having more than one provider. They answer
+	// different questions: VirusTotal counts engines, CIRCL says whether a
+	// catalogue has the file on record, and a sample one calls "detected"
+	// while another calls "known" is telling staff something either alone
+	// would hide. Flattening four statements into a summary and sending only
+	// that would throw away exactly what made the second, third and fourth
+	// lookup worth making.
+	//
+	// Never empty when this struct is non-nil: a block with no providers under
+	// it would be a verdict with no source.
+	Providers []AttachmentProviderVerdict `json:"providers"`
+}
+
+// AttachmentProviderVerdict is one service's statement about one file at one
+// time, for the expanded view of an attachment row.
+//
+// Each carries its own timestamps and its own eligibility for a re-check
+// because each is genuinely separate: the cache is keyed by hash AND provider,
+// so every verdict has its own expiry clock and its own Check again control.
+// A shared "last checked" across four providers would be wrong for at least
+// three of them.
+type AttachmentProviderVerdict struct {
+	// Provider is the name as a person reads it, ProviderKey as a machine
+	// does. The second is what the re-check endpoint's ?provider= takes, and
+	// what matches this entry against AttachmentReputation.ProviderKey.
+	Provider    string `json:"provider"`
+	ProviderKey string `json:"provider_key"`
+
+	// State is this provider's own verdict, and unlike the summary above it
+	// may be "unavailable": the lookup was attempted and did not finish — a
+	// spent allowance, a provider that is down, a key that was rejected. An
+	// operator has to be able to see their key failing, and hiding it behind a
+	// sibling's good answer is how a dead integration goes unnoticed for a
+	// month.
+	State string `json:"state"`
+
+	// Detected and Total are the engines that flagged the file and the engines
+	// that ran, for the providers that run engines. Pointers because nil is a
+	// fact: 0 of 0 reads as "nothing found anything", which is the false
+	// reassurance this feature exists to avoid. Always nil for a catalogue
+	// answer, where no engine ran at all.
+	Detected *int `json:"detected"`
+	Total    *int `json:"total"`
+
+	// ThreatName is this provider's own consensus name for what it found, and
+	// is often empty. Attacker-influenced text, escaped on the way to a
+	// browser like any other untrusted string.
+	ThreatName string `json:"threat_name"`
+
+	// KnownFeeds names the feeds that carry a file whose State is "known", and
+	// is empty on every other state. The feed is the evidence: an Authenticode
+	// signature assertion and an NSRL catalogue entry are not the same claim,
+	// and NSRL catalogues hacking tools, so a renderer must name the feed
+	// rather than say "known good".
+	KnownFeeds []string `json:"known_feeds"`
+
+	// AnalysedAt is when THIS provider last analysed the file; FetchedAt is
+	// when we last asked them. Both nil when there is nothing to say.
+	AnalysedAt *time.Time `json:"analysed_at"`
+	FetchedAt  *time.Time `json:"fetched_at"`
+
+	// LinkURL is this provider's own page for the hash, beside its own
+	// verdict, and nil for a provider that has no per-hash page — CIRCL,
+	// whose root serves a Swagger document. A link to a page that cannot
+	// answer the question the reader clicked it with is worse than no link.
+	//
+	// Distinct from Attachment.ReputationURL, which is the unconditional
+	// VirusTotal link every hash carries whatever is enabled.
+	LinkURL *string `json:"link_url"`
+
+	// Recheckable reports whether the Check again control should be armed for
+	// this provider: the verdict can still change, and the seven-day floor has
+	// passed. It deliberately does not consult the budget, which can be spent
+	// between the render and the click — a control that promised otherwise
+	// would be lying either way round.
+	Recheckable bool `json:"recheckable"`
+
+	// Inline marks the entry the summary above was taken from, so the row's
+	// single line can be traced to the service that said it. Exactly one entry
+	// carries it when anything answered, and none when nothing did.
+	Inline bool `json:"inline"`
 }
 
 // DefaultTrackingPrefix is used when an instance has not set one.

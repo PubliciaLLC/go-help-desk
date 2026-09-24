@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -36,13 +35,10 @@ const psKnownGoodBody = `{"result":[{
   "metadata":[]
 }]}`
 
-// setProvider points the rig's instance at one of the three services.
+// setProvider enables exactly one of the four services and disables the rest.
 func (r *repRig) setProvider(t *testing.T, provider string) {
 	t.Helper()
-	raw, err := json.Marshal(provider)
-	require.NoError(t, err)
-	require.NoError(t, r.admin.SetRaw(context.Background(),
-		admin.KeyAttachmentReputationProvider, raw))
+	r.enable(t, provider)
 }
 
 // A "known" verdict reaches the wire, with the feeds that carry the file and
@@ -105,19 +101,25 @@ func TestAddReputation_OnlyKnownCarriesFeeds(t *testing.T) {
 		"clean means engines found nothing, which is not the same as a feed having it on file")
 }
 
-// The operator's choice of PolySwarm reaches both halves of the feature: the
-// lookup and the link.
+// An enabled provider's own link sits next to its own verdict.
 //
-// A third provider added to the lookup and forgotten in the link builder is a
-// page where the verdict comes from one service and the "read the full report"
-// link goes to another — which is the mislabelling the provider column exists
-// to make impossible.
-func TestReputationProvider_PolySwarmIsChosenForBothHalves(t *testing.T) {
+// The unconditional VirusTotal link on the attachment is a different thing —
+// it is the public report any analyst can read, whatever is enabled. This one
+// is the service that actually answered, and a verdict from PolySwarm beside a
+// "read the full report" link to somebody else is the mislabelling the
+// provider column exists to make impossible.
+func TestAddReputation_APolySwarmVerdictCarriesAPolySwarmLink(t *testing.T) {
 	rig := newRepRig(t, repRespond(http.StatusOK, psKnownGoodBody))
 	rig.setProvider(t, "polyswarm")
-	ctx := context.Background()
+	rig.setKey(t, repTestKey)
 
+	att := quarantinedAttachment(repTestHash)
+	rig.srv.addReputation(context.Background(), &att)
+
+	require.NotNil(t, att.Reputation)
+	require.Len(t, att.Reputation.Providers, 1)
+	require.NotNil(t, att.Reputation.Providers[0].LinkURL)
 	require.Equal(t,
 		"https://polyswarm.network/scan/results/file/"+repTestHash,
-		rig.srv.reputationProvider(ctx).LinkURL(repTestHash))
+		*att.Reputation.Providers[0].LinkURL)
 }

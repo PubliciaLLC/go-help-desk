@@ -443,46 +443,74 @@ func (s *Service) AllowedTypes(ctx context.Context) map[string]bool {
 // returned. With the scan policy "off", or the scanner unreachable under
 // "permissive", nothing is ever identified as infected and this setting does
 // nothing at all.
-// ReputationProvider is the service this instance looks attachment hashes up
-// at: "virustotal" (the default), "metadefender", "polyswarm" or "circl".
+// ReputationEnabled reports whether this instance asks the named provider
+// about quarantined attachment hashes.
 //
-// Anything unrecognised falls back to the default rather than disabling the
-// feature, on the same reasoning as the scan policy: a typo in a setting must
-// land somewhere predictable, and here the safe landing is the shipped default
-// rather than no link at all.
+// False for every provider by default, and false for a name this build does
+// not know. All four off is a supported configuration and not a broken one:
+// it means attachments are judged by this instance's own scanner alone, which
+// is a complete answer and the deliberate choice of an operator who cannot
+// send customer file hashes to a third party.
 //
-// The spellings are reputation.ProviderVirusTotal, ProviderMetaDefender,
-// ProviderPolySwarm and ProviderCIRCL. They are not referenced by name here
-// because internal/domain may not import an infrastructure package; a test
-// pins that the two agree.
-func (s *Service) ReputationProvider(ctx context.Context) string {
-	switch v, _ := s.GetString(ctx, KeyAttachmentReputationProvider); v {
-	case "metadefender":
-		return "metadefender"
-	case "polyswarm":
-		return "polyswarm"
-	case "circl":
-		return "circl"
+// Whether the provider can actually run is a second question — a commercial
+// one still needs its key — and it is asked by reputation.CanLookup. The
+// settings endpoint refuses the combination that makes the two disagree, so
+// "enabled and silently doing nothing" is not a state an operator can reach
+// through the API.
+func (s *Service) ReputationEnabled(ctx context.Context, provider string) bool {
+	enabledKey, _, ok := ReputationSettingKeys(provider)
+	if !ok {
+		return false
 	}
-	return "virustotal"
+	v, _ := s.GetBool(ctx, enabledKey)
+	return v
 }
 
-// ReputationAPIKey is the key for whichever provider is configured, and with
-// it the feature's on/off switch: empty means no lookup at all. There is
-// deliberately no separate enabled flag, so "enabled with no key" is not a
-// state this instance can be in.
+// ReputationKey is the API key for one provider.
+//
+// Per provider, which the single key this replaced could not do: switching
+// from VirusTotal to MetaDefender used to destroy the key you had already
+// pasted, and an operator holding keys for two services had to choose between
+// them.
+//
+// Empty for CIRCL, always, because there is no such setting: it authenticates
+// nobody. Empty is also the answer for a provider this build does not know.
 //
 // The value is stored write-only — the settings endpoint accepts it and never
-// echoes it back — and it must stay that way on this side too: it is never
-// logged, never wrapped into an error, and never returned to a client. The
-// only thing it is for is an outbound request header.
+// echoes it back — and it must stay that way on this side too: never logged,
+// never wrapped into an error, never returned to a client. The only thing it
+// is for is an outbound request header.
 //
 // Trimmed because an operator pasting a key picks up a trailing newline often
 // enough to matter, and because a setting containing nothing but spaces should
 // read as unconfigured rather than as a key the provider will reject.
-func (s *Service) ReputationAPIKey(ctx context.Context) string {
-	v, _ := s.GetString(ctx, KeyAttachmentReputationAPIKey)
+func (s *Service) ReputationKey(ctx context.Context, provider string) string {
+	_, apiKeyKey, ok := ReputationSettingKeys(provider)
+	if !ok || apiKeyKey == "" {
+		return ""
+	}
+	v, _ := s.GetString(ctx, apiKeyKey)
 	return strings.TrimSpace(v)
+}
+
+// EnabledReputationProviders is every provider this instance asks, in
+// ReputationProviders order.
+//
+// Ordered rather than a set, because the order decides which provider's answer
+// summarises the row when two are equally serious, and an order that came out
+// of map iteration would make that summary change between renders.
+//
+// An empty slice is the ordinary state of a fresh instance and means the
+// reputation block is absent from the payload entirely — not "not checked
+// yet", which describes a lookup that was attempted and did not finish.
+func (s *Service) EnabledReputationProviders(ctx context.Context) []string {
+	var out []string
+	for _, p := range ReputationProviders() {
+		if s.ReputationEnabled(ctx, p) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (s *Service) InfectedHandling(ctx context.Context) string {

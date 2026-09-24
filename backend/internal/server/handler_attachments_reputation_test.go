@@ -13,16 +13,19 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
-// The link that lets a person look an attachment's hash up is built by the
-// server, not the browser.
+// Every attachment with a hash carries a VirusTotal link, whatever the
+// per-provider toggles say.
 //
-// Two reasons, and both are the reason this is tested rather than assumed. The
-// provider is a session-gated admin setting, so staff cannot read it — a
-// frontend that needed to know it would need a way to be told, and that is a
-// setting leak waiting to happen. And a frontend that assembled the URL itself
-// would carry each provider's format in TypeScript, a copy that drifts from
-// the Go one the moment either changes.
-func TestAttachments_CarryALookupLinkBuiltFromTheConfiguredProvider(t *testing.T) {
+// A link is not a lookup. A lookup is this server sending a customer's file
+// hash to a third party — the operator's decision, and what the toggles
+// govern. A link sends nothing from here: it is an anchor the analyst clicks
+// in their own browser, exactly as if they had copied the hash off the page,
+// which they can do anyway.
+//
+// Built by the server rather than the browser because a frontend that
+// assembled the URL itself would carry the format in TypeScript, a copy that
+// drifts from the Go one the moment either changes.
+func TestAttachments_CarryAHashLinkWhateverIsEnabled(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -38,46 +41,43 @@ func TestAttachments_CarryALookupLinkBuiltFromTheConfiguredProvider(t *testing.T
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
 
-	_ = attachmentOverHTTP(t, h, tk.ID.String(), "report.pdf")
+	const want = "https://www.virustotal.com/gui/file/"
 
 	cases := []struct {
-		name     string
-		setting  string
-		wantHost string
+		name    string
+		enabled []string
 	}{
+		{name: "nothing enabled, which is every fresh instance"},
+		{name: "VirusTotal enabled", enabled: []string{"virustotal"}},
 		{
-			name:     "the shipped default",
-			setting:  "",
-			wantHost: "https://www.virustotal.com/gui/file/",
-		},
-		{
-			name:     "an operator who chose the other one",
-			setting:  "metadefender",
-			wantHost: "https://metadefender.com/results/hash/",
-		},
-		{
-			// A typo must land somewhere predictable. The shipped default is
-			// the safe landing: no link at all would look like the feature is
-			// broken rather than like the setting is.
-			name:     "a value nobody recognises",
-			setting:  "notaprovider",
-			wantHost: "https://www.virustotal.com/gui/file/",
+			// The case that decided this. An operator who switched VirusTotal
+			// off did so to stop their SERVER sending customers' hashes
+			// there; it is not a rule about where their staff may read.
+			name:    "VirusTotal deliberately off, CIRCL on",
+			enabled: []string{"circl"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.setting == "" {
-				require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyAttachmentReputationProvider, []byte(`null`)))
-			} else {
-				require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyAttachmentReputationProvider,
-					[]byte(`"`+tc.setting+`"`)))
+			on := map[string]bool{}
+			for _, p := range tc.enabled {
+				on[p] = true
+			}
+			for _, p := range admin.ReputationProviders() {
+				enabledKey, _, ok := admin.ReputationSettingKeys(p)
+				require.True(t, ok)
+				raw := []byte("false")
+				if on[p] {
+					raw = []byte("true")
+				}
+				require.NoError(t, h.adminSvc.SetRaw(ctx, enabledKey, raw))
 			}
 
 			got := attachmentOverHTTP(t, h, tk.ID.String(), "report.pdf")
 			require.NotNil(t, got.ReputationURL,
-				"an attachment with a hash always has somewhere to look it up; the link needs no API key")
-			require.Equal(t, tc.wantHost+*got.SHA256, *got.ReputationURL)
+				"the hash link needs no key, no toggle and no server call")
+			require.Equal(t, want+*got.SHA256, *got.ReputationURL)
 		})
 	}
 }

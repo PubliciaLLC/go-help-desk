@@ -511,45 +511,103 @@ served: every download is `application/octet-stream` regardless.
 ### Reputation lookup
 
 A quarantined sample is worth asking the world about, so the SHA-256 can be
-looked up at a third-party reputation service. Three settings, all
-session-gated like the scanner keys — an API key must not be able to decide
-where customers' file hashes go, or how often:
+looked up at third-party reputation services. **Four independent toggles**, a
+key for each of the three commercial providers, and one shared refresh
+interval — all session-gated like the scanner keys, because an API key must not
+be able to decide where customers' file hashes go, or how often:
 
-- `attachment_reputation_provider` — `virustotal` (the default),
-  `metadefender`, `polyswarm` or `circl`. One setting with two effects: it
-  picks the service the server queries and the service the hash on a ticket
-  links to, so an operator who chose one never finds the other's link beside
-  its verdict. An unrecognised value is refused at save time with
-  `invalid_reputation_provider` and read as the default. CIRCL is the exception
-  to both halves: it needs no API key, and it has no per-hash page to link to,
-  so it is a lookup and no link where the three commercial services with no key
-  are a link and no lookup.
-- `attachment_reputation_api_key` — write-only over the API, like the OIDC
-  client secret and the SAML key, and never logged.
+- `attachment_reputation_virustotal_enabled` + `attachment_reputation_virustotal_key`
+- `attachment_reputation_metadefender_enabled` + `attachment_reputation_metadefender_key`
+- `attachment_reputation_polyswarm_enabled` + `attachment_reputation_polyswarm_key`
+- `attachment_reputation_circl_enabled` — **no key setting at all.** hashlookup
+  authenticates nobody, so there is none an operator could supply, and an empty
+  box somebody feels obliged to fill is worse than no box.
 - `attachment_reputation_refresh` — how often a stored verdict is asked about
   again. An unrecognised value is refused at save time with
   `invalid_reputation_refresh` and read as the default, never as `never`: a
   typo must not silently switch re-checking off, because the symptom is a
   verdict that looks current for as long as the instance lives.
 
-An instance that set the earlier `attachment_vt_lookup` and
-`attachment_vt_api_key` keys is not migrated. Nothing reads them, they are
-removed a release later, and an operator has to paste their key into the new
-field: copying somebody's secret from one setting to another on their behalf is
-not something to do quietly.
+The keys are write-only over the API, like the OIDC client secret and the SAML
+key, and are never logged.
 
-**A lookup runs when the configured provider can run.** A key for the three
-commercial services, nothing for CIRCL. The key is still the on switch for the
-three that have one, and there is still no separate enabled boolean, which
-removes the whole class of invalid combination — enabled-with-no-key is not a
-state this instance can be in. What the key can no longer express is "off",
-because CIRCL authenticates nobody: selecting it turns the lookup on and no key
-could switch it off again. Per-provider enable toggles are how that will be
-said; until they land, an operator who wants no lookups selects one of the
-three commercial providers and leaves its key empty. Nothing else changes:
-`virustotal` with no key is still a link and no lookup, and the **link** needs
-no key and makes no request, so an instance that never configures a lookup
-still gives staff a hash and somewhere to click.
+**Enabling a provider requires its key.** Turning VirusTotal on with no key is
+refused at the write with `invalid_reputation_config`, naming which provider is
+missing one — the same rule as everywhere else in that handler, a setting
+accepted and then ignored being worse than a refusal. It disposes of a state
+that existed before, "enabled but silently doing nothing", by making it
+unreachable. Separate keys are the other half of what one selected provider
+could not do: switching services no longer destroys the key you had already
+pasted, and an operator can hold keys for two without choosing between them.
+
+**Every enabled provider is queried, and every answer is stored.** They answer
+different questions, which is the point of allowing more than one: VirusTotal
+counts engines, CIRCL says whether a catalogue has the file on record, and a
+sample one calls `detected` while another calls `known` is telling staff
+something either alone would hide. The cache is already keyed
+`(sha256, provider)`, so this needs no schema change — one row per provider per
+file, each with its own expiry clock and its own re-check. The cost is real:
+four enabled providers means four lookups per quarantined file on first view,
+against free tiers of 500/day, 4,000/day, 60/hour and CIRCL unmetered.
+
+**The row shows the worst verdict; one click shows them all.** Inline, staff see
+the single most serious answer across every provider that replied:
+
+```
+detected  >  unseen  >  unscanned  >  clean  >  known
+```
+
+`unseen` outranks `clean` because only quarantined files are looked up, so every
+hash here is one ClamAV already called malicious — a file no service has ever
+seen is a novel sample, more concerning than one seventy engines examined and
+passed. `known` is the floor because it is the only positive claim in the set;
+everything else is an absence of findings. And **`unavailable` is not in the
+ordering at all**: it is a failed lookup rather than a verdict, and it must
+never displace a real answer, so VirusTotal timing out while CIRCL says `known`
+reads `known`. It is the inline answer only when nothing answered, and it is
+always listed against its own provider, because an operator needs to see their
+key failing.
+
+The expanded view carries each provider on its own line — named, with its own
+verdict, its own `analysed_at`, its own `fetched_at`, its own link and its own
+*Check again* control where the state allows one. The line the summary was taken
+from is marked, or the row's single sentence looks as though it came from
+nowhere.
+
+**All four off is a supported configuration, not a broken one.** It means
+attachments are judged by this instance's own scanner alone, which is a complete
+answer and the legitimate choice of an operator who cannot send customer file
+hashes anywhere. There is no warning, no banner, and specifically no "not
+checked yet" — that phrase belongs to a lookup that was attempted and did not
+finish, and nothing was attempted. The reputation block is absent from the
+payload entirely. The admin settings page says so plainly where the toggles are:
+*with none enabled, attachments are judged by this instance's own scanner
+alone.*
+
+**The VirusTotal hash link is unconditional**, whatever the toggles say,
+`rel="noreferrer noopener"`. A link is not a lookup. A lookup is this server
+sending a customer's file hash to a third party — the operator's decision, their
+allowance, and what the toggles govern. A link sends nothing from this server:
+it is an anchor the analyst clicks in their own browser, under their own account
+or none, exactly as if they had copied the hash off the page and pasted it
+themselves, which they can do anyway because the hash is there with a copy
+control. Disabling VirusTotal as a lookup provider means *do not send my
+customers' hashes to VirusTotal from my server*; it does not mean *my staff may
+never look at VirusTotal*. VirusTotal specifically because its page is the one
+every analyst already knows — no account needed, the complete report renders
+logged out — where MetaDefender's public page announces itself as a reduced view
+and CIRCL has no per-hash web UI at all. One line of copy beside it says the
+link opens in the reader's own browser and that this instance sends nothing
+there unless VirusTotal is enabled above; without it, an operator who switched
+VirusTotal off and still sees the link will reasonably conclude the setting does
+not work.
+
+An instance that set the earlier `attachment_vt_lookup` / `attachment_vt_api_key`
+keys, or the `attachment_reputation_provider` / `attachment_reputation_api_key`
+pair that replaced them, is not migrated. Nothing reads any of the four, they are
+removed a release later with a row-deleting migration, and an operator has to
+re-enter their key against the provider they want: copying somebody's secret from
+one setting to another on their behalf is not something to do quietly.
 
 CIRCL is a **catalogue and not a scanner**, which is why it answers with fewer
 states than the others: `known` when a hash set it re-publishes carries the
@@ -575,9 +633,10 @@ What the lookup does:
   allowance on a page refresh. There is no queue, because this project has no
   background job runner (#126) and a queue would be a table nothing drains.
 - **Cached against the hash and the provider**, not against the attachment, so
-  the same file on five tickets costs one lookup. Two rows per hash rather than
-  one is what stops an operator who switched provider from being shown the
-  other service's answer attributed to the one they chose.
+  the same file on five tickets costs one lookup per provider. One row per
+  provider per hash is what lets four services be asked at once without either
+  one's answer being attributed to another, and it is what gives each verdict
+  its own expiry clock and its own *Check again*.
 - **Budgeted.** Each provider is metered at its own published free-tier
   ceiling, in that provider's own shape: 500 a day for VirusTotal plus a
   four-a-minute bucket, 4,000 a day for MetaDefender with no bucket, and 60 an
@@ -588,7 +647,9 @@ What the lookup does:
   reset at 00:00 UTC and the hourly ones on the hour.
   In memory and per process: it is a courtesy cap rather than an accounting
   record, and a restart spending a handful of extra lookups is cheaper than a
-  table.
+  table. **Per provider, because the allowances are:** an exhausted VirusTotal
+  bucket does not stop CIRCL answering, and the row then shows CIRCL's verdict
+  rather than nothing.
 - **Expiring.** `attachment_reputation_refresh` decides when a stored verdict
   is asked about again: `weekly`, `biweekly` (the default), `monthly`,
   `quarterly` or `never`. A verdict decays, which is the whole reason this

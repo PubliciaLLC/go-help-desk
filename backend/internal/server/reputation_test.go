@@ -220,17 +220,19 @@ func TestAddReputation_SpendsOneBudgetAcrossCalls(t *testing.T) {
 		"44" + repTestHash[2:],
 		"55" + repTestHash[2:],
 	}
-	var got []bool
+	var got []string
 	for _, h := range hashes {
 		att := quarantinedAttachment(h)
 		rig.srv.addReputation(context.Background(), &att)
-		got = append(got, att.Reputation != nil)
+		require.NotNil(t, att.Reputation)
+		got = append(got, att.Reputation.State)
 	}
 
 	require.Equal(t, int64(4), rig.hits.Load(),
 		"the fifth lookup in a minute must not reach VirusTotal")
-	require.Equal(t, []bool{true, true, true, true, false}, got,
-		"the fifth renders as not checked, and must not render as clean")
+	require.Equal(t, []string{"clean", "clean", "clean", "clean", "unavailable"}, got,
+		"the fifth is a lookup that did not happen, and must not render as clean")
+	require.Len(t, rig.store.all(), 4, "a refusal is not a verdict and is never cached")
 }
 
 // A stored verdict is never fetched again. A page render costs one lookup per
@@ -280,8 +282,24 @@ func TestAddReputation_AFailedLookupIsNeverClean(t *testing.T) {
 			att := quarantinedAttachment(repTestHash)
 			rig.srv.addReputation(context.Background(), &att)
 
-			require.Nil(t, att.Reputation,
-				"a lookup that did not complete says nothing, least of all that the file is fine")
+			// The verdict is "unavailable" and nothing else. It carries no
+			// counts, no threat name and no feeds, because a lookup that did
+			// not complete says nothing — least of all that the file is fine.
+			//
+			// It is reported rather than omitted so that an operator whose key
+			// has been rejected can see it. That is the change per-provider
+			// toggles brought: with four services, one failing silently behind
+			// three that answered is a dead integration nobody notices.
+			require.NotNil(t, att.Reputation)
+			require.Equal(t, "unavailable", att.Reputation.State)
+			require.Nil(t, att.Reputation.Detected, "no lookup, no numbers")
+			require.Nil(t, att.Reputation.Total)
+			require.Empty(t, att.Reputation.ThreatName)
+			require.Empty(t, att.Reputation.KnownFeeds)
+			require.Len(t, att.Reputation.Providers, 1)
+			require.Equal(t, "unavailable", att.Reputation.Providers[0].State)
+			require.False(t, att.Reputation.Providers[0].Recheckable,
+				"there is nothing cached to re-check")
 			require.Empty(t, rig.store.all(), "a transient failure must not be cached")
 		})
 	}
@@ -318,7 +336,9 @@ func TestAddReputation_ACancelledRequestDoesNotHang(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("a dead provider held the attachment list open")
 	}
-	require.Nil(t, att.Reputation)
+	require.NotNil(t, att.Reputation)
+	require.Equal(t, "unavailable", att.Reputation.State,
+		"a reader who went away leaves a lookup that did not happen, never a clean file")
 	require.Empty(t, rig.store.all())
 }
 
@@ -380,17 +400,22 @@ func TestAddReputation_DoesNotWarnOnceThePageAllowanceIsSpent(t *testing.T) {
 	att := quarantinedAttachment("55" + repTestHash[2:])
 	rig.srv.addReputation(context.Background(), &att)
 
-	require.Nil(t, att.Reputation)
+	require.NotNil(t, att.Reputation)
+	require.Equal(t, "unavailable", att.Reputation.State)
 	require.Empty(t, warned.String(),
 		"a refusal that clears on its own is not worth a warning on every render")
 }
 
-// Switching provider switches what is looked up, with no restart.
+// Enabling a second provider makes the next render ask both, with no restart.
 //
-// Both settings are read per call for this reason; only the Budget is held. A
-// provider captured at startup is the defect this codebase already documents
-// for the ticket prefix and the scanner address.
-func TestAddReputation_FollowsTheProviderSettingWithoutARestart(t *testing.T) {
+// The toggles are read per call for this reason; only the Budget is held. A
+// set of providers captured at startup is the defect this codebase already
+// documents for the ticket prefix and the scanner address.
+//
+// And it is the point of per-provider toggles rather than one selected
+// service: VirusTotal counts engines and MetaDefender is a different corpus,
+// so a reader gets both answers rather than whichever one was picked last.
+func TestAddReputation_FollowsTheEnabledProvidersWithoutARestart(t *testing.T) {
 	var paths []string
 	var mu sync.Mutex
 	rig := newRepRig(t, func(w http.ResponseWriter, r *http.Request) {
@@ -406,22 +431,22 @@ func TestAddReputation_FollowsTheProviderSettingWithoutARestart(t *testing.T) {
 	att := quarantinedAttachment(repTestHash)
 	rig.srv.addReputation(context.Background(), &att)
 
-	require.NoError(t, rig.admin.SetRaw(context.Background(),
-		admin.KeyAttachmentReputationProvider, []byte(`"metadefender"`)))
-	other := quarantinedAttachment(repTestHash)
+	rig.enable(t, reputation.ProviderVirusTotal, reputation.ProviderMetaDefender)
+	other := quarantinedAttachment("ab" + repTestHash[2:])
 	rig.srv.addReputation(context.Background(), &other)
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, paths, 2)
-	require.Equal(t, "/api/v3/files/"+repTestHash, paths[0])
-	require.Equal(t, "/v4/hash/"+repTestHash, paths[1],
-		"the setting changed and the next render must follow it")
+	require.Equal(t, []string{
+		"/api/v3/files/" + repTestHash,
+		"/api/v3/files/ab" + repTestHash[2:],
+		"/v4/hash/ab" + repTestHash[2:],
+	}, paths, "the toggles changed and the next render must follow them")
 }
 
-// A verdict belongs to the provider that gave it. Switching provider must not
-// hand the other one's answer back under the new name, and the cache key is
-// what makes that impossible.
+// A verdict belongs to the provider that gave it. Enabling a second one must
+// not hand the first one's answer back under the new name, and the cache key
+// is what makes that impossible.
 func TestAddReputation_DoesNotServeOneProvidersVerdictAsAnothers(t *testing.T) {
 	rig := newRepRig(t, repRespond(http.StatusOK, vtDetectedBody))
 	rig.setKey(t, repTestKey)
@@ -431,8 +456,7 @@ func TestAddReputation_DoesNotServeOneProvidersVerdictAsAnothers(t *testing.T) {
 	require.NotNil(t, att.Reputation)
 	require.Equal(t, int64(1), rig.hits.Load())
 
-	require.NoError(t, rig.admin.SetRaw(context.Background(),
-		admin.KeyAttachmentReputationProvider, []byte(`"metadefender"`)))
+	rig.enable(t, reputation.ProviderMetaDefender)
 	other := quarantinedAttachment(repTestHash)
 	rig.srv.addReputation(context.Background(), &other)
 
@@ -512,15 +536,48 @@ func newRepRig(t *testing.T, respond http.HandlerFunc) *repRig {
 	srv := newBareServer(t, WithReputationLookup(store, reputation.WithBaseURL(ts.URL)))
 	srv.adminSvc = adminSvc
 
-	return &repRig{srv: srv, admin: adminSvc, store: store, hits: &hits}
+	rig := &repRig{srv: srv, admin: adminSvc, store: store, hits: &hits}
+	// VirusTotal alone, which is what the single-provider default was. Tests
+	// that want a different set say so with enable or setProvider.
+	rig.enable(t, reputation.ProviderVirusTotal)
+	return rig
 }
 
+// setKey gives every commercial provider the same key, without touching which
+// of them are enabled.
+//
+// All three rather than one, because these tests care about "this instance has
+// a usable key" and not about which box it was pasted into; the toggles are
+// what decide who is asked, and setProvider is what moves those.
 func (r *repRig) setKey(t *testing.T, key string) {
 	t.Helper()
 	raw, err := json.Marshal(key)
 	require.NoError(t, err)
-	require.NoError(t, r.admin.SetRaw(context.Background(),
-		admin.KeyAttachmentReputationAPIKey, raw))
+	for _, k := range []string{
+		admin.KeyAttachmentReputationVirusTotalKey,
+		admin.KeyAttachmentReputationMetaDefenderKey,
+		admin.KeyAttachmentReputationPolySwarmKey,
+	} {
+		require.NoError(t, r.admin.SetRaw(context.Background(), k, raw))
+	}
+}
+
+// enable turns the named providers on and every other one off.
+func (r *repRig) enable(t *testing.T, providers ...string) {
+	t.Helper()
+	want := map[string]bool{}
+	for _, p := range providers {
+		want[p] = true
+	}
+	for _, p := range admin.ReputationProviders() {
+		enabledKey, _, ok := admin.ReputationSettingKeys(p)
+		require.True(t, ok)
+		raw := []byte("false")
+		if want[p] {
+			raw = []byte("true")
+		}
+		require.NoError(t, r.admin.SetRaw(context.Background(), enabledKey, raw))
+	}
 }
 
 // newBareServer builds a Server with nothing but the reputation wiring. Every

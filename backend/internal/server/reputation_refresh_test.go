@@ -30,8 +30,11 @@ const repDay = 24 * time.Hour
 func (r *repRig) seedVerdict(t *testing.T, sha string, rep reputation.Reputation, ago time.Duration) {
 	t.Helper()
 	rep.FetchedAt = time.Now().Add(-ago)
-	require.NoError(t, r.store.Put(context.Background(), sha,
-		r.admin.ReputationProvider(context.Background()), rep))
+	provider := reputation.ProviderVirusTotal
+	if enabled := r.admin.EnabledReputationProviders(context.Background()); len(enabled) > 0 {
+		provider = enabled[0]
+	}
+	require.NoError(t, r.store.Put(context.Background(), sha, provider, rep))
 }
 
 func repCleanVerdict() reputation.Reputation {
@@ -150,9 +153,8 @@ func TestAddReputation_NamesTheProvider(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.setting, func(t *testing.T) {
 			rig := newRepRig(t, repRespond(200, vtCleanBody))
+			rig.setProvider(t, tc.setting)
 			rig.setKey(t, repTestKey)
-			require.NoError(t, rig.admin.SetRaw(context.Background(),
-				admin.KeyAttachmentReputationProvider, []byte(`"`+tc.setting+`"`)))
 			rig.seedVerdict(t, repTestHash, repCleanVerdict(), time.Hour)
 
 			att := quarantinedAttachment(repTestHash)
