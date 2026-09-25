@@ -170,17 +170,52 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 // with no way in short of editing the database by hand.
 var ErrLastAdmin = fmt.Errorf("%w: this is the only administrator, so it cannot be disabled, demoted or deleted", ErrValidation)
 
-// CanStopBeingAdmin reports whether this account can be removed from the
-// administrators without leaving the instance with none.
-func (s *Service) CanStopBeingAdmin(ctx context.Context, id uuid.UUID) error {
-	n, err := s.store.CountOtherActiveAdmins(ctx, id)
-	if err != nil {
-		return fmt.Errorf("counting administrators: %w", err)
+// Disable, SoftDelete and SetRole each refuse to remove the last active
+// administrator, and each decides that in the same statement that writes.
+//
+// The first version asked a separate question first — count the other
+// administrators, then write if there were any — and that lost the race it
+// was written for. Measured against a live database: two administrators
+// demoting each other, twenty-eight rounds in thirty ended with none. It did
+// not even need two people; one administrator sending "remove Bob" and
+// "remove me" at the same moment did it in all thirty. The window is the gap
+// between the two statements, and the only way to close it is not to have
+// one.
+func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
+	switch role {
+	case RoleAdmin, RoleStaff, RoleUser:
+	default:
+		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
-	if n == 0 {
+	applied, err := s.store.SetRoleUnlessLastAdmin(ctx, id, string(role))
+	if err != nil {
+		return err
+	}
+	if !applied {
 		return ErrLastAdmin
 	}
 	return nil
+}
+
+// EmailIsTaken reports whether an address already belongs to an account here,
+// deleted accounts included.
+//
+// The deleted ones are the point. GetByEmail hides them, which is right for
+// logging in and wrong for "can this be registered": the unique constraint is
+// on every row, so a deleted account still owns its address. Checking with
+// the login lookup let a signup through, sent a verification email, and then
+// failed at the end with a message about the token.
+func (s *Service) EmailIsTaken(ctx context.Context, email string) (bool, error) {
+	addr, err := ValidateEmail(email)
+	if err != nil {
+		return false, err
+	}
+	return s.store.EmailIsTaken(ctx, addr)
+}
+
+// ListAssignableStaff returns the people work can be given to.
+func (s *Service) ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error) {
+	return s.store.ListAssignableStaff(ctx)
 }
 
 // GetByEmail returns the account holding an address.
@@ -629,7 +664,14 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
 
 // SoftDelete marks a user as deleted without removing their data.
 func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
-	return s.store.SoftDelete(ctx, id)
+	applied, err := s.store.SoftDeleteUnlessLastAdmin(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrLastAdmin
+	}
+	return nil
 }
 
 // Update persists changes to an existing user.
@@ -661,9 +703,18 @@ func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, err
 	return s.store.ListAdmin(ctx, limit, offset)
 }
 
-// Disable marks a user account as disabled without deleting it.
+// Disable marks a user account as disabled without deleting it, unless it is
+// the last active administrator. See SetRole for why the guard is in the
+// statement rather than in front of it.
 func (s *Service) Disable(ctx context.Context, id uuid.UUID) error {
-	return s.store.Disable(ctx, id)
+	applied, err := s.store.DisableUnlessLastAdmin(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrLastAdmin
+	}
+	return nil
 }
 
 // Enable re-activates a disabled user account.

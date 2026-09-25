@@ -193,10 +193,64 @@ func (s *Store) Count(ctx context.Context) (int64, error) {
 	return s.q.CountUsers(ctx)
 }
 
+// DisableUnlessLastAdmin, SoftDeleteUnlessLastAdmin and SetRoleUnlessLastAdmin
+// each do their check and their write in one statement, so two of them racing
+// cannot both decide they are allowed. Each reports whether it applied.
+func (s *Store) DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	return s.appliedGuardedWrite(s.q.DisableUserUnlessLastAdmin(ctx, id))
+}
+
+func (s *Store) SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	return s.appliedGuardedWrite(s.q.SoftDeleteUserUnlessLastAdmin(ctx, id))
+}
+
+func (s *Store) SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role string) (bool, error) {
+	return s.appliedGuardedWrite(s.q.SetUserRoleUnlessLastAdmin(ctx, dbgen.SetUserRoleUnlessLastAdminParams{
+		ID: id, Role: role,
+	}))
+}
+
+// appliedGuardedWrite turns "no row came back" into "refused" rather than an
+// error. These statements return the id when they applied and nothing when
+// the guard stopped them, which database/sql reports as ErrNoRows.
+func (s *Store) appliedGuardedWrite(_ uuid.UUID, err error) (bool, error) {
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	}
+	return false, fmt.Errorf("guarded write: %w", err)
+}
+
 // CountOtherActiveAdmins counts the administrators this instance would still
 // have if the given user stopped being one.
 func (s *Store) CountOtherActiveAdmins(ctx context.Context, excluding uuid.UUID) (int64, error) {
 	return s.q.CountOtherActiveAdmins(ctx, excluding)
+}
+
+// EmailIsTaken reports whether any row holds this address, deleted rows
+// included — which is what the unique constraint covers.
+func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {
+	taken, err := s.q.EmailIsTaken(ctx, email)
+	if err != nil {
+		return false, fmt.Errorf("checking address: %w", err)
+	}
+	return taken, nil
+}
+
+// ListAssignableStaff returns active staff and administrators, id and name
+// only.
+func (s *Store) ListAssignableStaff(ctx context.Context) ([]user.AssignableStaff, error) {
+	rows, err := s.q.ListAssignableStaff(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing assignable staff: %w", err)
+	}
+	out := make([]user.AssignableStaff, len(rows))
+	for i, r := range rows {
+		out[i] = user.AssignableStaff{ID: r.ID, DisplayName: r.DisplayName}
+	}
+	return out, nil
 }
 
 // CountAll counts every user row, disabled and soft-deleted included.

@@ -375,6 +375,44 @@ func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber 
 	return i, err
 }
 
+const isAssignableGroup = `-- name: IsAssignableGroup :one
+SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1)
+`
+
+// Whether a group can be given a ticket. An unknown id used to reach the
+// foreign key and answer 500 for what is a caller's typo.
+func (q *Queries) IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isAssignableGroup, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const isAssignableUser = `-- name: IsAssignableUser :one
+SELECT EXISTS (
+    SELECT 1 FROM users
+    WHERE id = $1
+      AND deleted_at IS NULL
+      AND disabled = FALSE
+      AND role IN ('staff', 'admin')
+)
+`
+
+// Whether a user can be given a ticket: the account exists, is not deleted,
+// is not disabled, and is staff. A reporting user is not a queue.
+//
+// Asked inside the assignment transaction rather than by the caller, because
+// the caller is not the only caller. The REST handler checked this and MCP
+// did not, so `assign_ticket` happily put tickets on deleted accounts and on
+// reporting users — and a check the caller makes is a check every future
+// caller has to remember to make. This one is where the write is.
+func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isAssignableUser, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listAllTickets = `-- name: ListAllTickets :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -1995,4 +2033,18 @@ func (q *Queries) UpdateTicketCTI(ctx context.Context, arg UpdateTicketCTIParams
 		arg.UpdatedAt,
 	)
 	return err
+}
+
+const userExists = `-- name: UserExists :one
+SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)
+`
+
+// Whether a live account holds this id. Used for a supplied reporter, which
+// unlike an assignee may be any role — a ticket is filed on behalf of whoever
+// it is about.
+func (q *Queries) UserExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, userExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

@@ -50,6 +50,14 @@ type Store interface {
 	// UnassignForUser clears the assignee on every OPEN ticket held by a
 	// user, and reports how many moved. Used when an account is deleted.
 	UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// IsAssignableUser and IsAssignableGroup are asked inside the assignment
+	// transaction, so every caller gets the same answer and no caller has to
+	// remember to ask.
+	IsAssignableUser(ctx context.Context, userID uuid.UUID) (bool, error)
+	// UserExists checks a supplied reporter before a tracking number is
+	// taken, so an unknown one cannot leave a hole in the numbering.
+	UserExists(ctx context.Context, userID uuid.UUID) (bool, error)
+	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 
 	// Guest access tokens.

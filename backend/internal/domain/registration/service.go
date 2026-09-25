@@ -21,7 +21,8 @@ var ErrTokenExpired = fmt.Errorf("verification token has expired")
 var ErrInvalidEmail = fmt.Errorf("invalid email address")
 
 // ErrAlreadyRegistered is a signup for an address that already has an
-// account.
+// account, deleted accounts included — the unique constraint covers those
+// too, so a deleted account still owns its address.
 //
 // Never shown to the person signing up: the endpoint answers the same 202
 // either way, so this cannot be used to find out who has an account here. It
@@ -51,10 +52,12 @@ var ErrOpenRegistrationRequired = fmt.Errorf("open registration must be enabled 
 // userCreator is the subset of user.Service needed by the registration service.
 type userCreator interface {
 	Create(ctx context.Context, in user.CreateUserInput) (user.User, error)
-	// GetByEmail so a signup for an address that already has an account can
+	// EmailIsTaken so a signup for an address that already has an account can
 	// be stopped before the verification email goes out, rather than failing
-	// at the end of the flow with a message about the token.
-	GetByEmail(ctx context.Context, email string) (user.User, error)
+	// at the end of the flow with a message about the token. Deleted accounts
+	// count: the unique constraint covers them, so one still owns its
+	// address.
+	EmailIsTaken(ctx context.Context, email string) (bool, error)
 }
 
 // Service handles the sign-up and email-verification workflow.
@@ -115,13 +118,24 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 	// link and is told their token is invalid or already used, which it is
 	// not. Same shape as the display-name case above: fail where the failure
 	// is true rather than where it is confusing.
-	if _, err := s.users.GetByEmail(ctx, email); err == nil {
-		return ErrAlreadyRegistered
+	taken, err := s.users.EmailIsTaken(ctx, email)
+	if err != nil {
+		return fmt.Errorf("checking the address: %w", err)
 	}
 
+	// Hashed before the taken check is acted on, deliberately.
+	//
+	// The endpoint answers the same 202 either way so that signing up is not
+	// a way to find out who has an account here — and the first version of
+	// this returned before the hash, which made the two paths 3 ms and 70 ms.
+	// Measured, with no overlap across a dozen samples. An identical body
+	// that takes a twentieth of the time is not identical.
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
+	}
+	if taken {
+		return ErrAlreadyRegistered
 	}
 
 	now := time.Now()

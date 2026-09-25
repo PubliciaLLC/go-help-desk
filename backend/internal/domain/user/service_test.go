@@ -205,6 +205,64 @@ func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
 }
 
+// EmailIsTaken covers deleted rows, because the real unique constraint does.
+func (f *fakeUserStore) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	_, ok := f.byEmail[email]
+	return ok, nil
+}
+
+// The three guarded writes. This fake applies the same rule the SQL does:
+// refuse when the change would leave no active administrator.
+func (f *fakeUserStore) lastActiveAdmin(id uuid.UUID) bool {
+	for otherID, u := range f.byID {
+		if otherID == id || u.Role != user.RoleAdmin || u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (f *fakeUserStore) DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	if f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	return true, f.Disable(ctx, id)
+}
+
+func (f *fakeUserStore) SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	if f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	return true, f.SoftDelete(ctx, id)
+}
+
+func (f *fakeUserStore) SetRoleUnlessLastAdmin(_ context.Context, id uuid.UUID, role string) (bool, error) {
+	if role != string(user.RoleAdmin) && f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	u := f.byID[id]
+	u.Role = user.Role(role)
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// ListAssignableStaff returns the active staff and admins in this fake.
+func (f *fakeUserStore) ListAssignableStaff(_ context.Context) ([]user.AssignableStaff, error) {
+	var out []user.AssignableStaff
+	for _, u := range f.byID {
+		if u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
+			continue
+		}
+		out = append(out, user.AssignableStaff{ID: u.ID, DisplayName: u.DisplayName})
+	}
+	return out, nil
+}
+
 // CountOtherActiveAdmins counts the administrators left if this one stopped
 // being one.
 func (f *fakeUserStore) CountOtherActiveAdmins(_ context.Context, excluding uuid.UUID) (int64, error) {

@@ -222,6 +222,62 @@ func (q *Queries) DisableUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const disableUserUnlessLastAdmin = `-- name: DisableUserUnlessLastAdmin :one
+WITH admins AS (
+    SELECT u.id AS admin_id FROM users u
+    WHERE u.role = 'admin' AND u.deleted_at IS NULL AND u.disabled = FALSE
+    ORDER BY u.id
+    FOR UPDATE
+)
+UPDATE users AS t
+SET disabled = TRUE, updated_at = now()
+WHERE t.id = $1
+  AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
+RETURNING t.id
+`
+
+// Disables a user, refusing if that would leave the instance with no active
+// administrator. Returns the id when it applied, nothing when it did not.
+//
+// Count and write in one statement, locking every active administrator row
+// first. Counting in Go and then writing was two statements with nothing
+// between them, and it lost: two parallel requests both counted before either
+// wrote. Measured, twenty-nine rounds in thirty ended with zero
+// administrators — and it did not need two people. One administrator sending
+// "remove Bob" and "remove me" together did it every time.
+//
+// FOR UPDATE over ALL of them, not just the others, because the lock sets
+// have to overlap: locking only the other administrators means two requests
+// lock different rows and neither waits. ORDER BY id so two of these cannot
+// deadlock. When the second one unblocks, Postgres re-checks the locked rows
+// against the WHERE, so a row the first request just demoted is no longer
+// counted.
+func (q *Queries) DisableUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, disableUserUnlessLastAdmin, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const emailIsTaken = `-- name: EmailIsTaken :one
+SELECT EXISTS (SELECT 1 FROM users WHERE email = $1)
+`
+
+// Whether any row holds this address, INCLUDING a deleted one.
+//
+// GetUserByEmail hides deleted rows, which is right for logging in and wrong
+// for this: the unique constraint is on every row, so a deleted account still
+// owns its address. Checking with the login query meant a signup for a
+// deleted account's address was accepted, a verification email went out, and
+// the link failed at the end with "invalid or already used token" — which is
+// exactly the dead end that check was added to prevent.
+func (q *Queries) EmailIsTaken(ctx context.Context, email string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, emailIsTaken, email)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const enableUser = `-- name: EnableUser :exec
 UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1
 `
@@ -383,6 +439,53 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 	return i, err
 }
 
+const listAssignableStaff = `-- name: ListAssignableStaff :many
+SELECT id, display_name FROM users
+WHERE deleted_at IS NULL
+  AND disabled = FALSE
+  AND role IN ('staff', 'admin')
+ORDER BY display_name
+`
+
+type ListAssignableStaffRow struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+}
+
+// The people work can be given to: active staff and administrators, name and
+// id only.
+//
+// Staff had no way to read a list of users at all — /admin/users is
+// administrator-only — so the assignee picker on the ticket page was empty
+// for every staff member, and no name could be resolved for anybody. The page
+// had to guess, and guessed wrong.
+//
+// Deliberately narrow: an id and a display name, which is what assigning work
+// needs and what staff already see on every ticket. No email, no role, no
+// login state.
+func (q *Queries) ListAssignableStaff(ctx context.Context) ([]ListAssignableStaffRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAssignableStaff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAssignableStaffRow
+	for rows.Next() {
+		var i ListAssignableStaffRow
+		if err := rows.Scan(&i.ID, &i.DisplayName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsers = `-- name: ListUsers :many
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -525,6 +628,38 @@ func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const setUserRoleUnlessLastAdmin = `-- name: SetUserRoleUnlessLastAdmin :one
+WITH admins AS (
+    SELECT u.id AS admin_id FROM users u
+    WHERE u.role = 'admin' AND u.deleted_at IS NULL AND u.disabled = FALSE
+    ORDER BY u.id
+    FOR UPDATE
+)
+UPDATE users AS t
+SET role = $2, updated_at = now()
+WHERE t.id = $1
+  AND ($2 = 'admin' OR (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0)
+RETURNING t.id
+`
+
+type SetUserRoleUnlessLastAdminParams struct {
+	ID   uuid.UUID `json:"id"`
+	Role string    `json:"role"`
+}
+
+// The same guard for a role change. See DisableUserUnlessLastAdmin.
+//
+// A separate statement from UpdateUser because a role change is a different
+// operation from renaming somebody: it revokes sessions, it is refused to
+// machine credentials, and it is the one that can leave an instance with no
+// administrator.
+func (q *Queries) SetUserRoleUnlessLastAdmin(ctx context.Context, arg SetUserRoleUnlessLastAdminParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, setUserRoleUnlessLastAdmin, arg.ID, arg.Role)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const softDeleteUser = `-- name: SoftDeleteUser :exec
 UPDATE users SET deleted_at = now() WHERE id = $1
 `
@@ -532,6 +667,28 @@ UPDATE users SET deleted_at = now() WHERE id = $1
 func (q *Queries) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, softDeleteUser, id)
 	return err
+}
+
+const softDeleteUserUnlessLastAdmin = `-- name: SoftDeleteUserUnlessLastAdmin :one
+WITH admins AS (
+    SELECT u.id AS admin_id FROM users u
+    WHERE u.role = 'admin' AND u.deleted_at IS NULL AND u.disabled = FALSE
+    ORDER BY u.id
+    FOR UPDATE
+)
+UPDATE users AS t
+SET deleted_at = now(), updated_at = now()
+WHERE t.id = $1
+  AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
+RETURNING t.id
+`
+
+// The same guard for deletion. See DisableUserUnlessLastAdmin.
+func (q *Queries) SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, softDeleteUserUnlessLastAdmin, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const updateUser = `-- name: UpdateUser :exec

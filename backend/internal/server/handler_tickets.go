@@ -420,8 +420,20 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	} else if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
 		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, gid, ticket.SystemActor)
 	} else if uids := s.adminSvc.AutoAssignUserIDs(r.Context()); len(uids) > 0 {
-		uid := uids[s.rrIdx.Add(1)%uint64(len(uids))]
-		_, _ = s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor)
+		// Round-robin, skipping anybody the assignment refuses.
+		//
+		// Nothing removes a departed colleague from this setting, so the list
+		// outlives them. Assign now refuses a deleted, disabled or
+		// non-staff account — but taking their slot and giving up would
+		// silently leave every Nth ticket unassigned, which is a queue that
+		// quietly loses a share of its work. Try the next one instead.
+		start := s.rrIdx.Add(1)
+		for i := range uids {
+			uid := uids[(start+uint64(i))%uint64(len(uids))]
+			if _, err := s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor); err == nil {
+				break
+			}
+		}
 	}
 
 	// Set any custom field values supplied on creation.

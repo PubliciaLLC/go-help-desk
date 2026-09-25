@@ -175,13 +175,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
-			// Same guard as demotion and deletion: a disabled administrator
-			// cannot log in, so disabling the last one locks the instance out
-			// of its own administration.
-			if err := s.users.CanStopBeingAdmin(r.Context(), id); err != nil {
-				handleError(w, err)
-				return
-			}
+			// Disable refuses the last active administrator itself — the
+			// check and the write are one statement, because asking first
+			// and writing second lost the race to two parallel requests.
 			if err := s.users.Disable(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
@@ -245,27 +241,27 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			// spelling. The user was locked out and nothing said why.
 			u.Email = strings.ToLower(strings.TrimSpace(*body.Email))
 		}
-		if body.Role != nil {
-			// Demoting the only administrator leaves nobody who can
-			// administer this instance, and setup does not reopen — so it is
-			// unrecoverable short of editing the database.
-			if originalRole == user.RoleAdmin && user.Role(*body.Role) != user.RoleAdmin {
-				if err := s.users.CanStopBeingAdmin(r.Context(), id); err != nil {
-					handleError(w, err)
-					return
-				}
-			}
-			u.Role = user.Role(*body.Role)
-		}
-		// A role change must not leave the old role live in an existing
-		// session, which carries Role in its payload. Only for a role change:
-		// renaming someone should not sign them out.
+		// A role change is its own operation, not part of the profile write.
+		//
+		// It revokes sessions, it is refused to machine credentials, and it
+		// is the one that can leave an instance with no administrator — so it
+		// goes through the statement that checks and writes together. Folding
+		// it into the general update would put the guard back in front of the
+		// write, which is where it lost.
 		roleChanged := body.Role != nil && user.Role(*body.Role) != originalRole
-
+		if roleChanged {
+			if err := s.users.SetRole(r.Context(), id, user.Role(*body.Role)); err != nil {
+				handleError(w, err)
+				return
+			}
+		}
 		if err := s.users.Update(r.Context(), u); err != nil {
 			handleError(w, err)
 			return
 		}
+		// A role change must not leave the old role live in an existing
+		// session, which carries Role in its payload. Only for a role change:
+		// renaming someone should not sign them out.
 		if roleChanged {
 			if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 				handleError(w, err)
@@ -381,13 +377,8 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
-	// The last administrator cannot be deleted, for the same reason they
-	// cannot be disabled or demoted: setup does not reopen, so the instance
-	// would be left with no way in at all.
-	if err := s.users.CanStopBeingAdmin(r.Context(), id); err != nil {
-		handleError(w, err)
-		return
-	}
+	// SoftDelete refuses the last active administrator itself: setup does not
+	// reopen, so the instance would be left with no way in at all.
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
@@ -426,4 +417,22 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			"user_id", id, "tickets", moved)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/staff — who work can be given to.
+//
+// Staff-readable on purpose, and deliberately narrow: an id and a display
+// name, which is what assigning a ticket needs and what staff already see on
+// every ticket they can read. No email, no role, no login state — that is the
+// administrator's view and it stays there.
+func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Request) {
+	staff, err := s.users.ListAssignableStaff(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if staff == nil {
+		staff = []user.AssignableStaff{}
+	}
+	JSON(w, http.StatusOK, staff)
 }

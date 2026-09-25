@@ -178,6 +178,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		return Ticket{}, fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
 	}
 
+	// A supplied reporter, checked for the same reason the priority above is:
+	// everything after this takes a tracking number first, so an id the
+	// foreign key refuses costs a 500 and a permanent gap in the sequence.
+	// MCP's create_ticket takes a reporter_user_id from the caller, which is
+	// how an unknown one gets here.
+	if in.ReporterUserID != nil {
+		ok, err := s.store.UserExists(ctx, *in.ReporterUserID)
+		if err != nil {
+			return Ticket{}, err
+		}
+		if !ok {
+			return Ticket{}, fmt.Errorf("%w: reporter_user_id is not a user on this help desk", ErrValidation)
+		}
+	}
+
 	seq, err := s.store.NextSeq(ctx)
 	if err != nil {
 		return Ticket{}, fmt.Errorf("getting ticket sequence: %w", err)
@@ -430,6 +445,38 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		if err != nil {
 			return err
 		}
+		// Checked here, inside the transaction that writes it, because the
+		// caller is not the only caller.
+		//
+		// The REST handler checked the assignee and MCP did not, so
+		// assign_ticket put tickets on deleted accounts and on reporting
+		// users — and a ticket assigned to a deleted account is invisible:
+		// it renders with no assignee anyone can resolve and it is missing
+		// from the unassigned queue, because the column is not null. The
+		// auto-assign list has the same problem, since nothing removes
+		// somebody from it when they leave.
+		//
+		// A check the caller makes is a check every future caller has to
+		// remember to make. This one is where the write is.
+		if assigneeUserID != nil {
+			ok, err := st.IsAssignableUser(ctx, *assigneeUserID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("%w: that account cannot be given a ticket — it may be deleted, disabled, or not staff", ErrValidation)
+			}
+		}
+		if assigneeGroupID != nil {
+			ok, err := st.IsAssignableGroup(ctx, *assigneeGroupID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("%w: no such group", ErrValidation)
+			}
+		}
+
 		before := ticketMap(t)
 		t.AssigneeUserID = assigneeUserID
 		t.AssigneeGroupID = assigneeGroupID

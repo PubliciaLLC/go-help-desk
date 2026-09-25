@@ -28,9 +28,21 @@ type Store interface {
 	// accounts. Count, which excludes them, is the wrong question for
 	// "has this instance ever been set up".
 	CountAll(ctx context.Context) (int64, error)
+	// ListAssignableStaff is the id-and-name list staff need to assign work.
+	ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error)
+	// EmailIsTaken covers deleted rows too, because the unique constraint
+	// does. GetByEmail is the login lookup and hides them.
+	EmailIsTaken(ctx context.Context, email string) (bool, error)
 	// CountOtherActiveAdmins counts the administrators left if this one
 	// stopped being one, so the last of them cannot be removed.
-	CountOtherActiveAdmins(ctx context.Context, excluding uuid.UUID) (int64, error)
+	// These three do their check and their write in one statement, so two of
+	// them racing cannot both decide they are allowed. Each reports whether
+	// it applied. Counting first and writing second lost that race: measured,
+	// one administrator sending "remove Bob" and "remove me" together left
+	// the instance with no administrator every time.
+	DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error)
+	SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error)
+	SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role string) (bool, error)
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)

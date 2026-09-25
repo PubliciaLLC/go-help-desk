@@ -112,3 +112,15 @@ func IsLocalAuthAllowed(u User, samlEnabled bool) bool {
 	}
 	return u.Role == RoleAdmin
 }
+
+// AssignableStaff is somebody work can be given to: an id and a name, and
+// nothing else.
+//
+// Its own type rather than a User with most fields blank, because what staff
+// may read about their colleagues is narrower than what an administrator may:
+// an email address, a role and a login state are not needed to assign a
+// ticket, so they are not in this.
+type AssignableStaff struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+}

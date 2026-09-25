@@ -130,6 +130,32 @@ type Querier interface {
 	DeleteType(ctx context.Context, id uuid.UUID) error
 	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
 	DisableUser(ctx context.Context, id uuid.UUID) error
+	// Disables a user, refusing if that would leave the instance with no active
+	// administrator. Returns the id when it applied, nothing when it did not.
+	//
+	// Count and write in one statement, locking every active administrator row
+	// first. Counting in Go and then writing was two statements with nothing
+	// between them, and it lost: two parallel requests both counted before either
+	// wrote. Measured, twenty-nine rounds in thirty ended with zero
+	// administrators — and it did not need two people. One administrator sending
+	// "remove Bob" and "remove me" together did it every time.
+	//
+	// FOR UPDATE over ALL of them, not just the others, because the lock sets
+	// have to overlap: locking only the other administrators means two requests
+	// lock different rows and neither waits. ORDER BY id so two of these cannot
+	// deadlock. When the second one unblocks, Postgres re-checks the locked rows
+	// against the WHERE, so a row the first request just demoted is no longer
+	// counted.
+	DisableUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Whether any row holds this address, INCLUDING a deleted one.
+	//
+	// GetUserByEmail hides deleted rows, which is right for logging in and wrong
+	// for this: the unique constraint is on every row, so a deleted account still
+	// owns its address. Checking with the login query meant a signup for a
+	// deleted account's address was accepted, a verification email went out, and
+	// the link failed at the end with "invalid or already used token" — which is
+	// exactly the dead end that check was added to prevent.
+	EmailIsTaken(ctx context.Context, email string) (bool, error)
 	EnableUser(ctx context.Context, id uuid.UUID) error
 	// The four tiers DESIGN.md documents, most specific first:
 	//   1. Priority + Category
@@ -227,10 +253,34 @@ type Querier interface {
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
+	// Whether a group can be given a ticket. An unknown id used to reach the
+	// foreign key and answer 500 for what is a caller's typo.
+	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
+	// Whether a user can be given a ticket: the account exists, is not deleted,
+	// is not disabled, and is staff. A reporting user is not a queue.
+	//
+	// Asked inside the assignment transaction rather than by the caller, because
+	// the caller is not the only caller. The REST handler checked this and MCP
+	// did not, so `assign_ticket` happily put tickets on deleted accounts and on
+	// reporting users — and a check the caller makes is a check every future
+	// caller has to remember to make. This one is where the write is.
+	IsAssignableUser(ctx context.Context, id uuid.UUID) (bool, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)
 	ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]ListAllTicketsRow, error)
+	// The people work can be given to: active staff and administrators, name and
+	// id only.
+	//
+	// Staff had no way to read a list of users at all — /admin/users is
+	// administrator-only — so the assignee picker on the ticket page was empty
+	// for every staff member, and no name could be resolved for anybody. The page
+	// had to guess, and guessed wrong.
+	//
+	// Deliberately narrow: an id and a display name, which is what assigning work
+	// needs and what staff already see on every ticket. No email, no role, no
+	// login state.
+	ListAssignableStaff(ctx context.Context) ([]ListAssignableStaffRow, error)
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
@@ -321,8 +371,17 @@ type Querier interface {
 	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// The same guard for a role change. See DisableUserUnlessLastAdmin.
+	//
+	// A separate statement from UpdateUser because a role change is a different
+	// operation from renaming somebody: it revokes sessions, it is refused to
+	// machine credentials, and it is the one that can leave an instance with no
+	// administrator.
+	SetUserRoleUnlessLastAdmin(ctx context.Context, arg SetUserRoleUnlessLastAdminParams) (uuid.UUID, error)
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
+	// The same guard for deletion. See DisableUserUnlessLastAdmin.
+	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
@@ -407,6 +466,10 @@ type Querier interface {
 	// reason inverted: a frozen, earlier now() would keep an expired session
 	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
+	// Whether a live account holds this id. Used for a supplied reporter, which
+	// unlike an assignee may be any role — a ticket is filed on behalf of whoever
+	// it is about.
+	UserExists(ctx context.Context, id uuid.UUID) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)

@@ -17,7 +17,7 @@ import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
-import { listStatuses, listUsers } from '@/api/admin'
+import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
@@ -30,7 +30,7 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
+import type { Group, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
 
 function formatDate(iso: string) {
@@ -49,12 +49,18 @@ interface AssigneePanelProps {
   ticketId: string
   assigneeUserId?: string
   assigneeGroupId?: string
-  users: User[]
+  users: AssignableStaff[]
+  // haveStaffList says the list above actually loaded. Without it the panel
+  // cannot tell "this assignee has left" from "I could not read the list",
+  // and the first version of this guessed the first — so for a staff member,
+  // who could not read the list at all, every live colleague was reported as
+  // having left.
+  haveStaffList: boolean
   groups: Group[]
   onUpdated: () => void
 }
 
-function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, groups, onUpdated }: AssigneePanelProps) {
+function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, onUpdated }: AssigneePanelProps) {
   const [mode, setMode] = useState<'user' | 'group'>('user')
   const [selectedId, setSelectedId] = useState('')
   const [error, setError] = useState('')
@@ -87,7 +93,9 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
   const currentUser = users.find((u) => u.id === assigneeUserId)
   const currentGroup = groups.find((g) => g.id === assigneeGroupId)
 
-  const staffUsers = users.filter((u) => u.role === 'staff' || u.role === 'admin')
+  // The list is already only the people work can be given to — the server
+  // filters it — so there is nothing left to filter here.
+  const staffUsers = users
 
   return (
     <div className="space-y-2">
@@ -100,13 +108,20 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
             <span className="h-2 w-2 rounded-full bg-blue-400" />
             {currentGroup.name}
           </span>
-        ) : assigneeUserId ? (
-          // Assigned to somebody who is no longer in the user list — a
-          // deleted account. Saying "Unassigned" here was a lie the page told
-          // about its own history: a resolved ticket keeps its assignee
-          // deliberately, so that the record shows who handled it, and the
+        ) : assigneeUserId && haveStaffList ? (
+          // Assigned to somebody who is not in the list of people work can be
+          // given to — a deleted account. Saying "Unassigned" here was a lie
+          // the page told about its own history: a resolved ticket keeps its
+          // assignee deliberately, so the record shows who handled it, and the
           // page was erasing exactly that.
+          //
+          // Only when the list actually loaded. The first version of this said
+          // "Former staff member" whenever the list was empty, which for a
+          // staff member was always — so every live colleague was reported as
+          // having left. A page that cannot tell should say nothing, not guess.
           <span className="text-gray-500 italic">Former staff member</span>
+        ) : assigneeUserId ? (
+          <span className="text-gray-400">Assigned</span>
         ) : (
           <span className="text-gray-400">Unassigned</span>
         )}
@@ -350,9 +365,15 @@ export function TicketDetailPage() {
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
 
-  const { data: allUsers = [] } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => listUsers(),
+  // The staff-readable list, not /admin/users.
+  //
+  // listUsers answers 403 to anybody who is not an administrator, so for a
+  // staff member this query failed silently, the list was empty, and the
+  // assignee picker had nothing in it — while the server would have accepted
+  // the assignment perfectly well.
+  const { data: allUsers = [], isSuccess: haveStaffList } = useQuery({
+    queryKey: ['assignable-staff'],
+    queryFn: listAssignableStaff,
     enabled: isStaffOrAdmin,
   })
 
@@ -578,6 +599,7 @@ export function TicketDetailPage() {
                     assigneeUserId={ticket.assignee_user_id}
                     assigneeGroupId={ticket.assignee_group_id}
                     users={allUsers}
+                    haveStaffList={haveStaffList}
                     groups={groups}
                     onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
                   />

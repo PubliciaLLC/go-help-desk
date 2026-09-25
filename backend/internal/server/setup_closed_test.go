@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Setup stays closed after the last account is disabled or deleted.
@@ -32,12 +34,19 @@ func TestSetup_StaysClosedWhenEveryAccountIsGone(t *testing.T) {
 	// It is closed to begin with, because the harness seeded accounts.
 	require.False(t, setupNeeded(t, h), "the harness has users, so setup should be closed")
 
-	// Now take them all away, by both routes that leave a row behind — which
-	// is every route there is. Nothing in this system hard-deletes a user.
-	for _, id := range []uuid.UUID{h.staffID, h.adminID, h.userID} {
+	// Take away everything the system will let us take away. Both routes
+	// leave a row behind, which is every route there is: nothing here hard-
+	// deletes a user.
+	for _, id := range []uuid.UUID{h.staffID, h.userID} {
 		require.NoError(t, h.userSvc.Disable(ctx, id))
 		require.NoError(t, h.userSvc.SoftDelete(ctx, id))
 	}
+
+	// And the last administrator cannot be taken away at all — which is the
+	// stronger half of this guarantee, and the reason the state this test was
+	// originally written for is no longer reachable through the API.
+	require.ErrorIs(t, h.userSvc.Disable(ctx, h.adminID), user.ErrLastAdmin)
+	require.ErrorIs(t, h.userSvc.SoftDelete(ctx, h.adminID), user.ErrLastAdmin)
 
 	require.False(t, setupNeeded(t, h),
 		"the setup route reopened, so anyone can now create an administrator on this instance")

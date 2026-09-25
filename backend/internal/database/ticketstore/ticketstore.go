@@ -430,6 +430,33 @@ func (s *Store) CreateReply(ctx context.Context, r ticket.Reply) error {
 
 // UnassignForUser clears the assignee on every open ticket held by a user,
 // and returns how many moved.
+// UserExists reports whether a live account holds this id.
+func (s *Store) UserExists(ctx context.Context, userID uuid.UUID) (bool, error) {
+	ok, err := s.q.UserExists(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("checking reporter: %w", err)
+	}
+	return ok, nil
+}
+
+// IsAssignableUser reports whether a user can be given a ticket.
+func (s *Store) IsAssignableUser(ctx context.Context, userID uuid.UUID) (bool, error) {
+	ok, err := s.q.IsAssignableUser(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("checking assignee: %w", err)
+	}
+	return ok, nil
+}
+
+// IsAssignableGroup reports whether a group exists.
+func (s *Store) IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error) {
+	ok, err := s.q.IsAssignableGroup(ctx, groupID)
+	if err != nil {
+		return false, fmt.Errorf("checking assignee group: %w", err)
+	}
+	return ok, nil
+}
+
 func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	ids, err := s.q.UnassignTicketsForUser(ctx, database.NullUUID(&userID))
 	if err != nil {

@@ -144,7 +144,7 @@ func bytesPerPixel(m color.Model) int64 {
 // header. This is the whole defence: it must happen before any full decode,
 // because the allocation is the attack.
 func decodedSizeWithin(data []byte, maxPixels, maxBytes int64) error {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("reading image header: %w", err)
 	}
@@ -157,9 +157,29 @@ func decodedSizeWithin(data []byte, maxPixels, maxBytes int64) error {
 	}
 
 	// JPEG is asked directly, because its decoder allocates far more than the
-	// picture it produces and the colour model says nothing about it.
+	// picture it produces and the colour model says nothing about it — and a
+	// JPEG this cannot read is REFUSED rather than fallen back on.
+	//
+	// The fallback was the hole. It took the colour model's number whenever
+	// the header could not be parsed, which is the number that does not know
+	// about progressive coefficients or RGB conversion — so anything that
+	// made the parser give up got the budget the parser exists to replace.
+	// Eight bytes of malformed tail did it: a real 5120x5120 progressive
+	// image estimated at 75 MB, accepted, and decoded to 375 MB.
+	//
+	// Every real JPEG parses. A JPEG this cannot read is one somebody built
+	// to be unreadable, and "I cannot tell how much memory this needs" is not
+	// a reason to allow it — it is the reason to refuse it. That is the
+	// difference between failing open and failing closed, and it is worth
+	// more than any single thing the parser knows: a future gap in it becomes
+	// a refusal rather than a way through.
 	need := px * bytesPerPixel(cfg.ColorModel)
-	if b, ok := jpegDecodeBytes(data); ok {
+	if format == "jpeg" {
+		b, ok := jpegDecodeBytes(data)
+		if !ok {
+			return errors.New("this JPEG's header could not be read, so there is no way to tell " +
+				"how much memory decoding it would take")
+		}
 		need = b
 	}
 	if need > maxBytes {
@@ -221,8 +241,19 @@ func jpegDecodeBytes(data []byte) (int64, bool) {
 			continue
 		}
 		marker := data[i+1]
-		// Markers that carry no length: padding, and the standalone ones.
-		if marker == 0xFF || marker == 0x01 || marker == 0xD8 || (marker >= 0xD0 && marker <= 0xD7) {
+		// Markers that carry no length: padding, the standalone ones, and a
+		// stuffed zero.
+		//
+		// The zero matters. Go's decoder treats FF 00 outside a scan as
+		// extraneous and skips it; this used to read the next two bytes as a
+		// segment length, overrun the buffer, and give up — throwing away a
+		// frame header it had already parsed correctly. Eight bytes of tail
+		// were enough to do it. That is fixed at the other end too, by
+		// refusing a JPEG this cannot read rather than falling back, but a
+		// parser that agrees with the decoder is better than one that only
+		// fails safely when it disagrees.
+		if marker == 0x00 || marker == 0xFF || marker == 0x01 || marker == 0xD8 ||
+			(marker >= 0xD0 && marker <= 0xD7) {
 			i += 2
 			continue
 		}

@@ -204,6 +204,21 @@ func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, 
 	return nil, nil
 }
 
+// IsAssignableUser and IsAssignableGroup: this fake has no user table, so
+// everything it is asked about is assignable. The real rule lives in SQL and
+// is exercised against a real database.
+func (f *fakeStore) IsAssignableUser(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) UserExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) IsAssignableGroup(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
 // UnassignForUser clears the assignee on every open ticket held by a user.
 func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	var moved []uuid.UUID

@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
+	"strings"
 	"testing"
 )
 
@@ -281,4 +282,83 @@ type fixtureOpts struct {
 	// adobeAfterScan puts the Adobe marker past the compressed data instead
 	// of before the frame header, which is where it has to be caught.
 	adobeAfterScan bool
+}
+
+// A JPEG whose header cannot be read is refused, not fallen back on.
+//
+// This is the difference between failing open and failing closed, and it
+// matters more than anything the parser knows. The budget used to take the
+// colour model's number whenever the parse failed — the number that knows
+// nothing about progressive coefficients or RGB conversion, which is the
+// whole reason the parser exists. So anything that made the parser give up
+// got the weaker budget.
+//
+// Eight bytes of malformed tail did it: a real 5120x5120 progressive image
+// estimated at 75 MB, was accepted, and decoded to 375 MB. Any signed-in
+// reporter could upload it.
+//
+// Every real JPEG parses. One that does not is one somebody built not to, and
+// "I cannot tell how much memory this needs" is a reason to refuse rather
+// than to allow — which also means a future gap in the parser becomes a
+// refusal instead of a way through.
+func TestDecodedSizeWithin_RefusesAJPEGItCannotRead(t *testing.T) {
+	// A readable frame and scan — enough for image.DecodeConfig, which stops
+	// at the scan — followed by a segment claiming more bytes than are left.
+	hdr := jpegHeaderOnly(64, 64, false, []sampling{{1, 1}, {1, 1}, {1, 1}}, fixtureOpts{})
+	sos := []byte{0x01, 0x01, 0x00, 0x00, 0x3F, 0x00}
+	var f []byte
+	f = append(f, hdr...)
+	f = append(f, 0xFF, 0xDA)
+	f = append(f, byte((len(sos)+2)>>8), byte(len(sos)+2))
+	f = append(f, sos...)
+	f = append(f, 0x11, 0x22, 0x33)
+	// A comment segment that says it is 64 bytes long, with two bytes left.
+	f = append(f, 0xFF, 0xFE, 0x00, 0x40, 0x00, 0x00)
+
+	if _, ok := jpegDecodeBytes(f); ok {
+		t.Skip("the parser now reads this fixture, so it no longer exercises the refusal")
+	}
+
+	err := decodedSizeWithin(f, maxImagePixels, maxDecodedBytes)
+	if err == nil {
+		t.Fatal("a JPEG whose header could not be read was accepted on the colour model's " +
+			"number, which is the estimate the parser exists to replace")
+	}
+	if !strings.Contains(err.Error(), "could not be read") {
+		t.Errorf("refused for the wrong reason: %v", err)
+	}
+}
+
+// A stuffed zero after the scan does not make the parser give up.
+//
+// Go's decoder treats FF 00 outside a scan as extraneous and skips it. The
+// parser read the next two bytes as a segment length, overran, and threw away
+// a frame header it had already parsed correctly — which is what the eight
+// bytes above were exploiting. Fixed at both ends: the parser agrees with the
+// decoder, and a parse failure is a refusal either way.
+func TestJPEGDecodeBytes_SurvivesAStuffedZeroAfterTheScan(t *testing.T) {
+	comps := []sampling{{1, 1}, {1, 1}, {1, 1}}
+	hdr := jpegHeaderOnly(5120, 5120, true, comps, fixtureOpts{})
+
+	var f []byte
+	f = append(f, hdr...)
+	sos := []byte{0x01, 0x01, 0x00, 0x00, 0x3F, 0x00}
+	f = append(f, 0xFF, 0xDA)
+	f = append(f, byte((len(sos)+2)>>8), byte(len(sos)+2))
+	f = append(f, sos...)
+	f = append(f, 0x12, 0xFF, 0x00, 0x34)
+	// The tail from the proof of concept: a comment, then FF 00 and two
+	// bytes that the old parser read as a length.
+	f = append(f, 0xFF, 0xFE, 0x00, 0x02, 0xFF, 0x00, 0x7F, 0xFF)
+	f = append(f, 0xFF, 0xD9)
+
+	got, ok := jpegDecodeBytes(f)
+	if !ok {
+		t.Fatal("the parser gave up on a tail the decoder skips, so the budget fell back " +
+			"to the colour model's number")
+	}
+	// 5120x5120 progressive 4:4:4: three planes plus the coefficients.
+	if want := int64(375); got>>20 != want {
+		t.Errorf("estimate is %d MB, want %d MB", got>>20, want)
+	}
 }

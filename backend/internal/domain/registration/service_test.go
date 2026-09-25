@@ -56,13 +56,11 @@ type fakeUsers struct {
 	existing map[string]bool
 }
 
-// GetByEmail reports an existing account, which stops a signup before the
-// verification email goes out.
-func (f *fakeUsers) GetByEmail(_ context.Context, email string) (user.User, error) {
-	if f.existing[email] {
-		return user.User{Email: email}, nil
-	}
-	return user.User{}, user.ErrNotFound
+// EmailIsTaken reports an existing account, which stops a signup before the
+// verification email goes out. Deleted accounts count here, as they do in the
+// real store — that is the case the first version of this missed.
+func (f *fakeUsers) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	return f.existing[email], nil
 }
 
 func (f *fakeUsers) Create(_ context.Context, in user.CreateUserInput) (user.User, error) {
@@ -368,5 +366,64 @@ func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
 	}
 	if mailer.sent {
 		t.Error("a verification email was sent for an address that cannot be registered")
+	}
+}
+
+// A deleted account still owns its address, so a signup for it is stopped
+// too.
+//
+// This was the case the first version of the check missed: it asked the login
+// lookup, which hides deleted rows, while the unique constraint covers every
+// row. So the signup was accepted, the email went out, and the link failed at
+// the end with "invalid or already used token" — the exact dead end the check
+// was added to prevent, still there for the exact person it was added for.
+func TestRegister_ADeletedAccountStillOwnsItsAddress(t *testing.T) {
+	mailer := &fakeMailer{}
+	svc := NewService(
+		&fakeStore{},
+		&fakeUsers{existing: map[string]bool{"gone@any.com": true}},
+		mailer, "http://localhost")
+
+	err := svc.Register(context.Background(), "gone@any.com", "A", "a-passphrase", nil, true)
+	if !errors.Is(err, ErrAlreadyRegistered) {
+		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
+	}
+	if mailer.sent {
+		t.Error("a verification email was sent for an address that cannot be registered")
+	}
+}
+
+// Both paths pay for the password hash, so the answer does not give the
+// address away by how long it takes.
+//
+// The endpoint answers the same 202 either way, which is what stops signing
+// up being a way to find out who has an account here. The first version
+// returned before the hash: measured against a real server, a taken address
+// answered in 3 ms and a fresh one in 70 ms, with no overlap across a dozen
+// samples. An identical body that takes a twentieth of the time is not
+// identical.
+func TestRegister_TheTwoAnswersCostTheSame(t *testing.T) {
+	const samples = 3
+	taken := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
+
+	var takenTotal, freshTotal time.Duration
+	for range samples {
+		start := time.Now()
+		_ = NewService(&fakeStore{}, taken, &fakeMailer{}, "http://localhost").
+			Register(context.Background(), "taken@any.com", "A", "a-passphrase", nil, true)
+		takenTotal += time.Since(start)
+
+		start = time.Now()
+		_ = NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost").
+			Register(context.Background(), "fresh@any.com", "A", "a-passphrase", nil, true)
+		freshTotal += time.Since(start)
+	}
+
+	// bcrypt dominates both, so they land within a small factor of each
+	// other. The defect this catches was a factor of twenty.
+	ratio := float64(freshTotal) / float64(takenTotal)
+	if ratio > 4 || ratio < 0.25 {
+		t.Errorf("a fresh address took %v and a taken one %v (%.1fx) — the timing gives the answer away",
+			freshTotal/samples, takenTotal/samples, ratio)
 	}
 }

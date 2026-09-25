@@ -106,6 +106,34 @@ ORDER BY
   created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: UserExists :one
+-- Whether a live account holds this id. Used for a supplied reporter, which
+-- unlike an assignee may be any role — a ticket is filed on behalf of whoever
+-- it is about.
+SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL);
+
+-- name: IsAssignableUser :one
+-- Whether a user can be given a ticket: the account exists, is not deleted,
+-- is not disabled, and is staff. A reporting user is not a queue.
+--
+-- Asked inside the assignment transaction rather than by the caller, because
+-- the caller is not the only caller. The REST handler checked this and MCP
+-- did not, so `assign_ticket` happily put tickets on deleted accounts and on
+-- reporting users — and a check the caller makes is a check every future
+-- caller has to remember to make. This one is where the write is.
+SELECT EXISTS (
+    SELECT 1 FROM users
+    WHERE id = $1
+      AND deleted_at IS NULL
+      AND disabled = FALSE
+      AND role IN ('staff', 'admin')
+);
+
+-- name: IsAssignableGroup :one
+-- Whether a group can be given a ticket. An unknown id used to reach the
+-- foreign key and answer 500 for what is a caller's typo.
+SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1);
+
 -- name: UnassignTicketsForUser :many
 -- Takes a departing user off every ticket still assigned to them, and says
 -- which ones.
