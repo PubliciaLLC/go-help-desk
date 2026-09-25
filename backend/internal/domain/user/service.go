@@ -162,6 +162,42 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	return nil
 }
 
+// ErrLastAdmin is the refusal to remove the only administrator.
+//
+// Disabling, demoting or deleting a sole admin account all answered success,
+// and the next request answered 401. Setup does not reopen — that is
+// deliberate, and it is what makes this unrecoverable: the instance is left
+// with no way in short of editing the database by hand.
+var ErrLastAdmin = fmt.Errorf("%w: this is the only administrator, so it cannot be disabled, demoted or deleted", ErrValidation)
+
+// CanStopBeingAdmin reports whether this account can be removed from the
+// administrators without leaving the instance with none.
+func (s *Service) CanStopBeingAdmin(ctx context.Context, id uuid.UUID) error {
+	n, err := s.store.CountOtherActiveAdmins(ctx, id)
+	if err != nil {
+		return fmt.Errorf("counting administrators: %w", err)
+	}
+	if n == 0 {
+		return ErrLastAdmin
+	}
+	return nil
+}
+
+// GetByEmail returns the account holding an address.
+//
+// Exported for the signup flow, which needs to know whether an address is
+// already taken BEFORE it sends a verification email — otherwise the person
+// follows a link that cannot work and is told their token is invalid. The
+// answer is never shown to whoever is signing up; see
+// registration.ErrAlreadyRegistered.
+func (s *Service) GetByEmail(ctx context.Context, email string) (User, error) {
+	addr, err := ValidateEmail(email)
+	if err != nil {
+		return User{}, err
+	}
+	return s.store.GetByEmail(ctx, addr)
+}
+
 // VerifyPassword looks up a user by email and checks the plain-text password.
 func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User, error) {
 	u, err := s.store.GetByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
@@ -433,6 +469,13 @@ func (s *Service) UpsertOIDCUser(
 		}
 		u.UpdatedAt = time.Now()
 		if err := s.store.Update(ctx, u); err != nil {
+			// The address the identity provider now sends belongs to another
+			// account here. Without this the person got "an internal error
+			// occurred" on every sign-in attempt and nothing told the
+			// administrator which two accounts collide.
+			if isUniqueViolation(err) {
+				return User{}, ErrEmailTaken
+			}
 			return User{}, fmt.Errorf("updating OIDC user: %w", err)
 		}
 		return u, nil
@@ -525,6 +568,13 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 		}
 		u.UpdatedAt = time.Now()
 		if err := s.store.Update(ctx, u); err != nil {
+			// The address the identity provider now sends belongs to another
+			// account here. Without this the person got "an internal error
+			// occurred" on every sign-in attempt and nothing told the
+			// administrator which two accounts collide.
+			if isUniqueViolation(err) {
+				return User{}, ErrEmailTaken
+			}
 			return User{}, fmt.Errorf("updating SAML user: %w", err)
 		}
 		return u, nil
@@ -588,7 +638,17 @@ func (s *Service) Update(ctx context.Context, u User) error {
 		return err
 	}
 	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	if err := s.store.Update(ctx, u); err != nil {
+		// The admin edit is the route this actually happens on — somebody
+		// correcting an address and typing one another account already has.
+		// It answered 500 "an internal error occurred", which is the wrong
+		// thing to tell somebody about their own typo.
+		if isUniqueViolation(err) {
+			return ErrEmailTaken
+		}
+		return err
+	}
+	return nil
 }
 
 // GetByIDAdmin returns the user with the given ID, including disabled users.
@@ -758,7 +818,7 @@ func (s *Service) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
 // It covers a deleted account too, because the unique constraint does: the
 // row stays and keeps its address. That is worth knowing when re-hiring
 // somebody, and it is why the message says so.
-var ErrEmailTaken = fmt.Errorf("%w: that email address is already in use, possibly by a deleted account", ErrValidation)
+var ErrEmailTaken = errors.New("that email address is already in use, possibly by a deleted account")
 
 // isUniqueViolation reports whether a store error is Postgres refusing a
 // duplicate row. Matched on the SQLSTATE rather than the message, which is

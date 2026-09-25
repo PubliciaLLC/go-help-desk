@@ -100,6 +100,13 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
             <span className="h-2 w-2 rounded-full bg-blue-400" />
             {currentGroup.name}
           </span>
+        ) : assigneeUserId ? (
+          // Assigned to somebody who is no longer in the user list — a
+          // deleted account. Saying "Unassigned" here was a lie the page told
+          // about its own history: a resolved ticket keeps its assignee
+          // deliberately, so that the record shows who handled it, and the
+          // page was erasing exactly that.
+          <span className="text-gray-500 italic">Former staff member</span>
         ) : (
           <span className="text-gray-400">Unassigned</span>
         )}

@@ -58,6 +58,14 @@ type Querier interface {
 	// count of live accounts cannot express "permanently"; a count of rows can,
 	// because nothing in this system hard-deletes a user.
 	CountAllUsers(ctx context.Context) (int64, error)
+	// How many administrators this instance would still have if $1 stopped being
+	// one.
+	//
+	// Nothing stopped an administrator disabling, demoting or deleting their own
+	// sole admin account: all three answered 200 or 204, the next request was 401,
+	// and setup does not reopen (HasUsers counts every row, deliberately). The
+	// instance was then left with no way in at all short of editing the database.
+	CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error)
 	// Rows in ticket_status_history that reference a status, in either direction.
 	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
 	// so a status with zero CURRENT tickets can still be undeletable because a past

@@ -544,6 +544,22 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+		// Checked before the write, because the column's foreign key is the
+		// only thing that was checking it — and a foreign key can only
+		// answer 500.
+		//
+		// Four things got through: an unknown id (a typo, answered with "an
+		// internal error occurred"), a deleted account (which puts the ticket
+		// straight back into the limbo that deleting a user was just fixed to
+		// avoid — it shows as unassigned and is missing from the unassigned
+		// queue), a disabled account, and a reporting user, who is not
+		// somebody work can be assigned to.
+		if body.AssigneeUserID != nil {
+			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
+				Error(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+		}
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
 			handleError(w, err)
 			return
@@ -971,4 +987,26 @@ func (s *Server) requireUserIdentity(w http.ResponseWriter, r *http.Request) boo
 		return false
 	}
 	return true
+}
+
+// assignableUser reports why a user cannot be given a ticket, or nil.
+//
+// Work goes to somebody who can do it: an account that exists, is not
+// deleted, is not disabled, and belongs to staff. A reporting user is not a
+// queue.
+func (s *Server) assignableUser(ctx context.Context, id uuid.UUID) error {
+	u, err := s.users.GetByID(ctx, id)
+	if err != nil {
+		return errors.New("assignee_user_id is not a user on this help desk")
+	}
+	if u.DeletedAt != nil {
+		return errors.New("that account has been deleted")
+	}
+	if u.Disabled {
+		return errors.New("that account is disabled")
+	}
+	if u.Role == user.RoleUser {
+		return errors.New("tickets are assigned to staff, and that account is a reporting user")
+	}
+	return nil
 }

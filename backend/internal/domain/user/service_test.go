@@ -205,6 +205,19 @@ func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
 }
 
+// CountOtherActiveAdmins counts the administrators left if this one stopped
+// being one.
+func (f *fakeUserStore) CountOtherActiveAdmins(_ context.Context, excluding uuid.UUID) (int64, error) {
+	var n int64
+	for id, u := range f.byID {
+		if id == excluding || u.Role != user.RoleAdmin || u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 // CountAll counts every row. This fake never removes one, so it is the same
 // number — which is the point: the real store's two counts differ, and that
 // difference is what reopened the setup route.

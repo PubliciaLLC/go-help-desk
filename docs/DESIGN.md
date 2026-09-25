@@ -106,7 +106,7 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 - **Closed**: no further user updates. Staff/admin can still reopen manually. **The automatic transition is not implemented** — `ListResolvedBefore` exists for a scheduler that was never written, and nothing calls it, so a resolved ticket stays Resolved until somebody closes it. Tracked as an issue.
 - Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
 - Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
-- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
+- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (a user's display name, or "System" for a change nobody made — which today means the automatic reopen on a reply, since auto-close is not implemented), and the timestamp. The initial status assignment at ticket creation is also recorded.
 
 ### Tags
 
@@ -1291,7 +1291,9 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 
 ## SLA Tracking (v1)
 
-SLA tracking attaches a policy to a ticket when it is created, and records the resulting deadlines. **Read this section as a specification of the intended feature, not a description of what runs**: what is implemented is the policy attachment at creation time, and `SLA_ENABLED=true` is what switches it on. The **Admin → Settings** toggle has no effect — `admin.Service.SLAEnabled` has no callers — and there is no scheduler, no breach detection and no notification. Each gap is marked below and tracked as an issue.
+**Read this section as a specification of the intended feature, not a description of what runs.** What is implemented, with `SLA_ENABLED=true` in the environment: a policy is attached to a ticket when it is created, its deadlines are recorded, and the two timestamps needed to judge them — first response and resolution — are stamped as they happen. `EvaluateBreaches` and `IsResponseBreached` exist and have no callers, so nothing ever reads any of it.
+
+The **Admin → Settings** toggle shows the SLA policy editor and does nothing else: it is how an operator reaches the editor, and it does not switch the feature on. `SLA_ENABLED` in the environment is what does that. Nothing else below is implemented — no scheduler, no breach detection, no notification, no indicator, no pause. Each gap is marked, and they are tracked as issues.
 
 ### SLA Policies
 

@@ -1098,7 +1098,7 @@ function FeaturesPanel({
         <div>
           <SettingRow
             label="SLA tracking"
-            description="Enable SLA response and resolution time targets configurable per priority and category. When enabled, tickets approaching or breaching their SLA target are highlighted."
+            description="Show the SLA policy editor below, where response and resolution targets are set per priority and category. Tickets are not yet highlighted when a target is approaching or missed, and the targets are applied to new tickets only when SLA_ENABLED is set in the environment."
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
           </SettingRow>

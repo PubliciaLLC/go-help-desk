@@ -28,6 +28,9 @@ type Store interface {
 	// accounts. Count, which excludes them, is the wrong question for
 	// "has this instance ever been set up".
 	CountAll(ctx context.Context) (int64, error)
+	// CountOtherActiveAdmins counts the administrators left if this one
+	// stopped being one, so the last of them cannot be removed.
+	CountOtherActiveAdmins(ctx context.Context, excluding uuid.UUID) (int64, error)
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)

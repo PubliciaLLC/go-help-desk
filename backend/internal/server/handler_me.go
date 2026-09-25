@@ -8,6 +8,7 @@ import (
 
 	qrcode "github.com/skip2/go-qrcode"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -16,6 +17,24 @@ import (
 // GET /api/v1/me
 func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
+
+	// An OAuth client is not a person, and this route is deliberately open to
+	// machine credentials because an integration legitimately needs to know
+	// what it is acting as. It used to look up the nil user id and answer
+	// 404 "user 00000000-0000-0000-0000-000000000000", which is nonsense
+	// dressed as an error.
+	//
+	// What it can honestly say is what the credential is: its role and the
+	// scopes it holds, which is the part an integration checks.
+	if a.UserID == uuid.Nil {
+		JSON(w, http.StatusOK, map[string]any{
+			"machine": true,
+			"role":    a.Role,
+			"scopes":  a.Scopes,
+		})
+		return
+	}
+
 	u, err := s.users.GetByID(r.Context(), a.UserID)
 	if err != nil {
 		handleError(w, err)

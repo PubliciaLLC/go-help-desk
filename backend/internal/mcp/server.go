@@ -102,6 +102,27 @@ func requireStaff(a *authmw.Actor) bool {
 	return a != nil && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 }
 
+// hasUserIdentity reports whether this caller is somebody, rather than merely
+// something.
+//
+// An OAuth client actor carries no user id. Every write tool records who
+// acted — a ticket's reporter, a reply's author, an audit entry, a
+// status-history row — and all of those are foreign keys to users, so a nil
+// id reached the insert and came back as a constraint violation: the caller
+// was told "create ticket failed" and the operator's log filled with table
+// and column names. create_ticket also took a tracking number from the
+// sequence first, so every attempt left a hole in the numbering.
+//
+// The REST API refuses the same thing plainly. This is that rule on the other
+// surface, which is the point of there being one rule — the transport does not
+// decide what a caller may do.
+func hasUserIdentity(a *authmw.Actor) bool {
+	return a != nil && a.UserID != uuid.Nil
+}
+
+// noUserIdentityMessage is what a machine credential is told instead.
+const noUserIdentityMessage = "this credential has no user identity, so it cannot be recorded as having acted on a ticket"
+
 // visible reports whether the caller may see this ticket, and is the check
 // every read path funnels through.
 func (s *Server) visible(ctx context.Context, t ticket.Ticket) bool {
@@ -363,6 +384,9 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	if !requireStaff(actor) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(actor) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
 	subject, _ := args["subject"].(string)
 	catIDStr, _ := args["category_id"].(string)
@@ -434,6 +458,9 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	}
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
 	tidStr, _ := args["ticket_id"].(string)
@@ -566,6 +593,9 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
 	tidStr, _ := args["ticket_id"].(string)
 	tid, err := uuid.Parse(tidStr)
@@ -609,6 +639,9 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	}
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
 	tid, err := uuid.Parse(str(args, "ticket_id"))

@@ -52,6 +52,20 @@ SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY creat
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 
+-- name: CountOtherActiveAdmins :one
+-- How many administrators this instance would still have if $1 stopped being
+-- one.
+--
+-- Nothing stopped an administrator disabling, demoting or deleting their own
+-- sole admin account: all three answered 200 or 204, the next request was 401,
+-- and setup does not reopen (HasUsers counts every row, deliberately). The
+-- instance was then left with no way in at all short of editing the database.
+SELECT COUNT(*) FROM users
+WHERE role = 'admin'
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND id <> $1;
+
 -- name: CountAllUsers :one
 -- Every row, including disabled and soft-deleted accounts.
 --

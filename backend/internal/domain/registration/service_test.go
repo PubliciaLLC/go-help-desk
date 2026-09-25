@@ -51,6 +51,18 @@ func (f *fakeStore) Delete(_ context.Context, _ uuid.UUID) error {
 type fakeUsers struct {
 	created user.User
 	err     error
+	// existing is the set of addresses that already have an account, so the
+	// pre-check can be exercised.
+	existing map[string]bool
+}
+
+// GetByEmail reports an existing account, which stops a signup before the
+// verification email goes out.
+func (f *fakeUsers) GetByEmail(_ context.Context, email string) (user.User, error) {
+	if f.existing[email] {
+		return user.User{Email: email}, nil
+	}
+	return user.User{}, user.ErrNotFound
 }
 
 func (f *fakeUsers) Create(_ context.Context, in user.CreateUserInput) (user.User, error) {
@@ -328,5 +340,33 @@ func TestRegister_HoldsThePasswordMinimum(t *testing.T) {
 
 	if user.MinPasswordLength != 8 {
 		t.Fatalf("the cases above are written against a minimum of 8, not %d", user.MinPasswordLength)
+	}
+}
+
+// A signup for an address that already has an account stops here, and says
+// nothing about it to the person signing up.
+//
+// It used to go all the way through: the row was written, the email was sent,
+// and the person clicked the link to be told their token was invalid or
+// already used — which it was not. Somebody whose old account was deleted
+// could never register again and was told every time that their link was
+// broken.
+//
+// The endpoint's answer is unchanged, deliberately. A 202 either way is what
+// stops signup being a way to find out who has an account here; what changes
+// is that a link which cannot work is never sent.
+func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
+	mailer := &fakeMailer{}
+	svc := NewService(
+		&fakeStore{},
+		&fakeUsers{existing: map[string]bool{"taken@any.com": true}},
+		mailer, "http://localhost")
+
+	err := svc.Register(context.Background(), "taken@any.com", "A", "a-passphrase", nil, true)
+	if !errors.Is(err, ErrAlreadyRegistered) {
+		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
+	}
+	if mailer.sent {
+		t.Error("a verification email was sent for an address that cannot be registered")
 	}
 }

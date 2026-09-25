@@ -1178,8 +1178,31 @@ func ticketMap(t Ticket) map[string]any {
 //
 // Open tickets only. A resolved or closed one assigned to somebody who has
 // left is history, and history should record who actually handled it.
-func (s *Service) UnassignForUser(ctx context.Context, userID uuid.UUID) (int, error) {
-	return s.store.UnassignForUser(ctx, userID)
+func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID) (int, error) {
+	var moved int
+	// In one transaction with the audit entries, like every other assignment
+	// change. Assign records who moved a ticket and what it looked like
+	// before; this moved N tickets and recorded nothing, so the trail for a
+	// ticket read "created, assigned to Ann" and then showed no assignee with
+	// no row explaining it. An audit entry written apart from the change it
+	// describes is not an audit trail, and one that is missing entirely is
+	// worse.
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		ids, err := st.UnassignForUser(ctx, userID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			before := map[string]any{"assignee_user_id": userID.String()}
+			after := map[string]any{"assignee_user_id": nil}
+			if err := au.Create(ctx, auditEntry(&actorID, "ticket", id, "unassigned", before, after)); err != nil {
+				return fmt.Errorf("auditing unassignment: %w", err)
+			}
+		}
+		moved = len(ids)
+		return nil
+	})
+	return moved, err
 }
 
 // ErrNotReopenable is a ticket that is not closed, so there is nothing to

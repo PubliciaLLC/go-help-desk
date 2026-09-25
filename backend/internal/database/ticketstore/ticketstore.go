@@ -430,12 +430,12 @@ func (s *Store) CreateReply(ctx context.Context, r ticket.Reply) error {
 
 // UnassignForUser clears the assignee on every open ticket held by a user,
 // and returns how many moved.
-func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) (int, error) {
+func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	ids, err := s.q.UnassignTicketsForUser(ctx, database.NullUUID(&userID))
 	if err != nil {
-		return 0, fmt.Errorf("unassigning tickets: %w", err)
+		return nil, fmt.Errorf("unassigning tickets: %w", err)
 	}
-	return len(ids), nil
+	return ids, nil
 }
 
 func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.Reply, error) {

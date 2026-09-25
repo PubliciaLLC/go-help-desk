@@ -20,6 +20,16 @@ var ErrTokenExpired = fmt.Errorf("verification token has expired")
 // two it was.
 var ErrInvalidEmail = fmt.Errorf("invalid email address")
 
+// ErrAlreadyRegistered is a signup for an address that already has an
+// account.
+//
+// Never shown to the person signing up: the endpoint answers the same 202
+// either way, so this cannot be used to find out who has an account here. It
+// stops the verification email, which is what turned this into a dead end —
+// the link arrived, the account could not be created, and the verify page
+// said the token was invalid or already used.
+var ErrAlreadyRegistered = fmt.Errorf("an account already exists for that address")
+
 // ErrDisplayNameRequired is a signup with no name on it.
 //
 // Refused at registration rather than at verification, where the same rule
@@ -41,6 +51,10 @@ var ErrOpenRegistrationRequired = fmt.Errorf("open registration must be enabled 
 // userCreator is the subset of user.Service needed by the registration service.
 type userCreator interface {
 	Create(ctx context.Context, in user.CreateUserInput) (user.User, error)
+	// GetByEmail so a signup for an address that already has an account can
+	// be stopped before the verification email goes out, rather than failing
+	// at the end of the flow with a message about the token.
+	GetByEmail(ctx context.Context, email string) (user.User, error)
 }
 
 // Service handles the sign-up and email-verification workflow.
@@ -93,6 +107,16 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 	// where they can still fix it.
 	if displayName == "" {
 		return ErrDisplayNameRequired
+	}
+	// An address that already has an account is refused HERE and not
+	// disclosed to the requester — the 202 is deliberately the same either
+	// way, so signing up is not a way to find out who has an account. What
+	// changes is that the verification email is not sent, so nobody follows a
+	// link and is told their token is invalid or already used, which it is
+	// not. Same shape as the display-name case above: fail where the failure
+	// is true rather than where it is confusing.
+	if _, err := s.users.GetByEmail(ctx, email); err == nil {
+		return ErrAlreadyRegistered
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

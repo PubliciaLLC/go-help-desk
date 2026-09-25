@@ -132,6 +132,28 @@ func (q *Queries) CountAllUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countOtherActiveAdmins = `-- name: CountOtherActiveAdmins :one
+SELECT COUNT(*) FROM users
+WHERE role = 'admin'
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND id <> $1
+`
+
+// How many administrators this instance would still have if $1 stopped being
+// one.
+//
+// Nothing stopped an administrator disabling, demoting or deleting their own
+// sole admin account: all three answered 200 or 204, the next request was 401,
+// and setup does not reopen (HasUsers counts every row, deliberately). The
+// instance was then left with no way in at all short of editing the database.
+func (q *Queries) CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countOtherActiveAdmins, id)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE
 `

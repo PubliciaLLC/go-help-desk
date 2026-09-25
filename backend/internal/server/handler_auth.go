@@ -326,6 +326,8 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/login?error=account_disabled", http.StatusSeeOther)
 		case errors.Is(err, user.ErrAccountLinkRefused):
 			http.Redirect(w, r, "/login?error=account_link_refused", http.StatusSeeOther)
+		case errors.Is(err, user.ErrEmailTaken):
+			http.Redirect(w, r, "/login?error=email_taken", http.StatusSeeOther)
 		case errors.Is(err, user.ErrSubjectRequired):
 			http.Redirect(w, r, "/login?error=invalid_assertion", http.StatusSeeOther)
 		case errors.Is(err, user.ErrEmailRequired):

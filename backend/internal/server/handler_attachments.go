@@ -222,19 +222,53 @@ func jpegDecodeBytes(data []byte) (int64, bool) {
 		}
 		marker := data[i+1]
 		// Markers that carry no length: padding, and the standalone ones.
-		if marker == 0xFF || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
+		if marker == 0xFF || marker == 0x01 || marker == 0xD8 || (marker >= 0xD0 && marker <= 0xD7) {
 			i += 2
 			continue
 		}
-		// Start of scan, or end of image: everything that decides the
-		// allocation has been seen by now, because the decoder has seen it too.
-		if marker == 0xDA || marker == 0xD9 {
+		// End of image. The decoder stops here and so does this.
+		if marker == 0xD9 {
 			break
 		}
 		segLen := int(data[i+2])<<8 | int(data[i+3])
 		if segLen < 2 || i+2+segLen > len(data) {
 			return 0, false
 		}
+
+		// Start of scan. Skip its header and then the compressed data after
+		// it, and keep going — do NOT stop here.
+		//
+		// Stopping at the scan was the obvious reading and it was wrong. Go's
+		// decoder keeps reading markers until end-of-image and decides
+		// whether the file is RGB at the very end, so an Adobe marker placed
+		// AFTER the scan data still flips it — and a parser that stopped at
+		// the scan never saw it. Measured: the same 5120x5120 image with its
+		// Adobe marker moved to just before end-of-image was estimated at
+		// 37 MB, sailed through the budget, and decoded to 137 MB. The whole
+		// value of this estimate is that the number means something.
+		//
+		// DecodeConfig stops at the scan too, so the colour-model fallback
+		// would not have caught it either.
+		if marker == 0xDA {
+			i += 2 + segLen
+			for i+1 < len(data) {
+				if data[i] != 0xFF {
+					i++
+					continue
+				}
+				// Inside compressed data a 0xFF is either stuffed with a
+				// following zero, a fill byte, or a restart marker. None of
+				// those ends the scan.
+				next := data[i+1]
+				if next == 0x00 || next == 0xFF || (next >= 0xD0 && next <= 0xD7) {
+					i += 2
+					continue
+				}
+				break
+			}
+			continue
+		}
+
 		payload := data[i+4 : i+2+segLen]
 
 		switch {

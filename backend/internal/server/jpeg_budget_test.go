@@ -125,6 +125,21 @@ func TestJPEGDecodeBytes_CountsWhatTheDecoderActuallyNeeds(t *testing.T) {
 			wantRefused: false,
 		},
 		{
+			// The marker moved to AFTER the scan data. Go's decoder keeps
+			// reading markers until end-of-image and decides whether to
+			// convert at the very end, so this still makes it an RGB file —
+			// and a parser that stopped at the scan never saw it. Measured:
+			// estimated 37 MB, decoded to 137 MB.
+			name: "RGB declared by an Adobe marker placed after the scan",
+			w:    5120, h: 5120,
+			comps: []sampling{{2, 2}, {1, 1}, {1, 1}},
+			opt: fixtureOpts{
+				adobe: true, adobeTransform: 0, adobeAfterScan: true,
+			},
+			wantMB:      137,
+			wantRefused: true,
+		},
+		{
 			name: "a 5K screenshot, baseline 4:4:4",
 			w:    5120, h: 2880,
 			comps:       []sampling{{1, 1}, {1, 1}, {1, 1}},
@@ -223,7 +238,7 @@ func jpegHeaderOnly(w, h int, progressive bool, comps []sampling, opt fixtureOpt
 		_ = binary.Write(&out, binary.BigEndian, uint16(len(payload)+2))
 		out.Write(payload)
 	}
-	if opt.adobe {
+	adobe := func() {
 		payload := make([]byte, 12)
 		copy(payload, "Adobe")
 		payload[11] = opt.adobeTransform
@@ -231,10 +246,28 @@ func jpegHeaderOnly(w, h int, progressive bool, comps []sampling, opt fixtureOpt
 		_ = binary.Write(&out, binary.BigEndian, uint16(len(payload)+2))
 		out.Write(payload)
 	}
+	if opt.adobe && !opt.adobeAfterScan {
+		adobe()
+	}
 
 	out.Write([]byte{0xFF, marker})
 	_ = binary.Write(&out, binary.BigEndian, uint16(seg.Len()+2))
 	out.Write(seg.Bytes())
+
+	if opt.adobeAfterScan {
+		// A scan header, a little compressed data with a stuffed 0xFF and a
+		// restart marker in it, then the Adobe marker and end-of-image. The
+		// entropy bytes are there so the skip has something to skip.
+		sos := []byte{0x01, 0x01, 0x00, 0x00, 0x3F, 0x00}
+		out.Write([]byte{0xFF, 0xDA})
+		_ = binary.Write(&out, binary.BigEndian, uint16(len(sos)+2))
+		out.Write(sos)
+		out.Write([]byte{0x12, 0xFF, 0x00, 0x34, 0xFF, 0xD0, 0x56})
+		if opt.adobe {
+			adobe()
+		}
+		out.Write([]byte{0xFF, 0xD9})
+	}
 	return out.Bytes()
 }
 
@@ -245,4 +278,7 @@ type fixtureOpts struct {
 	jfif           bool
 	adobe          bool
 	adobeTransform byte
+	// adobeAfterScan puts the Adobe marker past the compressed data instead
+	// of before the frame header, which is where it has to be caught.
+	adobeAfterScan bool
 }

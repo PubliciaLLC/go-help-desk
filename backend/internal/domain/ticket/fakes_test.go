@@ -205,8 +205,8 @@ func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, 
 }
 
 // UnassignForUser clears the assignee on every open ticket held by a user.
-func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) (int, error) {
-	moved := 0
+func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
 	for id, t := range f.tickets {
 		if t.AssigneeUserID == nil || *t.AssigneeUserID != userID {
 			continue
@@ -216,7 +216,7 @@ func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) (int, e
 		}
 		t.AssigneeUserID = nil
 		f.tickets[id] = t
-		moved++
+		moved = append(moved, id)
 	}
 	return moved, nil
 }

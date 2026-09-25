@@ -175,6 +175,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
+			// Same guard as demotion and deletion: a disabled administrator
+			// cannot log in, so disabling the last one locks the instance out
+			// of its own administration.
+			if err := s.users.CanStopBeingAdmin(r.Context(), id); err != nil {
+				handleError(w, err)
+				return
+			}
 			if err := s.users.Disable(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
@@ -239,6 +246,15 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			u.Email = strings.ToLower(strings.TrimSpace(*body.Email))
 		}
 		if body.Role != nil {
+			// Demoting the only administrator leaves nobody who can
+			// administer this instance, and setup does not reopen — so it is
+			// unrecoverable short of editing the database.
+			if originalRole == user.RoleAdmin && user.Role(*body.Role) != user.RoleAdmin {
+				if err := s.users.CanStopBeingAdmin(r.Context(), id); err != nil {
+					handleError(w, err)
+					return
+				}
+			}
 			u.Role = user.Role(*body.Role)
 		}
 		// A role change must not leave the old role live in an existing
@@ -365,6 +381,13 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
+	// The last administrator cannot be deleted, for the same reason they
+	// cannot be disabled or demoted: setup does not reopen, so the instance
+	// would be left with no way in at all.
+	if err := s.users.CanStopBeingAdmin(r.Context(), id); err != nil {
+		handleError(w, err)
+		return
+	}
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
@@ -389,7 +412,12 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// request now would leave the caller unsure whether it worked. Logged
 	// instead, with the count, because an administrator watching a departure
 	// wants to know how many tickets just landed back in the queue.
-	moved, err := s.tickets.UnassignForUser(r.Context(), id)
+	actor := authmw.GetActor(r)
+	var actorID uuid.UUID
+	if actor != nil {
+		actorID = actor.UserID
+	}
+	moved, err := s.tickets.UnassignForUser(r.Context(), actorID, id)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "could not unassign the deleted user's tickets",
 			"user_id", id, "error", err)

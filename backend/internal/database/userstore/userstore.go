@@ -193,6 +193,12 @@ func (s *Store) Count(ctx context.Context) (int64, error) {
 	return s.q.CountUsers(ctx)
 }
 
+// CountOtherActiveAdmins counts the administrators this instance would still
+// have if the given user stopped being one.
+func (s *Store) CountOtherActiveAdmins(ctx context.Context, excluding uuid.UUID) (int64, error) {
+	return s.q.CountOtherActiveAdmins(ctx, excluding)
+}
+
 // CountAll counts every user row, disabled and soft-deleted included.
 func (s *Store) CountAll(ctx context.Context) (int64, error) {
 	return s.q.CountAllUsers(ctx)
