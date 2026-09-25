@@ -738,3 +738,32 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 	)
 	return err
 }
+
+const updateUserProfile = `-- name: UpdateUserProfile :exec
+UPDATE users
+SET email = $2, display_name = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type UpdateUserProfileParams struct {
+	ID          uuid.UUID `json:"id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+}
+
+// The parts of a user an administrator edits: the address and the name.
+//
+// Its own statement because UpdateUser writes the WHOLE row from a struct
+// read earlier in the request — role, password hash, MFA secret, federated
+// subjects — so anything that changed in between was silently written back.
+// Measured: read a user for a rename, have them change their password, let
+// the rename land, and the new password is refused while the old one works
+// again. The same shape undoes an MFA enrolment and another administrator's
+// role change.
+//
+// A rename should rename. Everything else has its own path, and the role has
+// a guarded one.
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
+	_, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
+	return err
+}

@@ -211,6 +211,22 @@ func (f *fakeUserStore) EmailIsTaken(_ context.Context, email string) (bool, err
 	return ok, nil
 }
 
+// UpdateProfile writes only the address and the name, leaving everything else
+// on the row alone — which is the whole point of it existing.
+func (f *fakeUserStore) UpdateProfile(_ context.Context, id uuid.UUID, email, displayName string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	delete(f.byEmail, u.Email)
+	u.Email = email
+	u.DisplayName = displayName
+	u.UpdatedAt = time.Now()
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
 // The three guarded writes. This fake applies the same rule the SQL does:
 // refuse when the change would leave no active administrator.
 func (f *fakeUserStore) lastActiveAdmin(id uuid.UUID) bool {

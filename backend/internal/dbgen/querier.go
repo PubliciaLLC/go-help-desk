@@ -16,6 +16,13 @@ type Querier interface {
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
+	// Whether a category id is real. Checked before a tracking number is taken,
+	// because the foreign key only speaks at the INSERT — by which point the
+	// number is gone and the sequence has a permanent gap. Staff and MCP were
+	// never validated here; only a reporting user's category was checked, and
+	// that check is about whether the category is OPEN to them, not whether it
+	// exists.
+	CategoryExists(ctx context.Context, id uuid.UUID) (bool, error)
 	// Takes one attempt off the account's TOTP budget, and reports what is left.
 	//
 	// Called BEFORE the code is checked, which is the whole point. The previous
@@ -264,7 +271,15 @@ type Querier interface {
 	// did not, so `assign_ticket` happily put tickets on deleted accounts and on
 	// reporting users — and a check the caller makes is a check every future
 	// caller has to remember to make. This one is where the write is.
-	IsAssignableUser(ctx context.Context, id uuid.UUID) (bool, error)
+	// FOR SHARE, so a delete cannot land between this check and the write.
+	//
+	// A plain read let them interleave: the check passed, a concurrent request
+	// soft-deleted the account and unassigned its tickets (finding none, because
+	// this one was not written yet), and then this transaction committed the
+	// assignment — leaving the ticket on a deleted account, which is the limbo
+	// the unassign-on-delete work exists to prevent. The share lock makes the
+	// delete wait for this transaction instead.
+	IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)
@@ -420,6 +435,19 @@ type Querier interface {
 	UpdateTicketCTI(ctx context.Context, arg UpdateTicketCTIParams) error
 	UpdateType(ctx context.Context, arg UpdateTypeParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
+	// The parts of a user an administrator edits: the address and the name.
+	//
+	// Its own statement because UpdateUser writes the WHOLE row from a struct
+	// read earlier in the request — role, password hash, MFA secret, federated
+	// subjects — so anything that changed in between was silently written back.
+	// Measured: read a user for a rename, have them change their password, let
+	// the rename land, and the new password is refused while the old one works
+	// again. The same shape undoes an MFA enrolment and another administrator's
+	// role change.
+	//
+	// A rename should rename. Everything else has its own path, and the role has
+	// a guarded one.
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error
 	// Records a completed lookup.
 	//

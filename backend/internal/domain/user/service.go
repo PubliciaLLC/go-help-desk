@@ -213,6 +213,24 @@ func (s *Service) EmailIsTaken(ctx context.Context, email string) (bool, error) 
 	return s.store.EmailIsTaken(ctx, addr)
 }
 
+// UpdateProfile changes an account's address and name, and nothing else.
+//
+// Update writes the whole row from a struct the caller read earlier, so
+// anything that changed in between is written back: a password set moments
+// ago stops working, an MFA enrolment is undone, another administrator's role
+// change is reverted. A rename should rename.
+func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	addr, err := ValidateEmail(email)
+	if err != nil {
+		return err
+	}
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return fmt.Errorf("%w: display name is required", ErrValidation)
+	}
+	return s.store.UpdateProfile(ctx, id, addr, name)
+}
+
 // ListAssignableStaff returns the people work can be given to.
 func (s *Service) ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error) {
 	return s.store.ListAssignableStaff(ctx)

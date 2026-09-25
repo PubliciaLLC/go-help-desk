@@ -13,6 +13,23 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const categoryExists = `-- name: CategoryExists :one
+SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1)
+`
+
+// Whether a category id is real. Checked before a tracking number is taken,
+// because the foreign key only speaks at the INSERT — by which point the
+// number is gone and the sequence has a permanent gap. Staff and MCP were
+// never validated here; only a reporting user's category was checked, and
+// that check is about whether the category is OPEN to them, not whether it
+// exists.
+func (q *Queries) CategoryExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, categoryExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const createAttachment = `-- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
                          detected_mime, sha256, virus_name, content_mismatch)
@@ -389,13 +406,12 @@ func (q *Queries) IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, er
 }
 
 const isAssignableUser = `-- name: IsAssignableUser :one
-SELECT EXISTS (
-    SELECT 1 FROM users
-    WHERE id = $1
-      AND deleted_at IS NULL
-      AND disabled = FALSE
-      AND role IN ('staff', 'admin')
-)
+SELECT id FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role IN ('staff', 'admin')
+FOR SHARE
 `
 
 // Whether a user can be given a ticket: the account exists, is not deleted,
@@ -406,11 +422,19 @@ SELECT EXISTS (
 // did not, so `assign_ticket` happily put tickets on deleted accounts and on
 // reporting users — and a check the caller makes is a check every future
 // caller has to remember to make. This one is where the write is.
-func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (bool, error) {
+// FOR SHARE, so a delete cannot land between this check and the write.
+//
+// A plain read let them interleave: the check passed, a concurrent request
+// soft-deleted the account and unassigned its tickets (finding none, because
+// this one was not written yet), and then this transaction committed the
+// assignment — leaving the ticket on a deleted account, which is the limbo
+// the unassign-on-delete work exists to prevent. The share lock makes the
+// delete wait for this transaction instead.
+func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, isAssignableUser, id)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const listAllTickets = `-- name: ListAllTickets :many

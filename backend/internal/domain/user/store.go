@@ -30,6 +30,10 @@ type Store interface {
 	CountAll(ctx context.Context) (int64, error)
 	// ListAssignableStaff is the id-and-name list staff need to assign work.
 	ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error)
+	// UpdateProfile writes only the address and the name, so an edit cannot
+	// silently revert a role, a password or an MFA enrolment that changed
+	// while the request was in flight.
+	UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error
 	// EmailIsTaken covers deleted rows too, because the unique constraint
 	// does. GetByEmail is the login lookup and hides them.
 	EmailIsTaken(ctx context.Context, email string) (bool, error)

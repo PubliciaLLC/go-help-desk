@@ -12,6 +12,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Store implements user.Store.
@@ -237,6 +239,21 @@ func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {
 		return false, fmt.Errorf("checking address: %w", err)
 	}
 	return taken, nil
+}
+
+// UpdateProfile writes only the address and the name.
+func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
+		ID: id, Email: email, DisplayName: displayName,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return user.ErrEmailTaken
+		}
+		return fmt.Errorf("updating profile: %w", err)
+	}
+	return nil
 }
 
 // ListAssignableStaff returns active staff and administrators, id and name

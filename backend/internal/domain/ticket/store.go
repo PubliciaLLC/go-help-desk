@@ -57,6 +57,9 @@ type Store interface {
 	// UserExists checks a supplied reporter before a tracking number is
 	// taken, so an unknown one cannot leave a hole in the numbering.
 	UserExists(ctx context.Context, userID uuid.UUID) (bool, error)
+	// CategoryExists, for the same reason: the foreign key only speaks at
+	// the INSERT, after the tracking number has been taken.
+	CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error)
 	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 

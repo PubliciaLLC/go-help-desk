@@ -611,16 +611,28 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 		return errResult(notFoundFor(tidStr))
 	}
 
+	// An id that will not parse is refused, not ignored.
+	//
+	// Swallowing the error left the pointer nil, and a nil assignee means
+	// "to nobody" — so a single mistyped character took the ticket off the
+	// person working it and answered success. An agent driving this makes
+	// exactly that kind of typo, and nothing in the reply said anything had
+	// gone wrong. The REST API refuses the same input when it decodes the
+	// body; this is that rule, on the other surface.
 	var assigneeUserID, assigneeGroupID *uuid.UUID
-	if v, ok := args["assignee_user_id"].(string); ok {
-		if id, err := uuid.Parse(v); err == nil {
-			assigneeUserID = &id
+	if v, ok := args["assignee_user_id"].(string); ok && v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return errResult("assignee_user_id is not a valid id")
 		}
+		assigneeUserID = &id
 	}
-	if v, ok := args["assignee_group_id"].(string); ok {
-		if id, err := uuid.Parse(v); err == nil {
-			assigneeGroupID = &id
+	if v, ok := args["assignee_group_id"].(string); ok && v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return errResult("assignee_group_id is not a valid id")
 		}
+		assigneeGroupID = &id
 	}
 
 	actorID := caller.UserID

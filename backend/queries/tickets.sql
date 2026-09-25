@@ -106,6 +106,15 @@ ORDER BY
   created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: CategoryExists :one
+-- Whether a category id is real. Checked before a tracking number is taken,
+-- because the foreign key only speaks at the INSERT — by which point the
+-- number is gone and the sequence has a permanent gap. Staff and MCP were
+-- never validated here; only a reporting user's category was checked, and
+-- that check is about whether the category is OPEN to them, not whether it
+-- exists.
+SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1);
+
 -- name: UserExists :one
 -- Whether a live account holds this id. Used for a supplied reporter, which
 -- unlike an assignee may be any role — a ticket is filed on behalf of whoever
@@ -121,13 +130,20 @@ SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL);
 -- did not, so `assign_ticket` happily put tickets on deleted accounts and on
 -- reporting users — and a check the caller makes is a check every future
 -- caller has to remember to make. This one is where the write is.
-SELECT EXISTS (
-    SELECT 1 FROM users
-    WHERE id = $1
-      AND deleted_at IS NULL
-      AND disabled = FALSE
-      AND role IN ('staff', 'admin')
-);
+-- FOR SHARE, so a delete cannot land between this check and the write.
+--
+-- A plain read let them interleave: the check passed, a concurrent request
+-- soft-deleted the account and unassigned its tickets (finding none, because
+-- this one was not written yet), and then this transaction committed the
+-- assignment — leaving the ticket on a deleted account, which is the limbo
+-- the unassign-on-delete work exists to prevent. The share lock makes the
+-- delete wait for this transaction instead.
+SELECT id FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role IN ('staff', 'admin')
+FOR SHARE;
 
 -- name: IsAssignableGroup :one
 -- Whether a group can be given a ticket. An unknown id used to reach the

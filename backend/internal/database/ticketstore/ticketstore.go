@@ -439,13 +439,27 @@ func (s *Store) UserExists(ctx context.Context, userID uuid.UUID) (bool, error) 
 	return ok, nil
 }
 
-// IsAssignableUser reports whether a user can be given a ticket.
-func (s *Store) IsAssignableUser(ctx context.Context, userID uuid.UUID) (bool, error) {
-	ok, err := s.q.IsAssignableUser(ctx, userID)
+// CategoryExists reports whether a category id is real.
+func (s *Store) CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error) {
+	ok, err := s.q.CategoryExists(ctx, categoryID)
 	if err != nil {
-		return false, fmt.Errorf("checking assignee: %w", err)
+		return false, fmt.Errorf("checking category: %w", err)
 	}
 	return ok, nil
+}
+
+// IsAssignableUser reports whether a user can be given a ticket.
+func (s *Store) IsAssignableUser(ctx context.Context, userID uuid.UUID) (bool, error) {
+	// No row means not assignable. The query takes a share lock on the row it
+	// finds, so a concurrent delete waits for this transaction rather than
+	// slipping in between the check and the write.
+	if _, err := s.q.IsAssignableUser(ctx, userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking assignee: %w", err)
+	}
+	return true, nil
 }
 
 // IsAssignableGroup reports whether a group exists.

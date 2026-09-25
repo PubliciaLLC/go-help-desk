@@ -63,6 +63,23 @@ SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY creat
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 
+-- name: UpdateUserProfile :exec
+-- The parts of a user an administrator edits: the address and the name.
+--
+-- Its own statement because UpdateUser writes the WHOLE row from a struct
+-- read earlier in the request — role, password hash, MFA secret, federated
+-- subjects — so anything that changed in between was silently written back.
+-- Measured: read a user for a rename, have them change their password, let
+-- the rename land, and the new password is refused while the old one works
+-- again. The same shape undoes an MFA enrolment and another administrator's
+-- role change.
+--
+-- A rename should rename. Everything else has its own path, and the role has
+-- a guarded one.
+UPDATE users
+SET email = $2, display_name = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: ListAssignableStaff :many
 -- The people work can be given to: active staff and administrators, name and
 -- id only.

@@ -178,6 +178,18 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		return Ticket{}, fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
 	}
 
+	// The category, checked for the same reason as everything else here:
+	// after this point a tracking number has been taken, and an id the
+	// foreign key refuses costs a 500 and a permanent gap in the sequence.
+	// Only a reporting user's category was checked, and that check asks
+	// whether it is OPEN to them — not whether it exists at all, which is
+	// what staff and MCP needed.
+	if ok, err := s.store.CategoryExists(ctx, in.CategoryID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+	}
+
 	// A supplied reporter, checked for the same reason the priority above is:
 	// everything after this takes a tracking number first, so an id the
 	// foreign key refuses costs a 500 and a permanent gap in the sequence.

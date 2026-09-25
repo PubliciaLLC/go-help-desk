@@ -264,19 +264,35 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			// and the response carried the old role, which is the shape that
 			// gets believed.
 			u.Role = user.Role(*body.Role)
-		}
-		if err := s.users.Update(r.Context(), u); err != nil {
-			handleError(w, err)
-			return
-		}
-		// A role change must not leave the old role live in an existing
-		// session, which carries Role in its payload. Only for a role change:
-		// renaming someone should not sign them out.
-		if roleChanged {
+
+			// Revoked HERE, straight after the role is committed — not after
+			// the profile write below.
+			//
+			// A session carries the role in its payload, so a demoted
+			// administrator with a live cookie is still an administrator
+			// until it is revoked. Doing that after the profile write meant
+			// any failure in between — a blank display name, an email that
+			// belongs to somebody else — left the demotion committed and the
+			// session alive, answering 400. Retrying then saw the role
+			// already changed, so roleChanged was false and it never revoked
+			// at all: a demoted account kept full authority for the life of
+			// the cookie, and could promote itself straight back.
+			//
+			// The order that survives a failure is: change the authority,
+			// then revoke what was granted under the old one, then do the
+			// cosmetic part.
 			if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
 			}
+		}
+		// Only the address and the name. Update writes the whole row from
+		// the copy read at the top of this handler, so a password set, an MFA
+		// enrolment or another administrator's role change that landed in
+		// between would be written back.
+		if err := s.users.UpdateProfile(r.Context(), id, u.Email, u.DisplayName); err != nil {
+			handleError(w, err)
+			return
 		}
 	}
 

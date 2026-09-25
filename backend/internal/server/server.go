@@ -453,6 +453,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		// every assigned ticket showed no name, for administrators as well as
 		// staff, which was worse than the problem it was added to fix.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
