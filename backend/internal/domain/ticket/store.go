@@ -60,6 +60,10 @@ type Store interface {
 	// CategoryExists, for the same reason: the foreign key only speaks at
 	// the INSERT, after the tracking number has been taken.
 	CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error)
+	// CTIIsCoherent checks the type belongs to the category and the item to
+	// the type — the pairings the foreign keys only enforce at the INSERT,
+	// which is after the tracking number has been taken.
+	CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error)
 	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 

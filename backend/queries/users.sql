@@ -63,6 +63,45 @@ SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY creat
 -- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 
+-- name: SetUserPasswordHash :exec
+-- Writes only the password hash.
+--
+-- SetPassword used to read the whole row, spend 45 to 66 milliseconds on
+-- bcrypt, and then write every column back — so anything committed during
+-- that window was undone. The window is controlled by the account holder,
+-- which is what makes it serious: demote a compromised account, and a
+-- password change already in flight writes `admin` back over the demotion.
+-- The attacker then signs in, with their new password, as an administrator.
+-- The same window undoes an administrator's MFA reset and reverts a
+-- corrected email address.
+--
+-- AdminSetPassword has always been a narrow statement. This is the same thing
+-- for the self-service path, which is the one an attacker can drive.
+UPDATE users
+SET password_hash = $2, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: SetUserMFA :exec
+-- Writes only the TOTP secret and whether it is enabled. Same reason: the
+-- enrolment confirmation read the whole row, checked a code, and wrote every
+-- column back over whatever had happened in between.
+UPDATE users
+SET mfa_secret = $2, mfa_enabled = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: SyncFederatedUser :exec
+-- What a federated login is allowed to change about an account it recognises:
+-- the address, the name, and nothing else.
+--
+-- The known-identity paths of the SAML and OIDC upserts wrote the whole row
+-- on every sign-in, carrying role, password hash and MFA state from a read a
+-- few statements earlier. A login is something the account holder triggers at
+-- will, so a demotion or a password reset landing in that window was written
+-- back by the next sign-in.
+UPDATE users
+SET email = $2, display_name = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+
 -- name: UpdateUserProfile :exec
 -- The parts of a user an administrator edits: the address and the name.
 --

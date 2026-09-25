@@ -115,6 +115,29 @@ LIMIT $1 OFFSET $2;
 -- exists.
 SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1);
 
+-- name: CTIIsCoherent :one
+-- Whether a category/type/item triple exists and hangs together: the type
+-- belongs to the category, and the item belongs to the type.
+--
+-- One question rather than three, because the foreign keys are the only thing
+-- that was asking and they speak at the INSERT — after the tracking number
+-- has been taken. Verified: five refused creates advanced the sequence by
+-- five. REST checked that the type belonged to the category; MCP checked
+-- neither; nobody checked the item at all, and there is no composite key for
+-- item-to-type, so a ticket could carry a type and an item that do not go
+-- together and then be routed on that.
+SELECT
+    (sqlc.narg('type_id')::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM types ty
+        WHERE ty.id = sqlc.narg('type_id') AND ty.category_id = sqlc.arg('category_id')))
+    AND
+    (sqlc.narg('item_id')::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM items it
+        JOIN types t2 ON t2.id = it.type_id
+        WHERE it.id = sqlc.narg('item_id')
+          AND it.type_id = sqlc.narg('type_id')
+          AND t2.category_id = sqlc.arg('category_id')));
+
 -- name: UserExists :one
 -- Whether a live account holds this id. Used for a supplied reporter, which
 -- unlike an assignee may be any role — a ticket is filed on behalf of whoever

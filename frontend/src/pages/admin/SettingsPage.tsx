@@ -1350,13 +1350,13 @@ function PolySwarmTerms() {
   return (
     <>
       <p className="font-semibold">
-        ⚠ PolySwarm's free tier is one lookup a minute, and its published terms are from 2018
+        ⚠ PolySwarm's free tier is 60 lookups an hour, and its published terms are from 2018
       </p>
       <p>
-        The free tier allows <strong>60 lookups an hour</strong> — one a minute, with no daily figure
-        published. A ticket carrying ten quarantined attachments spends ten minutes of that allowance in a
-        burst. Go Help Desk asks once for each quarantined attachment, stores the answer and asks again only
-        when the interval below has passed. Lookups beyond the allowance show as <em>not checked</em> —
+        The free tier allows <strong>60 lookups an hour</strong>, with no daily figure published. It is an
+        hourly bucket rather than a pace: a ticket carrying ten quarantined attachments spends ten of the
+        sixty at once, and the hour has to pass before they come back. Go Help Desk asks once for each
+        quarantined attachment, stores the answer and asks again only when the interval below has passed. Lookups beyond the allowance show as <em>not checked</em> —
         never as clean.
       </p>
       <p>

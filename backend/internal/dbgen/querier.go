@@ -6,6 +6,7 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 
 	uuid "github.com/google/uuid"
@@ -16,6 +17,17 @@ type Querier interface {
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
+	// Whether a category/type/item triple exists and hangs together: the type
+	// belongs to the category, and the item belongs to the type.
+	//
+	// One question rather than three, because the foreign keys are the only thing
+	// that was asking and they speak at the INSERT — after the tracking number
+	// has been taken. Verified: five refused creates advanced the sequence by
+	// five. REST checked that the type belonged to the category; MCP checked
+	// neither; nobody checked the item at all, and there is no composite key for
+	// item-to-type, so a ticket could carry a type and an item that do not go
+	// together and then be routed on that.
+	CTIIsCoherent(ctx context.Context, arg CTIIsCoherentParams) (sql.NullBool, error)
 	// Whether a category id is real. Checked before a tracking number is taken,
 	// because the foreign key only speaks at the INSERT — by which point the
 	// number is gone and the sequence has a permanent gap. Staff and MCP were
@@ -393,6 +405,24 @@ type Querier interface {
 	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// Writes only the TOTP secret and whether it is enabled. Same reason: the
+	// enrolment confirmation read the whole row, checked a code, and wrote every
+	// column back over whatever had happened in between.
+	SetUserMFA(ctx context.Context, arg SetUserMFAParams) error
+	// Writes only the password hash.
+	//
+	// SetPassword used to read the whole row, spend 45 to 66 milliseconds on
+	// bcrypt, and then write every column back — so anything committed during
+	// that window was undone. The window is controlled by the account holder,
+	// which is what makes it serious: demote a compromised account, and a
+	// password change already in flight writes `admin` back over the demotion.
+	// The attacker then signs in, with their new password, as an administrator.
+	// The same window undoes an administrator's MFA reset and reverts a
+	// corrected email address.
+	//
+	// AdminSetPassword has always been a narrow statement. This is the same thing
+	// for the self-service path, which is the one an attacker can drive.
+	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	// The same guard for a role change. See DisableUserUnlessLastAdmin.
 	//
 	// A separate statement from UpdateUser because a role change is a different
@@ -404,6 +434,15 @@ type Querier interface {
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
 	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// What a federated login is allowed to change about an account it recognises:
+	// the address, the name, and nothing else.
+	//
+	// The known-identity paths of the SAML and OIDC upserts wrote the whole row
+	// on every sign-in, carrying role, password hash and MFA state from a read a
+	// few statements earlier. A login is something the account holder triggers at
+	// will, so a demotion or a password reset landing in that window was written
+	// back by the next sign-in.
+	SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error

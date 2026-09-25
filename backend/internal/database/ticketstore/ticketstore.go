@@ -439,6 +439,20 @@ func (s *Store) UserExists(ctx context.Context, userID uuid.UUID) (bool, error) 
 	return ok, nil
 }
 
+// CTIIsCoherent reports whether the classification hangs together: the type
+// belongs to the category and the item belongs to the type.
+func (s *Store) CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error) {
+	ok, err := s.q.CTIIsCoherent(ctx, dbgen.CTIIsCoherentParams{
+		CategoryID: categoryID,
+		TypeID:     database.NullUUID(typeID),
+		ItemID:     database.NullUUID(itemID),
+	})
+	if err != nil {
+		return false, fmt.Errorf("checking classification: %w", err)
+	}
+	return ok.Bool, nil
+}
+
 // CategoryExists reports whether a category id is real.
 func (s *Store) CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error) {
 	ok, err := s.q.CategoryExists(ctx, categoryID)

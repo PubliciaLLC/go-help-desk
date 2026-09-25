@@ -227,6 +227,40 @@ func (f *fakeUserStore) UpdateProfile(_ context.Context, id uuid.UUID, email, di
 	return nil
 }
 
+// The narrow writes. Each touches the one thing it names and leaves the rest
+// of the row alone — which is the property the whole-row Update did not have.
+func (f *fakeUserStore) SetPasswordHash(_ context.Context, id uuid.UUID, hash string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.PasswordHash = hash
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) SetMFA(_ context.Context, id uuid.UUID, secret string, enabled bool) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.MFASecret, u.MFAEnabled = secret, enabled
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+// SyncFederated counts as an update, because that is what the OIDC and SAML
+// tests are asking about: whether the sign-in wrote the profile back. It goes
+// through the narrow statement now rather than the whole-row one, which is
+// the point of it existing — a sign-in must not carry a role or a password
+// hash along with the name.
+func (f *fakeUserStore) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	f.updates++
+	return f.UpdateProfile(ctx, id, email, displayName)
+}
+
 // The three guarded writes. This fake applies the same rule the SQL does:
 // refuse when the change would leave no active administrator.
 func (f *fakeUserStore) lastActiveAdmin(id uuid.UUID) bool {

@@ -13,6 +13,43 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const cTIIsCoherent = `-- name: CTIIsCoherent :one
+SELECT
+    ($1::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM types ty
+        WHERE ty.id = $1 AND ty.category_id = $2))
+    AND
+    ($3::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM items it
+        JOIN types t2 ON t2.id = it.type_id
+        WHERE it.id = $3
+          AND it.type_id = $1
+          AND t2.category_id = $2))
+`
+
+type CTIIsCoherentParams struct {
+	TypeID     uuid.NullUUID `json:"type_id"`
+	CategoryID uuid.UUID     `json:"category_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// Whether a category/type/item triple exists and hangs together: the type
+// belongs to the category, and the item belongs to the type.
+//
+// One question rather than three, because the foreign keys are the only thing
+// that was asking and they speak at the INSERT — after the tracking number
+// has been taken. Verified: five refused creates advanced the sequence by
+// five. REST checked that the type belonged to the category; MCP checked
+// neither; nobody checked the item at all, and there is no composite key for
+// item-to-type, so a ticket could carry a type and an item that do not go
+// together and then be routed on that.
+func (q *Queries) CTIIsCoherent(ctx context.Context, arg CTIIsCoherentParams) (sql.NullBool, error) {
+	row := q.db.QueryRowContext(ctx, cTIIsCoherent, arg.TypeID, arg.CategoryID, arg.ItemID)
+	var column_1 sql.NullBool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const categoryExists = `-- name: CategoryExists :one
 SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1)
 `

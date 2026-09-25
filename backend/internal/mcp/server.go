@@ -293,10 +293,14 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"assign_ticket",
-		mcpgo.WithDescription("Assign a ticket to a user or group"),
+		mcpgo.WithDescription("Assign a ticket to a user or group, or take it off whoever has it"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("assignee_user_id", mcpgo.Description("User UUID to assign to")),
 		mcpgo.WithString("assignee_group_id", mcpgo.Description("Group UUID to assign to")),
+		mcpgo.WithBoolean("clear_assignee", mcpgo.Description(
+			"Take the ticket off whoever has it. Required to unassign: omitting "+
+				"both ids is refused rather than treated as unassigning, because "+
+				"that silently took tickets off the people working them.")),
 		// No actor parameter: the actor is the authenticated caller.
 	), scoped(mcpWrite, s.handleAssignTicket))
 
@@ -609,6 +613,32 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	}
 	if !s.visible(ctx, existing) {
 		return errResult(notFoundFor(tidStr))
+	}
+
+	// Assigning to nobody has to be asked for explicitly.
+	//
+	// Refusing an unparseable STRING was not enough: a number, a boolean, a
+	// JSON null and an omitted argument all fell through the type assertion,
+	// left the pointer nil, and nil means "to nobody" — so the tool answered
+	// success and took the ticket off whoever was working it. An agent
+	// sending null to mean "leave this alone" did exactly that. The REST API
+	// makes it explicit with clear_assignee; this is the same rule.
+	_, haveUser := args["assignee_user_id"]
+	_, haveGroup := args["assignee_group_id"]
+	clear, _ := args["clear_assignee"].(bool)
+	if !clear && !haveUser && !haveGroup {
+		return errResult("give assignee_user_id or assignee_group_id, or clear_assignee: true to " +
+			"take the ticket off whoever has it")
+	}
+	if v, ok := args["assignee_user_id"]; ok && v != nil {
+		if _, isString := v.(string); !isString {
+			return errResult("assignee_user_id must be an id")
+		}
+	}
+	if v, ok := args["assignee_group_id"]; ok && v != nil {
+		if _, isString := v.(string); !isString {
+			return errResult("assignee_group_id must be an id")
+		}
 	}
 
 	// An id that will not parse is refused, not ignored.

@@ -636,6 +636,55 @@ func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const setUserMFA = `-- name: SetUserMFA :exec
+UPDATE users
+SET mfa_secret = $2, mfa_enabled = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type SetUserMFAParams struct {
+	ID         uuid.UUID `json:"id"`
+	MfaSecret  string    `json:"mfa_secret"`
+	MfaEnabled bool      `json:"mfa_enabled"`
+}
+
+// Writes only the TOTP secret and whether it is enabled. Same reason: the
+// enrolment confirmation read the whole row, checked a code, and wrote every
+// column back over whatever had happened in between.
+func (q *Queries) SetUserMFA(ctx context.Context, arg SetUserMFAParams) error {
+	_, err := q.db.ExecContext(ctx, setUserMFA, arg.ID, arg.MfaSecret, arg.MfaEnabled)
+	return err
+}
+
+const setUserPasswordHash = `-- name: SetUserPasswordHash :exec
+UPDATE users
+SET password_hash = $2, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type SetUserPasswordHashParams struct {
+	ID           uuid.UUID `json:"id"`
+	PasswordHash string    `json:"password_hash"`
+}
+
+// Writes only the password hash.
+//
+// SetPassword used to read the whole row, spend 45 to 66 milliseconds on
+// bcrypt, and then write every column back — so anything committed during
+// that window was undone. The window is controlled by the account holder,
+// which is what makes it serious: demote a compromised account, and a
+// password change already in flight writes `admin` back over the demotion.
+// The attacker then signs in, with their new password, as an administrator.
+// The same window undoes an administrator's MFA reset and reverts a
+// corrected email address.
+//
+// AdminSetPassword has always been a narrow statement. This is the same thing
+// for the self-service path, which is the one an attacker can drive.
+func (q *Queries) SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error {
+	_, err := q.db.ExecContext(ctx, setUserPasswordHash, arg.ID, arg.PasswordHash)
+	return err
+}
+
 const setUserRoleUnlessLastAdmin = `-- name: SetUserRoleUnlessLastAdmin :one
 WITH admins AS (
     SELECT u.id AS admin_id FROM users u
@@ -697,6 +746,31 @@ func (q *Queries) SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUI
 	var id_2 uuid.UUID
 	err := row.Scan(&id_2)
 	return id_2, err
+}
+
+const syncFederatedUser = `-- name: SyncFederatedUser :exec
+UPDATE users
+SET email = $2, display_name = $3, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type SyncFederatedUserParams struct {
+	ID          uuid.UUID `json:"id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+}
+
+// What a federated login is allowed to change about an account it recognises:
+// the address, the name, and nothing else.
+//
+// The known-identity paths of the SAML and OIDC upserts wrote the whole row
+// on every sign-in, carrying role, password hash and MFA state from a read a
+// few statements earlier. A login is something the account holder triggers at
+// will, so a demotion or a password reset landing in that window was written
+// back by the next sign-in.
+func (q *Queries) SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error {
+	_, err := q.db.ExecContext(ctx, syncFederatedUser, arg.ID, arg.Email, arg.DisplayName)
+	return err
 }
 
 const updateUser = `-- name: UpdateUser :exec

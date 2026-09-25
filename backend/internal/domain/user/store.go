@@ -34,6 +34,14 @@ type Store interface {
 	// silently revert a role, a password or an MFA enrolment that changed
 	// while the request was in flight.
 	UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error
+	// SetPasswordHash, SetMFA and SyncFederated each write the one thing they
+	// name. The whole-row Update below carries a copy of every column, so a
+	// caller that reads, thinks, and then writes puts back whatever changed
+	// while it was thinking — and for a password change, the thinking is a
+	// bcrypt hash the account holder chose the moment of.
+	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
+	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
+	SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error
 	// EmailIsTaken covers deleted rows too, because the unique constraint
 	// does. GetByEmail is the login lookup and hides them.
 	EmailIsTaken(ctx context.Context, email string) (bool, error)

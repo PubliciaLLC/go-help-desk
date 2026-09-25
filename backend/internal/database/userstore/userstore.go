@@ -241,6 +241,36 @@ func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {
 	return taken, nil
 }
 
+// SetPasswordHash, SetMFA and SyncFederated each write the one thing they
+// name, so a slow caller cannot write a stale copy of everything else back.
+func (s *Store) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error {
+	if err := s.q.SetUserPasswordHash(ctx, dbgen.SetUserPasswordHashParams{ID: id, PasswordHash: hash}); err != nil {
+		return fmt.Errorf("setting password: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
+	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
+		return fmt.Errorf("setting MFA: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	err := s.q.SyncFederatedUser(ctx, dbgen.SyncFederatedUserParams{
+		ID: id, Email: email, DisplayName: displayName,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return user.ErrEmailTaken
+		}
+		return fmt.Errorf("syncing federated user: %w", err)
+	}
+	return nil
+}
+
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
 	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{

@@ -190,6 +190,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
 	}
 
+	// And the rest of the classification: that the type belongs to the
+	// category, and the item to the type.
+	//
+	// Verified before this existed: five refused creates advanced the
+	// sequence by five. The REST handler checked type-against-category and
+	// MCP checked nothing, and nobody checked the item — there is no
+	// composite key for item-to-type, so a ticket could carry a type and an
+	// item that do not go together and then be routed on that pairing.
+	if ok, err := s.store.CTIIsCoherent(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf(
+			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
+	}
+
 	// A supplied reporter, checked for the same reason the priority above is:
 	// everything after this takes a tracking number first, so an id the
 	// foreign key refuses costs a 500 and a permanent gap in the sequence.

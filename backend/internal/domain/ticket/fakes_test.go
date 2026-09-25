@@ -211,6 +211,10 @@ func (f *fakeStore) IsAssignableUser(context.Context, uuid.UUID) (bool, error) {
 	return true, nil
 }
 
+func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID) (bool, error) {
+	return true, nil
+}
+
 func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
 	return true, nil
 }

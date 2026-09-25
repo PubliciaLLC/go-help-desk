@@ -143,23 +143,21 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 		return fmt.Errorf("%w: password must be at least %d characters",
 			ErrValidation, MinPasswordLength)
 	}
-	u, err := s.store.GetByID(ctx, userID)
-	if err != nil {
+	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
 	}
-	u.PasswordHash = string(hash)
-	u.UpdatedAt = time.Now()
-	if err := s.store.Update(ctx, u); err != nil {
-		if isUniqueViolation(err) {
-			return ErrEmailTaken
-		}
-		return err
-	}
-	return nil
+	// Only the hash. This used to write every column back from the copy read
+	// above, with a bcrypt hash in between — 45 to 66 milliseconds at the
+	// production cost, and the account holder chooses the moment. So demoting
+	// a compromised account while its owner was changing their password wrote
+	// `admin` back over the demotion, and they signed in again with the new
+	// password as an administrator. The same window undid an administrator's
+	// MFA reset and reverted a corrected address.
+	return s.store.SetPasswordHash(ctx, userID, string(hash))
 }
 
 // ErrLastAdmin is the refusal to remove the only administrator.
@@ -314,14 +312,12 @@ func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID
 	if !totp.Validate(code, pendingSecret) {
 		return fmt.Errorf("invalid TOTP code")
 	}
-	u, err := s.store.GetByID(ctx, userID)
-	if err != nil {
+	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
 	}
-	u.MFASecret = pendingSecret
-	u.MFAEnabled = true
-	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	// Only the secret and the flag: the same reason as SetPassword. This read
+	// the row, validated a code, and wrote everything back.
+	return s.store.SetMFA(ctx, userID, pendingSecret, true)
 }
 
 // GenerateMFASecret mints a secret and its otpauth URL WITHOUT persisting
@@ -382,9 +378,8 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, userID uuid.UUID, co
 	if !totp.Validate(code, u.MFASecret) {
 		return fmt.Errorf("invalid TOTP code")
 	}
-	u.MFAEnabled = true
-	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	// Only the flag, keeping the secret that was already on the row.
+	return s.store.SetMFA(ctx, userID, u.MFASecret, true)
 }
 
 // VerifyMFACode checks that the TOTP code is valid for the user.
@@ -521,15 +516,21 @@ func (s *Service) UpsertOIDCUser(
 			u.DisplayName = displayName
 		}
 		u.UpdatedAt = time.Now()
-		if err := s.store.Update(ctx, u); err != nil {
-			// The address the identity provider now sends belongs to another
-			// account here. Without this the person got "an internal error
-			// occurred" on every sign-in attempt and nothing told the
-			// administrator which two accounts collide.
-			if isUniqueViolation(err) {
-				return User{}, ErrEmailTaken
-			}
-			return User{}, fmt.Errorf("updating OIDC user: %w", err)
+		// The address and the name, and nothing else.
+		//
+		// This used to write the whole row on every sign-in, carrying role,
+		// password hash and MFA state from the read a few statements up. A
+		// login is something the account holder triggers whenever they like,
+		// so a demotion or an administrator's password reset landing in that
+		// window was written back by their next sign-in — and they were an
+		// administrator again, with their old password.
+		//
+		// ErrEmailTaken because the address the provider now sends may belong
+		// to another account here. Without it the person got "an internal
+		// error occurred" on every attempt and nothing told the administrator
+		// which two accounts collide.
+		if err := s.store.SyncFederated(ctx, u.ID, u.Email, u.DisplayName); err != nil {
+			return User{}, err
 		}
 		return u, nil
 	case !errors.Is(err, ErrNotFound):
@@ -620,15 +621,21 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 			u.DisplayName = displayName
 		}
 		u.UpdatedAt = time.Now()
-		if err := s.store.Update(ctx, u); err != nil {
-			// The address the identity provider now sends belongs to another
-			// account here. Without this the person got "an internal error
-			// occurred" on every sign-in attempt and nothing told the
-			// administrator which two accounts collide.
-			if isUniqueViolation(err) {
-				return User{}, ErrEmailTaken
-			}
-			return User{}, fmt.Errorf("updating SAML user: %w", err)
+		// The address and the name, and nothing else.
+		//
+		// This used to write the whole row on every sign-in, carrying role,
+		// password hash and MFA state from the read a few statements up. A
+		// login is something the account holder triggers whenever they like,
+		// so a demotion or an administrator's password reset landing in that
+		// window was written back by their next sign-in — and they were an
+		// administrator again, with their old password.
+		//
+		// ErrEmailTaken because the address the provider now sends may belong
+		// to another account here. Without it the person got "an internal
+		// error occurred" on every attempt and nothing told the administrator
+		// which two accounts collide.
+		if err := s.store.SyncFederated(ctx, u.ID, u.Email, u.DisplayName); err != nil {
+			return User{}, err
 		}
 		return u, nil
 	case !errors.Is(err, ErrNotFound):
