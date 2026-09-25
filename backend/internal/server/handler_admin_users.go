@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -229,7 +230,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			u.DisplayName = *body.DisplayName
 		}
 		if body.Email != nil {
-			u.Email = *body.Email
+			// Lowercased and trimmed, the same as Create, SAML and OIDC.
+			// Without it an administrator who typed a capital letter stored
+			// the address verbatim, and login — which lowercases before
+			// looking up — could no longer find the account under either
+			// spelling. The user was locked out and nothing said why.
+			u.Email = strings.ToLower(strings.TrimSpace(*body.Email))
 		}
 		if body.Role != nil {
 			u.Role = user.Role(*body.Role)

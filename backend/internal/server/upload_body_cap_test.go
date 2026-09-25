@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -92,15 +93,22 @@ func TestUpload_AnOversizedBodyIsRefusedWithoutBeingSwallowed(t *testing.T) {
 // forced it into the package's API would be a worse trade than one number.
 const attachMaxBytesForTest = 25 << 20
 
+// countingReader counts what the client actually managed to send.
+//
+// The counter is atomic because the two sides genuinely race: the server
+// refuses early and closes the connection, so Do returns while the transport
+// goroutine is still pushing body bytes through Read. A plain int64 here made
+// the project's own `go test -race ./...` fail every run — the test was
+// correct about the server and wrong about itself.
 type countingReader struct {
 	r     io.Reader
-	count int64
+	count atomic.Int64
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
-	c.count += int64(n)
+	c.count.Add(int64(n))
 	return n, err
 }
 
-func (c *countingReader) n() int64 { return c.count }
+func (c *countingReader) n() int64 { return c.count.Load() }

@@ -155,11 +155,128 @@ func decodedSizeWithin(data []byte, maxPixels, maxBytes int64) error {
 	if px > maxPixels {
 		return fmt.Errorf("image is %dx%d (%d pixels); the limit is %d", cfg.Width, cfg.Height, px, maxPixels)
 	}
-	if b := px * bytesPerPixel(cfg.ColorModel); b > maxBytes {
+
+	// JPEG is asked directly, because its decoder allocates far more than the
+	// picture it produces and the colour model says nothing about it.
+	need := px * bytesPerPixel(cfg.ColorModel)
+	if b, ok := jpegDecodeBytes(data); ok {
+		need = b
+	}
+	if need > maxBytes {
 		return fmt.Errorf("image is %dx%d and would need %d MB to decode; the limit is %d MB",
-			cfg.Width, cfg.Height, b>>20, maxBytes>>20)
+			cfg.Width, cfg.Height, need>>20, maxBytes>>20)
 	}
 	return nil
+}
+
+// jpegDecodeBytes is what image/jpeg will allocate for this file, read out of
+// its own header. The second return is false for anything that is not a JPEG
+// with a frame header this understands.
+//
+// A budget built from the colour model alone was wrong for JPEG, and wrong in
+// the direction that matters. Two shapes get nowhere near their estimate:
+//
+//   - A progressive JPEG holds every DCT coefficient in memory until the
+//     image is reconstructed — 256 bytes per 8x8 block per component, which
+//     for 4:4:4 is twelve bytes a pixel on top of the three the picture
+//     needs.
+//   - A CMYK JPEG decodes into a YCbCr image, a separate black plane, and
+//     then a third CMYK image, so it costs roughly eight bytes a pixel where
+//     the colour model says four.
+//
+// Measured, both pass the pixel cap exactly at 5120x5120 and then allocate
+// four to six times the ceiling: a 308 KB progressive file leaves 375 MB
+// live, and a 615 KB progressive CMYK one leaves 600 MB. That is the same
+// denial of service the byte budget was written to close, arriving through a
+// file type this application accepts by default and any signed-in reporter
+// can upload.
+//
+// The arithmetic is the decoder's own, which is why it is worth reading the
+// header rather than applying a blanket surcharge: a blanket one large enough
+// to be safe for 4:4:4 would refuse ordinary 4:2:0 photographs, and this
+// matches every fixture measured to the megabyte.
+func jpegDecodeBytes(data []byte) (int64, bool) {
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+		return 0, false
+	}
+	for i := 2; i+4 <= len(data); {
+		if data[i] != 0xFF {
+			i++
+			continue
+		}
+		marker := data[i+1]
+		// Markers that carry no length: padding, and the standalone ones.
+		if marker == 0xFF || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9) {
+			i += 2
+			continue
+		}
+		segLen := int(data[i+2])<<8 | int(data[i+3])
+		if segLen < 2 {
+			return 0, false
+		}
+		if !isJPEGFrameHeader(marker) {
+			i += 2 + segLen
+			continue
+		}
+
+		// SOF: precision, height, width, component count, then three bytes
+		// per component of which the middle one packs the sampling factors.
+		p := i + 4
+		if p+6 > len(data) {
+			return 0, false
+		}
+		height := int64(data[p+1])<<8 | int64(data[p+2])
+		width := int64(data[p+3])<<8 | int64(data[p+4])
+		count := int(data[p+5])
+		if width <= 0 || height <= 0 || count <= 0 || count > 4 {
+			return 0, false
+		}
+		p += 6
+
+		comps := make([]sampling, 0, count)
+		var hmax, vmax int64 = 1, 1
+		for c := 0; c < count; c++ {
+			if p+3 > len(data) {
+				return 0, false
+			}
+			h := int64(data[p+1] >> 4)
+			v := int64(data[p+1] & 0x0f)
+			if h < 1 || v < 1 || h > 4 || v > 4 {
+				return 0, false
+			}
+			comps = append(comps, sampling{h, v})
+			hmax = max(hmax, h)
+			vmax = max(vmax, v)
+			p += 3
+		}
+
+		// Blocks across and down, in units of the largest sampling factor.
+		mxx := (width + 8*hmax - 1) / (8 * hmax)
+		myy := (height + 8*vmax - 1) / (8 * vmax)
+
+		progressive := marker == 0xC2 || marker == 0xC6 || marker == 0xCA || marker == 0xCE
+
+		var total int64
+		for _, c := range comps {
+			total += (mxx * 8 * c.h) * (myy * 8 * c.v)
+			if progressive {
+				total += mxx * myy * c.h * c.v * 256
+			}
+		}
+		if count == 4 {
+			// applyBlack builds a CMYK image alongside the planes above.
+			total += width * height * 4
+		}
+		return total, true
+	}
+	return 0, false
+}
+
+// isJPEGFrameHeader reports whether a marker starts a frame header (SOF0
+// through SOF15, less the two that are not frames: DHT at 0xC4 and DAC at
+// 0xC8).
+func isJPEGFrameHeader(m byte) bool {
+	return m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8
 }
 
 // imageWork bounds how many images are decoded and re-encoded at once.
@@ -1391,3 +1508,7 @@ func deceptiveRune(r rune) bool {
 	}
 	return false
 }
+
+// sampling is one JPEG component's horizontal and vertical sampling factors,
+// which is what decides how much of the image that component's plane holds.
+type sampling struct{ h, v int64 }

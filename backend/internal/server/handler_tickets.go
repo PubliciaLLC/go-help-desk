@@ -389,6 +389,19 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isGuest {
+		// A credential with no person behind it cannot be a reporter.
+		//
+		// An OAuth client actor carries no user id, so this handed uuid.Nil
+		// to the insert and answered 500 with a foreign-key violation in the
+		// log — after NextSeq had already taken a tracking number, leaving a
+		// hole in the numbering. The scope catalogue advertises tickets:write
+		// to OAuth clients, so this is a capability the API offers and cannot
+		// deliver. Refused plainly instead, before anything is written.
+		if a.UserID == uuid.Nil {
+			Error(w, http.StatusForbidden, "user_identity_required",
+				"this credential has no user identity, so it cannot be recorded as the reporter of a ticket")
+			return
+		}
 		in.ReporterUserID = &a.UserID
 	} else {
 		email := body.GuestEmail
@@ -581,6 +594,15 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(body.Body) == "" {
 		Error(w, http.StatusBadRequest, "bad_request", "body is required")
+		return
+	}
+
+	// The same identity requirement as creating a ticket: a reply is written
+	// by somebody, and an OAuth client actor has no user id, so this reached
+	// the insert as uuid.Nil and answered 500 on a foreign key.
+	if a.UserID == uuid.Nil {
+		Error(w, http.StatusForbidden, "user_identity_required",
+			"this credential has no user identity, so it cannot be recorded as the author of a reply")
 		return
 	}
 

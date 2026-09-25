@@ -504,7 +504,9 @@ export function TicketDetailPage() {
                             a bare UUID and nobody could tell who had said
                             what. A reply with no author came from a guest —
                             that is the only way it is null. */}
-                        <span>{r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}</span>
+                        <span className="min-w-0 truncate" title={r.author_name || undefined}>
+                          {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
+                        </span>
                         <span className="flex items-center gap-2">
                           {r.internal && <span className="text-yellow-600 font-medium">Internal note</span>}
                           {formatDate(r.created_at)}

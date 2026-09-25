@@ -205,7 +205,7 @@ export function GuestTicketPage() {
               </div>
 
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Submitting…' : 'Submit request'}

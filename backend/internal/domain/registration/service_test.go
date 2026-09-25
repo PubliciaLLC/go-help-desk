@@ -113,7 +113,7 @@ func TestIsEmailDomainAllowed(t *testing.T) {
 func TestRegister(t *testing.T) {
 	t.Run("domain not allowed", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@other.com", "Alice", "pass", []string{"example.com"}, false)
+		err := svc.Register(context.Background(), "a@other.com", "Alice", "a-passphrase", []string{"example.com"}, false)
 		if !errors.Is(err, ErrDomainNotAllowed) {
 			t.Fatalf("want ErrDomainNotAllowed, got %v", err)
 		}
@@ -121,7 +121,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("open registration required", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "Alice", "pass", nil, false)
+		err := svc.Register(context.Background(), "a@any.com", "Alice", "a-passphrase", nil, false)
 		if !errors.Is(err, ErrOpenRegistrationRequired) {
 			t.Fatalf("want ErrOpenRegistrationRequired, got %v", err)
 		}
@@ -146,7 +146,7 @@ func TestRegister(t *testing.T) {
 	t.Run("open registration", func(t *testing.T) {
 		mailer := &fakeMailer{}
 		svc := NewService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "A", "pass", nil, true)
+		err := svc.Register(context.Background(), "a@any.com", "A", "a-passphrase", nil, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -285,4 +285,48 @@ type recordingMailer struct{ to string }
 func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
 	m.to = to
 	return nil
+}
+
+// Signup is held to the same password minimum as every other path that sets
+// one.
+//
+// It was the fifth path, and the one missed when the minimum was made a
+// single rule: nothing checked the length here, and Verify creates the
+// account from the stored hash, which skips the check in user.Service.Create.
+// So a signup with an EMPTY password produced a real account whose login
+// accepted an empty password. Self-service signup is off by default, which
+// was the only thing standing in front of it.
+func TestRegister_HoldsThePasswordMinimum(t *testing.T) {
+	cases := []struct {
+		name     string
+		password string
+		wantErr  bool
+	}{
+		{name: "empty", password: "", wantErr: true},
+		{name: "one character", password: "a", wantErr: true},
+		{name: "one short of the minimum", password: "passwor", wantErr: true},
+		{name: "exactly the minimum", password: "password"},
+		{name: "comfortably over", password: "a-real-passphrase"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+			err := svc.Register(context.Background(), "a@any.com", "Alice", tc.password, nil, true)
+
+			if tc.wantErr {
+				if !errors.Is(err, ErrPasswordTooShort) {
+					t.Fatalf("a %d-character password was accepted (err=%v)", len(tc.password), err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("an acceptable password was refused: %v", err)
+			}
+		})
+	}
+
+	if user.MinPasswordLength != 8 {
+		t.Fatalf("the cases above are written against a minimum of 8, not %d", user.MinPasswordLength)
+	}
 }

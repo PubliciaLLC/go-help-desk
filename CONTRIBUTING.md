@@ -93,10 +93,13 @@ go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./
 ### Integration tests
 
 ```sh
-# Via Docker Compose (recommended)
-docker-compose -f docker/docker-compose.yml --profile test run --rm test
+# Against a throwaway database (recommended)
+#
+# Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
+# and leaves nothing behind. Never points at the development database.
+./scripts/test-db.sh test
 
-# From the host (port 5432 is exposed by docker-compose)
+# Or against the development stack's database, which the suite will migrate
 TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
 ```
 

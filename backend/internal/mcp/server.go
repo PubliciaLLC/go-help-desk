@@ -728,7 +728,7 @@ func errResult(msg string) (*mcpgo.CallToolResult, error) {
 // answers "something went wrong" to a bad argument is a tool nobody can use.
 func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult, error) {
 	if errors.Is(err, ticket.ErrValidation) {
-		return storeErr(ctx, "list statuses", err)
+		return errResult(err.Error())
 	}
 	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)
 	return errResult(op + " failed")

@@ -20,6 +20,10 @@ var ErrTokenExpired = fmt.Errorf("verification token has expired")
 // two it was.
 var ErrInvalidEmail = fmt.Errorf("invalid email address")
 
+// ErrPasswordTooShort is the refusal for a signup password below
+// user.MinPasswordLength.
+var ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", user.MinPasswordLength)
+
 // ErrDomainNotAllowed is returned when the email domain is not permitted.
 var ErrDomainNotAllowed = fmt.Errorf("email domain not allowed")
 
@@ -64,6 +68,16 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 			return ErrOpenRegistrationRequired
 		}
 		return ErrDomainNotAllowed
+	}
+
+	// The fifth path that sets a password, and the one that was missed when
+	// the minimum was made one rule. Nothing checked the length here, and
+	// Verify creates the account from the stored hash — which skips the check
+	// in user.Service.Create — so a signup with an EMPTY password produced a
+	// real account whose login accepted an empty password. Signup is off by
+	// default, which was the only thing standing in front of it.
+	if len(password) < user.MinPasswordLength {
+		return ErrPasswordTooShort
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

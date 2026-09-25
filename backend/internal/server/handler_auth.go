@@ -65,10 +65,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	loginKey := "login:" + loginRateKey(body.Email)
 
 	if s.loginLimiter.Exceeded(loginKey) {
-		if !s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay, maxLoginWaiters) {
-			tooManyAttempts(w, time.Minute)
-			return
-		}
+		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
 	}
 
 	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
@@ -446,12 +443,3 @@ func loginRateKey(email string) string {
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
 	return hex.EncodeToString(sum[:])
 }
-
-// maxLoginWaiters bounds how many requests may queue in the login tarpit for
-// one account at once.
-//
-// The queue is the tarpit's own cost: a delay that holds a goroutine and a
-// connection is a thing an attacker can accumulate, so without a bound the
-// defence becomes the exhaustion it exists to prevent. Eight is comfortably
-// more than a real person retrying and far less than a flood.
-const maxLoginWaiters = 8

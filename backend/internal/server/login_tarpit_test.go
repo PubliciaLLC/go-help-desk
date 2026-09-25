@@ -2,7 +2,6 @@ package server_test
 
 import (
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 
@@ -63,44 +62,43 @@ func TestLoginTarpit_SlowsAnOverBudgetAccount(t *testing.T) {
 		"the correct password must be honoured even with the budget spent")
 }
 
-// The waits are taken one at a time, so the delay bounds guesses per second
-// rather than merely slowing each guess down.
-func TestLoginTarpit_TheWaitsAreSequentialPerAccount(t *testing.T) {
+// The over-budget wait applies to a wrong guess, and the right password still
+// gets in.
+//
+// The turn-taking and the bound on waiting are properties of the limiter and
+// are tested there, in internal/middleware — this harness runs every test
+// inside one database transaction, so a concurrent flood through it exercises
+// the transaction rather than the tarpit.
+func TestLoginTarpit_TheRightPasswordStillGetsIn(t *testing.T) {
 	const (
-		limit    = 1
-		delay    = 100 * time.Millisecond
-		parallel = 4
+		limit = 2
+		delay = 150 * time.Millisecond
 	)
 	h, cleanup := newHarnessWithThrottle(t, limit, delay)
 	defer cleanup()
 
-	// Spend the budget so everything below is over it.
-	h.do(t, http.MethodPost, "/api/v1/auth/local/login",
-		map[string]any{"email": "staff@test.local", "password": "no"}).Body.Close()
-
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-	for range parallel {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			res := h.do(t, http.MethodPost, "/api/v1/auth/local/login",
-				map[string]any{"email": "staff@test.local", "password": "no"})
-			res.Body.Close()
-		}()
+	wrong := func() *http.Response {
+		return h.do(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "staff@test.local", "password": "not-the-password"})
+	}
+	for range limit {
+		wrong().Body.Close()
 	}
 
+	// Over budget now: this one waits.
 	began := time.Now()
-	close(start)
-	wg.Wait()
-	elapsed := time.Since(began)
+	res := wrong()
+	res.Body.Close()
+	require.GreaterOrEqual(t, time.Since(began), delay,
+		"an over-budget guess was answered immediately")
 
-	// Four sequential waits of 100ms cannot finish in less than 300ms — the
-	// last one starts only after the first three are done. In parallel they
-	// would all be finished in a little over 100ms, which is the failure this
-	// catches.
-	require.GreaterOrEqual(t, elapsed, time.Duration(parallel-1)*delay,
-		"%d over-budget guesses finished in %v, so the waits ran in parallel and bound nothing",
-		parallel, elapsed)
+	// And the owner gets in, delayed but never refused.
+	began = time.Now()
+	ok := h.do(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "staff@test.local", "password": "password"})
+	ok.Body.Close()
+	require.Equal(t, http.StatusOK, ok.StatusCode,
+		"the correct password must be honoured with the budget spent")
+	require.Less(t, time.Since(began), 4*delay,
+		"the owner's own login was held open longer than the tarpit should ever hold anything")
 }

@@ -337,7 +337,7 @@ export function NewTicketPage() {
                 />
               </div>
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
               {uploadDone && createdTicketId && (
                 <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm space-y-1">

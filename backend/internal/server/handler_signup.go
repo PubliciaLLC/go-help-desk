@@ -56,6 +56,8 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	err := s.registration.Register(ctx, body.Email, body.DisplayName, body.Password, allowedDomains, openReg)
 	if err != nil {
 		switch {
+		case errors.Is(err, registration.ErrPasswordTooShort):
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		case errors.Is(err, registration.ErrDomainNotAllowed):
 			Error(w, http.StatusUnprocessableEntity, "domain_not_allowed", "your email domain is not permitted")
 		case errors.Is(err, registration.ErrOpenRegistrationRequired):

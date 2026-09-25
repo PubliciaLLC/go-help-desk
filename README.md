@@ -70,7 +70,7 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `DATABASE_URL` | yes | — | `postgres://user:pass@host/db?sslmode=disable` |
 | `BASE_URL` | yes | — | Public URL (e.g. `https://helpdesk.example.com`) |
 | `SESSION_SECRET` | yes | — | Random secret ≥ 32 chars |
-| `JWT_SECRET` | yes | — | Random secret ≥ 32 chars |
+| `JWT_SECRET` | yes | — | Random secret. No minimum is enforced; 32+ characters is the sensible choice |
 | `HTTP_PORT` | | `8080` | Listen port |
 | `SMTP_HOST` | | — | Enables email notifications when set |
 | `SMTP_PORT` | | `587` | |
@@ -277,11 +277,14 @@ Tests:
 cd backend
 go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...
 
-# Integration tests via Docker Compose
-docker-compose -f docker/docker-compose.yml --profile test run --rm test
+# Against a throwaway database (recommended)
+#
+# Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
+# and leaves nothing behind. Never points at the development database.
+./scripts/test-db.sh test
 
-# Integration tests from the host (port 5432 is exposed)
-TEST_DATABASE_URL=postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable go test ./...
+# Or against the development stack's database, which the suite will migrate
+TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
 ```
 
 Schema changes: edit `queries/*.sql`, add a migration under `internal/database/migrations/`, run `sqlc generate`. Never hand-edit `internal/dbgen/`.
