@@ -168,6 +168,62 @@ func TestSLAService_EvaluateBreaches(t *testing.T) {
 	require.NotNil(t, rec.ResolutionBreachedAt, "resolution should be breached")
 }
 
+// A ticket that would otherwise be breached must not be stamped while it is
+// (or was) paused for long enough of its wall-clock lifetime. Same setup as
+// TestSLAService_EvaluateBreaches, with the pause fields doing the work.
+func TestSLAService_EvaluateBreaches_PausedTicketDoesNotBreach(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+
+	policy := sla.Policy{
+		ID:                  policyID,
+		ResponseTargetMin:   30,
+		ResolutionTargetMin: 120,
+	}
+	store.policies[policyID] = policy
+	store.records[ticketID] = sla.Record{
+		TicketID: ticketID,
+		PolicyID: policyID,
+	}
+
+	createdAt := time.Now().Add(-3 * time.Hour) // ticket created 3h ago
+	now := time.Now()
+
+	// Currently pending since shortly after creation: elapsed is frozen well
+	// under either target.
+	tk := ticket.Ticket{
+		ID:           ticketID,
+		CreatedAt:    createdAt,
+		PendingSince: timePtr(createdAt.Add(10 * time.Minute)),
+	}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+
+	rec := store.records[ticketID]
+	require.Nil(t, rec.ResponseBreachedAt, "paused elapsed time must not breach")
+	require.Nil(t, rec.ResolutionBreachedAt, "paused elapsed time must not breach")
+
+	// The interval since closed, but the accumulated pause covers the same
+	// span: still no breach.
+	tk.PendingSince = nil
+	tk.SLAPausedSeconds = int64(now.Sub(createdAt.Add(10*time.Minute)) / time.Second)
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+
+	rec = store.records[ticketID]
+	require.Nil(t, rec.ResponseBreachedAt, "a closed pause covering the same span must not breach either")
+	require.Nil(t, rec.ResolutionBreachedAt)
+
+	// Remove the pause entirely: now the ticket is genuinely breached.
+	tk.SLAPausedSeconds = 0
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+
+	rec = store.records[ticketID]
+	require.NotNil(t, rec.ResponseBreachedAt, "with the pause removed, elapsed time breaches again")
+	require.NotNil(t, rec.ResolutionBreachedAt)
+}
+
 // swallowProbeStore lets a test distinguish "no SLA record" from a store failure, which
 // is the whole point of these tests: the service used to treat both the same.
 type swallowProbeStore struct {
@@ -255,21 +311,22 @@ func TestIsResolutionBreached_UsesTheResolutionTime(t *testing.T) {
 	created := time.Now().Add(-10 * time.Hour)
 	policy := sla.Policy{ResolutionTargetMin: 60} // one hour
 	deadline := created.Add(time.Hour)
+	tk := ticket.Ticket{CreatedAt: created}
 
 	onTime := deadline.Add(-10 * time.Minute)
 	late := deadline.Add(10 * time.Minute)
 	now := time.Now()
 
 	require.False(t,
-		sla.IsResolutionBreached(sla.Record{ResolvedAt: &onTime}, policy, created, now),
+		sla.IsResolutionBreached(sla.Record{ResolvedAt: &onTime}, policy, tk, now),
 		"resolved before the deadline is not a breach, however long ago that was")
 
 	require.True(t,
-		sla.IsResolutionBreached(sla.Record{ResolvedAt: &late}, policy, created, now),
+		sla.IsResolutionBreached(sla.Record{ResolvedAt: &late}, policy, tk, now),
 		"resolved after the deadline is a breach")
 
 	require.True(t,
-		sla.IsResolutionBreached(sla.Record{}, policy, created, now),
+		sla.IsResolutionBreached(sla.Record{}, policy, tk, now),
 		"unresolved past the deadline is a breach")
 }
 

@@ -282,14 +282,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 
 // UpdateStatus changes the ticket status after verifying the actor has
 // permission to make that transition.
-// applyStatusTimestamps keeps resolved_at and closed_at consistent with the
-// status a ticket is being moved to.
+// applyStatusTimestamps keeps resolved_at, closed_at and the SLA pause fields
+// consistent with the status a ticket is being moved to.
 //
 // Pure and taking the cached system statuses explicitly so the rule lives in
-// one place rather than being re-derived at each of the four call sites that
-// change a status.
-func applyStatusTimestamps(t *Ticket, oldStatusID, newStatusID uuid.UUID, sys *systemStatuses, now time.Time) {
-	switch newStatusID {
+// one place rather than being re-derived at each of the five call sites that
+// change a status. Called by every door that changes a status, inside its
+// transaction, on the locked row.
+func applyStatusTimestamps(t *Ticket, oldStatusID uuid.UUID, newStatus Status, sys *systemStatuses, now time.Time) {
+	switch newStatus.ID {
 	case sys.resolvedID:
 		// Preserve the timestamp only when the ticket is ALREADY Resolved, so
 		// re-resolving does not silently extend the reopen window. A ticket
@@ -311,6 +312,19 @@ func applyStatusTimestamps(t *Ticket, oldStatusID, newStatusID uuid.UUID, sys *s
 		// Any other status means the ticket is open again.
 		t.ResolvedAt = nil
 		t.ClosedAt = nil
+	}
+
+	// SLA pause. Decided from the ROW, not from oldStatusID: t.PendingSince
+	// being set is the fact that an interval is open, so Pending→Pending is a
+	// no-op, leaving Pending by any door closes the interval, and a status
+	// renamed away from "Pending" still closes the interval it opened.
+	entering := newStatus.Name == StatusNamePending
+	switch {
+	case entering && t.PendingSince == nil:
+		t.PendingSince = &now
+	case !entering && t.PendingSince != nil:
+		t.SLAPausedSeconds += int64(now.Sub(*t.PendingSince) / time.Second)
+		t.PendingSince = nil
 	}
 }
 
@@ -357,7 +371,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		oldStatusID = t.StatusID
 		t.StatusID = newStatusID
 		t.UpdatedAt = now
-		applyStatusTimestamps(&t, oldStatusID, newStatusID, s.sys, now)
+		applyStatusTimestamps(&t, oldStatusID, newStatus, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("updating ticket status: %w", err)
@@ -534,6 +548,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// Auto-reopen: user reply to a Resolved ticket within the window.
 	reopened := actor.Role == user.RoleUser && currentStatus.Name == StatusNameResolved
 	oldStatusID := t.StatusID
+	var target Status
 	if reopened {
 		// An unresolvable configured status arrives here as uuid.Nil. Left
 		// alone it reached the status_id foreign key, rolled the transaction
@@ -542,6 +557,13 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		// the write and says what is actually wrong.
 		if reopenTargetStatusID == uuid.Nil {
 			return Reply{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
+		}
+		// Fetched once, up front: the reopen target can be Pending (any
+		// active non-system status), and applyStatusTimestamps needs its
+		// Name, not just its ID.
+		target, err = s.getStatusByID(ctx, reopenTargetStatusID)
+		if err != nil {
+			return Reply{}, err
 		}
 		t.StatusID = reopenTargetStatusID
 		t.ResolvedAt = nil
@@ -619,7 +641,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		// Through the shared rule, so this door agrees with the others about
 		// resolved_at and closed_at rather than clearing one and forgetting
 		// the other.
-		applyStatusTimestamps(&locked, oldStatusID, reopenTargetStatusID, s.sys, t.UpdatedAt)
+		applyStatusTimestamps(&locked, oldStatusID, target, s.sys, t.UpdatedAt)
 		t = locked
 
 		if err := st.Update(ctx, t); err != nil {
@@ -723,7 +745,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		// restarted the reopen window on a re-resolve, and resolving a CLOSED
 		// ticket left closed_at set on an open ticket, which hides it from the
 		// auto-close query forever.
-		applyStatusTimestamps(&t, oldStatusID, s.sys.resolvedID, s.sys, now)
+		applyStatusTimestamps(&t, oldStatusID, s.sys.resolved, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("resolving ticket: %w", err)
@@ -805,8 +827,10 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		before := ticketMap(t)
 		oldStatusID := t.StatusID
 		t.StatusID = s.sys.closedID
-		t.ClosedAt = &now
 		t.UpdatedAt = now
+		// Through the shared rule rather than by hand, so closing a Pending
+		// ticket closes its SLA pause interval too.
+		applyStatusTimestamps(&t, oldStatusID, s.sys.closed, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("closing ticket: %w", err)
@@ -864,6 +888,10 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 	if targetStatusID == uuid.Nil {
 		return Ticket{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
 	}
+	target, err := s.getStatusByID(ctx, targetStatusID)
+	if err != nil {
+		return Ticket{}, err
+	}
 
 	now := time.Now()
 	var oldStatusID uuid.UUID
@@ -883,9 +911,12 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		before := ticketMap(t)
 		oldStatusID = t.StatusID
 		t.StatusID = targetStatusID
-		t.ClosedAt = nil
-		t.ResolvedAt = nil
 		t.UpdatedAt = now
+		// Through the shared rule: its default arm clears ClosedAt/ResolvedAt
+		// exactly as the two hand assignments did, and now also carries the
+		// accumulated SLA pause forward and opens a fresh interval if the
+		// reopen target is Pending — a reopened ticket is not a new SLA clock.
+		applyStatusTimestamps(&t, oldStatusID, target, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("reopening ticket: %w", err)

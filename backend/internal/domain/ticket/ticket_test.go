@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -311,4 +312,40 @@ func TestCanUserUpdate_NonOwnerIsStillForbidden(t *testing.T) {
 
 	require.ErrorIs(t, err, ticket.ErrForbidden)
 	require.NotErrorIs(t, err, ticket.ErrReopenWindowClosed)
+}
+
+// The wire format is a contract with the frontend (#183 reads sla_paused_seconds
+// as a plain number, not nanoseconds). pending_since is nil on most tickets, so
+// it must be absent rather than rendered as null; sla_paused_seconds has no
+// such "unset" state — a ticket that has never paused legitimately holds 0 —
+// so it is always present.
+func TestTicket_JSONContract_SLAPauseFields(t *testing.T) {
+	t.Run("not pending: pending_since is absent, sla_paused_seconds is present", func(t *testing.T) {
+		tk := ticket.Ticket{ID: uuid.New(), SLAPausedSeconds: 0}
+
+		b, err := json.Marshal(tk)
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(b, &got))
+
+		require.NotContains(t, got, "pending_since", "a nil PendingSince must not render as null")
+		require.Contains(t, got, "sla_paused_seconds")
+		require.Equal(t, float64(0), got["sla_paused_seconds"])
+	})
+
+	t.Run("currently pending: pending_since is an RFC3339 timestamp", func(t *testing.T) {
+		since := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+		tk := ticket.Ticket{ID: uuid.New(), PendingSince: &since, SLAPausedSeconds: 42}
+
+		b, err := json.Marshal(tk)
+		require.NoError(t, err)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(b, &got))
+
+		require.Equal(t, "2026-09-13T10:00:00Z", got["pending_since"])
+		require.Equal(t, float64(42), got["sla_paused_seconds"],
+			"seconds as a plain number the frontend can read, not a nanosecond duration")
+	})
 }

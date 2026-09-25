@@ -765,3 +765,196 @@ func TestLifecycleWrites_ReadUnderTheLock(t *testing.T) {
 		})
 	}
 }
+
+// ── SLA pause (#181) ─────────────────────────────────────────────────────────
+//
+// A target is measured against elapsed time since creation, MINUS time spent
+// Pending. applyStatusTimestamps is the one place that opens and closes a
+// pause interval, and every status door routes through it — these tests pin
+// that routing for each door, plus the edge cases DESIGN.md calls out:
+// multiple pause intervals, resolving while paused, and a reopen carrying the
+// accumulated pause forward rather than resetting the clock.
+
+// slaSeed plants a ticket in an arbitrary status with SLA pause fields set
+// directly, bypassing the status doors — these tests are about what the doors
+// do to a ticket that already carries pause state, not about how it got
+// there.
+func (h *harness) slaSeed(statusID uuid.UUID, pendingSince *time.Time, pausedSeconds int64) ticket.Ticket {
+	reporter := uuid.New()
+	now := time.Now()
+	t := ticket.Ticket{
+		ID:               uuid.New(),
+		TrackingNumber:   ticket.TrackingNumber("HD-SLA-" + uuid.NewString()[:8]),
+		Subject:          "SLA pause fixture",
+		ReporterUserID:   &reporter,
+		StatusID:         statusID,
+		CreatedAt:        now.Add(-24 * time.Hour),
+		UpdatedAt:        now.Add(-24 * time.Hour),
+		PendingSince:     pendingSince,
+		SLAPausedSeconds: pausedSeconds,
+	}
+	h.store.seed(t)
+	return t
+}
+
+func TestStatusTransitions_MaintainSLAPause(t *testing.T) {
+	t.Run("New to Pending opens an interval", func(t *testing.T) {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.pendingStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.PendingSince, "entering Pending must open an interval")
+		require.Zero(t, stored.SLAPausedSeconds, "nothing has closed yet")
+	})
+
+	t.Run("Pending to In Progress closes the interval", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(-90 * time.Second)
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 0)
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.inProgressStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.PendingSince, "leaving Pending must close the interval")
+		require.GreaterOrEqual(t, stored.SLAPausedSeconds, int64(90),
+			"the closed interval's length must be added to the accumulated total")
+	})
+
+	t.Run("Pending to Pending leaves the interval start untouched", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(-5 * time.Minute)
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 0)
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.pendingStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.PendingSince)
+		require.True(t, stored.PendingSince.Equal(pendingSince),
+			"re-entering the same status must not restart the interval")
+	})
+
+	t.Run("Pending to Resolved via Resolve closes the interval and records the SLA resolution", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(-120 * time.Second)
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 0)
+
+		_, err := h.svc.Resolve(context.Background(), seeded.ID, "fixed it",
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.PendingSince, "resolving must close the open interval")
+		require.GreaterOrEqual(t, stored.SLAPausedSeconds, int64(120))
+		require.Equal(t, 1, h.sla.resolutions)
+	})
+
+	t.Run("Pending to Closed via Close closes the interval", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(-60 * time.Second)
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 0)
+		admin := uuid.New()
+
+		require.NoError(t, h.svc.Close(context.Background(), seeded.ID,
+			ticket.Actor{UserID: &admin, Role: user.RoleAdmin}))
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.PendingSince,
+			"Close must route through the shared rule so a Pending ticket's interval closes")
+		require.GreaterOrEqual(t, stored.SLAPausedSeconds, int64(60))
+		require.NotNil(t, stored.ClosedAt)
+	})
+
+	t.Run("Closed to Pending via Reopen carries the accumulated pause forward", func(t *testing.T) {
+		h := newHarness(t)
+		closedAt := time.Now().Add(-time.Hour)
+		reporter := uuid.New()
+		seeded := ticket.Ticket{
+			ID:               uuid.New(),
+			TrackingNumber:   "HD-SLA-REOPEN",
+			Subject:          "Reopen carries pause",
+			ReporterUserID:   &reporter,
+			StatusID:         h.closedStatus.ID,
+			ResolvedAt:       &closedAt,
+			ClosedAt:         &closedAt,
+			CreatedAt:        time.Now().Add(-4 * time.Hour),
+			UpdatedAt:        closedAt,
+			SLAPausedSeconds: 300,
+		}
+		h.store.seed(seeded)
+		agent := uuid.New()
+
+		got, err := h.svc.Reopen(context.Background(), seeded.ID, h.pendingStatus.ID,
+			ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		require.NotNil(t, got.PendingSince, "reopening into Pending opens a fresh interval")
+		require.Equal(t, int64(300), got.SLAPausedSeconds,
+			"a reopen is not a new SLA clock: the accumulated pause must carry over unchanged")
+	})
+
+	t.Run("Resolved to Pending via a user reply auto-reopen opens an interval", func(t *testing.T) {
+		h := newHarness(t)
+		reporter := uuid.New()
+		seeded := h.seedResolved(reporter)
+
+		_, err := h.svc.AddReply(context.Background(), seeded.ID,
+			"Still broken, please hold", false, true, "reporter@example.com",
+			ticket.Actor{UserID: &reporter, Role: user.RoleUser},
+			7, h.pendingStatus.ID)
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.PendingSince,
+			"auto-reopening into a Pending target must open an interval")
+	})
+
+	t.Run("two pause intervals accumulate", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(-30 * time.Second)
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 60)
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.newStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.PendingSince)
+		require.GreaterOrEqual(t, stored.SLAPausedSeconds, int64(90),
+			"the pre-existing 60s interval plus the newly-closed ~30s interval")
+	})
+
+	t.Run("a staff reply while Pending does not touch the pause", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(-10 * time.Minute)
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 0)
+		agent := uuid.New()
+
+		_, err := h.svc.AddReply(context.Background(), seeded.ID,
+			"Looking into it", false, true, "reporter@example.com",
+			ticket.Actor{UserID: &agent, Role: user.RoleStaff},
+			7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.NotNil(t, stored.PendingSince, "a reply is not a status change")
+		require.True(t, stored.PendingSince.Equal(pendingSince),
+			"the open interval must be untouched by a reply")
+		require.Equal(t, 1, h.sla.firstResponses)
+	})
+}

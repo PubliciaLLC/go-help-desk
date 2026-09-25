@@ -89,11 +89,11 @@ func (s *Service) EvaluateBreaches(ctx context.Context, t ticket.Ticket, now tim
 	}
 
 	changed := false
-	if record.ResponseBreachedAt == nil && IsResponseBreached(record, policy, t.CreatedAt, now) {
+	if record.ResponseBreachedAt == nil && IsResponseBreached(record, policy, t, now) {
 		record.ResponseBreachedAt = &now
 		changed = true
 	}
-	if record.ResolutionBreachedAt == nil && IsResolutionBreached(record, policy, t.CreatedAt, now) {
+	if record.ResolutionBreachedAt == nil && IsResolutionBreached(record, policy, t, now) {
 		record.ResolutionBreachedAt = &now
 		changed = true
 	}

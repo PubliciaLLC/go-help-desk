@@ -20,7 +20,8 @@ VALUES ($1, $2, $3, $4, now());
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id,
        t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id,
        t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at,
-       t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone
+       t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone,
+       t.pending_since, t.sla_paused_seconds
 FROM guest_access_tokens g
 JOIN tickets t ON t.id = g.ticket_id
 WHERE g.token_hash = $1

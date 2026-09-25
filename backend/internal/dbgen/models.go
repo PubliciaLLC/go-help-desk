@@ -213,27 +213,29 @@ type Tag struct {
 }
 
 type Ticket struct {
-	ID              uuid.UUID      `json:"id"`
-	TrackingNumber  string         `json:"tracking_number"`
-	Subject         string         `json:"subject"`
-	Description     string         `json:"description"`
-	CategoryID      uuid.UUID      `json:"category_id"`
-	TypeID          uuid.NullUUID  `json:"type_id"`
-	ItemID          uuid.NullUUID  `json:"item_id"`
-	Priority        string         `json:"priority"`
-	StatusID        uuid.UUID      `json:"status_id"`
-	AssigneeUserID  uuid.NullUUID  `json:"assignee_user_id"`
-	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
-	ReporterUserID  uuid.NullUUID  `json:"reporter_user_id"`
-	GuestEmail      sql.NullString `json:"guest_email"`
-	ResolutionNotes sql.NullString `json:"resolution_notes"`
-	ResolvedAt      sql.NullTime   `json:"resolved_at"`
-	ClosedAt        sql.NullTime   `json:"closed_at"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	GuestName       string         `json:"guest_name"`
-	GuestPhone      string         `json:"guest_phone"`
-	SearchVector    interface{}    `json:"search_vector"`
+	ID               uuid.UUID      `json:"id"`
+	TrackingNumber   string         `json:"tracking_number"`
+	Subject          string         `json:"subject"`
+	Description      string         `json:"description"`
+	CategoryID       uuid.UUID      `json:"category_id"`
+	TypeID           uuid.NullUUID  `json:"type_id"`
+	ItemID           uuid.NullUUID  `json:"item_id"`
+	Priority         string         `json:"priority"`
+	StatusID         uuid.UUID      `json:"status_id"`
+	AssigneeUserID   uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID  uuid.NullUUID  `json:"assignee_group_id"`
+	ReporterUserID   uuid.NullUUID  `json:"reporter_user_id"`
+	GuestEmail       sql.NullString `json:"guest_email"`
+	ResolutionNotes  sql.NullString `json:"resolution_notes"`
+	ResolvedAt       sql.NullTime   `json:"resolved_at"`
+	ClosedAt         sql.NullTime   `json:"closed_at"`
+	CreatedAt        time.Time      `json:"created_at"`
+	UpdatedAt        time.Time      `json:"updated_at"`
+	GuestName        string         `json:"guest_name"`
+	GuestPhone       string         `json:"guest_phone"`
+	SearchVector     interface{}    `json:"search_vector"`
+	PendingSince     sql.NullTime   `json:"pending_since"`
+	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
 }
 
 type TicketCustomFieldValue struct {

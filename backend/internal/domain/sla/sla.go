@@ -29,26 +29,40 @@ type Record struct {
 	ResolutionBreachedAt *time.Time `json:"resolution_breached_at,omitempty"`
 }
 
+// Elapsed is the time a ticket has spent counting toward its targets as of at:
+// wall-clock since creation, less every Pending interval that has closed,
+// less the open one when the ticket is Pending at at.
+//
+// The open interval is clipped to at so a reading taken "as of" an instant
+// before the ticket went Pending — the resolution time, re-read later — does
+// not subtract time that had not been paused yet.
+func Elapsed(t ticket.Ticket, at time.Time) time.Duration {
+	e := at.Sub(t.CreatedAt) - time.Duration(t.SLAPausedSeconds)*time.Second
+	if t.PendingSince != nil && at.After(*t.PendingSince) {
+		e -= at.Sub(*t.PendingSince)
+	}
+	return e
+}
+
 // IsResponseBreached returns true when the response target has elapsed and no
 // first response has been recorded.
-func IsResponseBreached(r Record, p Policy, ticketCreatedAt, now time.Time) bool {
+func IsResponseBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bool {
 	if r.FirstResponseAt != nil {
 		return false // already responded
 	}
-	deadline := ticketCreatedAt.Add(time.Duration(p.ResponseTargetMin) * time.Minute)
-	return now.After(deadline)
+	return Elapsed(t, now) > time.Duration(p.ResponseTargetMin)*time.Minute
 }
 
 // IsResolutionBreached returns true when the resolution target has elapsed and
 // the ticket has not been resolved.
-func IsResolutionBreached(r Record, p Policy, ticketCreatedAt, now time.Time) bool {
-	deadline := ticketCreatedAt.Add(time.Duration(p.ResolutionTargetMin) * time.Minute)
+func IsResolutionBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bool {
+	target := time.Duration(p.ResolutionTargetMin) * time.Minute
 	if r.ResolvedAt != nil {
 		// Resolved: judge it by WHEN, not by the clock now. Treating any
 		// resolved ticket as met would hide every late resolution; the old
 		// early return did that, and nothing recorded ResolvedAt anyway, so
 		// on-time resolutions were about to be reported as breaches instead.
-		return r.ResolvedAt.After(deadline)
+		return Elapsed(t, *r.ResolvedAt) > target
 	}
-	return now.After(deadline)
+	return Elapsed(t, now) > target
 }

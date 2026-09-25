@@ -108,19 +108,21 @@ func (s *Store) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID,
 
 func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 	return s.q.UpdateTicket(ctx, dbgen.UpdateTicketParams{
-		ID:              t.ID,
-		Subject:         t.Subject,
-		Description:     t.Description,
-		TypeID:          database.NullUUID(t.TypeID),
-		ItemID:          database.NullUUID(t.ItemID),
-		Priority:        string(t.Priority),
-		StatusID:        t.StatusID,
-		AssigneeUserID:  database.NullUUID(t.AssigneeUserID),
-		AssigneeGroupID: database.NullUUID(t.AssigneeGroupID),
-		ResolutionNotes: database.NullString(t.ResolutionNotes),
-		ResolvedAt:      database.NullTime(t.ResolvedAt),
-		ClosedAt:        database.NullTime(t.ClosedAt),
-		UpdatedAt:       time.Now(),
+		ID:               t.ID,
+		Subject:          t.Subject,
+		Description:      t.Description,
+		TypeID:           database.NullUUID(t.TypeID),
+		ItemID:           database.NullUUID(t.ItemID),
+		Priority:         string(t.Priority),
+		StatusID:         t.StatusID,
+		AssigneeUserID:   database.NullUUID(t.AssigneeUserID),
+		AssigneeGroupID:  database.NullUUID(t.AssigneeGroupID),
+		ResolutionNotes:  database.NullString(t.ResolutionNotes),
+		ResolvedAt:       database.NullTime(t.ResolvedAt),
+		ClosedAt:         database.NullTime(t.ClosedAt),
+		UpdatedAt:        time.Now(),
+		PendingSince:     database.NullTime(t.PendingSince),
+		SlaPausedSeconds: t.SLAPausedSeconds,
 	})
 }
 
@@ -673,50 +675,54 @@ func (s *Store) CountByStatusForAssignee(ctx context.Context, statusID, userID u
 // underlying types, tags ignored). That lets fromRow's mapping logic live
 // in exactly one place instead of being duplicated per query.
 type ticketRow struct {
-	ID              uuid.UUID
-	TrackingNumber  string
-	Subject         string
-	Description     string
-	CategoryID      uuid.UUID
-	TypeID          uuid.NullUUID
-	ItemID          uuid.NullUUID
-	Priority        string
-	StatusID        uuid.UUID
-	AssigneeUserID  uuid.NullUUID
-	AssigneeGroupID uuid.NullUUID
-	ReporterUserID  uuid.NullUUID
-	GuestEmail      sql.NullString
-	ResolutionNotes sql.NullString
-	ResolvedAt      sql.NullTime
-	ClosedAt        sql.NullTime
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	GuestName       string
-	GuestPhone      string
+	ID               uuid.UUID
+	TrackingNumber   string
+	Subject          string
+	Description      string
+	CategoryID       uuid.UUID
+	TypeID           uuid.NullUUID
+	ItemID           uuid.NullUUID
+	Priority         string
+	StatusID         uuid.UUID
+	AssigneeUserID   uuid.NullUUID
+	AssigneeGroupID  uuid.NullUUID
+	ReporterUserID   uuid.NullUUID
+	GuestEmail       sql.NullString
+	ResolutionNotes  sql.NullString
+	ResolvedAt       sql.NullTime
+	ClosedAt         sql.NullTime
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	GuestName        string
+	GuestPhone       string
+	PendingSince     sql.NullTime
+	SlaPausedSeconds int64
 }
 
 func fromRow(r ticketRow) ticket.Ticket {
 	return ticket.Ticket{
-		ID:              r.ID,
-		TrackingNumber:  ticket.TrackingNumber(r.TrackingNumber),
-		Subject:         r.Subject,
-		Description:     r.Description,
-		CategoryID:      r.CategoryID,
-		TypeID:          database.UUIDPtr(r.TypeID),
-		ItemID:          database.UUIDPtr(r.ItemID),
-		Priority:        ticket.Priority(r.Priority),
-		StatusID:        r.StatusID,
-		AssigneeUserID:  database.UUIDPtr(r.AssigneeUserID),
-		AssigneeGroupID: database.UUIDPtr(r.AssigneeGroupID),
-		ReporterUserID:  database.UUIDPtr(r.ReporterUserID),
-		GuestEmail:      database.StringPtr(r.GuestEmail),
-		GuestName:       r.GuestName,
-		GuestPhone:      r.GuestPhone,
-		ResolutionNotes: database.StringPtr(r.ResolutionNotes),
-		ResolvedAt:      database.TimePtr(r.ResolvedAt),
-		ClosedAt:        database.TimePtr(r.ClosedAt),
-		CreatedAt:       r.CreatedAt,
-		UpdatedAt:       r.UpdatedAt,
+		ID:               r.ID,
+		TrackingNumber:   ticket.TrackingNumber(r.TrackingNumber),
+		Subject:          r.Subject,
+		Description:      r.Description,
+		CategoryID:       r.CategoryID,
+		TypeID:           database.UUIDPtr(r.TypeID),
+		ItemID:           database.UUIDPtr(r.ItemID),
+		Priority:         ticket.Priority(r.Priority),
+		StatusID:         r.StatusID,
+		AssigneeUserID:   database.UUIDPtr(r.AssigneeUserID),
+		AssigneeGroupID:  database.UUIDPtr(r.AssigneeGroupID),
+		ReporterUserID:   database.UUIDPtr(r.ReporterUserID),
+		GuestEmail:       database.StringPtr(r.GuestEmail),
+		GuestName:        r.GuestName,
+		GuestPhone:       r.GuestPhone,
+		ResolutionNotes:  database.StringPtr(r.ResolutionNotes),
+		ResolvedAt:       database.TimePtr(r.ResolvedAt),
+		ClosedAt:         database.TimePtr(r.ClosedAt),
+		CreatedAt:        r.CreatedAt,
+		UpdatedAt:        r.UpdatedAt,
+		PendingSince:     database.TimePtr(r.PendingSince),
+		SLAPausedSeconds: r.SlaPausedSeconds,
 	}
 }
 

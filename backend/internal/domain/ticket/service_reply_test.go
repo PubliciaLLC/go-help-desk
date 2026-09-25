@@ -24,9 +24,11 @@ type harness struct {
 	atomic     *fakeAtomic
 	sla        *fakeSLA
 
-	newStatus      ticket.Status
-	resolvedStatus ticket.Status
-	closedStatus   ticket.Status
+	newStatus        ticket.Status
+	resolvedStatus   ticket.Status
+	closedStatus     ticket.Status
+	pendingStatus    ticket.Status // custom status named "Pending" — pauses SLA
+	inProgressStatus ticket.Status // an ordinary custom status that does not
 }
 
 func newHarness(t *testing.T) *harness {
@@ -35,25 +37,31 @@ func newHarness(t *testing.T) *harness {
 	newSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameNew, Kind: ticket.StatusKindSystem, Active: true}
 	resolvedSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameResolved, Kind: ticket.StatusKindSystem, Active: true}
 	closedSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNameClosed, Kind: ticket.StatusKindSystem, Active: true}
+	pendingSt := ticket.Status{ID: uuid.New(), Name: ticket.StatusNamePending, Kind: ticket.StatusKindCustom, Active: true}
+	inProgressSt := ticket.Status{ID: uuid.New(), Name: "In Progress", Kind: ticket.StatusKindCustom, Active: true}
 
 	statuses := &fakeStatusStore{
 		byName: map[string]ticket.Status{
 			ticket.StatusNameNew:      newSt,
 			ticket.StatusNameResolved: resolvedSt,
 			ticket.StatusNameClosed:   closedSt,
+			ticket.StatusNamePending:  pendingSt,
+			"In Progress":             inProgressSt,
 		},
 		counts: make(map[uuid.UUID]int64),
 	}
 
 	h := &harness{
-		store:          newFakeStore(),
-		statuses:       statuses,
-		dispatcher:     &fakeDispatcher{},
-		auditStore:     &fakeAuditStore{},
-		sla:            &fakeSLA{},
-		newStatus:      newSt,
-		resolvedStatus: resolvedSt,
-		closedStatus:   closedSt,
+		store:            newFakeStore(),
+		statuses:         statuses,
+		dispatcher:       &fakeDispatcher{},
+		auditStore:       &fakeAuditStore{},
+		sla:              &fakeSLA{},
+		newStatus:        newSt,
+		resolvedStatus:   resolvedSt,
+		closedStatus:     closedSt,
+		pendingStatus:    pendingSt,
+		inProgressStatus: inProgressSt,
 	}
 	h.atomic = &fakeAtomic{store: h.store, audit: h.auditStore}
 	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)

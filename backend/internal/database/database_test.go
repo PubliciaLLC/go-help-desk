@@ -335,6 +335,99 @@ func TestTicketStore_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, ticketstore.ErrNotFound)
 }
 
+// TestTicketStore_PersistsSLAPause covers the two new columns from migration
+// 000025 (#181): every read path in ticketstore explicitly lists the tickets
+// table's columns rather than using SELECT *, so a query left off that list
+// fails silently (it compiles, and the field just always reads zero) rather
+// than with an error. This round-trips through Update, GetByID,
+// GetByIDForUpdate and ListAll, which is the query the one-off round-trip
+// case above would not have caught.
+func TestTicketStore_PersistsSLAPause(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	reporter := user.User{
+		ID: uuid.New(), Email: "sla-pause@example.com", DisplayName: "Reporter",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC().Truncate(time.Millisecond), UpdatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, us.Create(ctx, reporter))
+
+	cat := category.Category{ID: uuid.New(), Name: "SLA pause", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2026, 900001),
+		Subject:        "SLA pause round trip",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityMedium,
+		StatusID:       newSt.ID,
+		ReporterUserID: &reporter.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	// Fresh ticket: not pending, zero accumulated.
+	got, err := ts.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.PendingSince)
+	require.Zero(t, got.SLAPausedSeconds)
+
+	// Set both fields.
+	pendingSince := now.Add(-5 * time.Minute)
+	got.PendingSince = &pendingSince
+	got.SLAPausedSeconds = 42
+	require.NoError(t, ts.Update(ctx, got))
+
+	reread, err := ts.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, reread.PendingSince)
+	require.True(t, reread.PendingSince.Equal(pendingSince))
+	require.Equal(t, int64(42), reread.SLAPausedSeconds)
+
+	// GetByIDForUpdate reads the same columns.
+	locked, err := ts.GetByIDForUpdate(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, locked.PendingSince)
+	require.Equal(t, int64(42), locked.SLAPausedSeconds)
+
+	// A listing query must carry the fields too — this is what catches a
+	// SELECT column list that was missed on one of the eighteen ticket reads.
+	all, err := ts.ListAll(ctx, 100, 0)
+	require.NoError(t, err)
+	var found bool
+	for _, l := range all {
+		if l.ID == tk.ID {
+			found = true
+			require.NotNil(t, l.PendingSince)
+			require.Equal(t, int64(42), l.SLAPausedSeconds)
+		}
+	}
+	require.True(t, found)
+
+	// Clearing PendingSince (leaving Pending) writes back to NULL, not to a
+	// zero-value time.Time that would round-trip as "epoch" instead of unset.
+	reread.PendingSince = nil
+	require.NoError(t, ts.Update(ctx, reread))
+
+	cleared, err := ts.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Nil(t, cleared.PendingSince)
+	require.Equal(t, int64(42), cleared.SLAPausedSeconds, "clearing the interval must not touch the accumulated total")
+}
+
 // TestTicketStore_ScopedListsAndCounts covers the admin-scope list helpers
 // (ListAll / ListUnassigned and their Search variants) and the scoped status
 // counts used to drive per-role dashboard numbers.

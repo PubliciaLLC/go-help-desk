@@ -46,6 +46,14 @@ const (
 	StatusNameNew      = "New"
 	StatusNameResolved = "Resolved"
 	StatusNameClosed   = "Closed"
+
+	// StatusNamePending is a seeded *custom* status (migration 000001), not a
+	// system one, so there is no cached ID for it the way there is for the
+	// three above. It is identified by name, matching how
+	// lifecycleAllowsReply already compares Resolved/Closed. Known
+	// consequence, accepted: an admin who renames the status stops future
+	// SLA pauses (see sla.Elapsed and applyStatusTimestamps).
+	StatusNamePending = "Pending"
 )
 
 // Status represents a ticket state. System statuses have special lifecycle
@@ -121,6 +129,13 @@ type Ticket struct {
 	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
+
+	// PendingSince is when the ticket entered its current Pending interval; nil
+	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
+	// interval that has already closed. Both are maintained by
+	// applyStatusTimestamps and read by sla.Elapsed; nothing else writes them.
+	PendingSince     *time.Time `json:"pending_since,omitempty"`
+	SLAPausedSeconds int64      `json:"sla_paused_seconds"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the
