@@ -52,3 +52,33 @@ UPDATE sla_records
 SET first_response_at = $2, resolved_at = $3,
     response_breached_at = $4, resolution_breached_at = $5
 WHERE ticket_id = $1;
+
+-- name: ListSLABreachCandidates :many
+-- Tickets the breach sweep must evaluate: open, under a policy, with at least
+-- one target that is neither met nor already stamped. The age check is a
+-- necessary condition only: elapsed-toward-target can never exceed wall-clock
+-- age (pausing only subtracts), so a ticket younger than its target cannot
+-- have breached under any accounting. The sufficient check — pause-aware — is
+-- EvaluateBreaches' job, not this query's.
+SELECT r.ticket_id
+FROM sla_records r
+JOIN tickets      t ON t.id = r.ticket_id
+JOIN sla_policies p ON p.id = r.policy_id
+WHERE t.closed_at IS NULL
+  AND (
+       (r.first_response_at IS NULL AND r.response_breached_at IS NULL
+          AND t.created_at + make_interval(mins => p.response_target_min) <= sqlc.arg(now)::timestamptz)
+    OR (r.resolved_at IS NULL AND r.resolution_breached_at IS NULL
+          AND t.created_at + make_interval(mins => p.resolution_target_min) <= sqlc.arg(now)::timestamptz)
+  )
+ORDER BY t.created_at;
+
+-- name: StampSLABreaches :exec
+-- Sets only the breach columns, and only where still NULL. Two evaluators
+-- racing on the same row cannot overwrite each other's stamp or, worse, the
+-- request path's first_response_at / resolved_at. A stamp, once set, is a
+-- fact about what happened (DESIGN.md) and is never cleared here.
+UPDATE sla_records
+SET response_breached_at   = COALESCE(response_breached_at,   sqlc.narg(response_breached_at)::timestamptz),
+    resolution_breached_at = COALESCE(resolution_breached_at, sqlc.narg(resolution_breached_at)::timestamptz)
+WHERE ticket_id = $1;

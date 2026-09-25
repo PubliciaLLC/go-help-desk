@@ -74,33 +74,107 @@ func (s *Service) RecordResolved(ctx context.Context, ticketID uuid.UUID, at tim
 }
 
 // EvaluateBreaches checks whether a ticket has breached its SLA targets and
-// stamps the breach timestamps if so. Called on a schedule.
+// stamps the breach timestamps if so. Called per ticket, from the periodic
+// sweep (see SweepBreaches) or directly, as service_test.go still does.
 func (s *Service) EvaluateBreaches(ctx context.Context, t ticket.Ticket, now time.Time) error {
+	_, err := s.evaluate(ctx, t, now)
+	return err
+}
+
+// evaluate is EvaluateBreaches' implementation. It reports whether it wrote a
+// new breach stamp, so SweepBreaches can count it, without changing
+// EvaluateBreaches' own exported signature.
+//
+// A newly-detected breach is written through StampBreaches, not UpdateRecord.
+// UpdateRecord is a full-row read-modify-write, and the sweep's read and
+// write are far enough apart in time — up to a full pass over every open SLA
+// ticket — that a staff reply recording FirstResponseAt or ResolvedAt in
+// between would be silently overwritten back to NULL by a stale copy of this
+// function's own read. StampBreaches only ever sets a column that is still
+// NULL, so it cannot clobber a concurrent write to a column it does not own,
+// and calling it a second time with the same or a later now is a no-op.
+func (s *Service) evaluate(ctx context.Context, t ticket.Ticket, now time.Time) (bool, error) {
 	record, err := s.store.GetRecord(ctx, t.ID)
 	if errors.Is(err, ErrNoRecord) {
-		return nil // this ticket is not under an SLA
+		return false, nil // this ticket is not under an SLA
 	}
 	if err != nil {
-		return fmt.Errorf("getting SLA record: %w", err)
+		return false, fmt.Errorf("getting SLA record: %w", err)
 	}
 	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
 	if err != nil {
-		return fmt.Errorf("getting SLA policy: %w", err)
+		return false, fmt.Errorf("getting SLA policy: %w", err)
 	}
 
-	changed := false
+	var response, resolution *time.Time
 	if record.ResponseBreachedAt == nil && IsResponseBreached(record, policy, t, now) {
-		record.ResponseBreachedAt = &now
-		changed = true
+		response = &now
 	}
 	if record.ResolutionBreachedAt == nil && IsResolutionBreached(record, policy, t, now) {
-		record.ResolutionBreachedAt = &now
-		changed = true
+		resolution = &now
 	}
-	if changed {
-		return s.store.UpdateRecord(ctx, record)
+	if response == nil && resolution == nil {
+		return false, nil
 	}
-	return nil
+	if err := s.store.StampBreaches(ctx, t.ID, response, resolution); err != nil {
+		return false, fmt.Errorf("stamping SLA breaches: %w", err)
+	}
+	return true, nil
+}
+
+// TicketGetter is what SweepBreaches needs from the ticket layer: the full
+// row, so whatever fields the pause-aware elapsed calculation reads (see
+// sla.Elapsed) reach evaluate() rather than a partial struct built from the
+// candidate query's own columns, which would silently evaluate as never
+// paused.
+type TicketGetter interface {
+	GetByID(ctx context.Context, id uuid.UUID) (ticket.Ticket, error)
+}
+
+// SweepResult reports how many candidates a SweepBreaches pass looked at and
+// how many of those it actually stamped a new breach for.
+type SweepResult struct {
+	Evaluated int
+	Stamped   int
+}
+
+// SweepBreaches evaluates every current breach candidate once. Called on a
+// schedule (see cmd/server/main.go).
+//
+// A failure loading or evaluating one ticket does not stop the pass; every
+// such failure is collected and returned together via errors.Join, alongside
+// the counts of what did succeed. The pass stops early only when ctx is
+// done, between candidates, so a cancelled sweep does not start work it
+// cannot finish.
+func (s *Service) SweepBreaches(ctx context.Context, tickets TicketGetter, now time.Time) (SweepResult, error) {
+	var res SweepResult
+
+	ids, err := s.store.ListBreachCandidates(ctx, now)
+	if err != nil {
+		return res, fmt.Errorf("listing SLA breach candidates: %w", err)
+	}
+
+	var errs []error
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return res, err
+		}
+		t, err := tickets.GetByID(ctx, id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("loading ticket %s for SLA sweep: %w", id, err))
+			continue
+		}
+		stamped, err := s.evaluate(ctx, t, now)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("evaluating SLA breaches for ticket %s: %w", id, err))
+			continue
+		}
+		res.Evaluated++
+		if stamped {
+			res.Stamped++
+		}
+	}
+	return res, errors.Join(errs...)
 }
 
 // ── Policy CRUD ───────────────────────────────────────────────────────────────

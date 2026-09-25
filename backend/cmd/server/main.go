@@ -67,6 +67,18 @@ func main() {
 	}
 }
 
+// slaSweepInterval is how often the breach sweep runs. Policy targets are
+// integer minutes (response_target_min / resolution_target_min), and the
+// sweep stamps the time a breach was DETECTED rather than the deadline
+// instant, so this interval is exactly the stamp's worst-case error. One
+// minute keeps that error at the same granularity as the targets themselves:
+// 30s would double the query load for sub-minute precision no target can
+// express, and 5m would let a 15-minute critical response target report a
+// breach up to 33% late. Not configurable — DESIGN.md names no setting for
+// it, and the candidate query's own age prefilter keeps the load bounded
+// regardless of interval.
+const slaSweepInterval = time.Minute
+
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -292,6 +304,33 @@ func run() error {
 			}
 		}
 	}()
+
+	// Breach stamps are facts about time passing, so like session expiry they
+	// cannot be computed on read: a ticket nobody touches still breaches.
+	// See DESIGN.md → SLA Tracking → Breach Evaluation.
+	if cfg.SLAEnabled {
+		go func() {
+			t := time.NewTicker(slaSweepInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-sweepCtx.Done():
+					return
+				case <-t.C:
+					res, err := slaPolicySvc.SweepBreaches(sweepCtx, tStore, time.Now())
+					if err != nil {
+						// Partial failures are joined; res is still meaningful.
+						slog.WarnContext(sweepCtx, "sweeping SLA breaches failed", "error", err,
+							"evaluated", res.Evaluated, "stamped", res.Stamped)
+					}
+					if res.Stamped > 0 {
+						slog.InfoContext(sweepCtx, "stamped SLA breaches",
+							"evaluated", res.Evaluated, "stamped", res.Stamped)
+					}
+				}
+			}
+		}()
+	}
 
 	httpSrv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),

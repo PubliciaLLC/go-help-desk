@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
@@ -118,6 +119,25 @@ func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
 		ResponseBreachedAt:   database.NullTime(r.ResponseBreachedAt),
 		ResolutionBreachedAt: database.NullTime(r.ResolutionBreachedAt),
 	})
+}
+
+func (s *Store) ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	ids, err := s.q.ListSLABreachCandidates(ctx, now)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA breach candidates: %w", err)
+	}
+	return ids, nil
+}
+
+func (s *Store) StampBreaches(ctx context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
+	if err := s.q.StampSLABreaches(ctx, dbgen.StampSLABreachesParams{
+		TicketID:             ticketID,
+		ResponseBreachedAt:   database.NullTime(response),
+		ResolutionBreachedAt: database.NullTime(resolution),
+	}); err != nil {
+		return fmt.Errorf("stamping SLA breaches for ticket %s: %w", ticketID, err)
+	}
+	return nil
 }
 
 func policyFromRow(r dbgen.SlaPolicy) sla.Policy {

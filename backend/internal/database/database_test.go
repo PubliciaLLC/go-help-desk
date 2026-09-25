@@ -1047,6 +1047,204 @@ func TestSLAStore_FindPolicyTiers(t *testing.T) {
 	}
 }
 
+// TestSLAStore_ListBreachCandidates exercises the sweep's selection query
+// directly. It is a necessary-but-not-sufficient prefilter driven only by
+// wall-clock age against a fixed policy (30-minute response target, 120-minute
+// resolution target); each case seeds one ticket's sla_records columns
+// directly and checks whether its id is returned for a fixed `now`.
+func TestSLAStore_ListBreachCandidates(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	cases := []struct {
+		name                 string
+		age                  time.Duration
+		firstResponseAt      bool
+		resolvedAt           bool
+		responseBreachedAt   bool
+		resolutionBreachedAt bool
+		closed               bool
+		noRecord             bool
+		want                 bool
+	}{
+		{name: "no response, age past response target", age: 40 * time.Minute, want: true},
+		{name: "no response, age under response target", age: 10 * time.Minute, want: false},
+		{name: "responded, unresolved, age past resolution target", age: 3 * time.Hour, firstResponseAt: true, want: true},
+		{name: "responded, unresolved, age between the two targets", age: 40 * time.Minute, firstResponseAt: true, want: false},
+		{name: "response already stamped, resolution outstanding and overdue", age: 3 * time.Hour, responseBreachedAt: true, want: true},
+		{name: "both targets already stamped", age: 3 * time.Hour, responseBreachedAt: true, resolutionBreachedAt: true, want: false},
+		{name: "responded and resolved", age: 3 * time.Hour, firstResponseAt: true, resolvedAt: true, want: false},
+		{name: "closed ticket, overdue", age: 3 * time.Hour, closed: true, want: false},
+		{name: "no SLA record at all", age: 3 * time.Hour, noRecord: true, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			q, rollback := testutil.TxQueries(t, db)
+			defer rollback()
+
+			ctx := context.Background()
+			ss := slastore.New(q)
+			us := userstore.New(q)
+			cs := categorystore.New(q)
+			ts := ticketstore.New(q)
+
+			u := user.User{
+				ID: uuid.New(), Email: uuid.NewString() + "@example.com", DisplayName: "Candidate",
+				Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
+			}
+			require.NoError(t, us.Create(ctx, u))
+			cat := category.Category{ID: uuid.New(), Name: "Cand " + tc.name, SortOrder: 1, Active: true}
+			require.NoError(t, cs.CreateCategory(ctx, cat))
+			newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+			require.NoError(t, err)
+
+			createdAt := now.Add(-tc.age)
+			tk := ticket.Ticket{
+				ID:             uuid.New(),
+				TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 700),
+				Subject:        "Candidate test ticket",
+				CategoryID:     cat.ID,
+				Priority:       ticket.PriorityHigh,
+				StatusID:       newSt.ID,
+				ReporterUserID: &u.ID,
+				CreatedAt:      createdAt,
+				UpdatedAt:      createdAt,
+			}
+			require.NoError(t, ts.Create(ctx, tk))
+
+			if tc.closed {
+				closedAt := now
+				tk.ClosedAt = &closedAt
+				require.NoError(t, ts.Update(ctx, tk))
+			}
+
+			if !tc.noRecord {
+				p := sla.Policy{
+					ID: uuid.New(), Name: "Cand policy " + tc.name,
+					ResponseTargetMin: 30, ResolutionTargetMin: 120,
+				}
+				require.NoError(t, ss.CreatePolicy(ctx, p))
+
+				rec := sla.Record{TicketID: tk.ID, PolicyID: p.ID}
+				stamp := createdAt.Add(time.Minute) // any time before `now`; only nil-ness matters here
+				if tc.firstResponseAt {
+					rec.FirstResponseAt = &stamp
+				}
+				if tc.resolvedAt {
+					rec.ResolvedAt = &stamp
+				}
+				if tc.responseBreachedAt {
+					rec.ResponseBreachedAt = &stamp
+				}
+				if tc.resolutionBreachedAt {
+					rec.ResolutionBreachedAt = &stamp
+				}
+				require.NoError(t, ss.CreateRecord(ctx, rec))
+			}
+
+			got, err := ss.ListBreachCandidates(ctx, now)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, containsUUID(got, tk.ID))
+		})
+	}
+}
+
+func containsUUID(ids []uuid.UUID, id uuid.UUID) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSLAStore_StampBreaches pins the lost-update guard the design relies on:
+// StampBreaches only ever fills a NULL breach column, never overwrites one
+// already set, and never touches any column it does not own.
+func TestSLAStore_StampBreaches(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	ss := slastore.New(q)
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	u := user.User{
+		ID: uuid.New(), Email: "stamp@example.com", DisplayName: "Stamp",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, u))
+	cat := category.Category{ID: uuid.New(), Name: "StampCat", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 701),
+		Subject:        "Stamp test ticket",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityHigh,
+		StatusID:       newSt.ID,
+		ReporterUserID: &u.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	p := sla.Policy{ID: uuid.New(), Name: "StampPolicy", ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	require.NoError(t, ss.CreatePolicy(ctx, p))
+	require.NoError(t, ss.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: p.ID}))
+
+	// First stamp: response only.
+	t1 := now.Add(10 * time.Minute)
+	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t1, nil))
+
+	rec, err := ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.ResponseBreachedAt)
+	require.True(t, t1.Equal(*rec.ResponseBreachedAt))
+	require.Nil(t, rec.ResolutionBreachedAt)
+
+	// A later stamp for both columns: the already-set response column must
+	// not move, and the still-NULL resolution column must be filled in.
+	t2 := now.Add(20 * time.Minute)
+	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t2, &t2))
+
+	rec, err = ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+	require.True(t, t1.Equal(*rec.ResponseBreachedAt), "response stamp must not move once set")
+	require.NotNil(t, rec.ResolutionBreachedAt)
+	require.True(t, t2.Equal(*rec.ResolutionBreachedAt))
+
+	// The lost-update guard: a first_response_at written through UpdateRecord
+	// (the request path) between two stamp calls must survive a later stamp.
+	firstResp := now.Add(5 * time.Minute)
+	rec.FirstResponseAt = &firstResp
+	require.NoError(t, ss.UpdateRecord(ctx, rec))
+
+	t3 := now.Add(30 * time.Minute)
+	require.NoError(t, ss.StampBreaches(ctx, tk.ID, &t3, &t3))
+
+	rec, err = ss.GetRecord(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.FirstResponseAt, "a stamp call must not clear a field it does not own")
+	require.True(t, firstResp.Equal(*rec.FirstResponseAt))
+	require.True(t, t1.Equal(*rec.ResponseBreachedAt))
+	require.True(t, t2.Equal(*rec.ResolutionBreachedAt))
+
+	// Stamping a ticket id with no sla_records row is a silent no-op.
+	require.NoError(t, ss.StampBreaches(ctx, uuid.New(), &t1, nil))
+}
+
 // ── Admin store ──────────────────────────────────────────────────────────────
 
 func TestAdminStore(t *testing.T) {

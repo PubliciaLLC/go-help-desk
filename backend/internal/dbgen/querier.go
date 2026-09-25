@@ -7,6 +7,7 @@ package dbgen
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	uuid "github.com/google/uuid"
 )
@@ -205,6 +206,13 @@ type Querier interface {
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error)
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
+	// Tickets the breach sweep must evaluate: open, under a policy, with at least
+	// one target that is neither met nor already stamped. The age check is a
+	// necessary condition only: elapsed-toward-target can never exceed wall-clock
+	// age (pausing only subtracts), so a ticket younger than its target cannot
+	// have breached under any accounting. The sufficient check — pause-aware — is
+	// EvaluateBreaches' job, not this query's.
+	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
@@ -267,6 +275,11 @@ type Querier interface {
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
+	// Sets only the breach columns, and only where still NULL. Two evaluators
+	// racing on the same row cannot overwrite each other's stamp or, worse, the
+	// request path's first_response_at / resolved_at. A stamp, once set, is a
+	// fact about what happened (DESIGN.md) and is never cleared here.
+	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error

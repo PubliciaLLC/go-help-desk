@@ -18,6 +18,12 @@ type fakeSLAStore struct {
 	records  map[uuid.UUID]sla.Record
 	// findPolicy returns a policy if one is set for (priority, categoryID).
 	findResult *sla.Policy
+
+	// candidates is what ListBreachCandidates returns.
+	candidates []uuid.UUID
+
+	updateRecordCalls int
+	stampCalls        int
 }
 
 func newFakeSLAStore() *fakeSLAStore {
@@ -68,8 +74,51 @@ func (f *fakeSLAStore) GetRecord(_ context.Context, ticketID uuid.UUID) (sla.Rec
 	return r, nil
 }
 func (f *fakeSLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
+	f.updateRecordCalls++
 	f.records[r.TicketID] = r
 	return nil
+}
+func (f *fakeSLAStore) ListBreachCandidates(_ context.Context, _ time.Time) ([]uuid.UUID, error) {
+	return f.candidates, nil
+}
+
+// StampBreaches applies the same COALESCE semantics the real query does:
+// only a currently-nil column is set, and nothing else on the record changes.
+func (f *fakeSLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
+	f.stampCalls++
+	r, ok := f.records[ticketID]
+	if !ok {
+		return nil // no record for this ticket: a silent no-op, like the real query.
+	}
+	if r.ResponseBreachedAt == nil {
+		r.ResponseBreachedAt = response
+	}
+	if r.ResolutionBreachedAt == nil {
+		r.ResolutionBreachedAt = resolution
+	}
+	f.records[ticketID] = r
+	return nil
+}
+
+// fakeTickets is an in-memory sla.TicketGetter.
+type fakeTickets struct {
+	tickets map[uuid.UUID]ticket.Ticket
+	errs    map[uuid.UUID]error
+}
+
+func newFakeTickets() *fakeTickets {
+	return &fakeTickets{tickets: make(map[uuid.UUID]ticket.Ticket), errs: make(map[uuid.UUID]error)}
+}
+
+func (f *fakeTickets) GetByID(_ context.Context, id uuid.UUID) (ticket.Ticket, error) {
+	if err, ok := f.errs[id]; ok {
+		return ticket.Ticket{}, err
+	}
+	t, ok := f.tickets[id]
+	if !ok {
+		return ticket.Ticket{}, errors.New("ticket not found")
+	}
+	return t, nil
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -224,6 +273,202 @@ func TestSLAService_EvaluateBreaches_PausedTicketDoesNotBreach(t *testing.T) {
 	require.NotNil(t, rec.ResolutionBreachedAt)
 }
 
+// A fresh breach must be stamped exactly once, and re-evaluating later (with
+// the record now carrying the stamp) must not touch it again or write a
+// second time.
+func TestEvaluateBreaches_Idempotent(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-3 * time.Hour)
+	now := time.Now()
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+	require.Equal(t, 1, store.stampCalls)
+
+	first := store.records[ticketID]
+	require.NotNil(t, first.ResponseBreachedAt)
+	require.NotNil(t, first.ResolutionBreachedAt)
+
+	// Evaluate again, an hour later: the stamp must not move, and the store
+	// must not be written to again.
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now.Add(time.Hour)))
+	require.Equal(t, 1, store.stampCalls, "an already-stamped record must not be written again")
+
+	again := store.records[ticketID]
+	require.True(t, first.ResponseBreachedAt.Equal(*again.ResponseBreachedAt))
+	require.True(t, first.ResolutionBreachedAt.Equal(*again.ResolutionBreachedAt))
+}
+
+// The regression for the design's §4: a fresh breach must be written through
+// StampBreaches, never through UpdateRecord — UpdateRecord is a full-row
+// read-modify-write, and a reply landing between the sweep's read and its
+// write would un-stamp first_response_at/resolved_at.
+func TestEvaluateBreaches_NeverWritesThroughUpdateRecord(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: time.Now().Add(-3 * time.Hour)}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, time.Now()))
+
+	require.Equal(t, 0, store.updateRecordCalls, "a fresh breach must not go through UpdateRecord")
+	require.Equal(t, 1, store.stampCalls)
+	require.NotNil(t, store.records[ticketID].ResponseBreachedAt)
+}
+
+// A stamp, once set, is a fact about what happened: it must survive a later
+// policy change or reopen. Both are the same code path (evaluate() sees a
+// record whose breach columns are already set and does nothing), but the
+// test exercises the two scenarios the issue names explicitly.
+func TestEvaluateBreaches_StampSurvivesPolicyChange(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-3 * time.Hour)
+	now := time.Now()
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
+	stamped := store.records[ticketID]
+	require.NotNil(t, stamped.ResponseBreachedAt)
+	require.NotNil(t, stamped.ResolutionBreachedAt)
+
+	// Policy change: raising the targets to something the ticket would never
+	// have breached under must not clear the existing stamp.
+	loose := store.policies[policyID]
+	loose.ResponseTargetMin = 10000
+	loose.ResolutionTargetMin = 10000
+	store.policies[policyID] = loose
+
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now.Add(time.Minute)))
+	afterPolicyChange := store.records[ticketID]
+	require.True(t, stamped.ResponseBreachedAt.Equal(*afterPolicyChange.ResponseBreachedAt))
+	require.True(t, stamped.ResolutionBreachedAt.Equal(*afterPolicyChange.ResolutionBreachedAt))
+
+	// Reopen: clearing ResolvedAt on the record must not clear the stamp either.
+	reopened := store.records[ticketID]
+	reopened.ResolvedAt = nil
+	store.records[ticketID] = reopened
+
+	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now.Add(2*time.Minute)))
+	afterReopen := store.records[ticketID]
+	require.True(t, stamped.ResponseBreachedAt.Equal(*afterReopen.ResponseBreachedAt))
+	require.True(t, stamped.ResolutionBreachedAt.Equal(*afterReopen.ResolutionBreachedAt))
+}
+
+func TestSweepBreaches(t *testing.T) {
+	t.Run("empty candidate set", func(t *testing.T) {
+		store := newFakeSLAStore()
+		svc := sla.NewService(store)
+
+		res, err := svc.SweepBreaches(context.Background(), newFakeTickets(), time.Now())
+		require.NoError(t, err)
+		require.Equal(t, sla.SweepResult{}, res)
+	})
+
+	t.Run("two candidates, one past deadline and one not", func(t *testing.T) {
+		store := newFakeSLAStore()
+		policyID := uuid.New()
+		store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+
+		breachedID, freshID := uuid.New(), uuid.New()
+		store.records[breachedID] = sla.Record{TicketID: breachedID, PolicyID: policyID}
+		store.records[freshID] = sla.Record{TicketID: freshID, PolicyID: policyID}
+		store.candidates = []uuid.UUID{breachedID, freshID}
+
+		now := time.Now()
+		tickets := newFakeTickets()
+		tickets.tickets[breachedID] = ticket.Ticket{ID: breachedID, CreatedAt: now.Add(-3 * time.Hour)}
+		tickets.tickets[freshID] = ticket.Ticket{ID: freshID, CreatedAt: now.Add(-5 * time.Minute)}
+
+		svc := sla.NewService(store)
+		res, err := svc.SweepBreaches(context.Background(), tickets, now)
+		require.NoError(t, err)
+		require.Equal(t, sla.SweepResult{Evaluated: 2, Stamped: 1}, res)
+		require.NotNil(t, store.records[breachedID].ResponseBreachedAt)
+		require.Nil(t, store.records[freshID].ResponseBreachedAt)
+	})
+
+	t.Run("one candidate's GetByID fails, the other is still stamped", func(t *testing.T) {
+		store := newFakeSLAStore()
+		policyID := uuid.New()
+		store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+
+		okID, missingID := uuid.New(), uuid.New()
+		store.records[okID] = sla.Record{TicketID: okID, PolicyID: policyID}
+		store.candidates = []uuid.UUID{okID, missingID}
+
+		now := time.Now()
+		tickets := newFakeTickets()
+		tickets.tickets[okID] = ticket.Ticket{ID: okID, CreatedAt: now.Add(-3 * time.Hour)}
+		boom := errors.New("ticket store unavailable")
+		tickets.errs[missingID] = boom
+
+		svc := sla.NewService(store)
+		res, err := svc.SweepBreaches(context.Background(), tickets, now)
+		require.ErrorIs(t, err, boom)
+		require.Equal(t, 1, res.Evaluated, "only the successful load counts")
+		require.Equal(t, 1, res.Stamped)
+		require.NotNil(t, store.records[okID].ResponseBreachedAt)
+	})
+
+	t.Run("a stamped candidate re-listed is a no-op", func(t *testing.T) {
+		store := newFakeSLAStore()
+		policyID := uuid.New()
+		store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+
+		ticketID := uuid.New()
+		now := time.Now()
+		already := now.Add(-time.Minute)
+		store.records[ticketID] = sla.Record{
+			TicketID: ticketID, PolicyID: policyID,
+			ResponseBreachedAt: &already, ResolutionBreachedAt: &already,
+		}
+		store.candidates = []uuid.UUID{ticketID}
+
+		tickets := newFakeTickets()
+		tickets.tickets[ticketID] = ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-3 * time.Hour)}
+
+		svc := sla.NewService(store)
+		res, err := svc.SweepBreaches(context.Background(), tickets, now)
+		require.NoError(t, err)
+		require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 0}, res)
+		require.Zero(t, store.stampCalls, "an already-stamped record must not be written")
+	})
+
+	t.Run("cancelled context stops before touching the getter", func(t *testing.T) {
+		store := newFakeSLAStore()
+		ticketID := uuid.New()
+		store.candidates = []uuid.UUID{ticketID}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		tickets := newFakeTickets() // no ticket registered: GetByID would error if called
+		svc := sla.NewService(store)
+		res, err := svc.SweepBreaches(ctx, tickets, time.Now())
+		require.ErrorIs(t, err, context.Canceled)
+		require.Zero(t, res.Evaluated)
+	})
+}
+
 // swallowProbeStore lets a test distinguish "no SLA record" from a store failure, which
 // is the whole point of these tests: the service used to treat both the same.
 type swallowProbeStore struct {
@@ -256,6 +501,19 @@ func (f *swallowProbeStore) GetRecord(_ context.Context, _ uuid.UUID) (sla.Recor
 func (f *swallowProbeStore) UpdateRecord(_ context.Context, r sla.Record) error {
 	f.updates++
 	f.record = r
+	return nil
+}
+func (f *swallowProbeStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (f *swallowProbeStore) StampBreaches(_ context.Context, _ uuid.UUID, response, resolution *time.Time) error {
+	f.updates++
+	if f.record.ResponseBreachedAt == nil {
+		f.record.ResponseBreachedAt = response
+	}
+	if f.record.ResolutionBreachedAt == nil {
+		f.record.ResolutionBreachedAt = resolution
+	}
 	return nil
 }
 

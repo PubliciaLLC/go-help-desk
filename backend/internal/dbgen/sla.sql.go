@@ -8,6 +8,7 @@ package dbgen
 import (
 	"context"
 	"database/sql"
+	"time"
 
 	uuid "github.com/google/uuid"
 )
@@ -152,6 +153,50 @@ func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaReco
 	return i, err
 }
 
+const listSLABreachCandidates = `-- name: ListSLABreachCandidates :many
+SELECT r.ticket_id
+FROM sla_records r
+JOIN tickets      t ON t.id = r.ticket_id
+JOIN sla_policies p ON p.id = r.policy_id
+WHERE t.closed_at IS NULL
+  AND (
+       (r.first_response_at IS NULL AND r.response_breached_at IS NULL
+          AND t.created_at + make_interval(mins => p.response_target_min) <= $1::timestamptz)
+    OR (r.resolved_at IS NULL AND r.resolution_breached_at IS NULL
+          AND t.created_at + make_interval(mins => p.resolution_target_min) <= $1::timestamptz)
+  )
+ORDER BY t.created_at
+`
+
+// Tickets the breach sweep must evaluate: open, under a policy, with at least
+// one target that is neither met nor already stamped. The age check is a
+// necessary condition only: elapsed-toward-target can never exceed wall-clock
+// age (pausing only subtracts), so a ticket younger than its target cannot
+// have breached under any accounting. The sufficient check — pause-aware — is
+// EvaluateBreaches' job, not this query's.
+func (q *Queries) ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listSLABreachCandidates, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var ticket_id uuid.UUID
+		if err := rows.Scan(&ticket_id); err != nil {
+			return nil, err
+		}
+		items = append(items, ticket_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSLAPolicies = `-- name: ListSLAPolicies :many
 SELECT id, name, priority, category_id, response_target_min, resolution_target_min FROM sla_policies ORDER BY priority, name
 `
@@ -184,6 +229,28 @@ func (q *Queries) ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const stampSLABreaches = `-- name: StampSLABreaches :exec
+UPDATE sla_records
+SET response_breached_at   = COALESCE(response_breached_at,   $2::timestamptz),
+    resolution_breached_at = COALESCE(resolution_breached_at, $3::timestamptz)
+WHERE ticket_id = $1
+`
+
+type StampSLABreachesParams struct {
+	TicketID             uuid.UUID    `json:"ticket_id"`
+	ResponseBreachedAt   sql.NullTime `json:"response_breached_at"`
+	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
+}
+
+// Sets only the breach columns, and only where still NULL. Two evaluators
+// racing on the same row cannot overwrite each other's stamp or, worse, the
+// request path's first_response_at / resolved_at. A stamp, once set, is a
+// fact about what happened (DESIGN.md) and is never cleared here.
+func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error {
+	_, err := q.db.ExecContext(ctx, stampSLABreaches, arg.TicketID, arg.ResponseBreachedAt, arg.ResolutionBreachedAt)
+	return err
 }
 
 const updateSLAPolicy = `-- name: UpdateSLAPolicy :exec
