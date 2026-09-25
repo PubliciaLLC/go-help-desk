@@ -32,6 +32,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
+import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString()
@@ -312,6 +313,12 @@ export function TicketDetailPage() {
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
     queryFn: () => getTicket(id),
+    // The server computes SLA status at fetch time; re-polling is simpler
+    // and less error-prone than re-deriving color against a ticking clock in
+    // the browser. 60s is finer than the 80% band of any realistic target,
+    // and only runs at all once this ticket has actually shown a status —
+    // an instance with SLA off never polls for it.
+    refetchInterval: (query) => (query.state.data?.sla != null ? 60_000 : false),
   })
 
   const { data: replies = [] } = useQuery({
@@ -432,6 +439,7 @@ export function TicketDetailPage() {
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
               </Badge>
+              <SLAIndicator sla={ticket.sla} />
             </div>
           </div>
 

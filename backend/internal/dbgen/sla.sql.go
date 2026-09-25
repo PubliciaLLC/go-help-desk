@@ -11,6 +11,7 @@ import (
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const createSLAPolicy = `-- name: CreateSLAPolicy :exec
@@ -217,6 +218,45 @@ func (q *Queries) ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error) {
 			&i.CategoryID,
 			&i.ResponseTargetMin,
 			&i.ResolutionTargetMin,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSLARecordsByTicketIDs = `-- name: ListSLARecordsByTicketIDs :many
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at FROM sla_records WHERE ticket_id = ANY($1::uuid[])
+`
+
+// Batch lookup for the per-ticket SLA status embedded on GET /tickets and
+// GET /tickets/{id} (#183): one query for the whole page, after it is
+// sliced, rather than a JOIN pushed into every one of the ~12 list/search
+// queries that would compute SLA for limit×(1+groups) rows and throw most
+// of them away. See sla.Service.StatusesFor.
+func (q *Queries) ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]SlaRecord, error) {
+	rows, err := q.db.QueryContext(ctx, listSLARecordsByTicketIDs, pq.Array(ticketIds))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SlaRecord
+	for rows.Next() {
+		var i SlaRecord
+		if err := rows.Scan(
+			&i.TicketID,
+			&i.PolicyID,
+			&i.FirstResponseAt,
+			&i.ResolvedAt,
+			&i.ResponseBreachedAt,
+			&i.ResolutionBreachedAt,
 		); err != nil {
 			return nil, err
 		}

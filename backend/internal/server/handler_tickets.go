@@ -87,7 +87,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -206,7 +206,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -277,10 +277,10 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if offset >= len(all) {
-		JSON(w, http.StatusOK, []ticket.Ticket{})
+		s.writeTickets(w, r, nil)
 		return
 	}
-	JSON(w, http.StatusOK, all[offset:min(offset+limit, len(all))])
+	s.writeTickets(w, r, all[offset:min(offset+limit, len(all))])
 }
 
 // POST /api/v1/tickets
@@ -432,7 +432,12 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	JSON(w, http.StatusOK, t)
+	views, err := s.ticketViews(r.Context(), []ticket.Ticket{t})
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, views[0])
 }
 
 // PATCH /api/v1/tickets/{id}

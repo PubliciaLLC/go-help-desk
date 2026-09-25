@@ -73,6 +73,14 @@ WHERE t.closed_at IS NULL
   )
 ORDER BY t.created_at;
 
+-- name: ListSLARecordsByTicketIDs :many
+-- Batch lookup for the per-ticket SLA status embedded on GET /tickets and
+-- GET /tickets/{id} (#183): one query for the whole page, after it is
+-- sliced, rather than a JOIN pushed into every one of the ~12 list/search
+-- queries that would compute SLA for limit×(1+groups) rows and throw most
+-- of them away. See sla.Service.StatusesFor.
+SELECT * FROM sla_records WHERE ticket_id = ANY(sqlc.arg('ticket_ids')::uuid[]);
+
 -- name: StampSLABreaches :exec
 -- Sets only the breach columns, and only where still NULL. Two evaluators
 -- racing on the same row cannot overwrite each other's stamp or, worse, the

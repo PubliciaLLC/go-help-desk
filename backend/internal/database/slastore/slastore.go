@@ -121,6 +121,25 @@ func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
 	})
 }
 
+func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]sla.Record, error) {
+	rows, err := s.q.ListSLARecordsByTicketIDs(ctx, ticketIDs)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA records for tickets: %w", err)
+	}
+	out := make([]sla.Record, len(rows))
+	for i, r := range rows {
+		out[i] = sla.Record{
+			TicketID:             r.TicketID,
+			PolicyID:             r.PolicyID,
+			FirstResponseAt:      database.TimePtr(r.FirstResponseAt),
+			ResolvedAt:           database.TimePtr(r.ResolvedAt),
+			ResponseBreachedAt:   database.TimePtr(r.ResponseBreachedAt),
+			ResolutionBreachedAt: database.TimePtr(r.ResolutionBreachedAt),
+		}
+	}
+	return out, nil
+}
+
 func (s *Store) ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
 	ids, err := s.q.ListSLABreachCandidates(ctx, now)
 	if err != nil {

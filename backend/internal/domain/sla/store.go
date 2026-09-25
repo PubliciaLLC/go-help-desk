@@ -38,6 +38,15 @@ type Store interface {
 	GetRecord(ctx context.Context, ticketID uuid.UUID) (Record, error)
 	UpdateRecord(ctx context.Context, r Record) error
 
+	// ListRecordsByTicketIDs returns the SLA records for whichever of the
+	// given ticket ids have one. A ticket with no record is simply absent
+	// from the result — that is "not under an SLA", the same thing GetRecord
+	// reports as ErrNoRecord for one ticket at a time. Order is unspecified;
+	// callers index by TicketID. Used to attach live SLA status to a page of
+	// tickets in one query instead of one GetRecord per row (see
+	// Service.StatusesFor).
+	ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]Record, error)
+
 	// ListBreachCandidates returns the ids of tickets the breach sweep must
 	// evaluate: open, under a policy, with at least one target that is
 	// neither met nor already stamped, and whose wall-clock age has passed

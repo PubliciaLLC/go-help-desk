@@ -177,6 +177,57 @@ func (s *Service) SweepBreaches(ctx context.Context, tickets TicketGetter, now t
 	return res, errors.Join(errs...)
 }
 
+// StatusesFor returns a live SLA status for every ticket that has a record
+// and a policy that still exists. Tickets without one are simply absent from
+// the map — no policy, no status, not a zero-value entry.
+//
+// The cost is exactly two store calls, however many tickets are passed: the
+// records for this page (one ListRecordsByTicketIDs), and the policy table —
+// a handful of rows, read once and indexed by id rather than one GetPolicy
+// per record. Called after a ticket list has already been paged and sliced,
+// never before, so it never computes a status that gets thrown away (see
+// #183 and the "Ticket list paging" note in CLAUDE.md).
+func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now time.Time) (map[uuid.UUID]Status, error) {
+	if len(tickets) == 0 {
+		return map[uuid.UUID]Status{}, nil
+	}
+
+	ids := make([]uuid.UUID, len(tickets))
+	byID := make(map[uuid.UUID]ticket.Ticket, len(tickets))
+	for i, t := range tickets {
+		ids[i] = t.ID
+		byID[t.ID] = t
+	}
+
+	records, err := s.store.ListRecordsByTicketIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA records: %w", err)
+	}
+
+	policies, err := s.store.ListPolicies(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA policies: %w", err)
+	}
+	policyByID := make(map[uuid.UUID]Policy, len(policies))
+	for _, p := range policies {
+		policyByID[p.ID] = p
+	}
+
+	out := make(map[uuid.UUID]Status, len(records))
+	for _, r := range records {
+		p, ok := policyByID[r.PolicyID]
+		if !ok {
+			continue // the policy was deleted after this record was created
+		}
+		t, ok := byID[r.TicketID]
+		if !ok {
+			continue // defensive: the store was asked for exactly these ids
+		}
+		out[r.TicketID] = StatusFor(r, p, t, now)
+	}
+	return out, nil
+}
+
 // ── Policy CRUD ───────────────────────────────────────────────────────────────
 
 // validatePolicy guards both doors onto sla_policies. Priority was previously

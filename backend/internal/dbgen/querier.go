@@ -214,6 +214,12 @@ type Querier interface {
 	// EvaluateBreaches' job, not this query's.
 	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error)
+	// Batch lookup for the per-ticket SLA status embedded on GET /tickets and
+	// GET /tickets/{id} (#183): one query for the whole page, after it is
+	// sliced, rather than a JOIN pushed into every one of the ~12 list/search
+	// queries that would compute SLA for limit×(1+groups) rows and throw most
+	// of them away. See sla.Service.StatusesFor.
+	ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)

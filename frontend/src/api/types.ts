@@ -96,6 +96,14 @@ export interface Ticket {
   closed_at?: string
   created_at: string
   updated_at: string
+  // The ticket's live SLA read, computed by the server on every GET /tickets
+  // and GET /tickets/{id} response. null means no matching policy or SLA
+  // tracking is off for this instance — render nothing, not green. The color
+  // is the server's decision, not re-derived here: a second copy of the
+  // 80/100 rule drifts (same reasoning as Attachment.reputation_url).
+  // Absent on any response other than a get/list (e.g. after a PATCH), which
+  // is why TicketDetailPage re-fetches rather than trusting a mutation's body.
+  sla?: TicketSLA | null
 }
 
 export interface Attachment {
@@ -430,4 +438,25 @@ export interface SLAPolicy {
   category_id?: string
   response_target_min: number
   resolution_target_min: number
+}
+
+export type SLAColor = 'green' | 'amber' | 'red'
+
+// One target's (response or resolution) live read, embedded on a ticket. Once
+// met_at is set the numbers are frozen as of that instant and stop moving —
+// color is then the target's final color, so a late response stays red and an
+// on-time one stays green forever after.
+export interface SLATargetStatus {
+  color: SLAColor
+  target_min: number
+  elapsed_min: number
+  remaining_min: number // target_min - elapsed_min; negative when over
+  met_at: string | null // set: the numbers above are frozen and color is final
+}
+
+export interface TicketSLA {
+  policy_id: string
+  policy_name: string
+  response: SLATargetStatus
+  resolution: SLATargetStatus
 }

@@ -22,8 +22,10 @@ type fakeSLAStore struct {
 	// candidates is what ListBreachCandidates returns.
 	candidates []uuid.UUID
 
-	updateRecordCalls int
-	stampCalls        int
+	updateRecordCalls     int
+	stampCalls            int
+	listRecordsByIDsCalls int
+	listPoliciesCalls     int
 }
 
 func newFakeSLAStore() *fakeSLAStore {
@@ -53,6 +55,7 @@ func (f *fakeSLAStore) DeletePolicy(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 func (f *fakeSLAStore) ListPolicies(_ context.Context) ([]sla.Policy, error) {
+	f.listPoliciesCalls++
 	out := make([]sla.Policy, 0, len(f.policies))
 	for _, p := range f.policies {
 		out = append(out, p)
@@ -80,6 +83,20 @@ func (f *fakeSLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
 }
 func (f *fakeSLAStore) ListBreachCandidates(_ context.Context, _ time.Time) ([]uuid.UUID, error) {
 	return f.candidates, nil
+}
+func (f *fakeSLAStore) ListRecordsByTicketIDs(_ context.Context, ticketIDs []uuid.UUID) ([]sla.Record, error) {
+	f.listRecordsByIDsCalls++
+	want := make(map[uuid.UUID]bool, len(ticketIDs))
+	for _, id := range ticketIDs {
+		want[id] = true
+	}
+	var out []sla.Record
+	for id, r := range f.records {
+		if want[id] {
+			out = append(out, r)
+		}
+	}
+	return out, nil
 }
 
 // StampBreaches applies the same COALESCE semantics the real query does:
@@ -506,6 +523,9 @@ func (f *swallowProbeStore) UpdateRecord(_ context.Context, r sla.Record) error 
 func (f *swallowProbeStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
 	return nil, nil
 }
+func (f *swallowProbeStore) ListRecordsByTicketIDs(context.Context, []uuid.UUID) ([]sla.Record, error) {
+	return nil, nil
+}
 func (f *swallowProbeStore) StampBreaches(_ context.Context, _ uuid.UUID, response, resolution *time.Time) error {
 	f.updates++
 	if f.record.ResponseBreachedAt == nil {
@@ -634,6 +654,66 @@ func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// StatusesFor is the batch call the ticket list/detail handlers use (#183):
+// two store calls however many tickets are passed, and a result keyed only by
+// the tickets that actually have a record.
+func TestSLAService_StatusesFor(t *testing.T) {
+	t.Run("empty input makes zero store calls", func(t *testing.T) {
+		store := newFakeSLAStore()
+		svc := sla.NewService(store)
+
+		got, err := svc.StatusesFor(context.Background(), nil, time.Now())
+		require.NoError(t, err)
+		require.Empty(t, got)
+		require.Zero(t, store.listRecordsByIDsCalls)
+		require.Zero(t, store.listPoliciesCalls)
+	})
+
+	t.Run("only tickets with a record appear, one records call and one policies call", func(t *testing.T) {
+		store := newFakeSLAStore()
+		policy := sla.Policy{ID: uuid.New(), Name: "Standard", ResponseTargetMin: 60, ResolutionTargetMin: 480}
+		store.policies[policy.ID] = policy
+
+		withRecordA := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-10 * time.Minute)}
+		withRecordB := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-5 * time.Minute)}
+		noRecordC := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now()}
+		noRecordD := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now()}
+		noRecordE := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now()}
+
+		store.records[withRecordA.ID] = sla.Record{TicketID: withRecordA.ID, PolicyID: policy.ID}
+		store.records[withRecordB.ID] = sla.Record{TicketID: withRecordB.ID, PolicyID: policy.ID}
+
+		svc := sla.NewService(store)
+		got, err := svc.StatusesFor(context.Background(),
+			[]ticket.Ticket{withRecordA, withRecordB, noRecordC, noRecordD, noRecordE}, time.Now())
+		require.NoError(t, err)
+
+		require.Equal(t, 1, store.listRecordsByIDsCalls)
+		require.Equal(t, 1, store.listPoliciesCalls)
+
+		require.Len(t, got, 2)
+		require.Contains(t, got, withRecordA.ID)
+		require.Contains(t, got, withRecordB.ID)
+		require.NotContains(t, got, noRecordC.ID)
+		require.NotContains(t, got, noRecordD.ID)
+		require.NotContains(t, got, noRecordE.ID)
+		require.Equal(t, policy.ID, got[withRecordA.ID].PolicyID)
+		require.Equal(t, policy.Name, got[withRecordA.ID].PolicyName)
+	})
+
+	t.Run("a record whose policy was deleted is skipped, not zero-valued", func(t *testing.T) {
+		store := newFakeSLAStore()
+		orphanID := uuid.New()
+		tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now()}
+		store.records[tk.ID] = sla.Record{TicketID: tk.ID, PolicyID: orphanID}
+
+		svc := sla.NewService(store)
+		got, err := svc.StatusesFor(context.Background(), []ticket.Ticket{tk}, time.Now())
+		require.NoError(t, err)
+		require.Empty(t, got)
+	})
 }
 
 func prio(p ticket.Priority) *ticket.Priority { return &p }

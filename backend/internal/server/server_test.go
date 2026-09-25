@@ -78,6 +78,7 @@ type harness struct {
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
 	ticketStore     *ticketstore.Store
+	slaSvc          *sla.Service
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
@@ -119,6 +120,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	cfStore := customfieldstore.New(q)
 	tagSt := tagstore.New(q)
 	crStore := cannedresponsestore.New(q)
+	slStore := slastore.New(q)
 
 	// Services
 	// bcrypt at the production cost dominates this suite's runtime — ~140s of
@@ -130,10 +132,17 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	tagSvc := tag.NewService(tagSt)
 	customFieldSvc := customfield.NewService(cfStore)
 	cannedResponseSvc := cannedresponse.NewService(crStore)
+	// slaPolicySvc is always wired into the ticket service here, unlike
+	// production's cfg.SLAEnabled gate: AttachPolicy/RecordFirstResponse/
+	// RecordResolved are no-ops for a ticket with no matching policy, so this
+	// changes nothing for the tests that never create one, and it is what
+	// lets an SLA test create a policy and then see the record a real ticket
+	// creation attaches to it.
+	slaPolicySvc := sla.NewService(slStore)
 	dispatcher := notify.NewMulti() // no-op in tests
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
-	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), nil)
+	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), slaPolicySvc)
 	require.NoError(t, ticketSvc.LoadSystemStatuses(ctx))
 
 	// Seed an admin user.
@@ -265,7 +274,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		tagSvc,
 		adminSvc,
 		customFieldSvc,
-		sla.NewService(slastore.New(q)),
+		slaPolicySvc,
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,
@@ -276,6 +285,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 
 	h := &harness{
 		srv:             srv,
+		slaSvc:          slaPolicySvc,
 		apiKey:          rawToken,
 		adminKey:        adminRawToken,
 		userKey:         userRawToken,
