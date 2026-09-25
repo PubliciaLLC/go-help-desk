@@ -261,6 +261,29 @@ func (f *fakeUserStore) SyncFederated(ctx context.Context, id uuid.UUID, email, 
 	return f.UpdateProfile(ctx, id, email, displayName)
 }
 
+// AdoptOIDCSubject applies the same conditions the statement does, from the
+// stored row rather than from whatever the caller read earlier — which is the
+// whole reason the real one is a single statement.
+func (f *fakeUserStore) AdoptOIDCSubject(_ context.Context, id uuid.UUID, subject, displayName string) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return false, nil
+	}
+	if u.Disabled || u.DeletedAt != nil || u.Role == user.RoleAdmin ||
+		u.SAMLSubject != "" || (u.OIDCSubject != "" && u.OIDCSubject != subject) {
+		return false, nil
+	}
+	f.updates++
+	u.OIDCSubject = subject
+	if displayName != "" {
+		u.DisplayName = displayName
+	}
+	f.byID[u.ID] = u
+	f.byEmail[u.Email] = u
+	f.byOIDC[subject] = u
+	return true, nil
+}
+
 // The three guarded writes. This fake applies the same rule the SQL does:
 // refuse when the change would leave no active administrator.
 func (f *fakeUserStore) lastActiveAdmin(id uuid.UUID) bool {

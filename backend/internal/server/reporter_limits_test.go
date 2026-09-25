@@ -57,6 +57,35 @@ func TestCreateTicket_AReporterIsHeldToTheRoleTable(t *testing.T) {
 			"an administrator took this category out of circulation; keeping the id should not get you back in")
 	})
 
+	t.Run("an archived type is closed to them, and still open to staff", func(t *testing.T) {
+		// The same rule as the category above, one level down. The picker a
+		// reporter is shown lists active types only, so an archived id came
+		// from somewhere else — but the handler only checked that the type
+		// belonged to the category, so it went through.
+		retired, err := h.categorySvc.CreateType(ctx, h.catID, "Retired type", 97)
+		require.NoError(t, err)
+		retired.Active = false
+		require.NoError(t, h.categorySvc.UpdateType(ctx, retired))
+
+		res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject": "Under a retired type", "description": "x",
+			"category_id": h.catID.String(), "type_id": retired.ID.String(),
+		})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode,
+			"an administrator took this type out of circulation; keeping the id should not get you back in")
+
+		// Staff are not held to it: filing an old ticket under the
+		// classification it actually belongs to is ordinary work.
+		staffRes := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject": "Staff filing under a retired type", "description": "x",
+			"category_id": h.catID.String(), "type_id": retired.ID.String(),
+		})
+		defer staffRes.Body.Close()
+		require.Equal(t, http.StatusCreated, staffRes.StatusCode,
+			"staff were stopped from using an archived classification")
+	})
+
 	t.Run("a type from another category is refused before a number is taken", func(t *testing.T) {
 		// The database has a foreign key on the pair, but it fires at the
 		// INSERT — which happens after the tracking number has been taken

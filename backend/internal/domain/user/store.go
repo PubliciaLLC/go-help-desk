@@ -42,6 +42,11 @@ type Store interface {
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
 	SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error
+	// AdoptOIDCSubject binds an OIDC subject to an account found by email
+	// address, and reports whether it applied. The adoption rules live in
+	// the statement, so an account promoted or disabled between the lookup
+	// and the write is not adopted on the strength of the older read.
+	AdoptOIDCSubject(ctx context.Context, id uuid.UUID, subject, displayName string) (bool, error)
 	// EmailIsTaken covers deleted rows too, because the unique constraint
 	// does. GetByEmail is the login lookup and hides them.
 	EmailIsTaken(ctx context.Context, email string) (bool, error)

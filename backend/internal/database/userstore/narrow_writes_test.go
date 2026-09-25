@@ -98,6 +98,78 @@ func TestNarrowWrites_TouchOnlyWhatTheyName(t *testing.T) {
 		require.Equal(t, u.MFASecret, got.MFASecret)
 	})
 
+	t.Run("AdoptOIDCSubject", func(t *testing.T) {
+		u := seed(t)
+		applied, err := store.AdoptOIDCSubject(ctx, u.ID, "sub-"+uuid.NewString(), "From The IdP")
+		require.NoError(t, err)
+		require.True(t, applied)
+
+		got, err := store.GetByIDAdmin(ctx, u.ID)
+		require.NoError(t, err)
+		require.Equal(t, "From The IdP", got.DisplayName)
+		require.Equal(t, u.Role, got.Role, "adopting an account wrote the role as well")
+		require.Equal(t, u.PasswordHash, got.PasswordHash,
+			"adopting an account wrote the password as well")
+		require.Equal(t, u.Email, got.Email)
+		require.Equal(t, u.MFASecret, got.MFASecret)
+	})
+
+	// The rules are in the statement, so they are answered by the row as it
+	// is now — not by the copy the caller read before it decided.
+	//
+	// The read-check-write version could not do this. An identity provider
+	// login is something the account holder triggers at will, so promoting,
+	// disabling or deleting an account while one is in flight put the change
+	// back and adopted the account anyway. An administrator is the one thing
+	// adoption may never take, because it hands the account to whoever the
+	// provider says owns that address.
+	t.Run("AdoptOIDCSubject refuses on the row as it is now", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			change func(t *testing.T, id uuid.UUID)
+		}{
+			{"promoted to administrator", func(t *testing.T, id uuid.UUID) {
+				_, err := db.SQL.Exec(`UPDATE users SET role = 'admin' WHERE id = $1`, id)
+				require.NoError(t, err)
+			}},
+			{"disabled", func(t *testing.T, id uuid.UUID) {
+				_, err := db.SQL.Exec(`UPDATE users SET disabled = TRUE WHERE id = $1`, id)
+				require.NoError(t, err)
+			}},
+			{"deleted", func(t *testing.T, id uuid.UUID) {
+				_, err := db.SQL.Exec(`UPDATE users SET deleted_at = now() WHERE id = $1`, id)
+				require.NoError(t, err)
+			}},
+			{"already federates via SAML", func(t *testing.T, id uuid.UUID) {
+				_, err := db.SQL.Exec(`UPDATE users SET saml_subject = $2 WHERE id = $1`,
+					id, "saml-"+uuid.NewString())
+				require.NoError(t, err)
+			}},
+			{"bound to another OIDC subject", func(t *testing.T, id uuid.UUID) {
+				_, err := db.SQL.Exec(`UPDATE users SET oidc_subject = $2 WHERE id = $1`,
+					id, "other-"+uuid.NewString())
+				require.NoError(t, err)
+			}},
+		}
+
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				u := seed(t)
+				tc.change(t, u.ID)
+
+				subject := "sub-" + uuid.NewString()
+				applied, err := store.AdoptOIDCSubject(ctx, u.ID, subject, "From The IdP")
+				require.NoError(t, err)
+				require.False(t, applied, "the account was adopted anyway")
+
+				var bound string
+				require.NoError(t, db.SQL.QueryRow(
+					`SELECT oidc_subject FROM users WHERE id = $1`, u.ID).Scan(&bound))
+				require.NotEqual(t, subject, bound, "the subject was bound to it anyway")
+			})
+		}
+	})
+
 	t.Run("SyncFederated", func(t *testing.T) {
 		u := seed(t)
 		require.NoError(t, store.SyncFederated(ctx, u.ID, "idp-"+u.Email, "From The IdP"))

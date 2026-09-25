@@ -546,14 +546,31 @@ func (s *Service) UpsertOIDCUser(
 			if err := canAdoptByEmail(u, oidcSubject); err != nil {
 				return User{}, err
 			}
+			// The subject and, if the provider sent one, the name. Nothing
+			// else.
+			//
+			// This used to write the whole row from the read above, so an
+			// administrator's password reset, disable or promotion landing
+			// between the two was written back. The rules in
+			// canAdoptByEmail were read from that same stale copy, so an
+			// account promoted in the window was adopted as an
+			// administrator — which is the one account type adoption is
+			// never allowed to take. The statement asks them again at the
+			// write; canAdoptByEmail stays because it is what says which
+			// rule refused.
+			applied, err := s.store.AdoptOIDCSubject(ctx, u.ID, oidcSubject, displayName)
+			if err != nil {
+				return User{}, fmt.Errorf("linking OIDC subject to user: %w", err)
+			}
+			if !applied {
+				return User{}, fmt.Errorf("%w: the account changed while it was being linked",
+					ErrAccountLinkRefused)
+			}
 			u.OIDCSubject = oidcSubject
 			if displayName != "" {
 				u.DisplayName = displayName
 			}
 			u.UpdatedAt = time.Now()
-			if err := s.store.Update(ctx, u); err != nil {
-				return User{}, fmt.Errorf("linking OIDC subject to user: %w", err)
-			}
 			return u, nil
 		case !errors.Is(err, ErrNotFound):
 			return User{}, fmt.Errorf("looking up user by email: %w", err)
@@ -699,7 +716,12 @@ func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// Update persists changes to an existing user.
+// Deprecated: Update writes every column from a copy the caller read
+// earlier, so anything an administrator changed in between — a role, a
+// password, an MFA enrolment — is written back. Use the narrow writers
+// instead: UpdateProfile, SetPassword, SetRole, ConfirmMFAEnrollmentWith.
+// No production caller remains; kept only because tests still exercise it,
+// and removal belongs in its own commit.
 func (s *Service) Update(ctx context.Context, u User) error {
 	if err := u.Validate(); err != nil {
 		return err

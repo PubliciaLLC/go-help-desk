@@ -27,6 +27,50 @@ func (q *Queries) AdminSetPassword(ctx context.Context, arg AdminSetPasswordPara
 	return err
 }
 
+const adoptUserByOIDCSubject = `-- name: AdoptUserByOIDCSubject :one
+UPDATE users
+SET oidc_subject = $1,
+    display_name = COALESCE($2, display_name),
+    updated_at   = now()
+WHERE id = $3
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role <> 'admin'
+  AND saml_subject = ''
+  AND oidc_subject IN ('', $1)
+RETURNING id
+`
+
+type AdoptUserByOIDCSubjectParams struct {
+	OidcSubject string         `json:"oidc_subject"`
+	DisplayName sql.NullString `json:"display_name"`
+	ID          uuid.UUID      `json:"id"`
+}
+
+// Binds an OIDC subject to a local account found by email address, and
+// reports whether it applied.
+//
+// The conditions are the adoption rules, asked at the write rather than by
+// the caller: the account is live, it is not an administrator, it does not
+// federate via SAML, and it is not already bound to a different OIDC
+// subject. Adoption hands an account to whoever the identity provider says
+// owns that address, so every one of them matters.
+//
+// One statement, because this used to be a read, a check in Go, and a write
+// of the whole row. That carried role, password hash and MFA state from the
+// read back over anything an administrator changed in between, and the checks
+// themselves were answered from the same stale copy: an account promoted
+// between the read and the write was adopted anyway, as an administrator.
+//
+// The Go-side check still runs first, because it is what tells the person
+// WHICH rule refused them. This one is what binds.
+func (q *Queries) AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, adoptUserByOIDCSubject, arg.OidcSubject, arg.DisplayName, arg.ID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const claimMFAAttempt = `-- name: ClaimMFAAttempt :one
 UPDATE users
 SET mfa_failed_attempts = CASE

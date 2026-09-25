@@ -1056,6 +1056,27 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
 // UpdateCTI changes the category/type/item classification of a ticket.
 // Only staff and admin may call this; enforcement is at the handler layer.
 func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (Ticket, error) {
+	// The same checks Create makes, because reclassifying is creating a
+	// classification.
+	//
+	// They were on the create path only, so the pairing that path refuses was
+	// one PATCH away: a category from one tree with an item from another
+	// stored happily, and an item with no type at all. Group routing keys on
+	// this triple, so a ticket could be routed on a pairing that does not
+	// exist. An unknown id answered 500 from the foreign key rather than
+	// saying which id was wrong.
+	if ok, err := s.store.CategoryExists(ctx, categoryID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+	}
+	if ok, err := s.store.CTIIsCoherent(ctx, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf(
+			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
+	}
+
 	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
 		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
 	}

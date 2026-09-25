@@ -318,3 +318,33 @@ WHERE id = $1;
 
 -- name: GetMFALock :one
 SELECT mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1;
+
+-- name: AdoptUserByOIDCSubject :one
+-- Binds an OIDC subject to a local account found by email address, and
+-- reports whether it applied.
+--
+-- The conditions are the adoption rules, asked at the write rather than by
+-- the caller: the account is live, it is not an administrator, it does not
+-- federate via SAML, and it is not already bound to a different OIDC
+-- subject. Adoption hands an account to whoever the identity provider says
+-- owns that address, so every one of them matters.
+--
+-- One statement, because this used to be a read, a check in Go, and a write
+-- of the whole row. That carried role, password hash and MFA state from the
+-- read back over anything an administrator changed in between, and the checks
+-- themselves were answered from the same stale copy: an account promoted
+-- between the read and the write was adopted anyway, as an administrator.
+--
+-- The Go-side check still runs first, because it is what tells the person
+-- WHICH rule refused them. This one is what binds.
+UPDATE users
+SET oidc_subject = sqlc.arg('oidc_subject'),
+    display_name = COALESCE(sqlc.narg('display_name'), display_name),
+    updated_at   = now()
+WHERE id = sqlc.arg('id')
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role <> 'admin'
+  AND saml_subject = ''
+  AND oidc_subject IN ('', sqlc.arg('oidc_subject'))
+RETURNING id;

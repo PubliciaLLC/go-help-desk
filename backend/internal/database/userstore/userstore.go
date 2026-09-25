@@ -199,23 +199,47 @@ func (s *Store) Count(ctx context.Context) (int64, error) {
 // each do their check and their write in one statement, so two of them racing
 // cannot both decide they are allowed. Each reports whether it applied.
 func (s *Store) DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
-	return s.appliedGuardedWrite(s.q.DisableUserUnlessLastAdmin(ctx, id))
+	return s.guardedWrite(func() (uuid.UUID, error) {
+		return s.q.DisableUserUnlessLastAdmin(ctx, id)
+	})
 }
 
 func (s *Store) SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
-	return s.appliedGuardedWrite(s.q.SoftDeleteUserUnlessLastAdmin(ctx, id))
+	return s.guardedWrite(func() (uuid.UUID, error) {
+		return s.q.SoftDeleteUserUnlessLastAdmin(ctx, id)
+	})
 }
 
 func (s *Store) SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role string) (bool, error) {
-	return s.appliedGuardedWrite(s.q.SetUserRoleUnlessLastAdmin(ctx, dbgen.SetUserRoleUnlessLastAdminParams{
-		ID: id, Role: role,
-	}))
+	return s.guardedWrite(func() (uuid.UUID, error) {
+		return s.q.SetUserRoleUnlessLastAdmin(ctx, dbgen.SetUserRoleUnlessLastAdminParams{
+			ID: id, Role: role,
+		})
+	})
 }
 
-// appliedGuardedWrite turns "no row came back" into "refused" rather than an
-// error. These statements return the id when they applied and nothing when
-// the guard stopped them, which database/sql reports as ErrNoRows.
-func (s *Store) appliedGuardedWrite(_ uuid.UUID, err error) (bool, error) {
+// guardedWrite runs one of the three statements above and reads its answer.
+//
+// It retries once on a deadlock, for the same reason txrunner.InTx does, and
+// this is the side that needs it more. Each of these statements locks every
+// administrator row before touching the target; an assignment running at the
+// same time share-locks the assignee first and then writes an audit row whose
+// actor may be an administrator. When those two orders cross, Postgres kills
+// whichever transaction has waited longest — and that is this one, because it
+// starts by locking the whole administrator set and waits there. Without a
+// retry the assignment commits and the administrator gets "an internal error
+// occurred" for a disable that did nothing.
+//
+// Once, not in a loop, for the reason given in txrunner.
+//
+// "No row came back" is not an error: these statements return the id when
+// they applied and nothing when the guard stopped them, which database/sql
+// reports as ErrNoRows.
+func (s *Store) guardedWrite(write func() (uuid.UUID, error)) (bool, error) {
+	_, err := write()
+	if isDeadlock(err) {
+		_, err = write()
+	}
 	switch {
 	case err == nil:
 		return true, nil
@@ -223,6 +247,13 @@ func (s *Store) appliedGuardedWrite(_ uuid.UUID, err error) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("guarded write: %w", err)
+}
+
+// isDeadlock reports whether Postgres killed this statement to break a lock
+// cycle. SQLSTATE 40P01, matched on the code rather than the message.
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
 
 // CountOtherActiveAdmins counts the administrators this instance would still
@@ -269,6 +300,30 @@ func (s *Store) SyncFederated(ctx context.Context, id uuid.UUID, email, displayN
 		return fmt.Errorf("syncing federated user: %w", err)
 	}
 	return nil
+}
+
+// AdoptOIDCSubject binds an OIDC subject to an existing account. An empty
+// displayName leaves the stored name alone — an identity provider that stops
+// releasing the attribute must not blank it.
+func (s *Store) AdoptOIDCSubject(ctx context.Context, id uuid.UUID, subject, displayName string) (bool, error) {
+	name := sql.NullString{String: displayName, Valid: displayName != ""}
+	_, err := s.q.AdoptUserByOIDCSubject(ctx, dbgen.AdoptUserByOIDCSubjectParams{
+		ID: id, OidcSubject: subject, DisplayName: name,
+	})
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// The row no longer meets the adoption rules. Refused, not broken.
+		return false, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		// Another account already carries this subject. Same shape as the
+		// address collision: tell the caller which rule it hit.
+		return false, user.ErrAccountLinkRefused
+	}
+	return false, fmt.Errorf("adopting OIDC subject: %w", err)
 }
 
 // UpdateProfile writes only the address and the name.

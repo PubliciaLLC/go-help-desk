@@ -374,6 +374,20 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 				"type_id does not belong to category_id")
 			return
 		}
+		// And for a reporter, it has to still be in circulation — the same
+		// rule their category is held to, and the one DESIGN.md's role table
+		// states for them. The picker they are shown only lists active types,
+		// so an archived one means the id came from somewhere else.
+		//
+		// Staff and administrators are not held to this, for the same reason
+		// they are not held to it on the category: filing or reclassifying an
+		// old ticket under the classification it actually belongs to is
+		// ordinary work, and that classification may well be archived.
+		if !isStaffOrAdmin && !ty.Active {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"type_id is not an active type")
+			return
+		}
 	}
 
 	in := ticket.CreateInput{

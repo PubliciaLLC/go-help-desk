@@ -132,3 +132,64 @@ func TestCreateTicket_AnUnknownCategoryDoesNotBurnANumber(t *testing.T) {
 	require.Equal(t, before+1, trackingSeq(t, after.TrackingNumber),
 		"the refused request consumed a tracking number")
 }
+
+// Reclassifying a ticket is held to the same rules as classifying one.
+//
+// The checks were on the create path only, so the pairing that path refuses
+// was one PATCH away: a category from one tree with an item from another, or
+// an item with no type at all. Group routing keys on this triple, so a ticket
+// could be routed on a pairing that does not exist — and an unknown id
+// answered 500 from the foreign key instead of saying which id was wrong.
+func TestUpdateTicket_ReclassificationIsCheckedToo(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Two separate trees.
+	other, err := h.categorySvc.CreateCategory(ctx, "Other tree", 90)
+	require.NoError(t, err)
+	otherType, err := h.categorySvc.CreateType(ctx, other.ID, "Other type", 1)
+	require.NoError(t, err)
+	otherItem, err := h.categorySvc.CreateItem(ctx, otherType.ID, "Other item", 1)
+	require.NoError(t, err)
+
+	tk := createTicketAsUser(t, h, "To be reclassified")
+
+	cases := []struct {
+		name string
+		body map[string]any
+	}{
+		{
+			name: "an item from another tree",
+			body: map[string]any{"category_id": h.catID.String(), "item_id": otherItem.ID.String()},
+		},
+		{
+			name: "an item with no type",
+			body: map[string]any{"category_id": other.ID.String(), "item_id": otherItem.ID.String()},
+		},
+		{
+			name: "a category that does not exist",
+			body: map[string]any{"category_id": "22222222-2222-2222-2222-222222222222"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.do(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), tc.body)
+			body, _ := readAllBody(res)
+			res.Body.Close()
+			require.Equal(t, http.StatusBadRequest, res.StatusCode,
+				"stored a classification that does not hang together: %s", body)
+		})
+	}
+
+	// And an honest reclassification still works.
+	res := h.do(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"category_id": other.ID.String(),
+		"type_id":     otherType.ID.String(),
+		"item_id":     otherItem.ID.String(),
+	})
+	body, _ := readAllBody(res)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "a coherent triple was refused: %s", body)
+}

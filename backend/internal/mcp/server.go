@@ -102,6 +102,46 @@ func requireStaff(a *authmw.Actor) bool {
 	return a != nil && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 }
 
+// assignArgumentProblem reports what is wrong with an assign_ticket argument
+// set, or false when there is nothing wrong.
+//
+// Split out so the rules can be tested without a transport and a database:
+// the failure they prevent is a ticket quietly leaving somebody's queue, and
+// that is decided entirely here.
+func assignArgumentProblem(args map[string]any) (string, bool) {
+	id := func(name string) (string, string) {
+		v, present := args[name]
+		if !present {
+			return "", ""
+		}
+		str, isString := v.(string)
+		if !isString || str == "" {
+			return "", name + " must be an id; to take the ticket off whoever has it, " +
+				"pass clear_assignee: true"
+		}
+		return str, ""
+	}
+
+	userArg, problem := id("assignee_user_id")
+	if problem != "" {
+		return problem, true
+	}
+	groupArg, problem := id("assignee_group_id")
+	if problem != "" {
+		return problem, true
+	}
+
+	clear, _ := args["clear_assignee"].(bool)
+	switch {
+	case clear && (userArg != "" || groupArg != ""):
+		return "clear_assignee cannot be combined with an assignee id", true
+	case !clear && userArg == "" && groupArg == "":
+		return "give assignee_user_id or assignee_group_id, or clear_assignee: true to " +
+			"take the ticket off whoever has it", true
+	}
+	return "", false
+}
+
 // hasUserIdentity reports whether this caller is somebody, rather than merely
 // something.
 //
@@ -623,22 +663,11 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	// success and took the ticket off whoever was working it. An agent
 	// sending null to mean "leave this alone" did exactly that. The REST API
 	// makes it explicit with clear_assignee; this is the same rule.
-	_, haveUser := args["assignee_user_id"]
-	_, haveGroup := args["assignee_group_id"]
-	clear, _ := args["clear_assignee"].(bool)
-	if !clear && !haveUser && !haveGroup {
-		return errResult("give assignee_user_id or assignee_group_id, or clear_assignee: true to " +
-			"take the ticket off whoever has it")
-	}
-	if v, ok := args["assignee_user_id"]; ok && v != nil {
-		if _, isString := v.(string); !isString {
-			return errResult("assignee_user_id must be an id")
-		}
-	}
-	if v, ok := args["assignee_group_id"]; ok && v != nil {
-		if _, isString := v.(string); !isString {
-			return errResult("assignee_group_id must be an id")
-		}
+	// An id has to BE an id. A key that is present but null, an empty string,
+	// a number or a boolean is refused rather than read as "to nobody" — see
+	// assignArgumentProblem, where the rules live and are tested.
+	if problem, bad := assignArgumentProblem(args); bad {
+		return errResult(problem)
 	}
 
 	// An id that will not parse is refused, not ignored.
@@ -650,14 +679,14 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	// gone wrong. The REST API refuses the same input when it decodes the
 	// body; this is that rule, on the other surface.
 	var assigneeUserID, assigneeGroupID *uuid.UUID
-	if v, ok := args["assignee_user_id"].(string); ok && v != "" {
+	if v, _ := args["assignee_user_id"].(string); v != "" {
 		id, err := uuid.Parse(v)
 		if err != nil {
 			return errResult("assignee_user_id is not a valid id")
 		}
 		assigneeUserID = &id
 	}
-	if v, ok := args["assignee_group_id"].(string); ok && v != "" {
+	if v, _ := args["assignee_group_id"].(string); v != "" {
 		id, err := uuid.Parse(v)
 		if err != nil {
 			return errResult("assignee_group_id is not a valid id")
