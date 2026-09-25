@@ -248,7 +248,7 @@ func (s *Store) ListAssignableStaff(ctx context.Context) ([]user.AssignableStaff
 	}
 	out := make([]user.AssignableStaff, len(rows))
 	for i, r := range rows {
-		out[i] = user.AssignableStaff{ID: r.ID, DisplayName: r.DisplayName}
+		out[i] = user.AssignableStaff{ID: r.ID, DisplayName: r.DisplayName, Assignable: r.Assignable.Bool}
 	}
 	return out, nil
 }

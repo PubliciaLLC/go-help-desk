@@ -111,16 +111,6 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Put("/custom-fields", s.handlePutTicketCustomFields)
 	})
 
-	// Who work can be given to: id and display name, for staff and admins.
-	//
-	// Staff could not read any list of users — /admin/users is
-	// administrator-only — so the assignee picker was empty for every staff
-	// member and no colleague's name could be resolved on a ticket. The
-	// server accepts an assignment from staff; the page just had no way to
-	// offer one.
-	r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
-		Get("/staff", s.handleListAssignableStaff)
-
 	return r
 }
 

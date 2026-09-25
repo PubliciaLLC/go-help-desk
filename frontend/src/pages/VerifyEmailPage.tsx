@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { verifyEmail } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
-import { extractError } from '@/api/client'
+import { extractErrorCode } from '@/api/client'
 import { Spinner } from '@/components/ui/spinner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -23,7 +23,11 @@ export function VerifyEmailPage() {
         navigate({ to: '/dashboard' })
       })
       .catch((err) => {
-        const code = extractError(err)
+        // The code, not the message. Comparing the message to a code meant
+        // this branch never fired: an expired link was always reported as
+        // invalid or already used, and the advice to sign up again — the one
+        // thing that would have helped — was unreachable.
+        const code = extractErrorCode(err)
         setError(
           code === 'token_expired'
             ? 'This verification link has expired. Please sign up again to receive a new one.'

@@ -252,13 +252,13 @@ func (f *fakeUserStore) SetRoleUnlessLastAdmin(_ context.Context, id uuid.UUID, 
 func (f *fakeUserStore) ListAssignableStaff(_ context.Context) ([]user.AssignableStaff, error) {
 	var out []user.AssignableStaff
 	for _, u := range f.byID {
-		if u.Disabled || u.DeletedAt != nil {
+		if u.DeletedAt != nil {
 			continue
 		}
-		if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
-			continue
-		}
-		out = append(out, user.AssignableStaff{ID: u.ID, DisplayName: u.DisplayName})
+		out = append(out, user.AssignableStaff{
+			ID: u.ID, DisplayName: u.DisplayName,
+			Assignable: u.Role == user.RoleStaff || u.Role == user.RoleAdmin,
+		})
 	}
 	return out, nil
 }

@@ -72,13 +72,20 @@ SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
 -- for every staff member, and no name could be resolved for anybody. The page
 -- had to guess, and guessed wrong.
 --
--- Deliberately narrow: an id and a display name, which is what assigning work
--- needs and what staff already see on every ticket. No email, no role, no
--- login state.
-SELECT id, display_name FROM users
+-- Everyone who is not deleted, with a flag for whether work can be given to
+-- them. The flag rather than a filter, because the page needs both answers:
+-- who can be picked, and whose name to show on a ticket that is already
+-- assigned. Filtering to the assignable ones made a suspended colleague, or
+-- one moved to a reporting role, render as "Former staff member" — which is a
+-- statement about somebody having left, and it was not true. Re-enabling them
+-- would have made the name reappear.
+--
+-- Deliberately narrow: an id, a display name and that flag. No email, no
+-- role, no login state — that is the administrator's view.
+SELECT id, display_name,
+       (disabled = FALSE AND role IN ('staff', 'admin')) AS assignable
+FROM users
 WHERE deleted_at IS NULL
-  AND disabled = FALSE
-  AND role IN ('staff', 'admin')
 ORDER BY display_name;
 
 -- name: DisableUserUnlessLastAdmin :one
@@ -88,7 +95,7 @@ ORDER BY display_name;
 -- Count and write in one statement, locking every active administrator row
 -- first. Counting in Go and then writing was two statements with nothing
 -- between them, and it lost: two parallel requests both counted before either
--- wrote. Measured, twenty-nine rounds in thirty ended with zero
+-- wrote. Measured, twenty-eight rounds in thirty ended with zero
 -- administrators — and it did not need two people. One administrator sending
 -- "remove Bob" and "remove me" together did it every time.
 --

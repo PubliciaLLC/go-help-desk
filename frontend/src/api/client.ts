@@ -20,6 +20,23 @@ api.interceptors.response.use(
   }
 )
 
+/**
+ * The API error CODE from a failed call — `token_expired`, `email_taken` and
+ * so on — or an empty string when there is not one.
+ *
+ * Separate from `extractError`, which returns the human message. Comparing
+ * that message to a code is the mistake this exists to stop: the verify-email
+ * page did exactly that, so its "your link has expired" branch could never
+ * fire and an expired link was always reported as invalid or already used.
+ */
+export function extractErrorCode(err: unknown): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data as ApiError | undefined
+    return data?.error?.code ?? ''
+  }
+  return ''
+}
+
 export function extractError(err: unknown): string {
   if (axios.isAxiosError(err)) {
     const data = err.response?.data as ApiError | undefined

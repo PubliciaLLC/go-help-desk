@@ -123,4 +123,9 @@ func IsLocalAuthAllowed(u User, samlEnabled bool) bool {
 type AssignableStaff struct {
 	ID          uuid.UUID `json:"id"`
 	DisplayName string    `json:"display_name"`
+	// Assignable is false for somebody who is still here but cannot be given
+	// work — suspended, or moved to a reporting role. Their name is still
+	// needed: a ticket already assigned to them has to show who has it, and
+	// calling them a former staff member would be untrue.
+	Assignable bool `json:"assignable"`
 }

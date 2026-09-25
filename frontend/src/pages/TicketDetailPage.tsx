@@ -93,9 +93,10 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
   const currentUser = users.find((u) => u.id === assigneeUserId)
   const currentGroup = groups.find((g) => g.id === assigneeGroupId)
 
-  // The list is already only the people work can be given to — the server
-  // filters it — so there is nothing left to filter here.
-  const staffUsers = users
+  // Everyone in the list can be NAMED; only some can be PICKED. A suspended
+  // colleague still holds the tickets they were given, so their name belongs
+  // on those tickets — they just should not be offered for new ones.
+  const staffUsers = users.filter((u) => u.assignable)
 
   return (
     <div className="space-y-2">

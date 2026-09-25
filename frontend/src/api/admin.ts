@@ -596,6 +596,16 @@ export async function getSecurityWarnings(): Promise<SecurityWarnings> {
 export interface AssignableStaff {
   id: string
   display_name: string
+  /**
+   * False for somebody still here who cannot be given work — suspended, or
+   * moved to a reporting role.
+   *
+   * Their name is still in the list on purpose. A ticket already assigned to
+   * them has to show who has it, and filtering them out made the page call a
+   * suspended colleague a former staff member, which is a claim about
+   * somebody having left that was not true.
+   */
+  assignable: boolean
 }
 
 export async function listAssignableStaff(): Promise<AssignableStaff[]> {

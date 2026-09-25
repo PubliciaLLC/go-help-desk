@@ -443,6 +443,17 @@ func (s *Server) buildRouter() *chi.Mux {
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
+
+		// Who work can be given to: id and display name, for staff and
+		// admins.
+		//
+		// Mounted here rather than on the ticket router, which is where it
+		// first went — and that put it at /api/v1/tickets/staff while the
+		// page asked for /api/v1/staff. Every assignee picker was empty and
+		// every assigned ticket showed no name, for administrators as well as
+		// staff, which was worse than the problem it was added to fix.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			Get("/staff", s.handleListAssignableStaff)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

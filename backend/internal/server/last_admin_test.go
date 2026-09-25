@@ -34,6 +34,7 @@ func TestLastAdministrator_CannotBeRemoved(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h, cleanup := newHarness(t)
 			defer cleanup()
+			requireSoleAdministrator(t, h)
 
 			// A signed-in session, not the API key: acting on an
 			// administrator is deliberately refused to machine credentials.
@@ -77,4 +78,36 @@ func loggedInAdmin(t *testing.T, h *harness) *session {
 		map[string]any{"email": "admin@test.local", "password": "password"})
 	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 	return s
+}
+
+// requireSoleAdministrator skips when the database already holds an
+// administrator this harness did not create.
+//
+// The guard counts every administrator on the instance, and the harness runs
+// inside a transaction — so a committed administrator from somewhere else is
+// visible to the guard and invisible to the rollback, and the test then fails
+// for a reason that has nothing to do with the code. That is what happened:
+// a reviewer working against the same development database left two accounts
+// behind, and these tests started reporting a defect that was not there.
+//
+// Skipping rather than adapting, because there is nothing to adapt to: the
+// test is about the last administrator, and it cannot be the last one while
+// somebody else's is sitting there. Run the suite the way the documentation
+// says — ./scripts/test-db.sh — and it runs.
+func requireSoleAdministrator(t *testing.T, h *harness) {
+	t.Helper()
+	staff, err := h.userSvc.ListAssignableStaff(context.Background())
+	require.NoError(t, err)
+
+	others := 0
+	for _, s := range staff {
+		if s.ID != h.adminID && s.ID != h.staffID && s.ID != h.userID {
+			others++
+		}
+	}
+	if others > 0 {
+		t.Skipf("this database holds %d account(s) this harness did not create, so the "+
+			"seeded administrator is not the last one; run ./scripts/test-db.sh for an "+
+			"isolated database", others)
+	}
 }

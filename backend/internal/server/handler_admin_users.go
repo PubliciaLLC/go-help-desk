@@ -254,6 +254,16 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 				handleError(w, err)
 				return
 			}
+			// And carried into the profile write below, which writes the role
+			// column too.
+			//
+			// Without this the request undid itself: SetRole wrote the new
+			// role and Update immediately wrote the old one back, so nobody
+			// could be promoted or demoted — while the target was still
+			// signed out for a change that did not happen. It answered 200
+			// and the response carried the old role, which is the shape that
+			// gets believed.
+			u.Role = user.Role(*body.Role)
 		}
 		if err := s.users.Update(r.Context(), u); err != nil {
 			handleError(w, err)

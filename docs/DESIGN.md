@@ -1123,9 +1123,27 @@ so they are not removed as dead weight:
   caller's own tickets with each of their groups', so it reads each source to
   the end of the requested page and slices after merging — pushing the window
   into each query returns limit × (1 + groups) rows.
-- **Uploaded images are capped at 25 megapixels**, checked from the header
-  before any decode. A byte-size limit is not a memory limit: compressed formats
-  expand, and a 169 KB PNG decodes to 142 MB.
+- **Uploaded images are capped by what decoding them will cost**, checked from
+  the header before any decode. A byte-size limit is not a memory limit:
+  compressed formats expand, and a 169 KB PNG decodes to 142 MB.
+
+  Two bounds, and the second took five rounds of review to get right. Twenty-
+  five megapixels, and 100 MB of decoder allocation — which is not the same
+  number as the picture's size, because the JPEG decoder allocates far more
+  than the picture it produces. A progressive JPEG holds every DCT coefficient
+  until the image is reconstructed; a CMYK or RGB one decodes through a second
+  full-resolution image. Counting pixels and assuming four bytes each let a
+  214 KB file cost 403 MB, and each narrower rule that replaced it let a
+  differently-shaped file through: 16-bit, then progressive, then CMYK, then
+  RGB, then an Adobe marker moved after the scan data.
+
+  So the rule is no longer "know every shape". A JPEG whose header cannot be
+  read is **refused**, rather than falling back to a weaker estimate. Every
+  real JPEG parses; one that does not is one somebody built not to, and "I
+  cannot tell how much this will cost" is a reason to refuse. That converts
+  the next gap in the estimate from a way through into a refusal, which is
+  worth more than any single thing the estimate knows. A limit on how many
+  images are decoded at once bounds the process rather than the request.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
   with a stricter, sandboxed policy, so a file that got past the upload check
