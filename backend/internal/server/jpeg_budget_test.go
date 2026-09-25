@@ -34,6 +34,7 @@ func TestJPEGDecodeBytes_CountsWhatTheDecoderActuallyNeeds(t *testing.T) {
 		w, h        int
 		progressive bool
 		comps       []sampling
+		opt         fixtureOpts
 		wantMB      int64
 		wantRefused bool
 	}{
@@ -84,6 +85,46 @@ func TestJPEGDecodeBytes_CountsWhatTheDecoderActuallyNeeds(t *testing.T) {
 			wantRefused: false,
 		},
 		{
+			// Three components, but the decoder converts the whole thing
+			// into a second full-resolution image because the file says RGB
+			// rather than YCbCr. Missed the first time: the surcharge was
+			// applied only to four-component files. Measured on a real one,
+			// 6 MB on the wire and 175 MB live.
+			name: "RGB by component identifier, 4:4:4",
+			w:    5120, h: 5120,
+			comps:       []sampling{{1, 1}, {1, 1}, {1, 1}},
+			opt:         fixtureOpts{ids: []byte{'R', 'G', 'B'}},
+			wantMB:      175,
+			wantRefused: true,
+		},
+		{
+			name: "RGB by Adobe transform 0, 4:2:0",
+			w:    6000, h: 4000,
+			comps:       []sampling{{2, 2}, {1, 1}, {1, 1}},
+			opt:         fixtureOpts{adobe: true, adobeTransform: 0},
+			wantMB:      125,
+			wantRefused: true,
+		},
+		{
+			// JFIF settles it: that header means YCbCr whatever the
+			// component identifiers say, and the decoder does not convert.
+			// Getting this wrong the other way would refuse ordinary photos.
+			name: "component identifiers that say RGB, on a JFIF file",
+			w:    5120, h: 5120,
+			comps:       []sampling{{1, 1}, {1, 1}, {1, 1}},
+			opt:         fixtureOpts{ids: []byte{'R', 'G', 'B'}, jfif: true},
+			wantMB:      75,
+			wantRefused: false,
+		},
+		{
+			name: "an Adobe file that says YCbCr",
+			w:    5120, h: 5120,
+			comps:       []sampling{{1, 1}, {1, 1}, {1, 1}},
+			opt:         fixtureOpts{adobe: true, adobeTransform: 1},
+			wantMB:      75,
+			wantRefused: false,
+		},
+		{
 			name: "a 5K screenshot, baseline 4:4:4",
 			w:    5120, h: 2880,
 			comps:       []sampling{{1, 1}, {1, 1}, {1, 1}},
@@ -94,7 +135,7 @@ func TestJPEGDecodeBytes_CountsWhatTheDecoderActuallyNeeds(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			hdr := jpegHeaderOnly(tc.w, tc.h, tc.progressive, tc.comps)
+			hdr := jpegHeaderOnly(tc.w, tc.h, tc.progressive, tc.comps, tc.opt)
 
 			got, ok := jpegDecodeBytes(hdr)
 			if !ok {
@@ -133,7 +174,7 @@ func TestJPEGDecodeBytes_SaysSoWhenItCannotTell(t *testing.T) {
 		{"a frame header that runs off the end", []byte{0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08}},
 		{"a component count nothing produces", jpegHeaderOnly(10, 10, false, []sampling{
 			{1, 1}, {1, 1}, {1, 1}, {1, 1}, {1, 1},
-		})},
+		}, fixtureOpts{})},
 	}
 
 	for _, tc := range cases {
@@ -145,13 +186,21 @@ func TestJPEGDecodeBytes_SaysSoWhenItCannotTell(t *testing.T) {
 	}
 }
 
-// jpegHeaderOnly builds a JPEG signature and one frame header — the only part
-// this estimate reads, and the only part a huge image needs in order to
-// describe itself.
-func jpegHeaderOnly(w, h int, progressive bool, comps []sampling) []byte {
+// jpegHeaderOnly builds a JPEG signature, optionally the two markers that
+// decide whether the file is RGB, and one frame header — the only parts this
+// estimate reads, and the only parts a huge image needs to describe itself.
+func jpegHeaderOnly(w, h int, progressive bool, comps []sampling, opt fixtureOpts) []byte {
 	marker := byte(0xC0)
 	if progressive {
 		marker = 0xC2
+	}
+
+	ids := opt.ids
+	if len(ids) != len(comps) {
+		ids = make([]byte, len(comps))
+		for i := range ids {
+			ids[i] = byte(i + 1)
+		}
 	}
 
 	var seg bytes.Buffer
@@ -160,15 +209,40 @@ func jpegHeaderOnly(w, h int, progressive bool, comps []sampling) []byte {
 	_ = binary.Write(&seg, binary.BigEndian, uint16(w))
 	seg.WriteByte(byte(len(comps)))
 	for i, c := range comps {
-		seg.WriteByte(byte(i + 1))                   // component id
-		seg.WriteByte(byte(c.h)<<4 | byte(c.v)&0x0f) // sampling factors
-		seg.WriteByte(0)                             // quantisation table
+		seg.WriteByte(ids[i])
+		seg.WriteByte(byte(c.h)<<4 | byte(c.v)&0x0f)
+		seg.WriteByte(0) // quantisation table
 	}
 
 	var out bytes.Buffer
 	out.Write([]byte{0xFF, 0xD8}) // SOI
+
+	if opt.jfif {
+		payload := append([]byte("JFIF\x00"), make([]byte, 9)...)
+		out.Write([]byte{0xFF, 0xE0})
+		_ = binary.Write(&out, binary.BigEndian, uint16(len(payload)+2))
+		out.Write(payload)
+	}
+	if opt.adobe {
+		payload := make([]byte, 12)
+		copy(payload, "Adobe")
+		payload[11] = opt.adobeTransform
+		out.Write([]byte{0xFF, 0xEE})
+		_ = binary.Write(&out, binary.BigEndian, uint16(len(payload)+2))
+		out.Write(payload)
+	}
+
 	out.Write([]byte{0xFF, marker})
 	_ = binary.Write(&out, binary.BigEndian, uint16(seg.Len()+2))
 	out.Write(seg.Bytes())
 	return out.Bytes()
+}
+
+// fixtureOpts is everything about a JPEG besides its frame that changes what
+// the decoder allocates.
+type fixtureOpts struct {
+	ids            []byte
+	jfif           bool
+	adobe          bool
+	adobeTransform byte
 }

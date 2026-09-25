@@ -57,11 +57,13 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// second per core. MFA is off by default, so on most instances that was
 	// the whole of the online defence.
 	//
-	// So an account over its budget waits, one request at a time, before the
-	// password is checked. That bounds guesses per second instead of just
-	// slowing each one down, and it keeps the property this ordering exists
-	// for: the right password still works, a second later. Only a flood deep
-	// enough to fill the queue is refused outright.
+	// So an account over its budget waits before the password is checked.
+	// Measured, that costs a serial attacker about twenty times and costs one
+	// with a couple of hundred parallel connections nothing — a request that
+	// cannot get its turn goes ahead rather than being refused. Tarpit has
+	// the numbers and the reasoning for that trade. What it keeps is the
+	// property this ordering exists for: the right password always works, and
+	// nothing here can be used to keep somebody out of their own account.
 	loginKey := "login:" + loginRateKey(body.Email)
 
 	if s.loginLimiter.Exceeded(loginKey) {

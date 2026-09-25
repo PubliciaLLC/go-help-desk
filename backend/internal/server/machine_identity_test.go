@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -67,6 +68,33 @@ func TestOAuthClient_CannotBeTheReporterOrAuthor(t *testing.T) {
 		require.Equal(t, http.StatusForbidden, res.StatusCode)
 	})
 
+	// Every other route that records who acted. Round two fixed create and
+	// reply and left these four, each of which wrote an audit entry or a
+	// status-history row keyed on the actor — so each answered 500 with a
+	// foreign-key constraint name in the log.
+	t.Run("the rest of the write routes", func(t *testing.T) {
+		cases := []struct {
+			name, method, path string
+			body               any
+		}{
+			{"assigning", http.MethodPatch, "/api/v1/tickets/" + tk.ID.String(),
+				map[string]any{"assignee_user_id": h.staffID.String()}},
+			{"changing the status", http.MethodPatch, "/api/v1/tickets/" + tk.ID.String(),
+				map[string]any{"status_id": h.resolvedStatusID(t).String()}},
+			{"resolving", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/resolve", map[string]any{}},
+			{"reopening", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/reopen", map[string]any{}},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				res := bearerRequest(t, h, token, tc.method, tc.path, tc.body)
+				defer res.Body.Close()
+				require.Equal(t, http.StatusForbidden, res.StatusCode,
+					"answered %d; an internal error is the wrong thing to tell a caller "+
+						"whose credential simply is not a person", res.StatusCode)
+			})
+		}
+	})
+
 	// And the refused create did not spend a tracking number.
 	after := createTicketAsUser(t, h, "After the refusal")
 	require.Equal(t, before+1, trackingSeq(t, after.TrackingNumber),
@@ -76,12 +104,37 @@ func TestOAuthClient_CannotBeTheReporterOrAuthor(t *testing.T) {
 // postBearer sends a JSON POST authenticated with an OAuth access token.
 func postBearer(t *testing.T, h *harness, token, path string, body any) *http.Response {
 	t.Helper()
+	return bearerRequest(t, h, token, http.MethodPost, path, body)
+}
+
+// bearerRequest sends any JSON request authenticated with an OAuth token.
+func bearerRequest(t *testing.T, h *harness, token, method, path string, body any) *http.Response {
+	t.Helper()
 	var buf bytes.Buffer
 	require.NoError(t, json.NewEncoder(&buf).Encode(body))
-	req := httptest.NewRequest(http.MethodPost, path, &buf)
+	req := httptest.NewRequest(method, path, &buf)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	rr := httptest.NewRecorder()
 	h.srv.ServeHTTP(rr, req)
 	return rr.Result()
+}
+
+// resolvedStatusID is the id of a status the ticket can legitimately move to.
+func (h *harness) resolvedStatusID(t *testing.T) uuid.UUID {
+	t.Helper()
+	res := h.do(t, http.MethodGet, "/api/v1/statuses", nil)
+	defer res.Body.Close()
+	var statuses []struct {
+		ID   uuid.UUID `json:"id"`
+		Name string    `json:"name"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&statuses))
+	for _, st := range statuses {
+		if st.Name == "Resolved" {
+			return st.ID
+		}
+	}
+	require.NotEmpty(t, statuses)
+	return statuses[0].ID
 }

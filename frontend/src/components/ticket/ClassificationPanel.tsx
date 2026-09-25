@@ -158,7 +158,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                 </Select>
               </div>
             )}
-            {error && <p className="text-xs text-red-600">{error}</p>}
+            {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button
                 size="sm"

@@ -199,6 +199,22 @@ func jpegDecodeBytes(data []byte) (int64, bool) {
 	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
 		return 0, false
 	}
+
+	// Collected in one pass, because the decoder reads them all before it
+	// allocates anything and the order they arrive in is the file's choice.
+	var (
+		haveFrame   bool
+		progressive bool
+		width       int64
+		height      int64
+		comps       []sampling
+		ids         []byte
+
+		jfif                bool
+		adobeTransform      byte
+		adobeTransformValid bool
+	)
+
 	for i := 2; i+4 <= len(data); {
 		if data[i] != 0xFF {
 			i++
@@ -206,70 +222,120 @@ func jpegDecodeBytes(data []byte) (int64, bool) {
 		}
 		marker := data[i+1]
 		// Markers that carry no length: padding, and the standalone ones.
-		if marker == 0xFF || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD9) {
+		if marker == 0xFF || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
 			i += 2
 			continue
 		}
+		// Start of scan, or end of image: everything that decides the
+		// allocation has been seen by now, because the decoder has seen it too.
+		if marker == 0xDA || marker == 0xD9 {
+			break
+		}
 		segLen := int(data[i+2])<<8 | int(data[i+3])
-		if segLen < 2 {
+		if segLen < 2 || i+2+segLen > len(data) {
 			return 0, false
 		}
-		if !isJPEGFrameHeader(marker) {
-			i += 2 + segLen
-			continue
-		}
+		payload := data[i+4 : i+2+segLen]
 
-		// SOF: precision, height, width, component count, then three bytes
-		// per component of which the middle one packs the sampling factors.
-		p := i + 4
-		if p+6 > len(data) {
-			return 0, false
-		}
-		height := int64(data[p+1])<<8 | int64(data[p+2])
-		width := int64(data[p+3])<<8 | int64(data[p+4])
-		count := int(data[p+5])
-		if width <= 0 || height <= 0 || count <= 0 || count > 4 {
-			return 0, false
-		}
-		p += 6
+		switch {
+		case marker == 0xE0: // APP0
+			jfif = len(payload) >= 5 && string(payload[:5]) == "JFIF\x00"
 
-		comps := make([]sampling, 0, count)
-		var hmax, vmax int64 = 1, 1
-		for c := 0; c < count; c++ {
-			if p+3 > len(data) {
+		case marker == 0xEE: // APP14
+			if len(payload) >= 12 && string(payload[:5]) == "Adobe" {
+				adobeTransformValid = true
+				adobeTransform = payload[11]
+			}
+
+		case isJPEGFrameHeader(marker):
+			if len(payload) < 6 {
 				return 0, false
 			}
-			h := int64(data[p+1] >> 4)
-			v := int64(data[p+1] & 0x0f)
-			if h < 1 || v < 1 || h > 4 || v > 4 {
+			height = int64(payload[1])<<8 | int64(payload[2])
+			width = int64(payload[3])<<8 | int64(payload[4])
+			count := int(payload[5])
+			if width <= 0 || height <= 0 || count <= 0 || count > 4 {
 				return 0, false
 			}
-			comps = append(comps, sampling{h, v})
-			hmax = max(hmax, h)
-			vmax = max(vmax, v)
-			p += 3
-		}
-
-		// Blocks across and down, in units of the largest sampling factor.
-		mxx := (width + 8*hmax - 1) / (8 * hmax)
-		myy := (height + 8*vmax - 1) / (8 * vmax)
-
-		progressive := marker == 0xC2 || marker == 0xC6 || marker == 0xCA || marker == 0xCE
-
-		var total int64
-		for _, c := range comps {
-			total += (mxx * 8 * c.h) * (myy * 8 * c.v)
-			if progressive {
-				total += mxx * myy * c.h * c.v * 256
+			if len(payload) < 6+3*count {
+				return 0, false
 			}
+			for c := range count {
+				b := payload[6+3*c:]
+				h := int64(b[1] >> 4)
+				v := int64(b[1] & 0x0f)
+				if h < 1 || v < 1 || h > 4 || v > 4 {
+					return 0, false
+				}
+				comps = append(comps, sampling{h, v})
+				ids = append(ids, b[0])
+			}
+			progressive = marker == 0xC2 || marker == 0xC6 || marker == 0xCA || marker == 0xCE
+			haveFrame = true
 		}
-		if count == 4 {
-			// applyBlack builds a CMYK image alongside the planes above.
-			total += width * height * 4
-		}
-		return total, true
+		i += 2 + segLen
 	}
-	return 0, false
+
+	if !haveFrame {
+		return 0, false
+	}
+
+	var hmax, vmax int64 = 1, 1
+	for _, c := range comps {
+		hmax = max(hmax, c.h)
+		vmax = max(vmax, c.v)
+	}
+
+	// Blocks across and down, in units of the largest sampling factor.
+	mxx := (width + 8*hmax - 1) / (8 * hmax)
+	myy := (height + 8*vmax - 1) / (8 * vmax)
+
+	var total int64
+	for _, c := range comps {
+		total += (mxx * 8 * c.h) * (myy * 8 * c.v)
+		if progressive {
+			total += mxx * myy * c.h * c.v * 256
+		}
+	}
+
+	// A whole second image, at full resolution, whenever the decoder converts
+	// rather than returning the planes it already has.
+	//
+	// Four components is the CMYK case: applyBlack builds a CMYK image beside
+	// the planes and the black plane. Three components does it too whenever
+	// the file says it is RGB rather than YCbCr, which was missed the first
+	// time and is not a rare shape — cjpeg -rgb writes one, and so does
+	// anything Adobe tags with transform 0. Measured, a 6 MB RGB 4:4:4 file
+	// estimated at 75 MB and left 175 MB live.
+	//
+	// The test for RGB is the decoder's own, because guessing it wrong in
+	// either direction is expensive: assume every three-component file
+	// converts and an ordinary 24-megapixel 4:2:0 photograph goes from 34 MB
+	// to 130 MB and is refused.
+	if len(comps) == 4 || jpegIsRGB(jfif, adobeTransformValid, adobeTransform, ids) {
+		total += width * height * 4
+	}
+	return total, true
+}
+
+// jpegIsRGB mirrors image/jpeg's own isRGB: a three-component file whose
+// samples are red, green and blue rather than luma and chroma. The decoder
+// allocates a whole extra image to convert one.
+//
+// JFIF settles it: that header means YCbCr, whatever else the file says.
+// Otherwise an Adobe marker with a transform of zero means RGB, and failing
+// that the component identifiers are read as letters — 'R', 'G', 'B'.
+func jpegIsRGB(jfif, adobeValid bool, adobeTransform byte, ids []byte) bool {
+	if len(ids) != 3 {
+		return false
+	}
+	if jfif {
+		return false
+	}
+	if adobeValid && adobeTransform == 0 {
+		return true
+	}
+	return ids[0] == 'R' && ids[1] == 'G' && ids[2] == 'B'
 }
 
 // isJPEGFrameHeader reports whether a marker starts a frame header (SOF0

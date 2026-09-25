@@ -82,7 +82,7 @@ function SaveBar({ onSave, isPending, error, saved }: {
       <Button onClick={onSave} disabled={isPending}>
         {isPending ? 'Saving…' : 'Save changes'}
       </Button>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
       {saved && <p className="text-sm text-green-600">Saved.</p>}
     </div>
   )
@@ -218,7 +218,7 @@ function SAMLSection() {
         <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           {saveMutation.isPending ? 'Saving…' : 'Save SAML config'}
         </Button>
-        {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-sm text-red-600">{saveError}</p>}
         {saved && !warning && <p className="text-sm text-green-600">SAML config saved.</p>}
         {warning && <p className="text-sm text-amber-600">{warning}</p>}
       </div>
@@ -395,7 +395,7 @@ function OIDCSection() {
         </Button>
 
         {saveError && (
-          <p className="text-sm text-red-600">{saveError}</p>
+          <p role="alert" className="text-sm text-red-600">{saveError}</p>
         )}
 
         {saved && (
@@ -664,7 +664,7 @@ function BrandingPanel({
             />
           </div>
 
-          {logoError && <p className="text-sm text-red-600">{logoError}</p>}
+          {logoError && <p role="alert" className="text-sm text-red-600">{logoError}</p>}
         </div>
       </Section>
 
@@ -1061,7 +1061,7 @@ function SLAPoliciesSection() {
         ) : (
           <p className="text-sm text-gray-500">No SLA policies defined.</p>
         )}
-        {formError && <p className="text-sm text-red-600">{formError}</p>}
+        {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
         {!showAdd && !editingId && (
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}

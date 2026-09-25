@@ -390,16 +390,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 
 	if !isGuest {
 		// A credential with no person behind it cannot be a reporter.
-		//
-		// An OAuth client actor carries no user id, so this handed uuid.Nil
-		// to the insert and answered 500 with a foreign-key violation in the
-		// log — after NextSeq had already taken a tracking number, leaving a
-		// hole in the numbering. The scope catalogue advertises tickets:write
-		// to OAuth clients, so this is a capability the API offers and cannot
-		// deliver. Refused plainly instead, before anything is written.
-		if a.UserID == uuid.Nil {
-			Error(w, http.StatusForbidden, "user_identity_required",
-				"this credential has no user identity, so it cannot be recorded as the reporter of a ticket")
+		if !s.requireUserIdentity(w, r) {
 			return
 		}
 		in.ReporterUserID = &a.UserID
@@ -523,6 +514,9 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
 	if body.StatusID != nil {
@@ -597,12 +591,8 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The same identity requirement as creating a ticket: a reply is written
-	// by somebody, and an OAuth client actor has no user id, so this reached
-	// the insert as uuid.Nil and answered 500 on a foreign key.
-	if a.UserID == uuid.Nil {
-		Error(w, http.StatusForbidden, "user_identity_required",
-			"this credential has no user identity, so it cannot be recorded as the author of a reply")
+	// A reply is written by somebody.
+	if !s.requireUserIdentity(w, r) {
 		return
 	}
 
@@ -638,6 +628,9 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	reopenStatusID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
+		return
+	}
+	if !s.requireUserIdentity(w, r) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
@@ -680,6 +673,9 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = DecodeJSON(r, &body)
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	t, err := s.tickets.Resolve(r.Context(), id, body.Notes, actor)
 	if err != nil {
@@ -716,6 +712,9 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	t, err := s.tickets.Reopen(r.Context(), id, targetID, actor)
 	if err != nil {
@@ -739,6 +738,9 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	// The admin who pressed the button, not SystemActor: the authorisation
 	// check above is this handler's job, and the actor is for attribution.
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	if err := s.tickets.Close(r.Context(), id, ticket.Actor{UserID: &a.UserID, Role: a.Role}); err != nil {
 		handleError(w, err)
 		return
@@ -782,6 +784,9 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	if err := s.tickets.AddLink(r.Context(), sourceID, body.TargetID, ticket.LinkType(body.LinkType), actor); err != nil {
 		handleError(w, err)
@@ -943,4 +948,27 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 		}
 	}
 	return errors.New("category_id is not an active category")
+}
+
+// requireUserIdentity refuses a credential that has nobody behind it, and
+// reports whether the caller may go on.
+//
+// An OAuth client actor carries no user id. Everything below records who
+// acted — an audit entry, a status-history row, a reply's author, a ticket's
+// reporter — and all of those are foreign keys to users, so uuid.Nil reached
+// the insert and came back 500 with a constraint name in the log. Some of
+// those writes had already taken a tracking number from the sequence.
+//
+// The scope catalogue advertises tickets:write to OAuth clients, so this is a
+// capability the API offers and cannot deliver. Saying so is the honest
+// answer: the request is not malformed and the server is not broken, the
+// credential simply is not a person.
+func (s *Server) requireUserIdentity(w http.ResponseWriter, r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a == nil || a.UserID == uuid.Nil {
+		Error(w, http.StatusForbidden, "user_identity_required",
+			"this credential has no user identity, so it cannot be recorded as having acted on a ticket")
+		return false
+	}
+	return true
 }

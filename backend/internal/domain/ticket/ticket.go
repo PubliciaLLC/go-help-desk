@@ -85,6 +85,19 @@ const (
 	LinkDuplicateOf LinkType = "duplicate_of"
 )
 
+// Valid reports whether this is one of the four link types the column accepts.
+//
+// Checked in the service rather than left to the database's own constraint: a
+// bad value came back as a check violation, which the handler could only
+// render as 500 — an internal error, for a word the caller typed.
+func (lt LinkType) Valid() bool {
+	switch lt {
+	case LinkRelatedTo, LinkParentChild, LinkCausedBy, LinkDuplicateOf:
+		return true
+	}
+	return false
+}
+
 // TicketLink records a directional relationship between two tickets.
 // Both tickets are identified by UUID; no embedding is done to keep the
 // type flat.

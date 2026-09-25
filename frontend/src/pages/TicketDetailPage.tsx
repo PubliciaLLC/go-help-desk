@@ -155,7 +155,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
           Clear assignment
         </button>
       )}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
     </div>
   )
 }
@@ -295,7 +295,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
             </Button>
           </div>
         )}
-        {saveError && <p className="text-xs text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-xs text-red-600">{saveError}</p>}
       </CardContent>
     </Card>
   )
@@ -597,7 +597,7 @@ export function TicketDetailPage() {
                     ))}
                   </Select>
                   {statusMutation.isError && (
-                    <p className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
+                    <p role="alert" className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
                   )}
                 </CardContent>
               </Card>

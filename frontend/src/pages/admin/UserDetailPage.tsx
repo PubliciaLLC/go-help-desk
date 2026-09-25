@@ -219,7 +219,7 @@ export function UserDetailPage() {
             {user.disabled && (
               <p className="text-xs text-amber-600">Enable the account to edit profile fields.</p>
             )}
-            {profileError && <p className="text-sm text-red-600">{profileError}</p>}
+            {profileError && <p role="alert" className="text-sm text-red-600">{profileError}</p>}
             <div className="flex items-center gap-3 pt-1">
               <Button
                 size="sm"
@@ -335,7 +335,7 @@ export function UserDetailPage() {
                       {passwordMutation.isPending ? 'Setting…' : 'Set password'}
                     </Button>
                   </div>
-                  {passwordError && <p className="text-sm text-red-600">{passwordError}</p>}
+                  {passwordError && <p role="alert" className="text-sm text-red-600">{passwordError}</p>}
                   {passwordSaved && <p className="text-sm text-green-600">Password updated.</p>}
                 </div>
               )}
@@ -392,7 +392,7 @@ export function UserDetailPage() {
               </Button>
             </div>
           )}
-          {groupError && <p className="text-sm text-red-600">{groupError}</p>}
+          {groupError && <p role="alert" className="text-sm text-red-600">{groupError}</p>}
         </SectionCard>
 
         {/* ── Danger zone ─────────────────────────────────────────────────── */}

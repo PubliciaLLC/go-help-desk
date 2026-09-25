@@ -87,7 +87,8 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 >
 > **Note:** SAML, MFA, SLA and guest submission are toggled in the Admin UI,
 > and that setting is the switch. Only SLA has a matching environment variable
-> (`SLA_ENABLED`), which starts the background scheduler; there has never been
+> (`SLA_ENABLED`), which attaches an SLA policy to tickets as they are created
+> — there is no scheduler, and the Admin UI toggle for SLA has no effect; there has never been
 > a SAML one, and the MFA and guest-submission variables were removed in
 > 1.3.0-beta because nothing read them — an operator setting
 > `GUEST_SUBMISSION_ENABLED=true` and expecting guests to be able to file
@@ -248,8 +249,8 @@ The REST API is documented informally by the handler source at `backend/internal
 | `POST /api/v1/admin/tags/{id}/restore` | admin | Restore a deactivated tag |
 | `GET/POST /api/v1/tickets/{id}/tags` | staff / admin | List or add tags on a ticket |
 | `DELETE /api/v1/tickets/{id}/tags/{tagId}` | staff / admin | Remove a tag from a ticket |
-| `GET /api/v1/categories` | none | Active categories (for ticket creation) |
-| `GET /api/v1/categories/{id}/types` | none | Active types for a category |
+| `GET /api/v1/categories` | any signed-in user, or anyone when guest submission is on | Active categories (for ticket creation) |
+| `GET /api/v1/categories/{id}/types` | any signed-in user, or anyone when guest submission is on | Active types for a category |
 | `GET/POST /api/v1/tickets/{id}/attachments` | session / API key | List or upload attachments |
 | `GET /api/v1/tickets/{id}/attachments/{attachId}` | session / API key | Download an attachment |
 

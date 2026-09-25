@@ -203,6 +203,24 @@ func (f *fakeStore) ListAll(context.Context, int, int) ([]ticket.Ticket, error) 
 func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
+
+// UnassignForUser clears the assignee on every open ticket held by a user.
+func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) (int, error) {
+	moved := 0
+	for id, t := range f.tickets {
+		if t.AssigneeUserID == nil || *t.AssigneeUserID != userID {
+			continue
+		}
+		if t.ResolvedAt != nil || t.ClosedAt != nil {
+			continue
+		}
+		t.AssigneeUserID = nil
+		f.tickets[id] = t
+		moved++
+	}
+	return moved, nil
+}
+
 func (f *fakeStore) ListResolvedBefore(context.Context, time.Time, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }

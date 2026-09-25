@@ -11,6 +11,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Actor is the identity performing an operation. Both authenticated users and
@@ -856,7 +858,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, err
 	}
 	if t.StatusID != s.sys.closedID {
-		return Ticket{}, fmt.Errorf("ticket is not closed")
+		return Ticket{}, fmt.Errorf("%w: ticket is not closed", ErrNotReopenable)
 	}
 	// Same guard as AddReply's auto-reopen: an unresolvable configured status
 	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
@@ -878,7 +880,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 			return err
 		}
 		if t.StatusID != s.sys.closedID {
-			return fmt.Errorf("ticket is not closed")
+			return fmt.Errorf("%w: ticket is not closed", ErrNotReopenable)
 		}
 		before := ticketMap(t)
 		oldStatusID = t.StatusID
@@ -938,10 +940,23 @@ func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]
 // AddLink creates a directed link between two tickets.
 func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType, actor Actor) error {
 	if sourceID == targetID {
-		return fmt.Errorf("cannot link a ticket to itself")
+		return fmt.Errorf("%w: a ticket cannot be linked to itself", ErrValidation)
+	}
+	if !lt.Valid() {
+		// Checked here rather than left to the column's constraint. A bad
+		// link type came back from the database as a check violation, which
+		// the handler could only render as 500 — an internal error, for a
+		// word the caller typed.
+		return fmt.Errorf("%w: %q is not a link type", ErrValidation, lt)
 	}
 	link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 	if err := s.store.CreateLink(ctx, link); err != nil {
+		// A pair that is already linked is not a fault either. The unique
+		// constraint is doing its job and the caller asked for something that
+		// is already true.
+		if isUniqueViolation(err) {
+			return fmt.Errorf("%w: these tickets are already linked that way", ErrValidation)
+		}
 		return fmt.Errorf("creating link: %w", err)
 	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -1151,6 +1166,31 @@ func ticketMap(t Ticket) map[string]any {
 // ErrValidation wraps input-validation failures from Create, so callers
 // (the HTTP handler) can map them to 400 instead of the 500 handleError
 // falls back to for an unrecognized error.
+// UnassignForUser returns a departing user's open tickets to the queue, and
+// reports how many moved.
+//
+// Deleting a user is a soft delete, so the assignee column kept pointing at a
+// row that no longer appears in the user list: the ticket rendered as
+// "Unassigned" because the lookup found nobody, was absent from the
+// unassigned queue because the column was not null, and was in nobody's
+// "assigned to me". It sat between the two lists with nothing to prompt
+// anyone to pick it up.
+//
+// Open tickets only. A resolved or closed one assigned to somebody who has
+// left is history, and history should record who actually handled it.
+func (s *Service) UnassignForUser(ctx context.Context, userID uuid.UUID) (int, error) {
+	return s.store.UnassignForUser(ctx, userID)
+}
+
+// ErrNotReopenable is a ticket that is not closed, so there is nothing to
+// reopen.
+//
+// A named error rather than a bare string because the handler has to tell it
+// from a server fault: it fell through to 500 "an internal error occurred",
+// which is a lie about an ordinary precondition the caller can see for
+// themselves.
+var ErrNotReopenable = errors.New("ticket is not closed")
+
 var ErrValidation = errors.New("validation failed")
 
 // ── Attachments ───────────────────────────────────────────────────────────────
@@ -1192,4 +1232,18 @@ func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) 
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
 func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
 	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)
+}
+
+// isUniqueViolation reports whether a store error is Postgres refusing a
+// duplicate row.
+//
+// Matched on the SQLSTATE rather than the message, which is localised and
+// carries table and constraint names this layer should not be reading. The
+// point is to tell "you asked for something that is already true" from "the
+// database is broken": the first is the caller's answer and the second is a
+// fault, and rendering both as 500 tells somebody their own ordinary mistake
+// is a server error.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

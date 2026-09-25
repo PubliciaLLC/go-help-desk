@@ -81,10 +81,17 @@ func ValidateEmail(s string) (string, error) {
 	return strings.ToLower(addr.Address), nil
 }
 
-func (u User) Validate() error {
-	if _, err := ValidateEmail(u.Email); err != nil {
+func (u *User) Validate() error {
+	// The parsed form is kept, not discarded. ValidateEmail accepts the
+	// angle-bracket spelling — mail.ParseAddress does — and throwing its
+	// answer away stored "<someone@example.com>" verbatim, brackets and all.
+	// Login looks up the bare address, so the account could only be signed
+	// into by typing the brackets, which nobody does.
+	addr, err := ValidateEmail(u.Email)
+	if err != nil {
 		return err
 	}
+	u.Email = addr
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}

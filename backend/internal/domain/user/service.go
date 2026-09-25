@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Service orchestrates user-related business operations.
@@ -124,6 +126,9 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 		u.PasswordHash = in.PasswordHash
 	}
 	if err := s.store.Create(ctx, u); err != nil {
+		if isUniqueViolation(err) {
+			return User{}, ErrEmailTaken
+		}
 		return User{}, fmt.Errorf("creating user: %w", err)
 	}
 	return u, nil
@@ -148,7 +153,13 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	}
 	u.PasswordHash = string(hash)
 	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	if err := s.store.Update(ctx, u); err != nil {
+		if isUniqueViolation(err) {
+			return ErrEmailTaken
+		}
+		return err
+	}
+	return nil
 }
 
 // VerifyPassword looks up a user by email and checks the plain-text password.
@@ -735,4 +746,24 @@ func (s *Service) RecordMFAFailure(ctx context.Context, id uuid.UUID) error {
 // 800-63B.
 func (s *Service) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
 	return s.store.ClearMFAFailures(ctx, id)
+}
+
+// ErrEmailTaken is another account already holding this address.
+//
+// Named so the handler can answer 409 rather than 500. An administrator
+// typing an address that already exists is an ordinary mistake, and "an
+// internal error occurred" is both wrong and unhelpful — the one thing they
+// need to know is that the address is taken.
+//
+// It covers a deleted account too, because the unique constraint does: the
+// row stays and keeps its address. That is worth knowing when re-hiring
+// somebody, and it is why the message says so.
+var ErrEmailTaken = fmt.Errorf("%w: that email address is already in use, possibly by a deleted account", ErrValidation)
+
+// isUniqueViolation reports whether a store error is Postgres refusing a
+// duplicate row. Matched on the SQLSTATE rather than the message, which is
+// localised and names tables this layer should not be reading.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

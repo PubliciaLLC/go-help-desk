@@ -318,6 +318,19 @@ type Querier interface {
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
+	// Takes a departing user off every ticket still assigned to them, and says
+	// which ones.
+	//
+	// Deleting a user is a soft delete, so the assignee column kept pointing at a
+	// row that no longer appears anywhere: the ticket showed as "Unassigned" on
+	// the page (the lookup found nobody), was NOT in the unassigned queue (the
+	// column was not null), and was in nobody's "assigned to me". It sat in the
+	// gap between the two lists with nothing to prompt anyone to pick it up.
+	//
+	// Only tickets that are still open are worth moving. A resolved or closed
+	// ticket assigned to somebody who has left is history, and history should
+	// record who actually handled it.
+	UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error

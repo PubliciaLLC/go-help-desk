@@ -47,6 +47,9 @@ type Store interface {
 	ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]Ticket, error)
 	ListAll(ctx context.Context, limit, offset int) ([]Ticket, error)
 	ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error)
+	// UnassignForUser clears the assignee on every OPEN ticket held by a
+	// user, and reports how many moved. Used when an account is deleted.
+	UnassignForUser(ctx context.Context, userID uuid.UUID) (int, error)
 	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
 
 	// Guest access tokens.

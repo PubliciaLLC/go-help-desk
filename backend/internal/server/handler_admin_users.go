@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -373,6 +374,28 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
+	}
+	// And their open tickets go back in the queue.
+	//
+	// The assignee column kept pointing at the soft-deleted row, which no
+	// longer appears in the user list — so the ticket showed as "Unassigned"
+	// on the page, was NOT in the unassigned queue because the column was not
+	// null, and was in nobody's "assigned to me". It sat in the gap between
+	// the two lists with nothing to prompt anyone to pick it up. Disabling an
+	// account does not have this problem, because a disabled user is still in
+	// the list.
+	//
+	// Not fatal if it fails: the account is already gone and refusing the
+	// request now would leave the caller unsure whether it worked. Logged
+	// instead, with the count, because an administrator watching a departure
+	// wants to know how many tickets just landed back in the queue.
+	moved, err := s.tickets.UnassignForUser(r.Context(), id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "could not unassign the deleted user's tickets",
+			"user_id", id, "error", err)
+	} else if moved > 0 {
+		slog.InfoContext(r.Context(), "returned the deleted user's open tickets to the queue",
+			"user_id", id, "tickets", moved)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

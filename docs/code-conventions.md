@@ -33,7 +33,12 @@ No `init()` functions with side effects. No package-level variables that change 
 
 ## Testing
 
-- Use Go's stdlib `testing` package. No third-party assertion libraries.
+- Use Go's stdlib `testing` package, with `testify/require` for assertions.
+  The rule here used to say no third-party assertion libraries; testify has
+  been a dependency since early on and is used by most of the suite, so the
+  rule was describing a codebase that does not exist. Plain `if got != want`
+  is still right for a small check — the point is a readable failure message,
+  not which package produced it.
 - Table-driven tests for domain logic and HTTP handlers.
 - Integration tests use `testutil.TxQueries` — rolled back automatically, no pre-existing data dependency.
 - **Never mock the database.** Real queries catch real bugs.

@@ -1885,6 +1885,50 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 	return items, nil
 }
 
+const unassignTicketsForUser = `-- name: UnassignTicketsForUser :many
+UPDATE tickets
+SET assignee_user_id = NULL, updated_at = now()
+WHERE assignee_user_id = $1
+  AND resolved_at IS NULL
+  AND closed_at IS NULL
+RETURNING id
+`
+
+// Takes a departing user off every ticket still assigned to them, and says
+// which ones.
+//
+// Deleting a user is a soft delete, so the assignee column kept pointing at a
+// row that no longer appears anywhere: the ticket showed as "Unassigned" on
+// the page (the lookup found nobody), was NOT in the unassigned queue (the
+// column was not null), and was in nobody's "assigned to me". It sat in the
+// gap between the two lists with nothing to prompt anyone to pick it up.
+//
+// Only tickets that are still open are worth moving. A resolved or closed
+// ticket assigned to somebody who has left is history, and history should
+// record who actually handled it.
+func (q *Queries) UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, unassignTicketsForUser, assigneeUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateTicket = `-- name: UpdateTicket :exec
 UPDATE tickets
 SET subject = $2, description = $3, type_id = $4, item_id = $5,

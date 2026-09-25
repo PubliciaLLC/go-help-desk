@@ -102,8 +102,8 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
 - **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window. Set to 0 to disable user-initiated reopening entirely.
-- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the first active custom status when unset.
-- **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
+- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status.
+- **Closed**: no further user updates. Staff/admin can still reopen manually. **The automatic transition is not implemented** — `ListResolvedBefore` exists for a scheduler that was never written, and nothing calls it, so a resolved ticket stays Resolved until somebody closes it. Tracked as an issue.
 - Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
 - Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
 - Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
@@ -128,7 +128,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - The query is tokenized into words and each word is prefix-matched (e.g. `print jam` requires a word starting with "print" **and** a word starting with "jam", in any order) — this is what keeps "search as you type" working on partial words, not just whole ones.
 - Subject is weighted higher than description, so a match in the subject line ranks above one buried in a long description.
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
-- Results appear after 2 characters are entered. Fetching is shown inline with a spinner.
+- Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
 - Reply bodies are not indexed in v2 — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
@@ -141,7 +141,7 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 - **Related to** — informational association
 - **Parent / Child** — hierarchical grouping (e.g. a Problem with multiple Incidents)
 - **Caused by** — causal relationship
-- **Duplicate of** — marks a ticket as a duplicate (optionally auto-resolves the duplicate)
+- **Duplicate of** — marks a ticket as a duplicate. It records the relationship and nothing else; there is no auto-resolve.
 
 ### Groups & Scope
 
@@ -1291,7 +1291,7 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 
 ## SLA Tracking (v1)
 
-SLA tracking is an optional feature toggle available in **Admin → Settings → Features → SLA tracking**. It can also be pre-enabled at startup via the `SLA_ENABLED=true` environment variable.
+SLA tracking attaches a policy to a ticket when it is created, and records the resulting deadlines. **Read this section as a specification of the intended feature, not a description of what runs**: what is implemented is the policy attachment at creation time, and `SLA_ENABLED=true` is what switches it on. The **Admin → Settings** toggle has no effect — `admin.Service.SLAEnabled` has no callers — and there is no scheduler, no breach detection and no notification. Each gap is marked below and tracked as an issue.
 
 ### SLA Policies
 
@@ -1315,12 +1315,12 @@ When a ticket is created, the system selects an SLA policy by specificity:
 4. A catch-all (no Priority, no Category)
 5. No SLA — if no policy matches
 
-### SLA Indicators
+### SLA Indicators — not implemented
 
-The ticket queue shows a color-coded SLA indicator per ticket:
+Intended: the ticket queue shows a colour-coded SLA indicator per ticket. There is no SLA code in the queue page today.
 
 - **Green** — within SLA
 - **Amber** — within 20% of the deadline
 - **Red** — SLA breached
 
-SLA timers are paused while a ticket is in a "Pending" status (waiting on the user) and resume when the ticket moves to any other status.
+Intended: SLA timers pause while a ticket is in a "Pending" status (waiting on the user) and resume when it moves to any other status. There is no pause logic in the code.

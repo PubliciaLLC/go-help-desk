@@ -106,6 +106,26 @@ ORDER BY
   created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: UnassignTicketsForUser :many
+-- Takes a departing user off every ticket still assigned to them, and says
+-- which ones.
+--
+-- Deleting a user is a soft delete, so the assignee column kept pointing at a
+-- row that no longer appears anywhere: the ticket showed as "Unassigned" on
+-- the page (the lookup found nobody), was NOT in the unassigned queue (the
+-- column was not null), and was in nobody's "assigned to me". It sat in the
+-- gap between the two lists with nothing to prompt anyone to pick it up.
+--
+-- Only tickets that are still open are worth moving. A resolved or closed
+-- ticket assigned to somebody who has left is history, and history should
+-- record who actually handled it.
+UPDATE tickets
+SET assignee_user_id = NULL, updated_at = now()
+WHERE assignee_user_id = $1
+  AND resolved_at IS NULL
+  AND closed_at IS NULL
+RETURNING id;
+
 -- name: ListUnassignedTickets :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL

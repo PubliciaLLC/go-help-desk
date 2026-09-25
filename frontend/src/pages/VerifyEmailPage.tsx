@@ -43,7 +43,7 @@ export function VerifyEmailPage() {
         <CardContent>
           {error ? (
             <div className="space-y-3 text-sm text-gray-700">
-              <p className="text-red-600">{error}</p>
+              <p role="alert" className="text-red-600">{error}</p>
               <p>
                 <Link to="/signup" className="text-blue-600 hover:underline">
                   Back to sign up

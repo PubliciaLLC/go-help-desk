@@ -20,6 +20,13 @@ var ErrTokenExpired = fmt.Errorf("verification token has expired")
 // two it was.
 var ErrInvalidEmail = fmt.Errorf("invalid email address")
 
+// ErrDisplayNameRequired is a signup with no name on it.
+//
+// Refused at registration rather than at verification, where the same rule
+// already applied: by then the person has been told they are registered and
+// sent a link that cannot work.
+var ErrDisplayNameRequired = fmt.Errorf("display name is required")
+
 // ErrPasswordTooShort is the refusal for a signup password below
 // user.MinPasswordLength.
 var ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", user.MinPasswordLength)
@@ -78,6 +85,14 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 	// default, which was the only thing standing in front of it.
 	if len(password) < user.MinPasswordLength {
 		return ErrPasswordTooShort
+	}
+	// A display name is required by user.Validate, which runs at Verify —
+	// long after the person has been told their registration was accepted and
+	// an email has been sent. Without this they follow the link and are told
+	// the token is invalid or already used, which is neither. Refuse it here,
+	// where they can still fix it.
+	if displayName == "" {
+		return ErrDisplayNameRequired
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)

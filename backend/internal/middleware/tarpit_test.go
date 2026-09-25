@@ -22,7 +22,7 @@ import (
 // and a known email address got the account's owner refused on their own
 // correct password. That is the lockout the login handler's ordering exists to
 // prevent, reintroduced by the thing meant to strengthen it.
-func TestTarpit_IsSequentialAndBounded(t *testing.T) {
+func TestTarpit_SlowsACallerAndNeverQueuesOneForLong(t *testing.T) {
 	const (
 		delay    = 80 * time.Millisecond
 		parallel = 12
@@ -33,6 +33,7 @@ func TestTarpit_IsSequentialAndBounded(t *testing.T) {
 	var (
 		mu      sync.Mutex
 		longest time.Duration
+		delayed int
 		wg      sync.WaitGroup
 	)
 	start := make(chan struct{})
@@ -50,27 +51,58 @@ func TestTarpit_IsSequentialAndBounded(t *testing.T) {
 			if took > longest {
 				longest = took
 			}
+			// Everything over budget waits, whether it gets a turn or gives
+			// up waiting for one. Nothing sails straight through.
+			if took >= delay*9/10 {
+				delayed++
+			}
 		}()
 	}
 
-	began := time.Now()
 	close(start)
 	wg.Wait()
-	elapsed := time.Since(began)
 
-	// Sequential: the first caller holds its turn for the whole delay, so the
-	// second cannot even start one until then — two turns, end to end, before
-	// the last caller is done. Callers that ran in parallel would all be
-	// finished in a little over one delay, which is what this catches.
-	require.Greater(t, elapsed, delay*3/2,
-		"%d calls finished in %v against a delay of %v, so the waits ran in parallel and bound nothing",
-		parallel, elapsed, delay)
+	require.Equal(t, parallel, delayed,
+		"%d of %d callers were not slowed at all", parallel-delayed, parallel)
 
-	// Bounded: one wait for a turn, one hold. Anything longer is a queue an
-	// attacker can lengthen, which is how the owner gets held out.
+	// One wait for a turn, one hold. Anything longer is a queue an attacker
+	// can lengthen, which is how the account's owner gets held out — the
+	// failure the first version of this had.
 	require.Less(t, longest, 4*delay,
 		"one caller waited %v against a delay of %v, so a flood can hold somebody's own login open",
 		longest, delay)
+}
+
+// A serial caller is slowed once per attempt, which is the case the delay
+// actually buys something in. Ten attempts at the delay cannot finish in less
+// than nine of them.
+//
+// Deliberately not asserted for parallel callers. A request that cannot get
+// its turn within the delay proceeds without one, so with N arriving together
+// the bound is N over the delay rather than one over it — that is the trade
+// made to guarantee nobody is ever refused, and Tarpit carries the
+// measurements. A test that asserted strict serialisation under concurrency
+// would be asserting a coin flip: whether a waiter grabs the released turn or
+// times out first is a race between two timers set to the same duration, and
+// the earlier version of this test failed about once in four runs because of
+// it.
+func TestTarpit_SlowsASerialCaller(t *testing.T) {
+	const (
+		delay    = 20 * time.Millisecond
+		attempts = 10
+	)
+	rl := authmw.NewRateLimiter(1, time.Minute)
+	rl.Allow("victim@example.com")
+
+	began := time.Now()
+	for range attempts {
+		rl.Tarpit(context.Background(), "victim@example.com", delay)
+	}
+	elapsed := time.Since(began)
+
+	require.GreaterOrEqual(t, elapsed, time.Duration(attempts-1)*delay,
+		"%d sequential attempts finished in %v, so the delay is not being taken",
+		attempts, elapsed)
 }
 
 // A key inside its budget is not delayed at all, and neither is anything when

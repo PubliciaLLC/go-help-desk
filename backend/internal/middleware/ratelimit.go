@@ -98,29 +98,40 @@ func (rl *RateLimiter) Exceeded(key string) bool {
 
 // Tarpit slows an over-budget key down. It never refuses one.
 //
-// The point is throughput, which a counter alone does not control. Password
-// verification runs before the counter is consulted -- deliberately, so that a
-// correct password is always honoured and nobody can be locked out of their
-// own account by somebody else's guessing -- and the counter then only changes
-// the status code on a wrong guess. An attacker who ignores 429 therefore had
-// unlimited online guesses, bounded only by how fast this server computes
-// bcrypt: measured elsewhere at ten to fifteen a second per core.
+// Password verification runs before the counter is consulted — deliberately,
+// so that a correct password is always honoured and nobody can be locked out
+// of their own account by somebody else's guessing — so the counter alone only
+// changed the status code on a wrong guess. An attacker who ignored 429 had
+// unlimited online guesses, bounded by bcrypt alone.
 //
-// Two rules, and the second is here because the first version got it wrong.
+// What this buys, measured through the real login handler on a ten-core
+// machine with a one-second delay:
 //
-// One turn at a time per key, so the delay bounds guesses per second rather
-// than just making each guess slower. Fifty requests that each sleep a second
-// in parallel still make fifty guesses in a second.
+//	connections   with tarpit   without
+//	          1        ~1/sec    22/sec
+//	          8         9/sec   132/sec
+//	        256       154/sec   154/sec
+//
+// So it costs a serial client about twenty times, and against something that
+// opens a couple of hundred connections it costs nothing at all — at that
+// point bcrypt is the only thing left, which is where this started. The bound
+// is connections divided by the delay, not one over the delay, and saying
+// otherwise would be describing a control that is not there. MFA is the
+// answer to a determined parallel attacker; this is the answer to a script.
+//
+// Two rules, and the second is why the number above is not better.
+//
+// One turn at a time per key, so a serial caller is slowed by the delay
+// rather than just made to wait once.
 //
 // And nobody waits longer than twice the delay. The first version bounded the
 // queue instead and refused anything past it, which handed an attacker the
 // lockout this ordering exists to prevent: eight connections against a known
 // email address, and the owner's CORRECT password came back 429. A request
-// that cannot get its turn in time now goes ahead without one. That gives up
-// part of the throughput bound under a heavy parallel flood -- such an
-// attacker is back to being limited by bcrypt, which is where they were
-// before any of this existed -- and it buys back the guarantee that matters
-// more: this cannot be used to keep somebody out of their own account.
+// that cannot get its turn in time now goes ahead without one. That is what
+// flattens the table above at high concurrency, and it is the right trade:
+// the guarantee that nobody can be kept out of their own account is worth
+// more than a bound that a determined attacker walks around anyway.
 func (rl *RateLimiter) Tarpit(ctx context.Context, key string, delay time.Duration) {
 	if rl.limit <= 0 || delay <= 0 {
 		return
