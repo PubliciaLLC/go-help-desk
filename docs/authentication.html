@@ -75,13 +75,17 @@
       <li><a href="#auth-local">Local Accounts</a></li>
       <li><a href="#auth-mfa">TOTP MFA</a></li>
       <li><a href="#auth-saml">SAML 2.0</a></li>
-      <li><a href="#auth-guest">Guest Submission (soon)</a></li>
+      <li><a href="#auth-guest">Guest Access <span class="badge-beta">Beta</span></a></li>
       <li><a href="#auth-api-keys">API Keys</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Administration</div>
     <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -340,14 +344,59 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
 </div>
 
 
-<h2 id="auth-guest">Guest submission — coming soon</h2>
+<h2 id="auth-guest">Guest access <span class="badge-beta">New in 1.3.0-beta</span></h2>
 
 <div class="callout callout-warn">
-  <p><strong>This does not work yet.</strong> The pieces exist and do not connect: <code>POST /api/v1/tickets</code> sits behind a role check, so the handler's guest branch is unreachable, the <code>/submit</code> page posts to that same authenticated endpoint, and the <code>GUEST_SUBMISSION_ENABLED</code> setting changes nothing. An authenticated caller that sends <code>guest_email</code> has it discarded rather than stored. Turning the toggle on produces no error and no guest tickets.</p>
-  <p>Tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>, together with the tokenised view a guest needs in order to read replies. The two have to land together: since v1.2.0 notification email carries no ticket content, so a guest with no way to sign in would receive a link to a page they cannot open.</p>
+  <p><strong>This works from v1.3.0-beta and does not work in v1.2.0 or any earlier release.</strong> Up to and including 1.2.0 the pieces existed and did not connect — turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>. It is off by default.</p>
 </div>
 
-<p>What is planned: an unauthenticated visitor submits a ticket at <code>/submit</code>, gives a name, an email address and optionally a phone number, and receives a tracking number. A link scoped to that one ticket lets them read the thread and reply, without an account. Nothing here is implemented; treat the above as intent, not documentation.</p>
+<p>A guest is not an account. There is no guest password, no guest session and no guest role — <strong>possession of a private link is the whole credential</strong>, and possession of the mailbox it was sent to is what earns it.</p>
+
+<h3>How a guest gets in</h3>
+<ol>
+  <li>They submit a ticket at <code>/submit</code>. The page shows a tracking number and the server emails the address a link to that one ticket.</li>
+  <li>The link is <code>/g#&lt;token&gt;</code>. The token sits after the <code>#</code> deliberately: a fragment is never sent to the server, so it cannot land in a request log. The page reads it once and removes it from the address bar, so it survives neither browser history nor a screenshot of the URL.</li>
+  <li>From then on the browser sends it as an <code>Authorization: Guest &lt;token&gt;</code> header against two endpoints: read that ticket, and reply to it.</li>
+</ol>
+
+<h3>What the token is, and how long it lives</h3>
+<table>
+  <thead><tr><th>Property</th><th>Value</th></tr></thead>
+  <tbody>
+    <tr><td>Length</td><td>32 random bytes, hex encoded</td></tr>
+    <tr><td>Stored as</td><td>A SHA-256 hash. The raw value is never written down anywhere on the server.</td></tr>
+    <tr><td>Scope</td><td>Exactly one ticket. The token names the ticket; there is no ticket id in any guest URL.</td></tr>
+    <tr><td>Lifetime</td><td>30 days from issue, as an outer bound. On an active ticket it is replaced sooner, every time the help desk writes to the guest — see the next row.</td></tr>
+    <tr><td>Rotated</td><td>On ticket creation, on a staff reply that notifies the customer, on a status change, on resolve, on reopen, and on a re-request. <strong>The old link stops working immediately</strong> — there is no grace period, so the newest email is always the one that works.</td></tr>
+    <tr><td>Revoked</td><td>When the ticket is closed. No mail is sent for the close, and the link simply stops working.</td></tr>
+  </tbody>
+</table>
+
+<p>Every failure on a guest endpoint — wrong token, expired token, closed ticket, guest submission switched off — answers an identical <code>404</code>, so none of them can be told apart from outside.</p>
+
+<h3>Re-requesting a lost link</h3>
+<p><code>/track</code> takes the tracking number and the email address and mails a fresh link, which replaces the previous one. It <strong>always</strong> answers the same way, whether or not those details matched an open ticket, so it cannot be used to discover which tickets exist. One request per ticket every five minutes.</p>
+
+<h3>Rate limiting</h3>
+<p>Guest submission and link re-requests share the login rate limiter — 10 attempts a minute by default (<code>AUTH_RATE_LIMIT_PER_MINUTE</code>), keyed on the client address.</p>
+
+<div class="callout callout-warn">
+  <p><strong>Behind a reverse proxy, that key is the proxy.</strong> The limiter reads the connection's remote address and the application deliberately does not trust a forwarded-for header, so on the default Docker deployment every visitor shares one bucket: 10 guest submissions a minute for the whole instance. Rate-limit guest endpoints at your proxy if you need a per-visitor limit.</p>
+</div>
+
+<h3>What a guest can and cannot do</h3>
+<ul>
+  <li><strong>Can</strong> read the ticket's subject, description, status and public replies, and post a reply. Lifecycle rules still apply, including the reopen window.</li>
+  <li><strong>Cannot</strong> see internal notes, staff names, the assignee, the reporter or resolution notes. The guest view is built from a deliberately narrow set of fields rather than by hiding parts of the normal one.</li>
+  <li><strong>Cannot</strong> upload or download attachments. There is no attachment route on the guest surface at all, and the guest view does not indicate whether a ticket has any.</li>
+  <li><strong>Cannot</strong> reach any other ticket. The token names one.</li>
+</ul>
+
+<p>Guest notification email carries no ticket content — only the tracking number and the link. That has been true since v1.2.0.</p>
+
+<div class="callout callout-note">
+  <p><strong>Turning guest submission on is not session-gated.</strong> Unlike MFA, SSO and the registration settings, <code>guest_submission_enabled</code> can be changed by an API key or OAuth client with settings write access, and its value is not validated at the write. Treat write access to settings accordingly.</p>
+</div>
 
 
 <h2 id="auth-api-keys">API keys</h2>

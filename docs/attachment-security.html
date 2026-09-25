@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Attachment Security — Go Help Desk Docs</title>
+  <meta name="description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/attachment-security.html" />
+  <meta property="og:site_name" content="Go Help Desk" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/attachment-security.html" />
+  <meta property="og:title" content="Attachment Security — Go Help Desk Docs" />
+  <meta property="og:description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:site" content="@go_help_desk" />
+  <meta name="twitter:title" content="Attachment Security — Go Help Desk Docs" />
+  <meta name="twitter:description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+  <link rel="stylesheet" href="../style.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Attachment Security",
+    "description": "What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do.",
+    "url": "https://gohelpdesk.org/docs/attachment-security.html",
+    "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
+    "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
+    "isPartOf": { "@type": "SoftwareApplication", "name": "Go Help Desk", "url": "https://gohelpdesk.org" }
+  }
+  </script>
+  <style>
+    .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
+    .param-table td:nth-child(2) { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
+    .param-table td:nth-child(3) { font-size:0.875rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading</div>
+    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Getting Started</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul>
+      <li><a href="attachment-security.html" class="active">Attachment Security</a></li>
+      <li><a href="#attach-order">What happens to an upload</a></li>
+      <li><a href="#attach-record">What is recorded</a></li>
+      <li><a href="#attach-mismatch">Content vs. name</a></li>
+      <li><a href="#attach-tiers">The three storage tiers</a></li>
+      <li><a href="#attach-quarantine">The quarantine archive</a></li>
+      <li><a href="#attach-download">Downloads are downloads</a></li>
+      <li><a href="#attach-reputation">Reputation lookup</a></li>
+      <li><a href="#attach-link">A link is not a lookup</a></li>
+      <li><a href="#attach-not">What this does not do</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="attach-overview">Attachment Security <span class="badge-beta">Beta</span></h1>
+<p class="docs-page-sub">What the server does with a file somebody uploads to a ticket — and, just as important, what it does not do.</p>
+
+<div class="callout callout-warn">
+  <p><strong>Everything on this page is new in v1.3.0-beta and is not in a released version.</strong> The current stable release is <a href="upgrading-1.2.0.html">v1.2.0</a>. There is no 1.3.0 tag and no 1.3.0 release. Names, defaults and responses described here can still change before 1.3.0 ships. Run this on a deployment you are willing to treat as a beta.</p>
+</div>
+
+<p>Up to and including 1.2.0, an attachment was checked in one way: a hard-coded signature test against the file's extension, which had no entry for <code>.txt</code> or <code>.log</code> and ended by accepting anything it had no entry for. 1.3.0-beta replaces that with three separate things, which are worth keeping apart in your head because they answer different questions:</p>
+
+<ul>
+  <li><strong>Detection</strong> — what the bytes actually are, recorded on every file, never a reason to refuse one.</li>
+  <li><strong>Containment</strong> — whether a file the server has reason to distrust is turned away or stored wrapped in an archive. Two operator settings, both defaulting to "turn it away".</li>
+  <li><strong>Reputation</strong> — asking outside services what they already know about a quarantined file's hash. Off by default, at all four services.</li>
+</ul>
+
+
+<h2 id="attach-order">What happens to an upload, in order</h2>
+
+<p>Every step below runs on <code>POST /api/v1/tickets/{id}/attachments</code>, in this order. The first one that refuses ends it — nothing is written to disk and nothing is recorded.</p>
+
+<ol>
+  <li><strong>Is the caller allowed?</strong> Uploading needs a signed-in account. A reporting user may upload only to their own ticket.</li>
+  <li><strong>Is it within 25 MB?</strong> Checked three times — the request body is capped before it is parsed, then the size the upload declares is checked, then the bytes actually read. Over that is <code>413 too_large</code> whichever check catches it.</li>
+  <li><strong>Is the filename storable, and honest?</strong> It must be valid UTF-8, contain no NUL byte, contain no control character and no text-direction override (the characters that make <code>invoice&lt;U+202E&gt;txt.pdf</code> display as <code>invoicefdp.txt</code>), and be 255 bytes or shorter. Anything else is <code>400 invalid_filename</code>.</li>
+  <li><strong>Is the extension one this instance accepts?</strong> Checked against the operator's allowed-types list, before the file body is read. Anything else is <code>415 unsupported_type</code>.</li>
+  <li><strong>What are the bytes?</strong> The content detector and the SHA-256 both run here, on the file exactly as uploaded.</li>
+  <li><strong>What does the scanner say?</strong> ClamAV, subject to the scan policy. An unscannable upload under the default policy is <code>503 scanner_unavailable</code> with a <code>Retry-After</code>.</li>
+  <li><strong>Which tier is it stored in?</strong> Quarantine, mismatch wrap, image recompression, or as-is. See <a href="#attach-tiers">the three tiers</a>.</li>
+</ol>
+
+<div class="callout callout-note">
+  <p><strong>The allowed-types list is now an operator setting, not a list in the source.</strong> It stopped being a security boundary when every download became an opaque blob: nothing is rendered, so what the list decides is which files this deployment is willing to hold — a policy choice. An IT team triaging a reported <code>.exe</code> has a real reason to accept one. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
+</div>
+
+
+<h2 id="attach-record">What is recorded about every upload</h2>
+
+<p>Three facts are written on every file this instance stores, whatever the settings say. They are facts about what arrived, not enforcement.</p>
+
+<table class="param-table">
+  <thead><tr><th>Field</th><th>Type</th><th>What it is</th></tr></thead>
+  <tbody>
+    <tr><td>detected_mime</td><td>string</td><td>What the content detector made of the bytes, as a bare media type — <code>text/html</code>, never <code>text/html; charset=utf-8</code>. Content it cannot place at all is recorded as <code>application/octet-stream</code>.</td></tr>
+    <tr><td>sha256</td><td>string</td><td>Hex SHA-256 of the bytes as uploaded.</td></tr>
+    <tr><td>mismatch</td><td>bool or null</td><td>Whether the content contradicted the extension the file arrived under. <code>null</code> means no judgement was made — see below.</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Both are taken on the bytes as uploaded</strong> — before an image is recompressed, before a wrap puts the file inside an archive — because they answer one question: what did this person actually send. The consequence is worth stating plainly: <strong>for a recompressed image, the recorded hash is not the hash of the file on disk.</strong> For everything else the two are the same.</p>
+
+<p>The detector reads a prefix of the file rather than the whole thing, so it is confident about formats that declare themselves in their first bytes and it is not a parser. A file that is a valid one thing and a usable other thing is beyond it.</p>
+
+<h3>Three states, and they are different</h3>
+<ul>
+  <li><strong>A detected type and a verdict</strong> — this file was inspected and judged.</li>
+  <li><strong>A detected type and no verdict</strong> (<code>mismatch: null</code>) — inspected, but not judged, because the claimed extension is one the operator added rather than one this project ships. See <a href="#attach-shipped">below</a>.</li>
+  <li><strong>Nothing at all</strong> — the file predates this release. Nobody looked. Nothing is backfilled and nothing is re-scanned, and the ticket UI renders this as an absence rather than as a finding.</li>
+</ul>
+
+
+<h2 id="attach-mismatch">When content contradicts the name</h2>
+
+<p>A <strong>content mismatch</strong> is the detector's extension for the format differing from the one the file claimed. Three rules relax that comparison, and no others:</p>
+
+<ul>
+  <li><strong><code>.jpeg</code> and <code>.jpg</code> are one extension.</strong> The only synonym, because the two spellings name a single format. The allowed-types list applies the same rule, so allowing either allows both.</li>
+  <li><strong>A text extension matches any content that is inert text.</strong> The text extensions are <code>.txt</code>, <code>.log</code>, <code>.csv</code> and <code>.md</code>. "Inert text" is decided by asking the detector, not by a list — any type whose ancestry passes through <code>text/plain</code>. That covers <code>text/*</code> and also JSON, NDJSON, GeoJSON, SVG, XHTML and SubRip, which the media-type registry files elsewhere. <code>text/html</code> is included: a file called <code>notes.log</code> opens in a text editor whatever is inside it, and nothing here renders an attachment. It does not cover a ZIP or anything packaged inside one. Note that only <code>.txt</code> and <code>.log</code> are among the nine shipped extensions: a file named <code>.csv</code> or <code>.md</code>, on an instance that added those, gets a detected type and no verdict at all, for the reason given <a href="#attach-shipped">below</a>.</li>
+  <li><strong>Unidentifiable content under a text extension is not a mismatch.</strong> One stray NUL byte from a process that died mid-write, or UTF-16 with no byte-order mark, is enough to defeat the detector, and that is the detector's limit rather than evidence of deception. Under a name claiming a binary format it stays a mismatch: a PDF that cannot be identified as a PDF is worth a sentence.</li>
+</ul>
+
+<p>A text extension is not a blanket pass. A rotated log compressed in place and still called <code>.log</code> detects as <code>application/gzip</code>, which is not inert text, so it is flagged — and, being text-named, it is stored under its own name rather than wrapped or refused.</p>
+
+<p><strong>A mismatch never refuses an upload on its own.</strong> Recording one and acting on one are separate decisions; the second belongs to the operator and is <a href="#attach-tiers">tier 2</a>.</p>
+
+<h3 id="attach-shipped">Only the nine extensions this project ships are judged</h3>
+
+<p>Each of <code>.pdf</code>, <code>.docx</code>, <code>.xlsx</code>, <code>.txt</code>, <code>.log</code>, <code>.jpg</code>, <code>.jpeg</code>, <code>.png</code> and <code>.bmp</code> was checked against the detector, so a contradiction under one of those names is one the server can stand behind. <strong>An extension you add yourself is neither flagged nor contained.</strong></p>
+
+<p>The reason is spelling, not laziness. The detector reports one canonical extension per format: <code>.htm</code> is HTML and <code>.tif</code> is TIFF, but it calls them <code>.html</code> and <code>.tiff</code>. An operator who allowed <code>.htm</code> and received genuine HTML would otherwise be refused with a message saying the content did not match the name — which would be false. Such a file is stored under its own name, with the detected type recorded and no verdict, which reads as "we looked and could not judge".</p>
+
+<p>The practical consequence, stated because it is a real trade: an instance that has allowed <code>.xml</code> and receives an XHTML document carrying a script under the name <code>report.xml</code> stores it under that name, and a browser opening it from disk will run the script. If you want containment for a type, that type has to be one of the nine.</p>
+
+
+<h2 id="attach-tiers">The three storage tiers</h2>
+
+<p>Wrapping and recompression are alternatives, not steps — a wrapped file is an archive, so recompressing one would mean handing a ZIP to the JPEG encoder. The upload handler takes the <strong>first</strong> of these that applies.</p>
+
+<h3>Tier 1 — the scanner identified it</h3>
+<p>Applies when ClamAV returned a detection <em>and</em> <code>attachment_infected_handling</code> is set to <code>quarantine</code>. The sample is wrapped in a ZIP with the published password <code>infected</code> and stored under the uploaded name plus <code>.zip</code>: <code>sample.exe</code> becomes <code>sample.exe.zip</code>, so nothing downstream double-clicks an executable. The scanner's name for the detection is stored on the row.</p>
+<p>Under the default, <code>refuse</code>, an infected upload is rejected with <code>422 infected</code> and never reaches this tier.</p>
+
+<h3>Tier 2 — the content contradicts the name</h3>
+<p>Applies when <em>all</em> of the following are true:</p>
+<ul>
+  <li>the content mismatches the claimed extension, and</li>
+  <li>the claimed extension is one of the nine shipped ones, and</li>
+  <li>the claimed extension is <strong>not</strong> a text extension, and</li>
+  <li>the type the file <em>turned out to be</em> is not on the operator's allowed-types list, and</li>
+  <li><code>attachment_mismatch_handling</code> is set to <code>wrap</code>.</li>
+</ul>
+<p>The file is then wrapped with <strong>no password</strong> and stored as <code>suspicious-&lt;crc32&gt;.zip</code> — the CRC32 of the file inside, which every ZIP entry already carries, so the archive is named after a value its recipient can verify.</p>
+<p>Under the default, <code>refuse</code>, the upload is rejected with <code>415 invalid_file</code> — the same status, code and message 1.2.0 refused with — and never reaches this tier.</p>
+
+<h3>Tier 3 — it is an image</h3>
+<p><code>.jpg</code>, <code>.jpeg</code>, <code>.png</code> or <code>.bmp</code>, and neither of the above applied. The image is decoded and re-encoded as both JPEG (quality 85) and PNG, and whichever is smaller is stored, under the name it was uploaded with. An image with any transparency in it is always stored as PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures.</p>
+<p>An image is refused with <code>422 invalid_image</code> if it cannot be decoded, or if decoding it would cost too much memory. That second check reads the header only, before any decode, because the allocation is the attack — and it is a budget rather than one number. The header may declare at most 25 megapixels, <em>and</em> the decoded picture may take at most 100 MB, worked out from the pixel count and the colour depth: a 16-bit RGBA PNG costs eight bytes a pixel, not four, so 26 megapixels of it is 210 MB. A JPEG is asked directly, from its own frame header, because its decoder can need four to six times what the pixel count suggests — progressive and CMYK files especially — and <strong>a JPEG whose header cannot be read is refused</strong> rather than estimated. At most four images are decoded at once across the whole process, so several uploads each inside the budget cannot add up past it.</p>
+
+<p>Anything else is stored exactly as it arrived.</p>
+
+<h3>Which mismatches are wrapped, and which are only flagged</h3>
+
+<p>This is the part people get wrong. <strong>Not every mismatch is wrapped.</strong> The judgement is the operator's own allowed-types list — a file is contained when the type it turned out to be is not a type this instance accepts.</p>
+
+<table>
+  <thead><tr><th>Upload</th><th>Default instance</th><th>With <code>wrap</code> set</th></tr></thead>
+  <tbody>
+    <tr><td>HTML inside a <code>.pdf</code></td><td><code>415</code>, refused</td><td>Stored as <code>suspicious-&lt;crc32&gt;.zip</code>, flagged</td></tr>
+    <tr><td>A real PNG inside a <code>.pdf</code></td><td>Stored under its own name, flagged</td><td>Stored under its own name, flagged</td></tr>
+    <tr><td>A <code>.log</code> holding a captured HTML response</td><td>Stored, not flagged</td><td>Stored, not flagged</td></tr>
+    <tr><td>A gzipped file still called <code>.log</code></td><td>Stored under its own name, flagged</td><td>Stored under its own name, flagged</td></tr>
+    <tr><td>Genuine HTML called <code>report.htm</code>, on an instance that allowed <code>.htm</code></td><td>Stored under its own name, no verdict</td><td>Stored under its own name, no verdict</td></tr>
+  </tbody>
+</table>
+
+<p>A file named as text never reaches tier 2 under either setting. Wrapping contains a file by taking away the name that decides how it opens; <code>crash.log</code> already opens in a text editor whatever is inside it, so there is nothing to contain — only something to say.</p>
+
+<p>The two containment settings are independent, because the claims are different. "The scanner named this file" and "the content is not what the name says" are not the same fact. A file that is both is quarantined, and the mismatch is an extra line on the row rather than a replacement for the malware warning.</p>
+
+<h3>What the row says afterwards</h3>
+
+<p><code>mime_type</code> describes the file as stored; <code>detected_mime</code> describes the bytes that arrived; <code>size_bytes</code> is the stored file, because that is what a download costs.</p>
+
+<table>
+  <thead><tr><th></th><th>Stored name</th><th><code>mime_type</code></th><th><code>detected_mime</code></th></tr></thead>
+  <tbody>
+    <tr><td>Ordinary PDF</td><td><code>report.pdf</code></td><td><code>application/pdf</code></td><td><code>application/pdf</code></td></tr>
+    <tr><td>PNG recompressed to JPEG</td><td><code>shot.png</code></td><td><code>image/jpeg</code></td><td><code>image/png</code></td></tr>
+    <tr><td>HTML named <code>.pdf</code>, under <code>wrap</code></td><td><code>suspicious-4f2a91c3.zip</code></td><td><code>application/zip</code></td><td><code>text/html</code></td></tr>
+    <tr><td>Infected <code>.exe</code>, quarantined</td><td><code>sample.exe.zip</code></td><td><code>application/zip</code></td><td><code>application/vnd.microsoft.portable-executable</code></td></tr>
+  </tbody>
+</table>
+
+<p>Neither tier is retroactive in either direction. Turning quarantine or the wrap on does not rewrap what is already stored, and turning either off does not unwrap it.</p>
+
+
+<h2 id="attach-quarantine">The quarantine archive, and why its password is published</h2>
+
+<p>A quarantined sample is stored inside a ZIP encrypted with the password <code><strong>infected</strong></code>. That password is in this page, in the admin settings screen, and beside every quarantined file on the ticket. <strong>It protects nothing, and it is not meant to.</strong></p>
+
+<p>It has exactly two jobs:</p>
+<ul>
+  <li>The stored bytes are not directly double-clickable.</li>
+  <li>An on-access antivirus — on the help desk's own storage, or on the machine of whoever downloads it — does not eat the sample out from under the ticket a day later.</li>
+</ul>
+
+<p><code>infected</code> is the long-standing convention for moving malware samples, so an analyst's tooling already knows what to do with it. The encryption is ZipCrypto rather than AES for the same reason: weak is fine when the password is public, and an AES-256 ZIP is opaque to Windows Explorer and macOS Archive Utility, which is precisely the friction this is meant to remove. <strong>Do not read any of this as confidentiality.</strong></p>
+
+<p>The sample keeps its own name inside the archive, so unwrapping produces the file the ticket is about rather than the wrapper's name. The <code>.zip</code> is appended after the allowed-types list has had its say on the uploaded name, so <code>.zip</code> does not have to be an accepted type for quarantine to work.</p>
+
+<p><strong>The second tier's archive carries no password</strong>, deliberately. A mismatched file is not known-bad; the server could not identify it, which is a different claim. It is undouble-clickable either way, and blinding the recipient's own antivirus over a wrong extension would be the wrong trade.</p>
+
+<h3>What staff see</h3>
+<p>A ticket holding quarantined attachments carries a persistent red banner naming how many there are. Each quarantined row shows the scanner's name for the detection, the archive password, the detected type, the SHA-256 with a copy control, and a <em>Download…</em> button that opens a confirmation dialog rather than a link. The download URL is deliberately not on the row: a link that calls <code>preventDefault</code> is still reachable by middle-click, "Save link as" and the keyboard context menu, and a button is not.</p>
+
+<!-- SCREENSHOT NEEDED: a ticket detail page with the red quarantine banner at the top and one quarantined attachment row — the "Identified as malicious by the scanner" line with the detection name, the "password: infected" line, the "Content:" line with the detected type, the SHA-256 with its Copy control and "Look up on VirusTotal" link, and the Download… button. Nothing on the row expands; it is all visible at once. -->
+<img src="../screenshots/12-quarantined-attachment.png" alt="A ticket showing the quarantine banner and a quarantined attachment row" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
+
+
+<h2 id="attach-download">Downloads are downloads. Nothing is ever rendered</h2>
+
+<p><strong>There is no attachment previewer, and there will not be one.</strong> No lightbox, no thumbnail, no inline PDF viewer, no <code>&lt;img&gt;</code> pointing at the download route. Every link to an attachment downloads it.</p>
+
+<p>Rendering attachment content on the help desk's own origin would make every uploaded file a candidate for stealing a staff session, and the defence would become a content sanitiser that has to be right forever. The case that makes this load-bearing is PDF: <code>application/pdf</code> opens in the browser's built-in viewer, and those viewers run JavaScript.</p>
+
+<p>Three things hold it, all of them tested:</p>
+
+<table class="param-table">
+  <thead><tr><th>Header</th><th></th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>Content-Type</td><td>always</td><td><code>application/octet-stream</code> on every attachment, whatever the file claims to be. No browser renders that. Before 1.3.0-beta the type came from the filename, so a PDF went out as <code>application/pdf</code>.</td></tr>
+    <tr><td>Content-Disposition</td><td>always</td><td><code>attachment</code>, carrying the original filename in both RFC 6266 forms, so an accented name survives.</td></tr>
+    <tr><td>Sec-Fetch-Dest</td><td>checked</td><td>The download route <strong>refuses</strong> a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render the response — <code>403 not_downloadable</code>. Only <code>document</code>, <code>empty</code> and an absent header are allowed. The response also carries <code>Vary: Sec-Fetch-Dest</code>, so a browser cache cannot answer a rendering request out of an allowed one.</td></tr>
+  </tbody>
+</table>
+
+<p>Two limits, stated because they are easy to forget:</p>
+<ul>
+  <li><strong>An absent header is allowed.</strong> Command-line clients send nothing, and so do browsers older than Chrome 80, Firefox 90 and Safari 16.4. For those clients this check does not apply. Refusing an absent header would break every one of them, which is worse.</li>
+  <li><strong>Page script can fetch the bytes itself</strong> and render them without asking again. That arrives as <code>Sec-Fetch-Dest: empty</code>, which has to be allowed because an <code>&lt;a download&gt;</code> click sends it too, and the server cannot tell the two apart. What stops that is not writing such code; a frontend test catches the obvious shapes of the mistake at review time, and it is not a control.</li>
+</ul>
+
+<div class="callout callout-note">
+  <p><strong>The site logo is the one exception</strong>, and the only upload this application renders inline. 1.3.0-beta removed SVG from that uploader: PNG, JPEG and GIF are accepted and all re-encoded as PNG, and the logo route keeps its own sandboxing policy on top. An SVG left on disk by an older release is no longer served. See <a href="admin-guide.html#admin-branding">Admin Guide: Branding</a>.</p>
+</div>
+
+
+<h2 id="attach-reputation">Reputation lookup <span class="badge-beta">Beta</span></h2>
+
+<p>A quarantined sample's SHA-256 can be looked up at third-party reputation services. <strong>All four are off by default</strong>, and all four off is a supported configuration rather than a broken one: it means attachments are judged by this instance's own scanner alone.</p>
+
+<h3>The four services</h3>
+
+<table>
+  <thead><tr><th>Service</th><th>Key</th><th>What it answers</th><th>Allowance enforced</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>VirusTotal</strong></td><td>required</td>
+      <td>How many engines flagged the file, out of how many that ran. The broadest answer of the four.</td>
+      <td>500 a day and 4 a minute — VirusTotal's own published free-tier figures.</td>
+    </tr>
+    <tr>
+      <td><strong>MetaDefender</strong><br><span style="color:var(--muted);font-size:0.85em;">(OPSWAT)</span></td><td>required</td>
+      <td>A smaller engine set. It can also answer that it knows a hash — scanned privately — but holds no verdict for it, which is the <code>unscanned</code> state below.</td>
+      <td>4,000 a day. <strong>This figure is ours, not theirs</strong> — OPSWAT publish only "a limited number of API calls per day", so this is a courtesy cap.</td>
+    </tr>
+    <tr>
+      <td><strong>PolySwarm</strong></td><td>required</td>
+      <td>Engine detections, plus an answer VirusTotal and MetaDefender cannot give: that a file is a <em>known</em> binary vouched for by a named vendor feed. It can also answer <code>unscanned</code> for a file it holds but has no verdict on.</td>
+      <td>60 an hour — PolySwarm's own published figure. They publish no daily figure, so none is enforced.</td>
+    </tr>
+    <tr>
+      <td><strong>CIRCL</strong><br><span style="color:var(--muted);font-size:0.85em;">(hashlookup)</span></td><td><strong>none</strong></td>
+      <td>A catalogue, not a scanner. It answers only whether a hash set it re-publishes holds this file — <code>known</code>, naming the set, or <code>unseen</code>. It can never say clean, detected or unscanned.</td>
+      <td>300 an hour. <strong>This figure is ours, not theirs</strong> — CIRCL publish no ceiling of any kind. It is a politeness cap on a free best-effort service run by a CERT.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Daily counters reset at 00:00 UTC and hourly ones on the hour. The counters are held in memory, per process, and are deliberately not persisted: they are a courtesy cap, not an accounting record. The budgets are <strong>per service</strong>, so an exhausted VirusTotal allowance does not stop CIRCL answering.</p>
+
+<p><strong>CIRCL has no API key setting at all</strong>, and the absence is the decision: hashlookup authenticates nobody, so there is no key an operator could supply. Enabling any of the other three <em>without</em> a key is refused at save time with <code>invalid_reputation_config</code>, naming the service that lacks one — "enabled and silently doing nothing" is not a state you can reach.</p>
+
+<h3>What leaves the server, and what does not</h3>
+
+<ul>
+  <li><strong>What leaves:</strong> a 64-character hexadecimal SHA-256, sent to each enabled service, for quarantined attachments only.</li>
+  <li><strong>What does not leave:</strong> the file. Nothing here ever uploads one. A hash lookup tells a service that somebody has seen a file they already hold; submitting the file hands them a customer's document, which is a different feature with different terms attached and is deliberately not built.</li>
+  <li><strong>What else does not leave:</strong> the filename, the ticket, the reporter, or any other attachment. An ordinary attachment — content matching its name, scanner passed — is never looked up, so its hash never leaves the server at all.</li>
+</ul>
+
+<div class="callout callout-warn">
+  <p><strong>CIRCL is a disclosure of a different kind.</strong> It records the caller's IP address and User-Agent, and its public instance serves a leaderboard of the most-queried hashes, with filenames. VirusTotal and OPSWAT log but do not publish. If you enable CIRCL, hash reputation data comes from CIRCL hashlookup, Computer Incident Response Center Luxembourg, CC-BY-4.0.</p>
+</div>
+
+<h3>When a lookup happens</h3>
+
+<ul>
+  <li><strong>Only for quarantined files.</strong> A file the scanner named. Not ordinary attachments, and not files that were merely flagged as mislabelled.</li>
+  <li><strong>Only for staff.</strong> A reporting customer opening their own ticket never spends the operator's allowance.</li>
+  <li><strong>Lazily, on a page render</strong> — when staff open a ticket carrying a quarantined attachment with no current verdict. Never at upload. There is no background queue, because this project has no background job runner and a queue would be a table nothing drains.</li>
+  <li><strong>Cached against the hash and the service</strong>, not the attachment, so the same file on five tickets costs one lookup per service. Each service's verdict has its own expiry clock.</li>
+</ul>
+
+<h3>The verdicts</h3>
+
+<p>A service can tell the server one of five things, plus failure:</p>
+
+<table class="param-table">
+  <thead><tr><th>State</th><th></th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>detected</td><td></td><td>At least one engine flagged it.</td></tr>
+    <tr><td>unseen</td><td></td><td>The service has no record of this hash at all. <strong>Not a verdict, and not reassurance.</strong></td></tr>
+    <tr><td>unscanned</td><td></td><td>The service knows the hash but holds no verdict for it.</td></tr>
+    <tr><td>clean</td><td></td><td>The lookup completed and no engine flagged the file. Only ever reachable from a completed lookup.</td></tr>
+    <tr><td>known</td><td></td><td>A named feed has this exact hash in its catalogue. The file is not scanned at all; the answer comes from the hash match.</td></tr>
+    <tr><td>unavailable</td><td></td><td>No answer: unreachable, timed out, rate-limited, budget spent, key rejected. <strong>Never rendered as clean.</strong></td></tr>
+  </tbody>
+</table>
+
+<p>Where more than one service is enabled, the row shows the single most serious answer, named after the service that gave it, and one click shows them all:</p>
+
+<pre><code>detected  &gt;  unseen  &gt;  unscanned  &gt;  clean  &gt;  known</code></pre>
+
+<p>Two of those orderings are not obvious. <strong><code>unseen</code> outranks <code>clean</code></strong> because only quarantined files are looked up, so every hash here is one ClamAV already called malicious — a file no service has ever seen is a novel sample, which is more concerning than one seventy engines examined and passed. <strong><code>known</code> is the floor</strong> because it is the only positive claim in the set; everything above it is some flavour of "no findings".</p>
+
+<p><code>unavailable</code> is not in the ordering at all. It is a failed lookup rather than a verdict and must never displace a real answer, so VirusTotal timing out while CIRCL says <code>known</code> reads <code>known</code>. It is the summary only when nothing answered, and it is always listed against its own service, because an operator needs to see their key failing.</p>
+
+<h3><code>known</code> is not "known good"</h3>
+
+<p><code>known</code> is the only positive claim in the set, and the state name deliberately stops short of vouching for the file. How much the claim is worth depends entirely on which feed is speaking: PolySwarm's <code>microsoft_windows</code> feed asserts the file is signed and trusted, while an NSRL catalogue entry means only that the file appeared in a known software distribution — and NSRL catalogues hacking tools. So the UI always names the feed: "known file, signed by Microsoft Windows" and "known file, catalogued by NSRL" are not the same sentence. PolySwarm and CIRCL are the two services that produce it.</p>
+<p><strong>On the ticket page it is not rendered as reassurance</strong>, and that is deliberate. Only files the local scanner already identified are ever looked up, so a catalogue hit sits directly under the detection, the password and the download confirmation. The line is shown in the same amber as the other non-clean answers and says what it is: context on the sample — a catalogue records where a file has been distributed — and not a second opinion on the scanner's verdict. EICAR is in NSRL.</p>
+
+<p>Nothing a third party says moves a file out of quarantine. The detection, the password and the download confirmation are unaffected by any verdict on this page.</p>
+
+<h3>Expiry and re-checking</h3>
+
+<p><code>attachment_reputation_refresh</code> decides how old a stored verdict may be before the next page render fetches it again: <code>weekly</code>, <code>biweekly</code> (the default), <code>monthly</code>, <code>quarterly</code> or <code>never</code>. A verdict decays — new signatures catch old malware, and the sample nobody had submitted when you asked is precisely the one submitted a week later.</p>
+
+<p><strong>Two verdicts never expire:</strong> a detection, because engines do not un-flag a file, and a <code>known</code> file, because a hash does not fall out of a vendor catalogue. Re-confirming either would spend an allowance to learn nothing.</p>
+
+<p>Staff get a <em>Check again</em> control on a verdict that can still change. The server allows <strong>one manual re-check per hash per service every seven days</strong>, whatever the interval says — including when it says <code>never</code>, because an operator who turned automatic checking off to save quota did not mean that nobody may ever ask. It is a floor and not an override: the daily budget still applies, a re-check inside the week is refused with the date it clears, and a re-check of a final verdict is refused outright. The control is disabled rather than hidden while the week runs.</p>
+
+<!-- SCREENSHOT NEEDED: a quarantined attachment row with more than one reputation service enabled, after clicking "Show all N services" — the one-line summary above it (attributed to a named service), then one line per service with its own verdict sentence, its "Asked on" date, its "Open <service>" link (CIRCL has none) and, on a verdict that can still change, its own Check again control. Nothing in the expanded list marks which line the summary was copied from: the API sends that flag but the page does not draw it (issue #173), so do not wait for one. -->
+<img src="../screenshots/13-attachment-reputation.png" alt="The expanded per-provider reputation view on a quarantined attachment" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
+
+<h3>No provider can hold a page open</h3>
+
+<p>The whole of one HTTP request's reputation work shares a <strong>five-second budget</strong> — not five seconds each. Lookups run one after another, so without a shared bound three quarantined attachments and two unreachable services would be six timeouts and a response the server can no longer write. What the budget covers is the outbound calls and nothing else: a verdict already in the cache is still served after the time is gone, because a hung service must not erase answers already held.</p>
+
+
+<h2 id="attach-link">A link is not a lookup</h2>
+
+<p>Some attachment rows carry a <em>Look up on VirusTotal</em> link beside the hash. <strong>That link does not follow the reputation toggles, and it is not on every attachment.</strong> Two separate rules, and both matter.</p>
+
+<p><strong>It does not follow the toggles.</strong> A lookup is this server sending a customer's file hash to a third party — the operator's decision, their allowance, and what the toggles govern. A link sends nothing from the server: it is an anchor the analyst clicks in their own browser, under their own account or none, exactly as if they had copied the hash off the page and pasted it themselves, which they can do anyway because the hash is right there with a copy control. Switching VirusTotal off means "do not send my customers' hashes to VirusTotal from my server". It does not mean "my staff may never look at VirusTotal".</p>
+
+<p><strong>It is not on every attachment.</strong> A link goes only where this instance itself found something worth a second opinion: the scanner named the file, or its content contradicts the name it arrived under. An ordinary attachment carries the hash and no link, because a link and a line of explanatory text under every holiday-request PDF is the noise that teaches people to stop reading the rows that matter.</p>
+
+<p>The link is VirusTotal specifically because its page is the one every analyst already knows: no account needed, and the complete report renders logged out. MetaDefender's public page announces itself as a reduced view, and CIRCL has no per-hash web page at all. Each enabled service's own link sits next to its own verdict in the expanded view instead.</p>
+
+
+<h2 id="attach-not">What this does not do</h2>
+
+<p>Every item here is a deliberate limit, not a gap waiting to be filled.</p>
+
+<ul>
+  <li><strong>Nothing is uploaded to anybody.</strong> Only a hash is sent, and only for quarantined files.</li>
+  <li><strong>No key means no lookup at all.</strong> The page renders, the hash and the link are still there, and no request is made.</li>
+  <li><strong>A failed lookup is never "clean".</strong> A lookup that failed, timed out, was rate-limited or ran out of daily budget renders as not checked. "Clean" is reachable only from a completed lookup that came back with no detections, and an unavailable answer is never written to the cache.</li>
+  <li><strong>A stale verdict that could not be re-checked stays on screen</strong> rather than disappearing. "Clean, and here is when the service last analysed it" is worth more to a reader than "not checked yet".</li>
+  <li><strong>Nothing is re-scanned locally.</strong> The ClamAV verdict is recorded when the file arrives and is never revisited. A file that was clean last month and would be recognised today still reads as it did on the day it was uploaded. The reputation lookup is the only part of this that expires.</li>
+  <li><strong>Old attachments carry none of this.</strong> No detected type, no hash, no mismatch answer. Nothing is backfilled.</li>
+  <li><strong>Detection reads a prefix, not the whole file, and is not a parser.</strong> A file that is a valid one thing and a usable other thing is beyond it. Content it cannot place at all is recorded as unidentified, which counts as a contradiction under a name claiming a binary format — and not under a text name, where it is the detector's limit rather than evidence of anything.</li>
+  <li><strong>The allowed-types list is not a security boundary.</strong> It decides what this deployment is willing to hold, nothing more.</li>
+  <li><strong>An extension you add yourself is neither flagged nor contained</strong> — see <a href="#attach-shipped">above</a>.</li>
+  <li><strong>Containment is not retroactive.</strong> Turning quarantine or the wrap on does not rewrap what is already stored; turning either off does not unwrap it.</li>
+  <li><strong>The quarantine password is not confidentiality.</strong> It is published, and ZipCrypto is weak on purpose.</li>
+  <li><strong>The Sec-Fetch-Dest check cannot reach everything.</strong> Absent headers are allowed, and same-origin page script can fetch the bytes and render them itself. Nothing on the server can tell that apart from a download.</li>
+  <li><strong>The expanded reputation list does not mark which line the row's summary came from.</strong> The summary names its service, and the API sends an <code>inline</code> flag on the matching entry, but the ticket page does not draw it yet — tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/173">issue #173</a>.</li>
+  <li><strong>There is no admin screen for scanner health yet.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, including a live reachability check rather than a restatement of the configuration — but the admin UI renders only the insecure-secrets warning from that response. Today this is visible to an administrator who asks the API.</li>
+</ul>
+
+
+<h2 id="attach-settings">The settings behind all of this</h2>
+
+<p>Every one of these lives under <em>Admin → Settings → Attachments</em>, and every one is <strong>session-gated</strong>: an API key or OAuth client cannot change them, because they decide what this instance will hold and where customers' file hashes go. The full reference, with defaults and what changes when you change each one, is in the <a href="admin-guide.html#admin-attachments">Admin Guide</a>.</p>
+
+<table class="param-table">
+  <thead><tr><th>Setting</th><th>Default</th><th>What it decides</th></tr></thead>
+  <tbody>
+    <tr><td>attachment_allowed_types</td><td>9 extensions</td><td>What this instance will accept at all.</td></tr>
+    <tr><td>attachment_scan_policy</td><td><code>required</code>*</td><td>What an unscannable upload means.</td></tr>
+    <tr><td>attachment_scan_address</td><td>unset</td><td>Overrides <code>CLAMAV_ADDR</code>.</td></tr>
+    <tr><td>attachment_infected_handling</td><td><code>refuse</code></td><td>Refuse an identified file, or quarantine it.</td></tr>
+    <tr><td>attachment_mismatch_handling</td><td><code>refuse</code></td><td>Refuse a mislabelled file, or wrap it.</td></tr>
+    <tr><td>attachment_reputation_*_enabled</td><td><code>false</code></td><td>Whether each of the four services is asked.</td></tr>
+    <tr><td>attachment_reputation_*_key</td><td>unset</td><td>Write-only API key, per service. CIRCL has none.</td></tr>
+    <tr><td>attachment_reputation_refresh</td><td><code>biweekly</code></td><td>How long a non-final verdict is trusted.</td></tr>
+  </tbody>
+</table>
+
+<p style="font-size:0.85em;color:var(--muted);margin-top:-0.5rem;">* <code>required</code> where a scanner address is configured, <code>off</code> where none is.</p>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex; gap:1.5rem;">
+      <a href="../docs.html">Docs</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk/issues">Issues</a>
+      <a href="https://x.com/go_help_desk" rel="me">X</a>
+      <a href="https://ko-fi.com/erikpt">Support</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

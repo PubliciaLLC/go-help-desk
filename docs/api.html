@@ -82,6 +82,10 @@
     <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
   </div>
   <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+  </div>
+  <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
     <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
   </div>
@@ -98,6 +102,8 @@
       <li><a href="#api-me">Me / Profile</a></li>
       <li><a href="#api-admin">Admin Endpoints</a></li>
       <li><a href="#api-more">Tags &amp; attachments</a></li>
+      <li><a href="#api-attachments">Attachment uploads <span class="badge-beta">Beta</span></a></li>
+      <li><a href="#api-guest">Guest endpoints <span class="badge-beta">Beta</span></a></li>
       <li><a href="#api-signin">Sign-in</a></li>
       <li><a href="#api-admin-more">More admin</a></li>
       <li><a href="#api-errors">Errors &amp; Pagination</a></li>
@@ -217,7 +223,7 @@
 }</code></pre>
   <p>Priority values are lower-case: <code>critical</code>, <code>high</code>, <code>medium</code>, <code>low</code>. A value that is present but not one of these is a <code>400</code>.</p>
   <p><code>guest_email</code> must be a single bare address — no display name, one address only. From v1.2.0 it is validated and normalised; anything else is a <code>400</code>.</p>
-  <p><strong>Not usable yet.</strong> This endpoint requires a session, and an authenticated caller's guest fields are discarded rather than stored, so no guest ticket can currently be created. Tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>.</p>
+  <p><strong>This endpoint does not create guest tickets.</strong> It requires an authenticated caller, and an authenticated caller's guest fields are discarded rather than stored. From v1.3.0-beta a guest ticket is created at <a href="#api-guest"><code>POST /api/v1/guest/tickets</code></a> instead, which takes no credential at all.</p>
 </div>
 
 <div class="endpoint">
@@ -590,7 +596,7 @@
     <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/plugins/{id}</code></td><td>Uninstall a plugin.</td></tr>
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/settings</code></td><td>Get all settings as a flat key/value object.</td></tr>
     <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/settings</code></td><td>Update settings. Body is a partial key/value object — only included keys are updated.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/settings/logo</code></td><td>Upload a logo. Multipart form with a <code>logo</code> file field. Accepted: PNG, JPG, GIF, SVG (max 2 MB). Raster images are auto-scaled to fit within 320 × 64 px. SVGs are sanitized. Returns <code>{ "url": "/api/v1/logo" }</code>.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/settings/logo</code></td><td>Upload a logo. Multipart form with a <code>logo</code> file field. Accepted: PNG, JPG, GIF (max 2 MB). All three are raster and all are re-encoded as PNG, scaled to fit within 320 × 64 px. <strong>SVG is refused from v1.3.0-beta</strong> with <code>400 invalid_type</code>; earlier releases accepted it behind a sanitiser. Returns <code>{ "url": "/api/v1/logo?v=&lt;timestamp&gt;" }</code>.</td></tr>
     <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/settings/logo</code></td><td>Remove the logo. Clears the stored file and the <code>site_logo_url</code> setting. Returns HTTP 204.</td></tr>
   </tbody>
 </table>
@@ -599,8 +605,8 @@
 <table>
   <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/site</code></td><td>Returns <code>{ "name", "logo_url", "version" }</code>. No authentication required. Used by the SPA shell before login to render the correct site name and logo.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/logo</code></td><td>Serves the uploaded logo file (PNG or SVG). No authentication required. Returns 404 if no logo has been uploaded. Cache-Control: <code>public, max-age=300</code>.</td></tr>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/site</code></td><td>Returns <code>{ "name", "logo_url", "version", "guest_submission_enabled" }</code>. No authentication required. Used by the SPA shell before login to render the correct site name and logo, and to decide whether the login page offers a link to <code>/submit</code>. <code>guest_submission_enabled</code> is new in v1.3.0-beta.</td></tr>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/logo</code></td><td>Serves the uploaded logo file. <strong>PNG only from v1.3.0-beta</strong> — an SVG left on disk by an earlier release is deliberately not served, and the instance answers 404 as though no logo were set. No authentication required. Cache-Control: <code>public, max-age=300</code>, plus a sandboxing Content-Security-Policy.</td></tr>
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/setup/status</code></td><td>Returns <code>{ "needed": true|false }</code>. No authentication required. Used to detect first-run setup.</td></tr>
     <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/setup</code></td><td>Create the first admin account. Only available when no users exist. Body: <code>{ "email", "display_name", "password" }</code>. Returns 409 once setup is complete.</td></tr>
   </tbody>
@@ -619,8 +625,9 @@
     <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/tags</code></td><td>Add a tag. Staff and Admin only.</td></tr>
     <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/tickets/{id}/tags/{tagId}</code></td><td>Remove a tag. Staff and Admin only.</td></tr>
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/attachments</code></td><td>List attachments.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/attachments</code></td><td>Upload one, as multipart. Images are checked by header and refused above 25 megapixels before they are decoded.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/attachments/{attachId}</code></td><td>Download one.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/attachments</code></td><td>Upload one, as multipart with a <code>file</code> field. See <a href="#api-attachments">the upload contract</a> below.</td></tr>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/attachments/{attachId}</code></td><td>Download one. Always <code>application/octet-stream</code> with <code>Content-Disposition: attachment</code>, whatever the file is.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/attachments/{attachId}/reputation</code></td><td><span class="badge-beta">Beta</span> Re-check a quarantined file's reputation verdict by hand. Staff and Admin only. Optional <code>?provider=</code> names one service.</td></tr>
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/custom-fields</code></td><td>Custom field values on a ticket.</td></tr>
     <tr><td><span class="tag tag-put">PUT</span></td><td><code>/api/v1/tickets/{id}/custom-fields</code></td><td>Replace them. Body: <code>{ "values": { "&lt;field&gt;": "&lt;value&gt;" } }</code>.</td></tr>
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/history</code></td><td>Status history, oldest first.</td></tr>
@@ -629,6 +636,148 @@
     <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/groups</code></td><td>Groups, for assignment pickers.</td></tr>
   </tbody>
 </table>
+
+
+<h2 id="api-attachments">Attachment uploads and downloads <span class="badge-beta">Beta</span></h2>
+
+<div class="callout callout-warn">
+  <p><strong>Everything under this heading changed in v1.3.0-beta and is not in a released version.</strong> The stable release is v1.2.0. The background is on the <a href="attachment-security.html">Attachment Security</a> page.</p>
+</div>
+
+<h3>Uploading</h3>
+
+<div class="endpoint">
+  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/attachments</div>
+  <p>Multipart <code>form-data</code>, one file per request, in a field named <code>file</code>. Requires an authenticated account — a reporting user may upload only to their own ticket, and guests cannot upload at all.</p>
+</div>
+
+<p>Refusals, roughly in the order they are checked:</p>
+
+<table>
+  <thead><tr><th>Status</th><th>Code</th><th>When</th></tr></thead>
+  <tbody>
+    <tr><td><code>413</code></td><td><code>too_large</code></td><td>Over 25 MB. The request body is capped before it is parsed; the declared size and the bytes actually read are checked as well, with the same status, code and message.</td></tr>
+    <tr><td><code>400</code></td><td><code>invalid_filename</code></td><td>The filename is not valid UTF-8, contains a NUL byte, contains a control character or a text-direction override, or is over 255 bytes.</td></tr>
+    <tr><td><code>415</code></td><td><code>unsupported_type</code></td><td>The extension is not on this instance's allowed-types list. Checked before the body is read.</td></tr>
+    <tr><td><code>422</code></td><td><code>infected</code></td><td>The scanner identified the file and <code>attachment_infected_handling</code> is <code>refuse</code>, which is the default. The message carries the scanner's name for the detection.</td></tr>
+    <tr><td><code>503</code></td><td><code>scanner_unavailable</code></td><td>The file could not be scanned and <code>attachment_scan_policy</code> is <code>required</code>, which is the default wherever a scanner address is configured. Carries <code>Retry-After</code>.</td></tr>
+    <tr><td><code>415</code></td><td><code>invalid_file</code></td><td>The content contradicts the extension, the real type is not one this instance accepts, and <code>attachment_mismatch_handling</code> is <code>refuse</code>, which is the default. Same status, code and message as v1.2.0.</td></tr>
+    <tr><td><code>422</code></td><td><code>invalid_image</code></td><td>An image that could not be decoded, or that would cost too much to decode: more than 25 megapixels by its header, more than 100 MB once decoded, or a JPEG whose frame header cannot be read. All of that is decided from the header, before any decode.</td></tr>
+  </tbody>
+</table>
+
+<p><code>201</code> returns the attachment object. Note that <code>filename</code> may not be what was uploaded: a quarantined file is stored as <code>&lt;uploaded name&gt;.zip</code> and a wrapped mismatch as <code>suspicious-&lt;crc32&gt;.zip</code>.</p>
+
+<h3>The attachment object</h3>
+
+<pre><code>{
+  "id":            "9f1c…",
+  "ticket_id":     "3a77…",
+  "filename":      "sample.exe.zip",
+  "mime_type":     "application/zip",       // the file as stored
+  "size_bytes":    4821,                    // the stored file
+  "created_at":    "2026-09-24T10:12:04Z",
+
+  "detected_mime": "application/vnd.microsoft.portable-executable",
+  "sha256":        "5c2f…",                 // of the bytes as UPLOADED
+  "mismatch":      null,                    // null = no judgement was made (.exe is not a shipped extension)
+  "virus_name":    "Eicar-Test-Signature",  // null = not identified as malicious
+
+  "reputation_url": "https://www.virustotal.com/gui/file/5c2f…",
+  "reputation":     { … }                   // null = nothing was attempted
+}</code></pre>
+
+<table class="param-table">
+  <thead><tr><th>Field</th><th></th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>detected_mime</td><td>string or null</td><td>What the content detector made of the bytes, as a bare media type. <code>application/octet-stream</code> when it could not place them. <strong><code>null</code> means the file predates this release</strong> and was never inspected.</td></tr>
+    <tr><td>sha256</td><td>string or null</td><td>Hex SHA-256 of the bytes as uploaded — before image recompression and before any wrapping. <strong>For a recompressed image this is not the hash of the file on disk.</strong></td></tr>
+    <tr><td>mismatch</td><td>bool or null</td><td><code>null</code> means no judgement was made, which is a different statement from <code>false</code>. It is <code>null</code> for a file that predates this release, and for one whose claimed extension is not one of the nine this project ships.</td></tr>
+    <tr><td>virus_name</td><td>string or null</td><td>The scanner's name for the detection on a quarantined file. <code>null</code> means the file was not identified as malicious — either it scanned clean, or nothing scanned it.</td></tr>
+    <tr><td>reputation_url</td><td>string or null</td><td>A VirusTotal page for the hash. Present only where this instance itself found something worth a second opinion: the scanner named the file, or its content contradicts its name. <strong>It does not follow the reputation toggles</strong> — a link sends nothing from the server.</td></tr>
+    <tr><td>reputation</td><td>object or null</td><td><code>null</code> means <em>nothing was attempted</em>: no service is enabled, or this file was never a candidate. It never means a lookup failed — that is a provider entry with state <code>unavailable</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3>The reputation object</h3>
+
+<p>Filled in only for quarantined attachments, only when at least one service is enabled, and only for Staff and Admin callers — a reporting user listing their own ticket never spends the operator's API allowance.</p>
+
+<p>The top level repeats the single most serious answer across the services that replied, and <code>providers</code> carries every one of them:</p>
+
+<table class="param-table">
+  <thead><tr><th>Field</th><th></th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>state</td><td>string</td><td>One of <code>detected</code>, <code>unseen</code>, <code>unscanned</code>, <code>clean</code>, <code>known</code>, <code>unavailable</code>. The ordering is <code>detected &gt; unseen &gt; unscanned &gt; clean &gt; known</code>; <code>unavailable</code> is not in it and appears here only when nothing answered.</td></tr>
+    <tr><td>detected / total</td><td>int or null</td><td>Engines flagging it, engines that ran. <strong>Null except on <code>detected</code> and <code>clean</code></strong> — only a completed analysis has numbers, and <code>0 of 0</code> reads as a clean result.</td></tr>
+    <tr><td>threat_name</td><td>string</td><td>The service's own name for what it found. Often empty, and attacker-influenced text: escape it.</td></tr>
+    <tr><td>known_feeds</td><td>string[]</td><td>Set only on <code>known</code>. Name the feed when rendering: "signed by Microsoft Windows" and "catalogued by NSRL" are not worth the same, and neither is "known good".</td></tr>
+    <tr><td>analysed_at</td><td>time or null</td><td>When the <em>service</em> last analysed the file.</td></tr>
+    <tr><td>fetched_at</td><td>time or null</td><td>When <em>this server</em> last asked.</td></tr>
+    <tr><td>provider / provider_key</td><td>string</td><td>Which service the summary above was copied from — as a person reads it, and as a machine does. Both empty when nothing answered.</td></tr>
+    <tr><td>providers</td><td>array</td><td>One entry per enabled service, including the ones that failed. Each carries the same fields plus <code>link_url</code> (<code>null</code> where the service has no per-hash page — CIRCL has none), <code>recheckable</code>, and <code>inline</code>, which marks the entry the summary was taken from.</td></tr>
+  </tbody>
+</table>
+
+<h3>Re-checking a verdict</h3>
+
+<div class="endpoint">
+  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/attachments/{attachId}/reputation</div>
+  <p>Staff and Admin only. Optional <code>?provider=virustotal|metadefender|polyswarm|circl</code>; absent means every enabled service. Returns <code>200</code> with the refreshed attachment object.</p>
+</div>
+
+<table>
+  <thead><tr><th>Status</th><th>Code</th><th>When</th></tr></thead>
+  <tbody>
+    <tr><td><code>400</code></td><td><code>invalid_provider</code></td><td>That service is not enabled on this instance, or the name is misspelled.</td></tr>
+    <tr><td><code>409</code></td><td><code>no_verdict</code></td><td>Nothing has been looked up for this file yet, so there is nothing to re-check. A re-check is deliberately not a first lookup.</td></tr>
+    <tr><td><code>409</code></td><td><code>detection_is_final</code></td><td>Every service asked holds a verdict that cannot change — a detection, or a <code>known</code> file. One code for both; the message distinguishes them.</td></tr>
+    <tr><td><code>429</code></td><td><code>checked_recently</code></td><td>Inside the seven-day manual floor. Carries <code>Retry-After</code>, and the message names the date it clears.</td></tr>
+    <tr><td><code>503</code></td><td><code>reputation_unavailable</code></td><td>The lookup is not configured on this instance, or could not be made right now. Carries <code>Retry-After: 60</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3>Downloading</h3>
+
+<div class="endpoint">
+  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}/attachments/{attachId}</div>
+  <p>Streams the file. Every response carries:</p>
+</div>
+
+<pre><code>Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="report.pdf"; filename*=UTF-8''report.pdf
+Vary: Sec-Fetch-Dest
+Cache-Control: private, max-age=3600</code></pre>
+
+<p>The content type is <strong>always</strong> <code>application/octet-stream</code>, whatever the file claims to be. Up to and including v1.2.0 it came from the filename, so a PDF went out as <code>application/pdf</code>.</p>
+
+<p>The route also refuses a request whose <code>Sec-Fetch-Dest</code> header says the browser intends to <em>render</em> the response, with <code>403 not_downloadable</code>. Only <code>document</code>, <code>empty</code> and an absent header are accepted, so an allow list rather than a block list. <strong>Command-line clients send no such header and are unaffected</strong>; an <code>&lt;a download&gt;</code> click and a <code>fetch()</code> both send <code>empty</code> and are accepted.</p>
+
+
+<h2 id="api-guest">Guest endpoints <span class="badge-beta">New in 1.3.0-beta</span></h2>
+
+<p>Four routes under <code>/api/v1/guest</code>, none of which takes a session, an API key or an OAuth token. They exist only while the <code>guest_submission_enabled</code> setting is on; with it off, all four answer <code>404</code>.</p>
+
+<table>
+  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/guest/tickets</code></td><td>Submit a ticket with no credential. Body: <code>{ "subject", "description", "category_id", "guest_email", "guest_name", "guest_phone" }</code>. Returns <code>201 { "tracking_number": "…" }</code> and nothing else — the access link goes by email.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/guest/resend</code></td><td>Re-request the access link, given a tracking number and the email address. Always <code>202</code>, whether or not anything matched.</td></tr>
+    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/guest/ticket</code></td><td>Read the one ticket the token names. Requires <code>Authorization: Guest &lt;token&gt;</code>.</td></tr>
+    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/guest/replies</code></td><td>Reply to it. Body: <code>{ "body": "…" }</code>. Same header.</td></tr>
+  </tbody>
+</table>
+
+<h3>Notes that matter to a client</h3>
+<ul>
+  <li><strong>There is no ticket id in any guest URL.</strong> The token names exactly one ticket, so there is nothing to enumerate.</li>
+  <li><strong>The scheme is <code>Guest</code>, not <code>Bearer</code></strong>, deliberately: a guest token is not an API credential and must not be accepted anywhere one is.</li>
+  <li><strong>Every failure is a byte-identical <code>404</code></strong> — wrong token, expired token, closed ticket, feature off. None can be told apart from outside.</li>
+  <li><code>category_id</code> must be an <strong>active</strong> category, checked before anything is written. <code>type_id</code>, <code>item_id</code>, <code>priority</code> and custom field values are ignored if sent; priority is always Medium.</li>
+  <li><code>guest_email</code> must parse as a single bare address with no display name, and is stored lower-cased.</li>
+  <li>The read returns a deliberately narrow view: tracking number, subject, description, status name, timestamps, and the public replies with no author names. <strong>Internal notes are never included, and there is no attachment field at all.</strong></li>
+  <li>Both public routes are rate-limited per client address at the login limiter's rate (10 a minute by default). The re-request is additionally limited to once per ticket every five minutes.</li>
+</ul>
 
 
 <h2 id="api-signin">Sign-in and provisioning</h2>

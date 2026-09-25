@@ -81,6 +81,10 @@
     <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
   </div>
   <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+  </div>
+  <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
     <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
   </div>
@@ -190,7 +194,7 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
   <tbody>
     <tr><td><code>HTTP_PORT</code></td><td><code>8080</code></td><td>TCP port the HTTP server listens on. Change this when running behind a reverse proxy that handles TLS.</td></tr>
     <tr><td><code>ATTACHMENT_DIR</code></td><td><code>/data/attachments</code></td><td>Filesystem path where uploaded files are stored. The directory and its parents are created on startup if they don't exist. Must be writable by the application user (<code>ohd</code> in Docker).</td></tr>
-    <tr><td><code>CLAMAV_ADDR</code></td><td><code>tcp://clamav:3310</code>*</td><td>Address of a ClamAV daemon for virus scanning. The Docker Compose setup runs a ClamAV container automatically and wires this up — you do not need to set it yourself. For bare-metal or Kubernetes installs, point this at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>). When unreachable or unset, scanning is skipped with a logged warning and uploads proceed normally.</td></tr>
+    <tr><td><code>CLAMAV_ADDR</code></td><td><code>tcp://clamav:3310</code>*</td><td>Address of a ClamAV daemon for virus scanning. The Docker Compose setup runs a ClamAV container automatically and wires this up — you do not need to set it yourself. For bare-metal or Kubernetes installs, point this at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>). This sets what the instance <em>starts</em> with; an administrator can override it under <em>Admin → Settings → Attachments</em> without a restart.<br><br><strong>From v1.3.0-beta, what happens when the scanner cannot be reached is a setting, and the default refuses the upload</strong> — <code>503</code> with a <code>Retry-After</code>, wherever an address is configured. In v1.2.0 and earlier an unreachable scanner meant a logged warning and an upload accepted unchecked. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</td></tr>
     <tr><td><code>APP_ENV</code></td><td><code>production</code></td><td>Set to <code>development</code> to enable verbose request logging, relaxed CORS, and friendlier error messages in API responses.</td></tr>
   </tbody>
 </table>
@@ -224,9 +228,9 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>MFA_ENABLED</code></td><td><code>false</code></td><td>Enable TOTP MFA enrollment for all users. Admins can additionally enforce MFA per-role from the settings panel.</td></tr>
+    <tr><td><code>MFA_ENABLED</code></td><td><code>false</code></td><td><strong>This variable does nothing.</strong> In v1.2.0 it is read into the configuration and no code consults it; v1.3.0-beta removes it. MFA is switched on by the <code>mfa_enabled</code> setting under <em>Admin → Settings</em>, where it can also be enforced per role.</td></tr>
     <tr><td><code>SLA_ENABLED</code></td><td><code>false</code></td><td>Enable SLA policy tracking. When <code>false</code>, no SLA-related UI or data is shown.</td></tr>
-    <tr><td><code>GUEST_SUBMISSION_ENABLED</code></td><td><code>false</code></td><td>Allow unauthenticated ticket submission. Guests receive a tracking number and email link for their specific ticket.</td></tr>
+    <tr><td><code>GUEST_SUBMISSION_ENABLED</code></td><td><code>false</code></td><td><strong>This variable does nothing.</strong> In v1.2.0 it is read into the configuration and no code consults it; v1.3.0-beta removes it altogether, and the shipped Compose file and <code>.env.example</code> no longer mention it. Guest submission is switched on by the <code>guest_submission_enabled</code> setting under <em>Admin → Settings</em>, which is the only switch. See <a href="tickets.html#tickets-create">Guest ticket submission</a>.</td></tr>
   </tbody>
 </table>
 

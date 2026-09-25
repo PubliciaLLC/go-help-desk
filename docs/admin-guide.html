@@ -82,9 +82,14 @@
       <li><a href="#admin-sla">SLA Policies</a></li>
       <li><a href="#admin-email-tpl">Email Templates</a></li>
       <li><a href="#admin-webhooks">Webhooks</a></li>
+      <li><a href="#admin-attachments">Attachments <span class="badge-beta">Beta</span></a></li>
       <li><a href="#admin-plugins">Installing Plugins</a></li>
       <li><a href="#admin-branding">Branding</a></li>
     </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -621,6 +626,172 @@ function verifySignature(secret, body, header) {
 <p>All deliveries (successful and failed) are logged and visible under <em>Admin → Webhooks → [webhook name] → Deliveries</em>. Each entry shows the event type, HTTP status, response body (truncated), and timing. You can manually re-trigger a failed delivery from this page.</p>
 
 
+<h2 id="admin-attachments">Attachments <span class="badge-beta">Beta</span></h2>
+
+<div class="callout callout-warn">
+  <p><strong>Every setting in this section is new in v1.3.0-beta and is not in a released version.</strong> The current stable release is <a href="upgrading-1.2.0.html">v1.2.0</a>, where none of these settings exist. Names and defaults can still change before 1.3.0 ships.</p>
+</div>
+
+<p>Everything below lives under <em>Admin → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
+
+<div class="callout callout-note">
+  <p><strong>All of these require a signed-in administrator.</strong> An API key or OAuth client that tries to change one is refused with <code>403 session_required</code>, because these settings decide what this instance will hold and where customers' file hashes go. That includes the allowed-types list: a leaked API key must not be able to widen what the instance accepts and then upload what it has just allowed.</p>
+</div>
+
+<h3>Uploads</h3>
+
+<table class="param-table">
+  <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>attachment_allowed_types</td>
+      <td>see below</td>
+      <td>
+        <strong>Allowed file types.</strong> A list of lowercase extensions with the leading dot, one per line in the UI. Each entry must match a leading dot followed by 1–16 lowercase letters or digits; a bad entry refuses the whole write with <code>invalid_allowed_types</code> rather than being dropped silently.
+        <br><br>
+        The shipped default is <code>.pdf .docx .xlsx .txt .log .jpg .jpeg .png .bmp</code>. An instance that has never set the list follows whatever the built-in default is; the admin screen shows that default and saves it only if you change it.
+        <br><br>
+        <strong>An empty list is a valid setting</strong> and means this instance accepts no attachments at all. It is not read as "unset".
+        <br><br>
+        <code>.jpg</code> and <code>.jpeg</code> name one format, so allowing either allows both.
+      </td>
+    </tr>
+    <tr>
+      <td>attachment_mismatch_handling</td>
+      <td><code>refuse</code></td>
+      <td>
+        <strong>When a file’s content contradicts its name.</strong> Two values:
+        <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
+          <li><code>refuse</code> — <strong>the default.</strong> The upload is rejected with <code>415 invalid_file</code>, the same status, code and message 1.2.0 refused with.</li>
+          <li><code>wrap</code> — the file is accepted, stored inside a ZIP named <code>suspicious-&lt;crc32&gt;.zip</code> with <em>no</em> password, and flagged on the ticket.</li>
+        </ul>
+        <strong>It only ever applies to a file whose real type is not on the allowed-types list above, under a name claiming a binary format.</strong> A mislabelled file whose real type <em>is</em> allowed — a genuine PNG called <code>.pdf</code> — is flagged and stored under its own name whichever value you pick. A file named <code>.txt</code>, <code>.log</code>, <code>.csv</code> or <code>.md</code> never reaches this setting at all.
+        <br><br>
+        <code>quarantine</code> is refused here with <code>invalid_mismatch_handling</code>: it is the other setting’s word, and it is not read charitably as <code>wrap</code>. Any other unrecognised value stored by hand is read as <code>refuse</code>.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Changing the allowed-types list is not retroactive.</strong> Nothing already stored is removed or re-examined; the list decides what the next upload may be.</p>
+
+<h3>Malware scanning</h3>
+
+<table class="param-table">
+  <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>attachment_scan_policy</td>
+      <td><code>required</code>*</td>
+      <td>
+        <strong>Scan attachments for malware.</strong> Decides what an upload the scanner could not look at means:
+        <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
+          <li><code>off</code> — nothing is scanned. Uploads are accepted without being checked.</li>
+          <li><code>required</code> — <strong>the default wherever a scanner address is configured.</strong> An unscannable upload is refused with <code>503 scanner_unavailable</code> and a <code>Retry-After</code> header.</li>
+          <li><code>permissive</code> — an unscannable upload is accepted, with a warning logged.</li>
+        </ul>
+        * The default is <code>required</code> when a scanner address exists and <code>off</code> when none does. An unrecognised stored value falls back the same way, so a typo cannot silently disable scanning, and the settings endpoint refuses an invalid value outright with <code>invalid_scan_policy</code>.
+      </td>
+    </tr>
+    <tr>
+      <td>attachment_scan_address</td>
+      <td>unset</td>
+      <td>
+        Overrides the <code>CLAMAV_ADDR</code> environment variable without a restart. Empty means the environment value stands. It must look like <code>tcp://host:port</code> or <code>unix:///path/to/socket</code>, or the write is refused with <code>invalid_scanner_address</code> — so a typo fails at save time rather than at the first upload. Private addresses are allowed here, unlike webhook targets: a ClamAV on the same private network is the normal deployment.
+      </td>
+    </tr>
+    <tr>
+      <td>attachment_infected_handling</td>
+      <td><code>refuse</code></td>
+      <td>
+        <strong>When a scan finds malware.</strong> Two values:
+        <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
+          <li><code>refuse</code> — <strong>the default.</strong> The upload is rejected with <code>422 infected</code> and the user is shown the scanner’s name for the detection.</li>
+          <li><code>quarantine</code> — the sample is stored inside a ZIP with the published password <code>infected</code>, under the uploaded name plus <code>.zip</code>, and the ticket carries a persistent warning banner. Downloading it requires a confirmation.</li>
+        </ul>
+        For an IT security team whose tickets are <em>about</em> reported samples. An ordinary help desk should leave this on <code>refuse</code>. An unrecognised stored value is read as <code>refuse</code>, and the settings endpoint refuses one with <code>invalid_infected_handling</code>.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout callout-warn">
+  <p><strong><code>quarantine</code> does nothing while scanning is off.</strong> It only ever decides what to do with a verdict the scanner actually returned. With the policy set to <code>off</code>, or the scanner unreachable under <code>permissive</code>, nothing is ever identified as malicious and nothing is ever quarantined. The admin screen says so when you pick that combination.</p>
+</div>
+
+<p><strong>The first few minutes after a fresh <code>docker compose up</code> are the case <code>required</code> was chosen for.</strong> ClamAV spends around three minutes downloading its signature database while the application is already serving. Under <code>required</code>, uploads wait for the scanner rather than bypassing it. The help desk works throughout; only attachment upload is delayed.</p>
+
+<p><strong>Neither containment setting is retroactive.</strong> Turning quarantine or the wrap on does not rewrap what is already stored, and turning either off does not unwrap it.</p>
+
+<h3>Checking whether scanning is actually working</h3>
+
+<p><code>GET /api/v1/admin/security-warnings</code> reports what scanning is <em>doing</em>, including a live reachability check rather than a restatement of the configuration — because an instance whose scanner container has died has an address configured and no protection, and those two facts must not look alike. It returns the effective policy, whether an address is configured, whether the scanner answers, and a sentence saying what that combination means.</p>
+
+<div class="callout callout-warn">
+  <p><strong>The admin UI does not show this yet.</strong> The banner built on that endpoint renders only the insecure-secrets warning. Today the scanning status is visible to an administrator who asks the API.</p>
+</div>
+
+<h3>Reputation lookup</h3>
+
+<p>A quarantined attachment’s SHA-256 can be looked up at third-party services. <strong>All four are off by default</strong>, and all four off is a supported configuration: it means attachments are judged by this instance’s own scanner alone. There is no warning and no banner for that state.</p>
+
+<table class="param-table">
+  <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>attachment_reputation_virustotal_enabled</td><td><code>false</code></td><td>Ask VirusTotal. Requires the key below.</td></tr>
+    <tr><td>attachment_reputation_virustotal_key</td><td>unset</td><td>VirusTotal API key. <strong>Write-only</strong> — accepted and never echoed back.</td></tr>
+    <tr><td>attachment_reputation_metadefender_enabled</td><td><code>false</code></td><td>Ask OPSWAT MetaDefender. Requires the key below.</td></tr>
+    <tr><td>attachment_reputation_metadefender_key</td><td>unset</td><td>MetaDefender API key. Write-only.</td></tr>
+    <tr><td>attachment_reputation_polyswarm_enabled</td><td><code>false</code></td><td>Ask PolySwarm. Requires the key below.</td></tr>
+    <tr><td>attachment_reputation_polyswarm_key</td><td>unset</td><td>PolySwarm API key. Write-only.</td></tr>
+    <tr><td>attachment_reputation_circl_enabled</td><td><code>false</code></td><td>Ask CIRCL hashlookup. <strong>There is no key setting</strong> — hashlookup authenticates nobody, so there is none you could supply.</td></tr>
+    <tr>
+      <td>attachment_reputation_refresh</td><td><code>biweekly</code></td>
+      <td>
+        <strong>Re-check stored verdicts.</strong> How long a verdict is trusted before the next page render looks it up again: <code>weekly</code> (7 days), <code>biweekly</code> (14 days, the default), <code>monthly</code> (30), <code>quarterly</code> (90), or <code>never</code>.
+        <br><br>
+        A detection and a <code>known</code> verdict never expire under any value, because engines do not un-flag a file and a hash does not fall out of a vendor catalogue. Staff can ask again by hand once every seven days per file per service whatever this says, including when it says <code>never</code>.
+        <br><br>
+        An unrecognised value is read as <code>biweekly</code>, never as <code>never</code>, and the settings endpoint refuses one with <code>invalid_reputation_refresh</code> — a typo must not silently switch re-checking off, because the symptom is a verdict that looks current for as long as the instance lives.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<p><strong>Enabling a service without its key is refused</strong> at the write with <code>invalid_reputation_config</code>, naming the service that lacks one. "Enabled and silently doing nothing" is not a state you can reach through the API. The keys are stored per service, so configuring a second one does not destroy the key you already pasted for the first.</p>
+
+<p><strong>The keys never travel with an ordinary save.</strong> The settings screen sends a key only when you have typed one or asked for the stored one to be removed — three blank fields sent on an unrelated change would wipe three working keys, and nothing would report it.</p>
+
+<h3>What each service costs you</h3>
+
+<p>Every enabled service is asked about every quarantined file, so four enabled services means four lookups per file on first view. The server meters each one at its own ceiling, per service, so an exhausted allowance at one does not stop another answering. Counters are in memory and per process; daily ones reset at 00:00 UTC and hourly ones on the hour.</p>
+
+<table>
+  <thead><tr><th>Service</th><th>Ceiling enforced</th><th>Whose figure</th></tr></thead>
+  <tbody>
+    <tr><td>VirusTotal</td><td>500 a day, plus 4 a minute</td><td>VirusTotal’s own published free-tier figures</td></tr>
+    <tr><td>MetaDefender</td><td>4,000 a day</td><td><strong>Ours.</strong> OPSWAT publish only "a limited number of API calls per day", so this is a courtesy cap we chose</td></tr>
+    <tr><td>PolySwarm</td><td>60 an hour</td><td>PolySwarm’s own published figure. They publish no daily figure, so none is enforced</td></tr>
+    <tr><td>CIRCL</td><td>300 an hour</td><td><strong>Ours.</strong> CIRCL publish no ceiling of any kind; this is a politeness cap on a free best-effort service run by a CERT</td></tr>
+  </tbody>
+</table>
+
+<p>The admin screen carries each service’s own free-tier and licensing terms, quoted and attributed, beside its toggle — shown whether or not the service is switched on, because somebody reading that page to decide is exactly who needs them. Read them before you switch anything on: whose terms you accept is your decision, not the software’s.</p>
+
+<div class="callout callout-warn">
+  <p><strong>CIRCL discloses differently from the other three.</strong> It records the caller’s IP address and User-Agent, and its public instance serves a leaderboard of the most-queried hashes, with filenames. VirusTotal and OPSWAT log but do not publish.</p>
+</div>
+
+<p>A hash is not a file: nothing here ever uploads one, and only files the scanner identified are looked up. The full account of what leaves the server is on the <a href="attachment-security.html#attach-reputation">Attachment Security</a> page.</p>
+
+<!-- SCREENSHOT NEEDED: Admin → Settings → Attachments, showing the Uploads section (allowed types textarea and the content-contradicts-its-name select), Malware scanning, and the top of the Reputation lookup section with the four provider rows and their terms panels. -->
+<img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
+
+<div class="callout callout-note">
+  <p><strong>Upgrading from an earlier reputation setting?</strong> Nothing is migrated. The old <code>attachment_vt_lookup</code> / <code>attachment_vt_api_key</code> pair and the <code>attachment_reputation_provider</code> / <code>attachment_reputation_api_key</code> pair that replaced them are read by nothing, and are due to be deleted by a migration in the release after 1.3.0. Re-enter your key against the service you want — copying somebody’s secret from one setting to another on their behalf is not something to do quietly.</p>
+</div>
+
+
 <h2 id="admin-plugins">Installing plugins</h2>
 
 <p>Plugins extend Go Help Desk with custom behavior. They run as sandboxed WASM modules. Manage them from <em>Admin → Plugins</em>.</p>
@@ -663,10 +834,10 @@ function verifySignature(secret, body, header) {
     <tr>
       <td><strong>Logo</strong></td>
       <td>
-        Upload a logo file from <em>Admin → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF, SVG. Maximum 2 MB.
+        Upload a logo file from <em>Admin → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF. Maximum 2 MB.
         <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
-          <li><strong>Target size: 320 × 64 px.</strong> Raster images (PNG, JPG, GIF) are proportionally scaled to fit within this bounding box and re-encoded as PNG. Images that already fit are kept at their original dimensions.</li>
-          <li><strong>SVG safety:</strong> SVGs are validated as well-formed XML and scanned for disallowed content — <code>&lt;script&gt;</code> tags, event handlers (<code>onclick</code>, etc.), <code>javascript:</code> URIs, <code>&lt;foreignObject&gt;</code>, and <code>expression()</code>. Malformed or unsafe SVGs are rejected.</li>
+          <li><strong>Target size: 320 × 64 px.</strong> Every accepted format is raster: images are proportionally scaled to fit within this bounding box and re-encoded as PNG, which also strips whatever metadata came with them. Images that already fit are kept at their original dimensions.</li>
+          <li><strong>SVG is no longer accepted</strong> <span class="badge-beta">Changed in 1.3.0-beta</span>. It used to be, guarded by a sanitiser that parsed the XML and pattern-matched for scripts, event handlers and <code>javascript:</code> URIs. The <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">1.2.0 advisory</a> already contains one escape from that sanitiser. The logo is the one uploaded file this application renders inline on its own origin, so there is no safe subset worth maintaining. <strong>An SVG logo left on disk by an earlier release is no longer served</strong>: <code>GET /api/v1/logo</code> answers 404 as though no logo were set. Upload a PNG, JPG or GIF to get your logo back.</li>
         </ul>
         When set, the logo replaces the site name text in the sidebar. The file is served from <code>GET /api/v1/logo</code> with a 5-minute public cache header.
       </td>

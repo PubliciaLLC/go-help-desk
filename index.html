@@ -35,7 +35,7 @@
     "applicationCategory": "BusinessApplication",
     "operatingSystem": "Linux, macOS, Windows",
     "license": "https://www.gnu.org/licenses/agpl-3.0.html",
-    "softwareVersion": "1.0",
+    "softwareVersion": "1.2.0",
     "offers": {
       "@type": "Offer",
       "price": "0",
@@ -101,6 +101,23 @@
     </span>
     <a href="docs/upgrading-1.2.0.html"
        style="color:#fff;text-decoration:underline;white-space:nowrap;">Upgrade notes →</a>
+  </div>
+</div>
+
+<!-- v1.3.0-beta. Deliberately below the two 1.2.0 notices and in a quieter
+     colour: 1.2.0 is what everyone should be running, and the beta is an
+     invitation rather than a recommendation. Remove when 1.3.0 is tagged. -->
+<div style="background:#fffbeb;color:#92400e;padding:.6rem 0;font-size:.85rem;border-bottom:1px solid #f59e0b;">
+  <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
+    <strong>In beta:</strong>
+    <span style="flex:1;min-width:16rem;">
+      <strong>v1.3.0-beta</strong> rebuilds attachment handling — the server detects what an uploaded file
+      really is, can quarantine what the scanner names, and can optionally ask any of four reputation
+      services about a quarantined file's hash. Guest ticket submission works for the first time.
+      <strong>There is no 1.3.0 release yet</strong>; v1.2.0 remains the release to run in production.
+    </span>
+    <a href="docs/attachment-security.html"
+       style="color:#92400e;text-decoration:underline;white-space:nowrap;">Attachment security →</a>
   </div>
 </div>
 
@@ -325,6 +342,22 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         <p>Relevance-ranked Postgres full-text search across subject and description, word-prefix matched as you type — no more guessing the exact substring.</p>
       </div>
 
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h3>Attachment Security <span class="badge-beta">Beta</span></h3>
+        <p>Every upload is detected, hashed and compared against the name it arrived under. ClamAV scanning, an optional quarantine tier, and an optional hash lookup at four reputation services. Nothing is ever rendered in the browser. <a href="docs/attachment-security.html">Read how it works →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <h3>Guest Submission <span class="badge-beta">Beta</span></h3>
+        <p>Anyone can file a ticket without an account and follow it through a private emailed link — no password, no signup. The link is scoped to one ticket, replaced whenever the help desk writes back, and revoked when the ticket closes. <a href="docs/authentication.html#auth-guest">Read how it works →</a></p>
+      </div>
+
     </div>
   </div>
 </section>
@@ -395,7 +428,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
     <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem;">
 
       <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v1 · Shipped</div>
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v1 · Shipped — latest v1.2.0</div>
         <h4 style="margin-bottom: 0.75rem;">Core</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
           <li>✓ CTI ticketing</li>
@@ -416,6 +449,8 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
           <li>✓ Canned responses</li>
           <li>✓ Full-text search</li>
+          <li>Attachment security <span class="badge-beta">Beta</span></li>
+          <li>Guest submission <span class="badge-beta">Beta</span></li>
         </ul>
       </div>
 

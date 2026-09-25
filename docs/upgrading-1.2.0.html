@@ -78,6 +78,10 @@
     <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
   </div>
   <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+  </div>
+  <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
     <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
   </div>
@@ -174,12 +178,12 @@ https://help.example.com/tickets/…</code></pre>
 <p>The recipient's own address is also written bare, with no display name, for the same reason.</p>
 
 <div class="callout callout-warn">
-  <p><strong>Guest tickets.</strong> A guest recipient would have nowhere to read the reply, since the link leads to the sign-in page. Nothing is affected today, because guest submission does not work yet — see <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>, which covers the submission path and the tokenised guest view together.</p>
+  <p><strong>Guest tickets.</strong> In 1.2.0 a guest recipient has nowhere to read the reply, since the link leads to the sign-in page — and nothing is affected, because guest submission does not work in 1.2.0 at all. Both halves landed together in v1.3.0-beta: a guest now receives a private link to their own ticket. See <a href="authentication.html#auth-guest">Guest access</a>.</p>
 </div>
 
 <h2 id="guest">Guest email addresses are validated</h2>
 
-<p>Nothing checked them before: any string at all was accepted, stored, and handed to the mailer. A guest address that is not a single bare address is now refused with <code>400</code>, and the stored value is normalised — trimmed and lower-cased. Nothing meets this rule today, since guest submission is not live; it is the rule it will meet.</p>
+<p>Nothing checked them before: any string at all was accepted, stored, and handed to the mailer. A guest address that is not a single bare address is now refused with <code>400</code>, and the stored value is normalised — trimmed and lower-cased. In 1.2.0 nothing meets this rule, since guest submission is not live there; from v1.3.0-beta it is the rule every guest submission meets.</p>
 
 <p>If you create tickets through the API with a guest address, check that what you send parses as one address and carries no display name.</p>
 
