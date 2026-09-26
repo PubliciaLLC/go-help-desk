@@ -13,8 +13,9 @@ import (
 )
 
 // An omitted priority is the catch-all tier DESIGN.md documents, and an unknown
-// one used to reach the column's CHECK constraint — a 500 for what is plainly a
-// bad request.
+// one used to reach the column's CHECK constraint, whose raw driver error came
+// back as the 400's message — a status that happened to be right, for a
+// message that gave away table names and constraint names to the caller.
 
 func TestCreateSLAPolicy_PriorityIsOptionalAndValidated(t *testing.T) {
 	h, cleanup := newHarness(t)
