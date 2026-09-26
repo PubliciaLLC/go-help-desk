@@ -760,6 +760,13 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	lt := ticket.LinkType(chi.URLParam(r, "linkType"))
+	// An unrecognized link type would otherwise delete nothing and still
+	// answer 204 — not incorrect (there is indeed no such link), but silently
+	// misleading about why nothing happened. See #201.
+	if !lt.Valid() {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid link type")
+		return
+	}
 	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
 		handleError(w, err)
 		return

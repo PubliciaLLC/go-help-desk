@@ -273,6 +273,31 @@ func TestAddLink_SelfLinkReturns400(t *testing.T) {
 	})
 }
 
+// TestRemoveLink_InvalidLinkTypeReturns400 verifies that DELETE
+// .../links/{targetId}/{linkType} with an unrecognized linkType returns 400
+// rather than silently deleting nothing and answering 204. See #201.
+func TestRemoveLink_InvalidLinkTypeReturns400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	res := h.doAsUser(t, http.MethodDelete,
+		"/api/v1/tickets/"+own.ID.String()+"/links/"+target.ID.String()+"/not_a_real_type", nil)
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode,
+		"an unrecognized link type must return 400, not silently answer 204; body: %s", b)
+}
+
 // TestAddLink_ReturnsDuplicateLinkWith409 verifies that creating a duplicate link
 // returns 409 Conflict, not 500 Internal Server Error.
 func TestAddLink_ReturnsDuplicateLinkWith409(t *testing.T) {

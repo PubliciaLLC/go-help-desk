@@ -1182,10 +1182,6 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	}
 	link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 	if err := s.store.CreateLink(ctx, link); err != nil {
-		// Check if this is a duplicate link error
-		if errors.Is(err, ErrLinkAlreadyExists) {
-			return fmt.Errorf("creating link: %w", err)
-		}
 		return fmt.Errorf("creating link: %w", err)
 	}
 	// Read for Subject/TrackingNumber only — a webhook renderer needs a
