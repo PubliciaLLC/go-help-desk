@@ -55,10 +55,18 @@ func TestIsStatusNameViolation(t *testing.T) {
 	}
 }
 
-// TestIsStatusInUseViolation pins #279's race backstop: the shared-transaction
-// test harness cannot survive a real 23503 (a failed statement aborts the
-// whole transaction), so this is the only practical coverage of the detection
-// logic, shaped like TestIsPolicyInUseViolation (#261).
+// TestIsStatusInUseViolation pins #279's race backstop: the three hand-typed
+// constraint-name strings below, matched only against copies of themselves
+// here. The genuinely untestable part is the concurrent RACE itself — two
+// overlapping requests landing between RemoveStatus's counts and its delete —
+// which cannot be reproduced deterministically. The constraint-name-matching
+// logic that this test exercises is NOT similarly untestable: it can and is
+// also exercised against a real Postgres 23503 in
+// TestDeleteStatus_TicketReferencingIt_ReturnsErrStatusInUse below, the same
+// way #278's duplicate-name tests and the pre-existing duplicate-link test
+// already trigger a real constraint violation through the shared-transaction
+// harness (testutil.TxQueries) — the failing statement is simply the test's
+// last one before its transaction is rolled back. See #281.
 func TestIsStatusInUseViolation(t *testing.T) {
 	cases := []struct {
 		name string
@@ -108,3 +116,15 @@ func TestIsStatusInUseViolation(t *testing.T) {
 		})
 	}
 }
+
+// The real-database half of this coverage — a ticket created holding a
+// custom status, then Store.DeleteStatus called directly to force the actual
+// tickets_status_id_fkey violation — lives in
+// TestDeleteStatus_TicketReferencingIt_ReturnsErrStatusInUse
+// (status_violations_integration_test.go). It cannot live in this file: this
+// file is `package ticketstore` (so the table above can reach the unexported
+// isStatusInUseViolation directly), and internal/testutil imports ticketstore
+// itself to build its JoiningTxRunner — importing testutil from here would be
+// an import cycle. The integration test therefore lives in the external
+// `ticketstore_test` package instead, alongside this one in the same
+// directory.

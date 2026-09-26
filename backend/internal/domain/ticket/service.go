@@ -1483,7 +1483,8 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 // (#278) rather than letting the raw pgconn error reach handleError
 // unrecognized.
 func (s *Service) AddStatus(ctx context.Context, st Status) error {
-	if strings.TrimSpace(st.Name) == "" {
+	st.Name = strings.TrimSpace(st.Name)
+	if st.Name == "" {
 		return ErrInvalidStatusName
 	}
 	st.Active = true
@@ -1501,7 +1502,8 @@ func (s *Service) AddStatus(ctx context.Context, st Status) error {
 // a clean 403 rather than a bare 500 for any caller, HTTP or otherwise, that
 // reaches this method.
 func (s *Service) SaveStatus(ctx context.Context, st Status) error {
-	if strings.TrimSpace(st.Name) == "" {
+	st.Name = strings.TrimSpace(st.Name)
+	if st.Name == "" {
 		return ErrInvalidStatusName
 	}
 	current, err := s.getStatusByID(ctx, st.ID)

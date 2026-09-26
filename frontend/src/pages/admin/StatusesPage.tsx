@@ -75,7 +75,7 @@ export function StatusesPage() {
               Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be renamed, removed, or deactivated.
             </p>
           </div>
-          <Button onClick={() => setAddingStatus(true)} className="ml-6 shrink-0">
+          <Button onClick={() => { setFormError(''); setAddingStatus(true) }} className="ml-6 shrink-0">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Status
           </Button>
