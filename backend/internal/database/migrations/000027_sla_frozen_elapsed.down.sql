@@ -6,7 +6,7 @@
 -- just remove data 000027 can regenerate; it discards information 000028 has
 -- no other way to recover. Rewinding through this down migration and back up
 -- (unlike a 028-only down/up) loses that distinction for good: 000027's own
--- backfill below unconditionally re-freezes elapsed from whatever
+-- up-migration backfill unconditionally re-freezes elapsed from whatever
 -- sla_records.resolved_at/first_response_at already hold, indistinguishable
 -- afterward from a fact, and the next 000028 up will stamp a breach from an
 -- estimated instant it previously and correctly left unstamped. Accepted and
