@@ -89,6 +89,11 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	// 400, not 500: a self-link is bad input, not a fault. See #192.
+	if errors.Is(err, ticket.ErrSelfLink) {
+		Error(w, http.StatusBadRequest, "cannot_link_self", ticket.ErrSelfLink.Error())
+		return
+	}
 	if errors.Is(err, ticket.ErrForbidden) {
 		Error(w, http.StatusForbidden, "forbidden", "you do not have permission to perform this action")
 		return

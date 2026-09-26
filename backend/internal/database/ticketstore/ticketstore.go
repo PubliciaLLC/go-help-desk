@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -525,9 +526,16 @@ func (s *Store) CreateLink(ctx context.Context, link ticket.TicketLink) error {
 		LinkType:       string(link.LinkType),
 	})
 	if err != nil {
-		// Check if this is a unique constraint violation (link already exists)
-		// The pq library wraps the error, so we check the message string for the constraint name
-		if strings.Contains(err.Error(), "ticket_links_unique") && strings.Contains(err.Error(), "23505") {
+		// A unique constraint violation (link already exists) is detected off
+		// the typed Postgres error, not off err.Error()'s text (#195). The
+		// previous strings.Contains(err.Error(), "ticket_links_unique") &&
+		// strings.Contains(err.Error(), "23505") check happened to be correct
+		// for pgx stdlib's current Error() format, but it depended on that
+		// exact format: a driver change, or lib/pq (also in go.mod) instead
+		// of pgx, would silently turn every duplicate-link request back into
+		// an unhandled 500 with no compile-time or obvious runtime signal.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "ticket_links_unique" {
 			return ticket.ErrLinkAlreadyExists
 		}
 	}

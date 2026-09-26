@@ -11,6 +11,24 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
+// TestAddLink_SelfLinkRefused pins #192: a self-link must be a validation
+// error (ErrSelfLink, mapped to 400), not a bare error that falls through to
+// a 500 at the HTTP layer.
+func TestAddLink_SelfLinkRefused(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	agent := uuid.New()
+
+	err := h.svc.AddLink(context.Background(), source.ID, source.ID, ticket.LinkRelatedTo,
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ticket.ErrSelfLink)
+
+	links, _ := h.store.ListLinks(context.Background(), source.ID)
+	require.Empty(t, links, "no link should be created for a self-link")
+}
+
 func TestAddLink_InvalidLinkType(t *testing.T) {
 	h := newHarness(t)
 	source := h.seedOpen()

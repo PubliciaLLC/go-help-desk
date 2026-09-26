@@ -339,6 +339,9 @@ func TestResolveAsDuplicate_SelfLinkRefused(t *testing.T) {
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "cannot link a ticket to itself")
+	// #192: must map to 400, not 500 — which requires the typed sentinel,
+	// not just matching text.
+	require.ErrorIs(t, err, ticket.ErrSelfLink)
 }
 
 func TestDuplicateResolutionNotes(t *testing.T) {

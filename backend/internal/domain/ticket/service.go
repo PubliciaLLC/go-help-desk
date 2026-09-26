@@ -820,7 +820,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
 	}
 	if sourceID == targetID {
-		return Ticket{}, fmt.Errorf("cannot link a ticket to itself")
+		return Ticket{}, fmt.Errorf("cannot resolve as duplicate: %w", ErrSelfLink)
 	}
 
 	var t Ticket
@@ -1113,7 +1113,7 @@ func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]
 // AddLink creates a directed link between two tickets.
 func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType, actor Actor) error {
 	if sourceID == targetID {
-		return fmt.Errorf("cannot link a ticket to itself")
+		return fmt.Errorf("cannot add link: %w", ErrSelfLink)
 	}
 	// Validate LinkType before attempting to write to the database.
 	if !lt.Valid() {

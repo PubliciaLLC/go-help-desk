@@ -230,6 +230,49 @@ func TestAddLink_ReturnsInvalidLinkTypeWith400(t *testing.T) {
 	require.Empty(t, links, "no link should exist after invalid type error")
 }
 
+// TestAddLink_SelfLinkReturns400 verifies that linking a ticket to itself
+// returns 400 Bad Request, not 500, for both the plain AddLink path and the
+// resolve-as-duplicate path. See #192.
+func TestAddLink_SelfLinkReturns400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	base := "/api/v1/tickets/" + own.ID.String() + "/links"
+
+	t.Run("plain AddLink", func(t *testing.T) {
+		res := h.doAsUser(t, http.MethodPost, base,
+			map[string]any{"target_id": own.ID.String(), "link_type": "related_to"})
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "self-link must return 400, not 500; body: %s", b)
+
+		var errResp map[string]any
+		json.Unmarshal(b, &errResp)
+		errObj := errResp["error"].(map[string]any)
+		require.Equal(t, "cannot_link_self", errObj["code"])
+	})
+
+	t.Run("resolve-as-duplicate", func(t *testing.T) {
+		res := h.do(t, http.MethodPost, base, map[string]any{
+			"target_id": own.ID.String(), "link_type": "duplicate_of",
+			"resolve_as_duplicate": true, "resolution_notes": "x",
+		})
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "self-link must return 400, not 500; body: %s", b)
+
+		var errResp map[string]any
+		json.Unmarshal(b, &errResp)
+		errObj := errResp["error"].(map[string]any)
+		require.Equal(t, "cannot_link_self", errObj["code"])
+	})
+}
+
 // TestAddLink_ReturnsDuplicateLinkWith409 verifies that creating a duplicate link
 // returns 409 Conflict, not 500 Internal Server Error.
 func TestAddLink_ReturnsDuplicateLinkWith409(t *testing.T) {
