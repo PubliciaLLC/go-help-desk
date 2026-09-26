@@ -19,7 +19,7 @@ import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { apiRefusal, extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -437,8 +437,28 @@ export function TicketDetailPage() {
     },
   })
 
+  // Whichever of the three last failed. They are mutually exclusive in
+  // practice — a ticket is never resolvable and reopenable at once.
+  const lifecycleError =
+    (resolveMutation.isError && extractError(resolveMutation.error)) ||
+    (reopenMutation.isError && extractError(reopenMutation.error)) ||
+    (closeMutation.isError && extractError(closeMutation.error)) ||
+    ''
+
   if (isLoading) return <Layout><div className="flex justify-center py-12"><Spinner size="lg" /></div></Layout>
-  if (error || !ticket) return <Layout><p className="text-red-600">Ticket not found.</p></Layout>
+  if (error || !ticket) {
+    // Not every failure here is a missing ticket. A 403 means it exists and
+    // is not yours to read — which the server says in as many words — and a
+    // 500 or a proxy's 503 is not about this ticket at all. All three used
+    // to print "Ticket not found."
+    const { status, message } = apiRefusal(error)
+    const text =
+      status === 404 ? 'Ticket not found.'
+      : message ? message
+      : status ? `This ticket could not be loaded (error ${status}).`
+      : 'This ticket could not be loaded.'
+    return <Layout><p role="alert" className="text-red-600">{text}</p></Layout>
+  }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
   const canReopen = isStaffOrAdmin && (statusName === 'Resolved' || statusName === 'Closed')
@@ -506,6 +526,15 @@ export function TicketDetailPage() {
             )}
           </div>
         </div>
+
+        {/* The server explains why it refused — a transition the lifecycle
+            does not allow, a ticket outside this staff member's scope, an
+            expired session. Without this the button simply re-enabled and
+            the status did not change, which reads as the app being broken.
+            The status picker below already did this; these three did not. */}
+        {lifecycleError && (
+          <p role="alert" className="text-sm text-red-600">{lifecycleError}</p>
+        )}
 
         <div className="grid grid-cols-3 gap-6">
           {/* Main column */}

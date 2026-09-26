@@ -566,6 +566,15 @@ var (
 	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
 	// empty name was silently accepted before this check existed. See #278.
 	ErrInvalidStatusName = errors.New("status name must not be empty")
+	// ErrNotClosed is returned by Reopen for a ticket that is not Closed —
+	// including one a concurrent writer reopened between the unlocked check
+	// and the row lock. Reopen is deliberately Closed-only
+	// (TestReopen_OnlyFromClosed); a Resolved ticket leaves that state
+	// through UpdateStatus or a reporter's reply. It was a bare fmt.Errorf
+	// that handleError could not recognize, so a staff click on Reopen came
+	// back as a 500. 409, like ErrClosed: the ticket's state, not the
+	// caller's permissions, is what refuses. See #277.
+	ErrNotClosed = errors.New("ticket is not closed")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

@@ -1312,7 +1312,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, err
 	}
 	if t.StatusID != s.sys.closedID {
-		return Ticket{}, fmt.Errorf("%w: ticket is not closed", ErrNotReopenable)
+		return Ticket{}, fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
 	}
 	// Same guard as AddReply's auto-reopen: an unresolvable configured status
 	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
@@ -1338,7 +1338,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 			return err
 		}
 		if t.StatusID != s.sys.closedID {
-			return fmt.Errorf("%w: ticket is not closed", ErrNotReopenable)
+			return fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
 		}
 		before := ticketMap(t)
 		oldStatusID = t.StatusID
@@ -1787,15 +1787,6 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 	})
 	return moved, err
 }
-
-// ErrNotReopenable is a ticket that is not closed, so there is nothing to
-// reopen.
-//
-// A named error rather than a bare string because the handler has to tell it
-// from a server fault: it fell through to 500 "an internal error occurred",
-// which is a lie about an ordinary precondition the caller can see for
-// themselves.
-var ErrNotReopenable = errors.New("ticket is not closed")
 
 var ErrValidation = errors.New("validation failed")
 

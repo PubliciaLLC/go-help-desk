@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { listTickets, updateTicket, type TicketScope } from '@/api/tickets'
+import { getTicket, listTickets, updateTicket, type TicketScope } from '@/api/tickets'
 import { listStatuses, listUsers } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
@@ -12,6 +12,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, SearchIcon } from 'lucide-react'
 import { priorityVariant } from '@/lib/format'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
+import { apiRefusal, extractError } from '@/api/client'
 
 function emptyMessageFor(scope: TicketScope) {
   switch (scope) {
@@ -42,6 +43,8 @@ export function TicketListPage() {
   const [scope, setScope] = useState<TicketScope>('mine')
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkStatusId, setBulkStatusId] = useState('')
+  const [bulkError, setBulkError] = useState('')
+  const [jumpError, setJumpError] = useState('')
 
   // 300 ms debounce on the search box
   useEffect(() => {
@@ -66,14 +69,19 @@ export function TicketListPage() {
   // The server returns at most PAGE_SIZE rows. Before paging existed it
   // returned at most 100 and there was no way to ask for the rest, so anything
   // older than the hundredth ticket was unreachable by browsing.
-  const [page, setPage] = useState(0)
-
-  // Any change to what is being asked for starts again at the first page —
-  // otherwise a narrower search lands on an offset past its own results and
-  // shows an empty list.
-  useEffect(() => {
-    setPage(0)
-  }, [debouncedQuery, effectiveScope, reporterFilter])
+  //
+  // The page number is stored together with WHAT it is a page of. Any change
+  // to what is being asked for starts again at the first page — otherwise a
+  // narrower search lands on an offset past its own results and shows an
+  // empty list. Kept as one piece of state rather than a number plus an
+  // effect that resets it, because the effect ran a render late: the query
+  // fired once for the new search at the old offset, and that wasted request
+  // is the empty flash it was meant to prevent.
+  const asking = `${debouncedQuery}\u0000${effectiveScope}\u0000${reporterFilter ?? ''}`
+  const [paged, setPaged] = useState({ asking, page: 0 })
+  const page = paged.asking === asking ? paged.page : 0
+  const setPage = (next: (p: number) => number) =>
+    setPaged({ asking, page: next(page) })
 
   const { data: allTickets = [], isFetching } = useQuery({
     queryKey: ['tickets', { q: debouncedQuery || undefined, scope: effectiveScope, reporter: reporterFilter, page }],
@@ -144,14 +152,37 @@ export function TicketListPage() {
   }
 
   const bulkMutation = useMutation({
+    // allSettled, not all: the calls go out in parallel, so when one is
+    // refused the others have already gone through. Promise.all rejected on
+    // the first failure and the page said nothing at all — leaving the
+    // selection highlighted over tickets that HAD changed, with no way to
+    // tell which. What comes back is a count and the server's own reason.
     mutationFn: async (statusId: string) => {
-      await Promise.all([...selectedIds].map(id => updateTicket(id, { status_id: statusId })))
+      const ids = [...selectedIds]
+      const results = await Promise.allSettled(
+        ids.map(id => updateTicket(id, { status_id: statusId })),
+      )
+      const refused = results.flatMap((r, i) =>
+        r.status === 'rejected' ? [{ id: ids[i], reason: extractError(r.reason) }] : [],
+      )
+      return { total: ids.length, refused }
     },
-    onSuccess: () => {
-      setSelectedIds(new Set())
-      setBulkStatusId('')
+    onSuccess: ({ total, refused }) => {
       qc.invalidateQueries({ queryKey: ['tickets'] })
+      if (refused.length === 0) {
+        setBulkError('')
+        setSelectedIds(new Set())
+        setBulkStatusId('')
+        return
+      }
+      // The ones that failed stay selected, so the next attempt is just
+      // another click on the same button.
+      setSelectedIds(new Set(refused.map(r => r.id)))
+      setBulkError(
+        `${total - refused.length} of ${total} updated. ${refused.length} refused: ${refused[0].reason}`,
+      )
     },
+    onError: (err) => setBulkError(extractError(err)),
   })
 
   return (
@@ -213,12 +244,22 @@ export function TicketListPage() {
               onClick={async () => {
                 const q = query.trim()
                 if (!q) return
+                setJumpError('')
                 try {
-                  const { getTicket } = await import('@/api/tickets')
                   const t = await getTicket(q)
                   navigate({ to: '/tickets/$id', params: { id: t.id } })
-                } catch {
-                  // not a valid tracking number / UUID — fall through to search results
+                } catch (err) {
+                  // DESIGN.md's "Ticket Search" says this shows an inline
+                  // error. It used to swallow every failure — a mistyped
+                  // number, a ticket outside this staff member's scope and a
+                  // server fault all looked identical, which is to say they
+                  // looked like the button doing nothing.
+                  const { status, message } = apiRefusal(err)
+                  setJumpError(
+                    status === 404 ? `No ticket matches "${q}".`
+                    : message ? message
+                    : `That ticket could not be opened${status ? ` (error ${status})` : ''}.`,
+                  )
                 }
               }}
             >
@@ -226,6 +267,10 @@ export function TicketListPage() {
             </Button>
           )}
         </div>
+
+        {jumpError && (
+          <p role="alert" className="text-sm text-red-600">{jumpError}</p>
+        )}
 
         {/* Active status filter chip */}
         {statusFilter && (() => {
@@ -265,6 +310,7 @@ export function TicketListPage() {
 
         {/* Bulk action bar */}
         {someSelected && isStaffOrAdmin && (
+          <div className="space-y-2">
           <div className="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
             <span className="text-blue-700 font-medium">{selectedIds.size} selected</span>
             <select
@@ -287,10 +333,14 @@ export function TicketListPage() {
             <button
               type="button"
               className="ml-auto text-xs text-gray-500 hover:text-gray-700"
-              onClick={() => setSelectedIds(new Set())}
+              onClick={() => { setSelectedIds(new Set()); setBulkError('') }}
             >
               Clear selection
             </button>
+          </div>
+          {bulkError && (
+            <p role="alert" className="text-sm text-red-600">{bulkError}</p>
+          )}
           </div>
         )}
 
@@ -314,6 +364,7 @@ export function TicketListPage() {
                     <th className="w-8 px-3 py-2">
                       <input
                         type="checkbox"
+                        aria-label="Select every ticket on this page"
                         className="h-4 w-4 rounded border-gray-300"
                         checked={allSelected}
                         onChange={toggleAll}
@@ -340,6 +391,7 @@ export function TicketListPage() {
                         <td className="w-8 px-3 py-2" onClick={e => e.stopPropagation()}>
                           <input
                             type="checkbox"
+                            aria-label={`Select ticket ${t.tracking_number}`}
                             className="h-4 w-4 rounded border-gray-300"
                             checked={selectedIds.has(t.id)}
                             onChange={() => toggleOne(t.id)}
@@ -350,7 +402,19 @@ export function TicketListPage() {
                         {t.tracking_number}
                       </td>
                       <td className="px-4 py-2 font-medium text-gray-900 max-w-xs truncate">
-                        {t.subject}
+                        {/* A real link, not just a row click. The row was a
+                            <tr onClick>, which no amount of tabbing reaches,
+                            so a keyboard-only user had no way into a ticket
+                            at all — and a reporting user had no way in by any
+                            route, since "Jump to ticket" is staff-only.
+                            Anchors also give middle-click and copy-link. */}
+                        <Link
+                          to="/tickets/$id"
+                          params={{ id: t.id }}
+                          className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                        >
+                          {t.subject}
+                        </Link>
                       </td>
                       <td className="px-4 py-2">
                         {status ? (
