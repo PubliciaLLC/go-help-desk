@@ -1464,9 +1464,15 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 ## SLA Tracking (v1)
 
 This section describes what runs. SLA tracking is off until an operator turns
-it on from **Admin → Settings → Features**, and `SLA_ENABLED=true` in the
-environment pre-enables it at first start; the setting is read live, so the
+it on from **Admin → Settings → Features**. The setting is read live, so the
 toggle takes effect without a restart.
+
+`SLA_ENABLED=true` in the environment switches that setting on at **every**
+start, not only the first. It only ever switches it on and never off, so an
+unset variable cannot disable a feature an administrator enabled — but an
+administrator who turns the toggle off while the variable is still set will
+find it on again after the next restart. Treat it as "this instance has SLA
+tracking" rather than as a default.
 
 ### SLA Policies
 
