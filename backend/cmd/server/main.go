@@ -79,6 +79,10 @@ func main() {
 // regardless of interval.
 const slaSweepInterval = time.Minute
 
+// autoCloseBatch is the page size for the auto-close sweep. Resolved tickets
+// past the reopen window flip to Closed on each tick.
+const autoCloseBatch = 500
+
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -331,6 +335,31 @@ func run() error {
 			}
 		}()
 	}
+
+	// Resolved tickets past the reopen window flip to Closed here, not on read:
+	// DESIGN.md → Ticket Lifecycle → Auto-close scheduling. Five minutes because
+	// the window is denominated in days; the interval is not a setting.
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				// Read per tick, never cached: the window is "as configured at
+				// the time the sweep runs".
+				days := adminSvc.ReopenWindowDays(sweepCtx)
+				n, err := ticketSvc.AutoClose(sweepCtx, days, autoCloseBatch)
+				if err != nil {
+					slog.WarnContext(sweepCtx, "auto-closing resolved tickets failed", "closed", n, "error", err)
+				}
+				if n > 0 {
+					slog.InfoContext(sweepCtx, "auto-closed resolved tickets", "count", n, "reopen_window_days", days)
+				}
+			}
+		}
+	}()
 
 	httpSrv := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort),

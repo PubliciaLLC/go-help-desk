@@ -203,8 +203,27 @@ func (f *fakeStore) ListAll(context.Context, int, int) ([]ticket.Ticket, error) 
 func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
-func (f *fakeStore) ListResolvedBefore(context.Context, time.Time, int) ([]ticket.Ticket, error) {
-	return nil, nil
+func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
+	// Filter: ResolvedAt != nil && ResolvedAt < before && ClosedAt == nil
+	// Sort by ResolvedAt ascending, apply limit.
+	var candidates []ticket.Ticket
+	for _, t := range f.tickets {
+		if t.ResolvedAt != nil && t.ResolvedAt.Before(before) && t.ClosedAt == nil {
+			candidates = append(candidates, t)
+		}
+	}
+	// Sort by ResolvedAt ascending (earliest first).
+	for i := 0; i < len(candidates)-1; i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].ResolvedAt.Before(*candidates[i].ResolvedAt) {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
 }
 func (f *fakeStore) SearchByReporter(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil

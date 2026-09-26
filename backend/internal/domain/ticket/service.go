@@ -792,7 +792,6 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 // Close transitions a ticket to Closed. Used by the auto-close scheduler and
 // admin overrides. It does NOT call CanTransitionStatus — the caller decides
 // whether this is authorised.
-// Close closes a ticket.
 //
 // It deliberately does NOT consult CanTransitionStatus: the auto-close
 // scheduler has no actor, and the authorisation decision belongs to the
@@ -806,8 +805,46 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 // close showed as "System" in the timeline and wrote no audit entry at all,
 // while DESIGN.md requires history to name whoever made the change.
 func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
+	_, err := s.close(ctx, ticketID, actor, nil)
+	return err
+}
+
+// AutoClose closes every ticket whose Resolved state has outlived the reopen
+// window, attributed to SystemActor. One page per call; rows that close or
+// are reopened both fall out of the query, so the next call continues.
+// Returns the number closed and the joined per-ticket errors; a failure on
+// one ticket does not stop the others.
+func (s *Service) AutoClose(ctx context.Context, reopenWindowDays, limit int) (int, error) {
+	cutoff := time.Now().AddDate(0, 0, -reopenWindowDays)
+	candidates, err := s.store.ListResolvedBefore(ctx, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("listing tickets to auto-close: %w", err)
+	}
+	stillEligible := func(t Ticket) bool {
+		return t.StatusID == s.sys.resolvedID && t.ResolvedAt != nil && t.ResolvedAt.Before(cutoff)
+	}
+	var closed int
+	var errs []error
+	for _, c := range candidates {
+		n, err := s.close(ctx, c.ID, SystemActor, stillEligible)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("auto-closing %s: %w", c.TrackingNumber, err))
+			continue
+		}
+		closed += n
+	}
+	return closed, errors.Join(errs...)
+}
+
+// close is Close's body. eligible, when non-nil, is re-evaluated on the row
+// read under FOR UPDATE; a ticket that no longer qualifies is left untouched:
+// no write, no history row, no notification. Returns (0, error) if skipped
+// or already closed, (1, error) if successfully closed.
+func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, eligible func(Ticket) bool) (int, error) {
 	var t Ticket
+	var closed int
 	alreadyClosed := false
+	skipped := false
 	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
@@ -815,6 +852,13 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		t, err = st.GetByIDForUpdate(ctx, ticketID)
 		if err != nil {
 			return err
+		}
+		if eligible != nil && !eligible(t) {
+			// Listed as a candidate, then moved by someone else before the lock was
+			// taken. The row that decided this is the row being written, so the
+			// decision holds. Same skip path as alreadyClosed: no write, no dispatch.
+			skipped = true
+			return nil
 		}
 		if t.StatusID == s.sys.closedID {
 			// Already closed. Without this, re-closing appends a duplicate
@@ -850,15 +894,15 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
 			return fmt.Errorf("revoking guest access: %w", err)
 		}
+		closed = 1
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 
-	// Re-closing dispatches nothing, same as before: the check moved under the
-	// lock but its meaning did not.
-	if alreadyClosed {
-		return nil
+	// Skip and re-close dispatch nothing, same as before.
+	if skipped || alreadyClosed {
+		return 0, nil
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -867,7 +911,7 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		ActorID:    actor.UserID,
 		OccurredAt: now,
 	})
-	return nil
+	return closed, nil
 }
 
 // Reopen transitions a Closed ticket back to the target status. Staff/Admin only.
