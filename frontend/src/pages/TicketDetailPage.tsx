@@ -15,6 +15,7 @@ import {
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
+import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listStatuses, listUsers } from '@/api/admin'
@@ -619,6 +620,8 @@ export function TicketDetailPage() {
                 {isStaffOrAdmin && <TagInput ticketId={id} readonly={false} />}
               </CardContent>
             </Card>
+
+            {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
 
             {attachments.length > 0 && (
               <Card>

@@ -1,6 +1,6 @@
 export type Role = 'admin' | 'staff' | 'user'
 export type Priority = 'critical' | 'high' | 'medium' | 'low'
-export type LinkType = 'related_to' | 'parent_of' | 'child_of' | 'caused_by' | 'duplicate_of'
+export type LinkType = 'related_to' | 'parent_child' | 'caused_by' | 'duplicate_of'
 
 export interface User {
   id: string
