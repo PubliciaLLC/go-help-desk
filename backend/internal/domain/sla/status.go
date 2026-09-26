@@ -69,9 +69,12 @@ func StatusFor(rec Record, p Policy, t ticket.Ticket, now time.Time) Status {
 // when the target was met (see Record's doc comment and CLAUDE.md).
 //
 // frozenSeconds is nil only for a record whose target was met before that
-// column existed; that case falls back to the old live recompute, which is
-// wrong in exactly the way this function exists to fix, but only for rows a
-// one-time migration backfill did not reach.
+// column existed, or whose met instant migration 000028 could only estimate
+// (no fact anywhere backed it, so nothing is frozen for it — see that
+// migration's LIMITS section, #246); that case falls back to the old live
+// recompute, which is wrong in exactly the way this function exists to fix,
+// but only for rows a one-time migration backfill did not reach or could not
+// exactly place.
 func targetStatus(metAt *time.Time, frozenSeconds *int64, targetMin int, t ticket.Ticket, now time.Time) TargetStatus {
 	target := time.Duration(targetMin) * time.Minute
 

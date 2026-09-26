@@ -383,7 +383,12 @@ func TestMigration_SLABackfillReachesClosedAtStillNullRows(t *testing.T) {
 	require.NotNil(t, rec.ResolvedAt,
 		"#231: the SLA backfill must now reach this row once closed_at exists, in the same migration run")
 	require.True(t, rec.ResolvedAt.Equal(*repaired.ClosedAt))
-	require.NotNil(t, rec.ResolutionElapsedAtMetSeconds)
+	// #246: this fixture's resolution instant is estimated (no fact backs
+	// it — see the #243 regression pin below), so S1 deliberately leaves
+	// the frozen elapsed number NULL rather than filling it with a
+	// number derived from an estimate: that NULL is the durable marker a
+	// second migration run reads to know this row must never be stamped.
+	require.Nil(t, rec.ResolutionElapsedAtMetSeconds)
 	require.NotNil(t, rec.FirstResponseAt, "#226(a) cascades from the newly-backfilled resolved_at")
 
 	// #243 regression pin: this fixture has no history and no fact for its

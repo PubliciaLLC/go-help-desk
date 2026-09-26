@@ -41,9 +41,12 @@ type Record struct {
 	// — a reading that is supposed to be final. targetStatus reads this
 	// column instead, for exactly that reason.
 	//
-	// nil only for a record whose target was met before this column existed;
-	// targetStatus falls back to the old (reopenable-to-the-same-bug) live
-	// recompute for those, never for a fresh RecordFirstResponse/RecordResolved.
+	// nil only for a record whose target was met before this column existed,
+	// or whose met instant migration 000028 could only estimate (no fact
+	// anywhere backed it, so no number is frozen — see that migration's
+	// LIMITS section, #246); targetStatus falls back to the old
+	// (reopenable-to-the-same-bug) live recompute for those, never for a
+	// fresh RecordFirstResponse/RecordResolved.
 	ResponseElapsedAtMetSeconds   *int64 `json:"response_elapsed_at_met_seconds,omitempty"`
 	ResolutionElapsedAtMetSeconds *int64 `json:"resolution_elapsed_at_met_seconds,omitempty"`
 }
@@ -96,7 +99,9 @@ func IsResolutionBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bo
 		// reverse, but it means this and the frozen indicator could disagree
 		// (#218). Falls back to the live recompute only for a record whose
 		// target was met before this column existed (a one-time migration
-		// backfill that did not reach every row).
+		// backfill that did not reach every row), or whose met instant
+		// migration 000028 could only estimate (#246) — see Record's doc
+		// comment.
 		if r.ResolutionElapsedAtMetSeconds != nil {
 			return time.Duration(*r.ResolutionElapsedAtMetSeconds)*time.Second > target
 		}

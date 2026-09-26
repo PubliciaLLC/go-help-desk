@@ -3,12 +3,14 @@ package database_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
@@ -459,4 +461,79 @@ func TestMigration_AbortsWhenSystemStatusRenamedAndNameReused(t *testing.T) {
 		"the failure should name which system status it could not find, to make the cause obvious")
 	require.Contains(t, execErr.Error(), "SYSTEM",
 		"the failure should make clear this is about the SYSTEM status specifically, not merely the name")
+}
+
+// TestMigration_028LocksStatusesBeforeGuard is a structural pin for #248: the
+// LOCK TABLE statement must be the very first statement in the file, strictly
+// before the guard's own SELECTs — a lock taken any later would leave a
+// window between the guard's snapshot and the lock being granted, in which a
+// still-running old app instance could commit a rename the guard never saw.
+// This is a structural check rather than a behavioural ordering test: proving
+// the ordering behaviourally would mean committing a rename of a system
+// status into the shared test database (see TestMigration_028HoldsStatuses…
+// below for why that is out of bounds here — it would race every other
+// package's tests running against the same database at the same time).
+func TestMigration_028LocksStatusesBeforeGuard(t *testing.T) {
+	sqlBytes, err := os.ReadFile("migrations/000028_repair_resolved_status_invariant.up.sql")
+	require.NoError(t, err)
+
+	var stripped strings.Builder
+	for _, line := range strings.Split(string(sqlBytes), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		stripped.WriteString(line)
+		stripped.WriteByte('\n')
+	}
+
+	stmts := splitSQLStatements(stripped.String())
+	require.NotEmpty(t, stmts, "the migration file must contain at least one statement")
+	require.Equal(t, "LOCK TABLE statuses IN SHARE MODE", strings.TrimSpace(stmts[0]),
+		"#248: LOCK TABLE must be the first statement in the file, before the guard's DO block")
+}
+
+// TestMigration_028HoldsStatusesLockUntilCommit pins #248's actual locking
+// behaviour against real Postgres: migration 000028's SHARE lock on statuses
+// must be held for the rest of its transaction, so a concurrent rename of a
+// system status cannot commit — and therefore cannot land between the
+// guard's snapshot and this migration's own destructive statements — until
+// this transaction itself commits or rolls back.
+//
+// This runs 027+028 in one transaction and leaves it OPEN (never committed,
+// only rolled back at the end — nothing this test does is ever persisted),
+// then attempts a rename of the system Closed status from a second,
+// independent connection with a short lock_timeout. The rename's implicit
+// ROW EXCLUSIVE lock on statuses conflicts with the first transaction's SHARE
+// lock, so it must block and then time out, rather than succeed.
+func TestMigration_028HoldsStatusesLockUntilCommit(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+
+	tx1, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx1.Rollback() }()
+	runMigration027And028(t, ctx, tx1)
+
+	// A second, independent connection from the pool — tx1's own connection
+	// is busy holding its transaction open.
+	tx2, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx2.Rollback() }()
+
+	_, err = tx2.ExecContext(ctx, `SET LOCAL lock_timeout = '200ms'`)
+	require.NoError(t, err)
+
+	_, err = tx2.ExecContext(ctx, `UPDATE statuses SET name = name WHERE kind = 'system' AND name = 'Closed'`)
+	require.Error(t, err,
+		"#248: tx1's SHARE lock on statuses, held until it commits or rolls back, must block this UPDATE's implicit ROW EXCLUSIVE lock until lock_timeout fires")
+
+	var pgErr *pgconn.PgError
+	require.True(t, errors.As(err, &pgErr), "expected a Postgres error, got: %v", err)
+	require.Equal(t, "55P03", pgErr.Code,
+		"expected lock_not_available (the lock_timeout firing while waiting on tx1's lock), got: %v", err)
+
+	// Neither transaction is committed: tx1's LOCK and repairs, and tx2's
+	// (never applied, since it errored) rename attempt, are both discarded by
+	// the deferred rollbacks above.
 }

@@ -8,8 +8,14 @@
 -- migration 000027's own earlier pass had already frozen but never stamped
 -- (#240), plus a legacy sla_records resolution recovered from the earliest
 -- recorded resolve or close, including on a ticket since reopened (#242,
--- #244), recorded without a breach stamp where only the updated_at upper
--- bound was available (#243) — were bugs, not state worth restoring, and
--- there is no way to recover which rows had which stale or missing values
--- before the up migration ran. Left as a no-op rather than silently
--- reintroducing the invariant violations the up migration fixed.
+-- #244), recorded without a frozen elapsed reading or breach stamp where
+-- only the updated_at upper bound was available (#243, #246) — were bugs,
+-- not state worth restoring, and there is no way to recover which rows had
+-- which stale or missing values before the up migration ran. Left as a
+-- no-op rather than silently reintroducing the invariant violations the up
+-- migration fixed.
+--
+-- #248: this migration also takes LOCK TABLE statuses IN SHARE MODE as its
+-- first statement, for the duration of its own transaction only — no lock
+-- survives past that transaction's commit, so this down migration (also a
+-- no-op) needs no lock of its own and takes none.

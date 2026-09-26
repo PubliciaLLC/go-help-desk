@@ -353,11 +353,16 @@ func TestMigration_SLABackfillPreservesReopenedTicketsResolution(t *testing.T) {
 	require.True(t, recStale.ResolvedAt.Equal(T.Add(10*time.Minute)))
 }
 
-// TestMigration_EstimatedResolutionFreezesButNeverStamps pins #243(a): a
-// resolution instant recovered only from the updated_at fallback (no fact
-// anywhere) must still get sla_records.resolved_at, a frozen elapsed reading,
-// and a first_response_at — but never a breach stamp.
-func TestMigration_EstimatedResolutionFreezesButNeverStamps(t *testing.T) {
+// TestMigration_EstimatedResolutionIsRecordedButNeitherFrozenNorStamped pins
+// #243(a) and #246: a resolution instant recovered only from the updated_at
+// fallback (no fact anywhere) must still get sla_records.resolved_at and a
+// first_response_at — but, after #246, neither a frozen elapsed reading nor
+// a breach stamp. (Renamed from …FreezesButNeverStamps: before #246 this
+// migration froze an estimated instant's elapsed reading, which is exactly
+// what made a second run of the file unable to tell "already handled"
+// apart from "needs handling", and go on to stamp a false breach on rerun —
+// see the migration's LIMITS section.)
+func TestMigration_EstimatedResolutionIsRecordedButNeitherFrozenNorStamped(t *testing.T) {
 	f := newMigration028Fixture(t, "backfill-estimated")
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	T := now.Add(-4 * time.Hour)
@@ -390,14 +395,28 @@ func TestMigration_EstimatedResolutionFreezesButNeverStamps(t *testing.T) {
 	recClosed := f.getRecord(t, closedNoHistory.ID)
 	require.NotNil(t, recClosed.ResolvedAt)
 	require.True(t, recClosed.ResolvedAt.Equal(updatedAt))
-	require.NotNil(t, recClosed.ResolutionElapsedAtMetSeconds)
-	require.Equal(t, int64(10800), *recClosed.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, recClosed.ResolutionElapsedAtMetSeconds,
+		"#246: an estimated instant must never be frozen — the NULL is the durable marker a second run reads")
 	require.Nil(t, recClosed.ResolutionBreachedAt, "#243: an estimated instant must never be stamped, however late it reads")
 	require.NotNil(t, recClosed.FirstResponseAt)
 	require.True(t, recClosed.FirstResponseAt.Equal(updatedAt))
-	require.NotNil(t, recClosed.ResponseElapsedAtMetSeconds)
-	require.Equal(t, int64(10800), *recClosed.ResponseElapsedAtMetSeconds)
+	require.Nil(t, recClosed.ResponseElapsedAtMetSeconds,
+		"#246: same, for the #226(a) response cascade — S5's gate must exclude S4's copy of an estimated instant")
 	require.Nil(t, recClosed.ResponseBreachedAt, "#243: same, for the #226(a) response cascade")
+
+	// The live indicator must still read this as a late (red) resolution, and
+	// IsResolutionBreached must still agree, via the live-recompute fallback
+	// targetStatus/IsResolutionBreached use for a NULL frozen elapsed value —
+	// "no stamp" must never mean "reads as on time" (DESIGN.md allows red
+	// without a stamp; it does not allow green instead of red).
+	statusClosed := sla.StatusFor(recClosed, f.policy, tkClosed, now.Add(30*24*time.Hour))
+	require.Equal(t, sla.Red, statusClosed.Resolution.Color)
+	require.Equal(t, 180, statusClosed.Resolution.ElapsedMin, "3h elapsed against a 30-minute target")
+	require.NotNil(t, statusClosed.Resolution.MetAt)
+	require.True(t, statusClosed.Resolution.MetAt.Equal(updatedAt))
+	require.Equal(t, sla.Red, statusClosed.Response.Color)
+	require.True(t, sla.IsResolutionBreached(recClosed, f.policy, tkClosed, now.Add(30*24*time.Hour)),
+		"IsResolutionBreached must fall back to the same live recompute as the indicator, not read NULL as met")
 
 	// resolvedNoHistory
 	tkResolved := f.getTicket(t, resolvedNoHistory.ID)
@@ -406,26 +425,278 @@ func TestMigration_EstimatedResolutionFreezesButNeverStamps(t *testing.T) {
 	recResolved := f.getRecord(t, resolvedNoHistory.ID)
 	require.NotNil(t, recResolved.ResolvedAt)
 	require.True(t, recResolved.ResolvedAt.Equal(updatedAt))
+	require.Nil(t, recResolved.ResolutionElapsedAtMetSeconds, "#246: estimated, never frozen")
 	require.Nil(t, recResolved.ResolutionBreachedAt)
+	require.Nil(t, recResolved.ResponseElapsedAtMetSeconds, "#246: estimated, never frozen")
 	require.Nil(t, recResolved.ResponseBreachedAt)
 	candidates, err := f.sls.ListBreachCandidates(f.ctx, now)
 	require.NoError(t, err)
 	for _, id := range candidates {
 		require.NotEqual(t, resolvedNoHistory.ID, id,
-			"once backfilled, this ticket must no longer be a live breach candidate")
+			"once backfilled (resolved_at and first_response_at both set), this ticket must no longer be a live breach candidate, even with no frozen elapsed number")
+		require.NotEqual(t, closedNoHistory.ID, id, "same, for the Closed fixture")
 	}
 
-	// estimatedWithRealLateResponse: the S6 equality gate lets the REAL late
-	// response stamp a breach, even though the resolution itself is estimated.
+	// estimatedWithRealLateResponse: the S5 equality gate lets the REAL late
+	// response freeze and stamp normally, even though the resolution itself
+	// is estimated.
 	recMixed := f.getRecord(t, estimatedWithRealLateResponse.ID)
 	require.NotNil(t, recMixed.FirstResponseAt)
 	require.True(t, recMixed.FirstResponseAt.Equal(realFirstResponseAt), "S4 must not overwrite an existing first_response_at")
+	require.Nil(t, recMixed.ResolutionElapsedAtMetSeconds, "the resolution instant itself is still only estimated")
+	require.Nil(t, recMixed.ResolutionBreachedAt, "the resolution instant itself is still only estimated")
+	require.NotNil(t, recMixed.ResponseElapsedAtMetSeconds,
+		"S5's gate must NOT exclude a REAL first_response_at merely because the ticket's resolution is estimated")
+	require.Equal(t, int64(7200), *recMixed.ResponseElapsedAtMetSeconds)
 	require.NotNil(t, recMixed.ResponseBreachedAt, "a REAL late response must be stamped even on an estimated-resolution row")
 	require.True(t, recMixed.ResponseBreachedAt.Equal(realFirstResponseAt))
-	require.Nil(t, recMixed.ResolutionBreachedAt, "the resolution instant itself is still only estimated")
 
 	// Cleanup check: the scratch temp table must not survive the migration.
 	var regclass sql.NullString
 	require.NoError(t, f.tx.QueryRowContext(f.ctx, `SELECT to_regclass('pg_temp.m28_sla_resolution')::text`).Scan(&regclass))
 	require.False(t, regclass.Valid, "m28_sla_resolution must be dropped by the end of the migration")
+}
+
+// TestMigration_SLABackfillClosedTicketUsesEarliestResolveOrClose pins #247:
+// C1's close arm must be COMPARED against the resolve arm via a flat LEAST,
+// not consulted only when the resolve arm is NULL. Before this fix, a ticket
+// that resolved late, was reopened, and was resolved again on time before
+// being re-closed would record its LATER (on-time) resolve instead of its
+// earlier (late) close — turning what should read as a breach into a false
+// on-time record, and worse, flipping it on a later migration run if the
+// on-time resolve fact were added to history only after the ticket was
+// already closed once.
+func TestMigration_SLABackfillClosedTicketUsesEarliestResolveOrClose(t *testing.T) {
+	f := newMigration028Fixture(t, "backfill-close-le")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	T := now.Add(-4 * time.Hour)
+
+	// closeReopenResolveClose: Closed, resolved_at T+120m, closed_at T+150m
+	// (both facts already stamped on the tickets row — R1/R4 must not need to
+	// touch them for C1 to find the right instant). History: New@T,
+	// New->Closed@T+10m, Closed->InProgress@T+60m, InProgress->Resolved@T+120m,
+	// Resolved->Closed@T+150m. The issue's reproduction shape: pre-fix, the
+	// old COALESCE only consulted the close arm when the resolve arm (T+120m)
+	// was NULL, so it recorded T+120m — 7200s against a 30-minute target, a
+	// breach — even though the ticket was first (and validly) closed at
+	// T+10m, on time, before ever being reopened and resolved again.
+	closedAt1 := T.Add(150 * time.Minute)
+	resolvedAt1 := T.Add(120 * time.Minute)
+	closeReopenResolveClose := f.seed(t, "close reopen resolve close", f.closedSt.ID, T, now, &resolvedAt1, &closedAt1, nil)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+
+	// closeReopenResolveCloseHistoryOnly: identical history, but NEITHER
+	// ticket column is stamped — proves C1 reads the fact from history alone,
+	// and R4 still recovers closed_at (T+150m) independently.
+	closeReopenResolveCloseHistoryOnly := f.seed(t, "close reopen resolve close, history only", f.closedSt.ID, T, now, nil, nil, nil)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveCloseHistoryOnly.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveCloseHistoryOnly.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveCloseHistoryOnly.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveCloseHistoryOnly.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveCloseHistoryOnly.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+
+	// closeReopenResolveStillResolved (#238 sibling control): currently
+	// Resolved (never re-closed), resolved_at T+120m. The close arm must be
+	// gated off entirely (status is Resolved, not Closed), so this must be
+	// UNCHANGED by #247: T+120m, late, both stamps.
+	resolvedAt2 := T.Add(120 * time.Minute)
+	closeReopenResolveStillResolved := f.seed(t, "close reopen resolve, still resolved", f.resolvedSt.ID, T, now, &resolvedAt2, nil, nil)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveStillResolved.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveStillResolved.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveStillResolved.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveStillResolved.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+
+	// closeReopenResolveReopened (#239/#244 control): In Progress again (the
+	// resolve was itself reopened, never re-closed). resolved_at NULL on the
+	// tickets row (R1 clears it). The close arm must be gated off (status is
+	// In Progress, not Closed), so C1 must still use the resolve arm: T+120m,
+	// late, both stamps — exactly as #244 already requires, now proven
+	// alongside a close earlier in the same history.
+	closeReopenResolveReopened := f.seed(t, "close reopen resolve reopened", f.inProgressSt.ID, T, now, nil, nil, nil)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveReopened.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveReopened.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveReopened.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveReopened.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveReopened.ID, &f.resolvedSt.ID, f.inProgressSt.ID, T.Add(130*time.Minute))
+
+	// closeReopenCloseOnly (the issue's comparison case): Closed, never
+	// resolved at all — closed, reopened, and closed again. The resolve arm
+	// is NULL throughout (LEAST ignores it), so C1 must fall through to the
+	// close arm: T+10m, on time, no stamps.
+	closeReopenCloseOnly := f.seed(t, "close reopen close only", f.closedSt.ID, T, now, nil, nil, nil)
+	seedHistory(t, f.ctx, f.ts, closeReopenCloseOnly.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenCloseOnly.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenCloseOnly.ID, &f.inProgressSt.ID, f.closedSt.ID, T.Add(180*time.Minute))
+
+	runMigration027And028(t, f.ctx, f.tx)
+
+	rec1 := f.getRecord(t, closeReopenResolveClose.ID)
+	require.NotNil(t, rec1.ResolvedAt)
+	require.True(t, rec1.ResolvedAt.Equal(T.Add(10*time.Minute)),
+		"#247: LEAST must pick the earlier CLOSE fact over the later resolve fact")
+	require.NotNil(t, rec1.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *rec1.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, rec1.ResolutionBreachedAt, "on time: no breach")
+	require.Nil(t, rec1.ResponseBreachedAt)
+	tk1 := f.getTicket(t, closeReopenResolveClose.ID)
+	require.NotNil(t, tk1.ResolvedAt, "R2 does not clear an already-set resolved_at on a Closed ticket")
+	require.True(t, tk1.ResolvedAt.Equal(resolvedAt1), "tickets.resolved_at is untouched by #247 — only the SLA record's instant changes")
+	require.NotNil(t, tk1.ClosedAt)
+	require.True(t, tk1.ClosedAt.Equal(closedAt1))
+
+	rec1b := f.getRecord(t, closeReopenResolveCloseHistoryOnly.ID)
+	require.NotNil(t, rec1b.ResolvedAt)
+	require.True(t, rec1b.ResolvedAt.Equal(T.Add(10*time.Minute)), "same result, recovered purely from history")
+	require.Nil(t, rec1b.ResolutionBreachedAt)
+	require.Nil(t, rec1b.ResponseBreachedAt)
+	tk1b := f.getTicket(t, closeReopenResolveCloseHistoryOnly.ID)
+	require.NotNil(t, tk1b.ClosedAt, "R4 must recover closed_at from history when the ticket row never had one")
+	require.True(t, tk1b.ClosedAt.Equal(T.Add(150*time.Minute)))
+
+	rec2 := f.getRecord(t, closeReopenResolveStillResolved.ID)
+	require.NotNil(t, rec2.ResolvedAt)
+	require.True(t, rec2.ResolvedAt.Equal(resolvedAt2), "#238 sibling: unaffected by #247 — the close arm is gated off for a Resolved ticket")
+	require.NotNil(t, rec2.ResolutionBreachedAt, "late: must still stamp")
+	require.True(t, rec2.ResolutionBreachedAt.Equal(resolvedAt2))
+	require.NotNil(t, rec2.ResponseBreachedAt)
+
+	rec3 := f.getRecord(t, closeReopenResolveReopened.ID)
+	require.NotNil(t, rec3.ResolvedAt)
+	require.True(t, rec3.ResolvedAt.Equal(T.Add(120*time.Minute)), "#239/#244: the close arm is gated off for a non-Closed ticket, even one closed earlier in its history")
+	require.NotNil(t, rec3.ResolutionBreachedAt, "late: must still stamp")
+	require.NotNil(t, rec3.ResponseBreachedAt)
+
+	rec4 := f.getRecord(t, closeReopenCloseOnly.ID)
+	require.NotNil(t, rec4.ResolvedAt)
+	require.True(t, rec4.ResolvedAt.Equal(T.Add(10*time.Minute)), "never resolved: the close arm is the only source, LEAST falls through to it")
+	require.Nil(t, rec4.ResolutionBreachedAt)
+	require.Nil(t, rec4.ResponseBreachedAt)
+}
+
+// TestMigration_028SecondRunChangesNothing pins #246: running migration
+// 000028's up.sql a second time against data the FIRST run already committed
+// must be a complete no-op — the more likely re-run path in practice is not
+// `migrate force` but `migrate down 1` (000028's down is comment-only)
+// followed by `up`, which re-executes this exact file against already-repaired
+// data. Before the fix, the second run's S2/S5 would freeze the elapsed
+// number for every row the first run had deliberately left estimated (and
+// therefore unfrozen), and S3/S6 would then stamp a false breach from that
+// newly-frozen number.
+func TestMigration_028SecondRunChangesNothing(t *testing.T) {
+	f := newMigration028Fixture(t, "second-run")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	T := now.Add(-6 * time.Hour)
+	lateAt := T.Add(3 * time.Hour) // 180min, past the 30-minute target
+	onTimeAt := T.Add(10 * time.Minute)
+
+	// closedNoHistory / resolvedNoHistory: estimated, late — no fact anywhere,
+	// C2 estimates from updated_at.
+	closedNoHistory := f.seed(t, "closed no history", f.closedSt.ID, T, lateAt, nil, nil, nil)
+	resolvedNoHistory := f.seed(t, "resolved no history", f.resolvedSt.ID, T, lateAt, nil, nil, nil)
+
+	// estimatedWithRealLateResponse: estimated resolution, but a REAL late
+	// first_response_at already on the sla_records row before either
+	// migration runs.
+	realFirstResponseAt := T.Add(2 * time.Hour)
+	estimatedWithRealLateResponse := f.seed(t, "closed no history, real late response", f.closedSt.ID, T, lateAt, nil, nil, nil)
+	_, err := f.tx.ExecContext(f.ctx,
+		`UPDATE sla_records SET first_response_at = $2 WHERE ticket_id = $1`,
+		estimatedWithRealLateResponse.ID, realFirstResponseAt)
+	require.NoError(t, err)
+
+	// closedAfterLateUnstampedResolve: a genuine late FACT, recovered from
+	// history — must stamp on run 1, and the stamp must survive run 2
+	// untouched.
+	closedAfterLateUnstampedResolve := f.seed(t, "closed after late unstamped resolve", f.closedSt.ID, T, now, nil, nil, nil)
+	seedHistory(t, f.ctx, f.ts, closedAfterLateUnstampedResolve.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, closedAfterLateUnstampedResolve.ID, &f.newSt.ID, f.resolvedSt.ID, T.Add(1*time.Hour))
+	seedHistory(t, f.ctx, f.ts, closedAfterLateUnstampedResolve.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(2*time.Hour))
+
+	// onTimeFact: currently Resolved, on-time fact — frozen, no stamp, must
+	// stay that way.
+	onTimeFactAt := onTimeAt
+	onTimeFact := f.seed(t, "on time fact", f.resolvedSt.ID, T, now, &onTimeFactAt, nil, nil)
+
+	// reopenedOnTime (#244 shape): In Progress, resolved_at on time, no
+	// history — both targets met and frozen, nothing outstanding.
+	reopenedAt := onTimeAt
+	reopenedOnTime := f.seed(t, "reopened on time", f.inProgressSt.ID, T, now, &reopenedAt, nil, nil)
+
+	// preFrozenBy000027: simulates a row an EARLIER deployment's 000027 had
+	// already frozen (sla_records.resolved_at set before either migration in
+	// this test runs) — late, so 000028's S3 must stamp it on run 1, and that
+	// stamp must survive run 2 untouched.
+	preFrozenAt := T.Add(1 * time.Hour) // late
+	preFrozenBy000027 := f.seed(t, "pre-frozen by 000027", f.resolvedSt.ID, T, now, &preFrozenAt, nil, nil)
+	_, err = f.tx.ExecContext(f.ctx,
+		`UPDATE sla_records SET resolved_at = $2 WHERE ticket_id = $1`,
+		preFrozenBy000027.ID, preFrozenAt)
+	require.NoError(t, err)
+
+	// The #247 close→reopen→resolve→close row.
+	closeReopenResolveClose := f.seed(t, "close reopen resolve close", f.closedSt.ID, T, now, nil, nil, nil)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, closeReopenResolveClose.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+
+	ids := []uuid.UUID{
+		closedNoHistory.ID, resolvedNoHistory.ID, estimatedWithRealLateResponse.ID,
+		closedAfterLateUnstampedResolve.ID, onTimeFact.ID, reopenedOnTime.ID,
+		preFrozenBy000027.ID, closeReopenResolveClose.ID,
+	}
+
+	runMigration027And028(t, f.ctx, f.tx)
+
+	type snapshot struct {
+		rec        sla.Record
+		statusID   uuid.UUID
+		resolvedAt *time.Time
+		closedAt   *time.Time
+	}
+	snap := func() map[uuid.UUID]snapshot {
+		out := make(map[uuid.UUID]snapshot, len(ids))
+		for _, id := range ids {
+			rec := f.getRecord(t, id)
+			tk := f.getTicket(t, id)
+			out[id] = snapshot{rec: rec, statusID: tk.StatusID, resolvedAt: tk.ResolvedAt, closedAt: tk.ClosedAt}
+		}
+		return out
+	}
+
+	first := snap()
+
+	// Explicit Nil asserts after run 1, so a failure below is readable rather
+	// than buried in a map-equality diff.
+	require.Nil(t, first[closedNoHistory.ID].rec.ResolutionBreachedAt)
+	require.Nil(t, first[closedNoHistory.ID].rec.ResponseBreachedAt)
+	require.Nil(t, first[closedNoHistory.ID].rec.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, first[resolvedNoHistory.ID].rec.ResolutionBreachedAt)
+	require.Nil(t, first[resolvedNoHistory.ID].rec.ResponseBreachedAt)
+	require.NotNil(t, first[closedAfterLateUnstampedResolve.ID].rec.ResolutionBreachedAt, "a real late fact must be stamped on run 1")
+	require.NotNil(t, first[preFrozenBy000027.ID].rec.ResolutionBreachedAt, "a row 000027 already froze must still be stamped by 028's S3 on run 1")
+
+	// Run 000028's down (comment-only — a no-op) and then its up again,
+	// against the SAME committed data, pinning the down/up re-run path.
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000028_repair_resolved_status_invariant.down.sql", nil)
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
+
+	second := snap()
+
+	require.Equal(t, first, second, "a second run of migration 000028 against already-committed data must change nothing (#246)")
+
+	// Explicit Nil asserts on both breach columns of the estimated rows after
+	// run 2 as well: the failure mode this test exists to catch is exactly
+	// these flipping from Nil to non-Nil.
+	require.Nil(t, second[closedNoHistory.ID].rec.ResolutionBreachedAt)
+	require.Nil(t, second[closedNoHistory.ID].rec.ResponseBreachedAt)
+	require.Nil(t, second[closedNoHistory.ID].rec.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, second[resolvedNoHistory.ID].rec.ResolutionBreachedAt)
+	require.Nil(t, second[resolvedNoHistory.ID].rec.ResponseBreachedAt)
+	require.Nil(t, second[estimatedWithRealLateResponse.ID].rec.ResolutionBreachedAt)
 }

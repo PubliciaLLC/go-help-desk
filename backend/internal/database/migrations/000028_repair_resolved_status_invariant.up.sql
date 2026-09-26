@@ -60,6 +60,23 @@
 -- this shape — if this guard were dropped, an upgrade could apply this
 -- migration on a database where 'New' is already broken in a way the running
 -- app would refuse to start against.
+
+-- #248: freeze the statuses table for the rest of this file. golang-migrate
+-- runs this file as one implicit READ COMMITTED transaction, so every
+-- statement below takes a fresh snapshot; without this, a rename committed
+-- by a still-running old app instance after the guard below passed would be
+-- visible to C1 and R1-R4's name-keyed joins (#208 through a timing path).
+-- SHARE conflicts with the ROW EXCLUSIVE lock any UPDATE/INSERT/DELETE on
+-- statuses takes, so: (1) this waits for any in-flight rename to commit or
+-- abort, (2) the guard's own snapshot, taken AFTER the lock is granted, sees
+-- it, and (3) no rename can commit until this transaction ends. Taken BEFORE
+-- the guard, not after: a lock taken after would leave the window between
+-- the guard's snapshot and the lock open. Top-level rather than inside the
+-- DO block so that running this file statement-by-statement in autocommit
+-- (x-multi-statement) fails loudly ("LOCK TABLE can only be used in
+-- transaction blocks") instead of silently releasing the lock per statement.
+LOCK TABLE statuses IN SHARE MODE;
+
 DO $$
 DECLARE
     n int;
@@ -82,7 +99,7 @@ END $$;
 
 -- ============================================================
 -- LIMITS: where this file's recovered instants come from, and which way
--- each can be wrong. Referenced by name from C1, C2, R2, R4, S3 and S6.
+-- each can be wrong. Referenced by name from C1, C2, R2, R4, S1, S3 and S5.
 --
 -- Two sources:
 --
@@ -119,13 +136,32 @@ END $$;
 --    fact about what happened, and this is not one. C2 marks these rows
 --    estimated, and S3/S6 read the mark.
 --
--- Accepted residual: an estimated row's frozen elapsed reading can exceed
--- its target with no stamp, so the staff-only indicator shows it red
--- (DESIGN.md allows red without a stamp). Nothing revisits it later: the
--- breach sweep only visits a record with an outstanding target, and S4
--- leaves no record with resolved_at set and first_response_at NULL. A future
--- repair pass that stamps "every frozen-late row with no stamp" (S3 without
--- its estimated gate) would turn these into false stamps. Do not write one.
+-- Accepted residual (#246): an estimated row's resolution_elapsed_at_met_seconds
+-- (and, when S4 copies the same instant, response_elapsed_at_met_seconds)
+-- stays NULL forever — S1 below deliberately never freezes a number for a
+-- row it marks estimated. That NULL is not "missing"; it is now the durable
+-- marker that tells a SECOND run of this file (or a rewind to 000027 and
+-- back) which rows were only ever estimated, so it must never be filled in
+-- later. The hazard this file must never reintroduce is a pass that freezes
+-- a number into that NULL: the moment a met target has BOTH a timestamp and
+-- a frozen elapsed reading, S3/S6 read it as a fact and stamp a breach from
+-- it, which is exactly the false-stamp-on-rerun bug #246 was filed against.
+--
+-- The residual this leaves: targetStatus (status.go) reads MetAt set but
+-- frozenSeconds NULL as "no frozen number yet" and falls back to a live
+-- Elapsed(t, *MetAt) — for an estimated row that recompute uses the ticket's
+-- CURRENT sla_paused_seconds, which only grows. So if an estimated ticket is
+-- reopened after this migration runs and later passes through Pending
+-- again, its live reading can drift toward green as more pause time
+-- accumulates, breaking DESIGN.md's "once a target's timestamp is set, that
+-- target's indicator stops updating" for estimated rows only. The drift is
+-- always in the understating direction, applied to a reading that was
+-- already an upper bound (see above), and it can never produce a breach
+-- stamp: IsResolutionBreached/IsResponseBreached fall back to the identical
+-- live recompute for the same reason, and the sweep never revisits a record
+-- with both resolved_at/first_response_at set (ListSLABreachCandidates
+-- requires one of them NULL). Accepted rather than fixed with a new schema
+-- column, which DESIGN.md does not describe.
 -- ============================================================
 
 -- ============================================================
@@ -146,11 +182,13 @@ END $$;
 -- pair's column breaks this argument.
 -- ============================================================
 
--- Scratch space for phase B's S1, S3 and S6, dropped at the end of the
--- file. A plain temp table with an explicit DROP rather than ON COMMIT
--- DROP: golang-migrate runs this file as one implicit transaction, and the
--- migration tests run it statement by statement inside an outer
--- transaction, and an explicit DROP is correct under both.
+-- Scratch space for phase B's S1, dropped at the end of the file (#246: S3
+-- and S6 used to read `estimated` from here directly; they now read it off
+-- sla_records' own frozen-elapsed columns instead, which survive a second
+-- run — this table does not). A plain temp table with an explicit DROP
+-- rather than ON COMMIT DROP: golang-migrate runs this file as one implicit
+-- transaction, and the migration tests run it statement by statement inside
+-- an outer transaction, and an explicit DROP is correct under both.
 CREATE TEMP TABLE m28_sla_resolution (
     ticket_id   UUID        PRIMARY KEY,
     resolved_at TIMESTAMPTZ NOT NULL,
@@ -187,38 +225,46 @@ CREATE TEMP TABLE m28_sla_resolution (
 -- re-resolve) is skipped: it records "still resolved", not when the
 -- resolve happened. LEAST ignores NULLs.
 --
--- Second arm, only for a ticket currently in system Closed and only when
--- the first arm found nothing: the earliest of tickets.closed_at and every
--- history row entering Closed. This is #220 (a close without a resolve
--- counts as the resolution) applied retroactively exactly where #226(b)
+-- Second arm (#247): close facts are included only for a ticket CURRENTLY in
+-- system Closed, and they are COMPARED against the resolve facts via a
+-- single flat LEAST, not consulted only when the first arm found nothing.
+-- C1's rule is the ticket's first resolution, and for a ticket still Closed
+-- a close counts as one (#220 applied retroactively, exactly where #226(b)
 -- needs it: a ticket still Closed is skipped by the breach sweep and would
--- otherwise show an open, ever-growing resolution target forever. A
--- reopened ticket's stale closed_at is deliberately NOT used: a close
--- without a resolve was not a resolution under the rules in force when it
--- was written, the ticket is legitimately outstanding again, and #239's
--- test pins that its SLA resolution stays open. The status gate also keeps
--- a Resolved ticket's stale closed_at away from its own resolve (#238's
--- test).
+-- otherwise show an open, ever-growing resolution target forever). The old
+-- COALESCE consulted the close arm only when the resolve arm was NULL, so
+-- for a ticket resolved late, reopened, and closed again, adding a NEW
+-- on-time resolve fact to history could flip an already-correct on-time
+-- close-based record into a false late breach the next time this file ran —
+-- LEAST picks whichever fact is EARLIEST instead, which for a ticket that
+-- passed through Closed before ever resolving is the close, and for one
+-- that resolved before its (first) close is the resolve, matching #242's
+-- "first resolution" rule either way.
+--
+-- LEAST is NULL only when every argument is NULL, exactly the case the old
+-- COALESCE was also NULL in, so which tickets get a row here is unchanged
+-- (#247 does not affect C2). A reopened ticket never satisfies
+-- `t.status_id = cs.id`, so its close-arm arguments are always NULL and it
+-- keeps using only the resolve arm — the same guarantee the old CASE gave,
+-- for the same reason (#239, #244), and it is what keeps a Resolved
+-- ticket's own stale closed_at out of its resolve (#238).
 INSERT INTO m28_sla_resolution (ticket_id, resolved_at, estimated)
 SELECT f.ticket_id, f.at, false
   FROM (SELECT t.id AS ticket_id,
-               COALESCE(
-                   LEAST(
-                       t.resolved_at,
+               LEAST(
+                   t.resolved_at,
+                   (SELECT min(h.created_at)
+                      FROM ticket_status_history h
+                     WHERE h.ticket_id = t.id
+                       AND h.to_status_id = rs.id
+                       AND h.from_status_id IS DISTINCT FROM rs.id),
+                   CASE WHEN t.status_id = cs.id THEN t.closed_at END,
+                   CASE WHEN t.status_id = cs.id THEN
                        (SELECT min(h.created_at)
                           FROM ticket_status_history h
                          WHERE h.ticket_id = t.id
-                           AND h.to_status_id = rs.id
-                           AND h.from_status_id IS DISTINCT FROM rs.id)),
-                   CASE
-                       WHEN t.status_id = cs.id THEN
-                           LEAST(
-                               t.closed_at,
-                               (SELECT min(h.created_at)
-                                  FROM ticket_status_history h
-                                 WHERE h.ticket_id = t.id
-                                   AND h.to_status_id = cs.id
-                                   AND h.from_status_id IS DISTINCT FROM cs.id))
+                           AND h.to_status_id = cs.id
+                           AND h.from_status_id IS DISTINCT FROM cs.id)
                    END) AS at
           FROM tickets t
           JOIN sla_records r ON r.ticket_id = t.id
@@ -353,9 +399,12 @@ WHERE t.status_id = s.id
 -- need an SLA resolution instant (otherwise a Resolved one gets a breach
 -- stamped at the next sweep, #238, and a Closed one shows an open
 -- resolution target forever, #226(b)), so one is recorded here, marked
--- estimated, for S3/S6. The column's NOT NULL turns "phase A leaves
--- COALESCE non-NULL here" into a checked assertion: a row that breaks it
--- aborts the migration instead of silently skipping the row.
+-- estimated. The `estimated` column is read only by S1 below (#246): it is
+-- what tells S1 to write resolved_at without a frozen elapsed number,
+-- leaving the NULL that is itself the durable marker S3/S5/S6 key off later
+-- (see LIMITS). The column's NOT NULL turns "phase A leaves COALESCE
+-- non-NULL here" into a checked assertion: a row that breaks it aborts the
+-- migration instead of silently skipping the row.
 INSERT INTO m28_sla_resolution (ticket_id, resolved_at, estimated)
 SELECT t.id, COALESCE(t.resolved_at, t.closed_at), true
   FROM tickets t
@@ -373,56 +422,71 @@ SELECT t.id, COALESCE(t.resolved_at, t.closed_at), true
 -- repaired tickets columns directly.
 -- ============================================================
 
--- S1 (#238, #242, #243, #244): record the captured resolution instant.
--- Which tickets get one, and from which instant, is now decided entirely by
--- C1/C2. This statement no longer carries the status key it used to (first
--- 'Closed' alone, #231, then 'Resolved'/'Closed', #238), because C1
--- deliberately includes tickets that are no longer terminal (#244). Every
--- row C2 added is currently terminal, and every row C1 added rests on a
--- real resolve or close, so nothing is invented for a ticket that was never
--- resolved. `r.resolved_at IS NULL` is redundant with the capture's own
--- filter and is kept as the same first-writer-wins guard SetSLAResolved
--- uses.
-UPDATE sla_records r
-SET resolved_at = c.resolved_at
-FROM m28_sla_resolution c
-WHERE c.ticket_id = r.ticket_id
-  AND r.resolved_at IS NULL;
-
--- S2: freeze resolution_elapsed_at_met_seconds wherever it is still missing —
--- exactly the rows S1 just gave a resolved_at to; every other row either
--- already carries one (migration 000027's own backfill already froze it) or
--- still has no resolved_at at all. Same formula as that earlier pass, now
--- with a value to compute it from. #240: this statement ONLY freezes; it no
--- longer also decides a breach in the same UPDATE (see S3 below for why that
--- split matters).
+-- S1 (#238, #242, #243, #244, #246): record the captured resolution instant,
+-- and freeze its elapsed-toward-target number IN THE SAME STATEMENT — but
+-- only for a row C1/C2 did NOT mark estimated. This absorbs what used to be
+-- a separate S2 freeze pass; the two are folded together for the same reason
+-- #228 folded a fact write with its own breach decision: the fact and the
+-- number derived from it must land in one atomic write, or a second run of
+-- this file cannot tell "already handled" apart from "still needs handling"
+-- purely from resolved_at (every row has that; only a NON-estimated row
+-- ever gets a frozen number). Which tickets get a row here, and from which
+-- instant, is decided entirely by C1/C2. This statement no longer carries
+-- the status key it used to (first 'Closed' alone, #231, then
+-- 'Resolved'/'Closed', #238), because C1 deliberately includes tickets that
+-- are no longer terminal (#244). Every row C2 added is currently terminal,
+-- and every row C1 added rests on a real resolve or close, so nothing is
+-- invented for a ticket that was never resolved. `r.resolved_at IS NULL` is
+-- redundant with the capture's own filter and is kept as the same
+-- first-writer-wins guard SetSLAResolved uses.
 --
--- This freezes estimated rows too (see LIMITS: an estimated instant may be
--- recorded and frozen, it just never stamps). For a reopened ticket (#244)
+-- #246: this is the fix for the second-run bug. The old, separate S2 froze
+-- resolution_elapsed_at_met_seconds for every row with resolved_at set and
+-- the column still NULL, with no reference to what THIS run's capture table
+-- held — so on a second run, every row the FIRST run had deliberately left
+-- unfrozen (an estimated row, per LIMITS) had resolved_at already set from
+-- run one, and S2 would freeze it anyway, handing S3 a stamped-looking
+-- number to stamp a false breach from. Tying the freeze to
+-- `NOT c.estimated` — read from THIS run's own capture, which is empty on
+-- every later run — means a later run freezes nothing new: an already-set
+-- resolved_at fails this statement's `r.resolved_at IS NULL` guard before
+-- the CASE is ever reached, and a row this run's C1/C2 did add either was
+-- never estimated (frozen once, correctly) or was estimated (its
+-- resolution_elapsed_at_met_seconds column is the durable marker future runs
+-- read via that same NULL check, not via the temp table, which is gone by
+-- the time the next migrate run starts). See LIMITS for why leaving it NULL,
+-- rather than filling it with an estimate, is the fix.
+--
+-- For a reopened ticket (#244) whose resolve fact IS used (not estimated),
 -- the ticket's current sla_paused_seconds includes pauses after the
 -- resolution, which can only understate, the same direction as 000027's own
 -- backfill.
 UPDATE sla_records r
-SET resolution_elapsed_at_met_seconds = GREATEST(
-        0,
-        EXTRACT(EPOCH FROM (r.resolved_at - t.created_at))::bigint - t.sla_paused_seconds
-    )
-FROM tickets t
-WHERE t.id = r.ticket_id
-  AND r.resolved_at IS NOT NULL
-  AND r.resolution_elapsed_at_met_seconds IS NULL;
+SET resolved_at = c.resolved_at,
+    resolution_elapsed_at_met_seconds = CASE
+        WHEN NOT c.estimated THEN GREATEST(
+            0,
+            EXTRACT(EPOCH FROM (c.resolved_at - t.created_at))::bigint - t.sla_paused_seconds)
+    END
+FROM m28_sla_resolution c
+JOIN tickets t ON t.id = c.ticket_id
+WHERE c.ticket_id = r.ticket_id
+  AND r.resolved_at IS NULL;
 
--- S3 (#235, #240, #243): stamp a resolution breach on every record whose
--- frozen elapsed reading is past the policy's resolution target and that
--- has no stamp yet, whichever pass froze it, EXCEPT a record whose
--- resolution instant C2 marked estimated. Same strict `>` and same stamp
--- instant as SetSLAResolved.
+-- S3 (#235, #240, #243, #246): stamp a resolution breach on every record
+-- whose frozen elapsed reading is past the policy's resolution target and
+-- that has no stamp yet, whichever pass froze it. No estimated gate is
+-- needed here any more: S1 above never freezes a number for an estimated
+-- row, so `resolution_elapsed_at_met_seconds > target` is comparing against
+-- NULL for exactly those rows, and `NULL > x` is never true in Postgres —
+-- three-valued logic excludes them on its own, the same way the WHERE
+-- clause already relies on for every other NULL column here. Same strict
+-- `>` and same stamp instant as SetSLAResolved.
 --
 -- Before this, each freeze statement ALSO stamped its own breach, gated on
 -- `elapsed IS NULL` — so the breach decision was tied to whether THAT
 -- statement had just written the frozen value, and a row 000027 had frozen
--- on an earlier upgrade (or one this file's own S2 skips because it is
--- already frozen) could carry a genuinely late frozen reading with a
+-- on an earlier upgrade could carry a genuinely late frozen reading with a
 -- permanently NULL breach column, because nothing revisited it once frozen.
 -- Splitting freeze and stamp into separate statements fixes this: S3 decides
 -- purely from the STORED frozen seconds, reaching every row regardless of
@@ -430,12 +494,13 @@ WHERE t.id = r.ticket_id
 --
 -- Why this cannot produce a FALSE stamp, by where the frozen value came
 -- from: 000027's best-effort pass can only UNDERSTATE (the ticket's current
--- sla_paused_seconds is at least what it was when the target was met). S2
+-- sla_paused_seconds is at least what it was when the target was met). S1
 -- over a C1 fact is exact up to that same pause approximation, which only
--- understates. S2 over a C2 estimate OVERSTATES (see LIMITS), and that is
--- the one case excluded here. At worst this misses a breach. It never
--- invents one. An existing stamp is preserved by the IS NULL guard: a stamp
--- is a fact and is never cleared here.
+-- understates. S1 never freezes a number over a C2 estimate at all (see
+-- above and LIMITS), so there is no OVERSTATED number for this statement to
+-- ever read. At worst this misses a breach. It never invents one. An
+-- existing stamp is preserved by the IS NULL guard: a stamp is a fact and is
+-- never cleared here.
 --
 -- Single FROM item (sla_policies alone): the old comma-join workaround for
 -- "the UPDATE target's own alias cannot appear in a JOIN...ON" is no longer
@@ -446,12 +511,7 @@ FROM sla_policies p
 WHERE p.id = r.policy_id
   AND r.resolved_at IS NOT NULL
   AND r.resolution_breached_at IS NULL
-  AND r.resolution_elapsed_at_met_seconds > p.resolution_target_min::bigint * 60
-  AND NOT EXISTS (
-          SELECT 1
-            FROM m28_sla_resolution c
-           WHERE c.ticket_id = r.ticket_id
-             AND c.estimated);
+  AND r.resolution_elapsed_at_met_seconds > p.resolution_target_min::bigint * 60;
 
 -- S4 (#226(a)): a ticket resolved without ever getting a prior staff reply
 -- was allowed under the OLD rules, before #219 taught RecordResolved that "a
@@ -472,12 +532,34 @@ SET first_response_at = r.resolved_at
 WHERE r.resolved_at IS NOT NULL
   AND r.first_response_at IS NULL;
 
--- S5: freeze response_elapsed_at_met_seconds wherever it is still missing,
--- using the same pending-aware clip as migration 000027's own
+-- S5 (#246): freeze response_elapsed_at_met_seconds wherever it is still
+-- missing, using the same pending-aware clip as migration 000027's own
 -- response_elapsed_at_met_seconds pass (#222) — first response and
 -- resolution landed at the same instant for exactly the rows S4 just touched
 -- (every other row either already has one frozen, or still has no
 -- first_response_at at all).
+--
+-- The trailing NOT (...) is this statement's own durable gate, the response
+-- side's twin of S1's `NOT c.estimated`: it excludes exactly the rows where
+-- S4 just copied an ESTIMATED resolution instant into first_response_at —
+-- recognised, now that the temp table is gone by the time a later run
+-- starts, by the row's own stored columns: resolved_at set,
+-- resolution_elapsed_at_met_seconds still NULL (S1's marker for "this
+-- resolution was estimated"), and first_response_at equal to that same
+-- resolved_at (S4's copy, not an independent fact). Without this, a second
+-- run would freeze response_elapsed_at_met_seconds for those rows from
+-- whatever first_response_at/resolved_at already carry — harmless in
+-- isolation, but it would then hand S6 a frozen number to stamp a false
+-- response breach from, the response-side mirror of the bug S1's gate
+-- fixes on the resolution side.
+--
+-- `r.resolved_at IS NOT NULL` in the gate is required, not redundant: without
+-- it, a row with NULL resolved_at would make the whole AND NULL — three-
+-- valued logic, not "false" — and NOT NULL is also NULL, so the row would be
+-- SILENTLY EXCLUDED by the WHERE clause instead of correctly included. A row
+-- with a real, non-estimated first_response_at but no resolution at all
+-- (a plain on-time reply, no resolve yet) must still be frozen normally; the
+-- explicit IS NOT NULL check makes that so.
 UPDATE sla_records r
 SET response_elapsed_at_met_seconds = GREATEST(
         0,
@@ -491,28 +573,29 @@ SET response_elapsed_at_met_seconds = GREATEST(
 FROM tickets t
 WHERE t.id = r.ticket_id
   AND r.first_response_at IS NOT NULL
-  AND r.response_elapsed_at_met_seconds IS NULL;
+  AND r.response_elapsed_at_met_seconds IS NULL
+  AND NOT (r.resolved_at IS NOT NULL
+           AND r.resolution_elapsed_at_met_seconds IS NULL
+           AND r.first_response_at = r.resolved_at);
 
--- S6 (#235, #240, #243): the response-side twin of S3. The estimated gate
--- is narrower here: it skips only a first_response_at that S4 COPIED from
--- an estimated resolution (equal to the captured instant). A record whose
--- resolution is estimated but whose first response is a real, earlier
--- staff reply keeps that reply's own breach decision, exactly as #240
--- requires. A real reply landing on the exact same microsecond as an
--- updated_at-derived estimate would also be skipped, which errs in the
--- safe direction.
+-- S6 (#235, #240, #243, #246): the response-side twin of S3. No estimated
+-- gate is needed here either, for the same reason as S3: S5's own gate above
+-- already leaves response_elapsed_at_met_seconds NULL for exactly the rows
+-- whose first_response_at was S4's copy of an estimated resolution, and
+-- `NULL > target` is never true. A record whose resolution is estimated but
+-- whose first response is a real, earlier staff reply was never touched by
+-- S5's gate (the equality check fails), so it keeps a real frozen number
+-- here and this statement judges it normally — that reply's own breach
+-- decision, exactly as #240 requires. A real reply landing on the exact same
+-- microsecond as an updated_at-derived estimate would still be treated as
+-- the estimate (S5's gate cannot tell them apart either), which errs in the
+-- safe direction, as before.
 UPDATE sla_records r
 SET response_breached_at = r.first_response_at
 FROM sla_policies p
 WHERE p.id = r.policy_id
   AND r.first_response_at IS NOT NULL
   AND r.response_breached_at IS NULL
-  AND r.response_elapsed_at_met_seconds > p.response_target_min::bigint * 60
-  AND NOT EXISTS (
-          SELECT 1
-            FROM m28_sla_resolution c
-           WHERE c.ticket_id = r.ticket_id
-             AND c.estimated
-             AND c.resolved_at = r.first_response_at);
+  AND r.response_elapsed_at_met_seconds > p.response_target_min::bigint * 60;
 
 DROP TABLE m28_sla_resolution;
