@@ -14,6 +14,21 @@ import (
 	"github.com/lib/pq"
 )
 
+const countSLARecordsByPolicy = `-- name: CountSLARecordsByPolicy :one
+SELECT COUNT(*) FROM sla_records WHERE policy_id = $1
+`
+
+// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
+// stamps only mean something against the policy that set them. Counting first
+// turns the raw foreign-key 500 into a refusal naming how many tickets depend
+// on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
+func (q *Queries) CountSLARecordsByPolicy(ctx context.Context, policyID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSLARecordsByPolicy, policyID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createSLAPolicy = `-- name: CreateSLAPolicy :exec
 INSERT INTO sla_policies (id, name, priority, category_id, response_target_min, resolution_target_min)
 VALUES ($1, $2, $3, $4, $5, $6)

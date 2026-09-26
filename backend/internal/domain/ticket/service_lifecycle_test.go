@@ -317,8 +317,50 @@ func TestRemoveStatus_ProtectsSystemStatuses(t *testing.T) {
 			err := h.svc.RemoveStatus(context.Background(), h.statusNamed(name).ID)
 			require.Error(t, err, "system status %q must not be deletable", name)
 			require.Contains(t, err.Error(), "system status")
+			// #269: the refusal is the sentinel handleError maps to 403,
+			// not a bare error a future caller sees as a 500.
+			require.ErrorIs(t, err, ticket.ErrSystemStatusImmutable)
 		})
 	}
+}
+
+// TestSaveStatus_RefusesSystemStatusRename proves the rename refusal is
+// enforced by the domain layer itself, not only by handleUpdateStatus. It
+// calls Service.SaveStatus directly, bypassing the HTTP handler entirely, so
+// a future caller (an MCP status-management tool, a bulk-import endpoint)
+// cannot silently reintroduce the restart-crash hazard #263 closed: system
+// statuses are found by name at startup and compared by name in lifecycle
+// rules, so a rename that reached this method by any route breaks that.
+func TestSaveStatus_RefusesSystemStatusRename(t *testing.T) {
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			st := h.statusNamed(name)
+			st.Name = "Renamed"
+
+			_, err := h.svc.SaveStatus(context.Background(), st)
+
+			require.Error(t, err, "system status %q must not be renameable via SaveStatus", name)
+			require.Contains(t, err.Error(), "system status")
+			require.ErrorIs(t, err, ticket.ErrSystemStatusImmutable)
+			require.Equal(t, 0, h.statuses.updates, "a refused rename must never reach the store")
+		})
+	}
+}
+
+// TestSaveStatus_SystemStatusOtherFieldsStillEditable confirms the refusal is
+// scoped to the name: color and sort order on a system status still save
+// through the same method with no name change.
+func TestSaveStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
+	h := newHarness(t)
+	st := h.statusNamed(ticket.StatusNameNew)
+	st.Color = "#ff0000"
+	st.SortOrder = 42
+
+	_, err := h.svc.SaveStatus(context.Background(), st)
+
+	require.NoError(t, err)
+	require.Equal(t, 1, h.statuses.updates, "the edit must actually reach the store")
 }
 
 // TestRemoveStatus_RefusesStatusInUse protects tickets from being orphaned on a
@@ -333,6 +375,7 @@ func TestRemoveStatus_RefusesStatusInUse(t *testing.T) {
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "deactivate")
+	require.True(t, errors.Is(err, ticket.ErrStatusInUse), "err must wrap ErrStatusInUse so handleError maps it to 409, not 500 (#275)")
 	require.Equal(t, 0, h.statuses.deletes, "a status in use must not be deleted")
 }
 
@@ -534,6 +577,7 @@ func TestRemoveStatus_RefusesWhenHistoryReferencesIt(t *testing.T) {
 	require.Contains(t, err.Error(), "past ticket transition",
 		"the refusal must explain why, not fail on a foreign key")
 	require.Contains(t, err.Error(), "deactivate")
+	require.True(t, errors.Is(err, ticket.ErrStatusInUse), "err must wrap ErrStatusInUse so handleError maps it to 409, not 500 (#275)")
 	require.Zero(t, h.statuses.deletes, "nothing may be deleted")
 }
 

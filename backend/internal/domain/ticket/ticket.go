@@ -52,7 +52,8 @@ const (
 	// three above. It is identified by name, matching how
 	// lifecycleAllowsReply already compares Resolved/Closed. Known
 	// consequence, accepted: an admin who renames the status stops future
-	// SLA pauses (see sla.Elapsed and applyStatusTimestamps).
+	// SLA pauses (see sla.Elapsed and applyStatusTimestamps). Documented in
+	// DESIGN.md → SLA Tracking → Timer Mechanics (#263).
 	StatusNamePending = "Pending"
 )
 
@@ -509,6 +510,54 @@ var (
 	// #192: AddLink and ResolveAsDuplicate both used to refuse a self-link
 	// with a bare fmt.Errorf, which handleError has nothing to recognise.
 	ErrSelfLink = errors.New("cannot link a ticket to itself")
+	// ErrSystemStatusImmutable is returned by SaveStatus and RemoveStatus when
+	// asked to rename or delete a system status (New, Resolved, Closed).
+	// System statuses are found by name at startup (LoadSystemStatuses) and
+	// compared by name in lifecycle rules, so either operation reaching the
+	// store would reintroduce the restart-crash hazard #263 closed. Wrapped
+	// rather than returned bare — like ErrSelfLink and ErrPolicyInUse in the
+	// sla package — so handleError maps it to a clean refusal instead of
+	// falling through to 500. The HTTP handler (handleUpdateStatus) has no
+	// inline rename check of its own: #269 removed it in favor of relying
+	// entirely on this refusal. (handleUpdateStatus does still check Active
+	// inline before a system status ever reaches SaveStatus, which is why a
+	// request that both renames and deactivates a system status is refused
+	// for the deactivate, not the rename — see #272.) RemoveStatus's delete
+	// refusal was never duplicated at the handler either.
+	ErrSystemStatusImmutable = errors.New("system status is immutable")
+	// ErrStatusNotFound is returned by getStatusByID (and so by SaveStatus and
+	// RemoveStatus) when no status matches the given ID — a nonexistent or
+	// already-deleted id, most commonly. Wrapped for the same reason
+	// ErrSystemStatusImmutable is: the bare error it replaces reached
+	// handleError unrecognized and came back as a 500, though the fault was
+	// in the request, not the server. See #273.
+	ErrStatusNotFound = errors.New("status not found")
+	// ErrStatusInUse is returned by RemoveStatus when a custom status cannot
+	// be hard-deleted: either a ticket currently has this status, or a past
+	// ticket_status_history entry references it (the table has no ON DELETE
+	// action on that foreign key, so a zero current-count status can still
+	// fail the DELETE). Wrapped for the same reason ErrSystemStatusImmutable
+	// and ErrStatusNotFound are: both refusals used to be bare fmt.Errorf,
+	// reaching handleError unrecognized and coming back as a 500 for an
+	// ordinary, expected refusal. See #275 (found four review rounds into
+	// #264, the same pass that added the two sentinels above it). 409, not
+	// 403 or 404: this is the sla.ErrPolicyInUse shape — a conflicting state
+	// the caller can resolve by deactivating instead, not a permissions or
+	// existence problem.
+	ErrStatusInUse = errors.New("status is in use")
+	// ErrStatusNameTaken is returned by AddStatus and SaveStatus when the
+	// requested name collides with another status's: statuses.name is TEXT NOT
+	// NULL UNIQUE (statuses_name_key), and until now nothing checked that
+	// ahead of the write, so the constraint violation reached handleError
+	// unrecognized and came back as a 500 for an admin typing a name that
+	// already exists (e.g. "In Progress") — the same shape as
+	// ErrLinkAlreadyExists (#195) and sla.ErrPolicyInUse, wrapped for the same
+	// reason. See #278.
+	ErrStatusNameTaken = errors.New("a status with this name already exists")
+	// ErrInvalidStatusName is returned by AddStatus and SaveStatus when the
+	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
+	// empty name was silently accepted before this check existed. See #278.
+	ErrInvalidStatusName = errors.New("status name must not be empty")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

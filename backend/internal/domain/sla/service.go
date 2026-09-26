@@ -276,7 +276,7 @@ func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now 
 	for _, r := range records {
 		p, ok := policyByID[r.PolicyID]
 		if !ok {
-			continue // the policy was deleted after this record was created
+			continue // defensive: sla_records.policy_id is ON DELETE RESTRICT, so a record cannot outlive its policy (#261)
 		}
 		t, ok := byID[r.TicketID]
 		if !ok {

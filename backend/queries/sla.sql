@@ -14,6 +14,13 @@ WHERE id = $1;
 -- name: DeleteSLAPolicy :exec
 DELETE FROM sla_policies WHERE id = $1;
 
+-- name: CountSLARecordsByPolicy :one
+-- sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
+-- stamps only mean something against the policy that set them. Counting first
+-- turns the raw foreign-key 500 into a refusal naming how many tickets depend
+-- on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
+SELECT COUNT(*) FROM sla_records WHERE policy_id = $1;
+
 -- name: ListSLAPolicies :many
 SELECT * FROM sla_policies ORDER BY priority, name;
 

@@ -12,6 +12,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -55,7 +56,7 @@ func DecodeJSON(r *http.Request, dst any) error {
 
 // handleError maps common sentinel errors to HTTP status codes.
 func handleError(w http.ResponseWriter, err error) {
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) {
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
@@ -82,10 +83,40 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "link_already_exists", "this link already exists")
 		return
 	}
+	// 409, not 500: a policy some ticket's SLA record is measured against is
+	// refused by the schema (ON DELETE RESTRICT), which is the database working
+	// as designed. The message carries the ticket count (#261).
+	if errors.Is(err, sla.ErrPolicyInUse) {
+		Error(w, http.StatusConflict, "policy_in_use", err.Error())
+		return
+	}
+	// 409, not 500: the same sla.ErrPolicyInUse shape, one layer over —
+	// RemoveStatus refuses to hard-delete a custom status that a ticket
+	// currently holds or that a past ticket_status_history entry references,
+	// and the message carries the ticket or transition count (#275).
+	if errors.Is(err, ticket.ErrStatusInUse) {
+		Error(w, http.StatusConflict, "status_in_use", err.Error())
+		return
+	}
+	// 409, not 500: statuses.name is TEXT NOT NULL UNIQUE, and creating or
+	// renaming a status to a name that already exists is the schema working
+	// as designed, not a server fault. See #278.
+	if errors.Is(err, ticket.ErrStatusNameTaken) {
+		Error(w, http.StatusConflict, "status_name_taken", err.Error())
+		return
+	}
+	// 403, not 500: refusing to rename or delete a system status is the
+	// domain layer working as designed, matching the sla.ErrPolicyInUse
+	// pattern just above for a refusal that used to fall through to 500 one
+	// layer down from its HTTP-handler check. See #269.
+	if errors.Is(err, ticket.ErrSystemStatusImmutable) {
+		Error(w, http.StatusForbidden, "forbidden", err.Error())
+		return
+	}
 	// Bad input, not a fault. Without this a mistyped email address at signup,
 	// or on an admin's user edit, came back as 500 "an internal error
 	// occurred" and was logged as one.
-	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) {
+	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

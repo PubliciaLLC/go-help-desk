@@ -349,10 +349,13 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 }
 
 // TestMigration_AbortsWhenSystemStatusRenamed pins #230: migration 000028's
-// destructive first statement matches by status NAME ('Resolved', 'Closed'),
-// which the admin API cannot fully guard against — it blocks DEACTIVATING a
-// system status but not RENAMING one (handleUpdateStatus / SaveStatus has no
-// such check). If "Closed" were renamed on a running instance before this
+// destructive first statement matches by status NAME ('Resolved', 'Closed').
+// The admin API now refuses a rename of a system status outright (403, both
+// at the HTTP handler and, independently, in SaveStatus itself — #263/#268/
+// #269), but this migration's own guard is kept anyway, as belt and
+// suspenders: it is the last line of defense against a database that reached
+// this shape some other way (a manual data fix, a future caller that bypasses
+// SaveStatus, or a pre-#263 build). If "Closed" were renamed before this
 // migration next ran on an upgrade, the name-based exclusion would silently
 // stop matching every genuinely-Closed ticket, reproducing #208's original
 // data-loss bug through a different path — irreversibly, since the down

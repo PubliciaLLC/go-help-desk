@@ -1477,15 +1477,62 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 	return s.statuses.ListStatuses(ctx)
 }
 
-// AddStatus creates a new custom status entry.
-func (s *Service) AddStatus(ctx context.Context, st Status) error {
+// AddStatus creates a new custom status entry. The name is checked for
+// emptiness here (NOT NULL alone doesn't reject "") and for uniqueness at the
+// store, which maps the statuses_name_key violation to ErrStatusNameTaken
+// (#278) rather than letting the raw pgconn error reach handleError
+// unrecognized.
+//
+// Returns the saved Status — with Name trimmed and Active set — rather than
+// leaving the caller's own pre-call copy to be echoed back. handleCreateStatus
+// used to serialize its own copy, whose Name was never trimmed: a name with
+// trailing whitespace came back untrimmed in the 201 body while the stored
+// (and trimmed) row disagreed with it (#285). Mirrors
+// category.Service.CreateCategory, which returns the saved Category for the
+// same reason.
+func (s *Service) AddStatus(ctx context.Context, st Status) (Status, error) {
+	st.Name = strings.TrimSpace(st.Name)
+	if st.Name == "" {
+		return Status{}, ErrInvalidStatusName
+	}
 	st.Active = true
-	return s.statuses.CreateStatus(ctx, st)
+	if err := s.statuses.CreateStatus(ctx, st); err != nil {
+		return Status{}, err
+	}
+	return st, nil
 }
 
-// SaveStatus persists changes to an existing status record.
-func (s *Service) SaveStatus(ctx context.Context, st Status) error {
-	return s.statuses.UpdateStatus(ctx, st)
+// SaveStatus persists changes to an existing status record. Renaming a
+// system status is refused here, and only here (#269 removed the HTTP
+// handler's own inline rename check, so handleUpdateStatus now relies
+// entirely on this refusal): system statuses are found by name at startup
+// (LoadSystemStatuses) and compared by name in lifecycle rules, so a rename
+// that reached the store would reintroduce the restart-crash hazard #263
+// closed. Mirrors RemoveStatus's own system-status refusal below. The
+// refusal wraps ErrSystemStatusImmutable (#269) so handleError can map it to
+// a clean 403 rather than a bare 500 for any caller, HTTP or otherwise, that
+// reaches this method.
+//
+// Returns the saved Status — with Name trimmed — rather than leaving the
+// caller's own pre-call copy to be echoed back. handleUpdateStatus used to
+// serialize its own copy, whose Name was never trimmed, the same #285
+// mismatch AddStatus had. Mirrors AddStatus's own return above.
+func (s *Service) SaveStatus(ctx context.Context, st Status) (Status, error) {
+	st.Name = strings.TrimSpace(st.Name)
+	if st.Name == "" {
+		return Status{}, ErrInvalidStatusName
+	}
+	current, err := s.getStatusByID(ctx, st.ID)
+	if err != nil {
+		return Status{}, err
+	}
+	if current.Kind == StatusKindSystem && st.Name != current.Name {
+		return Status{}, fmt.Errorf("system status %q cannot be renamed: %w", current.Name, ErrSystemStatusImmutable)
+	}
+	if err := s.statuses.UpdateStatus(ctx, st); err != nil {
+		return Status{}, err
+	}
+	return st, nil
 }
 
 // CountByStatus returns the number of tickets currently in the given status.
@@ -1505,21 +1552,36 @@ func (s *Service) CountByStatusForAssignee(ctx context.Context, statusID, userID
 }
 
 // RemoveStatus hard-deletes a custom status. Blocked if the status is a
-// system status or if any tickets currently have this status.
+// system status or if any tickets currently have this status. The
+// system-status refusal wraps ErrSystemStatusImmutable (#269) for the same
+// reason SaveStatus's does: a bare fmt.Errorf here maps to a bare 500 for
+// any caller, and DELETE on a system status is reachable via the HTTP
+// handler with no inline guard of its own. The two in-use refusals below
+// wrap ErrStatusInUse for the same reason (#275): both were still bare
+// fmt.Errorf as of review round 4, so the "deactivate it instead" guidance
+// they carry never reached the caller — handleError had no case for either
+// and both fell through to a 500. The counts and the final DeleteStatus below
+// are separate statements, so a ticket can be PATCHed into this status (or
+// transitioned through it) between the counts and the delete; that race is
+// backstopped at the store layer (ticketstore.Store.DeleteStatus), which maps
+// the resulting foreign-key violation to this same ErrStatusInUse rather than
+// letting it surface as a 500 — the identical shape slastore.DeletePolicy
+// established for the same count-then-delete race (#261), added here for
+// #279.
 func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	st, err := s.getStatusByID(ctx, id)
 	if err != nil {
 		return err
 	}
 	if st.Kind != StatusKindCustom {
-		return fmt.Errorf("cannot delete system status %q", st.Name)
+		return fmt.Errorf("system status %q cannot be deleted: %w", st.Name, ErrSystemStatusImmutable)
 	}
 	count, err := s.statuses.CountByStatus(ctx, id)
 	if err != nil {
 		return fmt.Errorf("counting tickets for status: %w", err)
 	}
 	if count > 0 {
-		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting", st.Name, count)
+		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting: %w", st.Name, count, ErrStatusInUse)
 	}
 	// Zero current tickets is not enough: ticket_status_history references
 	// statuses with no ON DELETE action, so any past transition through this
@@ -1531,12 +1593,15 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("counting status history: %w", err)
 	}
 	if histCount > 0 {
-		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead", st.Name, histCount)
+		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead: %w", st.Name, histCount, ErrStatusInUse)
 	}
 	return s.statuses.DeleteStatus(ctx, id)
 }
 
-// getStatusByID fetches a status; returns a descriptive error on miss.
+// getStatusByID fetches a status; returns a descriptive error on miss. The
+// miss wraps ErrStatusNotFound (#273) so handleError maps it to a 404
+// instead of falling through to a 500 for callers that don't do their own
+// existence check first — handleDeleteStatus is the one that doesn't.
 func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, error) {
 	statuses, err := s.statuses.ListStatuses(ctx)
 	if err != nil {
@@ -1547,7 +1612,7 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 			return st, nil
 		}
 	}
-	return Status{}, fmt.Errorf("status %s not found", id)
+	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
 }
 
 // auditEntry builds an audit row. Callers write it through the transaction's

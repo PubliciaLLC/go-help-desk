@@ -929,6 +929,71 @@ func TestSLAStore_Records(t *testing.T) {
 	require.NotNil(t, updated.FirstResponseAt)
 }
 
+// TestSLAStore_DeletePolicy_RefusesPolicyWithRecords pins #261: a policy with
+// at least one attached SLA record is refused with sla.ErrPolicyInUse naming
+// how many tickets depend on it, rather than the raw foreign-key 500 that
+// DELETE FROM sla_policies used to surface as. TestSLAStore_Policies:859
+// already covers deleting a policy with zero records.
+func TestSLAStore_DeletePolicy_RefusesPolicyWithRecords(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	ss := slastore.New(q)
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	u := user.User{
+		ID: uuid.New(), Email: "sla-inuse@example.com", DisplayName: "SLA In Use User",
+		Role: user.RoleUser, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, u))
+
+	cat := category.Category{ID: uuid.New(), Name: "SLAInUseCat", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	tk := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 98),
+		Subject:        "SLA in-use test ticket",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityHigh,
+		StatusID:       newSt.ID,
+		ReporterUserID: &u.ID,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	p := sla.Policy{
+		ID:                  uuid.New(),
+		Name:                "SLAInUseTest",
+		Priority:            prio(ticket.PriorityHigh),
+		ResponseTargetMin:   30,
+		ResolutionTargetMin: 240,
+	}
+	require.NoError(t, ss.CreatePolicy(ctx, p))
+
+	rec := sla.Record{TicketID: tk.ID, PolicyID: p.ID}
+	require.NoError(t, ss.CreateRecord(ctx, rec))
+
+	err = ss.DeletePolicy(ctx, p.ID)
+	require.ErrorIs(t, err, sla.ErrPolicyInUse)
+	require.Contains(t, err.Error(), "1 ticket(s)")
+
+	// The refusal took the count path before issuing a DELETE, so the policy
+	// is still there and the transaction is not aborted.
+	_, err = ss.GetPolicy(ctx, p.ID)
+	require.NoError(t, err)
+}
+
 // FindPolicy must choose by specificity, not by insertion order, so every case
 // seeds its policies least-specific-first — the order the old query, which
 // ordered only on category_id, would have been happy to return.

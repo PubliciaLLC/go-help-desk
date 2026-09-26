@@ -78,11 +78,12 @@ func (s *Server) handleCreateStatus(w http.ResponseWriter, r *http.Request) {
 		SortOrder: body.SortOrder,
 		Color:     body.Color,
 	}
-	if err := s.tickets.AddStatus(r.Context(), st); err != nil {
+	saved, err := s.tickets.AddStatus(r.Context(), st)
+	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusCreated, st)
+	JSON(w, http.StatusCreated, saved)
 }
 
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +119,16 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Name != nil {
+		// System statuses are found by name: LoadSystemStatuses fails startup
+		// if New/Resolved/Closed is missing, and lifecycle rules compare
+		// against those names. Renaming one broke the next restart (#263) and
+		// is the gap migration 000028's #230 guard was written around.
+		// Resending the unchanged name is not a rename.
+		//
+		// The refusal itself now lives entirely in SaveStatus (#269): it
+		// returns ticket.ErrSystemStatusImmutable, which handleError maps to
+		// this same 403, so there is no need to duplicate the Kind/name
+		// check at this layer too.
 		st.Name = *body.Name
 	}
 	if body.SortOrder != nil {
@@ -128,16 +139,27 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Active != nil {
 		if st.Kind == ticket.StatusKindSystem {
+			// This is the one inline refusal handleUpdateStatus still has of
+			// its own; the rename check above it was removed by #269. Because
+			// Name is applied to st unconditionally above, before this check
+			// runs, a request that both renames and deactivates a system
+			// status (e.g. {"name":"Done","active":false}) never reaches
+			// SaveStatus and its rename refusal at all: the caller gets this
+			// 403 "cannot be deactivated" instead of "cannot be renamed",
+			// the reverse of what the same request got before #269. Same
+			// status code and error code either way, just a different
+			// message — see #272.
 			Error(w, http.StatusForbidden, "forbidden", "system statuses cannot be deactivated")
 			return
 		}
 		st.Active = *body.Active
 	}
-	if err := s.tickets.SaveStatus(r.Context(), st); err != nil {
+	saved, err := s.tickets.SaveStatus(r.Context(), st)
+	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, st)
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteStatus(w http.ResponseWriter, r *http.Request) {

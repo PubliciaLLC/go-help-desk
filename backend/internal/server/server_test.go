@@ -976,6 +976,108 @@ func TestCreateStatus_AsAdmin(t *testing.T) {
 	require.Equal(t, "Escalated", st["name"])
 }
 
+// TestCreateStatus_TrimsNameInResponse pins #285: AddStatus trims the name it
+// stores, but handleCreateStatus used to serialize its own pre-call copy of
+// the request body — which was never trimmed — so a name with trailing
+// whitespace came back untrimmed in the 201 response body while the stored
+// row (and the next GET) disagreed with it. handleCreateStatus now echoes
+// AddStatus's own returned Status instead.
+func TestCreateStatus_TrimsNameInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts  ",
+		"sort_order": 10,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Parts", st["name"], "the response body must echo the trimmed name, not the untrimmed request body")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var found bool
+	for _, s := range statuses {
+		if s["id"] == st["id"] {
+			found = true
+			require.Equal(t, "Awaiting Parts", s["name"])
+		}
+	}
+	require.True(t, found, "the created status must be listed")
+}
+
+// TestUpdateStatus_TrimsNameInResponse is TestCreateStatus_TrimsNameInResponse's
+// PATCH counterpart, pinning the same #285 fix in SaveStatus/handleUpdateStatus.
+func TestUpdateStatus_TrimsNameInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Vendor",
+		"sort_order": 11,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Awaiting Vendor Parts  "})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Vendor Parts", st["name"], "the response body must echo the trimmed name, not the untrimmed request body")
+}
+
+// TestCreateStatus_DuplicateName_ReturnsConflict pins #278: statuses.name is
+// TEXT NOT NULL UNIQUE (statuses_name_key), and before AddStatus/CreateStatus
+// mapped the violation to ticket.ErrStatusNameTaken, creating a status with a
+// name that already exists (a seeded default, or one created moments before)
+// fell through handleError unrecognized and came back as a 500 rather than
+// the 409 an admin retyping an existing name should see.
+func TestCreateStatus_DuplicateName_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// "In Progress" collides with a seeded default status of that name
+	// (migration 000001).
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "In Progress",
+		"sort_order": 14,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_name_taken", errBody.Error.Code)
+}
+
+// TestCreateStatus_EmptyName_ReturnsBadRequest pins the other half of #278:
+// NOT NULL alone doesn't reject "", so an empty name was accepted unvalidated
+// before AddStatus started checking it.
+func TestCreateStatus_EmptyName_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "   ",
+		"sort_order": 15,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -994,6 +1096,405 @@ func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	resp := h.doAsAdmin(t, http.MethodDelete,
 		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+// TestDeleteStatus_System_AsAdmin pins #269: DELETE on a system status
+// (New, Resolved, Closed) has no inline handler guard the way rename and
+// deactivate do, so before RemoveStatus wrapped its refusal in
+// ticket.ErrSystemStatusImmutable this reached handleError as a bare,
+// unrecognized error and came back as a 500 internal_error rather than a
+// clean, expected refusal.
+func TestDeleteStatus_System_AsAdmin(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			var id string
+			for _, st := range statuses {
+				if st["name"] == name {
+					id = st["id"].(string)
+				}
+			}
+			require.NotEmpty(t, id, "seeded system status %q must exist", name)
+
+			resp := h.doAsAdmin(t, http.MethodDelete,
+				fmt.Sprintf("/api/v1/admin/statuses/%s", id), nil)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			var errBody struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			decodeJSON(t, resp, &errBody)
+			require.Equal(t, "forbidden", errBody.Error.Code)
+			require.Contains(t, errBody.Error.Message, "cannot be deleted")
+		})
+	}
+}
+
+// TestDeleteStatus_UnknownID_Returns404 pins #273: getStatusByID used to
+// return a bare, untyped error on a miss, so RemoveStatus's failure fell
+// through handleError's switch unmatched and came back as a 500 rather than
+// the 404 an admin deleting an already-deleted (or mistyped) status id
+// should see.
+func TestDeleteStatus_UnknownID_Returns404(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", uuid.New()), nil)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "not_found", errBody.Error.Code)
+}
+
+// TestDeleteStatus_InUse_ReturnsConflict pins #275: a custom status that a
+// ticket currently has was still refused with a bare, unrecognized error
+// before RemoveStatus wrapped it in ticket.ErrStatusInUse, so this fell
+// through handleError's switch and came back as a 500 rather than the 409
+// (with the "deactivate instead" guidance) that a conflicting, expected
+// refusal should surface as.
+func TestDeleteStatus_InUse_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts In Use",
+		"sort_order": 12,
+		"color":      "#112233",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, createResp, &st)
+
+	ticketResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "needs the part",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, ticketResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, ticketResp, &tk)
+
+	patchResp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": st["id"],
+	})
+	require.Equal(t, http.StatusOK, patchResp.StatusCode)
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_in_use", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "1 ticket(s)")
+	require.Contains(t, errBody.Error.Message, "deactivate")
+}
+
+// TestDeleteStatus_HistoryReferenced_ReturnsConflict pins #275's other
+// remaining refusal in the same function: zero tickets are currently in the
+// status, but a past transition through it still blocks the hard delete
+// (ticket_status_history has no ON DELETE action on the status foreign key).
+// Before wrapping this in ticket.ErrStatusInUse it fell through to a 500
+// exactly like the in-use case above.
+func TestDeleteStatus_HistoryReferenced_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts History",
+		"sort_order": 13,
+		"color":      "#334455",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, createResp, &st)
+
+	ticketResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "passed through the status",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, ticketResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, ticketResp, &tk)
+
+	// Transition into the custom status, then out of it again, so the
+	// current count is zero but a history row still references it.
+	patchIn := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": st["id"],
+	})
+	require.Equal(t, http.StatusOK, patchIn.StatusCode)
+
+	patchOut := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": statusIDNamed(t, h, ticket.StatusNameResolved).String(),
+	})
+	require.Equal(t, http.StatusOK, patchOut.StatusCode)
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_in_use", errBody.Error.Code)
+	// Two history rows reference the custom status: the transition into it
+	// (to_status_id) and the transition out of it (from_status_id) — the
+	// count query matches either column (see CountStatusHistoryByStatus).
+	require.Contains(t, errBody.Error.Message, "2 past ticket transition(s)")
+	require.Contains(t, errBody.Error.Message, "deactivate")
+}
+
+// TestUpdateStatus_SystemStatusCannotBeRenamed pins #263: renaming a system
+// status broke the next server restart (LoadSystemStatuses looks them up by
+// name), so the admin API now refuses the rename outright rather than
+// writing it.
+func TestUpdateStatus_SystemStatusCannotBeRenamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			var id string
+			for _, st := range statuses {
+				if st["name"] == name {
+					id = st["id"].(string)
+				}
+			}
+			require.NotEmpty(t, id, "seeded system status %q must exist", name)
+
+			resp := h.doAsAdmin(t, http.MethodPatch,
+				fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{"name": "Done"})
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			var errBody struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			decodeJSON(t, resp, &errBody)
+			require.Equal(t, "forbidden", errBody.Error.Code)
+			require.Contains(t, errBody.Error.Message, "cannot be renamed")
+
+			// The name must be unchanged.
+			getResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+			require.Equal(t, http.StatusOK, getResp.StatusCode)
+			var after []map[string]any
+			decodeJSON(t, getResp, &after)
+			var stillNamed bool
+			for _, st := range after {
+				if st["id"] == id && st["name"] == name {
+					stillNamed = true
+				}
+			}
+			require.True(t, stillNamed, "system status %q must keep its name", name)
+		})
+	}
+
+	// The "restart" from the issue's reproduction: LoadSystemStatuses must
+	// still find New/Resolved/Closed by name after every refused rename.
+	require.NoError(t, h.ticketSvc.LoadSystemStatuses(ctx))
+}
+
+// TestUpdateStatus_SystemStatusOtherFieldsStillEditable pins that the #263
+// guard is scoped to the name field alone, and that resending the unchanged
+// name (an idempotent PATCH echoing the resource) is not treated as a rename.
+func TestUpdateStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNameResolved {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{
+		"name":       ticket.StatusNameResolved,
+		"color":      "#123456",
+		"sort_order": 97,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, ticket.StatusNameResolved, st["name"])
+	require.Equal(t, "#123456", st["color"])
+	require.EqualValues(t, 97, st["sort_order"])
+}
+
+// TestUpdateStatus_CombinedRenameAndDeactivate_RefusesDeactivateFirst pins
+// the #272 finding: a single PATCH that both renames and deactivates a
+// system status is invalid two different ways at once. handleUpdateStatus
+// applies the name to the in-memory struct unconditionally and only then
+// checks Active inline (the rename check that used to run first was removed
+// by #269 in favor of SaveStatus's own refusal), so the caller sees 403
+// "cannot be deactivated" rather than "cannot be renamed" — the reverse of
+// what this same request got before #269's refactor. Both are a clean 403;
+// this only pins which message wins now.
+func TestUpdateStatus_CombinedRenameAndDeactivate_RefusesDeactivateFirst(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNameClosed {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", id),
+		map[string]any{"name": "Done", "active": false})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "forbidden", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "cannot be deactivated")
+
+	// The name must be unchanged: the request never reached SaveStatus.
+	getResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+	var after []map[string]any
+	decodeJSON(t, getResp, &after)
+	var stillNamed bool
+	for _, st := range after {
+		if st["id"] == id && st["name"] == ticket.StatusNameClosed {
+			stillNamed = true
+		}
+	}
+	require.True(t, stillNamed, "system status must keep its name after the combined request is refused")
+}
+
+// TestUpdateStatus_CustomStatusCanBeRenamed pins that the #263 refusal does
+// not spread to custom statuses, which remain freely renamable.
+func TestUpdateStatus_CustomStatusCanBeRenamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Vendor",
+		"sort_order": 12,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Awaiting Supplier"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Supplier", st["name"])
+}
+
+// TestUpdateStatus_RenameToDuplicateName_ReturnsConflict pins #278's other
+// half: renaming a status to a name that collides with another status's hits
+// the same statuses_name_key constraint CreateStatus does, and before
+// SaveStatus/UpdateStatus mapped it to ticket.ErrStatusNameTaken it fell
+// through handleError unrecognized and came back as a 500.
+func TestUpdateStatus_RenameToDuplicateName_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Approval",
+		"sort_order": 16,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	// "Pending" collides with a seeded default status of that name
+	// (migration 000001).
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Pending"})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_name_taken", errBody.Error.Code)
+}
+
+// TestUpdateStatus_PendingIsRenamable_ByDesign is a decision pin, the shape
+// CLAUDE.md describes for ticket.Service.Close: Pending is a seeded *custom*
+// status (ticket.StatusNamePending), not a system one, so the #263 guard does
+// not cover it. See DESIGN.md → SLA Tracking → Timer Mechanics for why this is
+// accepted rather than "fixed" — renaming Pending only stops future SLA
+// pauses, a mild and reversible consequence, whereas protecting it would need
+// a special case keyed on the string "Pending".
+func TestUpdateStatus_PendingIsRenamable_ByDesign(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNamePending {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id, "seeded Pending status must exist")
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{"name": "Waiting on customer"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Waiting on customer", st["name"])
 }
 
 // ── Admin: settings ───────────────────────────────────────────────────────────

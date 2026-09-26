@@ -953,6 +953,7 @@ function SLAPoliciesSection() {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setShowAdd(false)
       setForm(EMPTY_FORM)
+      setFormError('')
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -970,6 +971,7 @@ function SLAPoliciesSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setEditingId(null)
+      setFormError('')
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -979,6 +981,11 @@ function SLAPoliciesSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setPendingDelete(null)
+      setFormError('')
+    },
+    onError: (err) => {
+      setPendingDelete(null)
+      setFormError(extractError(err))
     },
   })
 
@@ -1010,7 +1017,7 @@ function SLAPoliciesSection() {
                       key={p.id}
                       form={form} setForm={setForm} categories={categories}
                       onSave={() => updateMutation.mutate(p.id)}
-                      onCancel={() => setEditingId(null)}
+                      onCancel={() => { setFormError(''); setEditingId(null) }}
                       isPending={updateMutation.isPending}
                     />
                   ) : (
@@ -1037,7 +1044,7 @@ function SLAPoliciesSection() {
                           <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
                           <button
                             className="text-xs text-red-600 hover:underline disabled:opacity-40"
-                            onClick={() => setPendingDelete(p)}
+                            onClick={() => { setFormError(''); setPendingDelete(p) }}
                             disabled={deleteMutation.isPending}
                           >
                             Delete
@@ -1051,7 +1058,7 @@ function SLAPoliciesSection() {
                   <PolicyFormRow
                     form={form} setForm={setForm} categories={categories}
                     onSave={() => createMutation.mutate()}
-                    onCancel={() => setShowAdd(false)}
+                    onCancel={() => { setFormError(''); setShowAdd(false) }}
                     isPending={createMutation.isPending}
                   />
                 )}
@@ -1070,7 +1077,7 @@ function SLAPoliciesSection() {
         open={pendingDelete !== null}
         onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
         title={`Delete SLA policy "${pendingDelete?.name ?? ''}"?`}
-        description="Tickets currently tracking against this policy will lose their SLA targets."
+        description="This cannot be undone. A policy that any ticket has been tracked against cannot be deleted."
         confirmLabel="Delete policy"
         isPending={deleteMutation.isPending}
         onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}

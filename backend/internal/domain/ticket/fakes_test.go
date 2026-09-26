@@ -291,6 +291,7 @@ type fakeStatusStore struct {
 	counts map[uuid.UUID]int64
 
 	deletes int
+	updates int
 }
 
 func (f *fakeStatusStore) GetStatusByName(_ context.Context, name string) (ticket.Status, error) {
@@ -310,7 +311,10 @@ func (f *fakeStatusStore) ListStatuses(context.Context) ([]ticket.Status, error)
 }
 
 func (f *fakeStatusStore) CreateStatus(context.Context, ticket.Status) error { return nil }
-func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error { return nil }
+func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error {
+	f.updates++
+	return nil
+}
 func (f *fakeStatusStore) DeleteStatus(context.Context, uuid.UUID) error {
 	f.deletes++
 	return nil
