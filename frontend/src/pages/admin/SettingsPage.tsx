@@ -1017,7 +1017,7 @@ function SLAPoliciesSection() {
                       key={p.id}
                       form={form} setForm={setForm} categories={categories}
                       onSave={() => updateMutation.mutate(p.id)}
-                      onCancel={() => setEditingId(null)}
+                      onCancel={() => { setFormError(''); setEditingId(null) }}
                       isPending={updateMutation.isPending}
                     />
                   ) : (
@@ -1058,7 +1058,7 @@ function SLAPoliciesSection() {
                   <PolicyFormRow
                     form={form} setForm={setForm} categories={categories}
                     onSave={() => createMutation.mutate()}
-                    onCancel={() => setShowAdd(false)}
+                    onCancel={() => { setFormError(''); setShowAdd(false) }}
                     isPending={createMutation.isPending}
                   />
                 )}

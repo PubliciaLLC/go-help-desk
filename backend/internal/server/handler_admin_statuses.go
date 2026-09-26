@@ -138,6 +138,16 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Active != nil {
 		if st.Kind == ticket.StatusKindSystem {
+			// This is the one inline refusal handleUpdateStatus still has of
+			// its own; the rename check above it was removed by #269. Because
+			// Name is applied to st unconditionally above, before this check
+			// runs, a request that both renames and deactivates a system
+			// status (e.g. {"name":"Done","active":false}) never reaches
+			// SaveStatus and its rename refusal at all: the caller gets this
+			// 403 "cannot be deactivated" instead of "cannot be renamed",
+			// the reverse of what the same request got before #269. Same
+			// status code and error code either way, just a different
+			// message — see #272.
 			Error(w, http.StatusForbidden, "forbidden", "system statuses cannot be deactivated")
 			return
 		}

@@ -517,9 +517,21 @@ var (
 	// store would reintroduce the restart-crash hazard #263 closed. Wrapped
 	// rather than returned bare — like ErrSelfLink and ErrPolicyInUse in the
 	// sla package — so handleError maps it to a clean refusal instead of
-	// falling through to 500 for any caller that reaches these methods by a
-	// route other than the HTTP handler's own inline check. See #269.
+	// falling through to 500. The HTTP handler (handleUpdateStatus) has no
+	// inline rename check of its own: #269 removed it in favor of relying
+	// entirely on this refusal. (handleUpdateStatus does still check Active
+	// inline before a system status ever reaches SaveStatus, which is why a
+	// request that both renames and deactivates a system status is refused
+	// for the deactivate, not the rename — see #272.) RemoveStatus's delete
+	// refusal was never duplicated at the handler either.
 	ErrSystemStatusImmutable = errors.New("system status is immutable")
+	// ErrStatusNotFound is returned by getStatusByID (and so by SaveStatus and
+	// RemoveStatus) when no status matches the given ID — a nonexistent or
+	// already-deleted id, most commonly. Wrapped for the same reason
+	// ErrSystemStatusImmutable is: the bare error it replaces reached
+	// handleError unrecognized and came back as a 500, though the fault was
+	// in the request, not the server. See #273.
+	ErrStatusNotFound = errors.New("status not found")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

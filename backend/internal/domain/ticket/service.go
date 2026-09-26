@@ -1484,14 +1484,15 @@ func (s *Service) AddStatus(ctx context.Context, st Status) error {
 }
 
 // SaveStatus persists changes to an existing status record. Renaming a
-// system status is refused here as well as at the HTTP handler
-// (handleUpdateStatus): system statuses are found by name at startup
+// system status is refused here, and only here (#269 removed the HTTP
+// handler's own inline rename check, so handleUpdateStatus now relies
+// entirely on this refusal): system statuses are found by name at startup
 // (LoadSystemStatuses) and compared by name in lifecycle rules, so a rename
-// that reached this method by any other route would reintroduce the
-// restart-crash hazard #263 closed. Mirrors RemoveStatus's own
-// system-status refusal below. The refusal wraps ErrSystemStatusImmutable
-// (#269) so handleError can map it to a clean 403 rather than a bare 500 for
-// any caller that reaches this method without going through the handler.
+// that reached the store would reintroduce the restart-crash hazard #263
+// closed. Mirrors RemoveStatus's own system-status refusal below. The
+// refusal wraps ErrSystemStatusImmutable (#269) so handleError can map it to
+// a clean 403 rather than a bare 500 for any caller, HTTP or otherwise, that
+// reaches this method.
 func (s *Service) SaveStatus(ctx context.Context, st Status) error {
 	current, err := s.getStatusByID(ctx, st.ID)
 	if err != nil {
@@ -1555,7 +1556,10 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	return s.statuses.DeleteStatus(ctx, id)
 }
 
-// getStatusByID fetches a status; returns a descriptive error on miss.
+// getStatusByID fetches a status; returns a descriptive error on miss. The
+// miss wraps ErrStatusNotFound (#273) so handleError maps it to a 404
+// instead of falling through to a 500 for callers that don't do their own
+// existence check first — handleDeleteStatus is the one that doesn't.
 func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, error) {
 	statuses, err := s.statuses.ListStatuses(ctx)
 	if err != nil {
@@ -1566,7 +1570,7 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 			return st, nil
 		}
 	}
-	return Status{}, fmt.Errorf("status %s not found", id)
+	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
 }
 
 // auditEntry builds an audit row. Callers write it through the transaction's

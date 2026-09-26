@@ -1037,6 +1037,28 @@ func TestDeleteStatus_System_AsAdmin(t *testing.T) {
 	}
 }
 
+// TestDeleteStatus_UnknownID_Returns404 pins #273: getStatusByID used to
+// return a bare, untyped error on a miss, so RemoveStatus's failure fell
+// through handleError's switch unmatched and came back as a 500 rather than
+// the 404 an admin deleting an already-deleted (or mistyped) status id
+// should see.
+func TestDeleteStatus_UnknownID_Returns404(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", uuid.New()), nil)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "not_found", errBody.Error.Code)
+}
+
 // TestUpdateStatus_SystemStatusCannotBeRenamed pins #263: renaming a system
 // status broke the next server restart (LoadSystemStatuses looks them up by
 // name), so the admin API now refuses the rename outright rather than
@@ -1124,6 +1146,58 @@ func TestUpdateStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
 	require.Equal(t, ticket.StatusNameResolved, st["name"])
 	require.Equal(t, "#123456", st["color"])
 	require.EqualValues(t, 97, st["sort_order"])
+}
+
+// TestUpdateStatus_CombinedRenameAndDeactivate_RefusesDeactivateFirst pins
+// the #272 finding: a single PATCH that both renames and deactivates a
+// system status is invalid two different ways at once. handleUpdateStatus
+// applies the name to the in-memory struct unconditionally and only then
+// checks Active inline (the rename check that used to run first was removed
+// by #269 in favor of SaveStatus's own refusal), so the caller sees 403
+// "cannot be deactivated" rather than "cannot be renamed" — the reverse of
+// what this same request got before #269's refactor. Both are a clean 403;
+// this only pins which message wins now.
+func TestUpdateStatus_CombinedRenameAndDeactivate_RefusesDeactivateFirst(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNameClosed {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", id),
+		map[string]any{"name": "Done", "active": false})
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "forbidden", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "cannot be deactivated")
+
+	// The name must be unchanged: the request never reached SaveStatus.
+	getResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, getResp.StatusCode)
+	var after []map[string]any
+	decodeJSON(t, getResp, &after)
+	var stillNamed bool
+	for _, st := range after {
+		if st["id"] == id && st["name"] == ticket.StatusNameClosed {
+			stillNamed = true
+		}
+	}
+	require.True(t, stillNamed, "system status must keep its name after the combined request is refused")
 }
 
 // TestUpdateStatus_CustomStatusCanBeRenamed pins that the #263 refusal does

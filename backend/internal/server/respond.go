@@ -56,7 +56,7 @@ func DecodeJSON(r *http.Request, dst any) error {
 
 // handleError maps common sentinel errors to HTTP status codes.
 func handleError(w http.ResponseWriter, err error) {
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) {
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
