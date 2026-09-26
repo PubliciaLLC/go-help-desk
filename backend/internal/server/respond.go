@@ -77,6 +77,10 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "ticket_not_closed", "only a closed ticket can be reopened")
 		return
 	}
+	// Not a permission problem: the caller may well own this ticket. The
+	// ticket is in a state that does not accept the change, which is what
+	// 409 is for. It fell through to 500 for the same reason ErrForbidden
+	// did.
 	if errors.Is(err, ticket.ErrClosed) {
 		Error(w, http.StatusConflict, "ticket_closed", "this ticket is closed")
 		return
