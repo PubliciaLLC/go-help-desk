@@ -54,23 +54,61 @@ SET first_response_at = $2, resolved_at = $3,
 WHERE ticket_id = $1;
 
 -- name: SetSLAFirstResponse :exec
--- Marks the first response and freezes elapsed-toward-target as of that same
--- moment in one statement, COALESCE-guarded like StampSLABreaches below: it
--- only ever writes first_response_at / response_elapsed_at_met_seconds, and
--- only while they are still NULL, so it cannot race with StampSLABreaches
--- clobbering a breach stamp the way a full-row UpdateSLARecord read-then-write
--- could (see CLAUDE.md). Idempotent for the same reason: a retried call finds
--- both columns already set and changes nothing.
+-- Marks the first response, freezes elapsed-toward-target as of that same
+-- moment, AND stamps a response breach if it is already late — all in ONE
+-- statement. COALESCE-guarded like StampSLABreaches below: it only ever
+-- writes first_response_at / response_elapsed_at_met_seconds /
+-- response_breached_at, and only while each is still NULL, so it cannot race
+-- with StampSLABreaches clobbering a breach stamp the way a full-row
+-- UpdateSLARecord read-then-write could (see CLAUDE.md). Idempotent for the
+-- same reason: a retried call finds every column already set and changes
+-- nothing.
+--
+-- #228: this used to be the fact write alone, with the caller separately
+-- reading the record, deciding whether to breach from that (possibly stale)
+-- read, and issuing a second StampSLABreaches statement. Two consequences:
+-- two near-simultaneous calls could both decide from a stale pre-write read,
+-- so the LOSING call's own (later, larger) elapsed reading could still land
+-- a breach stamp even though the WINNING call's earlier, on-time write is
+-- what actually took — a stray, uncleared breach stamp next to a frozen
+-- green elapsed reading. And a failure between the fact write and the
+-- now-separate breach-stamp statement could lose a genuine late-response
+-- signal permanently (ListSLABreachCandidates excludes a ticket once
+-- first_response_at is set, so nothing ever revisits it).
+--
+-- Folding both into one statement removes the gap entirely: every column
+-- reference on the right of "=" reads this row as it stood BEFORE this
+-- statement (a single UPDATE's SET list is computed once, from the pre-image
+-- row, never from another SET clause's new value), so
+-- "first_response_at IS NULL" means "nothing has won this race yet — THIS
+-- call's write is the one that lands, and its own elapsed reading is the one
+-- the breach decision is made from." A losing call (first_response_at
+-- already NOT NULL) touches nothing at all, including response_breached_at,
+-- so it can never stamp a breach the winning call did not itself decide.
 UPDATE sla_records
-SET first_response_at = COALESCE(first_response_at, $2),
-    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3)
+SET first_response_at = COALESCE(first_response_at, sqlc.arg(at)::timestamptz),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    response_breached_at = CASE
+        WHEN first_response_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(response_target_seconds)::bigint
+            THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE response_breached_at
+    END
 WHERE ticket_id = $1;
 
 -- name: SetSLAResolved :exec
--- The resolution-side twin of SetSLAFirstResponse.
+-- The resolution-side twin of SetSLAFirstResponse: see its comment for why
+-- the fact write and the breach stamp are one statement (#228), and why
+-- every right-hand-side column reference here reads the PRE-UPDATE row.
 UPDATE sla_records
-SET resolved_at = COALESCE(resolved_at, $2),
-    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3)
+SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    resolution_breached_at = CASE
+        WHEN resolved_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(resolution_target_seconds)::bigint
+            THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE resolution_breached_at
+    END
 WHERE ticket_id = $1;
 
 -- name: ListSLABreachCandidates :many

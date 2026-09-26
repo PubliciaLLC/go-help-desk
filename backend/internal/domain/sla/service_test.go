@@ -23,6 +23,12 @@ type fakeSLAStore struct {
 	// candidates is what ListBreachCandidates returns.
 	candidates []uuid.UUID
 
+	// stampErr, when set, is returned by StampBreaches — used to prove a
+	// door no longer depends on it at all (#228: RecordFirstResponse/
+	// RecordResolved fold their own breach decision into SetFirstResponse/
+	// SetResolved, so StampBreaches failing must not touch them).
+	stampErr error
+
 	updateRecordCalls     int
 	setFirstResponseCalls int
 	setResolvedCalls      int
@@ -88,13 +94,17 @@ func (f *fakeSLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
 	return nil
 }
 
-// SetFirstResponse and SetResolved apply the same COALESCE semantics the real
-// queries do: only a currently-nil pair of columns is written, and nothing
-// else on the record changes — in particular, a concurrent StampBreaches call
-// is never clobbered by these (see TestEvaluateBreaches_NeverWritesThroughUpdateRecord
-// for the regression this protects, and TestRecordFirstResponse_SurvivesConcurrentBreachStamp
-// for the equivalent check on this door).
-func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+// SetFirstResponse and SetResolved apply the same semantics the real,
+// #228-folded queries do: only a currently-nil fact (and, atomically with
+// it, a currently-nil breach column) is written, and nothing else on the
+// record changes — in particular, a concurrent StampBreaches call is never
+// clobbered by these (see TestEvaluateBreaches_NeverWritesThroughUpdateRecord
+// for the regression this protects), and the breach decision is made from
+// THIS call's own elapsed/target arguments, landing in the same assignment as
+// the fact — never from a separately-read record — so a call that loses the
+// COALESCE race (finds the fact already set) touches nothing at all,
+// including the breach column. See TestRecordResolved_ConcurrentCallsLeaveNoStrayBreachStamp.
+func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
 	f.setFirstResponseCalls++
 	r, ok := f.records[ticketID]
 	if !ok {
@@ -102,15 +112,16 @@ func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, a
 	}
 	if r.FirstResponseAt == nil {
 		r.FirstResponseAt = &at
-	}
-	if r.ResponseElapsedAtMetSeconds == nil {
 		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > responseTargetSeconds && r.ResponseBreachedAt == nil {
+			r.ResponseBreachedAt = &at
+		}
 	}
 	f.records[ticketID] = r
 	return nil
 }
 
-func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
 	f.setResolvedCalls++
 	r, ok := f.records[ticketID]
 	if !ok {
@@ -118,9 +129,10 @@ func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at tim
 	}
 	if r.ResolvedAt == nil {
 		r.ResolvedAt = &at
-	}
-	if r.ResolutionElapsedAtMetSeconds == nil {
 		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
+			r.ResolutionBreachedAt = &at
+		}
 	}
 	f.records[ticketID] = r
 	return nil
@@ -147,6 +159,9 @@ func (f *fakeSLAStore) ListRecordsByTicketIDs(_ context.Context, ticketIDs []uui
 // only a currently-nil column is set, and nothing else on the record changes.
 func (f *fakeSLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
 	f.stampCalls++
+	if f.stampErr != nil {
+		return f.stampErr
+	}
 	r, ok := f.records[ticketID]
 	if !ok {
 		return nil // no record for this ticket: a silent no-op, like the real query.
@@ -644,10 +659,11 @@ func (f *swallowProbeStore) UpdateRecord(_ context.Context, r sla.Record) error 
 	return nil
 }
 
-// SetFirstResponse and SetResolved apply the same "only write a NULL column"
-// rule the real COALESCE-guarded queries do, keyed off hasRecord the same way
-// GetRecord's ErrNoRecord is: a ticket with no record is a silent no-op.
-func (f *swallowProbeStore) SetFirstResponse(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds int64) error {
+// SetFirstResponse and SetResolved apply the same "only write a NULL column,
+// atomically with its breach stamp" rule the real #228-folded queries do,
+// keyed off hasRecord the same way GetRecord's ErrNoRecord is: a ticket with
+// no record is a silent no-op.
+func (f *swallowProbeStore) SetFirstResponse(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
 	if f.setErr != nil {
 		return f.setErr
 	}
@@ -657,14 +673,15 @@ func (f *swallowProbeStore) SetFirstResponse(_ context.Context, _ uuid.UUID, at 
 	f.updates++
 	if f.record.FirstResponseAt == nil {
 		f.record.FirstResponseAt = &at
-	}
-	if f.record.ResponseElapsedAtMetSeconds == nil {
 		f.record.ResponseElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > responseTargetSeconds && f.record.ResponseBreachedAt == nil {
+			f.record.ResponseBreachedAt = &at
+		}
 	}
 	return nil
 }
 
-func (f *swallowProbeStore) SetResolved(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds int64) error {
+func (f *swallowProbeStore) SetResolved(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
 	if f.setErr != nil {
 		return f.setErr
 	}
@@ -674,9 +691,10 @@ func (f *swallowProbeStore) SetResolved(_ context.Context, _ uuid.UUID, at time.
 	f.updates++
 	if f.record.ResolvedAt == nil {
 		f.record.ResolvedAt = &at
-	}
-	if f.record.ResolutionElapsedAtMetSeconds == nil {
 		f.record.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > resolutionTargetSeconds && f.record.ResolutionBreachedAt == nil {
+			f.record.ResolutionBreachedAt = &at
+		}
 	}
 	return nil
 }
@@ -772,6 +790,77 @@ func TestRecordResolved(t *testing.T) {
 	require.Equal(t, 2, f.updates, "already resolved: no further store writes")
 	require.True(t, f.record.ResolvedAt.Equal(now), "already recorded")
 	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
+}
+
+// TestSetResolved_ConcurrentCallsLeaveNoStrayBreachStamp pins #228 directly
+// against the store contract both RecordResolved callers rely on: two
+// "near-simultaneous" calls — modelled here as two sequential calls racing
+// the same COALESCE, exactly as two real overlapping transactions would —
+// must not leave a breach stamp that disagrees with whichever call's write
+// actually landed.
+//
+// Before #228, the fact write (SetResolved) and the breach decision
+// (StampBreaches, decided from a separately-read record) were two
+// statements. The LOSING call here would still have read a pre-write record
+// showing "not yet resolved," computed ITS OWN (later, breaching) elapsed
+// reading, and called StampBreaches with that reading — landing a stray
+// resolution_breached_at next to the WINNING call's genuinely on-time
+// resolved_at, a stamp nothing could ever clear afterward. Folding the
+// breach decision into the same statement as the fact write means a losing
+// call's statement finds resolved_at already NOT NULL and changes nothing at
+// all, including the breach column.
+func TestSetResolved_ConcurrentCallsLeaveNoStrayBreachStamp(t *testing.T) {
+	store := newFakeSLAStore()
+	ticketID := uuid.New()
+	store.records[ticketID] = sla.Record{TicketID: ticketID}
+	const resolutionTargetSeconds = int64(3600) // one hour
+
+	onTimeAt := time.Now()
+	// The "on time" call: comfortably under target.
+	require.NoError(t, store.SetResolved(context.Background(), ticketID, onTimeAt, 1800, resolutionTargetSeconds))
+
+	// The "losing" near-simultaneous call: a different (later) instant with
+	// an elapsed reading that WOULD have breached, had it been the one to
+	// land.
+	lateAt := onTimeAt.Add(time.Hour)
+	require.NoError(t, store.SetResolved(context.Background(), ticketID, lateAt, 5000, resolutionTargetSeconds))
+
+	rec := store.records[ticketID]
+	require.True(t, rec.ResolvedAt.Equal(onTimeAt), "the first call's write wins the COALESCE race")
+	require.Equal(t, int64(1800), *rec.ResolutionElapsedAtMetSeconds, "the winning call's own elapsed reading, not the loser's")
+	require.Nil(t, rec.ResolutionBreachedAt,
+		"the losing call's own breaching elapsed must never land a stray stamp once its write lost the race")
+}
+
+// TestRecordFirstResponse_StampBreachesFailureDoesNotLoseTheLateSignal pins
+// the other half of #228: before this fix, a late response's breach stamp
+// was written by a THIRD, separate StampBreaches statement after the fact
+// write — a failure there lost the signal permanently, since
+// ListSLABreachCandidates excludes a ticket once first_response_at is set, so
+// nothing would ever revisit it. RecordFirstResponse no longer calls
+// StampBreaches at all: the breach decision is folded into SetFirstResponse's
+// own statement. This is proven here by making StampBreaches always fail and
+// showing the late-response signal still lands correctly.
+func TestRecordFirstResponse_StampBreachesFailureDoesNotLoseTheLateSignal(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 1000}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+	store.stampErr = errors.New("StampBreaches unavailable")
+
+	createdAt := time.Now().Add(-2 * time.Hour)
+	respondedAt := createdAt.Add(60 * time.Minute) // 60 > 30-minute target: late
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, respondedAt),
+		"a StampBreaches failure must not surface here at all: this door no longer calls it")
+
+	rec := store.records[ticketID]
+	require.NotNil(t, rec.ResponseBreachedAt, "the late response must still be stamped, folded into SetFirstResponse's own write")
+	require.True(t, rec.ResponseBreachedAt.Equal(respondedAt))
+	require.Zero(t, store.stampCalls, "RecordFirstResponse must not call StampBreaches at all")
 }
 
 // TestRecordResolved_LateResolutionEntirelyBetweenSweepTicksStillStamped pins

@@ -42,12 +42,12 @@ func (s *Service) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 // always has this row already (it just read or wrote it), so Elapsed is
 // computed here rather than via a GetRecord round trip for the ticket side.
 // A GetRecord round trip IS made, but only to read the record's immutable
-// policy_id (for the target) and to decide whether this call has anything to
-// do; the actual write is still SetFirstResponse's single COALESCE-guarded
-// UPDATE touching only its own two columns, and the breach stamp below is
-// StampBreaches's own COALESCE-guarded UPDATE — so a breach stamp
-// StampBreaches wrote between this call being triggered and it running still
-// cannot be clobbered (see store.go's SetFirstResponse and CLAUDE.md).
+// policy_id (for the target) and as a fast-path check for whether this call
+// has anything to do; store.SetFirstResponse is the actual write, and it is
+// the sole authority on whether ITS write lands and whether a breach gets
+// stamped for it (#228) — see its doc comment for why folding the two into
+// one statement removes the race a separately-read record here would
+// otherwise decide from.
 //
 // #217: this is also where a LATE response gets its breach stamp the moment
 // it actually happens, using the frozen elapsed value just computed — not
@@ -63,7 +63,7 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 		return fmt.Errorf("recording SLA first response: %w", err)
 	}
 	if record.FirstResponseAt != nil {
-		return nil // already recorded; nothing to do
+		return nil // fast path; the store write below would no-op anyway
 	}
 	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
 	if err != nil {
@@ -71,13 +71,8 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 	}
 
 	elapsed := int64(Elapsed(t, at) / time.Second)
-	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed); err != nil {
+	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA first response: %w", err)
-	}
-	if elapsed > int64(policy.ResponseTargetMin)*60 {
-		if err := s.store.StampBreaches(ctx, t.ID, &at, nil); err != nil {
-			return fmt.Errorf("stamping SLA response breach: %w", err)
-		}
 	}
 	return nil
 }
@@ -98,13 +93,17 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 //
 // #217: like RecordFirstResponse, this stamps a late RESOLUTION breach right
 // here, at the instant it is recorded, rather than relying solely on the
-// sweep to notice an outstanding record later.
+// sweep to notice an outstanding record later. #228: SetResolved decides that
+// stamp atomically with its own write — see its store.go doc comment.
 //
-// #219: a resolution is a response in every practical sense. If nothing has
-// satisfied the response target yet (no prior staff reply), this resolution
-// does — COALESCE-guarded via SetFirstResponse, so an actual earlier reply is
-// left untouched, and its own frozen elapsed/breach decision (made at ITS
-// instant, not this one) stands.
+// #219: a resolution is a response in every practical sense. The call to
+// SetFirstResponse below always runs, unconditionally — not gated on a
+// separately-read "is it already set" check, which is exactly the kind of
+// stale-record decision #228 removes. SetFirstResponse's own COALESCE guard
+// already makes this the correct no-op when a real earlier reply exists: it
+// leaves first_response_at, response_elapsed_at_met_seconds, and
+// response_breached_at every one untouched, so an actual earlier reply's own
+// frozen elapsed/breach decision (made at ITS instant, not this one) stands.
 func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
 	record, err := s.store.GetRecord(ctx, t.ID)
 	if errors.Is(err, ErrNoRecord) {
@@ -114,7 +113,7 @@ func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.T
 		return fmt.Errorf("recording SLA resolution: %w", err)
 	}
 	if record.ResolvedAt != nil {
-		return nil // already resolved; nothing to do
+		return nil // fast path; the store writes below would no-op anyway
 	}
 	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
 	if err != nil {
@@ -122,29 +121,11 @@ func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.T
 	}
 
 	elapsed := int64(Elapsed(t, at) / time.Second)
-	if err := s.store.SetResolved(ctx, t.ID, at, elapsed); err != nil {
+	if err := s.store.SetResolved(ctx, t.ID, at, elapsed, int64(policy.ResolutionTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA resolution: %w", err)
 	}
-
-	var responseBreach, resolutionBreach *time.Time
-	if elapsed > int64(policy.ResolutionTargetMin)*60 {
-		resolutionBreach = &at
-	}
-
-	firstResponseAlreadySet := record.FirstResponseAt != nil
-	if !firstResponseAlreadySet {
-		if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed); err != nil {
-			return fmt.Errorf("recording SLA response at resolution: %w", err)
-		}
-		if elapsed > int64(policy.ResponseTargetMin)*60 {
-			responseBreach = &at
-		}
-	}
-
-	if responseBreach != nil || resolutionBreach != nil {
-		if err := s.store.StampBreaches(ctx, t.ID, responseBreach, resolutionBreach); err != nil {
-			return fmt.Errorf("stamping SLA breach at resolution: %w", err)
-		}
+	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
+		return fmt.Errorf("recording SLA response at resolution: %w", err)
 	}
 	return nil
 }

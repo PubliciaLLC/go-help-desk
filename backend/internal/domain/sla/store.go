@@ -43,18 +43,22 @@ type Store interface {
 	// against a concurrent breach stamp.
 	UpdateRecord(ctx context.Context, r Record) error
 
-	// SetFirstResponse marks ticketID's first response and freezes its
-	// elapsed-toward-target reading as of that same moment, in one statement
-	// that only ever writes first_response_at / response_elapsed_at_met_seconds
-	// and only while they are still NULL (first writer wins) — the same
-	// COALESCE-guarded, single-purpose shape as StampBreaches, and for the
-	// same reason: a GetRecord-then-UpdateRecord round trip here could
-	// silently overwrite a breach stamp StampBreaches wrote in between back to
-	// NULL. Called for a ticket with no record is a silent no-op.
-	SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error
+	// SetFirstResponse marks ticketID's first response, freezes its
+	// elapsed-toward-target reading as of that same moment, AND stamps a
+	// response breach if it is already late — all in one statement that only
+	// ever writes first_response_at / response_elapsed_at_met_seconds /
+	// response_breached_at, and only while each is still NULL (first writer
+	// wins). Folding the breach decision into the same write as the fact
+	// (#228) means it is made from THIS call's own elapsed reading landing
+	// atomically with the fact, never from a separately-read, possibly-stale
+	// record — a losing call (one that finds first_response_at already set)
+	// touches nothing, including the breach column, so it can never stamp a
+	// breach the winning call did not itself decide. Called for a ticket with
+	// no record is a silent no-op.
+	SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error
 
 	// SetResolved is SetFirstResponse's resolution-side twin.
-	SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error
+	SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error
 
 	// ListRecordsByTicketIDs returns the SLA records for whichever of the
 	// given ticket ids have one. A ticket with no record is simply absent
