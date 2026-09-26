@@ -696,10 +696,10 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		TargetID             uuid.UUID `json:"target_id"`
-		LinkType             string    `json:"link_type"`
-		ResolveAsDuplicate   bool      `json:"resolve_as_duplicate"`
-		ResolutionNotes      string    `json:"resolution_notes"`
+		TargetID           uuid.UUID `json:"target_id"`
+		LinkType           string    `json:"link_type"`
+		ResolveAsDuplicate bool      `json:"resolve_as_duplicate"`
+		ResolutionNotes    string    `json:"resolution_notes"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")

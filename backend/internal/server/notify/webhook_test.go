@@ -212,3 +212,15 @@ func TestDispatch_UnknownFormatIsLoggedAndSkipped(t *testing.T) {
 		t.Fatal("timeout waiting for webhook delivery")
 	}
 }
+
+// TestNewWebhookDispatcher_NilLoggerDefaultsInsteadOfPanicking pins that a nil
+// logger can never reach send's unrecovered goroutine: calling a method on a
+// nil *slog.Logger panics, and a panic in that goroutine takes the whole
+// process down. A caller that skips this constructor and builds the struct
+// literal directly (as other tests in this file do, by design, to bypass
+// safehttp) is still responsible for setting log itself; this only guards
+// the constructor path.
+func TestNewWebhookDispatcher_NilLoggerDefaultsInsteadOfPanicking(t *testing.T) {
+	disp := NewWebhookDispatcher(nil, fixtureBaseURL, nil)
+	require.NotNil(t, disp.log)
+}

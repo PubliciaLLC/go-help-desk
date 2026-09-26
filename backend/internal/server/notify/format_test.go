@@ -629,11 +629,11 @@ func TestTruncateUTF16(t *testing.T) {
 		{name: "ASCII over limit", s: "hello world", n: 5, want: "hello"},
 		{name: "empty string", s: "", n: 0, want: ""},
 		{name: "negative limit", s: "hello", n: -1, want: ""},
-		{name: "emoji under limit", s: "😀", n: 5, want: "😀"},    // emoji is 1 rune = 2 UTF-16 units
+		{name: "emoji under limit", s: "😀", n: 5, want: "😀"}, // emoji is 1 rune = 2 UTF-16 units
 		{name: "emoji at limit", s: "😀", n: 2, want: "😀"},
 		{name: "emoji over limit", s: "😀", n: 1, want: ""},         // can't fit 2-unit emoji
-		{name: "multiple emoji", s: "😀😀", n: 3, want: "😀"},      // only first emoji fits
-		{name: "ascii then emoji", s: "a😀b", n: 3, want: "a😀"},   // a(1) + emoji(2) = 3
+		{name: "multiple emoji", s: "😀😀", n: 3, want: "😀"},         // only first emoji fits
+		{name: "ascii then emoji", s: "a😀b", n: 3, want: "a😀"},     // a(1) + emoji(2) = 3
 		{name: "ascii then emoji over", s: "a😀b", n: 2, want: "a"}, // need 3 for emoji
 		{name: "zero limit", s: "hello", n: 0, want: ""},
 	}
@@ -654,13 +654,13 @@ func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
 	}{
 		{
 			name:    "long subject and escaped asterisks with newlines",
-			subject: strings.Repeat("*", 300),  // escapes to 600 UTF-16 units
+			subject: strings.Repeat("*", 300),   // escapes to 600 UTF-16 units
 			body:    strings.Repeat("*\n", 400), // escapes to 800 per * + newlines
 		},
 		{
 			name:    "all asterisks in body",
-			subject: strings.Repeat("*", 300),  // 600 UTF-16 units
-			body:    strings.Repeat("*", 600),  // 1200 UTF-16 units when escaped
+			subject: strings.Repeat("*", 300), // 600 UTF-16 units
+			body:    strings.Repeat("*", 600), // 1200 UTF-16 units when escaped
 		},
 		{
 			name:    "emoji beyond rune limit",

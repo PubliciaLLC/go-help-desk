@@ -64,6 +64,13 @@ type WebhookDispatcher struct {
 // (cfg.BaseURL); it is never used to reach the hook target itself.
 // log is used to report delivery failures and other operational issues.
 func NewWebhookDispatcher(store WebhookStore, baseURL string, log *slog.Logger) *WebhookDispatcher {
+	if log == nil {
+		// send runs unrecovered in its own goroutine; a nil logger would
+		// panic there on the first delivery failure and take the process
+		// down with it. Defaulting here removes that trap for any caller
+		// that builds a dispatcher without one.
+		log = slog.Default()
+	}
 	return &WebhookDispatcher{
 		store:   store,
 		baseURL: baseURL,

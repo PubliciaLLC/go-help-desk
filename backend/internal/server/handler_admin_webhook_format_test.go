@@ -312,7 +312,7 @@ func TestWebhookUpdate_RejectsUnknownEventName(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 
 	var body struct {
-		Error struct{
+		Error struct {
 			Code string `json:"code"`
 		} `json:"error"`
 	}

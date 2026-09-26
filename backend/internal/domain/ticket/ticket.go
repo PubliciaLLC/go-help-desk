@@ -502,8 +502,8 @@ var (
 	// expired is the window, and telling them "you do not have permission"
 	// sends them to an administrator for something no administrator can grant.
 	ErrReopenWindowClosed = errors.New("the reopen window for this ticket has closed")
-	ErrInvalidLinkType   = errors.New("invalid link type")
-	ErrLinkAlreadyExists = errors.New("link already exists")
+	ErrInvalidLinkType    = errors.New("invalid link type")
+	ErrLinkAlreadyExists  = errors.New("link already exists")
 	// ErrSelfLink is bad input, not a fault — wrapped like ErrInvalidLinkType
 	// so the HTTP layer maps it to 400 instead of falling through to 500. See
 	// #192: AddLink and ResolveAsDuplicate both used to refuse a self-link
