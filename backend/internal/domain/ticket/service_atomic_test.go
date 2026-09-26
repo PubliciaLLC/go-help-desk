@@ -344,6 +344,63 @@ func TestResolveAsDuplicate_SelfLinkRefused(t *testing.T) {
 	require.ErrorIs(t, err, ticket.ErrSelfLink)
 }
 
+// TestResolveAsDuplicate_AlreadyLinkedIsSatisfiedNotConflict pins #194: if the
+// exact duplicate_of link already exists (e.g. staff linked A duplicate-of B
+// earlier without checking the resolve box, or a stale second tab), resolving
+// must still succeed with the given notes rather than aborting with a
+// conflict.
+func TestResolveAsDuplicate_AlreadyLinkedIsSatisfiedNotConflict(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	agent := uuid.New()
+	staff := ticket.Actor{UserID: &agent, Role: user.RoleStaff}
+
+	// Staff already linked the two tickets without resolving.
+	require.NoError(t, h.svc.AddLink(context.Background(), source.ID, target.ID, ticket.LinkDuplicateOf, staff))
+
+	result, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "resolved on second pass", staff)
+
+	require.NoError(t, err, "an already-existing identical link must not abort the resolve")
+	require.Equal(t, h.resolvedStatus.ID, result.StatusID)
+	require.NotNil(t, result.ResolutionNotes)
+	require.Equal(t, "resolved on second pass", *result.ResolutionNotes)
+
+	// Still exactly one link — the pre-existing row, not a duplicate of it.
+	links, err := h.store.ListLinks(context.Background(), source.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1)
+	require.Equal(t, ticket.LinkDuplicateOf, links[0].LinkType)
+}
+
+// TestResolveAsDuplicate_SamePairDifferentTypeIsUnaffected pins the other half
+// of #194: a link between the same two tickets but of a DIFFERENT type must
+// not be special-cased — it is unrelated to the duplicate_of link this call
+// creates, so both must end up existing.
+func TestResolveAsDuplicate_SamePairDifferentTypeIsUnaffected(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	agent := uuid.New()
+	staff := ticket.Actor{UserID: &agent, Role: user.RoleStaff}
+
+	require.NoError(t, h.svc.AddLink(context.Background(), source.ID, target.ID, ticket.LinkRelatedTo, staff))
+
+	result, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "actually a duplicate", staff)
+	require.NoError(t, err)
+	require.Equal(t, h.resolvedStatus.ID, result.StatusID)
+
+	links, err := h.store.ListLinks(context.Background(), source.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 2, "the related_to link and the new duplicate_of link must both exist")
+	types := map[ticket.LinkType]bool{}
+	for _, l := range links {
+		types[l.LinkType] = true
+	}
+	require.True(t, types[ticket.LinkRelatedTo])
+	require.True(t, types[ticket.LinkDuplicateOf])
+}
+
 func TestDuplicateResolutionNotes(t *testing.T) {
 	tn := ticket.TrackingNumber("GHD-2026-000042")
 	notes := ticket.DuplicateResolutionNotes(tn)

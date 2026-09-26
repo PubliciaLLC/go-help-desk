@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -828,10 +829,37 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
-		// Read target ticket to get its tracking number for default notes.
-		target, err := st.GetByID(ctx, targetID)
+		// Lock both ticket rows FOR UPDATE up front, always in the same order
+		// regardless of which is source and which is target.
+		//
+		// Without this, two opposite-direction calls on the same pair (A
+		// dup-of B, and concurrently B dup-of A) deadlock (#196): CreateLink's
+		// FK check takes a FOR KEY SHARE lock on both referenced rows, and
+		// resolveInTx's GetByIDForUpdate later takes FOR UPDATE on the source.
+		// Call 1 ends up holding KEY SHARE on {A,B} and waiting for FOR UPDATE
+		// on A, while call 2 holds KEY SHARE on {B,A} and waits for FOR
+		// UPDATE on B — a cycle Postgres has to abort with 40P01. Taking a
+		// FOR UPDATE lock on both rows here first, in a fixed order (the
+		// lexicographically smaller id first), means both calls queue behind
+		// the same single row instead of forming a cycle: whichever call gets
+		// there first holds both locks by the time it reaches CreateLink and
+		// resolveInTx, and the second call simply waits for the whole first
+		// transaction to finish.
+		first, second := sourceID, targetID
+		if bytes.Compare(second[:], first[:]) < 0 {
+			first, second = second, first
+		}
+		lockedFirst, err := st.GetByIDForUpdate(ctx, first)
 		if err != nil {
 			return err
+		}
+		lockedSecond, err := st.GetByIDForUpdate(ctx, second)
+		if err != nil {
+			return err
+		}
+		target := lockedFirst
+		if target.ID != targetID {
+			target = lockedSecond
 		}
 
 		// Apply default notes if empty.
@@ -839,11 +867,44 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 			notes = DuplicateResolutionNotes(target.TrackingNumber)
 		}
 
-		// Create the link first, so a duplicate link constraint violation fails
-		// before the ticket is locked.
-		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: LinkDuplicateOf}
-		if err := st.CreateLink(ctx, link); err != nil {
-			return fmt.Errorf("creating duplicate link: %w", err)
+		// Check for the exact link before inserting, rather than attempting the
+		// insert and catching ErrLinkAlreadyExists: Postgres marks the whole
+		// transaction aborted the instant one statement fails a constraint, so
+		// catching that error in Go and carrying on does not work here — every
+		// statement after it (resolveInTx's own reads and writes) would fail
+		// with "current transaction is aborted" (25P02), turning the intended
+		// 200 into a 500. A plain existence check has no such cost, and it is
+		// race-safe here specifically because the FOR UPDATE locks taken above
+		// already cover both sourceID and targetID: CreateLink's FK check
+		// requires a FOR KEY SHARE lock on each referenced row, which
+		// conflicts with the FOR UPDATE this transaction already holds, so no
+		// concurrent link insert on this exact pair can land between this
+		// check and this transaction's commit.
+		existingLinks, err := st.ListLinks(ctx, sourceID)
+		if err != nil {
+			return fmt.Errorf("checking for an existing duplicate link: %w", err)
+		}
+		alreadyLinked := false
+		for _, l := range existingLinks {
+			if l.TargetTicketID == targetID && l.LinkType == LinkDuplicateOf {
+				alreadyLinked = true
+				break
+			}
+		}
+		if !alreadyLinked {
+			// The identical duplicate_of link not existing yet is the normal
+			// case; when it does, it is satisfied, not a conflict (#194).
+			// Staff may have linked the two tickets earlier without checking
+			// "resolve as duplicate", and later want to resolve — aborting
+			// the whole transaction over a link that already says exactly
+			// what this call asked for left the ticket stuck unresolved for
+			// no reason. A same-pair link of a DIFFERENT type does not match
+			// this check, so it is created normally alongside the new one,
+			// with no special-casing needed.
+			link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: LinkDuplicateOf}
+			if err := st.CreateLink(ctx, link); err != nil {
+				return fmt.Errorf("creating duplicate link: %w", err)
+			}
 		}
 
 		// Resolve the source ticket.
