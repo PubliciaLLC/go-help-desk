@@ -3,6 +3,7 @@ package sla_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -74,7 +75,10 @@ func (f *fakeSLAStore) CreateRecord(_ context.Context, r sla.Record) error {
 func (f *fakeSLAStore) GetRecord(_ context.Context, ticketID uuid.UUID) (sla.Record, error) {
 	r, ok := f.records[ticketID]
 	if !ok {
-		return sla.Record{}, errors.New("record not found")
+		// Wraps sla.ErrNoRecord, matching the real store, so callers that
+		// branch on it (Service.RecordFirstResponse / RecordResolved) see the
+		// same "not under an SLA" signal this fake's tests rely on.
+		return sla.Record{}, fmt.Errorf("%w: %s", sla.ErrNoRecord, ticketID)
 	}
 	return r, nil
 }
@@ -252,6 +256,10 @@ func TestSLAService_RecordFirstResponse_FreezesElapsed(t *testing.T) {
 	store := newFakeSLAStore()
 	policyID := uuid.New()
 	ticketID := uuid.New()
+	// A target comfortably above the 60-minute elapsed reading below, so
+	// this test's only concern (the elapsed number itself) isn't muddied by
+	// also tripping the #217 record-time breach stamp.
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 1000, ResolutionTargetMin: 1000}
 	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
 
 	createdAt := time.Now().Add(-90 * time.Minute)
@@ -603,11 +611,16 @@ type swallowProbeStore struct {
 	getErr    error
 	setErr    error // returned by SetFirstResponse / SetResolved, independent of getErr
 	updates   int
+	// policy is returned by GetPolicy unconditionally (this fake has exactly
+	// one ticket in play). Left zero-valued, both targets are 0 minutes, so
+	// any positive elapsed reading counts as an immediate breach — tests that
+	// care about NOT breaching set this explicitly.
+	policy sla.Policy
 }
 
 func (f *swallowProbeStore) CreatePolicy(context.Context, sla.Policy) error { return nil }
 func (f *swallowProbeStore) GetPolicy(context.Context, uuid.UUID) (sla.Policy, error) {
-	return sla.Policy{}, nil
+	return f.policy, nil
 }
 func (f *swallowProbeStore) UpdatePolicy(context.Context, sla.Policy) error     { return nil }
 func (f *swallowProbeStore) DeletePolicy(context.Context, uuid.UUID) error      { return nil }
@@ -690,7 +703,11 @@ func (f *swallowProbeStore) StampBreaches(_ context.Context, _ uuid.UUID, respon
 // permanently — which later reads as a genuine breach.
 func TestRecordFirstResponse_PropagatesStoreFailures(t *testing.T) {
 	boom := errors.New("connection reset by peer")
-	f := &swallowProbeStore{setErr: boom}
+	// hasRecord: true — a store failure on the WRITE (setErr) must surface
+	// even though the record read that precedes it (for the policy lookup)
+	// succeeds; a missing record entirely is the separate, deliberately
+	// no-op case TestRecordFirstResponse_NoRecordIsNotAnError covers.
+	f := &swallowProbeStore{hasRecord: true, setErr: boom}
 
 	tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-time.Hour)}
 	err := sla.NewService(f).RecordFirstResponse(context.Background(), tk, time.Now())
@@ -718,25 +735,144 @@ func TestEvaluateBreaches_PropagatesStoreFailures(t *testing.T) {
 // Nothing wrote ResolvedAt, so IsResolutionBreached saw NULL on every ticket
 // and would have reported each one as breached once its deadline passed,
 // however promptly it had been resolved.
+//
+// #219 and #220 changed this test's shape: a resolution with no prior reply
+// now ALSO backfills first_response_at (SetResolved + SetFirstResponse, two
+// store writes), and RecordResolved itself now short-circuits when the record
+// is already resolved (checked in the service, before touching the store
+// again at all) rather than relying on the store's own COALESCE guard to make
+// a second call a no-op — the service has to decide this early so it does not
+// re-read the policy and re-evaluate breach state against a later "now" that
+// has nothing to do with when the ticket actually resolved.
 func TestRecordResolved(t *testing.T) {
 	now := time.Now()
 	ticketID := uuid.New()
-	f := &swallowProbeStore{hasRecord: true, record: sla.Record{TicketID: ticketID}}
+	f := &swallowProbeStore{
+		hasRecord: true,
+		record:    sla.Record{TicketID: ticketID},
+		// Comfortably above the 3-hour elapsed reading below, so this test's
+		// own concern isn't muddied by also tripping a breach stamp.
+		policy: sla.Policy{ResponseTargetMin: 1000, ResolutionTargetMin: 1000},
+	}
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-3 * time.Hour)}
 
 	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, now))
-	require.Equal(t, 1, f.updates)
+	require.Equal(t, 2, f.updates, "SetResolved, plus SetFirstResponse backfilling the response (#219)")
 	require.NotNil(t, f.record.ResolvedAt)
 	require.True(t, f.record.ResolvedAt.Equal(now))
 	require.NotNil(t, f.record.ResolutionElapsedAtMetSeconds)
 	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
+	require.NotNil(t, f.record.FirstResponseAt, "#219: a resolution with no prior reply satisfies the response target too")
+	require.True(t, f.record.FirstResponseAt.Equal(now))
 
-	// Re-resolving must not overwrite the original time or elapsed reading.
+	// Re-resolving must not touch the store at all: the record is already
+	// resolved, so RecordResolved is a full no-op (#220).
 	later := now.Add(2 * time.Hour)
 	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, later))
-	require.Equal(t, 2, f.updates, "the store is still called (COALESCE decides idempotency, not the service)")
+	require.Equal(t, 2, f.updates, "already resolved: no further store writes")
 	require.True(t, f.record.ResolvedAt.Equal(now), "already recorded")
 	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
+}
+
+// TestRecordResolved_LateResolutionEntirelyBetweenSweepTicksStillStamped pins
+// #217's root cause fix: before this, the ONLY place a late resolution got a
+// breach stamp was the periodic sweep evaluating an outstanding record —
+// nothing stamped it at the moment it was actually recorded, and
+// ListSLABreachCandidates' resolved_at IS NULL guard means a ticket resolved
+// late is never selected as a candidate again once resolved_at is set, losing
+// the breach stamp forever. Simulated here by never calling
+// EvaluateBreaches/SweepBreaches at all — RecordResolved alone must stamp it.
+func TestRecordResolved_LateResolutionEntirelyBetweenSweepTicksStillStamped(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 60}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-2 * time.Hour)
+	resolvedAt := createdAt.Add(90 * time.Minute) // 90 > 60-minute resolution target: late
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.RecordResolved(context.Background(), tk, resolvedAt))
+
+	rec := store.records[ticketID]
+	require.NotNil(t, rec.ResolutionBreachedAt, "a late resolution must be stamped at record time, not left for a sweep that never ran")
+	require.True(t, rec.ResolutionBreachedAt.Equal(resolvedAt))
+}
+
+// TestRecordResolved_NoPriorReplyDoesNotShowFalseResponseBreach pins #219: a
+// ticket resolved with no separate staff reply first must not read as a
+// response breach purely because wall-clock time later passes the response
+// target — the resolution itself satisfies the response target, at the
+// resolution instant, and that reading is then frozen.
+func TestRecordResolved_NoPriorReplyDoesNotShowFalseResponseBreach(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	policy := sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	store.policies[policyID] = policy
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-3 * time.Hour)
+	// Resolved in 20 minutes: under the 30-minute response target AND the
+	// 120-minute resolution target, with no separate reply ever recorded.
+	resolvedAt := createdAt.Add(20 * time.Minute)
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.RecordResolved(context.Background(), tk, resolvedAt))
+
+	rec := store.records[ticketID]
+	require.NotNil(t, rec.FirstResponseAt, "the resolution must satisfy the response target")
+	require.True(t, rec.FirstResponseAt.Equal(resolvedAt))
+	require.Nil(t, rec.ResponseBreachedAt, "resolved on time toward the response target: not a breach")
+	require.Nil(t, rec.ResolutionBreachedAt, "resolved on time toward the resolution target: not a breach")
+
+	// The false-breach shape #219 fixes: checked much later, wall-clock time
+	// has long since passed the 30-minute response target. Without the fix,
+	// IsResponseBreached would recompute against `now` and read this as
+	// breached; with FirstResponseAt now set, it must not.
+	muchLater := resolvedAt.Add(10 * time.Hour)
+	require.False(t, sla.IsResponseBreached(rec, policy, tk, muchLater),
+		"a resolved ticket with no prior reply must never show a false response breach")
+}
+
+// TestRecordResolved_ClosedWithoutResolvingFreezesStatusInsteadOfGrowingLive
+// pins #220: when close() (or the other UpdateStatus->Closed door) calls
+// RecordResolved using closed_at as the resolution instant for a ticket that
+// was never separately resolved, the SLA status must freeze at that instant
+// — correctly red if it really was late — rather than keep computing a live,
+// ever-growing Elapsed(t, now) against a ticket that will never move again.
+func TestRecordResolved_ClosedWithoutResolvingFreezesStatusInsteadOfGrowingLive(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	policy := sla.Policy{ID: policyID, Name: "Closed-without-resolving", ResponseTargetMin: 30, ResolutionTargetMin: 60}
+	store.policies[policyID] = policy
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-4 * time.Hour)
+	closedAt := createdAt.Add(90 * time.Minute) // later than the 60-minute resolution target
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	// This is exactly what ticket.Service.close()/UpdateStatus now do: call
+	// RecordResolved with closed_at as the resolution instant.
+	require.NoError(t, svc.RecordResolved(context.Background(), tk, closedAt))
+
+	rec := store.records[ticketID]
+	require.NotNil(t, rec.ResolvedAt, "close() must leave the record with a resolution recorded")
+	require.NotNil(t, rec.ResolutionBreachedAt, "it really was late, so this must be a real, stamped breach")
+
+	statusSoonAfter := sla.StatusFor(rec, policy, tk, closedAt.Add(time.Minute))
+	statusMuchLater := sla.StatusFor(rec, policy, tk, closedAt.Add(24*30*time.Hour)) // a month later
+
+	require.NotNil(t, statusSoonAfter.Resolution.MetAt, "frozen: the indicator must have a MetAt, not read as still outstanding")
+	require.Equal(t, sla.Red, statusSoonAfter.Resolution.Color)
+	require.Equal(t, statusSoonAfter.Resolution.ElapsedMin, statusMuchLater.Resolution.ElapsedMin,
+		"a frozen reading must not keep growing the longer the closed ticket sits untouched")
+	require.Equal(t, sla.Red, statusMuchLater.Resolution.Color)
 }
 
 // A resolved ticket is judged by WHEN it was resolved, not by the clock now.

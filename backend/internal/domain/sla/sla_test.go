@@ -293,6 +293,29 @@ func TestIsResolutionBreached(t *testing.T) {
 			now:  pendingCreated.Add(10 * time.Hour),
 			want: true,
 		},
+		{
+			// #218: same shape as the case above, but this time the PAUSE
+			// has already CLOSED and grown SLAPausedSeconds by the time this
+			// is checked (not merely started, as above) — the ticket
+			// resolved late, was reopened, paused for a long interval, and
+			// released again. A live Elapsed(t, *ResolvedAt) recompute
+			// against the ticket's now-larger SLAPausedSeconds would shrink
+			// 70min down to 40min — under the 60min target — flipping a
+			// true breach into a false negative. The frozen
+			// ResolutionElapsedAtMetSeconds this test sets must be preferred
+			// instead, so the answer still agrees with the frozen indicator.
+			name: "a later CLOSED pause does not rescue an already-late resolution when frozen elapsed is known",
+			record: sla.Record{
+				ResolvedAt:                    timePtr(pendingCreated.Add(70 * min)),
+				ResolutionElapsedAtMetSeconds: int64Ptr(int64((70 * min).Seconds())),
+			},
+			tk: ticket.Ticket{
+				CreatedAt:        pendingCreated,
+				SLAPausedSeconds: int64((30 * min).Seconds()), // grown AFTER resolution
+			},
+			now:  pendingCreated.Add(10 * time.Hour),
+			want: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -303,3 +326,4 @@ func TestIsResolutionBreached(t *testing.T) {
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
+func int64Ptr(n int64) *int64        { return &n }

@@ -331,7 +331,17 @@ func applyStatusTimestamps(t *Ticket, oldStatusID uuid.UUID, newStatus Status, s
 	case entering && t.PendingSince == nil:
 		t.PendingSince = &now
 	case !entering && t.PendingSince != nil:
-		t.SLAPausedSeconds += int64(now.Sub(*t.PendingSince) / time.Second)
+		// Clamped at zero: PendingSince may have been written by a different
+		// app replica than the one computing now. With clock skew between
+		// them, entering Pending on a fast-clocked replica and leaving on a
+		// slow-clocked one within the skew window makes the delta negative,
+		// which migration 000025's CHECK (sla_paused_seconds >= 0) rejects —
+		// failing whichever door is leaving Pending (UpdateStatus,
+		// reply-reopen, resolve, close) with a 500 until the skew elapses.
+		// See #223.
+		if delta := now.Sub(*t.PendingSince); delta > 0 {
+			t.SLAPausedSeconds += int64(delta / time.Second)
+		}
 		t.PendingSince = nil
 	}
 }
@@ -422,6 +432,14 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		// describes. Discarded here rather than logged because domain code
 		// does not log — cmd/server wraps the SLA service so the boundary
 		// reports these, which is where a failure can actually be seen.
+		_ = s.sla.RecordResolved(ctx, t, now)
+	}
+	// The other door into Closed. Same #220 reasoning as close(): a ticket
+	// moved straight to Closed here without ever resolving would otherwise
+	// carry a NULL sla_records.resolved_at forever. RecordResolved no-ops
+	// when a resolution is already recorded, so this is a no-op on the
+	// ordinary Resolved-then-Closed path.
+	if s.sla != nil && newStatusID == s.sys.closedID {
 		_ = s.sla.RecordResolved(ctx, t, now)
 	}
 
@@ -684,7 +702,14 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// is already persisted and this is a metric, not the user's intent, so an
 	// SLA outage must not fail a reply that succeeded. Unlike the reopen above,
 	// nothing is announced on the strength of this write.
-	if s.sla != nil && actor.Role != user.RoleUser {
+	//
+	// !internal: DESIGN.md defines the response target as "first staff
+	// reply", and this codebase already distinguishes internal notes from
+	// customer-visible replies everywhere else (VisibleReplies, webhook/email
+	// suppression of internal-note content). A staff-to-staff note the
+	// customer never sees must not freeze the response target as met. See
+	// #221.
+	if s.sla != nil && actor.Role != user.RoleUser && !internal {
 		_ = s.sla.RecordFirstResponse(ctx, t, reply.CreatedAt)
 	}
 
@@ -1089,6 +1114,20 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 	// Skip and re-close dispatch nothing, same as before.
 	if skipped || alreadyClosed {
 		return 0, nil
+	}
+
+	// A ticket can reach Closed without ever passing through Resolved (an
+	// admin moving it straight from an open status, or the reopen window
+	// simply never being used). Without this, sla_records.resolved_at stays
+	// NULL forever: the sweep's closed_at IS NULL guard then excludes it from
+	// ever being evaluated again, but the indicator has no MetAt to freeze
+	// against, so it keeps computing a live, ever-growing Elapsed(t, now)
+	// against a ticket that will never move again. RecordResolved is a no-op
+	// when a resolution is already recorded (the ordinary Resolved-then-Closed
+	// path), so this only ever does anything for the case it exists to fix.
+	// Non-fatal and after the commit, matching Resolve/UpdateStatus. See #220.
+	if s.sla != nil {
+		_ = s.sla.RecordResolved(ctx, t, now)
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{

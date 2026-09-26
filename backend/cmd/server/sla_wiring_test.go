@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"strings"
 	"testing"
@@ -43,36 +44,60 @@ func (f *fakeInnerSLA) RecordResolved(context.Context, ticket.Ticket, time.Time)
 // standing in for the live admin-settings read gatedSLA does against
 // adminSvc.SLAEnabled. Its whole point is that flipping `on` takes effect on
 // the very next call, with no reconstruction of gatedSLA — that is what
-// "checked live, not decided once at boot" means.
-type mutableEnabler struct{ on bool }
+// "checked live, not decided once at boot" means. err, when set, is what
+// SLAEnabled returns instead, standing in for a transient store failure.
+type mutableEnabler struct {
+	on  bool
+	err error
+}
 
-func (m *mutableEnabler) SLAEnabled(context.Context) bool { return m.on }
+func (m *mutableEnabler) SLAEnabled(context.Context) (bool, error) { return m.on, m.err }
 
 // ── gatedSLA ──────────────────────────────────────────────────────────────────
 
-// The core regression for #2: with the feature off, every method is a
-// no-op that never reaches the inner service — the shape of the bug where an
-// admin's Settings-page toggle attached no records and ran no sweep.
-func TestGatedSLA_NoOpsWhenDisabled(t *testing.T) {
+// The core regression for #2, narrowed by #216: with the feature off,
+// AttachPolicy is a no-op that never reaches the inner service — the shape of
+// the bug where an admin's Settings-page toggle attached no records and ran
+// no sweep. RecordFirstResponse/RecordResolved are deliberately NOT part of
+// this any more (#216): they always delegate, toggle or not, because writing
+// a fact onto an sla_records row that already exists is always safe, and
+// gating it used to silently drop the fact instead of deferring it.
+func TestGatedSLA_AttachPolicyNoOpsWhenDisabled(t *testing.T) {
 	inner := &fakeInnerSLA{}
 	admin := &mutableEnabler{on: false}
-	g := newGatedSLA(inner, admin)
+	g := newGatedSLA(inner, admin, discardLogger())
 
 	require.NoError(t, g.AttachPolicy(context.Background(), ticket.Ticket{ID: uuid.New()}))
-	require.NoError(t, g.RecordFirstResponse(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now()))
-	require.NoError(t, g.RecordResolved(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now()))
 
 	require.Zero(t, inner.attachCalls, "the inner service must not be called while disabled")
-	require.Zero(t, inner.firstResponseCalls)
-	require.Zero(t, inner.resolvedCalls)
 }
 
-// The other half: enabled, every method delegates and the inner error (or
+// TestGatedSLA_RecordMethodsAlwaysDelegateRegardlessOfToggle pins #216: unlike
+// AttachPolicy, RecordFirstResponse/RecordResolved must reach the inner
+// service whether the toggle is on or off, since a record they'd write onto
+// only exists because the toggle was on when the ticket was created.
+func TestGatedSLA_RecordMethodsAlwaysDelegateRegardlessOfToggle(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(map[bool]string{true: "toggle on", false: "toggle off"}[on], func(t *testing.T) {
+			inner := &fakeInnerSLA{}
+			admin := &mutableEnabler{on: on}
+			g := newGatedSLA(inner, admin, discardLogger())
+
+			require.NoError(t, g.RecordFirstResponse(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now()))
+			require.NoError(t, g.RecordResolved(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now()))
+
+			require.Equal(t, 1, inner.firstResponseCalls, "RecordFirstResponse must always delegate")
+			require.Equal(t, 1, inner.resolvedCalls, "RecordResolved must always delegate")
+		})
+	}
+}
+
+// The other half: enabled, AttachPolicy delegates and the inner error (or
 // success) passes through unchanged.
 func TestGatedSLA_DelegatesWhenEnabled(t *testing.T) {
 	inner := &fakeInnerSLA{}
 	admin := &mutableEnabler{on: true}
-	g := newGatedSLA(inner, admin)
+	g := newGatedSLA(inner, admin, discardLogger())
 
 	require.NoError(t, g.AttachPolicy(context.Background(), ticket.Ticket{ID: uuid.New()}))
 	require.NoError(t, g.RecordFirstResponse(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now()))
@@ -94,7 +119,7 @@ func TestGatedSLA_DelegatesWhenEnabled(t *testing.T) {
 func TestGatedSLA_ReadsTheSettingLiveNotOnceAtConstruction(t *testing.T) {
 	inner := &fakeInnerSLA{}
 	admin := &mutableEnabler{on: false}
-	g := newGatedSLA(inner, admin)
+	g := newGatedSLA(inner, admin, discardLogger())
 
 	require.NoError(t, g.AttachPolicy(context.Background(), ticket.Ticket{ID: uuid.New()}))
 	require.Zero(t, inner.attachCalls, "starts disabled: no-op")
@@ -109,6 +134,32 @@ func TestGatedSLA_ReadsTheSettingLiveNotOnceAtConstruction(t *testing.T) {
 	admin.on = false
 	require.NoError(t, g.AttachPolicy(context.Background(), ticket.Ticket{ID: uuid.New()}))
 	require.Equal(t, 1, inner.attachCalls, "turning the toggle back off must take effect immediately too")
+}
+
+// TestGatedSLA_AttachPolicyLogsReadFailureAndFailsSafe pins #216's other half:
+// admin.Service.SLAEnabled's read failure must be logged at this boundary
+// (domain code does not log) and must not attach a policy nobody confirmed is
+// wanted.
+func TestGatedSLA_AttachPolicyLogsReadFailureAndFailsSafe(t *testing.T) {
+	inner := &fakeInnerSLA{}
+	boom := errors.New("connection reset by peer")
+	admin := &mutableEnabler{on: true, err: boom}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	g := newGatedSLA(inner, admin, logger)
+
+	err := g.AttachPolicy(context.Background(), ticket.Ticket{ID: uuid.New()})
+	require.NoError(t, err, "a read failure fails safe, not fatal, to the caller")
+	require.Zero(t, inner.attachCalls, "must not attach a policy when the toggle could not be confirmed")
+	require.Contains(t, buf.String(), "reading SLA enabled setting failed")
+	require.Contains(t, buf.String(), "connection reset by peer")
+}
+
+// discardLogger is a *slog.Logger that writes nowhere, for tests that need a
+// non-nil logger but don't care what it says.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // ── loggingSLA (fix #4: the discarded error is logged at the boundary) ──────
@@ -238,37 +289,44 @@ func TestRunSLASweepTick_PropagatesSweepError(t *testing.T) {
 // Same behaviour, this time proving it end to end through the real
 // gatedSLA/loggingSLA stack and a live admin.Service-shaped setting, rather
 // than a hand-rolled function value: flipping the DB setting is what makes
-// AttachPolicy/RecordFirstResponse/RecordResolved AND the sweep tick all
-// start working, together, with cfg.SLAEnabled never touched at all.
+// AttachPolicy AND the sweep tick start working, together, with cfg.SLAEnabled
+// never touched at all. RecordFirstResponse/RecordResolved are asserted
+// separately below (#216 stopped gating them on this same toggle).
 func TestSLAFullyActivatesFromTheDBSettingAloneNoEnvVar(t *testing.T) {
 	inner := &fakeInnerSLA{}
 	toggle := &mutableEnabler{on: false} // cfg.SLAEnabled is never set anywhere in this test
-	svc := newGatedSLA(inner, toggle)
+	svc := newGatedSLA(inner, toggle, discardLogger())
+	enabledFn := func(ctx context.Context) bool {
+		on, _ := toggle.SLAEnabled(ctx)
+		return on
+	}
 
 	tk := ticket.Ticket{ID: uuid.New()}
 	require.NoError(t, svc.AttachPolicy(context.Background(), tk))
-	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, time.Now()))
-	require.NoError(t, svc.RecordResolved(context.Background(), tk, time.Now()))
-	ran, _, err := runSLASweepTick(context.Background(), toggle.SLAEnabled,
+	ran, _, err := runSLASweepTick(context.Background(), enabledFn,
 		func(context.Context, time.Time) (sla.SweepResult, error) { return sla.SweepResult{}, nil }, time.Now())
 	require.NoError(t, err)
 	require.False(t, ran)
-	require.Zero(t, inner.attachCalls+inner.firstResponseCalls+inner.resolvedCalls,
-		"nothing must run before the admin turns the feature on")
+	require.Zero(t, inner.attachCalls, "AttachPolicy must not run before the admin turns the feature on")
 
 	// The admin turns SLA tracking on via Settings — the only thing this
 	// bundle wires it to. No env var, no restart, no rebuilding svc.
 	toggle.on = true
 
 	require.NoError(t, svc.AttachPolicy(context.Background(), tk))
-	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, time.Now()))
-	require.NoError(t, svc.RecordResolved(context.Background(), tk, time.Now()))
-	ran, _, err = runSLASweepTick(context.Background(), toggle.SLAEnabled,
+	ran, _, err = runSLASweepTick(context.Background(), enabledFn,
 		func(context.Context, time.Time) (sla.SweepResult, error) { return sla.SweepResult{}, nil }, time.Now())
 	require.NoError(t, err)
 
 	require.True(t, ran, "the sweep must run once the DB setting alone says enabled")
 	require.Equal(t, 1, inner.attachCalls)
+
+	// #216: RecordFirstResponse/RecordResolved always delegate, toggle or
+	// not — proven here with the toggle back off, so this is not just the
+	// enabled-path coincidentally passing.
+	toggle.on = false
+	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, time.Now()))
+	require.NoError(t, svc.RecordResolved(context.Background(), tk, time.Now()))
 	require.Equal(t, 1, inner.firstResponseCalls)
 	require.Equal(t, 1, inner.resolvedCalls)
 }

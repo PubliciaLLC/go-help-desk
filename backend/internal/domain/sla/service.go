@@ -40,31 +40,111 @@ func (s *Service) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 //
 // t is the ticket as it stood at the moment of the response — the caller
 // always has this row already (it just read or wrote it), so Elapsed is
-// computed here rather than via a GetRecord round trip. That also means this
-// no longer reads-then-writes the record at all: SetFirstResponse is a single
-// COALESCE-guarded UPDATE touching only its own two columns, so a breach
-// stamp StampBreaches wrote between this call being triggered and it running
+// computed here rather than via a GetRecord round trip for the ticket side.
+// A GetRecord round trip IS made, but only to read the record's immutable
+// policy_id (for the target) and to decide whether this call has anything to
+// do; the actual write is still SetFirstResponse's single COALESCE-guarded
+// UPDATE touching only its own two columns, and the breach stamp below is
+// StampBreaches's own COALESCE-guarded UPDATE — so a breach stamp
+// StampBreaches wrote between this call being triggered and it running still
 // cannot be clobbered (see store.go's SetFirstResponse and CLAUDE.md).
+//
+// #217: this is also where a LATE response gets its breach stamp the moment
+// it actually happens, using the frozen elapsed value just computed — not
+// only from the periodic sweep evaluating an outstanding record, which misses
+// a response that lands late entirely between sweep ticks (or during an
+// SLA-toggle-off stretch, since #216 stops gating this method on the toggle).
 func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at time.Time) error {
+	record, err := s.store.GetRecord(ctx, t.ID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
+	if err != nil {
+		return fmt.Errorf("recording SLA first response: %w", err)
+	}
+	if record.FirstResponseAt != nil {
+		return nil // already recorded; nothing to do
+	}
+	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
+	if err != nil {
+		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
+	}
+
 	elapsed := int64(Elapsed(t, at) / time.Second)
 	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed); err != nil {
 		return fmt.Errorf("recording SLA first response: %w", err)
+	}
+	if elapsed > int64(policy.ResponseTargetMin)*60 {
+		if err := s.store.StampBreaches(ctx, t.ID, &at, nil); err != nil {
+			return fmt.Errorf("stamping SLA response breach: %w", err)
+		}
 	}
 	return nil
 }
 
 // RecordResolved stamps when a ticket was resolved, so resolution breaches are
 // judged against the time it was actually resolved, and freezes its
-// elapsed-toward-target reading the same way RecordFirstResponse does.
+// elapsed-toward-target reading the same way RecordFirstResponse does. It is
+// a no-op when a resolution is already recorded, or when the ticket carries
+// no SLA record — which is also how #220's close()-calls-RecordResolved path
+// stays a no-op for a ticket that was already resolved before being closed:
+// only a ticket that reaches Closed WITHOUT ever resolving reaches the write
+// below.
 //
 // Nothing used to write ResolvedAt at all. IsResolutionBreached therefore saw
 // a NULL ResolvedAt on every ticket and would have reported each one as
 // breached the moment its deadline passed, however promptly it had been
 // resolved.
+//
+// #217: like RecordFirstResponse, this stamps a late RESOLUTION breach right
+// here, at the instant it is recorded, rather than relying solely on the
+// sweep to notice an outstanding record later.
+//
+// #219: a resolution is a response in every practical sense. If nothing has
+// satisfied the response target yet (no prior staff reply), this resolution
+// does — COALESCE-guarded via SetFirstResponse, so an actual earlier reply is
+// left untouched, and its own frozen elapsed/breach decision (made at ITS
+// instant, not this one) stands.
 func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
+	record, err := s.store.GetRecord(ctx, t.ID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
+	if err != nil {
+		return fmt.Errorf("recording SLA resolution: %w", err)
+	}
+	if record.ResolvedAt != nil {
+		return nil // already resolved; nothing to do
+	}
+	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
+	if err != nil {
+		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
+	}
+
 	elapsed := int64(Elapsed(t, at) / time.Second)
 	if err := s.store.SetResolved(ctx, t.ID, at, elapsed); err != nil {
 		return fmt.Errorf("recording SLA resolution: %w", err)
+	}
+
+	var responseBreach, resolutionBreach *time.Time
+	if elapsed > int64(policy.ResolutionTargetMin)*60 {
+		resolutionBreach = &at
+	}
+
+	firstResponseAlreadySet := record.FirstResponseAt != nil
+	if !firstResponseAlreadySet {
+		if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed); err != nil {
+			return fmt.Errorf("recording SLA response at resolution: %w", err)
+		}
+		if elapsed > int64(policy.ResponseTargetMin)*60 {
+			responseBreach = &at
+		}
+	}
+
+	if responseBreach != nil || resolutionBreach != nil {
+		if err := s.store.StampBreaches(ctx, t.ID, responseBreach, resolutionBreach); err != nil {
+			return fmt.Errorf("stamping SLA breach at resolution: %w", err)
+		}
 	}
 	return nil
 }

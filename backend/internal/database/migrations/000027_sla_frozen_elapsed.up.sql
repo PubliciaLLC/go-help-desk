@@ -30,10 +30,22 @@ ALTER TABLE sla_records
 -- than leaving the column NULL (which falls back to the same live recompute
 -- these rows already display today), and it is a one-time correction, not a
 -- pattern anything relies on going forward.
+-- The same pending-aware clip sla.Elapsed applies at read time: a ticket
+-- Pending at upgrade time (migration 000025, run just before this one in the
+-- same upgrade, populates pending_since for every currently-Pending ticket)
+-- whose first_response_at landed AFTER it went Pending would otherwise be
+-- backfilled too large by exactly (first_response_at - pending_since) — the
+-- open pause interval sla.Elapsed clips away but this one-time backfill
+-- formula did not. See #222.
 UPDATE sla_records r
 SET response_elapsed_at_met_seconds = GREATEST(
         0,
         EXTRACT(EPOCH FROM (r.first_response_at - t.created_at))::bigint - t.sla_paused_seconds
+            - CASE
+                  WHEN t.pending_since IS NOT NULL
+                  THEN GREATEST(0, EXTRACT(EPOCH FROM (r.first_response_at - t.pending_since)))::bigint
+                  ELSE 0
+              END
     )
 FROM tickets t
 WHERE t.id = r.ticket_id

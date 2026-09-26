@@ -86,6 +86,20 @@ func IsResolutionBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bo
 		// resolved ticket as met would hide every late resolution; the old
 		// early return did that, and nothing recorded ResolvedAt anyway, so
 		// on-time resolutions were about to be reported as breaches instead.
+		//
+		// Prefer the FROZEN elapsed reading over a live recompute, matching
+		// how the indicator (status.go's targetStatus) already reads frozen
+		// vs. live: recomputing Elapsed(t, *r.ResolvedAt) against the
+		// ticket's CURRENT SLAPausedSeconds can shrink below target if the
+		// ticket was reopened, paused, and released again after resolution —
+		// which can only turn a true breach into a false negative, never the
+		// reverse, but it means this and the frozen indicator could disagree
+		// (#218). Falls back to the live recompute only for a record whose
+		// target was met before this column existed (a one-time migration
+		// backfill that did not reach every row).
+		if r.ResolutionElapsedAtMetSeconds != nil {
+			return time.Duration(*r.ResolutionElapsedAtMetSeconds)*time.Second > target
+		}
 		return Elapsed(t, *r.ResolvedAt) > target
 	}
 	return Elapsed(t, now) > target
