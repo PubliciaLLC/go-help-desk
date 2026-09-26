@@ -1059,6 +1059,112 @@ func TestDeleteStatus_UnknownID_Returns404(t *testing.T) {
 	require.Equal(t, "not_found", errBody.Error.Code)
 }
 
+// TestDeleteStatus_InUse_ReturnsConflict pins #275: a custom status that a
+// ticket currently has was still refused with a bare, unrecognized error
+// before RemoveStatus wrapped it in ticket.ErrStatusInUse, so this fell
+// through handleError's switch and came back as a 500 rather than the 409
+// (with the "deactivate instead" guidance) that a conflicting, expected
+// refusal should surface as.
+func TestDeleteStatus_InUse_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts In Use",
+		"sort_order": 12,
+		"color":      "#112233",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, createResp, &st)
+
+	ticketResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "needs the part",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, ticketResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, ticketResp, &tk)
+
+	patchResp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": st["id"],
+	})
+	require.Equal(t, http.StatusOK, patchResp.StatusCode)
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_in_use", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "1 ticket(s)")
+	require.Contains(t, errBody.Error.Message, "deactivate")
+}
+
+// TestDeleteStatus_HistoryReferenced_ReturnsConflict pins #275's other
+// remaining refusal in the same function: zero tickets are currently in the
+// status, but a past transition through it still blocks the hard delete
+// (ticket_status_history has no ON DELETE action on the status foreign key).
+// Before wrapping this in ticket.ErrStatusInUse it fell through to a 500
+// exactly like the in-use case above.
+func TestDeleteStatus_HistoryReferenced_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts History",
+		"sort_order": 13,
+		"color":      "#334455",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, createResp, &st)
+
+	ticketResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "passed through the status",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, ticketResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, ticketResp, &tk)
+
+	// Transition into the custom status, then out of it again, so the
+	// current count is zero but a history row still references it.
+	patchIn := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": st["id"],
+	})
+	require.Equal(t, http.StatusOK, patchIn.StatusCode)
+
+	patchOut := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{
+		"status_id": statusIDNamed(t, h, ticket.StatusNameResolved).String(),
+	})
+	require.Equal(t, http.StatusOK, patchOut.StatusCode)
+
+	resp := h.doAsAdmin(t, http.MethodDelete,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", st["id"]), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_in_use", errBody.Error.Code)
+	// Two history rows reference the custom status: the transition into it
+	// (to_status_id) and the transition out of it (from_status_id) — the
+	// count query matches either column (see CountStatusHistoryByStatus).
+	require.Contains(t, errBody.Error.Message, "2 past ticket transition(s)")
+	require.Contains(t, errBody.Error.Message, "deactivate")
+}
+
 // TestUpdateStatus_SystemStatusCannotBeRenamed pins #263: renaming a system
 // status broke the next server restart (LoadSystemStatuses looks them up by
 // name), so the admin API now refuses the rename outright rather than

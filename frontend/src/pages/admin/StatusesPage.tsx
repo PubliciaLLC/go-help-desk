@@ -55,6 +55,11 @@ export function StatusesPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
       setPendingDelete(null)
+      setFormError('')
+    },
+    onError: (err) => {
+      setPendingDelete(null)
+      setFormError(extractError(err))
     },
   })
 
@@ -200,7 +205,7 @@ export function StatusesPage() {
                                 size="sm"
                                 variant="outline"
                                 className="text-red-600 border-red-200 hover:bg-red-50"
-                                onClick={() => setPendingDelete(s)}
+                                onClick={() => { setFormError(''); setPendingDelete(s) }}
                                 disabled={deleteMutation.isPending}
                               >
                                 Delete
@@ -223,6 +228,9 @@ export function StatusesPage() {
             </table>
           </div>
         )}
+        {/* Not nested under addingStatus above: this also carries delete
+            refusals (409 status_in_use, #275) surfaced outside that form. */}
+        {formError && !addingStatus && <p className="text-sm text-red-600">{formError}</p>}
       </div>
       <ConfirmDialog
         open={pendingDelete !== null}

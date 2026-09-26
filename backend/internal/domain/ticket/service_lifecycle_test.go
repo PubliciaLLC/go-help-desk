@@ -375,6 +375,7 @@ func TestRemoveStatus_RefusesStatusInUse(t *testing.T) {
 
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "deactivate")
+	require.True(t, errors.Is(err, ticket.ErrStatusInUse), "err must wrap ErrStatusInUse so handleError maps it to 409, not 500 (#275)")
 	require.Equal(t, 0, h.statuses.deletes, "a status in use must not be deleted")
 }
 
@@ -576,6 +577,7 @@ func TestRemoveStatus_RefusesWhenHistoryReferencesIt(t *testing.T) {
 	require.Contains(t, err.Error(), "past ticket transition",
 		"the refusal must explain why, not fail on a foreign key")
 	require.Contains(t, err.Error(), "deactivate")
+	require.True(t, errors.Is(err, ticket.ErrStatusInUse), "err must wrap ErrStatusInUse so handleError maps it to 409, not 500 (#275)")
 	require.Zero(t, h.statuses.deletes, "nothing may be deleted")
 }
 

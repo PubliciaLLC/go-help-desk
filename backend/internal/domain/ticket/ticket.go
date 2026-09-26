@@ -532,6 +532,19 @@ var (
 	// handleError unrecognized and came back as a 500, though the fault was
 	// in the request, not the server. See #273.
 	ErrStatusNotFound = errors.New("status not found")
+	// ErrStatusInUse is returned by RemoveStatus when a custom status cannot
+	// be hard-deleted: either a ticket currently has this status, or a past
+	// ticket_status_history entry references it (the table has no ON DELETE
+	// action on that foreign key, so a zero current-count status can still
+	// fail the DELETE). Wrapped for the same reason ErrSystemStatusImmutable
+	// and ErrStatusNotFound are: both refusals used to be bare fmt.Errorf,
+	// reaching handleError unrecognized and coming back as a 500 for an
+	// ordinary, expected refusal. See #275 (found four review rounds into
+	// #264, the same pass that added the two sentinels above it). 409, not
+	// 403 or 404: this is the sla.ErrPolicyInUse shape — a conflicting state
+	// the caller can resolve by deactivating instead, not a permissions or
+	// existence problem.
+	ErrStatusInUse = errors.New("status is in use")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

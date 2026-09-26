@@ -1525,7 +1525,11 @@ func (s *Service) CountByStatusForAssignee(ctx context.Context, statusID, userID
 // system-status refusal wraps ErrSystemStatusImmutable (#269) for the same
 // reason SaveStatus's does: a bare fmt.Errorf here maps to a bare 500 for
 // any caller, and DELETE on a system status is reachable via the HTTP
-// handler with no inline guard of its own.
+// handler with no inline guard of its own. The two in-use refusals below
+// wrap ErrStatusInUse for the same reason (#275): both were still bare
+// fmt.Errorf as of review round 4, so the "deactivate it instead" guidance
+// they carry never reached the caller — handleError had no case for either
+// and both fell through to a 500.
 func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	st, err := s.getStatusByID(ctx, id)
 	if err != nil {
@@ -1539,7 +1543,7 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("counting tickets for status: %w", err)
 	}
 	if count > 0 {
-		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting", st.Name, count)
+		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting: %w", st.Name, count, ErrStatusInUse)
 	}
 	// Zero current tickets is not enough: ticket_status_history references
 	// statuses with no ON DELETE action, so any past transition through this
@@ -1551,7 +1555,7 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("counting status history: %w", err)
 	}
 	if histCount > 0 {
-		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead", st.Name, histCount)
+		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead: %w", st.Name, histCount, ErrStatusInUse)
 	}
 	return s.statuses.DeleteStatus(ctx, id)
 }
