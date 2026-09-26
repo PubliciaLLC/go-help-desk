@@ -162,10 +162,17 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	badOpen := mk("Mig bad open", newSt.ID, &stale, nil)
 	// Bad row #2: sitting in Closed with no closed_at.
 	badClosed := mk("Mig bad closed", closedSt.ID, nil, nil)
+	// Bad row #3: sitting in Resolved with a stale closed_at left over from
+	// resolving a previously-Closed ticket before that bug was fixed.
+	badResolvedStaleClosed := mk("Mig bad resolved stale closed", resolvedSt.ID, &stale, &stale)
 	// Control: correctly Resolved, must keep its timestamp.
 	goodResolved := mk("Mig good resolved", resolvedSt.ID, &stale, nil)
 	// Control: an ordinary open ticket with nothing set, must stay untouched.
 	goodOpen := mk("Mig good open", newSt.ID, nil, nil)
+	// Control: the ordinary, correct Closed shape — both resolved_at and
+	// closed_at set (applyStatusTimestamps's closedID case never clears
+	// ResolvedAt). Must survive untouched; see #208.
+	goodClosed := mk("Mig good closed", closedSt.ID, &stale, &stale)
 
 	// Run the migration's own SQL, verbatim (comments stripped first, since a
 	// naive split on ";" would otherwise break mid-statement on the semicolons
@@ -205,4 +212,12 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	stillOpen := get(goodOpen.ID)
 	require.Nil(t, stillOpen.ResolvedAt)
 	require.Nil(t, stillOpen.ClosedAt)
+
+	repairedResolved := get(badResolvedStaleClosed.ID)
+	require.NotNil(t, repairedResolved.ResolvedAt, "a Resolved ticket must keep its resolved_at")
+	require.Nil(t, repairedResolved.ClosedAt, "a Resolved ticket must have a stale closed_at cleared")
+
+	stillClosed := get(goodClosed.ID)
+	require.NotNil(t, stillClosed.ResolvedAt, "a Closed ticket must NOT have resolved_at cleared (#208)")
+	require.NotNil(t, stillClosed.ClosedAt, "a Closed ticket must keep its closed_at")
 }
