@@ -845,6 +845,18 @@ func setSLAFields(t *testing.T, ctx context.Context, tx *sql.Tx, ticketID uuid.U
 	require.NoError(t, err)
 }
 
+// setSLAResponseBreachedAt directly stamps sla_records.response_breached_at
+// for a ticket — setSLAFields has no parameter for this column, and its
+// signature is left alone rather than changed for its many other callers
+// (#259).
+func setSLAResponseBreachedAt(t *testing.T, ctx context.Context, tx *sql.Tx, ticketID uuid.UUID, responseBreachedAt *time.Time) {
+	t.Helper()
+	_, err := tx.ExecContext(ctx,
+		`UPDATE sla_records SET response_breached_at = $2 WHERE ticket_id = $1`,
+		ticketID, responseBreachedAt)
+	require.NoError(t, err)
+}
+
 // TestMigration_SLABackfillRevisesRecordedResolutionToEarlierFact pins #258:
 // an sla_records row that ALREADY carries a resolved_at (the ordinary
 // population since #238 — v1.2.0's live RecordResolved, or an earlier run of
@@ -859,6 +871,12 @@ func setSLAFields(t *testing.T, ctx context.Context, tx *sql.Tx, ticketID uuid.U
 // arm (a ticket resolved once, reopened, and resolved again, whose
 // first-write-wins RecordResolved recorded the later re-resolve even though
 // tickets.resolved_at itself keeps the first).
+//
+// Also pins #259: C1b (and S4a/S4b) must revise a row exactly the same way
+// whether or not it already carries a breach stamp — ctlPreStampedRecorded
+// and ctlPreStampedUnrecorded below must come out identical, and both of
+// their pre-existing stamps must survive untouched. rowBLaterReplyResponseStamped
+// documents the same rule holds on the response side.
 func TestMigration_SLABackfillRevisesRecordedResolutionToEarlierFact(t *testing.T) {
 	f := newMigration028Fixture(t, "backfill-revise-earlier-fact")
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -978,19 +996,66 @@ func TestMigration_SLABackfillRevisesRecordedResolutionToEarlierFact(t *testing.
 	seedHistory(t, f.ctx, f.ts, ctlReopenedGatedOff.ID, &f.resolvedSt.ID, f.inProgressSt.ID, T.Add(130*time.Minute))
 	setSLAFields(t, f.ctx, f.tx, ctlReopenedGatedOff.ID, &ctlGatedResolveAt, nil, nil)
 
-	// ctlPreStamped: rowB's exact shape, plus an existing resolution breach
-	// stamp at T+60m — simulating the untagged v1.3.0-beta branch's own
-	// breach sweep having already stamped this row before this file's
-	// C1b ever runs (section 5(e)/(3)(e) of the design). A stamp is a fact
-	// and must never be contradicted or cleared.
+	// ctlPreStampedRecorded (#259): rowB's exact shape, plus an existing
+	// breach stamp on BOTH targets at T+60m — simulating the untagged
+	// v1.3.0-beta branch's own breach sweep having already stamped this row
+	// (its first_response_at stays NULL, since the beta sweep stamps
+	// response_breached_at without ever recording a response instant) before
+	// this file's C1b ever runs (section 5(e)/(3)(e) of the design). A stamp
+	// is a fact and must never be contradicted or cleared, but per #259 it
+	// must not block C1b's (or S4a/S4b's) revision either: this row's
+	// resolved_at/first_response_at must come out identical to
+	// ctlPreStampedUnrecorded below, and both stamps must survive untouched.
 	ctlPreStampedAt := T.Add(60 * time.Minute)
-	ctlPreStamped := f.seed(t, "control: pre-stamped, close reopen resolve close", f.closedSt.ID, T, now, &resolvedAt1, &closedAt1, nil)
-	seedHistory(t, f.ctx, f.ts, ctlPreStamped.ID, nil, f.newSt.ID, T)
-	seedHistory(t, f.ctx, f.ts, ctlPreStamped.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
-	seedHistory(t, f.ctx, f.ts, ctlPreStamped.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
-	seedHistory(t, f.ctx, f.ts, ctlPreStamped.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
-	seedHistory(t, f.ctx, f.ts, ctlPreStamped.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
-	setSLAFields(t, f.ctx, f.tx, ctlPreStamped.ID, &resolvedAt1, nil, &ctlPreStampedAt)
+	ctlPreStampedRecorded := f.seed(t, "control: pre-stamped (recorded), close reopen resolve close", f.closedSt.ID, T, now, &resolvedAt1, &closedAt1, nil)
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedRecorded.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedRecorded.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedRecorded.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedRecorded.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedRecorded.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+	setSLAFields(t, f.ctx, f.tx, ctlPreStampedRecorded.ID, &resolvedAt1, nil, &ctlPreStampedAt)
+	setSLAResponseBreachedAt(t, f.ctx, f.tx, ctlPreStampedRecorded.ID, &ctlPreStampedAt)
+
+	// ctlPreStampedUnrecorded (#259, the D1/D2 regression): IDENTICAL ticket
+	// state, history and both pre-existing stamps as ctlPreStampedRecorded
+	// above, but sla_records.resolved_at (and first_response_at) are left
+	// NULL — nothing was ever recorded for this row before the migration
+	// runs, so C1 (not C1b) produces its result. Before the fix, comparing
+	// the two against each other is exactly #259's reproduction: this row
+	// resolves via C1, which was never gated on a stamp, and lands on the
+	// T+10m close fact; ctlPreStampedRecorded's C1b was gated on
+	// `resolution_breached_at IS NULL` and, seeing the stamp, left it
+	// stuck at T+120m — two tickets with identical history diverging purely
+	// on whether something had already been recorded. After the fix both
+	// land on T+10m/600, with both stamps preserved exactly where they were.
+	ctlPreStampedUnrecorded := f.seed(t, "control: pre-stamped (unrecorded), close reopen resolve close", f.closedSt.ID, T, now, &resolvedAt1, &closedAt1, nil)
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedUnrecorded.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedUnrecorded.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedUnrecorded.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedUnrecorded.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, ctlPreStampedUnrecorded.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+	setSLAFields(t, f.ctx, f.tx, ctlPreStampedUnrecorded.ID, nil, nil, &ctlPreStampedAt)
+	setSLAResponseBreachedAt(t, f.ctx, f.tx, ctlPreStampedUnrecorded.ID, &ctlPreStampedAt)
+
+	// rowBLaterReplyResponseStamped (#259 part 2, pins the chosen policy on
+	// the response side): rowB's shape, with a real reply recorded at the
+	// stale T+120m instant (not rewound yet) and only response_breached_at
+	// pre-stamped (at T+65m) — the resolution side is unstamped. This
+	// documents that S4a follows the same "never gated on a stamp" rule as
+	// C1b, so a future review does not raise #259 in reverse by adding a
+	// stamp gate to S4a alone. This shape already passes today: the gate
+	// #259 removes was only ever on resolution_breached_at, never on
+	// response_breached_at.
+	rowBLaterReplyResponseStampedAt := T.Add(120 * time.Minute)
+	rowBLaterReplyResponseStampedBreach := T.Add(65 * time.Minute)
+	rowBLaterReplyResponseStamped := f.seed(t, "row B, later reply, response pre-stamped", f.closedSt.ID, T, now, &resolvedAt1, &closedAt1, nil)
+	seedHistory(t, f.ctx, f.ts, rowBLaterReplyResponseStamped.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, rowBLaterReplyResponseStamped.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, rowBLaterReplyResponseStamped.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, rowBLaterReplyResponseStamped.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, rowBLaterReplyResponseStamped.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+	setSLAFields(t, f.ctx, f.tx, rowBLaterReplyResponseStamped.ID, &resolvedAt1, &rowBLaterReplyResponseStampedAt, nil)
+	setSLAResponseBreachedAt(t, f.ctx, f.tx, rowBLaterReplyResponseStamped.ID, &rowBLaterReplyResponseStampedBreach)
 
 	runMigration027And028(t, f.ctx, f.tx)
 
@@ -1120,16 +1185,58 @@ func TestMigration_SLABackfillRevisesRecordedResolutionToEarlierFact(t *testing.
 	require.NotNil(t, recCtlReopenedGated.ResolutionBreachedAt)
 	require.NotNil(t, recCtlReopenedGated.ResponseBreachedAt)
 
-	// ctlPreStamped: an existing breach stamp must never be contradicted or
-	// cleared, even though the frozen number sitting next to it would
-	// otherwise be revised by C1b.
-	recCtlPreStamped := f.getRecord(t, ctlPreStamped.ID)
-	require.NotNil(t, recCtlPreStamped.ResolvedAt)
-	require.True(t, recCtlPreStamped.ResolvedAt.Equal(resolvedAt1), "an existing breach stamp blocks C1b's revision entirely")
-	require.NotNil(t, recCtlPreStamped.ResolutionElapsedAtMetSeconds)
-	require.Equal(t, int64(7200), *recCtlPreStamped.ResolutionElapsedAtMetSeconds)
-	require.NotNil(t, recCtlPreStamped.ResolutionBreachedAt)
-	require.True(t, recCtlPreStamped.ResolutionBreachedAt.Equal(ctlPreStampedAt), "an existing stamp must never move")
+	// ctlPreStampedRecorded (#259): C1b revises resolved_at/the frozen number
+	// exactly as it would for an unrecorded row, and NEITHER pre-existing
+	// stamp is contradicted, cleared, or moved. S4 fills first_response_at
+	// (still NULL going in) from C1b's own corrected resolved_at, and S5
+	// freezes response_elapsed_at_met_seconds from that — response_breached_at
+	// stays exactly where the (simulated) beta sweep put it, since S6 only
+	// stamps a still-NULL column.
+	recCtlPreStampedRecorded := f.getRecord(t, ctlPreStampedRecorded.ID)
+	require.NotNil(t, recCtlPreStampedRecorded.ResolvedAt)
+	require.True(t, recCtlPreStampedRecorded.ResolvedAt.Equal(T.Add(10*time.Minute)), "#259: an existing stamp must not block C1b's revision")
+	require.NotNil(t, recCtlPreStampedRecorded.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *recCtlPreStampedRecorded.ResolutionElapsedAtMetSeconds)
+	require.NotNil(t, recCtlPreStampedRecorded.ResolutionBreachedAt)
+	require.True(t, recCtlPreStampedRecorded.ResolutionBreachedAt.Equal(ctlPreStampedAt), "an existing stamp must never move")
+	require.NotNil(t, recCtlPreStampedRecorded.FirstResponseAt)
+	require.True(t, recCtlPreStampedRecorded.FirstResponseAt.Equal(T.Add(10*time.Minute)), "S4's copy of C1b's corrected resolution")
+	require.NotNil(t, recCtlPreStampedRecorded.ResponseElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *recCtlPreStampedRecorded.ResponseElapsedAtMetSeconds)
+	require.NotNil(t, recCtlPreStampedRecorded.ResponseBreachedAt)
+	require.True(t, recCtlPreStampedRecorded.ResponseBreachedAt.Equal(ctlPreStampedAt), "an existing response stamp must never move either")
+
+	// ctlPreStampedUnrecorded (#259, the D1/D2 regression): must come out
+	// IDENTICAL to ctlPreStampedRecorded on every field, field for field.
+	// Before the fix, this fails: this row resolves via C1 (never gated on a
+	// stamp) to T+10m, while ctlPreStampedRecorded's C1b was blocked by the
+	// stamp gate and stuck at T+120m.
+	recCtlPreStampedUnrecorded := f.getRecord(t, ctlPreStampedUnrecorded.ID)
+	requireSameTimePtr(t, recCtlPreStampedRecorded.ResolvedAt, recCtlPreStampedUnrecorded.ResolvedAt, "#259: a pre-recorded row and an unrecorded row with identical history and stamps must resolve identically")
+	requireSameInt64Ptr(t, recCtlPreStampedRecorded.ResolutionElapsedAtMetSeconds, recCtlPreStampedUnrecorded.ResolutionElapsedAtMetSeconds, "ResolutionElapsedAtMetSeconds")
+	requireSameTimePtr(t, recCtlPreStampedRecorded.ResolutionBreachedAt, recCtlPreStampedUnrecorded.ResolutionBreachedAt, "ResolutionBreachedAt")
+	requireSameTimePtr(t, recCtlPreStampedRecorded.FirstResponseAt, recCtlPreStampedUnrecorded.FirstResponseAt, "FirstResponseAt")
+	requireSameInt64Ptr(t, recCtlPreStampedRecorded.ResponseElapsedAtMetSeconds, recCtlPreStampedUnrecorded.ResponseElapsedAtMetSeconds, "ResponseElapsedAtMetSeconds")
+	requireSameTimePtr(t, recCtlPreStampedRecorded.ResponseBreachedAt, recCtlPreStampedUnrecorded.ResponseBreachedAt, "ResponseBreachedAt")
+
+	// rowBLaterReplyResponseStamped (#259 part 2): C1b revises the resolution
+	// side exactly as rowBLaterReply does (no resolution stamp involved), S4a
+	// rewinds the reply and reuses C1b's own 600s, and the pre-existing
+	// response_breached_at stamp is left exactly where it was — this already
+	// passes today, documenting that the response side follows the same
+	// no-stamp-gate rule as the resolution side.
+	recRowBLaterReplyResponseStamped := f.getRecord(t, rowBLaterReplyResponseStamped.ID)
+	require.NotNil(t, recRowBLaterReplyResponseStamped.ResolvedAt)
+	require.True(t, recRowBLaterReplyResponseStamped.ResolvedAt.Equal(T.Add(10*time.Minute)))
+	require.NotNil(t, recRowBLaterReplyResponseStamped.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *recRowBLaterReplyResponseStamped.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, recRowBLaterReplyResponseStamped.ResolutionBreachedAt)
+	require.NotNil(t, recRowBLaterReplyResponseStamped.FirstResponseAt)
+	require.True(t, recRowBLaterReplyResponseStamped.FirstResponseAt.Equal(T.Add(10*time.Minute)), "S4a rewinds the reply to C1b's corrected resolution")
+	require.NotNil(t, recRowBLaterReplyResponseStamped.ResponseElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *recRowBLaterReplyResponseStamped.ResponseElapsedAtMetSeconds, "S4a reuses C1b's own frozen number")
+	require.NotNil(t, recRowBLaterReplyResponseStamped.ResponseBreachedAt)
+	require.True(t, recRowBLaterReplyResponseStamped.ResponseBreachedAt.Equal(rowBLaterReplyResponseStampedBreach), "an existing response stamp must never move")
 }
 
 // TestMigration_028SecondRunChangesNothing pins #246: running migration
@@ -1229,11 +1336,30 @@ func TestMigration_028SecondRunChangesNothing(t *testing.T) {
 	seedHistory(t, f.ctx, f.ts, rowHRecorded.ID, &f.resolvedSt.ID, f.resolvedSt.ID, rowHReResolveAt)
 	setSLAFields(t, f.ctx, f.tx, rowHRecorded.ID, &rowHReResolveAt, nil, nil)
 
+	// rowBRecordedPreStamped (#259): rowBRecorded's exact shape, plus both
+	// breach stamps pre-set at T+60m. Before #259's fix, the stamp gate on
+	// C1b left this row stuck at T+120m forever, which incidentally made it
+	// LOOK idempotent across two runs — this row exists so removing the gate
+	// is checked against a rerun too, not only a single run: a stamped row
+	// revised on run 1 must not change AGAIN on run 2 (the strict `<` no
+	// longer matches once resolved_at equals the earliest fact), and neither
+	// stamp may ever move, on either run.
+	rowBRecordedPreStampedAt := T.Add(60 * time.Minute)
+	rowBRecordedPreStamped := f.seed(t, "row B recorded, pre-stamped, close reopen resolve close", f.closedSt.ID, T, now,
+		&rowBRecordedResolvedAt, &rowBRecordedClosedAt, nil)
+	seedHistory(t, f.ctx, f.ts, rowBRecordedPreStamped.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, rowBRecordedPreStamped.ID, &f.newSt.ID, f.closedSt.ID, T.Add(10*time.Minute))
+	seedHistory(t, f.ctx, f.ts, rowBRecordedPreStamped.ID, &f.closedSt.ID, f.inProgressSt.ID, T.Add(60*time.Minute))
+	seedHistory(t, f.ctx, f.ts, rowBRecordedPreStamped.ID, &f.inProgressSt.ID, f.resolvedSt.ID, T.Add(120*time.Minute))
+	seedHistory(t, f.ctx, f.ts, rowBRecordedPreStamped.ID, &f.resolvedSt.ID, f.closedSt.ID, T.Add(150*time.Minute))
+	setSLAFields(t, f.ctx, f.tx, rowBRecordedPreStamped.ID, &rowBRecordedResolvedAt, nil, &rowBRecordedPreStampedAt)
+	setSLAResponseBreachedAt(t, f.ctx, f.tx, rowBRecordedPreStamped.ID, &rowBRecordedPreStampedAt)
+
 	ids := []uuid.UUID{
 		closedNoHistory.ID, resolvedNoHistory.ID, estimatedWithRealLateResponse.ID,
 		closedAfterLateUnstampedResolve.ID, onTimeFact.ID, reopenedOnTime.ID,
 		preFrozenBy000027.ID, closeReopenResolveClose.ID,
-		rowBRecorded.ID, rowHRecorded.ID,
+		rowBRecorded.ID, rowHRecorded.ID, rowBRecordedPreStamped.ID,
 	}
 
 	runMigration027And028(t, f.ctx, f.tx)
@@ -1278,6 +1404,17 @@ func TestMigration_028SecondRunChangesNothing(t *testing.T) {
 	require.True(t, first[rowHRecorded.ID].rec.ResolvedAt.Equal(rowHResolveAt), "run 1: C1b must revise rowHRecorded down to its FIRST resolve")
 	require.Nil(t, first[rowHRecorded.ID].rec.ResolutionBreachedAt)
 
+	// #259: C1b must revise rowBRecordedPreStamped exactly like rowBRecorded
+	// on run 1, and neither pre-existing stamp is contradicted or moved.
+	require.NotNil(t, first[rowBRecordedPreStamped.ID].rec.ResolvedAt)
+	require.True(t, first[rowBRecordedPreStamped.ID].rec.ResolvedAt.Equal(T.Add(10*time.Minute)), "run 1: an existing stamp must not block C1b's revision")
+	require.NotNil(t, first[rowBRecordedPreStamped.ID].rec.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *first[rowBRecordedPreStamped.ID].rec.ResolutionElapsedAtMetSeconds)
+	require.NotNil(t, first[rowBRecordedPreStamped.ID].rec.ResolutionBreachedAt)
+	require.True(t, first[rowBRecordedPreStamped.ID].rec.ResolutionBreachedAt.Equal(rowBRecordedPreStampedAt), "run 1: an existing stamp must never move")
+	require.NotNil(t, first[rowBRecordedPreStamped.ID].rec.ResponseBreachedAt)
+	require.True(t, first[rowBRecordedPreStamped.ID].rec.ResponseBreachedAt.Equal(rowBRecordedPreStampedAt), "run 1: an existing response stamp must never move")
+
 	// #258: grow rowBRecorded's sla_paused_seconds between the two runs —
 	// this is the strictness check the design's test plan calls for. With
 	// C1b's idempotence predicate correctly STRICT (f.at < r.resolved_at), a
@@ -1317,6 +1454,16 @@ func TestMigration_028SecondRunChangesNothing(t *testing.T) {
 	require.Equal(t, int64(600), *second[rowBRecorded.ID].rec.ResolutionElapsedAtMetSeconds,
 		"#258: the frozen number must not drift after sla_paused_seconds grew between the two runs")
 	require.Nil(t, second[rowHRecorded.ID].rec.ResolutionBreachedAt)
+
+	// #259: rowBRecordedPreStamped's stamps must still not have moved after
+	// run 2 — the map-equality check above already covers this via
+	// first == second, but this spells out the specific regression a stamp
+	// gate coming back would cause: run 2 blocked (or worse, re-triggered) by
+	// its own presence.
+	require.NotNil(t, second[rowBRecordedPreStamped.ID].rec.ResolutionBreachedAt)
+	require.True(t, second[rowBRecordedPreStamped.ID].rec.ResolutionBreachedAt.Equal(rowBRecordedPreStampedAt), "run 2: an existing stamp must never move")
+	require.NotNil(t, second[rowBRecordedPreStamped.ID].rec.ResponseBreachedAt)
+	require.True(t, second[rowBRecordedPreStamped.ID].rec.ResponseBreachedAt.Equal(rowBRecordedPreStampedAt), "run 2: an existing response stamp must never move")
 }
 
 // TestMigration_RewindThrough000027LosesEstimatedMarkerAndReStamps pins #249:

@@ -355,21 +355,21 @@ SELECT f.ticket_id, f.at, false
 -- happened to hold when 000027 ran, so the too-late number this statement
 -- exists to fix is already sitting there, not NULL — an IS NULL guard like
 -- S1's would leave it untouched and S3 would still stamp from it. Instead
--- this is gated by three explicit conditions:
---   - r.resolution_elapsed_at_met_seconds IS NOT NULL: never touch a row
---     THIS run's own C2/S1 marked estimated (#246 — see LIMITS). An
---     estimated row's resolved_at came from the updated_at fallback, not a
---     fact, so there is no fact here to revise it against, and freezing a
---     number into that NULL is exactly the hazard LIMITS says this file must
---     never reintroduce.
---   - r.resolution_breached_at IS NULL: never contradict an existing breach
---     stamp. A stamp is a fact and is never cleared or moved anywhere else
---     in this file (see S3's own comment); the untagged v1.3.0-beta branch
---     ships its own, older 000028 and schedules a real breach sweep, so a
---     database that manually replays this exact file (`migrate down 1` then
---     `up` against a beta-versioned schema) can already carry a stamp next
---     to a resolved_at this statement would otherwise want to revise, and
---     the stamp must win.
+-- this is gated by two explicit conditions:
+--   - r.resolution_elapsed_at_met_seconds IS NOT NULL: never touch a row an
+--     EARLIER run of this file marked estimated (#246 — see LIMITS). Like
+--     S1's `r.resolved_at IS NULL` and S5's trailing NOT (...), this gate
+--     exists for a replay of this file (the `migrate down 1` then `up` path
+--     TestMigration_028SecondRunChangesNothing exercises). It can never
+--     exclude a row THIS run marked estimated, because C2 and S1 both run
+--     after this statement. On an ordinary first upgrade it never fires at
+--     all: 000027's resolution backfill, which runs just before this file,
+--     freezes a non-NULL number into every row with resolved_at set (this
+--     statement's whole candidate set) with no IS NULL guard of its own. On
+--     a replay, an estimated row's resolved_at came from the updated_at
+--     fallback, not a fact, so there is no fact to revise it against, and
+--     freezing a number into that NULL is exactly the hazard LIMITS says
+--     this file must never reintroduce.
 --   - f.at < r.resolved_at, STRICT: the idempotence predicate. Once
 --     corrected, the stored resolved_at equals the earliest fact, so a rerun
 --     no longer matches. With <=, a rerun would recompute elapsed from the
@@ -378,6 +378,33 @@ SELECT f.ticket_id, f.at, false
 --     exactly what 000027's own comment says "a met target must never move
 --     again" forbids. TestMigration_028SecondRunChangesNothing pins this by
 --     growing sla_paused_seconds between its two runs.
+--
+-- No breach-stamp gate, on purpose (#259). An existing
+-- resolution_breached_at is left exactly where it is (this statement never
+-- writes that column, and S3's IS NULL guard never adds a second one), but
+-- it does not block this revision either, the same as a stamp blocks no
+-- other statement here. S1 fills resolved_at next to an existing stamp (on
+-- this statement's own unrecorded twin), S4a/S4b revise first_response_at
+-- next to an existing response_breached_at, and the live SetSLAResolved /
+-- SetSLAFirstResponse write a fact next to an earlier sweep stamp without
+-- reading it. DESIGN.md already lets a stamp outlive the reading that
+-- produced it ("does not clear itself if a ticket is later reopened or its
+-- policy changes"), and StatusFor never reads a stamp, so the indicator
+-- follows the corrected frozen number. Gating this statement alone on the
+-- stamp made two tickets with identical history diverge on whether
+-- something had been recorded (#258's own shape), and let S4a revise the
+-- response side of a row this statement had refused to touch. This revision
+-- only moves resolved_at earlier, to a real fact, so it only ever lowers the
+-- frozen number. At worst a stamp is left next to a reading that no longer
+-- justifies it. It never adds one.
+--
+-- Accepted residual: the close arm is keyed on the ticket's CURRENT status
+-- (#238), so a replay after live activity can revise a row an earlier run
+-- left alone. Example: a ticket that was Resolved on run 1 (close arm off)
+-- and has since been closed. The revision is to an earlier real fact, so it
+-- is in the understating direction. Preventing it would need a durable "this
+-- file already handled this row" marker, a schema change DESIGN.md does not
+-- describe (see #249 in LIMITS).
 --
 -- Must run before R1, R2 and R4: R1 clears resolved_at for a reopened
 -- ticket (a real fact, #244) that this statement's resolve arm still needs
@@ -428,7 +455,6 @@ SET resolved_at = f.at,
  WHERE f.ticket_id = r.ticket_id
    AND r.resolved_at IS NOT NULL                       -- C1's complement, explicit (as the file does elsewhere)
    AND r.resolution_elapsed_at_met_seconds IS NOT NULL  -- never touch a #246 estimated marker
-   AND r.resolution_breached_at IS NULL                 -- never contradict an existing stamp
    AND f.at < r.resolved_at;                            -- strict: the idempotence predicate
 
 -- R1 (#237): no ticket outside system Resolved/Closed may carry resolved_at.
@@ -674,13 +700,19 @@ WHERE c.ticket_id = r.ticket_id
 -- over a C1 fact is exact up to that same pause approximation, which only
 -- understates. C1b over a strictly earlier fact is exact up to the same
 -- approximation too, for the same reason: it is a fact, not an estimate, and
--- its own gate (r.resolution_elapsed_at_met_seconds IS NOT NULL) already
--- keeps it off every row S1 left estimated. S1 never freezes a number over a
--- C2 estimate at all (see above and LIMITS), so there is no OVERSTATED
--- number for this statement to ever read. At worst this misses a breach. It
--- never invents one. An existing stamp is preserved by the IS NULL guard: a
--- stamp is a fact and is never cleared here — the same guard C1b's own
--- `resolution_breached_at IS NULL` condition mirrors, for the same reason.
+-- its own gate (r.resolution_elapsed_at_met_seconds IS NOT NULL) keeps it
+-- off every row an EARLIER run's S1 left estimated (on a first run there are
+-- none yet; see C1b). S1 never freezes a number over a C2 estimate at all
+-- (see above and LIMITS), so there is no OVERSTATED number for this
+-- statement to ever read. At worst this misses a breach. It never invents
+-- one.
+--
+-- An existing stamp is preserved by the IS NULL guard: a stamp is a fact and
+-- is never cleared or moved anywhere in this file. It is also never read to
+-- block a correction to the met instant or frozen number next to it (C1b,
+-- S1, S4a and S4b all run regardless of it, #259). A stamp that outlives the
+-- reading that produced it is a shape DESIGN.md already allows (a policy
+-- change does the same) and StatusFor never reads.
 --
 -- Single FROM item (sla_policies alone): the old comma-join workaround for
 -- "the UPDATE target's own alias cannot appear in a JOIN...ON" is no longer
@@ -772,6 +804,9 @@ WHERE r.resolved_at IS NOT NULL
 -- this statement touches on this and any later run — see S5's comment for
 -- why its own estimated-only gate does not need to, and must not, also
 -- catch this case.
+--
+-- Like C1b, this does not consult response_breached_at: an existing stamp is
+-- kept, never cleared, and never blocks the correction (#259, see C1b).
 UPDATE sla_records r
 SET first_response_at = r.resolved_at,
     response_elapsed_at_met_seconds = r.resolution_elapsed_at_met_seconds
@@ -813,6 +848,9 @@ WHERE r.resolution_elapsed_at_met_seconds IS NOT NULL
 -- FACT row (resolution_elapsed_at_met_seconds IS NOT NULL fails the gate —
 -- S4a already handled that case above) nor a row whose reply genuinely
 -- precedes the estimate (the inequality does not match).
+--
+-- Like C1b, this does not consult response_breached_at: an existing stamp is
+-- kept, never cleared, and never blocks the correction (#259, see C1b).
 UPDATE sla_records r
 SET first_response_at = r.resolved_at,
     response_elapsed_at_met_seconds = NULL
