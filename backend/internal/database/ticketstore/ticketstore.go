@@ -525,21 +525,27 @@ func (s *Store) CreateLink(ctx context.Context, link ticket.TicketLink) error {
 		TargetTicketID: link.TargetTicketID,
 		LinkType:       string(link.LinkType),
 	})
-	if err != nil {
-		// A unique constraint violation (link already exists) is detected off
-		// the typed Postgres error, not off err.Error()'s text (#195). The
-		// previous strings.Contains(err.Error(), "ticket_links_unique") &&
-		// strings.Contains(err.Error(), "23505") check happened to be correct
-		// for pgx stdlib's current Error() format, but it depended on that
-		// exact format: a driver change, or lib/pq (also in go.mod) instead
-		// of pgx, would silently turn every duplicate-link request back into
-		// an unhandled 500 with no compile-time or obvious runtime signal.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "ticket_links_unique" {
-			return ticket.ErrLinkAlreadyExists
-		}
+	if err != nil && isDuplicateLinkViolation(err) {
+		return ticket.ErrLinkAlreadyExists
 	}
 	return err
+}
+
+// isDuplicateLinkViolation reports whether err is the ticket_links_unique
+// constraint violation — detected off the typed Postgres error, not off
+// err.Error()'s text (#195). The previous
+// strings.Contains(err.Error(), "ticket_links_unique") &&
+// strings.Contains(err.Error(), "23505") check happened to be correct for
+// pgx stdlib's current Error() format, but it depended on that exact format:
+// a driver change, or lib/pq (also in go.mod) instead of pgx, would silently
+// turn every duplicate-link request back into an unhandled 500 with no
+// compile-time or obvious runtime signal. errors.As sees through wrapping —
+// see TestIsDuplicateLinkViolation for a case where the error arrives
+// wrapped in additional context, which the old text-matching approach also
+// happened to tolerate, but only by accident of where the substrings landed.
+func isDuplicateLinkViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "ticket_links_unique"
 }
 
 func (s *Store) DeleteLink(ctx context.Context, source, target uuid.UUID, lt ticket.LinkType) error {
