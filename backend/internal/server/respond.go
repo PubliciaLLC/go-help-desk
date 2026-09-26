@@ -127,10 +127,6 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusForbidden, "forbidden", err.Error())
 		return
 	}
-	// Bad input, not a fault. Without this a mistyped email address at signup,
-	// or on an admin's user edit, came back as 500 "an internal error
-	// occurred" and was logged as one.
-	//
 	// Checked before the general validation arm below, which it is a kind of:
 	// a taken address is a conflict, and saying so lets the admin form tell
 	// the difference between "that is not an address" and "somebody already
@@ -139,6 +135,10 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "email_taken", err.Error())
 		return
 	}
+	// Bad input, not a fault. Without this a mistyped email address at signup,
+	// or on an admin's user edit, came back as 500 "an internal error
+	// occurred" and was logged as one.
+	//
 	// sla.ErrValidation and sla.ErrUnknownCategory are added for the SLA
 	// policy create/update doors (#276): every store or validation error used
 	// to be reported as a raw-text 400 regardless of what actually went
