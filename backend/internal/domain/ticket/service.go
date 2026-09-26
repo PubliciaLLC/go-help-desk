@@ -1482,13 +1482,24 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 // store, which maps the statuses_name_key violation to ErrStatusNameTaken
 // (#278) rather than letting the raw pgconn error reach handleError
 // unrecognized.
-func (s *Service) AddStatus(ctx context.Context, st Status) error {
+//
+// Returns the saved Status — with Name trimmed and Active set — rather than
+// leaving the caller's own pre-call copy to be echoed back. handleCreateStatus
+// used to serialize its own copy, whose Name was never trimmed: a name with
+// trailing whitespace came back untrimmed in the 201 body while the stored
+// (and trimmed) row disagreed with it (#285). Mirrors
+// category.Service.CreateCategory, which returns the saved Category for the
+// same reason.
+func (s *Service) AddStatus(ctx context.Context, st Status) (Status, error) {
 	st.Name = strings.TrimSpace(st.Name)
 	if st.Name == "" {
-		return ErrInvalidStatusName
+		return Status{}, ErrInvalidStatusName
 	}
 	st.Active = true
-	return s.statuses.CreateStatus(ctx, st)
+	if err := s.statuses.CreateStatus(ctx, st); err != nil {
+		return Status{}, err
+	}
+	return st, nil
 }
 
 // SaveStatus persists changes to an existing status record. Renaming a
@@ -1501,19 +1512,27 @@ func (s *Service) AddStatus(ctx context.Context, st Status) error {
 // refusal wraps ErrSystemStatusImmutable (#269) so handleError can map it to
 // a clean 403 rather than a bare 500 for any caller, HTTP or otherwise, that
 // reaches this method.
-func (s *Service) SaveStatus(ctx context.Context, st Status) error {
+//
+// Returns the saved Status — with Name trimmed — rather than leaving the
+// caller's own pre-call copy to be echoed back. handleUpdateStatus used to
+// serialize its own copy, whose Name was never trimmed, the same #285
+// mismatch AddStatus had. Mirrors AddStatus's own return above.
+func (s *Service) SaveStatus(ctx context.Context, st Status) (Status, error) {
 	st.Name = strings.TrimSpace(st.Name)
 	if st.Name == "" {
-		return ErrInvalidStatusName
+		return Status{}, ErrInvalidStatusName
 	}
 	current, err := s.getStatusByID(ctx, st.ID)
 	if err != nil {
-		return err
+		return Status{}, err
 	}
 	if current.Kind == StatusKindSystem && st.Name != current.Name {
-		return fmt.Errorf("system status %q cannot be renamed: %w", current.Name, ErrSystemStatusImmutable)
+		return Status{}, fmt.Errorf("system status %q cannot be renamed: %w", current.Name, ErrSystemStatusImmutable)
 	}
-	return s.statuses.UpdateStatus(ctx, st)
+	if err := s.statuses.UpdateStatus(ctx, st); err != nil {
+		return Status{}, err
+	}
+	return st, nil
 }
 
 // CountByStatus returns the number of tickets currently in the given status.

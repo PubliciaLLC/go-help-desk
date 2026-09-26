@@ -78,11 +78,12 @@ func (s *Server) handleCreateStatus(w http.ResponseWriter, r *http.Request) {
 		SortOrder: body.SortOrder,
 		Color:     body.Color,
 	}
-	if err := s.tickets.AddStatus(r.Context(), st); err != nil {
+	saved, err := s.tickets.AddStatus(r.Context(), st)
+	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusCreated, st)
+	JSON(w, http.StatusCreated, saved)
 }
 
 func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
@@ -153,11 +154,12 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		st.Active = *body.Active
 	}
-	if err := s.tickets.SaveStatus(r.Context(), st); err != nil {
+	saved, err := s.tickets.SaveStatus(r.Context(), st)
+	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, st)
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteStatus(w http.ResponseWriter, r *http.Request) {

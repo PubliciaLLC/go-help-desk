@@ -62,7 +62,8 @@ func TestIsStatusNameViolation(t *testing.T) {
 // which cannot be reproduced deterministically. The constraint-name-matching
 // logic that this test exercises is NOT similarly untestable: it can and is
 // also exercised against a real Postgres 23503 in
-// TestDeleteStatus_TicketReferencingIt_ReturnsErrStatusInUse below, the same
+// TestDeleteStatus_TicketReferencingIt_ReturnsErrStatusInUse, in
+// status_violations_integration_test.go, the same
 // way #278's duplicate-name tests and the pre-existing duplicate-link test
 // already trigger a real constraint violation through the shared-transaction
 // harness (testutil.TxQueries) — the failing statement is simply the test's

@@ -976,6 +976,65 @@ func TestCreateStatus_AsAdmin(t *testing.T) {
 	require.Equal(t, "Escalated", st["name"])
 }
 
+// TestCreateStatus_TrimsNameInResponse pins #285: AddStatus trims the name it
+// stores, but handleCreateStatus used to serialize its own pre-call copy of
+// the request body — which was never trimmed — so a name with trailing
+// whitespace came back untrimmed in the 201 response body while the stored
+// row (and the next GET) disagreed with it. handleCreateStatus now echoes
+// AddStatus's own returned Status instead.
+func TestCreateStatus_TrimsNameInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Parts  ",
+		"sort_order": 10,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Parts", st["name"], "the response body must echo the trimmed name, not the untrimmed request body")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var found bool
+	for _, s := range statuses {
+		if s["id"] == st["id"] {
+			found = true
+			require.Equal(t, "Awaiting Parts", s["name"])
+		}
+	}
+	require.True(t, found, "the created status must be listed")
+}
+
+// TestUpdateStatus_TrimsNameInResponse is TestCreateStatus_TrimsNameInResponse's
+// PATCH counterpart, pinning the same #285 fix in SaveStatus/handleUpdateStatus.
+func TestUpdateStatus_TrimsNameInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Vendor",
+		"sort_order": 11,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Awaiting Vendor Parts  "})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Vendor Parts", st["name"], "the response body must echo the trimmed name, not the untrimmed request body")
+}
+
 // TestCreateStatus_DuplicateName_ReturnsConflict pins #278: statuses.name is
 // TEXT NOT NULL UNIQUE (statuses_name_key), and before AddStatus/CreateStatus
 // mapped the violation to ticket.ErrStatusNameTaken, creating a status with a

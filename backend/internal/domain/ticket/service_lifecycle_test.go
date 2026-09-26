@@ -338,7 +338,7 @@ func TestSaveStatus_RefusesSystemStatusRename(t *testing.T) {
 			st := h.statusNamed(name)
 			st.Name = "Renamed"
 
-			err := h.svc.SaveStatus(context.Background(), st)
+			_, err := h.svc.SaveStatus(context.Background(), st)
 
 			require.Error(t, err, "system status %q must not be renameable via SaveStatus", name)
 			require.Contains(t, err.Error(), "system status")
@@ -357,7 +357,7 @@ func TestSaveStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
 	st.Color = "#ff0000"
 	st.SortOrder = 42
 
-	err := h.svc.SaveStatus(context.Background(), st)
+	_, err := h.svc.SaveStatus(context.Background(), st)
 
 	require.NoError(t, err)
 	require.Equal(t, 1, h.statuses.updates, "the edit must actually reach the store")

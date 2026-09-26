@@ -42,12 +42,18 @@ export function StatusesPage() {
 
   const deactivateMutation = useMutation({
     mutationFn: (id: string) => updateStatus(id, { active: false }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+    onSuccess: () => {
+      setFormError('')
+      qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
+    },
   })
 
   const reactivateMutation = useMutation({
     mutationFn: (id: string) => updateStatus(id, { active: true }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'statuses'] }),
+    onSuccess: () => {
+      setFormError('')
+      qc.invalidateQueries({ queryKey: ['admin', 'statuses'] })
+    },
   })
 
   const deleteMutation = useMutation({
