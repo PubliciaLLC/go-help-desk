@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { addReply, listTickets, updateTicket } from './tickets'
+import { addReply, listTickets, updateTicket, duplicateResolutionNotes } from './tickets'
 
 // tickets.ts is mostly thin wrappers, and those are deliberately not tested —
 // asserting that `api.get` gets called proves nothing. What is covered here is
@@ -101,5 +101,27 @@ describe('updateTicket', () => {
     await updateTicket('abc-123', { status_id: 's-1' })
 
     expect(patch.mock.calls[0][0]).toBe('/tickets/abc-123')
+  })
+})
+
+describe('duplicateResolutionNotes', () => {
+  // This is the template generator for duplicate resolution notes. It formats
+  // the target tracking number into the default resolution text shown to the user
+  // when creating a duplicate link with automatic resolution.
+  it('formats the template with the target tracking number', () => {
+    const result = duplicateResolutionNotes('GHD-2026-000001')
+    expect(result).toBe('Duplicate of GHD-2026-000001')
+  })
+
+  it('handles different tracking number formats', () => {
+    expect(duplicateResolutionNotes('TKT-100')).toBe('Duplicate of TKT-100')
+    expect(duplicateResolutionNotes('ISSUE-2024-999')).toBe('Duplicate of ISSUE-2024-999')
+  })
+
+  it('produces the exact format expected by addDuplicateLinkAndResolve', () => {
+    // This test pins the exact format so changes to the template are visible
+    const trackingNumber = 'GHD-2026-000042'
+    const notes = duplicateResolutionNotes(trackingNumber)
+    expect(notes).toMatch(/^Duplicate of GHD-2026-000042$/)
   })
 })

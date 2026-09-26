@@ -529,6 +529,346 @@ describe('LinkedTicketsPanel', () => {
     })
   })
 
+  describe('resolve as duplicate', () => {
+    it('does not show checkbox for related_to relation', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      // Relation is already "related_to", checkbox should not be visible
+      expect(screen.queryByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })).toBeNull()
+    })
+
+    it('does not show checkbox for parent_child relation', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'parent_of')
+
+      expect(screen.queryByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })).toBeNull()
+    })
+
+    it('does not show checkbox for caused_by relation', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'caused_by')
+
+      expect(screen.queryByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })).toBeNull()
+    })
+
+    it('shows checkbox only when relation is duplicate_of and ticket is selected', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      // Checkbox should now be visible
+      expect(await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })).toBeDefined()
+    })
+
+    it('does not show textarea until checkbox is checked', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      // Textarea should not be visible yet
+      expect(screen.queryByRole('textbox', { name: /Resolution notes/i })).toBeNull()
+    })
+
+    it('shows textarea with default template text when checkbox is checked', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      // Textarea should appear with default template
+      const textarea = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      expect(textarea).toBeDefined()
+      expect((textarea as HTMLTextAreaElement).value).toBe('Duplicate of GHD-2026-000002')
+    })
+
+    it('preserves user edits when checkbox remains checked', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      const textarea = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      await user.clear(textarea)
+      await user.type(textarea, 'Custom resolution notes explaining the duplicate')
+
+      expect((textarea as HTMLTextAreaElement).value).toBe('Custom resolution notes explaining the duplicate')
+    })
+
+    it('resets to null when changing target ticket (actual behavior: overwrites edits with new template)', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets')
+        .mockResolvedValueOnce([TICKETS['tkt-2']]) // First search
+        .mockResolvedValueOnce([TICKETS['tkt-3']]) // Second search
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      // Select first ticket
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalledTimes(1))
+
+      let item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      let textarea = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      // Edit the textarea to have custom text
+      await user.clear(textarea)
+      await user.type(textarea, 'Custom notes for first ticket')
+      expect((textarea as HTMLTextAreaElement).value).toBe('Custom notes for first ticket')
+
+      // Now clear the selected ticket and select a different one
+      const clearBtn = screen.getAllByRole('button', { name: 'Clear ticket' })[0]
+      await user.click(clearBtn)
+
+      const input2 = screen.getByRole('textbox', { name: /ticket/i })
+      await user.type(input2, 'rel')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalledTimes(2))
+
+      item = await screen.findByText(/GHD-2026-000003/)
+      await user.click(item)
+
+      // The checkbox is now unchecked (cleared when we cleared the ticket)
+      // Re-check it to show the resolve feature with the new ticket
+      const checkbox2 = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox2)
+
+      // Check that textarea now shows new target's template
+      // (This is the actual behavior - resolutionNotes is reset to null when changing tickets)
+      textarea = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      expect((textarea as HTMLTextAreaElement).value).toBe('Duplicate of GHD-2026-000003')
+    })
+
+    it('calls addDuplicateLinkAndResolve when checkbox is checked and form is submitted', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const addDuplicateMock = vi.spyOn(ticketsApi, 'addDuplicateLinkAndResolve').mockResolvedValue(TICKETS['tkt-1'])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      const linkBtn = await screen.findByRole('button', { name: 'Link' })
+      await user.click(linkBtn)
+
+      await waitFor(() => {
+        expect(addDuplicateMock).toHaveBeenCalledWith('tkt-1', 'tkt-2', 'Duplicate of GHD-2026-000002')
+      })
+    })
+
+    it('calls addDuplicateLinkAndResolve with custom notes when user edited the textarea', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const addDuplicateMock = vi.spyOn(ticketsApi, 'addDuplicateLinkAndResolve').mockResolvedValue(TICKETS['tkt-1'])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      const textarea = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      await user.clear(textarea)
+      await user.type(textarea, 'User provided resolution notes')
+
+      const linkBtn = await screen.findByRole('button', { name: 'Link' })
+      await user.click(linkBtn)
+
+      await waitFor(() => {
+        expect(addDuplicateMock).toHaveBeenCalledWith('tkt-1', 'tkt-2', 'User provided resolution notes')
+      })
+    })
+
+    it('calls addLink (not addDuplicateLinkAndResolve) when checkbox is unchecked even with duplicate_of', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const addLinkMock = vi.spyOn(ticketsApi, 'addLink').mockResolvedValue()
+      const addDuplicateMock = vi.spyOn(ticketsApi, 'addDuplicateLinkAndResolve').mockResolvedValue(TICKETS['tkt-1'])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      // Don't check the checkbox, just submit
+      const linkBtn = await screen.findByRole('button', { name: 'Link' })
+      await user.click(linkBtn)
+
+      await waitFor(() => {
+        expect(addLinkMock).toHaveBeenCalledWith('tkt-1', 'tkt-2', 'duplicate_of')
+        expect(addDuplicateMock).not.toHaveBeenCalled()
+      })
+    })
+
+    it('resets checkbox and notes when relation changes from duplicate_of', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      // Verify textarea is visible
+      expect(await screen.findByRole('textbox', { name: /Resolution notes/i })).toBeDefined()
+
+      // Change relation back to related_to
+      await user.selectOptions(relationSelect, 'related_to')
+
+      // Checkbox and textarea should be gone
+      expect(screen.queryByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })).toBeNull()
+      expect(screen.queryByRole('textbox', { name: /Resolution notes/i })).toBeNull()
+    })
+  })
+
   describe('type drift', () => {
     it('TypeScript compiles with all four LinkType values in LABELS', async () => {
       // This test is a compile-time check: if LinkType and LABELS don't match,
