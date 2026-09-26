@@ -194,3 +194,74 @@ func activeAdmins(t *testing.T, db *testutil.DB) int {
 	require.NoError(t, err)
 	return n
 }
+
+// The guarded writes act on live rows only.
+//
+// Each statement counted the OTHER administrators as live ones — deleted_at
+// IS NULL AND disabled = FALSE — but matched the row it then wrote on id
+// alone. So an administrator holding a soft-deleted account's id could still
+// act on it, and SetUserRoleUnlessLastAdmin would mark a deleted row 'admin':
+// a deleted-but-administrator account sitting in the table.
+//
+// It could not tip the live-administrator count either way, because a deleted
+// row was never counted, and nothing in internal/server restores one today.
+// Closed anyway. A guarantee that holds only because no restore path happens
+// to exist is one that breaks the day somebody writes the restore.
+//
+// Found by the session-B review of #292.
+func TestGuardedWrites_RefuseADeletedTarget(t *testing.T) {
+	db, closeDB := freshDatabase(t)
+	defer closeDB()
+	store := userstore.New(dbgen.New(db.SQL))
+	ctx := context.Background()
+
+	// Two administrators, so the last-admin guard is not what refuses.
+	seedAdmin(t, store)
+	gone := seedAdmin(t, store)
+
+	applied, err := store.SoftDeleteUnlessLastAdmin(ctx, gone)
+	require.NoError(t, err)
+	require.True(t, applied, "the delete itself should have been allowed")
+
+	t.Run("demoting a deleted account is refused", func(t *testing.T) {
+		applied, err := store.SetRoleUnlessLastAdmin(ctx, gone, "user")
+		require.NoError(t, err)
+		require.False(t, applied)
+	})
+
+	// The one that produced a deleted row marked admin.
+	t.Run("promoting a deleted account is refused", func(t *testing.T) {
+		applied, err := store.SetRoleUnlessLastAdmin(ctx, gone, "admin")
+		require.NoError(t, err)
+		require.False(t, applied, "a soft-deleted account was promoted to administrator")
+
+		var role string
+		var deleted *time.Time
+		require.NoError(t, db.SQL.QueryRow(
+			`SELECT role, deleted_at FROM users WHERE id = $1`, gone).Scan(&role, &deleted))
+		require.NotNil(t, deleted, "the row stopped being deleted")
+		require.Equal(t, "admin", role,
+			"this fixture was already an administrator; if this ever reads differently the test is not testing what it says")
+	})
+
+	t.Run("disabling a deleted account is refused", func(t *testing.T) {
+		applied, err := store.DisableUnlessLastAdmin(ctx, gone)
+		require.NoError(t, err)
+		require.False(t, applied)
+	})
+
+	t.Run("deleting it twice is refused", func(t *testing.T) {
+		applied, err := store.SoftDeleteUnlessLastAdmin(ctx, gone)
+		require.NoError(t, err)
+		require.False(t, applied)
+	})
+
+	// And a live account is still perfectly actionable, or this would "fix"
+	// the hole by breaking administration.
+	t.Run("a live account is untouched by any of this", func(t *testing.T) {
+		live := seedAdmin(t, store)
+		applied, err := store.SetRoleUnlessLastAdmin(ctx, live, "staff")
+		require.NoError(t, err)
+		require.True(t, applied, "a live account could no longer be demoted")
+	})
+}

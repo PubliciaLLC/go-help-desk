@@ -261,6 +261,20 @@ func (f *fakeUserStore) SyncFederated(ctx context.Context, id uuid.UUID, email, 
 	return f.UpdateProfile(ctx, id, email, displayName)
 }
 
+// EnableMFAIfStillEnrolled mirrors the statement: the flag only, and only
+// while a secret is still there. A fake that wrote the secret back would hide
+// the very thing this exists to stop.
+func (f *fakeUserStore) EnableMFAIfStillEnrolled(_ context.Context, id uuid.UUID) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok || u.MFASecret == "" || u.DeletedAt != nil {
+		return false, nil
+	}
+	u.MFAEnabled = true
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
 // AdoptOIDCSubject applies the same conditions the statement does, from the
 // stored row rather than from whatever the caller read earlier — which is the
 // whole reason the real one is a single statement.

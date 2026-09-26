@@ -276,6 +276,7 @@ WITH admins AS (
 UPDATE users AS t
 SET disabled = TRUE, updated_at = now()
 WHERE t.id = $1
+  AND t.deleted_at IS NULL
   AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
 RETURNING t.id
 `
@@ -289,6 +290,19 @@ RETURNING t.id
 // wrote. Measured, twenty-eight rounds in thirty ended with zero
 // administrators — and it did not need two people. One administrator sending
 // "remove Bob" and "remove me" together did it every time.
+//
+// The target carries `deleted_at IS NULL` of its own. The guard counted the
+// OTHER administrators as live ones, but the row it wrote was matched on id
+// alone — so an administrator holding a soft-deleted account's id could still
+// act on it, and SetUserRoleUnlessLastAdmin would happily mark a deleted row
+// `admin`. It could not tip the live-administrator count either way, since a
+// deleted row was never counted, and nothing restores such a row today. It is
+// closed anyway: a guarantee that holds only because no restore path happens
+// to exist is one that breaks the day somebody writes one.
+//
+// deleted_at and not disabled: a suspended account is still an account, and
+// demoting, deleting or re-disabling one is ordinary administration. A
+// deleted account is gone.
 //
 // FOR UPDATE over ALL of them, not just the others, because the lock sets
 // have to overlap: locking only the other administrators means two requests
@@ -320,6 +334,34 @@ func (q *Queries) EmailIsTaken(ctx context.Context, email string) (bool, error) 
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const enableMFAIfStillEnrolled = `-- name: EnableMFAIfStillEnrolled :one
+UPDATE users
+SET mfa_enabled = TRUE, updated_at = now()
+WHERE id = $1 AND mfa_secret <> '' AND deleted_at IS NULL
+RETURNING id
+`
+
+// Turns MFA on using whatever secret the row still holds, and reports whether
+// it applied.
+//
+// The flag and nothing else. ConfirmMFAEnrollment used to read the row,
+// validate a code against the secret it found, and then write that same
+// secret back alongside the flag — a read-modify-write with a TOTP validation
+// in the middle of it. An administrator's "reset MFA" committing in that
+// window was undone: the cleared secret came back and MFA was re-enabled with
+// the authenticator the reset existed to revoke.
+//
+// Writing only the flag removes the carried copy. The `mfa_secret <> ”` test
+// is what makes the reset win: once the secret is cleared there is nothing to
+// enable, no row comes back, and the caller reports that enrolment was
+// reset rather than silently turning MFA on against an empty secret.
+func (q *Queries) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, enableMFAIfStillEnrolled, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const enableUser = `-- name: EnableUser :exec
@@ -739,6 +781,7 @@ WITH admins AS (
 UPDATE users AS t
 SET role = $2, updated_at = now()
 WHERE t.id = $1
+  AND t.deleted_at IS NULL
   AND ($2 = 'admin' OR (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0)
 RETURNING t.id
 `
@@ -780,6 +823,7 @@ WITH admins AS (
 UPDATE users AS t
 SET deleted_at = now(), updated_at = now()
 WHERE t.id = $1
+  AND t.deleted_at IS NULL
   AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
 RETURNING t.id
 `

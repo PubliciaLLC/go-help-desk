@@ -184,3 +184,69 @@ func TestNarrowWrites_TouchOnlyWhatTheyName(t *testing.T) {
 			"a sign-in wrote the password, so it can restore one an administrator just reset")
 	})
 }
+
+// An administrator's "reset MFA" beats a confirmation that was already in
+// flight.
+//
+// ConfirmMFAEnrollment used to read the row, validate a TOTP code against the
+// secret it found, and write that same secret back with the flag. Validating
+// takes time, and a reset committing inside that window was undone: the
+// cleared secret came back and MFA was re-enabled with exactly the
+// authenticator the reset existed to revoke. Found by the session-B review of
+// #292; it had no production caller, which is why it survived.
+//
+// Staged rather than raced: the reset is applied between the read and the
+// write, which is the whole window expressed as two statements.
+func TestEnableMFAIfStillEnrolled_ResetWins(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	store := userstore.New(dbgen.New(db.SQL))
+	ctx := context.Background()
+
+	seed := func(t *testing.T) user.User {
+		t.Helper()
+		u := user.User{
+			ID:          uuid.New(),
+			Email:       "mfa-" + uuid.NewString() + "@test.local",
+			DisplayName: "MFA Race",
+			Role:        user.RoleStaff,
+			MFASecret:   "ORIGINALSECRET",
+			MFAEnabled:  false,
+			CreatedAt:   time.Now().UTC(),
+			UpdatedAt:   time.Now().UTC(),
+		}
+		require.NoError(t, store.Create(ctx, u))
+		t.Cleanup(func() { deleteUser(t, db, u.ID) })
+		return u
+	}
+
+	t.Run("an undisturbed confirmation still works", func(t *testing.T) {
+		u := seed(t)
+		applied, err := store.EnableMFAIfStillEnrolled(ctx, u.ID)
+		require.NoError(t, err)
+		require.True(t, applied)
+
+		got, err := store.GetByIDAdmin(ctx, u.ID)
+		require.NoError(t, err)
+		require.True(t, got.MFAEnabled)
+		require.Equal(t, "ORIGINALSECRET", got.MFASecret, "it rewrote the secret")
+	})
+
+	t.Run("a reset in the window refuses the confirmation", func(t *testing.T) {
+		u := seed(t)
+
+		// The administrator's reset, landing while the code is being checked.
+		require.NoError(t, store.ClearMFA(ctx, u.ID))
+
+		applied, err := store.EnableMFAIfStillEnrolled(ctx, u.ID)
+		require.NoError(t, err)
+		require.False(t, applied, "the confirmation went through after the reset")
+
+		got, err := store.GetByIDAdmin(ctx, u.ID)
+		require.NoError(t, err)
+		require.False(t, got.MFAEnabled,
+			"MFA is on again after an administrator reset it")
+		require.Empty(t, got.MFASecret,
+			"the cleared secret came back, so the revoked authenticator still works")
+	})
+}

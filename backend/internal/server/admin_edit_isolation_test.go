@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -192,4 +193,53 @@ func TestUpdateTicket_ReclassificationIsCheckedToo(t *testing.T) {
 	body, _ := readAllBody(res)
 	res.Body.Close()
 	require.Equal(t, http.StatusOK, res.StatusCode, "a coherent triple was refused: %s", body)
+}
+
+// A refusal says which thing refused.
+//
+// The three guarded writes report one bit — applied, or not — and the service
+// turned every "not" into ErrLastAdmin. So acting on an account that had been
+// deleted, or on an id matching nothing at all, came back as "this is the
+// only administrator, so it cannot be disabled, demoted or deleted": a
+// confident statement about a different account's situation.
+//
+// Asserted against the service rather than over HTTP. The delete route has
+// its own lookup in front of it (denyMachineTargetingAdmin), which answers
+// 404 for a missing row before the guarded write is ever reached — so an
+// HTTP test passes whatever the service returns, and the first version of
+// this test did exactly that: it went green against the unfixed code.
+func TestUserService_ARefusalNamesTheRightReason(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	t.Run("an id that matches nothing is not the last administrator", func(t *testing.T) {
+		err := h.userSvc.SoftDelete(ctx, uuid.New())
+		require.ErrorIs(t, err, user.ErrNotFound,
+			"a nonexistent account was reported as the only administrator: %v", err)
+	})
+
+	t.Run("an account already deleted is gone, not the last administrator", func(t *testing.T) {
+		made, err := h.userSvc.Create(ctx, user.CreateUserInput{
+			Email:       "deleted-refusal-" + uuid.NewString() + "@test.local",
+			DisplayName: "Soon Deleted",
+			Role:        user.RoleStaff,
+			Password:    "a-real-passphrase",
+		})
+		require.NoError(t, err)
+		require.NoError(t, h.userSvc.SoftDelete(ctx, made.ID))
+
+		require.ErrorIs(t, h.userSvc.SoftDelete(ctx, made.ID), user.ErrNotFound,
+			"deleting an already-deleted account claimed it was the only administrator")
+		require.ErrorIs(t, h.userSvc.Disable(ctx, made.ID), user.ErrNotFound,
+			"disabling a deleted account claimed it was the only administrator")
+		require.ErrorIs(t, h.userSvc.SetRole(ctx, made.ID, user.RoleAdmin), user.ErrNotFound,
+			"promoting a deleted account claimed it was the only administrator")
+	})
+
+	// And the real last-administrator case still says so, or this would trade
+	// one wrong message for another.
+	t.Run("the actual last administrator still says so", func(t *testing.T) {
+		require.ErrorIs(t, h.userSvc.SetRole(ctx, h.adminID, user.RoleUser), user.ErrLastAdmin)
+	})
 }

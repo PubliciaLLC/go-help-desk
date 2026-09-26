@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -174,19 +175,96 @@ func decodedSizeWithin(data []byte, maxPixels, maxBytes int64) error {
 	// more than any single thing the parser knows: a future gap in it becomes
 	// a refusal rather than a way through.
 	need := px * bytesPerPixel(cfg.ColorModel)
-	if format == "jpeg" {
+	switch format {
+	case "jpeg":
 		b, ok := jpegDecodeBytes(data)
 		if !ok {
 			return errors.New("this JPEG's header could not be read, so there is no way to tell " +
 				"how much memory decoding it would take")
 		}
 		need = b
+	case "png":
+		// A grayscale PNG carrying a tRNS chunk decodes four times wider than
+		// its colour model says, and DecodeConfig cannot tell you so.
+		//
+		// The reason is an ordering detail in image/png: DecodeConfig returns
+		// as soon as it reaches IDAT, and for a non-paletted image the colour
+		// model it reports comes from IHDR's colour type alone. There is no
+		// branch in it for transparency. But parsetRNS sets useTransparent,
+		// and readImagePass reads that flag and builds an NRGBA instead of a
+		// Gray, or an NRGBA64 instead of a Gray16.
+		//
+		// Measured, 5120x5120: 8-bit grayscale estimated at 25 MB and cost
+		// 100 MB; 16-bit estimated at 50 MB and cost 200 MB, which is twice
+		// the whole per-request budget on one upload. Both compress to almost
+		// nothing, because the pixels can all be the same value.
+		//
+		// Only grayscale moves. Truecolor allocates 4 or 8 bytes either way —
+		// RGBA without the chunk, NRGBA with it — and paletted stays one byte
+		// per pixel whatever its palette holds.
+		//
+		// Walking only as far as IDAT is safe here, unlike the equivalent
+		// question in JPEG, where a marker after the scan still counted. Go's
+		// decoder enforces chunk order: for a grayscale image tRNS is only
+		// accepted at dsSeenIHDR, so one placed after the pixel data is a
+		// chunkOrderError and the file does not decode at all.
+		if pngUsesTransparency(data) {
+			switch cfg.ColorModel {
+			case color.GrayModel:
+				need = px * 4 // image.NRGBA
+			case color.Gray16Model:
+				need = px * 8 // image.NRGBA64
+			}
+		}
 	}
 	if need > maxBytes {
 		return fmt.Errorf("image is %dx%d and would need %d MB to decode; the limit is %d MB",
 			cfg.Width, cfg.Height, need>>20, maxBytes>>20)
 	}
 	return nil
+}
+
+// pngUsesTransparency reports whether the decoder will treat this PNG as
+// carrying transparency — a tRNS chunk before the pixel data.
+//
+// It answers TRUE when the chunk stream cannot be walked, which is the
+// fail-closed direction: an unreadable stream is budgeted as though the
+// expensive thing were there rather than as though it were not. That is the
+// same rule the JPEG header follows, arrived at differently — a JPEG that
+// cannot be read is refused outright, but here refusing would throw out
+// files that decode perfectly well, so the conservative estimate does the
+// job instead.
+//
+// Walking only as far as IDAT is safe, unlike the equivalent question in
+// JPEG where a marker after the scan still counted. image/png enforces chunk
+// order: for a grayscale image tRNS is accepted only at dsSeenIHDR, so one
+// placed after the pixel data is a chunkOrderError and the file does not
+// decode at all.
+func pngUsesTransparency(data []byte) bool {
+	const sig = 8 // \x89PNG\r\n\x1a\n
+	if len(data) < sig {
+		return true
+	}
+	for off := sig; ; {
+		// length (4) + type (4) + data + crc (4)
+		if off+8 > len(data) {
+			return true
+		}
+		length := int64(binary.BigEndian.Uint32(data[off : off+4]))
+		switch string(data[off+4 : off+8]) {
+		case "tRNS":
+			return true
+		case "IDAT", "IEND":
+			return false
+		}
+		// int64 throughout: a length near 2^32 overflows an int on a 32-bit
+		// build, and the offset then walks backwards into a loop with no end.
+		next := int64(off) + 8 + length + 4
+		if length < 0 || next > int64(len(data)) {
+			return true
+		}
+		off = int(next)
+	}
 }
 
 // jpegDecodeBytes is what image/jpeg will allocate for this file, read out of

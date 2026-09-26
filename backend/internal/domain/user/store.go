@@ -41,6 +41,11 @@ type Store interface {
 	// bcrypt hash the account holder chose the moment of.
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
+	// EnableMFAIfStillEnrolled turns the flag on using the secret already on
+	// the row, so a caller that read, validated a code, and then wrote does
+	// not carry a copy of the secret across that gap. False means there was
+	// no secret left to enable.
+	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (bool, error)
 	SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error
 	// AdoptOIDCSubject binds an OIDC subject to an account found by email
 	// address, and reports whether it applied. The adoption rules live in

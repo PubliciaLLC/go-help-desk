@@ -179,6 +179,33 @@ var ErrLastAdmin = fmt.Errorf("%w: this is the only administrator, so it cannot 
 // "remove me" at the same moment did it in all thirty. The window is the gap
 // between the two statements, and the only way to close it is not to have
 // one.
+
+// refusalFor turns a guarded write that did not apply into the reason it did
+// not.
+//
+// The three ...UnlessLastAdmin statements report one bit: applied, or not.
+// Not-applied has two causes — the guard refused because this is the last
+// administrator, or there was no live row to act on at all — and reporting
+// both as ErrLastAdmin told an administrator "this is the only
+// administrator" about an account that had been deleted, which is a lie
+// about a different thing. It did that before these statements filtered
+// their own target row, too: an id that matched nothing already came back
+// that way.
+//
+// Read on the failure path only. The write has already been refused, so this
+// is choosing a message rather than deciding an outcome, and a row deleted
+// between the two simply gets the other true answer.
+func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
+	u, err := s.store.GetByIDAdmin(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.DeletedAt != nil {
+		return ErrNotFound
+	}
+	return ErrLastAdmin
+}
+
 func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
 	switch role {
 	case RoleAdmin, RoleStaff, RoleUser:
@@ -190,7 +217,7 @@ func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
 		return err
 	}
 	if !applied {
-		return ErrLastAdmin
+		return s.refusalFor(ctx, id)
 	}
 	return nil
 }
@@ -378,8 +405,23 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, userID uuid.UUID, co
 	if !totp.Validate(code, u.MFASecret) {
 		return fmt.Errorf("invalid TOTP code")
 	}
-	// Only the flag, keeping the secret that was already on the row.
-	return s.store.SetMFA(ctx, userID, u.MFASecret, true)
+	// The flag alone, against the secret the row holds NOW — not the copy
+	// read above.
+	//
+	// Validating a TOTP code takes time, and an administrator's "reset MFA"
+	// committing in that window used to be undone: the secret from the read
+	// was written back with the flag, so the cleared authenticator came back
+	// and MFA was re-enabled with exactly the credential the reset existed to
+	// revoke. The statement refuses when no secret is left, so the reset
+	// wins.
+	applied, err := s.store.EnableMFAIfStillEnrolled(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("MFA enrollment was reset before it could be confirmed")
+	}
+	return nil
 }
 
 // VerifyMFACode checks that the TOTP code is valid for the user.
@@ -711,7 +753,7 @@ func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if !applied {
-		return ErrLastAdmin
+		return s.refusalFor(ctx, id)
 	}
 	return nil
 }
@@ -759,7 +801,7 @@ func (s *Service) Disable(ctx context.Context, id uuid.UUID) error {
 		return err
 	}
 	if !applied {
-		return ErrLastAdmin
+		return s.refusalFor(ctx, id)
 	}
 	return nil
 }

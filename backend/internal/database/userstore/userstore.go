@@ -326,6 +326,20 @@ func (s *Store) AdoptOIDCSubject(ctx context.Context, id uuid.UUID, subject, dis
 	return false, fmt.Errorf("adopting OIDC subject: %w", err)
 }
 
+// EnableMFAIfStillEnrolled turns the flag on without carrying a copy of the
+// secret, and reports whether a secret was still there to enable.
+func (s *Store) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (bool, error) {
+	_, err := s.q.EnableMFAIfStillEnrolled(ctx, id)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// No secret on the row any more. Refused, not broken.
+		return false, nil
+	}
+	return false, fmt.Errorf("enabling MFA: %w", err)
+}
+
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
 	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
