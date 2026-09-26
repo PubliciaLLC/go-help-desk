@@ -719,49 +719,57 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	return reply, nil
 }
 
+// resolveInTx is the transactional body of Resolve, extracted so ResolveAsDuplicate
+// can reuse it. It transitions the ticket to Resolved, records resolution notes,
+// and performs all the necessary updates in one transaction.
+// Returns the updated ticket and the new guest token.
+func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ticketID uuid.UUID, notes string, actor Actor, now time.Time) (Ticket, string, error) {
+	t, err := st.GetByIDForUpdate(ctx, ticketID)
+	if err != nil {
+		return Ticket{}, "", err
+	}
+	before := ticketMap(t)
+	oldStatusID := t.StatusID
+	t.StatusID = s.sys.resolvedID
+	t.ResolutionNotes = &notes
+	t.UpdatedAt = now
+	// Through the shared rule, not by hand. Setting ResolvedAt directly
+	// here was how this door came to disagree with UpdateStatus: it
+	// restarted the reopen window on a re-resolve, and resolving a CLOSED
+	// ticket left closed_at set on an open ticket, which hides it from the
+	// auto-close query forever.
+	applyStatusTimestamps(&t, oldStatusID, s.sys.resolved, s.sys, now)
+
+	if err := st.Update(ctx, t); err != nil {
+		return Ticket{}, "", fmt.Errorf("resolving ticket: %w", err)
+	}
+	if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
+		return Ticket{}, "", fmt.Errorf("recording resolution: %w", err)
+	}
+	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
+		return Ticket{}, "", fmt.Errorf("auditing resolution: %w", err)
+	}
+	// Rotate: the guest is told, and the link they are told with is the
+	// one they need to reopen inside the window.
+	guestToken, err := rotateGuestToken(ctx, st, t)
+	if err != nil {
+		return Ticket{}, "", err
+	}
+	return t, guestToken, nil
+}
+
 // Resolve transitions a ticket to Resolved and records resolution notes.
 func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string, actor Actor) (Ticket, error) {
 	if err := CanTransitionStatus(s.sys.resolved, actor.Role); err != nil {
 		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
 	}
 	var t Ticket
-	var before map[string]any
-	var oldStatusID uuid.UUID
 	var guestToken string
 	now := time.Now()
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		var err error
-		t, err = st.GetByIDForUpdate(ctx, ticketID)
-		if err != nil {
-			return err
-		}
-		before = ticketMap(t)
-		oldStatusID = t.StatusID
-		t.StatusID = s.sys.resolvedID
-		t.ResolutionNotes = &notes
-		t.UpdatedAt = now
-		// Through the shared rule, not by hand. Setting ResolvedAt directly
-		// here was how this door came to disagree with UpdateStatus: it
-		// restarted the reopen window on a re-resolve, and resolving a CLOSED
-		// ticket left closed_at set on an open ticket, which hides it from the
-		// auto-close query forever.
-		applyStatusTimestamps(&t, oldStatusID, s.sys.resolved, s.sys, now)
-
-		if err := st.Update(ctx, t); err != nil {
-			return fmt.Errorf("resolving ticket: %w", err)
-		}
-		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
-			return fmt.Errorf("recording resolution: %w", err)
-		}
-		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
-			return fmt.Errorf("auditing resolution: %w", err)
-		}
-		// Rotate: the guest is told, and the link they are told with is the
-		// one they need to reopen inside the window.
-		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
-			return err
-		}
-		return nil
+		t, guestToken, err = s.resolveInTx(ctx, st, au, ticketID, notes, actor, now)
+		return err
 	}); err != nil {
 		return Ticket{}, err
 	}
@@ -775,6 +783,75 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		// cmd/server rather than logged from the domain.
 		_ = s.sla.RecordResolved(ctx, t.ID, now)
 	}
+
+	_ = s.dispatcher.Dispatch(ctx, notification.Event{
+		Type:           notification.EventTicketResolved,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     now,
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestToken:     guestToken,
+	})
+
+	return t, nil
+}
+
+// ResolveAsDuplicate creates a duplicate_of link and resolves the source ticket
+// in one atomic transaction. It combines the link creation with the resolution,
+// ensuring both succeed or both fail together.
+func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uuid.UUID, notes string, actor Actor) (Ticket, error) {
+	if err := CanTransitionStatus(s.sys.resolved, actor.Role); err != nil {
+		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
+	}
+	if sourceID == targetID {
+		return Ticket{}, fmt.Errorf("cannot link a ticket to itself")
+	}
+
+	var t Ticket
+	var guestToken string
+	now := time.Now()
+
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// Read target ticket to get its tracking number for default notes.
+		target, err := st.GetByID(ctx, targetID)
+		if err != nil {
+			return err
+		}
+
+		// Apply default notes if empty.
+		if strings.TrimSpace(notes) == "" {
+			notes = DuplicateResolutionNotes(target.TrackingNumber)
+		}
+
+		// Create the link first, so a duplicate link constraint violation fails
+		// before the ticket is locked.
+		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: LinkDuplicateOf}
+		if err := st.CreateLink(ctx, link); err != nil {
+			return fmt.Errorf("creating duplicate link: %w", err)
+		}
+
+		// Resolve the source ticket.
+		var txErr error
+		t, guestToken, txErr = s.resolveInTx(ctx, st, au, sourceID, notes, actor, now)
+		return txErr
+	}); err != nil {
+		return Ticket{}, err
+	}
+
+	// After the commit, dispatch events and record SLA, as Resolve does.
+	if s.sla != nil {
+		_ = s.sla.RecordResolved(ctx, t.ID, now)
+	}
+
+	// Dispatch both the link event and the resolve event.
+	_ = s.dispatcher.Dispatch(ctx, notification.Event{
+		Type:       notification.EventTicketLinked,
+		TicketID:   sourceID,
+		ActorID:    actor.UserID,
+		Payload:    map[string]any{"target_id": targetID, "link_type": LinkDuplicateOf},
+		OccurredAt: now,
+	})
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventTicketResolved,

@@ -417,6 +417,10 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 	}
 	history := append([]ticket.StatusHistoryEntry(nil), a.store.history...)
 	entries := append([]audit.Entry(nil), a.audit.entries...)
+	links := make(map[uuid.UUID][]ticket.TicketLink, len(a.store.links))
+	for k, v := range a.store.links {
+		links[k] = append([]ticket.TicketLink(nil), v...)
+	}
 	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
 
 	if err := fn(a.store, a.audit); err != nil {
@@ -424,6 +428,7 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 		a.store.replies = replies
 		a.store.history = history
 		a.audit.entries = entries
+		a.store.links = links
 		a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates =
 			counters[0], counters[1], counters[2], counters[3]
 		a.rollbacks++

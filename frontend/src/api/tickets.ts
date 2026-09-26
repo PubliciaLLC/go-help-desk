@@ -117,6 +117,24 @@ export async function removeLink(
   await api.delete(`/tickets/${ticketId}/links/${targetId}/${linkType}`)
 }
 
+export function duplicateResolutionNotes(targetTrackingNumber: string): string {
+  return `Duplicate of ${targetTrackingNumber}`
+}
+
+export async function addDuplicateLinkAndResolve(
+  ticketId: string,
+  targetId: string,
+  resolutionNotes: string
+): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${ticketId}/links`, {
+    target_id: targetId,
+    link_type: 'duplicate_of',
+    resolve_as_duplicate: true,
+    resolution_notes: resolutionNotes,
+  })
+  return res.data
+}
+
 // ── Tags ──────────────────────────────────────────────────────────────────────
 
 export async function searchTags(q: string): Promise<Tag[]> {

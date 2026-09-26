@@ -696,8 +696,10 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		TargetID uuid.UUID `json:"target_id"`
-		LinkType string    `json:"link_type"`
+		TargetID             uuid.UUID `json:"target_id"`
+		LinkType             string    `json:"link_type"`
+		ResolveAsDuplicate   bool      `json:"resolve_as_duplicate"`
+		ResolutionNotes      string    `json:"resolution_notes"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -719,6 +721,25 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+
+	// If resolve_as_duplicate is true, validate that link_type is actually duplicate_of
+	if body.ResolveAsDuplicate && ticket.LinkType(body.LinkType) != ticket.LinkDuplicateOf {
+		Error(w, http.StatusBadRequest, "bad_request", "resolve_as_duplicate can only be used with duplicate_of link type")
+		return
+	}
+
+	if body.ResolveAsDuplicate {
+		// Resolve the source ticket as a duplicate of the target in one transaction.
+		t, err := s.tickets.ResolveAsDuplicate(r.Context(), sourceID, body.TargetID, body.ResolutionNotes, actor)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, t)
+		return
+	}
+
+	// Original path: just create the link.
 	if err := s.tickets.AddLink(r.Context(), sourceID, body.TargetID, ticket.LinkType(body.LinkType), actor); err != nil {
 		handleError(w, err)
 		return

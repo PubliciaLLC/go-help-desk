@@ -592,6 +592,12 @@ func CanTransitionStatus(to Status, role user.Role) error {
 	return nil
 }
 
+// DuplicateResolutionNotes is the default resolution note for a ticket
+// resolved as a duplicate.
+func DuplicateResolutionNotes(targetTrackingNumber TrackingNumber) string {
+	return "Duplicate of " + string(targetTrackingNumber)
+}
+
 // VisibleReplies drops internal notes for a caller who is not staff.
 //
 // Internal notes are staff-to-staff. Access to a ticket is not access to them:

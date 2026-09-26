@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { listLinks, addLink, removeLink, listTickets, getTicket } from '@/api/tickets'
+import { listLinks, addLink, removeLink, listTickets, getTicket, duplicateResolutionNotes, addDuplicateLinkAndResolve } from '@/api/tickets'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -45,6 +45,8 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
   const [error, setError] = useState('')
   const pickerRef = useRef<HTMLDivElement>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [resolveAsResolve, setResolveAsResolve] = useState(false)
+  const [resolutionNotes, setResolutionNotes] = useState<string | null>(null)
 
   // Fetch existing links
   const { data: links = [] } = useQuery({
@@ -113,15 +115,27 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
       if (!opt) throw new Error('Invalid relation')
 
       const [source, target] = opt.reversed ? [selectedTicket.id, ticketId] : [ticketId, selectedTicket.id]
-      await addLink(source, target, opt.link_type)
+
+      if (resolveAsResolve && opt.link_type === 'duplicate_of') {
+        // Resolve as duplicate with custom or default notes
+        const notes = resolutionNotes ?? duplicateResolutionNotes(selectedTicket.tracking_number)
+        await addDuplicateLinkAndResolve(source, target, notes)
+      } else {
+        // Just add the link
+        await addLink(source, target, opt.link_type)
+      }
     },
     onSuccess: async () => {
       setSearchInput('')
       setSelectedTicket(null)
       setSelectedRelation('related_to')
+      setResolveAsResolve(false)
+      setResolutionNotes(null)
       setShowForm(false)
       setError('')
       qc.invalidateQueries({ queryKey: ['links', ticketId] })
+      qc.invalidateQueries({ queryKey: ['ticket', ticketId] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', ticketId] })
       if (selectedTicket) {
         qc.invalidateQueries({ queryKey: ['links', selectedTicket.id] })
       }
@@ -241,7 +255,12 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                 id="relation-select"
                 className="h-8 text-xs w-full"
                 value={selectedRelation}
-                onChange={(e) => setSelectedRelation(e.target.value)}
+                onChange={(e) => {
+                  setSelectedRelation(e.target.value)
+                  // Reset resolve checkbox when relation changes
+                  setResolveAsResolve(false)
+                  setResolutionNotes(null)
+                }}
               >
                 {RELATION_OPTIONS.map(opt => (
                   <option key={opt.key} value={opt.key}>
@@ -261,7 +280,11 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                       {selectedTicket.tracking_number} · {selectedTicket.subject}
                     </span>
                     <button
-                      onClick={() => setSelectedTicket(null)}
+                      onClick={() => {
+                        setSelectedTicket(null)
+                        setResolveAsResolve(false)
+                        setResolutionNotes(null)
+                      }}
                       className="text-gray-400 hover:text-gray-600"
                       aria-label="Clear ticket"
                     >
@@ -297,6 +320,10 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                               setSelectedTicket(t)
                               setSearchInput('')
                               setPickerOpen(false)
+                              // Reset notes to null so default is shown for new ticket
+                              if (selectedRelation === 'duplicate_of') {
+                                setResolutionNotes(null)
+                              }
                             }}
                           >
                             {t.tracking_number} · {t.subject}
@@ -315,6 +342,42 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                 )}
               </div>
             </div>
+
+            {/* Resolve as duplicate checkbox - only for duplicate_of relation */}
+            {selectedRelation === 'duplicate_of' && selectedTicket && (
+              <div className="space-y-2 pt-2 border-t">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={resolveAsResolve}
+                    onChange={(e) => {
+                      setResolveAsResolve(e.target.checked)
+                      if (e.target.checked && resolutionNotes === null) {
+                        // Set default notes when checkbox is checked, but preserve edits
+                        setResolutionNotes(duplicateResolutionNotes(selectedTicket.tracking_number))
+                      }
+                    }}
+                    className="w-4 h-4"
+                  />
+                  <span className="text-xs text-gray-700">Also resolve this ticket as a duplicate</span>
+                </label>
+
+                {/* Resolution notes textarea - only when resolve is checked */}
+                {resolveAsResolve && (
+                  <div>
+                    <label htmlFor="resolution-notes" className="text-xs text-gray-500 block mb-1">Resolution notes</label>
+                    <textarea
+                      id="resolution-notes"
+                      value={resolutionNotes ?? duplicateResolutionNotes(selectedTicket.tracking_number)}
+                      onChange={(e) => setResolutionNotes(e.target.value)}
+                      rows={3}
+                      placeholder="Notes explaining why this is a duplicate"
+                      className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             {error && <p className="text-xs text-red-600">{error}</p>}
 
