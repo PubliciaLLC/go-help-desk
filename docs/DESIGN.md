@@ -280,6 +280,48 @@ in 1.2.0.
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
 
+### Small screens
+
+Two jobs are supported on a phone: **a staff member triaging away from their
+desk**, and **a reporter filing a request and following it**. Administration is
+not. An operator configuring categories, editing roles or managing API keys is
+at a desk, and the ten admin tables are built for one.
+
+That boundary is stated rather than implied, because the alternative is a
+product that appears to work on a phone until somebody reaches a page that
+does not.
+
+**What each job covers.** The staff path is the queue, a ticket, and the
+actions taken on it: read, reply, reassign, change status, resolve. The
+reporter path is the new-ticket form, their own list, and the thread they can
+read and reply to. Both include signing in.
+
+**Where the work actually is.** The unauthenticated pages — sign-in,
+registration, first-run setup, email verification, guest submission, the guest
+ticket view, and the tracking-number form — render outside the application
+shell, as centred cards with their own maximum widths. They already work at
+phone size; measured at 390 CSS pixels, each fits with nothing wider than the
+screen. Nothing in this section changes them.
+
+Everything inside the shell does not work, and for one reason: the sidebar is
+a fixed 240 pixels with no breakpoint, which is more than half of a 390-pixel
+viewport. The pages beneath it then inherit a column too narrow to lay
+anything out in. So the shell is the first change and the largest single
+improvement; the queue and the ticket page follow it.
+
+**The rule for the pages that are in scope.** No horizontal scrolling at 390
+pixels, controls large enough to hit with a thumb, and a layout that stacks
+rather than shrinks — a five-column table squeezed into a phone is not a
+mobile layout, it is the same table with less room. Where a table carries one
+row per thing, that becomes one card per thing.
+
+**Not a claim of feature parity.** Everything a staff member can do to a ticket
+from a desk they can do from a phone, because those actions live on the ticket
+page. Bulk selection across a queue is the exception and stays desktop-only:
+it is a multi-select over a table, which is the shape that does not translate.
+
+Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296).
+
 ### Ticket Submission by Role
 
 | Field | Guest | User (logged in) | Staff / Admin |
