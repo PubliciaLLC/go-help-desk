@@ -173,7 +173,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
 
       {(assigneeUserId || assigneeGroupId) && (
         <button
-          className="text-xs text-gray-400 hover:text-gray-600"
+          className="min-h-6 rounded px-1 py-1 text-xs text-gray-400 hover:text-gray-600"
           onClick={() => unassignMutation.mutate()}
           disabled={unassignMutation.isPending}
         >
@@ -277,7 +277,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
           </CardTitle>
           {isStaffOrAdmin && !editValues && (
             <button
-              className="text-xs text-blue-600 hover:underline"
+              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
               onClick={() => {
                 const init: Record<string, string> = {}
                 for (const v of values) init[v.field_def_id] = v.value
@@ -478,13 +478,13 @@ export function TicketDetailPage() {
 
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1">
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <span>{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
-            <h1 className="text-2xl font-bold text-gray-900">{ticket.subject}</h1>
+            <h1 className="text-2xl font-bold text-gray-900 break-words">{ticket.subject}</h1>
             <div className="flex items-center gap-2 flex-wrap">
               <span
                 className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
@@ -589,7 +589,7 @@ export function TicketDetailPage() {
                           {formatDate(r.created_at)}
                         </span>
                       </div>
-                      <p className="whitespace-pre-wrap">{r.body}</p>
+                      <p className="whitespace-pre-wrap break-words">{r.body}</p>
                     </div>
                   )
                 }

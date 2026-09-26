@@ -228,8 +228,12 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                 <Badge variant="secondary" className="text-[10px] shrink-0">{label}</Badge>
                 <div className="flex-1 min-w-0">
                   {other && 'ticket' in other ? (
-                    <Link to="/tickets/$id" params={{ id: other.ticket.id }}>
-                      <span className="text-xs font-medium text-blue-600 hover:underline truncate" title={other.ticket.subject}>
+                    <Link
+                      to="/tickets/$id"
+                      params={{ id: other.ticket.id }}
+                      className="flex min-h-6 min-w-0 items-center"
+                    >
+                      <span className="block truncate text-xs font-medium text-blue-600 hover:underline" title={other.ticket.subject}>
                         {other.ticket.tracking_number} · {other.ticket.subject}
                       </span>
                     </Link>
@@ -240,7 +244,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                 <button
                   onClick={() => removeMutation.mutate(link)}
                   disabled={removeMutation.isPending}
-                  className="text-gray-400 hover:text-gray-600 shrink-0"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
                   aria-label={
                     other && 'ticket' in other
                       ? `Remove link to ${other.ticket.tracking_number}`

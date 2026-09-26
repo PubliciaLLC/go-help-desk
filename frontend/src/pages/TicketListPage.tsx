@@ -308,9 +308,13 @@ export function TicketListPage() {
           )
         })()}
 
-        {/* Bulk action bar */}
+        {/* Bulk action bar — desktop-only, like the selection checkboxes it
+            controls (see the table/card split below): below md there is
+            nothing left to select, so a bar surviving a resize down would
+            float with no controls under it and overflow the 390px card view
+            besides. */}
         {someSelected && isStaffOrAdmin && (
-          <div className="space-y-2">
+          <div className="hidden space-y-2 md:block">
           <div className="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
             <span className="text-blue-700 font-medium">{selectedIds.size} selected</span>
             <select
@@ -479,7 +483,7 @@ export function TicketListPage() {
                           </span>
                         ) : '—'}
                       </div>
-                      <p className="mt-1.5 font-medium text-gray-900">{t.subject}</p>
+                      <p className="mt-1.5 break-words font-medium text-gray-900">{t.subject}</p>
                       <div className="mt-1.5 flex items-center gap-2">
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}

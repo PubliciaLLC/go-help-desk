@@ -215,7 +215,7 @@ function OrdinaryRow({ ticketId, attachment }: RowProps) {
     <div className="space-y-1">
       <a
         href={attachmentDownloadUrl(ticketId, attachment.id)}
-        className="flex items-center gap-2 text-sm text-blue-600 hover:underline truncate"
+        className="flex min-h-6 items-center gap-2 text-sm text-blue-600 hover:underline truncate"
         download={attachment.filename}
       >
         <span className="shrink-0 text-gray-400">↓</span>
@@ -352,7 +352,7 @@ function HashLine({ attachment }: { attachment: Attachment }) {
             href={attachment.reputation_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-blue-600 hover:underline"
+            className="inline-flex min-h-6 items-center text-blue-600 hover:underline"
           >
             Look up on VirusTotal ↗
           </a>
@@ -471,7 +471,7 @@ function ReputationLine({ ticketId, attachment }: RowProps) {
             aria-expanded={expanded}
             aria-controls={listId}
             onClick={() => setExpanded((open) => !open)}
-            className="text-xs font-medium text-blue-700 underline-offset-2 hover:underline"
+            className="inline-flex min-h-6 items-center text-xs font-medium text-blue-700 underline-offset-2 hover:underline"
           >
             {expanded ? 'Hide' : 'Show'} all {providers.length} services {expanded ? '▴' : '▾'}
           </button>
@@ -536,7 +536,7 @@ function ProviderLine({
             href={verdict.link_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="text-blue-600 hover:underline"
+            className="inline-flex min-h-6 items-center text-blue-600 hover:underline"
           >
             Open {named ?? 'the report'} ↗
           </a>

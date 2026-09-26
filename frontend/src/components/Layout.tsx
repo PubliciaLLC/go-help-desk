@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
+import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, MenuIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -14,14 +15,16 @@ interface NavItemProps {
   to: string
   icon: React.ReactNode
   label: string
+  onNavigate?: () => void
 }
 
-function NavItem({ to, icon, label }: NavItemProps) {
+function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
   const { location } = useRouterState()
   const active = location.pathname === to || location.pathname.startsWith(to + '/')
   return (
     <Link
       to={to}
+      onClick={onNavigate}
       className={cn(
         'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
         active
@@ -45,47 +48,39 @@ interface SidebarContentProps {
 // The sidebar's actual content — branding, nav, sign-out — shared between the
 // permanent desktop <aside> and the mobile drawer so the two never drift.
 function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContentProps) {
-  const { showLogo, logoURL, siteName, onLogoError } = branding
   return (
     <>
       <div className="flex h-14 items-center border-b px-4">
-        {showLogo ? (
-          <img
-            src={logoURL}
-            alt={siteName}
-            className="h-8 max-w-[160px] object-contain"
-            onError={onLogoError}
-          />
-        ) : (
-          <span className="text-lg font-semibold text-gray-900">{siteName}</span>
-        )}
+        <BrandLogo
+          {...branding}
+          imgClassName="h-8 max-w-[160px] object-contain"
+          fallbackClassName="text-lg font-semibold text-gray-900"
+        />
       </div>
 
-      {/* Closing on any click inside covers every NavItem without wiring
-          each one individually — there is nothing else in here to click. */}
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3" onClick={onNavigate}>
-        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" />
-        <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" />
+      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} />
+        <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
         {user?.role === 'admin' && (
           <>
             <div className="px-3 pt-4 pb-1">
               <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Admin</span>
             </div>
-            <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" />
+            <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" onNavigate={onNavigate} />
           </>
         )}
         {user?.role === 'admin' && (
           <>
-            <NavItem to="/admin/groups" icon={<UsersRoundIcon className="h-4 w-4" />} label="Groups" />
-            <NavItem to="/admin/roles" icon={<ShieldIcon className="h-4 w-4" />} label="Roles" />
-            <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" />
-            <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" />
-            <NavItem to="/admin/tags" icon={<TagIcon className="h-4 w-4" />} label="Tags" />
-            <NavItem to="/admin/canned-responses" icon={<MessageSquareTextIcon className="h-4 w-4" />} label="Canned Responses" />
-            <NavItem to="/admin/custom-fields" icon={<SlidersIcon className="h-4 w-4" />} label="Custom Fields" />
-            <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" />
-            <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" />
-            <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" />
+            <NavItem to="/admin/groups" icon={<UsersRoundIcon className="h-4 w-4" />} label="Groups" onNavigate={onNavigate} />
+            <NavItem to="/admin/roles" icon={<ShieldIcon className="h-4 w-4" />} label="Roles" onNavigate={onNavigate} />
+            <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" onNavigate={onNavigate} />
+            <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" onNavigate={onNavigate} />
+            <NavItem to="/admin/tags" icon={<TagIcon className="h-4 w-4" />} label="Tags" onNavigate={onNavigate} />
+            <NavItem to="/admin/canned-responses" icon={<MessageSquareTextIcon className="h-4 w-4" />} label="Canned Responses" onNavigate={onNavigate} />
+            <NavItem to="/admin/custom-fields" icon={<SlidersIcon className="h-4 w-4" />} label="Custom Fields" onNavigate={onNavigate} />
+            <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" onNavigate={onNavigate} />
+            <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" onNavigate={onNavigate} />
+            <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" onNavigate={onNavigate} />
           </>
         )}
       </nav>
@@ -122,6 +117,20 @@ export function Layout({ children }: LayoutProps) {
   // default, opened from the mobile top bar's own trigger. See #296.
   const [drawerOpen, setDrawerOpen] = useState(false)
 
+  // Rotating a phone to landscape, or resizing past md some other way, must
+  // not leave the drawer open behind the now-visible permanent sidebar: it is
+  // still focus-trapped and still covers the page with its overlay, and
+  // nothing on screen would explain why the app has stopped responding.
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 48rem)')
+    function onChange(e: MediaQueryListEvent | MediaQueryList) {
+      if (e.matches) setDrawerOpen(false)
+    }
+    onChange(query)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
+
   async function handleLogout() {
     await logout().catch(() => {})
     clear()
@@ -129,7 +138,7 @@ export function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="flex h-screen flex-col bg-gray-50">
+    <div className="flex h-dvh flex-col bg-gray-50">
       {/* Above everything, including the sidebar: an instance signing sessions
           with a published key is not a detail to scroll past. */}
       <InsecureConfigBanner isAdmin={user?.role === 'admin'} />
@@ -145,16 +154,11 @@ export function Layout({ children }: LayoutProps) {
         >
           <MenuIcon className="h-5 w-5" />
         </button>
-        {showLogo ? (
-          <img
-            src={logoURL}
-            alt={siteName}
-            className="h-7 max-w-[140px] object-contain"
-            onError={branding.onLogoError}
-          />
-        ) : (
-          <span className="truncate text-base font-semibold text-gray-900">{siteName}</span>
-        )}
+        <BrandLogo
+          {...branding}
+          imgClassName="h-7 max-w-[140px] object-contain"
+          fallbackClassName="truncate text-base font-semibold text-gray-900"
+        />
       </div>
 
       {/* Body row: sidebar + main */}

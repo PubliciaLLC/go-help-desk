@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { mockApi, ME_REPORTER, TICKET_DETAIL } from './mock'
+import { mockApi, ME_REPORTER, TICKET_DETAIL, TICKETS } from './mock'
 
 // #296: the shell has a fixed 240px sidebar with no breakpoint, so every
 // page inside it is unusable — not overflowing, just crushed — at a phone
@@ -13,11 +13,18 @@ import { mockApi, ME_REPORTER, TICKET_DETAIL } from './mock'
 test.use({ viewport: { width: 390, height: 844 } })
 
 async function noHorizontalScroll(page: Page) {
-  const { scrollWidth, innerWidth } = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    innerWidth: window.innerWidth,
-  }))
-  expect(scrollWidth, 'page is wider than the viewport at 390px').toBeLessThanOrEqual(innerWidth)
+  // NOT document.documentElement: every page's content sits inside
+  // <main class="overflow-auto"> in a shell whose row is overflow-hidden, so
+  // the document itself can never be wider than the viewport regardless of
+  // what overflows inside main — exactly the shape of check #296 warned
+  // against ("scrollWidth == innerWidth ... passed this and did"). Measuring
+  // main's own box is what actually catches a too-wide child of it.
+  const { scrollWidth, clientWidth } = await page.evaluate(() => {
+    const main = document.querySelector('main')
+    if (!main) throw new Error('no <main> element found')
+    return { scrollWidth: main.scrollWidth, clientWidth: main.clientWidth }
+  })
+  expect(scrollWidth, 'main is wider than its own box at 390px').toBeLessThanOrEqual(clientWidth)
 }
 
 test.describe('shell + pages fit at 390 CSS pixels', () => {
@@ -91,10 +98,64 @@ test.describe('the sidebar is reachable, not just absent', () => {
     await page.keyboard.press('Escape')
     await expect(page.getByRole('navigation')).toBeHidden()
   })
+
+  test('resizing past md closes an open drawer instead of leaving it trapped behind the sidebar', async ({ page }) => {
+    await mockApi(page)
+    await page.goto('/dashboard')
+
+    await page.getByRole('button', { name: /menu|navigation/i }).click()
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+
+    // Widening past md (768px) is what a phone rotating to landscape, or a
+    // window being resized, looks like. Without a listener for this, the
+    // drawer stays open and its focus trap and overlay keep covering the now
+    // otherwise-usable desktop layout underneath.
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await expect(page.getByRole('navigation')).toBeVisible()
+
+    // Back below md: the drawer must not have silently reopened — the
+    // permanent sidebar is what took its place, and only its own trigger
+    // reopens the drawer again.
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(page.getByRole('navigation')).toBeHidden()
+  })
+})
+
+test.describe('bulk ticket selection stays desktop-only', () => {
+  test('a selection made at desktop width does not survive into the mobile card view', async ({ page }) => {
+    await mockApi(page)
+    // Wide first: bulk selection is a table feature, not reachable from the
+    // card view at all, so the selection itself has to be made at desktop
+    // width before resizing down to prove anything about what happens next.
+    await page.setViewportSize({ width: 1024, height: 800 })
+    await page.goto('/tickets')
+
+    await page
+      .getByRole('checkbox', { name: `Select ticket ${TICKETS[0].tracking_number}` })
+      .check()
+    await expect(page.getByText('1 selected')).toBeVisible()
+
+    // Narrow to the phone viewport this whole file otherwise runs at,
+    // without reloading — a resize, not a fresh navigation, since a stale
+    // selection surviving a page load was never the failure mode here.
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(page.getByText('1 selected')).toBeHidden()
+    await noHorizontalScroll(page)
+  })
 })
 
 test.describe('tap targets are large enough to hit with a thumb', () => {
-  test('ticket detail: SHA-256 copy and assignee toggle', async ({ page }) => {
+  // mock.ts populates this ticket with an assignee, a tag, a linked ticket, a
+  // custom field and an attachment pair (one clean, one quarantined with two
+  // reputation providers) specifically so this scan reaches the controls
+  // those panels only render once populated — AssigneePanel's "Clear
+  // assignment", CustomFieldsPanel's "Edit", TagInput's "Remove tag",
+  // LinkedTicketsPanel's link anchor and "Remove link", and AttachmentList's
+  // "Look up on VirusTotal", "Show all N services" and "Open … report".
+  // Against the empty-array fixture this test used before, none of those
+  // elements exist to measure, so the pass they gate never actually ran on
+  // them.
+  test('ticket detail: every control, once every panel actually renders', async ({ page }) => {
     await mockApi(page)
     await page.goto(`/tickets/${TICKET_DETAIL.id}`)
     await expect(page.getByText(TICKET_DETAIL.subject)).toBeVisible()

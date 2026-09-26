@@ -33,9 +33,16 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev -- --port 5183 --strictPort',
+    // Vite binds to `localhost` by default, not 127.0.0.1 — on at least one
+    // CI runner that is not the same address, so the readiness poll below
+    // never saw it come up and the whole job timed out. Pinning the host
+    // makes the bind address match what's being polled instead of relying on
+    // however the runner resolves the difference.
+    command: 'npm run dev -- --host 127.0.0.1 --port 5183 --strictPort',
     url: 'http://127.0.0.1:5183',
     reuseExistingServer: !process.env.CI,
-    timeout: 30_000,
+    timeout: 60_000,
+    stdout: 'pipe',
+    stderr: 'pipe',
   },
 })
