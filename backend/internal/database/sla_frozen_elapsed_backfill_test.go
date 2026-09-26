@@ -219,8 +219,12 @@ func TestMigration_BackfillsPreExistingSLAInvariantViolations(t *testing.T) {
 		StatusID: newSt.ID, ReporterUserID: &reporter.ID, ResolvedAt: &resolvedAtA,
 		CreatedAt: now.Add(-24 * time.Hour), UpdatedAt: resolvedAtA,
 	}
-	// A ticket sitting in Resolved has that as its actual status; the fake
-	// New status above is a placeholder to satisfy Create, overwritten here.
+	// Actually stays New — this fixture is a #244-shaped ticket (resolved_at
+	// set, but the ticket is not sitting in Resolved) whose sla_records row
+	// already carries a resolution fact (set below), which is exactly what
+	// C1 skips (r.resolved_at IS NULL is false for it). Kept as New rather
+	// than "corrected" to Resolved, since re-shaping it would stop pinning
+	// what this test actually exercises.
 	tkA.StatusID = newSt.ID
 	require.NoError(t, ts.Create(ctx, tkA))
 	require.NoError(t, ts.Update(ctx, tkA)) // Create never sets resolved_at; write it directly, as a real resolve would have.
@@ -381,6 +385,15 @@ func TestMigration_SLABackfillReachesClosedAtStillNullRows(t *testing.T) {
 	require.True(t, rec.ResolvedAt.Equal(*repaired.ClosedAt))
 	require.NotNil(t, rec.ResolutionElapsedAtMetSeconds)
 	require.NotNil(t, rec.FirstResponseAt, "#226(a) cascades from the newly-backfilled resolved_at")
+
+	// #243 regression pin: this fixture has no history and no fact for its
+	// resolution — C1 finds nothing, so C2 estimates the instant from
+	// updated_at/closed_at. Its resolution reads over a wide 480-minute
+	// target from a ticket created 24h ago, so before the estimated gate
+	// existed the old SQL stamped both breach columns here.
+	require.Nil(t, rec.ResolutionBreachedAt,
+		"#243: an estimated resolution instant (no fact backs it) must never get a breach stamp")
+	require.Nil(t, rec.ResponseBreachedAt, "#243: same, for the #226(a) response cascade")
 }
 
 // TestMigration_SLABackfillStampsBreachForLateLegacyTicket pins #235: a

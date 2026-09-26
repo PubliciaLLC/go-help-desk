@@ -6,7 +6,10 @@
 -- sitting in Closed, and — since #231 moved it here — a legacy sla_records
 -- row missing resolved_at/first_response_at or their breach stamps, even one
 -- migration 000027's own earlier pass had already frozen but never stamped
--- (#240) — were bugs, not state worth restoring, and there is no way to
--- recover which rows had which stale or missing values before the up
--- migration ran. Left as a no-op rather than silently reintroducing the
--- invariant violations the up migration fixed.
+-- (#240), plus a legacy sla_records resolution recovered from the earliest
+-- recorded resolve or close, including on a ticket since reopened (#242,
+-- #244), recorded without a breach stamp where only the updated_at upper
+-- bound was available (#243) — were bugs, not state worth restoring, and
+-- there is no way to recover which rows had which stale or missing values
+-- before the up migration ran. Left as a no-op rather than silently
+-- reintroducing the invariant violations the up migration fixed.
