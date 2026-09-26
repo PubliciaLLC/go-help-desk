@@ -6,9 +6,9 @@ import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
 // #277: Reopen is Closed-only on the server. Staff must not see the button on
-// a Resolved ticket (it always 500'd there), and a click that still fails
-// (someone else already reopened it) must show a message rather than a
-// swallowed error.
+// a Resolved ticket (it 500'd there until #292, and 409s now), and a click
+// that still fails (someone else already reopened it) must show a message
+// rather than a swallowed error.
 
 const TICKET_ID = 'tkt-1'
 

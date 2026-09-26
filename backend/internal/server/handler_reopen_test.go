@@ -35,10 +35,11 @@ func TestReopenTicket_New_ReturnsTicketNotClosed(t *testing.T) {
 
 // TestReopenTicket_Resolved_ReturnsTicketNotClosed pins #277's central
 // decision: Reopen accepts only a Closed ticket, deliberately, even though
-// this button has always been shown on a Resolved ticket's header too (and
-// has always 500'd there). A Resolved ticket is moved by the status
-// selector (UpdateStatus) or by the reporter's own reply — not by this
-// endpoint.
+// this button was shown on a Resolved ticket's header too (it 500'd there
+// until #292 wrapped ticket.ErrNotClosed and mapped it to 409; the frontend
+// stopped showing the button there in this same PR). A Resolved ticket is
+// moved by the status selector (UpdateStatus) or by the reporter's own
+// reply — not by this endpoint.
 func TestReopenTicket_Resolved_ReturnsTicketNotClosed(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
