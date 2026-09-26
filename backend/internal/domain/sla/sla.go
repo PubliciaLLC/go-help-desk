@@ -27,6 +27,25 @@ type Record struct {
 	ResolvedAt           *time.Time `json:"resolved_at,omitempty"`
 	ResponseBreachedAt   *time.Time `json:"response_breached_at,omitempty"`
 	ResolutionBreachedAt *time.Time `json:"resolution_breached_at,omitempty"`
+
+	// ResponseElapsedAtMetSeconds / ResolutionElapsedAtMetSeconds are the
+	// elapsed-toward-target NUMBER frozen at the instant FirstResponseAt /
+	// ResolvedAt was recorded (see Service.RecordFirstResponse /
+	// RecordResolved), not merely the timestamp it happened at.
+	//
+	// Elapsed(t, at) subtracts t.SLAPausedSeconds, which is a single
+	// accumulated total that keeps growing for the rest of the ticket's life.
+	// Recomputing Elapsed(t, *FirstResponseAt) against today's ticket row
+	// would therefore subtract pause time that had not even happened yet when
+	// the target was met, silently shrinking — or even flipping the color of
+	// — a reading that is supposed to be final. targetStatus reads this
+	// column instead, for exactly that reason.
+	//
+	// nil only for a record whose target was met before this column existed;
+	// targetStatus falls back to the old (reopenable-to-the-same-bug) live
+	// recompute for those, never for a fresh RecordFirstResponse/RecordResolved.
+	ResponseElapsedAtMetSeconds   *int64 `json:"response_elapsed_at_met_seconds,omitempty"`
+	ResolutionElapsedAtMetSeconds *int64 `json:"resolution_elapsed_at_met_seconds,omitempty"`
 }
 
 // Elapsed is the time a ticket has spent counting toward its targets as of at:

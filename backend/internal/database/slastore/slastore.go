@@ -101,14 +101,7 @@ func (s *Store) GetRecord(ctx context.Context, ticketID uuid.UUID) (sla.Record, 
 		}
 		return sla.Record{}, fmt.Errorf("getting SLA record %s: %w", ticketID, err)
 	}
-	return sla.Record{
-		TicketID:             r.TicketID,
-		PolicyID:             r.PolicyID,
-		FirstResponseAt:      database.TimePtr(r.FirstResponseAt),
-		ResolvedAt:           database.TimePtr(r.ResolvedAt),
-		ResponseBreachedAt:   database.TimePtr(r.ResponseBreachedAt),
-		ResolutionBreachedAt: database.TimePtr(r.ResolutionBreachedAt),
-	}, nil
+	return recordFromRow(r), nil
 }
 
 func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
@@ -121,6 +114,28 @@ func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
 	})
 }
 
+func (s *Store) SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+	if err := s.q.SetSLAFirstResponse(ctx, dbgen.SetSLAFirstResponseParams{
+		TicketID:                    ticketID,
+		FirstResponseAt:             database.NullTime(&at),
+		ResponseElapsedAtMetSeconds: database.NullInt64(&elapsedSeconds),
+	}); err != nil {
+		return fmt.Errorf("setting SLA first response for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
+func (s *Store) SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+	if err := s.q.SetSLAResolved(ctx, dbgen.SetSLAResolvedParams{
+		TicketID:                      ticketID,
+		ResolvedAt:                    database.NullTime(&at),
+		ResolutionElapsedAtMetSeconds: database.NullInt64(&elapsedSeconds),
+	}); err != nil {
+		return fmt.Errorf("setting SLA resolution for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
 func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]sla.Record, error) {
 	rows, err := s.q.ListSLARecordsByTicketIDs(ctx, ticketIDs)
 	if err != nil {
@@ -128,16 +143,22 @@ func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUI
 	}
 	out := make([]sla.Record, len(rows))
 	for i, r := range rows {
-		out[i] = sla.Record{
-			TicketID:             r.TicketID,
-			PolicyID:             r.PolicyID,
-			FirstResponseAt:      database.TimePtr(r.FirstResponseAt),
-			ResolvedAt:           database.TimePtr(r.ResolvedAt),
-			ResponseBreachedAt:   database.TimePtr(r.ResponseBreachedAt),
-			ResolutionBreachedAt: database.TimePtr(r.ResolutionBreachedAt),
-		}
+		out[i] = recordFromRow(r)
 	}
 	return out, nil
+}
+
+func recordFromRow(r dbgen.SlaRecord) sla.Record {
+	return sla.Record{
+		TicketID:                      r.TicketID,
+		PolicyID:                      r.PolicyID,
+		FirstResponseAt:               database.TimePtr(r.FirstResponseAt),
+		ResolvedAt:                    database.TimePtr(r.ResolvedAt),
+		ResponseBreachedAt:            database.TimePtr(r.ResponseBreachedAt),
+		ResolutionBreachedAt:          database.TimePtr(r.ResolutionBreachedAt),
+		ResponseElapsedAtMetSeconds:   database.Int64Ptr(r.ResponseElapsedAtMetSeconds),
+		ResolutionElapsedAtMetSeconds: database.Int64Ptr(r.ResolutionElapsedAtMetSeconds),
+	}
 }
 
 func (s *Store) ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {

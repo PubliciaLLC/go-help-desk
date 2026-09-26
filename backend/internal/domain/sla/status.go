@@ -55,18 +55,36 @@ func StatusFor(rec Record, p Policy, t ticket.Ticket, now time.Time) Status {
 	return Status{
 		PolicyID:   p.ID,
 		PolicyName: p.Name,
-		Response:   targetStatus(rec.FirstResponseAt, p.ResponseTargetMin, t, now),
-		Resolution: targetStatus(rec.ResolvedAt, p.ResolutionTargetMin, t, now),
+		Response:   targetStatus(rec.FirstResponseAt, rec.ResponseElapsedAtMetSeconds, p.ResponseTargetMin, t, now),
+		Resolution: targetStatus(rec.ResolvedAt, rec.ResolutionElapsedAtMetSeconds, p.ResolutionTargetMin, t, now),
 	}
 }
 
-func targetStatus(metAt *time.Time, targetMin int, t ticket.Ticket, now time.Time) TargetStatus {
+// targetStatus computes one target's live read. Once metAt is set, elapsed
+// must never move again, so a met target reads its FROZEN number
+// (frozenSeconds, written by Service.RecordFirstResponse / RecordResolved at
+// the instant it was met) rather than recomputing Elapsed(t, *metAt) against
+// t — t.SLAPausedSeconds keeps growing for the rest of the ticket's life, so
+// that recompute would silently subtract pause time that had not happened yet
+// when the target was met (see Record's doc comment and CLAUDE.md).
+//
+// frozenSeconds is nil only for a record whose target was met before that
+// column existed; that case falls back to the old live recompute, which is
+// wrong in exactly the way this function exists to fix, but only for rows a
+// one-time migration backfill did not reach.
+func targetStatus(metAt *time.Time, frozenSeconds *int64, targetMin int, t ticket.Ticket, now time.Time) TargetStatus {
 	target := time.Duration(targetMin) * time.Minute
-	at := now
-	if metAt != nil {
-		at = *metAt
+
+	var elapsed time.Duration
+	switch {
+	case metAt == nil:
+		elapsed = Elapsed(t, now)
+	case frozenSeconds != nil:
+		elapsed = time.Duration(*frozenSeconds) * time.Second
+	default:
+		elapsed = Elapsed(t, *metAt)
 	}
-	elapsed := Elapsed(t, at)
+
 	return TargetStatus{
 		Color:        colorFor(elapsed, target),
 		TargetMin:    targetMin,

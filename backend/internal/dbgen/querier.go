@@ -278,6 +278,16 @@ type Querier interface {
 	// ranking used by the other ticket searches.
 	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
+	// Marks the first response and freezes elapsed-toward-target as of that same
+	// moment in one statement, COALESCE-guarded like StampSLABreaches below: it
+	// only ever writes first_response_at / response_elapsed_at_met_seconds, and
+	// only while they are still NULL, so it cannot race with StampSLABreaches
+	// clobbering a breach stamp the way a full-row UpdateSLARecord read-then-write
+	// could (see CLAUDE.md). Idempotent for the same reason: a retried call finds
+	// both columns already set and changes nothing.
+	SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) error
+	// The resolution-side twin of SetSLAFirstResponse.
+	SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error

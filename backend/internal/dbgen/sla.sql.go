@@ -137,7 +137,7 @@ func (q *Queries) GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, er
 }
 
 const getSLARecord = `-- name: GetSLARecord :one
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at FROM sla_records WHERE ticket_id = $1
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds FROM sla_records WHERE ticket_id = $1
 `
 
 func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error) {
@@ -150,6 +150,8 @@ func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaReco
 		&i.ResolvedAt,
 		&i.ResponseBreachedAt,
 		&i.ResolutionBreachedAt,
+		&i.ResponseElapsedAtMetSeconds,
+		&i.ResolutionElapsedAtMetSeconds,
 	)
 	return i, err
 }
@@ -233,7 +235,7 @@ func (q *Queries) ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error) {
 }
 
 const listSLARecordsByTicketIDs = `-- name: ListSLARecordsByTicketIDs :many
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at FROM sla_records WHERE ticket_id = ANY($1::uuid[])
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds FROM sla_records WHERE ticket_id = ANY($1::uuid[])
 `
 
 // Batch lookup for the per-ticket SLA status embedded on GET /tickets and
@@ -257,6 +259,8 @@ func (q *Queries) ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uui
 			&i.ResolvedAt,
 			&i.ResponseBreachedAt,
 			&i.ResolutionBreachedAt,
+			&i.ResponseElapsedAtMetSeconds,
+			&i.ResolutionElapsedAtMetSeconds,
 		); err != nil {
 			return nil, err
 		}
@@ -269,6 +273,50 @@ func (q *Queries) ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uui
 		return nil, err
 	}
 	return items, nil
+}
+
+const setSLAFirstResponse = `-- name: SetSLAFirstResponse :exec
+UPDATE sla_records
+SET first_response_at = COALESCE(first_response_at, $2),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3)
+WHERE ticket_id = $1
+`
+
+type SetSLAFirstResponseParams struct {
+	TicketID                    uuid.UUID     `json:"ticket_id"`
+	FirstResponseAt             sql.NullTime  `json:"first_response_at"`
+	ResponseElapsedAtMetSeconds sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
+}
+
+// Marks the first response and freezes elapsed-toward-target as of that same
+// moment in one statement, COALESCE-guarded like StampSLABreaches below: it
+// only ever writes first_response_at / response_elapsed_at_met_seconds, and
+// only while they are still NULL, so it cannot race with StampSLABreaches
+// clobbering a breach stamp the way a full-row UpdateSLARecord read-then-write
+// could (see CLAUDE.md). Idempotent for the same reason: a retried call finds
+// both columns already set and changes nothing.
+func (q *Queries) SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) error {
+	_, err := q.db.ExecContext(ctx, setSLAFirstResponse, arg.TicketID, arg.FirstResponseAt, arg.ResponseElapsedAtMetSeconds)
+	return err
+}
+
+const setSLAResolved = `-- name: SetSLAResolved :exec
+UPDATE sla_records
+SET resolved_at = COALESCE(resolved_at, $2),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3)
+WHERE ticket_id = $1
+`
+
+type SetSLAResolvedParams struct {
+	TicketID                      uuid.UUID     `json:"ticket_id"`
+	ResolvedAt                    sql.NullTime  `json:"resolved_at"`
+	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
+}
+
+// The resolution-side twin of SetSLAFirstResponse.
+func (q *Queries) SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) error {
+	_, err := q.db.ExecContext(ctx, setSLAResolved, arg.TicketID, arg.ResolvedAt, arg.ResolutionElapsedAtMetSeconds)
+	return err
 }
 
 const stampSLABreaches = `-- name: StampSLABreaches :exec

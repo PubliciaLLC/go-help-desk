@@ -111,6 +111,47 @@ func TestStatusFor_MetTargetsFreezeAtTheirOwnInstant(t *testing.T) {
 	})
 }
 
+// The regression for #184: once frozenSeconds is set, it is what gets read —
+// never Elapsed(t, *metAt) recomputed against t. A ticket's SLAPausedSeconds
+// only ever grows across its life, so recomputing against "today's" ticket
+// would silently subtract pause time that had not happened yet when the
+// target was met. Constructing a ticket whose live recompute would produce a
+// completely different answer than the frozen number is the point: if
+// targetStatus ever went back to recomputing, this test would catch it
+// immediately, not just fail to notice by coincidence.
+func TestTargetStatus_UsesFrozenElapsedSeconds_IgnoringTicketChanges(t *testing.T) {
+	metAt := statusCreated.Add(120 * time.Minute) // 120/100 = 120%: a genuine breach
+	frozen := int64(120 * 60)                     // frozen at that instant, in seconds
+	rec := sla.Record{FirstResponseAt: &metAt, ResponseElapsedAtMetSeconds: &frozen}
+
+	// If this were recomputed live against *metAt instead of read from
+	// frozen, a SLAPausedSeconds accumulated well AFTER metAt would drag
+	// elapsed back down from 120min to 70min (120-50) — 70%, green — and
+	// repaint a genuine breach as healthy.
+	tk := ticket.Ticket{CreatedAt: statusCreated, SLAPausedSeconds: int64(50 * time.Minute / time.Second)}
+	now := statusCreated.Add(500 * time.Minute)
+
+	got := sla.StatusFor(rec, statusPolicy, tk, now)
+
+	require.Equal(t, 120, got.Response.ElapsedMin, "must read the frozen number, not recompute")
+	require.Equal(t, sla.Red, got.Response.Color, "the late response must stay red however much the ticket pauses later")
+}
+
+// A record whose target was met before this column existed (frozenSeconds
+// nil) falls back to the old live recompute — wrong in exactly the way the
+// column exists to fix, but only for rows a migration backfill did not reach,
+// and strictly no worse than today's behaviour for those rows.
+func TestTargetStatus_FallsBackToLiveRecomputeWhenFrozenSecondsIsNil(t *testing.T) {
+	metAt := statusCreated.Add(60 * time.Minute)
+	rec := sla.Record{FirstResponseAt: &metAt} // no frozen column
+	tk := ticket.Ticket{CreatedAt: statusCreated}
+	now := statusCreated.Add(500 * time.Minute)
+
+	got := sla.StatusFor(rec, statusPolicy, tk, now)
+
+	require.Equal(t, 60, got.Response.ElapsedMin, "recomputed from CreatedAt to metAt with no pause activity")
+}
+
 // The color is a live read of elapsed-toward-target; the breach stamp is not
 // consulted at all, so a response stamped breached but well under target time
 // is still green. Pinned so nobody "optimises" the stamp back in and

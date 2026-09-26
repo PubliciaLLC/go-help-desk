@@ -53,6 +53,26 @@ SET first_response_at = $2, resolved_at = $3,
     response_breached_at = $4, resolution_breached_at = $5
 WHERE ticket_id = $1;
 
+-- name: SetSLAFirstResponse :exec
+-- Marks the first response and freezes elapsed-toward-target as of that same
+-- moment in one statement, COALESCE-guarded like StampSLABreaches below: it
+-- only ever writes first_response_at / response_elapsed_at_met_seconds, and
+-- only while they are still NULL, so it cannot race with StampSLABreaches
+-- clobbering a breach stamp the way a full-row UpdateSLARecord read-then-write
+-- could (see CLAUDE.md). Idempotent for the same reason: a retried call finds
+-- both columns already set and changes nothing.
+UPDATE sla_records
+SET first_response_at = COALESCE(first_response_at, $2),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3)
+WHERE ticket_id = $1;
+
+-- name: SetSLAResolved :exec
+-- The resolution-side twin of SetSLAFirstResponse.
+UPDATE sla_records
+SET resolved_at = COALESCE(resolved_at, $2),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3)
+WHERE ticket_id = $1;
+
 -- name: ListSLABreachCandidates :many
 -- Tickets the breach sweep must evaluate: open, under a policy, with at least
 -- one target that is neither met nor already stamped. The age check is a

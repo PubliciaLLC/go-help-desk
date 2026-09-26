@@ -23,6 +23,8 @@ type fakeSLAStore struct {
 	candidates []uuid.UUID
 
 	updateRecordCalls     int
+	setFirstResponseCalls int
+	setResolvedCalls      int
 	stampCalls            int
 	listRecordsByIDsCalls int
 	listPoliciesCalls     int
@@ -79,6 +81,44 @@ func (f *fakeSLAStore) GetRecord(_ context.Context, ticketID uuid.UUID) (sla.Rec
 func (f *fakeSLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
 	f.updateRecordCalls++
 	f.records[r.TicketID] = r
+	return nil
+}
+
+// SetFirstResponse and SetResolved apply the same COALESCE semantics the real
+// queries do: only a currently-nil pair of columns is written, and nothing
+// else on the record changes — in particular, a concurrent StampBreaches call
+// is never clobbered by these (see TestEvaluateBreaches_NeverWritesThroughUpdateRecord
+// for the regression this protects, and TestRecordFirstResponse_SurvivesConcurrentBreachStamp
+// for the equivalent check on this door).
+func (f *fakeSLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+	f.setFirstResponseCalls++
+	r, ok := f.records[ticketID]
+	if !ok {
+		return nil // no record for this ticket: a silent no-op, like the real query.
+	}
+	if r.FirstResponseAt == nil {
+		r.FirstResponseAt = &at
+	}
+	if r.ResponseElapsedAtMetSeconds == nil {
+		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
+	}
+	f.records[ticketID] = r
+	return nil
+}
+
+func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+	f.setResolvedCalls++
+	r, ok := f.records[ticketID]
+	if !ok {
+		return nil
+	}
+	if r.ResolvedAt == nil {
+		r.ResolvedAt = &at
+	}
+	if r.ResolutionElapsedAtMetSeconds == nil {
+		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+	}
+	f.records[ticketID] = r
 	return nil
 }
 func (f *fakeSLAStore) ListBreachCandidates(_ context.Context, _ time.Time) ([]uuid.UUID, error) {
@@ -185,21 +225,90 @@ func TestSLAService_RecordFirstResponse_Idempotent(t *testing.T) {
 	policyID := uuid.New()
 	ticketID := uuid.New()
 	firstTime := time.Now().Add(-10 * time.Minute)
+	frozen := int64(600)
 
 	// Pre-seed a record with a first response already recorded.
 	store.records[ticketID] = sla.Record{
-		TicketID:        ticketID,
-		PolicyID:        policyID,
-		FirstResponseAt: &firstTime,
+		TicketID:                    ticketID,
+		PolicyID:                    policyID,
+		FirstResponseAt:             &firstTime,
+		ResponseElapsedAtMetSeconds: &frozen,
 	}
 
 	svc := sla.NewService(store)
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: firstTime.Add(-time.Hour)}
 	later := time.Now()
-	require.NoError(t, svc.RecordFirstResponse(context.Background(), ticketID, later))
+	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, later))
 
-	// The stored timestamp must not have changed.
+	// The stored timestamp and frozen elapsed reading must not have changed.
 	rec := store.records[ticketID]
 	require.Equal(t, firstTime.Unix(), rec.FirstResponseAt.Unix(), "timestamp must not be overwritten")
+	require.Equal(t, frozen, *rec.ResponseElapsedAtMetSeconds, "frozen elapsed reading must not be overwritten")
+}
+
+// A fresh first response computes elapsed from the ticket snapshot passed in,
+// and freezes it in the same call — not a separate read-then-write.
+func TestSLAService_RecordFirstResponse_FreezesElapsed(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-90 * time.Minute)
+	respondedAt := createdAt.Add(60 * time.Minute)
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, respondedAt))
+
+	rec := store.records[ticketID]
+	require.NotNil(t, rec.FirstResponseAt)
+	require.True(t, rec.FirstResponseAt.Equal(respondedAt))
+	require.NotNil(t, rec.ResponseElapsedAtMetSeconds)
+	require.Equal(t, int64(60*60), *rec.ResponseElapsedAtMetSeconds)
+}
+
+// The regression for #184: once a target is met, its elapsed reading is
+// frozen as a NUMBER and must never move again, however much pause time the
+// ticket accumulates afterward. Before this fix, StatusFor recomputed
+// Elapsed(t, respondedAt) against the ticket's CURRENT (not its
+// at-the-time) SLAPausedSeconds, so a Pending interval that opened and
+// closed AFTER the response was recorded silently shrank an already-late
+// reading — flipping a breach back to green.
+func TestFrozenResponseElapsed_SurvivesLaterPendingCycles(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	policy := sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 1000}
+	store.policies[policyID] = policy
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	createdAt := time.Now().Add(-2 * time.Hour)
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	// Staff replies 60 minutes in: the response target was 30 minutes, so
+	// this is a breach at the moment it is recorded.
+	respondedAt := createdAt.Add(60 * time.Minute)
+
+	svc := sla.NewService(store)
+	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, respondedAt))
+	rec := store.records[ticketID]
+
+	before := sla.StatusFor(rec, policy, tk, respondedAt)
+	require.Equal(t, sla.Red, before.Response.Color, "sanity check: the response really was late")
+	require.Equal(t, 60, before.Response.ElapsedMin)
+
+	// The ticket goes Pending after the response was already recorded, and
+	// later comes back: more paused seconds accumulate on the ticket AFTER
+	// the target was met.
+	tk.SLAPausedSeconds = int64(45 * time.Minute / time.Second)
+
+	after := sla.StatusFor(rec, policy, tk, respondedAt.Add(3*time.Hour))
+
+	require.Equal(t, before.Response.ElapsedMin, after.Response.ElapsedMin,
+		"a met target's elapsed reading must never move, regardless of later pause activity")
+	require.Equal(t, sla.Red, after.Response.Color,
+		"a breach must not flip back to green after a later Pending cycle")
 }
 
 func TestSLAService_EvaluateBreaches(t *testing.T) {
@@ -492,6 +601,7 @@ type swallowProbeStore struct {
 	record    sla.Record
 	hasRecord bool
 	getErr    error
+	setErr    error // returned by SetFirstResponse / SetResolved, independent of getErr
 	updates   int
 }
 
@@ -520,6 +630,44 @@ func (f *swallowProbeStore) UpdateRecord(_ context.Context, r sla.Record) error 
 	f.record = r
 	return nil
 }
+
+// SetFirstResponse and SetResolved apply the same "only write a NULL column"
+// rule the real COALESCE-guarded queries do, keyed off hasRecord the same way
+// GetRecord's ErrNoRecord is: a ticket with no record is a silent no-op.
+func (f *swallowProbeStore) SetFirstResponse(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds int64) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
+	if !f.hasRecord {
+		return nil
+	}
+	f.updates++
+	if f.record.FirstResponseAt == nil {
+		f.record.FirstResponseAt = &at
+	}
+	if f.record.ResponseElapsedAtMetSeconds == nil {
+		f.record.ResponseElapsedAtMetSeconds = &elapsedSeconds
+	}
+	return nil
+}
+
+func (f *swallowProbeStore) SetResolved(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds int64) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
+	if !f.hasRecord {
+		return nil
+	}
+	f.updates++
+	if f.record.ResolvedAt == nil {
+		f.record.ResolvedAt = &at
+	}
+	if f.record.ResolutionElapsedAtMetSeconds == nil {
+		f.record.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+	}
+	return nil
+}
+
 func (f *swallowProbeStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
 	return nil, nil
 }
@@ -542,9 +690,10 @@ func (f *swallowProbeStore) StampBreaches(_ context.Context, _ uuid.UUID, respon
 // permanently — which later reads as a genuine breach.
 func TestRecordFirstResponse_PropagatesStoreFailures(t *testing.T) {
 	boom := errors.New("connection reset by peer")
-	f := &swallowProbeStore{getErr: boom}
+	f := &swallowProbeStore{setErr: boom}
 
-	err := sla.NewService(f).RecordFirstResponse(context.Background(), uuid.New(), time.Now())
+	tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-time.Hour)}
+	err := sla.NewService(f).RecordFirstResponse(context.Background(), tk, time.Now())
 
 	require.ErrorIs(t, err, boom, "a store failure must not be reported as success")
 	require.Zero(t, f.updates)
@@ -553,7 +702,8 @@ func TestRecordFirstResponse_PropagatesStoreFailures(t *testing.T) {
 func TestRecordFirstResponse_NoRecordIsNotAnError(t *testing.T) {
 	f := &swallowProbeStore{hasRecord: false}
 
-	require.NoError(t, sla.NewService(f).RecordFirstResponse(context.Background(), uuid.New(), time.Now()))
+	tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-time.Hour)}
+	require.NoError(t, sla.NewService(f).RecordFirstResponse(context.Background(), tk, time.Now()))
 	require.Zero(t, f.updates, "nothing to update when the ticket is not under an SLA")
 }
 
@@ -570,18 +720,23 @@ func TestEvaluateBreaches_PropagatesStoreFailures(t *testing.T) {
 // however promptly it had been resolved.
 func TestRecordResolved(t *testing.T) {
 	now := time.Now()
-	f := &swallowProbeStore{hasRecord: true, record: sla.Record{TicketID: uuid.New()}}
+	ticketID := uuid.New()
+	f := &swallowProbeStore{hasRecord: true, record: sla.Record{TicketID: ticketID}}
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-3 * time.Hour)}
 
-	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), f.record.TicketID, now))
+	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, now))
 	require.Equal(t, 1, f.updates)
 	require.NotNil(t, f.record.ResolvedAt)
 	require.True(t, f.record.ResolvedAt.Equal(now))
+	require.NotNil(t, f.record.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
 
-	// Re-resolving must not overwrite the original time.
+	// Re-resolving must not overwrite the original time or elapsed reading.
 	later := now.Add(2 * time.Hour)
-	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), f.record.TicketID, later))
-	require.Equal(t, 1, f.updates, "already recorded")
-	require.True(t, f.record.ResolvedAt.Equal(now))
+	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, later))
+	require.Equal(t, 2, f.updates, "the store is still called (COALESCE decides idempotency, not the service)")
+	require.True(t, f.record.ResolvedAt.Equal(now), "already recorded")
+	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
 }
 
 // A resolved ticket is judged by WHEN it was resolved, not by the clock now.

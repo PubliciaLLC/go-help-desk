@@ -188,12 +188,14 @@ type SlaPolicy struct {
 }
 
 type SlaRecord struct {
-	TicketID             uuid.UUID    `json:"ticket_id"`
-	PolicyID             uuid.UUID    `json:"policy_id"`
-	FirstResponseAt      sql.NullTime `json:"first_response_at"`
-	ResolvedAt           sql.NullTime `json:"resolved_at"`
-	ResponseBreachedAt   sql.NullTime `json:"response_breached_at"`
-	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
+	TicketID                      uuid.UUID     `json:"ticket_id"`
+	PolicyID                      uuid.UUID     `json:"policy_id"`
+	FirstResponseAt               sql.NullTime  `json:"first_response_at"`
+	ResolvedAt                    sql.NullTime  `json:"resolved_at"`
+	ResponseBreachedAt            sql.NullTime  `json:"response_breached_at"`
+	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
+	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
+	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
 }
 
 type Status struct {

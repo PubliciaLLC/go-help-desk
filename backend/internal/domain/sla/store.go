@@ -36,7 +36,25 @@ type Store interface {
 	// Records
 	CreateRecord(ctx context.Context, r Record) error
 	GetRecord(ctx context.Context, ticketID uuid.UUID) (Record, error)
+	// UpdateRecord is a full-row read-modify-write. RecordFirstResponse and
+	// RecordResolved do not use it (see SetFirstResponse / SetResolved below);
+	// nothing in this codebase calls it any more, and nothing should start:
+	// see the comment on StampBreaches for why a full-row write is unsafe
+	// against a concurrent breach stamp.
 	UpdateRecord(ctx context.Context, r Record) error
+
+	// SetFirstResponse marks ticketID's first response and freezes its
+	// elapsed-toward-target reading as of that same moment, in one statement
+	// that only ever writes first_response_at / response_elapsed_at_met_seconds
+	// and only while they are still NULL (first writer wins) — the same
+	// COALESCE-guarded, single-purpose shape as StampBreaches, and for the
+	// same reason: a GetRecord-then-UpdateRecord round trip here could
+	// silently overwrite a breach stamp StampBreaches wrote in between back to
+	// NULL. Called for a ticket with no record is a silent no-op.
+	SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error
+
+	// SetResolved is SetFirstResponse's resolution-side twin.
+	SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error
 
 	// ListRecordsByTicketIDs returns the SLA records for whichever of the
 	// given ticket ids have one. A ticket with no record is simply absent

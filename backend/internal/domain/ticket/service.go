@@ -49,11 +49,17 @@ type Service struct {
 	sys *systemStatuses
 }
 
-// SLAService is the narrow interface the ticket service needs from the SLA layer.
+// SLAService is the narrow interface the ticket service needs from the SLA
+// layer. RecordFirstResponse and RecordResolved take the full ticket, not
+// just its id: the SLA layer freezes elapsed-toward-target as of this exact
+// moment (see sla.Service.RecordFirstResponse), which needs CreatedAt,
+// SLAPausedSeconds and PendingSince as they stood right now — not whatever
+// they read back on a second trip to the store, by which time a pause
+// interval could have opened or closed.
 type SLAService interface {
 	AttachPolicy(ctx context.Context, t Ticket) error
-	RecordFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time) error
-	RecordResolved(ctx context.Context, ticketID uuid.UUID, at time.Time) error
+	RecordFirstResponse(ctx context.Context, t Ticket, at time.Time) error
+	RecordResolved(ctx context.Context, t Ticket, at time.Time) error
 }
 
 // NewService constructs a Service. Call LoadSystemStatuses before use.
@@ -415,7 +421,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		// describes. Discarded here rather than logged because domain code
 		// does not log — cmd/server wraps the SLA service so the boundary
 		// reports these, which is where a failure can actually be seen.
-		_ = s.sla.RecordResolved(ctx, t.ID, now)
+		_ = s.sla.RecordResolved(ctx, t, now)
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -678,7 +684,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// SLA outage must not fail a reply that succeeded. Unlike the reopen above,
 	// nothing is announced on the strength of this write.
 	if s.sla != nil && actor.Role != user.RoleUser {
-		_ = s.sla.RecordFirstResponse(ctx, ticketID, reply.CreatedAt)
+		_ = s.sla.RecordFirstResponse(ctx, t, reply.CreatedAt)
 	}
 
 	// Dispatch reply event. reporter_email is only populated when notifyCustomer
@@ -789,7 +795,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	if s.sla != nil {
 		// See UpdateStatus: non-fatal, and reported by the boundary wrapper in
 		// cmd/server rather than logged from the domain.
-		_ = s.sla.RecordResolved(ctx, t.ID, now)
+		_ = s.sla.RecordResolved(ctx, t, now)
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -850,7 +856,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 
 	// After the commit, dispatch events and record SLA, as Resolve does.
 	if s.sla != nil {
-		_ = s.sla.RecordResolved(ctx, t.ID, now)
+		_ = s.sla.RecordResolved(ctx, t, now)
 	}
 
 	// Dispatch both the link event and the resolve event. t is the source

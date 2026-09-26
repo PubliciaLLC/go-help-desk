@@ -375,7 +375,7 @@ type fakeSLA struct {
 
 func (f *fakeSLA) AttachPolicy(context.Context, ticket.Ticket) error { return nil }
 
-func (f *fakeSLA) RecordResolved(_ context.Context, _ uuid.UUID, _ time.Time) error {
+func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, _ time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
@@ -383,7 +383,7 @@ func (f *fakeSLA) RecordResolved(_ context.Context, _ uuid.UUID, _ time.Time) er
 	return nil
 }
 
-func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ uuid.UUID, _ time.Time) error {
+func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ ticket.Ticket, _ time.Time) error {
 	if f.err != nil {
 		return f.err
 	}

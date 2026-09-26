@@ -77,3 +77,20 @@ func TimePtr(n sql.NullTime) *time.Time {
 	v := n.Time
 	return &v
 }
+
+// NullInt64 wraps a *int64 for nullable BIGINT columns.
+func NullInt64(p *int64) sql.NullInt64 {
+	if p == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *p, Valid: true}
+}
+
+// Int64Ptr unwraps a nullable int64; nil when not valid.
+func Int64Ptr(n sql.NullInt64) *int64 {
+	if !n.Valid {
+		return nil
+	}
+	v := n.Int64
+	return &v
+}

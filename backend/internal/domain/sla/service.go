@@ -32,45 +32,41 @@ func (s *Service) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 	})
 }
 
-// RecordFirstResponse marks the time of the first staff reply on a ticket.
-// It is a no-op when already recorded.
-func (s *Service) RecordFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time) error {
-	record, err := s.store.GetRecord(ctx, ticketID)
-	if errors.Is(err, ErrNoRecord) {
-		return nil // this ticket is not under an SLA
+// RecordFirstResponse marks the time of the first staff reply on a ticket and
+// freezes its elapsed-toward-target reading as of that same instant (see the
+// doc comment on Record.ResponseElapsedAtMetSeconds for why the number, not
+// just the timestamp, has to be captured now). It is a no-op when already
+// recorded, or when the ticket carries no SLA record.
+//
+// t is the ticket as it stood at the moment of the response — the caller
+// always has this row already (it just read or wrote it), so Elapsed is
+// computed here rather than via a GetRecord round trip. That also means this
+// no longer reads-then-writes the record at all: SetFirstResponse is a single
+// COALESCE-guarded UPDATE touching only its own two columns, so a breach
+// stamp StampBreaches wrote between this call being triggered and it running
+// cannot be clobbered (see store.go's SetFirstResponse and CLAUDE.md).
+func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at time.Time) error {
+	elapsed := int64(Elapsed(t, at) / time.Second)
+	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed); err != nil {
+		return fmt.Errorf("recording SLA first response: %w", err)
 	}
-	if err != nil {
-		// Previously every error was treated as "no record". A transient
-		// database failure therefore lost the first-response timestamp
-		// permanently, and the ticket later looked like a genuine breach.
-		return fmt.Errorf("getting SLA record: %w", err)
-	}
-	if record.FirstResponseAt != nil {
-		return nil // already recorded
-	}
-	record.FirstResponseAt = &at
-	return s.store.UpdateRecord(ctx, record)
+	return nil
 }
 
 // RecordResolved stamps when a ticket was resolved, so resolution breaches are
-// judged against the time it was actually resolved.
+// judged against the time it was actually resolved, and freezes its
+// elapsed-toward-target reading the same way RecordFirstResponse does.
 //
-// Nothing wrote this field. IsResolutionBreached therefore saw a NULL
-// ResolvedAt on every ticket and would have reported each one as breached the
-// moment its deadline passed, however promptly it had been resolved.
-func (s *Service) RecordResolved(ctx context.Context, ticketID uuid.UUID, at time.Time) error {
-	record, err := s.store.GetRecord(ctx, ticketID)
-	if errors.Is(err, ErrNoRecord) {
-		return nil // this ticket is not under an SLA
+// Nothing used to write ResolvedAt at all. IsResolutionBreached therefore saw
+// a NULL ResolvedAt on every ticket and would have reported each one as
+// breached the moment its deadline passed, however promptly it had been
+// resolved.
+func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
+	elapsed := int64(Elapsed(t, at) / time.Second)
+	if err := s.store.SetResolved(ctx, t.ID, at, elapsed); err != nil {
+		return fmt.Errorf("recording SLA resolution: %w", err)
 	}
-	if err != nil {
-		return fmt.Errorf("getting SLA record: %w", err)
-	}
-	if record.ResolvedAt != nil {
-		return nil // already recorded
-	}
-	record.ResolvedAt = &at
-	return s.store.UpdateRecord(ctx, record)
+	return nil
 }
 
 // EvaluateBreaches checks whether a ticket has breached its SLA targets and
