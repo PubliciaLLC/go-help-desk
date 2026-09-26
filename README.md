@@ -85,11 +85,11 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA and guest submission are toggled in the Admin UI, and
-> that setting is the switch. SLA is the exception and works the other way
-> round: `SLA_ENABLED` in the environment is what attaches policies to new
-> tickets, and the Admin UI toggle only shows the policy editor. There is no
-> scheduler and nothing reads the deadlines yet — see issue #180; there has never been
+> **Note:** SAML, MFA, guest submission and SLA are all toggled in the Admin
+> UI, and that setting is the switch. `SLA_ENABLED` in the environment turns
+> the SLA setting on at every start — it only ever switches it on, never off —
+> so it is a way to ship an instance with the feature already enabled, not a
+> separate gate. There has never been
 > a SAML one, and the MFA and guest-submission variables were removed in
 > 1.3.0-beta because nothing read them — an operator setting
 > `GUEST_SUBMISSION_ENABLED=true` and expecting guests to be able to file

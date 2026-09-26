@@ -12,8 +12,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Actor is the identity performing an operation. Both authenticated users and
@@ -1440,13 +1438,6 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 
 		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 		if err := st.CreateLink(ctx, link); err != nil {
-			// A pair that is already linked is not a fault. The unique
-			// constraint is doing its job and the caller asked for something
-			// that is already true — it came back as a raw error and the
-			// handler could only render it as 500.
-			if isUniqueViolation(err) {
-				return fmt.Errorf("%w: these tickets are already linked that way", ErrValidation)
-			}
 			return fmt.Errorf("creating link: %w", err)
 		}
 		return nil
@@ -1746,9 +1737,6 @@ func ticketMap(t Ticket) map[string]any {
 	}
 }
 
-// ErrValidation wraps input-validation failures from Create, so callers
-// (the HTTP handler) can map them to 400 instead of the 500 handleError
-// falls back to for an unrecognized error.
 // UnassignForUser returns a departing user's open tickets to the queue, and
 // reports how many moved.
 //
@@ -1788,6 +1776,9 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 	return moved, err
 }
 
+// ErrValidation wraps input-validation failures, so callers — the HTTP
+// handler — can map them to 400 rather than the 500 handleError falls back to
+// for an error it does not recognise.
 var ErrValidation = errors.New("validation failed")
 
 // ── Attachments ───────────────────────────────────────────────────────────────
@@ -1829,18 +1820,4 @@ func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) 
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
 func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
 	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)
-}
-
-// isUniqueViolation reports whether a store error is Postgres refusing a
-// duplicate row.
-//
-// Matched on the SQLSTATE rather than the message, which is localised and
-// carries table and constraint names this layer should not be reading. The
-// point is to tell "you asked for something that is already true" from "the
-// database is broken": the first is the caller's answer and the second is a
-// fault, and rendering both as 500 tells somebody their own ordinary mistake
-// is a server error.
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
