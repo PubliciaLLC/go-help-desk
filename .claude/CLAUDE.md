@@ -61,6 +61,28 @@ check whether it is listed here.
   bytes and rendering them itself; nothing on the server can. See docs/DESIGN.md and #165 before adding a
   thumbnail, a lightbox or an inline PDF view.
 
+- **The last-administrator guard does not cover credentials, and that is
+  correct only while a password is always a way in.** The three
+  `...UnlessLastAdmin` statements in `queries/users.sql` refuse to disable,
+  demote or delete the last active administrator, because setup does not
+  reopen. Removing that administrator's last way to authenticate is the same
+  permanent mistake, and the guard says nothing about it — deliberately.
+
+  It is safe today because of a mechanism, not a coincidence: MFA enrolment
+  lives outside `RequireMFA` in `meRouter`, so an administrator with no working
+  factor still signs in with their password, reaches enrolment and recovers
+  alone. `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor` fails if those
+  routes are ever moved behind the gate.
+
+  **This stops being true the moment passwordless sign-in exists** (passkeys,
+  see docs/DESIGN.md → Authentication → Passkeys). When the password is no
+  longer a way in, self-recovery stops working and an administrator whose last
+  credential is removed is locked out for good. The guard grows its fourth case
+  in the change that introduces passwordless — not afterwards, and not as a
+  follow-up issue. This entry is the opposite shape to the rest of this list:
+  the others say "looks unfinished, is not". This one says "looks finished, is
+  conditional, and here is the condition".
+
 - **CIRCL hashlookup's `KnownMalicious` field is read by nothing, on purpose.**
   It is a field named `KnownMalicious`, sitting in a response we parse, holding
   the string `"malshare.com"`, and wiring it to the `detected` verdict would be
