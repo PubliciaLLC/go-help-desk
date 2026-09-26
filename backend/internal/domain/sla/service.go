@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -289,22 +290,48 @@ func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now 
 
 // ── Policy CRUD ───────────────────────────────────────────────────────────────
 
+// ErrValidation wraps a policy that fails validatePolicy, so the HTTP layer
+// can tell bad input (400) from a store or driver failure (500). Before this
+// every error from CreatePolicy/UpdatePolicy was reported as 400 with its raw
+// text (#276).
+var ErrValidation = errors.New("validation failed")
+
 // validatePolicy guards both doors onto sla_policies. Priority was previously
 // unvalidated on either, so an unknown value travelled all the way to the
 // column's CHECK constraint and the raw driver error — table name, constraint
 // name, SQLSTATE — was handed back to the client as the 400's message.
 func validatePolicy(p Policy) error {
 	if p.Name == "" {
-		return fmt.Errorf("policy name is required")
+		return fmt.Errorf("policy name is required: %w", ErrValidation)
 	}
 	if p.Priority != nil && !p.Priority.Valid() {
-		return fmt.Errorf("invalid priority %q", *p.Priority)
+		return fmt.Errorf("invalid priority %q: %w", *p.Priority, ErrValidation)
 	}
 	if p.ResponseTargetMin <= 0 {
-		return fmt.Errorf("response target must be greater than zero")
+		return fmt.Errorf("response target must be greater than zero: %w", ErrValidation)
 	}
 	if p.ResolutionTargetMin <= 0 {
-		return fmt.Errorf("resolution target must be greater than zero")
+		return fmt.Errorf("resolution target must be greater than zero: %w", ErrValidation)
+	}
+	// The store narrows to int32 (the int32() conversion in slastore.go,
+	// ahead of an INTEGER column). Left unchecked, a target above that
+	// range silently truncates on write: any value above it stores as its
+	// low 32 bits, so 2^31 stores as a large negative number and every
+	// multiple of 2^32 stores as zero. math.MaxInt32 minutes is centuries, so
+	// this isn't a fat-fingered digit — it's malformed or unit-confused input
+	// (seconds mistaken for minutes, an accidental timestamp) reaching a
+	// target nobody meant to set. Whatever it truncates to, the result is
+	// either a target already breached the moment the ticket is created
+	// (zero, or negative — Elapsed(t, now) > a negative target is always
+	// true) or a wrong-but-plausible-looking one (any other truncated
+	// value). Either way the breach stamps this produces are permanent by
+	// design (see sla_frozen_elapsed), so refusing the input here is the
+	// only point where fixing it is still possible.
+	if p.ResponseTargetMin > math.MaxInt32 {
+		return fmt.Errorf("response target is too large: %w", ErrValidation)
+	}
+	if p.ResolutionTargetMin > math.MaxInt32 {
+		return fmt.Errorf("resolution target is too large: %w", ErrValidation)
 	}
 	return nil
 }

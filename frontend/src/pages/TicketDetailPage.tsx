@@ -333,7 +333,6 @@ export function TicketDetailPage() {
   const { user } = useAuthStore()
   const qc = useQueryClient()
 
-
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
     queryFn: () => getTicket(id),
@@ -426,6 +425,12 @@ export function TicketDetailPage() {
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
+    onError: () => {
+      // A 409 means this page is stale (someone else already reopened it):
+      // refetch so the header shows the real status and the button goes away.
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+    },
   })
 
   const closeMutation = useMutation({
@@ -461,7 +466,9 @@ export function TicketDetailPage() {
   }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
-  const canReopen = isStaffOrAdmin && (statusName === 'Resolved' || statusName === 'Closed')
+  // Reopen is Closed-only on the server (ticket.Service.Reopen). A Resolved
+  // ticket is moved with the status selector, or reopened by the reporter's reply.
+  const canReopen = isStaffOrAdmin && statusName === 'Closed'
   const canClose = isAdmin && statusName === 'Resolved'
 
   return (

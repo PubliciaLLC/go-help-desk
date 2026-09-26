@@ -51,7 +51,7 @@ func (s *Server) handleCreateSLAPolicy(w http.ResponseWriter, r *http.Request) {
 		ResolutionTargetMin: body.ResolutionTargetMin,
 	})
 	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		handleError(w, err)
 		return
 	}
 	JSON(w, http.StatusCreated, p)
@@ -108,7 +108,7 @@ func (s *Server) handleUpdateSLAPolicy(w http.ResponseWriter, r *http.Request) {
 		existing.ResolutionTargetMin = *body.ResolutionTargetMin
 	}
 	if err := s.slaPolicies.UpdatePolicy(r.Context(), existing); err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		handleError(w, err)
 		return
 	}
 	JSON(w, http.StatusOK, existing)

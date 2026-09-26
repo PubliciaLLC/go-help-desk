@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -1076,9 +1077,15 @@ func TestIsResolutionBreached_UsesTheResolutionTime(t *testing.T) {
 		"unresolved past the deadline is a breach")
 }
 
-// A policy's priority was written to the database unvalidated. An unknown value
-// reached the column's CHECK constraint and surfaced as a 500; a nil one is the
-// catch-all tier and must be allowed through.
+// TestSLAService_PolicyPriorityValidation covers priority: a policy's
+// priority used to be written to the database unvalidated, so an unknown
+// value reached the column's CHECK constraint and its raw driver error was
+// handed back as the 400's message; a nil priority is the catch-all tier
+// and must still be allowed through. It also pins #276: validatePolicy's
+// errors now wrap sla.ErrValidation, so the HTTP layer (respond.go) can tell
+// a bad request apart from a store or driver failure instead of reporting
+// every CreatePolicy/UpdatePolicy error as a raw-text 400 regardless of
+// cause.
 func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 	bogus := ticket.Priority("urgent")
 	high := ticket.PriorityHigh
@@ -1106,7 +1113,7 @@ func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 
 			created, err := svc.CreatePolicy(context.Background(), in)
 			if tc.wantErr {
-				require.Error(t, err)
+				require.ErrorIs(t, err, sla.ErrValidation)
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, tc.priority, created.Priority)
@@ -1116,12 +1123,138 @@ func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 			in.ID = uuid.New()
 			err = svc.UpdatePolicy(context.Background(), in)
 			if tc.wantErr {
-				require.Error(t, err)
+				require.ErrorIs(t, err, sla.ErrValidation)
 			} else {
 				require.NoError(t, err)
 			}
 		})
 	}
+}
+
+// TestSLAService_PolicyValidation_NameAndTargets covers the rest of
+// validatePolicy's checks: an empty name, and a zero or negative target on
+// either side, all of which must wrap sla.ErrValidation the same way an
+// invalid priority does.
+func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
+	valid := sla.Policy{Name: "P", ResponseTargetMin: 60, ResolutionTargetMin: 480}
+
+	cases := []struct {
+		name   string
+		modify func(p sla.Policy) sla.Policy
+	}{
+		{
+			name:   "empty name",
+			modify: func(p sla.Policy) sla.Policy { p.Name = ""; return p },
+		},
+		{
+			name:   "zero response target",
+			modify: func(p sla.Policy) sla.Policy { p.ResponseTargetMin = 0; return p },
+		},
+		{
+			name:   "negative response target",
+			modify: func(p sla.Policy) sla.Policy { p.ResponseTargetMin = -1; return p },
+		},
+		{
+			name:   "zero resolution target",
+			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = 0; return p },
+		},
+		{
+			name:   "negative resolution target",
+			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = -1; return p },
+		},
+		{
+			// The store narrows to int32 (the int32() conversion in
+			// slastore.go). Unchecked, this silently truncates on write
+			// instead of being refused here. math.MaxInt32+1 as a raw
+			// literal overflows int on a 32-bit build; incrementing at
+			// runtime keeps the case portable.
+			name: "response target above int32",
+			modify: func(p sla.Policy) sla.Policy {
+				p.ResponseTargetMin = math.MaxInt32
+				p.ResponseTargetMin++
+				return p
+			},
+		},
+		{
+			name: "resolution target above int32",
+			modify: func(p sla.Policy) sla.Policy {
+				p.ResolutionTargetMin = math.MaxInt32
+				p.ResolutionTargetMin++
+				return p
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := sla.NewService(newFakeSLAStore())
+			in := tc.modify(valid)
+
+			_, err := svc.CreatePolicy(context.Background(), in)
+			require.ErrorIs(t, err, sla.ErrValidation)
+
+			in.ID = uuid.New()
+			err = svc.UpdatePolicy(context.Background(), in)
+			require.ErrorIs(t, err, sla.ErrValidation)
+		})
+	}
+}
+
+// TestSLAService_PolicyValidation_AcceptsInt32Boundary pins the other side of
+// the bound above: math.MaxInt32 itself is a legitimate target and must not
+// be refused. Without this, a future "> " turning into ">=" would still pass
+// every other test in this file.
+func TestSLAService_PolicyValidation_AcceptsInt32Boundary(t *testing.T) {
+	valid := sla.Policy{Name: "P", ResponseTargetMin: math.MaxInt32, ResolutionTargetMin: math.MaxInt32}
+
+	svc := sla.NewService(newFakeSLAStore())
+	_, err := svc.CreatePolicy(context.Background(), valid)
+	require.NoError(t, err)
+
+	valid.ID = uuid.New()
+	require.NoError(t, svc.UpdatePolicy(context.Background(), valid))
+}
+
+// erroringSLAStore wraps fakeSLAStore so CreatePolicy/UpdatePolicy can be
+// made to fail with something other than validation: fakeSLAStore's own
+// versions always return nil, so this is the only way to prove a genuine
+// store failure is NOT reported as sla.ErrValidation.
+type erroringSLAStore struct {
+	*fakeSLAStore
+	err error
+}
+
+func (e *erroringSLAStore) CreatePolicy(ctx context.Context, p sla.Policy) error {
+	if e.err != nil {
+		return e.err
+	}
+	return e.fakeSLAStore.CreatePolicy(ctx, p)
+}
+
+func (e *erroringSLAStore) UpdatePolicy(ctx context.Context, p sla.Policy) error {
+	if e.err != nil {
+		return e.err
+	}
+	return e.fakeSLAStore.UpdatePolicy(ctx, p)
+}
+
+// TestSLAService_PolicyStoreFailure_IsNotReportedAsValidation pins the other
+// side of #276: a store or driver failure on a policy that itself validates
+// fine must come back as something respond.go's handleError sends to 500,
+// never mistaken for sla.ErrValidation.
+func TestSLAService_PolicyStoreFailure_IsNotReportedAsValidation(t *testing.T) {
+	store := &erroringSLAStore{fakeSLAStore: newFakeSLAStore(), err: errors.New("boom")}
+	svc := sla.NewService(store)
+	in := sla.Policy{Name: "P", ResponseTargetMin: 60, ResolutionTargetMin: 480}
+
+	_, err := svc.CreatePolicy(context.Background(), in)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, sla.ErrValidation)
+
+	in.ID = uuid.New()
+	err = svc.UpdatePolicy(context.Background(), in)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, sla.ErrValidation)
 }
 
 // StatusesFor is the batch call the ticket list/detail handlers use (#183):
