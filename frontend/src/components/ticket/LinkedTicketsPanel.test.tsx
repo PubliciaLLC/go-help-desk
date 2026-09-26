@@ -509,6 +509,32 @@ describe('LinkedTicketsPanel', () => {
       })
     })
 
+    it('shows an error instead of failing silently when removal fails (e.g. link source outside viewer scope)', async () => {
+      const link: TicketLink = { source_id: 'tkt-2', target_id: 'tkt-1', link_type: 'related_to' }
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([link])
+      vi.spyOn(ticketsApi, 'getTicket').mockResolvedValue(TICKETS['tkt-2'])
+      vi.spyOn(ticketsApi, 'removeLink').mockRejectedValue(
+        Object.assign(new Error('Request failed'), {
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: { code: 'forbidden', message: 'not your ticket' } },
+          },
+        })
+      )
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await screen.findByText(/GHD-2026-000002/)
+
+      const removeBtn = screen.getByRole('button', { name: /Remove link/ })
+      await user.click(removeBtn)
+
+      expect(await screen.findByText(/not your ticket/)).toBeDefined()
+      // The link must still be there — nothing pretends the removal worked.
+      expect(screen.getByText(/GHD-2026-000002/)).toBeDefined()
+    })
+
     it('invalidates link queries on removal', async () => {
       const link: TicketLink = { source_id: 'tkt-1', target_id: 'tkt-2', link_type: 'related_to' }
       vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([link])
@@ -866,6 +892,69 @@ describe('LinkedTicketsPanel', () => {
       // Checkbox and textarea should be gone
       expect(screen.queryByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })).toBeNull()
       expect(screen.queryByRole('textbox', { name: /Resolution notes/i })).toBeNull()
+    })
+
+    // #201: Cancel used to rely entirely on the relation-select's onChange to
+    // clear resolveAsResolve/resolutionNotes — it had no reset of its own.
+    // Today that is masked, because getting back to a visible checkbox always
+    // means re-selecting duplicate_of, which re-triggers that same onChange
+    // reset regardless of what Cancel did. This test exercises exactly that
+    // masked path (Cancel while duplicate_of is selected, then reselecting
+    // it), so it does not by itself distinguish Cancel's own reset from the
+    // select's — but it does pin the end-to-end contract ("cancel, then redo,
+    // starts clean") and gives the explicit reset in Cancel's handler
+    // regression coverage for the day something changes how the relation
+    // gets set (e.g. selecting an already-selected value, or setting it
+    // programmatically) without going through this onChange.
+    it('Cancel resets the resolve checkbox and notes even while relation is still duplicate_of', async () => {
+      vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([])
+      vi.spyOn(ticketsApi, 'listTickets').mockResolvedValue([TICKETS['tkt-2']])
+      const user = userEvent.setup()
+
+      renderPanel('tkt-1')
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+
+      const input = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input, 'par')
+      await waitFor(() => expect(ticketsApi.listTickets).toHaveBeenCalled())
+
+      const item = await screen.findByText(/GHD-2026-000002/)
+      await user.click(item)
+
+      const relationSelect = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect, 'duplicate_of')
+
+      const checkbox = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      await user.click(checkbox)
+
+      const textarea = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      await user.clear(textarea)
+      await user.type(textarea, 'Stale custom notes')
+
+      // Cancel while relation is STILL duplicate_of — the onChange reset never fires.
+      await user.click(await screen.findByRole('button', { name: 'Cancel' }))
+
+      // Reopen and select the same ticket again via the exact-match Enter path
+      // (not the search dropdown, whose query result is cached under the same
+      // key for the same search text and would not prove anything was reset).
+      vi.spyOn(ticketsApi, 'getTicket').mockResolvedValue(TICKETS['tkt-2'])
+      await user.click(await screen.findByRole('button', { name: 'Add link' }))
+      const input2 = await screen.findByRole('textbox', { name: /ticket/i })
+      await user.type(input2, 'GHD-2026-000002{Enter}')
+      await waitFor(() => expect(ticketsApi.getTicket).toHaveBeenCalledWith('GHD-2026-000002'))
+      await screen.findByText(/GHD-2026-000002 · Parent ticket/)
+
+      const relationSelect2 = await screen.findByRole('combobox', { name: /relation/i })
+      await user.selectOptions(relationSelect2, 'duplicate_of')
+
+      // The checkbox must come back unchecked, and the textarea (once
+      // re-checked) must show the fresh default template, not the stale edit.
+      expect(screen.queryByRole('textbox', { name: /Resolution notes/i })).toBeNull()
+      const checkbox2 = await screen.findByRole('checkbox', { name: /Also resolve this ticket as a duplicate/i })
+      expect((checkbox2 as HTMLInputElement).checked).toBe(false)
+      await user.click(checkbox2)
+      const textarea2 = await screen.findByRole('textbox', { name: /Resolution notes/i })
+      expect((textarea2 as HTMLTextAreaElement).value).toBe('Duplicate of GHD-2026-000002')
     })
   })
 

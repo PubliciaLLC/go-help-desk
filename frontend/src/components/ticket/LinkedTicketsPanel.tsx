@@ -146,11 +146,17 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
   const removeMutation = useMutation({
     mutationFn: (link: TicketLink) => removeLink(link.source_id, link.target_id, link.link_type),
     onSuccess: (_, link) => {
+      setError('')
       qc.invalidateQueries({ queryKey: ['links', ticketId] })
       // Invalidate the other end's links too
       const otherId = link.source_id === ticketId ? link.target_id : link.source_id
       qc.invalidateQueries({ queryKey: ['links', otherId] })
     },
+    // Without this, removal failed silently: the button just re-enabled with
+    // no feedback. The most common cause is the link's source being outside
+    // the viewer's scope — DELETE is gated on the source ticket, which is not
+    // necessarily the ticket being viewed. See #193.
+    onError: (err) => setError(extractError(err)),
   })
 
   // Handle Enter key for jump-to-ticket
@@ -244,6 +250,10 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
             )
           })}
         </div>
+
+        {/* Errors from removing a link surface here even when the add form is
+            closed, since removal is available whenever a link is listed. */}
+        {error && <p className="text-xs text-red-600">{error}</p>}
 
         {/* Add form */}
         {showForm && (
@@ -379,8 +389,6 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
               </div>
             )}
 
-            {error && <p className="text-xs text-red-600">{error}</p>}
-
             {/* Buttons */}
             <div className="flex gap-2 pt-1">
               <Button
@@ -400,6 +408,13 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                   setSearchInput('')
                   setSelectedTicket(null)
                   setSelectedRelation('related_to')
+                  // Reset explicitly rather than relying on the relation-select
+                  // onChange handler to do it: that only fires on a change AWAY
+                  // from duplicate_of, so Cancel while duplicate_of is still
+                  // selected left both fields stale for the next add attempt.
+                  // See #201.
+                  setResolveAsResolve(false)
+                  setResolutionNotes(null)
                   setError('')
                 }}
               >
