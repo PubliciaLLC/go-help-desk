@@ -1028,6 +1028,44 @@ func TestCreateStatus_TrimsNameInResponse(t *testing.T) {
 	require.True(t, found, "the created status must be listed")
 }
 
+// TestCreateStatus_ReportsActiveInResponse pins #284: the 201 body from
+// POST /admin/statuses must say active:true, and the row it created must
+// agree when read back. Fixed as a side effect of #285: handleCreateStatus
+// now serializes AddStatus's own returned Status (which sets Active: true)
+// instead of its own pre-call copy, and the stored row is active via the
+// statuses.active DEFAULT TRUE column (migration 000007) — CreateStatus's
+// INSERT does not mention the column at all. The two sources agreeing is
+// coincidental rather than guaranteed, which is exactly what this test pins:
+// a later change to either one alone would be caught here.
+func TestCreateStatus_ReportsActiveInResponse(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Reports Active",
+		"sort_order": 12,
+		"color":      "#33cc33",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, true, st["active"], "the 201 body must report active:true")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var found bool
+	for _, s := range statuses {
+		if s["id"] == st["id"] {
+			found = true
+			require.Equal(t, true, s["active"], "the stored row must also be active")
+		}
+	}
+	require.True(t, found, "the created status must be listed")
+}
+
 // TestUpdateStatus_TrimsNameInResponse is TestCreateStatus_TrimsNameInResponse's
 // PATCH counterpart, pinning the same #285 fix in SaveStatus/handleUpdateStatus.
 func TestUpdateStatus_TrimsNameInResponse(t *testing.T) {
