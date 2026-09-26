@@ -99,7 +99,7 @@ END $$;
 
 -- ============================================================
 -- LIMITS: where this file's recovered instants come from, and which way
--- each can be wrong. Referenced by name from C1, C2, R2, R4, S1, S3 and S5.
+-- each can be wrong. Referenced by name from C1, C2, R2, R4, S1 and S3.
 --
 -- Two sources:
 --
@@ -322,8 +322,9 @@ WHERE t.status_id = s.id
   AND NOT (s.kind = 'system' AND s.name IN ('Resolved', 'Closed'))
   AND t.resolved_at IS NOT NULL;
 
--- R2 (#237/#238, new — see the file-level note below the guard for how this
--- was found): a ticket sitting in system Resolved must carry resolved_at.
+-- R2 (#237/#238; see LIMITS below the guard for the updated_at fallback this
+-- uses and which direction it can be wrong): a ticket sitting in system
+-- Resolved must carry resolved_at.
 -- Pre-#102 UpdateStatus (see that commit) could set StatusID alone, leaving a
 -- ticket resolved through it with a NULL resolved_at — invisible to
 -- ListResolvedTicketsBefore (which requires resolved_at < cutoff) and read as
@@ -485,12 +486,27 @@ SELECT t.id, COALESCE(t.resolved_at, t.closed_at), true
 -- the ticket's current sla_paused_seconds includes pauses after the
 -- resolution, which can only understate, the same direction as 000027's own
 -- backfill.
+--
+-- #250: clipped by the same pending-time CASE that S5 below applies on the
+-- response side, and that live sla.Elapsed (sla.go) always applies when
+-- t.PendingSince is set. C1 (#244) captures a resolution fact for a ticket
+-- that is not currently terminal, including one now sitting in Pending, so
+-- this can no longer assume "resolved means not Pending" the way 000027's own
+-- original resolution-side pass (#222) did. Without the clip, a captured
+-- instant AFTER pending_since overstates elapsed relative to the live
+-- formula and can stamp a breach S3 would not otherwise stamp — the one
+-- direction S3's own comment says this file must never produce.
 UPDATE sla_records r
 SET resolved_at = c.resolved_at,
     resolution_elapsed_at_met_seconds = CASE
         WHEN NOT c.estimated THEN GREATEST(
             0,
-            EXTRACT(EPOCH FROM (c.resolved_at - t.created_at))::bigint - t.sla_paused_seconds)
+            EXTRACT(EPOCH FROM (c.resolved_at - t.created_at))::bigint - t.sla_paused_seconds
+                - CASE
+                      WHEN t.pending_since IS NOT NULL
+                      THEN GREATEST(0, EXTRACT(EPOCH FROM (c.resolved_at - t.pending_since)))::bigint
+                      ELSE 0
+                  END)
     END
 FROM m28_sla_resolution c
 JOIN tickets t ON t.id = c.ticket_id

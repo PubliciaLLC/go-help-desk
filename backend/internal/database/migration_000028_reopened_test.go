@@ -278,6 +278,21 @@ func TestMigration_SLABackfillPreservesReopenedTicketsResolution(t *testing.T) {
 	pendingSince := T.Add(2 * time.Hour)
 	reopenedPending := f.seed(t, "reopened pending", f.pendingSt.ID, T, now, &reopenedPendingAt, nil, &pendingSince)
 
+	// reopenedPendingBeforeResolution (#250): Pending, resolved_at = T+40m (a
+	// legacy dropped-history shape: a stamped resolve whose history row was
+	// dropped, then moved back to Pending without a history row either),
+	// pending_since = T+10m — BEFORE the captured resolution instant, unlike
+	// reopenedPending above (whose pending_since is AFTER, so its clip is a
+	// no-op). Without S1's pending-time clip this would freeze 2400s and S3
+	// would falsely stamp a resolution breach against the 30-minute target,
+	// while S5's already-clipped response side would read 600s and stay
+	// on-time for the exact same instant — inconsistent with live
+	// sla.Elapsed, which always clips. With the clip both sides must agree.
+	resolvedBeforePendingAt := T.Add(40 * time.Minute)
+	pendingSinceBeforeResolve := T.Add(10 * time.Minute)
+	reopenedPendingBeforeResolution := f.seed(t, "reopened pending before resolution",
+		f.pendingSt.ID, T, now, &resolvedBeforePendingAt, nil, &pendingSinceBeforeResolve)
+
 	// reopenedCustom: a custom status, resolved_at = T+20m.
 	var customStatusID uuid.UUID
 	require.NoError(t, f.tx.QueryRowContext(f.ctx,
@@ -330,6 +345,26 @@ func TestMigration_SLABackfillPreservesReopenedTicketsResolution(t *testing.T) {
 	recPending := f.getRecord(t, reopenedPending.ID)
 	require.NotNil(t, recPending.ResponseElapsedAtMetSeconds)
 	require.Equal(t, int64(1200), *recPending.ResponseElapsedAtMetSeconds)
+
+	// reopenedPendingBeforeResolution (#250): the opposite shape — pending_since
+	// BEFORE the resolution instant, so the clip actually subtracts time. Both
+	// the resolution and response elapsed readings must equal what live
+	// sla.Elapsed computes for this exact ticket/instant, and neither target
+	// may be stamped as breached (correctly on time once clipped).
+	wantElapsed := sla.Elapsed(ticket.Ticket{
+		CreatedAt:        T,
+		PendingSince:     &pendingSinceBeforeResolve,
+		SLAPausedSeconds: 0,
+	}, resolvedBeforePendingAt)
+	recPendingBefore := f.getRecord(t, reopenedPendingBeforeResolution.ID)
+	require.NotNil(t, recPendingBefore.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(wantElapsed/time.Second), *recPendingBefore.ResolutionElapsedAtMetSeconds,
+		"#250: S1 must clip pending time the same way live sla.Elapsed does")
+	require.NotNil(t, recPendingBefore.ResponseElapsedAtMetSeconds)
+	require.Equal(t, *recPendingBefore.ResolutionElapsedAtMetSeconds, *recPendingBefore.ResponseElapsedAtMetSeconds,
+		"resolution and response elapsed must agree: they are the same instant")
+	require.Nil(t, recPendingBefore.ResolutionBreachedAt, "#250: correctly clipped, this is on time")
+	require.Nil(t, recPendingBefore.ResponseBreachedAt, "#250: correctly clipped, this is on time")
 
 	// reopenedCustom: same as reopenedOnTime.
 	recCustom := f.getRecord(t, reopenedCustom.ID)
