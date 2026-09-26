@@ -1236,7 +1236,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, err
 	}
 	if t.StatusID != s.sys.closedID {
-		return Ticket{}, fmt.Errorf("ticket is not closed")
+		return Ticket{}, ErrNotClosed
 	}
 	// Same guard as AddReply's auto-reopen: an unresolvable configured status
 	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
@@ -1262,7 +1262,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 			return err
 		}
 		if t.StatusID != s.sys.closedID {
-			return fmt.Errorf("ticket is not closed")
+			return ErrNotClosed
 		}
 		before := ticketMap(t)
 		oldStatusID = t.StatusID

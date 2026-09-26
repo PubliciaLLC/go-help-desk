@@ -638,18 +638,10 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	statuses, err := s.tickets.ListStatuses(r.Context())
+	targetID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
 		return
-	}
-	targetName := s.adminSvc.ReopenTargetStatusName(r.Context())
-	var targetID uuid.UUID
-	for _, st := range statuses {
-		if st.Name == targetName {
-			targetID = st.ID
-			break
-		}
 	}
 
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
@@ -845,8 +837,9 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 // administrator had mistyped a setting. The fallback keeps the customer
 // working; the misconfiguration is an admin problem and is logged.
 //
-// Shared by the authenticated reply path and the guest one, because a guest
-// reopening a ticket has to land on the same status a reporter would.
+// Shared by the authenticated reply path, the guest reply path, and manual
+// reopen (handleReopenTicket): all three need to land on the same status a
+// misconfigured or absent setting should fall back to.
 func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {

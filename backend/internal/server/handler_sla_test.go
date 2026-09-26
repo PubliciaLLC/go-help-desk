@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -56,10 +57,12 @@ func TestCreateSLAPolicy_PriorityIsOptionalAndValidated(t *testing.T) {
 			resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", tc.body)
 			require.Equal(t, tc.wantStatus, resp.StatusCode)
 			if tc.wantStatus != http.StatusCreated {
-				// The status alone does not distinguish a rejection from a
-				// database CHECK violation reported as one: the handler maps
-				// every store error to 400 too. The message is what says the
-				// request never reached the column.
+				// The status alone would not distinguish a domain rejection
+				// from a database CHECK violation: before #276 the handler
+				// mapped every store error to 400 too. Now only
+				// sla.ErrValidation (and sla.ErrUnknownCategory) map to 400 —
+				// see handleError — but the message is still what confirms
+				// this is the validation error, not some other 400.
 				var errBody struct {
 					Error struct {
 						Message string `json:"message"`
@@ -136,6 +139,71 @@ func TestUpdateSLAPolicy_ClearPriority(t *testing.T) {
 }
 
 func priorityOf(p ticket.Priority) *ticket.Priority { return &p }
+
+// TestCreateSLAPolicy_UnknownCategory_ReturnsBadRequest pins #276: a
+// category_id that names no row used to reach the client as the raw Postgres
+// foreign-key violation text under a 400 rather than a message a reader can
+// act on. The FK violation aborts the harness's shared test transaction, so
+// this request has to be the last statement in the test — same constraint as
+// TestCreateStatus_DuplicateName_ReturnsConflict.
+func TestCreateSLAPolicy_UnknownCategory_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Unknown category",
+		"category_id":           uuid.New().String(),
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "bad_request", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "category does not exist")
+	require.NotContains(t, errBody.Error.Message, "violates")
+	require.NotContains(t, errBody.Error.Message, "sla_policies")
+}
+
+// TestUpdateSLAPolicy_UnknownCategory_ReturnsBadRequest is the PATCH
+// counterpart of TestCreateSLAPolicy_UnknownCategory_ReturnsBadRequest (#276).
+// Same transaction-abort constraint: the update that trips the FK violation
+// has to be the last statement in the test.
+func TestUpdateSLAPolicy_UnknownCategory_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Valid at first",
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created sla.Policy
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/sla/policies/"+created.ID.String(),
+		map[string]any{"category_id": uuid.New().String()})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "bad_request", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "category does not exist")
+	require.NotContains(t, errBody.Error.Message, "violates")
+	require.NotContains(t, errBody.Error.Message, "sla_policies")
+}
 
 // TestDeleteSLAPolicy_InUse_Returns409 pins #261: a policy attached to at
 // least one ticket's SLA record is refused with 409 policy_in_use naming how

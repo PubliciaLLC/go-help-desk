@@ -78,6 +78,12 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
 		return
 	}
+	// 409, like ErrClosed: the ticket's state refuses a reopen, not the
+	// caller's permissions. Was a bare error falling through to 500 (#277).
+	if errors.Is(err, ticket.ErrNotClosed) {
+		Error(w, http.StatusConflict, "ticket_not_closed", "only a closed ticket can be reopened")
+		return
+	}
 	// 409 Conflict: link already exists
 	if errors.Is(err, ticket.ErrLinkAlreadyExists) {
 		Error(w, http.StatusConflict, "link_already_exists", "this link already exists")
@@ -116,7 +122,19 @@ func handleError(w http.ResponseWriter, err error) {
 	// Bad input, not a fault. Without this a mistyped email address at signup,
 	// or on an admin's user edit, came back as 500 "an internal error
 	// occurred" and was logged as one.
-	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) {
+	//
+	// ticket.ErrValidation is added here for AddReply and Reopen: before this
+	// only the two create-ticket handlers mapped it inline (they still do;
+	// that check is now redundant but harmless), so a misconfigured reopen
+	// target status reaching AddReply's or Reopen's own ErrValidation check
+	// fell through to 500 instead of the 400 its own doc comment promised.
+	// sla.ErrValidation and sla.ErrUnknownCategory are added for the same
+	// reason on the SLA policy create/update doors (#276): every store or
+	// validation error used to be reported as a raw-text 400 regardless of
+	// what actually went wrong.
+	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) ||
+		errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) ||
+		errors.Is(err, ticket.ErrValidation) || errors.Is(err, sla.ErrValidation) || errors.Is(err, sla.ErrUnknownCategory) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

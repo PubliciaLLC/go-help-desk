@@ -289,22 +289,28 @@ func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now 
 
 // ── Policy CRUD ───────────────────────────────────────────────────────────────
 
+// ErrValidation wraps a policy that fails validatePolicy, so the HTTP layer
+// can tell bad input (400) from a store or driver failure (500). Before this
+// every error from CreatePolicy/UpdatePolicy was reported as 400 with its raw
+// text (#276).
+var ErrValidation = errors.New("validation failed")
+
 // validatePolicy guards both doors onto sla_policies. Priority was previously
 // unvalidated on either, so an unknown value travelled all the way to the
 // column's CHECK constraint and the raw driver error — table name, constraint
 // name, SQLSTATE — was handed back to the client as the 400's message.
 func validatePolicy(p Policy) error {
 	if p.Name == "" {
-		return fmt.Errorf("policy name is required")
+		return fmt.Errorf("policy name is required: %w", ErrValidation)
 	}
 	if p.Priority != nil && !p.Priority.Valid() {
-		return fmt.Errorf("invalid priority %q", *p.Priority)
+		return fmt.Errorf("invalid priority %q: %w", *p.Priority, ErrValidation)
 	}
 	if p.ResponseTargetMin <= 0 {
-		return fmt.Errorf("response target must be greater than zero")
+		return fmt.Errorf("response target must be greater than zero: %w", ErrValidation)
 	}
 	if p.ResolutionTargetMin <= 0 {
-		return fmt.Errorf("resolution target must be greater than zero")
+		return fmt.Errorf("resolution target must be greater than zero: %w", ErrValidation)
 	}
 	return nil
 }

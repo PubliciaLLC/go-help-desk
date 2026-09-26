@@ -309,7 +309,7 @@ export function TicketDetailPage() {
   const { id } = useParams({ from: '/tickets/$id' })
   const { user } = useAuthStore()
   const qc = useQueryClient()
-
+  const [reopenError, setReopenError] = useState('')
 
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
@@ -393,9 +393,17 @@ export function TicketDetailPage() {
   const reopenMutation = useMutation({
     mutationFn: () => reopenTicket(id),
     onSuccess: () => {
+      setReopenError('')
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+    onError: (err) => {
+      setReopenError(extractError(err))
+      // A 409 means this page is stale (someone else already reopened it):
+      // refetch so the header shows the real status and the button goes away.
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
     },
   })
 
@@ -412,7 +420,9 @@ export function TicketDetailPage() {
   if (error || !ticket) return <Layout><p className="text-red-600">Ticket not found.</p></Layout>
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
-  const canReopen = isStaffOrAdmin && (statusName === 'Resolved' || statusName === 'Closed')
+  // Reopen is Closed-only on the server (ticket.Service.Reopen). A Resolved
+  // ticket is moved with the status selector, or reopened by the reporter's reply.
+  const canReopen = isStaffOrAdmin && statusName === 'Closed'
   const canClose = isAdmin && statusName === 'Resolved'
 
   return (
@@ -477,6 +487,8 @@ export function TicketDetailPage() {
             )}
           </div>
         </div>
+
+        {reopenError && <p role="alert" className="text-sm text-red-600">{reopenError}</p>}
 
         <div className="grid grid-cols-3 gap-6">
           {/* Main column */}

@@ -1079,6 +1079,10 @@ func TestIsResolutionBreached_UsesTheResolutionTime(t *testing.T) {
 // A policy's priority was written to the database unvalidated. An unknown value
 // reached the column's CHECK constraint and surfaced as a 500; a nil one is the
 // catch-all tier and must be allowed through.
+// TestSLAService_PolicyPriorityValidation pins #276: validatePolicy's errors
+// now wrap sla.ErrValidation, so the HTTP layer (respond.go) can tell a bad
+// request apart from a store or driver failure instead of reporting every
+// CreatePolicy/UpdatePolicy error as 400 with its raw text.
 func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 	bogus := ticket.Priority("urgent")
 	high := ticket.PriorityHigh
@@ -1106,7 +1110,7 @@ func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 
 			created, err := svc.CreatePolicy(context.Background(), in)
 			if tc.wantErr {
-				require.Error(t, err)
+				require.ErrorIs(t, err, sla.ErrValidation)
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, tc.priority, created.Priority)
@@ -1116,12 +1120,102 @@ func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 			in.ID = uuid.New()
 			err = svc.UpdatePolicy(context.Background(), in)
 			if tc.wantErr {
-				require.Error(t, err)
+				require.ErrorIs(t, err, sla.ErrValidation)
 			} else {
 				require.NoError(t, err)
 			}
 		})
 	}
+}
+
+// TestSLAService_PolicyValidation_NameAndTargets covers the rest of
+// validatePolicy's checks: an empty name, and a zero or negative target on
+// either side, all of which must wrap sla.ErrValidation the same way an
+// invalid priority does.
+func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
+	valid := sla.Policy{Name: "P", ResponseTargetMin: 60, ResolutionTargetMin: 480}
+
+	cases := []struct {
+		name   string
+		modify func(p sla.Policy) sla.Policy
+	}{
+		{
+			name:   "empty name",
+			modify: func(p sla.Policy) sla.Policy { p.Name = ""; return p },
+		},
+		{
+			name:   "zero response target",
+			modify: func(p sla.Policy) sla.Policy { p.ResponseTargetMin = 0; return p },
+		},
+		{
+			name:   "negative response target",
+			modify: func(p sla.Policy) sla.Policy { p.ResponseTargetMin = -1; return p },
+		},
+		{
+			name:   "zero resolution target",
+			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = 0; return p },
+		},
+		{
+			name:   "negative resolution target",
+			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = -1; return p },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := sla.NewService(newFakeSLAStore())
+			in := tc.modify(valid)
+
+			_, err := svc.CreatePolicy(context.Background(), in)
+			require.ErrorIs(t, err, sla.ErrValidation)
+
+			in.ID = uuid.New()
+			err = svc.UpdatePolicy(context.Background(), in)
+			require.ErrorIs(t, err, sla.ErrValidation)
+		})
+	}
+}
+
+// erroringSLAStore wraps fakeSLAStore so CreatePolicy/UpdatePolicy can be
+// made to fail with something other than validation: fakeSLAStore's own
+// versions always return nil, so this is the only way to prove a genuine
+// store failure is NOT reported as sla.ErrValidation.
+type erroringSLAStore struct {
+	*fakeSLAStore
+	err error
+}
+
+func (e *erroringSLAStore) CreatePolicy(ctx context.Context, p sla.Policy) error {
+	if e.err != nil {
+		return e.err
+	}
+	return e.fakeSLAStore.CreatePolicy(ctx, p)
+}
+
+func (e *erroringSLAStore) UpdatePolicy(ctx context.Context, p sla.Policy) error {
+	if e.err != nil {
+		return e.err
+	}
+	return e.fakeSLAStore.UpdatePolicy(ctx, p)
+}
+
+// TestSLAService_PolicyStoreFailure_IsNotReportedAsValidation pins the other
+// side of #276: a store or driver failure on a policy that itself validates
+// fine must come back as something respond.go's handleError sends to 500,
+// never mistaken for sla.ErrValidation.
+func TestSLAService_PolicyStoreFailure_IsNotReportedAsValidation(t *testing.T) {
+	store := &erroringSLAStore{fakeSLAStore: newFakeSLAStore(), err: errors.New("boom")}
+	svc := sla.NewService(store)
+	in := sla.Policy{Name: "P", ResponseTargetMin: 60, ResolutionTargetMin: 480}
+
+	_, err := svc.CreatePolicy(context.Background(), in)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, sla.ErrValidation)
+
+	in.ID = uuid.New()
+	err = svc.UpdatePolicy(context.Background(), in)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, sla.ErrValidation)
 }
 
 // StatusesFor is the batch call the ticket list/detail handlers use (#183):

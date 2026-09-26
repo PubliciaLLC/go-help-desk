@@ -265,6 +265,56 @@ func TestReopen_OnlyFromClosed(t *testing.T) {
 		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
 
 	require.Error(t, err)
+	require.ErrorIs(t, err, ticket.ErrNotClosed)
+	require.Equal(t, 0, h.store.updates)
+}
+
+// TestReopen_RejectsResolved pins #277: Reopen is deliberately Closed-only. A
+// Resolved ticket leaves that state through UpdateStatus (the status
+// selector, which allows staff any status but Closed) or a reporter's reply
+// within the reopen window — never through this endpoint, which used to
+// return a bare, unrecognized error that handleError sent back as a 500.
+func TestReopen_RejectsResolved(t *testing.T) {
+	h := newHarness(t)
+	reporter := uuid.New()
+	seeded := h.seedResolved(reporter)
+	agent := uuid.New()
+
+	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ticket.ErrNotClosed)
+	require.Equal(t, 0, h.store.updates)
+}
+
+// TestReopen_ConcurrentReopenDetectedUnderLock covers ErrNotClosed's other
+// doc-commented case: a ticket that was Closed when Reopen's unlocked
+// precondition check ran, but that a concurrent writer already reopened by
+// the time the row lock inside the transaction is taken. The re-read under
+// GetByIDForUpdate must catch this rather than trusting the stale unlocked
+// read, so this simulates the interleaving by making the two reads disagree.
+func TestReopen_ConcurrentReopenDetectedUnderLock(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedClosed()
+	agent := uuid.New()
+
+	// h.store.forUpdateReads is only incremented by GetByIDForUpdate, so the
+	// unlocked outer GetByID (forUpdateReads == 0) still sees Closed, and the
+	// locked re-read inside the transaction (forUpdateReads > 0) sees that
+	// someone else already reopened it.
+	h.store.onRead = func(tk ticket.Ticket) ticket.Ticket {
+		if tk.ID == seeded.ID && h.store.forUpdateReads > 0 {
+			tk.StatusID = h.newStatus.ID
+		}
+		return tk
+	}
+
+	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, ticket.ErrNotClosed)
 	require.Equal(t, 0, h.store.updates)
 }
 
@@ -322,6 +372,25 @@ func TestRemoveStatus_ProtectsSystemStatuses(t *testing.T) {
 			require.ErrorIs(t, err, ticket.ErrSystemStatusImmutable)
 		})
 	}
+}
+
+// TestAddStatus_ReturnsActiveStatus pins half of #284 at the domain layer:
+// AddStatus sets Active true on the Status it returns (CreateStatus's INSERT
+// does not mention the column at all — the row is active via the
+// statuses.active DEFAULT TRUE column, migration 000007), so the caller's
+// response never has to fake the flag itself.
+func TestAddStatus_ReturnsActiveStatus(t *testing.T) {
+	h := newHarness(t)
+
+	got, err := h.svc.AddStatus(context.Background(), ticket.Status{
+		Name:      "Escalated",
+		Kind:      ticket.StatusKindCustom,
+		SortOrder: 20,
+		Color:     "#ff0000",
+	})
+
+	require.NoError(t, err)
+	require.True(t, got.Active, "AddStatus must return a Status with Active true")
 }
 
 // TestSaveStatus_RefusesSystemStatusRename proves the rename refusal is

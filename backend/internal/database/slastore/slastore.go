@@ -23,7 +23,7 @@ type Store struct{ q *dbgen.Queries }
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 
 func (s *Store) CreatePolicy(ctx context.Context, p sla.Policy) error {
-	return s.q.CreateSLAPolicy(ctx, dbgen.CreateSLAPolicyParams{
+	err := s.q.CreateSLAPolicy(ctx, dbgen.CreateSLAPolicyParams{
 		ID:                  p.ID,
 		Name:                p.Name,
 		Priority:            nullPriority(p.Priority),
@@ -31,6 +31,10 @@ func (s *Store) CreatePolicy(ctx context.Context, p sla.Policy) error {
 		ResponseTargetMin:   int32(p.ResponseTargetMin),
 		ResolutionTargetMin: int32(p.ResolutionTargetMin),
 	})
+	if err != nil && isUnknownCategoryViolation(err) {
+		return sla.ErrUnknownCategory
+	}
+	return err
 }
 
 func (s *Store) GetPolicy(ctx context.Context, id uuid.UUID) (sla.Policy, error) {
@@ -42,7 +46,7 @@ func (s *Store) GetPolicy(ctx context.Context, id uuid.UUID) (sla.Policy, error)
 }
 
 func (s *Store) UpdatePolicy(ctx context.Context, p sla.Policy) error {
-	return s.q.UpdateSLAPolicy(ctx, dbgen.UpdateSLAPolicyParams{
+	err := s.q.UpdateSLAPolicy(ctx, dbgen.UpdateSLAPolicyParams{
 		ID:                  p.ID,
 		Name:                p.Name,
 		Priority:            nullPriority(p.Priority),
@@ -50,6 +54,10 @@ func (s *Store) UpdatePolicy(ctx context.Context, p sla.Policy) error {
 		ResponseTargetMin:   int32(p.ResponseTargetMin),
 		ResolutionTargetMin: int32(p.ResolutionTargetMin),
 	})
+	if err != nil && isUnknownCategoryViolation(err) {
+		return sla.ErrUnknownCategory
+	}
+	return err
 }
 
 // DeletePolicy removes a policy that no ticket's SLA record references.
@@ -83,6 +91,15 @@ func (s *Store) DeletePolicy(ctx context.Context, id uuid.UUID) error {
 func isPolicyInUseViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "sla_records_policy_id_fkey"
+}
+
+// isUnknownCategoryViolation reports whether err is sla_policies' foreign key
+// to categories refusing an insert/update -- detected off the typed Postgres
+// error, never err.Error()'s text, for the reason isDuplicateLinkViolation
+// gives (#195).
+func isUnknownCategoryViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "sla_policies_category_id_fkey"
 }
 
 func (s *Store) ListPolicies(ctx context.Context) ([]sla.Policy, error) {

@@ -25,6 +25,12 @@ var ErrNoRecord = errors.New("no SLA record for ticket")
 // violation reached the API as a bare 500 (#261).
 var ErrPolicyInUse = errors.New("SLA policy is in use and cannot be deleted")
 
+// ErrUnknownCategory reports a policy whose category_id names no category —
+// most often one deleted in another tab. It is the store's mapping of the
+// sla_policies_category_id_fkey violation, which reached the client as raw
+// Postgres text under a 400 (#276).
+var ErrUnknownCategory = errors.New("SLA policy category does not exist")
+
 // Store is the persistence interface for SLA policies and records.
 type Store interface {
 	// Policies
