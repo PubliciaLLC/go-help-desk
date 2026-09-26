@@ -1,5 +1,23 @@
 -- No inverse: this migration repairs data, it does not change schema. The
--- values it overwrote (a stale resolved_at, a missing closed_at) were bugs,
--- not state worth restoring, and there is no way to recover which rows had
--- which stale values before the up migration ran. Left as a no-op rather than
--- silently reintroducing the invariant violation the up migration fixed.
+-- values it overwrote — a stale resolved_at on a ticket no longer in
+-- Resolved, a stale closed_at on a ticket no longer in Closed, a missing
+-- resolved_at stamped (recovered from history where possible) on a ticket
+-- sitting in Resolved, a missing closed_at stamped the same way on a ticket
+-- sitting in Closed, and — since #231 moved it here — a legacy sla_records
+-- row missing resolved_at/first_response_at or their breach stamps, even one
+-- migration 000027's own earlier pass had already frozen but never stamped
+-- (#240), plus a legacy sla_records resolution recovered from the earliest
+-- recorded resolve or close, including on a ticket since reopened (#242,
+-- #244), recorded without a frozen elapsed reading or breach stamp where
+-- only the updated_at upper bound was available (#243, #246), and an
+-- already-recorded SLA resolution revised to an earlier recorded resolve or
+-- close, with its frozen elapsed reading recomputed from that earlier
+-- instant (#258) — were bugs, not state worth restoring, and there is no
+-- way to recover which rows had which stale or missing values before the up
+-- migration ran. Left as a no-op rather than silently reintroducing the
+-- invariant violations the up migration fixed.
+--
+-- #248: this migration also takes LOCK TABLE statuses IN SHARE MODE as its
+-- first statement, for the duration of its own transaction only — no lock
+-- survives past that transaction's commit, so this down migration (also a
+-- no-op) needs no lock of its own and takes none.

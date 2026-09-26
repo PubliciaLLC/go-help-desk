@@ -198,7 +198,7 @@ func run() error {
 	// off) is still reported — the ticket service treats these as non-fatal
 	// and drops them, and domain code does not log, so without this wrapper
 	// they would vanish entirely.
-	slaSvc := ticket.SLAService(newLoggingSLA(newGatedSLA(sla.NewService(slStore), adminSvc), slog.Default()))
+	slaSvc := ticket.SLAService(newLoggingSLA(newGatedSLA(sla.NewService(slStore), adminSvc, slog.Default()), slog.Default()))
 
 	// SLA_ENABLED is a startup-time convenience only: DESIGN.md documents it
 	// as a way to pre-enable the feature so a fresh instance works from first
@@ -369,7 +369,18 @@ func run() error {
 			case <-sweepCtx.Done():
 				return
 			case <-t.C:
-				ran, res, err := runSLASweepTick(sweepCtx, adminSvc.SLAEnabled,
+				ran, res, err := runSLASweepTick(sweepCtx,
+					func(ctx context.Context) bool {
+						enabled, err := adminSvc.SLAEnabled(ctx)
+						if err != nil {
+							// Fail safe: skip this tick rather than sweep
+							// against a setting read that just failed, but
+							// log it — see admin.Service.SLAEnabled and #216.
+							slog.WarnContext(ctx, "reading SLA enabled setting failed; skipping this sweep tick", "error", err)
+							return false
+						}
+						return enabled
+					},
 					func(ctx context.Context, now time.Time) (sla.SweepResult, error) {
 						return slaPolicySvc.SweepBreaches(ctx, tStore, now)
 					}, time.Now())

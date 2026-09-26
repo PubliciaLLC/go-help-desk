@@ -30,10 +30,22 @@ ALTER TABLE sla_records
 -- than leaving the column NULL (which falls back to the same live recompute
 -- these rows already display today), and it is a one-time correction, not a
 -- pattern anything relies on going forward.
+-- The same pending-aware clip sla.Elapsed applies at read time: a ticket
+-- Pending at upgrade time (migration 000025, run just before this one in the
+-- same upgrade, populates pending_since for every currently-Pending ticket)
+-- whose first_response_at landed AFTER it went Pending would otherwise be
+-- backfilled too large by exactly (first_response_at - pending_since) — the
+-- open pause interval sla.Elapsed clips away but this one-time backfill
+-- formula did not. See #222.
 UPDATE sla_records r
 SET response_elapsed_at_met_seconds = GREATEST(
         0,
         EXTRACT(EPOCH FROM (r.first_response_at - t.created_at))::bigint - t.sla_paused_seconds
+            - CASE
+                  WHEN t.pending_since IS NOT NULL
+                  THEN GREATEST(0, EXTRACT(EPOCH FROM (r.first_response_at - t.pending_since)))::bigint
+                  ELSE 0
+              END
     )
 FROM tickets t
 WHERE t.id = r.ticket_id
@@ -47,3 +59,20 @@ SET resolution_elapsed_at_met_seconds = GREATEST(
 FROM tickets t
 WHERE t.id = r.ticket_id
   AND r.resolved_at IS NOT NULL;
+
+-- #226(a)/(b) (a ticket closed without ever resolving, and a ticket resolved
+-- without a prior reply) used to be backfilled here, keyed on
+-- t.closed_at IS NOT NULL. #231: that ran BEFORE migration 000028 (which is
+-- what actually stamps closed_at on a legacy Closed ticket that never had
+-- one), so the exact rows 000028 exists to fix were skipped by this
+-- migration's backfill every time — closed_at was still NULL right now, at
+-- the moment this file ran. Moved to the end of migration
+-- 000028_repair_resolved_status_invariant.up.sql, AFTER its own repairs. The
+-- ordering dependency was not eliminated, only made deliberate and
+-- documented: that file's Phase A capture/repair statements (C1, C1b,
+-- R1-R4, C2) each have their own specific ordering requirements relative to
+-- tickets.closed_at and .resolved_at, spelled out in that file's Phase A
+-- header and each statement's own comment. S1 (#254) is Phase B, not Phase A,
+-- and has no such requirement — it reads only phase A's capture table for
+-- resolution instants, never the repaired tickets columns directly. See that
+-- file for the current statements.

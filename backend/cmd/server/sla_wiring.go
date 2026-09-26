@@ -60,7 +60,7 @@ func (l *loggingSLA) RecordResolved(ctx context.Context, t ticket.Ticket, at tim
 // this tiny gate, and satisfied by *admin.Service without either package
 // naming the other.
 type slaEnabler interface {
-	SLAEnabled(ctx context.Context) bool
+	SLAEnabled(ctx context.Context) (bool, error)
 }
 
 // gatedSLA reads the SLA feature toggle LIVE, from the same admin-settings
@@ -85,29 +85,62 @@ type slaEnabler interface {
 type gatedSLA struct {
 	inner ticket.SLAService
 	admin slaEnabler
+	log   *slog.Logger
 }
 
-func newGatedSLA(inner ticket.SLAService, admin slaEnabler) ticket.SLAService {
-	return &gatedSLA{inner: inner, admin: admin}
+func newGatedSLA(inner ticket.SLAService, admin slaEnabler, log *slog.Logger) ticket.SLAService {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &gatedSLA{inner: inner, admin: admin, log: log}
 }
 
 func (g *gatedSLA) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
-	if !g.admin.SLAEnabled(ctx) {
+	enabled, err := g.admin.SLAEnabled(ctx)
+	if err != nil {
+		// Fail safe rather than silently: a transient read failure must not
+		// attach a policy nobody confirmed is wanted, but it also must not
+		// vanish the way `v, _ := ...` did before #216 — logged here, at the
+		// boundary, since CLAUDE.md keeps domain code (admin.Service) from
+		// logging it itself.
+		g.log.WarnContext(ctx, "reading SLA enabled setting failed; treating SLA as disabled for this ticket",
+			"ticket_id", t.ID, "error", err)
+		return nil
+	}
+	if !enabled {
 		return nil
 	}
 	return g.inner.AttachPolicy(ctx, t)
 }
 
+// RecordFirstResponse and RecordResolved are NOT gated on the toggle (#216).
+// Unlike AttachPolicy (which must not create a new record while the feature
+// is off), a record here is being written onto an sla_records row that only
+// exists because the toggle was ON when the ticket was created — writing a
+// fact onto an existing record is always safe. Gating these silently DROPPED
+// the fact instead of deferring it: if staff replied to or resolved a ticket
+// during an off period, first_response_at/resolved_at were never written, and
+// flipping the toggle back on left the ticket looking still-unresolved to the
+// next sweep tick, which then stamped a false breach that never clears.
+//
+// #236: #217/#228 later folded breach-stamping INTO these same methods, so
+// with the toggle off, a late reply or late resolution now DOES stamp a
+// breach right here, at record time — this is intentional, not a gap this
+// wrapper needs to close. A breach stamp is an objective fact about what
+// already happened (the ticket WAS late), independent of whether an admin
+// currently has the SLA indicator toggled on for display; the toggle governs
+// whether SLA tracking is visible and whether new records get created, never
+// whether a fact already in progress gets recorded truthfully. The sweep
+// (gated separately, in cmd/server/main.go's runSLASweepTick) stays off while
+// the toggle is off for a different reason entirely: it is a periodic
+// RE-EVALUATION of records still outstanding, and there is no point spending
+// a query re-checking records for a feature nobody can currently see the
+// result of — not because a breach must never be stamped while the toggle is
+// off, which is no longer true (and, per these two methods, never fully was).
 func (g *gatedSLA) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at time.Time) error {
-	if !g.admin.SLAEnabled(ctx) {
-		return nil
-	}
 	return g.inner.RecordFirstResponse(ctx, t, at)
 }
 
 func (g *gatedSLA) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
-	if !g.admin.SLAEnabled(ctx) {
-		return nil
-	}
 	return g.inner.RecordResolved(ctx, t, at)
 }

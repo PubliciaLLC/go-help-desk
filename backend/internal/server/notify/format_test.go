@@ -132,17 +132,17 @@ func TestRenderSlack(t *testing.T) {
 		{
 			name: "reply created (public)",
 			ev:   fixtureReplyEvent(false),
-			want: `{"text": "*[GHD-2026-000001]* New reply — Printer jammed\n> Paper tray 2 was empty.\n<` + fixtureTicketURL + `|Open ticket>"}`,
+			want: `{"text": "*[GHD-2026-000001]* New reply — Printer jammed\n> Paper tray 2 was empty.\n<` + fixtureTicketURL + `|Open ticket>", "unfurl_links": false, "unfurl_media": false}`,
 		},
 		{
 			name: "reply created (internal)",
 			ev:   fixtureReplyEvent(true),
-			want: `{"text": "*[GHD-2026-000001]* Internal note added — Printer jammed\n<` + fixtureTicketURL + `|Open ticket>"}`,
+			want: `{"text": "*[GHD-2026-000001]* Internal note added — Printer jammed\n<` + fixtureTicketURL + `|Open ticket>", "unfurl_links": false, "unfurl_media": false}`,
 		},
 		{
 			name: "status changed",
 			ev:   fixtureStatusChangedEvent(),
-			want: `{"text": "*[GHD-2026-000001]* Status changed to Resolved — Printer jammed\n<` + fixtureTicketURL + `|Open ticket>"}`,
+			want: `{"text": "*[GHD-2026-000001]* Status changed to Resolved — Printer jammed\n<` + fixtureTicketURL + `|Open ticket>", "unfurl_links": false, "unfurl_media": false}`,
 		},
 	}
 	for _, tc := range cases {
@@ -262,17 +262,17 @@ func TestRenderDiscord(t *testing.T) {
 		{
 			name: "reply created (public)",
 			ev:   fixtureReplyEvent(false),
-			want: `{"content": "**[GHD-2026-000001]** New reply — Printer jammed\n> Paper tray 2 was empty.\n` + fixtureTicketURL + `", "allowed_mentions": {"parse": []}}`,
+			want: `{"content": "**[GHD-2026-000001]** New reply — Printer jammed\n> Paper tray 2 was empty.\n` + fixtureTicketURL + `", "allowed_mentions": {"parse": []}, "flags": 4}`,
 		},
 		{
 			name: "reply created (internal)",
 			ev:   fixtureReplyEvent(true),
-			want: `{"content": "**[GHD-2026-000001]** Internal note added — Printer jammed\n` + fixtureTicketURL + `", "allowed_mentions": {"parse": []}}`,
+			want: `{"content": "**[GHD-2026-000001]** Internal note added — Printer jammed\n` + fixtureTicketURL + `", "allowed_mentions": {"parse": []}, "flags": 4}`,
 		},
 		{
 			name: "status changed",
 			ev:   fixtureStatusChangedEvent(),
-			want: `{"content": "**[GHD-2026-000001]** Status changed to Resolved — Printer jammed\n` + fixtureTicketURL + `", "allowed_mentions": {"parse": []}}`,
+			want: `{"content": "**[GHD-2026-000001]** Status changed to Resolved — Printer jammed\n` + fixtureTicketURL + `", "allowed_mentions": {"parse": []}, "flags": 4}`,
 		},
 	}
 	for _, tc := range cases {

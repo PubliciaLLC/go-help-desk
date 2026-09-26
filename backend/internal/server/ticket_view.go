@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -47,7 +48,15 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 	if actor == nil || actor.Role == user.RoleUser {
 		return views, nil
 	}
-	if !s.adminSvc.SLAEnabled(ctx) {
+	enabled, err := s.adminSvc.SLAEnabled(ctx)
+	if err != nil {
+		// Fail safe: treat a read failure as "disabled" rather than let it
+		// surface as a 500 on every ticket list, but log it — see
+		// admin.Service.SLAEnabled and #216.
+		slog.WarnContext(ctx, "reading SLA enabled setting failed; omitting SLA status", "error", err)
+		return views, nil
+	}
+	if !enabled {
 		return views, nil
 	}
 	statuses, err := s.slaPolicies.StatusesFor(ctx, ts, time.Now())

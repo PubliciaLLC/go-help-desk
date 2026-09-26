@@ -767,6 +767,20 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid link type")
 		return
 	}
+	// The path gate authorised {id}; targetId names a second ticket. Match
+	// handleAddLink's check on the other end: the link's ids are already
+	// visible via GET /links, and without this a reporting user could remove
+	// a staff-created link from their own ticket to a ticket they cannot
+	// view. See #211.
+	ok, err := s.canViewTicketID(r, targetID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !ok {
+		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return
+	}
 	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
 		handleError(w, err)
 		return

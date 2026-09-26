@@ -40,14 +40,38 @@ func (s *Service) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 //
 // t is the ticket as it stood at the moment of the response — the caller
 // always has this row already (it just read or wrote it), so Elapsed is
-// computed here rather than via a GetRecord round trip. That also means this
-// no longer reads-then-writes the record at all: SetFirstResponse is a single
-// COALESCE-guarded UPDATE touching only its own two columns, so a breach
-// stamp StampBreaches wrote between this call being triggered and it running
-// cannot be clobbered (see store.go's SetFirstResponse and CLAUDE.md).
+// computed here rather than via a GetRecord round trip for the ticket side.
+// A GetRecord round trip IS made, but only to read the record's immutable
+// policy_id (for the target) and as a fast-path check for whether this call
+// has anything to do; store.SetFirstResponse is the actual write, and it is
+// the sole authority on whether ITS write lands and whether a breach gets
+// stamped for it (#228) — see its doc comment for why folding the two into
+// one statement removes the race a separately-read record here would
+// otherwise decide from.
+//
+// #217: this is also where a LATE response gets its breach stamp the moment
+// it actually happens, using the frozen elapsed value just computed — not
+// only from the periodic sweep evaluating an outstanding record, which misses
+// a response that lands late entirely between sweep ticks (or during an
+// SLA-toggle-off stretch, since #216 stops gating this method on the toggle).
 func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at time.Time) error {
+	record, err := s.store.GetRecord(ctx, t.ID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
+	if err != nil {
+		return fmt.Errorf("recording SLA first response: %w", err)
+	}
+	if record.FirstResponseAt != nil {
+		return nil // fast path; the store write below would no-op anyway
+	}
+	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
+	if err != nil {
+		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
+	}
+
 	elapsed := int64(Elapsed(t, at) / time.Second)
-	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed); err != nil {
+	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA first response: %w", err)
 	}
 	return nil
@@ -55,15 +79,54 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 
 // RecordResolved stamps when a ticket was resolved, so resolution breaches are
 // judged against the time it was actually resolved, and freezes its
-// elapsed-toward-target reading the same way RecordFirstResponse does.
+// elapsed-toward-target reading the same way RecordFirstResponse does. It is
+// a no-op when a resolution is already recorded, or when the ticket carries
+// no SLA record — which is also how #220's close()-calls-RecordResolved path
+// stays a no-op for a ticket that was already resolved before being closed:
+// only a ticket that reaches Closed WITHOUT ever resolving reaches the write
+// below.
 //
 // Nothing used to write ResolvedAt at all. IsResolutionBreached therefore saw
 // a NULL ResolvedAt on every ticket and would have reported each one as
 // breached the moment its deadline passed, however promptly it had been
 // resolved.
+//
+// #217: like RecordFirstResponse, this stamps a late RESOLUTION breach right
+// here, at the instant it is recorded, rather than relying solely on the
+// sweep to notice an outstanding record later.
+//
+// #219: a resolution is a response in every practical sense. #233: the write
+// that backfills the response, and the write that records the resolution
+// itself, are ONE call to store.SetResolvedAndFirstResponse below — not two
+// separate statements. Two separate calls here used to mean a failure
+// between them left resolved_at set and first_response_at permanently NULL,
+// with no self-heal path: this method's own fast no-op guard above (which
+// exists precisely so a later retry does not re-decide a breach against a
+// new "now") blocks any later call from ever retrying the dropped second
+// write, and the sweep would then stamp a permanent false response breach.
+// #228's store-level fold (breach stamp atomic with its own fact write)
+// composes with this one: SetResolvedAndFirstResponse folds all FOUR
+// writes — both facts and both of their own breach decisions — into a
+// single statement. See its store.go doc comment.
 func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
+	record, err := s.store.GetRecord(ctx, t.ID)
+	if errors.Is(err, ErrNoRecord) {
+		return nil // this ticket is not under an SLA
+	}
+	if err != nil {
+		return fmt.Errorf("recording SLA resolution: %w", err)
+	}
+	if record.ResolvedAt != nil {
+		return nil // fast path; the store write below would no-op anyway
+	}
+	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
+	if err != nil {
+		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
+	}
+
 	elapsed := int64(Elapsed(t, at) / time.Second)
-	if err := s.store.SetResolved(ctx, t.ID, at, elapsed); err != nil {
+	if err := s.store.SetResolvedAndFirstResponse(ctx, t.ID, at, elapsed,
+		int64(policy.ResolutionTargetMin)*60, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA resolution: %w", err)
 	}
 	return nil

@@ -666,7 +666,30 @@ func TestResolve_RecordsTheSLAResolution(t *testing.T) {
 }
 
 // Moving to any other status is not a resolution and must not record one.
+// TestUpdateStatus_DoesNotRecordSLAForOtherStatuses pins that an ORDINARY
+// status transition — neither Resolved nor Closed — never touches SLA
+// resolution recording. Closed is deliberately excluded from "other" here
+// (see TestUpdateStatus_RecordsSLAForClosedToo, #220): it is the second door
+// into a resolution fact, the same way it already is for Resolved.
 func TestUpdateStatus_DoesNotRecordSLAForOtherStatuses(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.inProgressStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleAdmin})
+	require.NoError(t, err)
+
+	require.Zero(t, h.sla.resolutions)
+}
+
+// TestUpdateStatus_RecordsSLAForClosedToo pins #220: a ticket moved straight
+// from an open status to Closed via UpdateStatus (never separately resolved)
+// must still record an SLA resolution — RecordResolved itself decides
+// whether there is anything to freeze/stamp, but the door must not be
+// skipped, or the ticket's SLA indicator spins red forever with no breach
+// stamp and nothing left to ever re-evaluate it (closed_at IS NOT NULL
+// excludes it from the sweep for good).
+func TestUpdateStatus_RecordsSLAForClosedToo(t *testing.T) {
 	h := newHarness(t)
 	seeded := h.seedOpen()
 
@@ -674,7 +697,100 @@ func TestUpdateStatus_DoesNotRecordSLAForOtherStatuses(t *testing.T) {
 		ticket.Actor{UserID: &staffID, Role: user.RoleAdmin})
 	require.NoError(t, err)
 
-	require.Zero(t, h.sla.resolutions)
+	require.Equal(t, 1, h.sla.resolutions)
+}
+
+// TestClose_RecordsSLAAtTheOriginalResolvedInstant pins #227: close() must
+// record the SLA resolution against the ticket's OWN resolved_at when one is
+// already set — not the close instant. applyStatusTimestamps' closedID case
+// never touches ResolvedAt, so a ticket that was already Resolved (including
+// one whose earlier RecordResolved call failed non-fatally, or was dropped by
+// the pre-#216 toggle-gating bug) still carries its real resolution instant
+// on the row. Stamping breaches against the LATER close time instead can
+// manufacture a false breach on a ticket that was actually resolved on time.
+func TestClose_RecordsSLAAtTheOriginalResolvedInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"close() must record the SLA resolution at the ticket's real (earlier) resolved_at, not the close instant")
+}
+
+// TestUpdateStatus_ToClosed_RecordsSLAAtTheOriginalResolvedInstant is
+// TestClose_RecordsSLAAtTheOriginalResolvedInstant's twin for the other door
+// into Closed. See #227.
+func TestUpdateStatus_ToClosed_RecordsSLAAtTheOriginalResolvedInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.closedStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleAdmin})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"UpdateStatus->Closed must record the SLA resolution at the ticket's real (earlier) resolved_at, not the close instant")
+}
+
+// TestClose_RecordsSLAAtNowWhenNeverResolved is the control for
+// TestClose_RecordsSLAAtTheOriginalResolvedInstant: a ticket closed straight
+// from an open status, never separately resolved, has no earlier instant to
+// fall back to, so #220's close-time recording still applies.
+func TestClose_RecordsSLAAtNowWhenNeverResolved(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+	before := time.Now()
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+	after := time.Now()
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.False(t, h.sla.lastResolvedAt.Before(before))
+	require.False(t, h.sla.lastResolvedAt.After(after))
+}
+
+// TestResolve_ReResolvePreservesOriginalSLAInstant pins #234: #227 taught
+// close()/UpdateStatus->Closed to record SLA against resolutionInstant(t, now)
+// rather than a bare now, but Resolve itself still passed a bare now. Since
+// #225 made a genuine re-resolve (different notes) actually re-execute,
+// applyStatusTimestamps preserves the ticket's ORIGINAL ResolvedAt on that
+// re-resolve — so the SLA call must use the same original instant, not the
+// re-resolve's now, or it can stamp a false breach (via #217) repairing a
+// dropped SLA fact against the wrong instant.
+func TestResolve_ReResolvePreservesOriginalSLAInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	_, err := h.svc.Resolve(context.Background(), seeded.ID, "resolved again, different notes",
+		ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"a re-resolve (#225) must repair/record the SLA resolution at the ticket's real original instant (#234), not this call's now")
+}
+
+// TestUpdateStatus_ResolvedToResolved_PreservesOriginalSLAInstant is
+// TestResolve_ReResolvePreservesOriginalSLAInstant's twin for the other door
+// into Resolved. See #234.
+func TestUpdateStatus_ResolvedToResolved_PreservesOriginalSLAInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"UpdateStatus->Resolved must repair/record the SLA resolution at the ticket's real original instant (#234), not this call's now")
 }
 
 // Every lifecycle write must read the row it is about to overwrite from inside
@@ -785,6 +901,29 @@ func TestStatusTransitions_MaintainSLAPause(t *testing.T) {
 		require.Nil(t, stored.PendingSince, "leaving Pending must close the interval")
 		require.GreaterOrEqual(t, stored.SLAPausedSeconds, int64(90),
 			"the closed interval's length must be added to the accumulated total")
+	})
+
+	// #223: PendingSince may have been written by a different app replica
+	// than the one computing now. With clock skew, entering Pending on a
+	// fast-clocked replica and leaving on a slow-clocked one within the skew
+	// window makes now.Sub(*PendingSince) negative — simulated here directly
+	// with a PendingSince in the future. Before the clamp, this failed
+	// migration 000025's CHECK (sla_paused_seconds >= 0) with a raw 500;
+	// clamped, the transition simply contributes nothing negative.
+	t.Run("leaving Pending with clock skew clamps the delta at zero instead of going negative", func(t *testing.T) {
+		h := newHarness(t)
+		pendingSince := time.Now().Add(30 * time.Second) // in the future: negative skew
+		seeded := h.slaSeed(h.pendingStatus.ID, &pendingSince, 10)
+
+		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.inProgressStatus.ID,
+			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+		require.NoError(t, err, "must succeed rather than fail a sla_paused_seconds >= 0 constraint")
+
+		stored, err := h.store.GetByID(context.Background(), seeded.ID)
+		require.NoError(t, err)
+		require.Nil(t, stored.PendingSince, "leaving Pending must still close the interval")
+		require.Equal(t, int64(10), stored.SLAPausedSeconds,
+			"a negative delta must contribute nothing, not subtract from the prior total")
 	})
 
 	t.Run("Pending to Pending leaves the interval start untouched", func(t *testing.T) {
@@ -916,6 +1055,32 @@ func TestStatusTransitions_MaintainSLAPause(t *testing.T) {
 			"the open interval must be untouched by a reply")
 		require.Equal(t, 1, h.sla.firstResponses)
 	})
+}
+
+// TestAddReply_InternalNoteDoesNotSatisfyResponseTarget pins #221: DESIGN.md
+// defines the response target as "first staff reply", and this codebase
+// already distinguishes internal notes from customer-visible replies
+// everywhere else (VisibleReplies, webhook/email suppression of internal-note
+// content). A staff-to-staff note the customer never sees must not freeze the
+// response target as met; only a subsequent PUBLIC reply may.
+func TestAddReply_InternalNoteDoesNotSatisfyResponseTarget(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+	agent := uuid.New()
+
+	_, err := h.svc.AddReply(context.Background(), seeded.ID,
+		"INTERNAL: waiting on vendor", true, false, "",
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
+		7, h.newStatus.ID)
+	require.NoError(t, err)
+	require.Zero(t, h.sla.firstResponses, "an internal note must not satisfy the response target")
+
+	_, err = h.svc.AddReply(context.Background(), seeded.ID,
+		"We are looking into it", false, true, "reporter@example.com",
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff},
+		7, h.newStatus.ID)
+	require.NoError(t, err)
+	require.Equal(t, 1, h.sla.firstResponses, "a subsequent public reply must satisfy it")
 }
 
 // TestAutoClose_ResolvedPastWindowCloses verifies that a resolved ticket past

@@ -43,7 +43,14 @@ func renderSlack(s summary) ([]byte, error) {
 
 	return json.Marshal(struct {
 		Text string `json:"text"`
-	}{Text: b.String()})
+		// UnfurlLinks/UnfurlMedia: false. Masked-link escaping neutralizes
+		// "[text](url)" mrkdwn, but Slack still auto-unfurls and previews a
+		// bare URL regardless of escaping — a ticket subject containing one
+		// would render as a clickable, previewed link under the operator's
+		// own webhook identity. See #214.
+		UnfurlLinks bool `json:"unfurl_links"`
+		UnfurlMedia bool `json:"unfurl_media"`
+	}{Text: b.String(), UnfurlLinks: false, UnfurlMedia: false})
 }
 
 // slackEscape applies Slack's mrkdwn escaping. Order matters: & must be

@@ -32,8 +32,9 @@ var errNotFound = errors.New("not found")
 type fakeStore struct {
 	forUpdateReads int
 
-	guestTokens   map[string]guestTokenRow
-	errGuestToken error
+	guestTokens       map[string]guestTokenRow
+	errGuestToken     error
+	guestTokenCreates int // total CreateGuestToken calls, across rotations
 
 	// onRead rewrites what a read returns, so a test can tell a value that came
 	// back from the store apart from the identical-looking one the caller
@@ -376,15 +377,22 @@ type fakeSLA struct {
 	firstResponses int
 	resolutions    int
 	err            error
+
+	// lastResolvedAt is the `at` argument RecordResolved was last called
+	// with, so a test can assert WHICH instant close()/UpdateStatus recorded
+	// a resolution against — the real ticket's own ResolvedAt, not a bare
+	// close-time now(). See #227.
+	lastResolvedAt time.Time
 }
 
 func (f *fakeSLA) AttachPolicy(context.Context, ticket.Ticket) error { return nil }
 
-func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, _ time.Time) error {
+func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, at time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
 	f.resolutions++
+	f.lastResolvedAt = at
 	return nil
 }
 
@@ -473,6 +481,7 @@ func (f *fakeStore) CreateGuestToken(_ context.Context, _, ticketID uuid.UUID, h
 		f.guestTokens = map[string]guestTokenRow{}
 	}
 	f.guestTokens[hash] = guestTokenRow{ticketID: ticketID, expiresAt: expiresAt}
+	f.guestTokenCreates++
 	return nil
 }
 

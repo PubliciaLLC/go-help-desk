@@ -114,24 +114,39 @@ func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
 	})
 }
 
-func (s *Store) SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+func (s *Store) SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
 	if err := s.q.SetSLAFirstResponse(ctx, dbgen.SetSLAFirstResponseParams{
-		TicketID:                    ticketID,
-		FirstResponseAt:             database.NullTime(&at),
-		ResponseElapsedAtMetSeconds: database.NullInt64(&elapsedSeconds),
+		TicketID:              ticketID,
+		At:                    at,
+		ElapsedSeconds:        elapsedSeconds,
+		ResponseTargetSeconds: responseTargetSeconds,
 	}); err != nil {
 		return fmt.Errorf("setting SLA first response for ticket %s: %w", ticketID, err)
 	}
 	return nil
 }
 
-func (s *Store) SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds int64) error {
+func (s *Store) SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
 	if err := s.q.SetSLAResolved(ctx, dbgen.SetSLAResolvedParams{
-		TicketID:                      ticketID,
-		ResolvedAt:                    database.NullTime(&at),
-		ResolutionElapsedAtMetSeconds: database.NullInt64(&elapsedSeconds),
+		TicketID:                ticketID,
+		At:                      at,
+		ElapsedSeconds:          elapsedSeconds,
+		ResolutionTargetSeconds: resolutionTargetSeconds,
 	}); err != nil {
 		return fmt.Errorf("setting SLA resolution for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
+func (s *Store) SetResolvedAndFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	if err := s.q.SetSLAResolvedAndFirstResponse(ctx, dbgen.SetSLAResolvedAndFirstResponseParams{
+		TicketID:                ticketID,
+		At:                      at,
+		ElapsedSeconds:          elapsedSeconds,
+		ResolutionTargetSeconds: resolutionTargetSeconds,
+		ResponseTargetSeconds:   responseTargetSeconds,
+	}); err != nil {
+		return fmt.Errorf("recording SLA resolution and first response for ticket %s: %w", ticketID, err)
 	}
 	return nil
 }
