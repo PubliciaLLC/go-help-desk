@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -1158,6 +1159,16 @@ func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
 		{
 			name:   "negative resolution target",
 			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = -1; return p },
+		},
+		{
+			// The store narrows to int32 (queries/sla.sql). Unchecked, this
+			// silently truncates on write instead of being refused here.
+			name:   "response target above int32",
+			modify: func(p sla.Policy) sla.Policy { p.ResponseTargetMin = math.MaxInt32 + 1; return p },
+		},
+		{
+			name:   "resolution target above int32",
+			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = math.MaxInt32 + 1; return p },
 		},
 	}
 

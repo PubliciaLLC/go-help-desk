@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/google/uuid"
@@ -311,6 +312,20 @@ func validatePolicy(p Policy) error {
 	}
 	if p.ResolutionTargetMin <= 0 {
 		return fmt.Errorf("resolution target must be greater than zero: %w", ErrValidation)
+	}
+	// The store narrows to int32 (queries/sla.sql). Left unchecked, a target
+	// above that range silently truncates on write — 2^31 stores as a large
+	// negative number, and every multiple of 2^32 stores as whatever its low
+	// 32 bits are, zero included. A stored zero means every ticket under the
+	// policy is already breached the moment it is created, and the breach
+	// stamps that produces are permanent by design (see sla_frozen_elapsed),
+	// so a typo with one extra digit writes history that fixing the number
+	// afterward cannot undo.
+	if p.ResponseTargetMin > math.MaxInt32 {
+		return fmt.Errorf("response target is too large: %w", ErrValidation)
+	}
+	if p.ResolutionTargetMin > math.MaxInt32 {
+		return fmt.Errorf("resolution target is too large: %w", ErrValidation)
 	}
 	return nil
 }
