@@ -392,6 +392,17 @@ func TestMigration_SLABackfillReachesClosedAtStillNullRows(t *testing.T) {
 // timestamp and frozen-elapsed columns but never the breach columns, even
 // though its own comment claimed equivalence with what RecordResolved would
 // have written.
+//
+// #241 (round 4 review): this fixture used to give tkOnTime no history and
+// rely on ts.Update's ClosedAt: nil leaving tickets.closed_at to be stamped
+// with now() by the pre-#241 migration — which is exactly the bug #241
+// fixed, so a ticket "closed" 10 minutes after creation only read as on-time
+// because the migration back then dated the close at the moment IT ran, not
+// at the moment the ticket actually closed. Now every ticket here is the
+// same age (created 4h ago) and the ONLY thing that decides late vs on-time
+// is the recovered (or, for tkFallback, the updated_at-derived) close
+// instant, proving the migration measures the historical close, not the
+// upgrade time.
 func TestMigration_SLABackfillStampsBreachForLateLegacyTicket(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
@@ -425,10 +436,12 @@ func TestMigration_SLABackfillStampsBreachForLateLegacyTicket(t *testing.T) {
 	require.NoError(t, sls.CreatePolicy(ctx, policy))
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-
-	// Late: closed 4 hours after creation, well past the 30-minute target,
-	// closed_at never stamped (legacy shape), never separately resolved.
 	created := now.Add(-4 * time.Hour)
+
+	// Late: history says it closed 2 hours after creation — well past the
+	// 30-minute target — closed_at never stamped (legacy shape), never
+	// separately resolved. UpdatedAt is "now" (much later than the recovered
+	// close), so this also proves history outranks updated_at.
 	tkLate := ticket.Ticket{
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF235L-" + uuid.NewString()[:8]),
 		Subject: "late legacy close", Description: "late legacy close",
@@ -437,41 +450,510 @@ func TestMigration_SLABackfillStampsBreachForLateLegacyTicket(t *testing.T) {
 		CreatedAt: created, UpdatedAt: now,
 	}
 	require.NoError(t, ts.Create(ctx, tkLate))
+	seedHistory(t, ctx, ts, tkLate.ID, nil, newSt.ID, created)
 	tkLate.StatusID = closedSt.ID
 	require.NoError(t, ts.Update(ctx, tkLate))
+	seedHistory(t, ctx, ts, tkLate.ID, &newSt.ID, closedSt.ID, created.Add(2*time.Hour))
 	require.NoError(t, sls.CreateRecord(ctx, sla.Record{TicketID: tkLate.ID, PolicyID: policy.ID}))
 
-	// On-time control: closed 10 minutes after creation, under the 30-minute
-	// target, same legacy shape otherwise.
-	createdOnTime := now.Add(-10 * time.Minute)
+	// On-time: same age as tkLate (created 4h ago), but history says it
+	// closed only 10 minutes after creation, under the 30-minute target.
+	// Before #241, this ticket had no history and relied on the migration's
+	// closed_at = now() to read as "on time" purely because it was seeded
+	// close to the moment the test ran it — that is the exact bug #241
+	// fixed, so this fixture must not rely on it any more.
 	tkOnTime := ticket.Ticket{
 		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF235O-" + uuid.NewString()[:8]),
 		Subject: "on-time legacy close", Description: "on-time legacy close",
 		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
 		StatusID: newSt.ID, ReporterUserID: &reporter.ID,
-		CreatedAt: createdOnTime, UpdatedAt: now,
+		CreatedAt: created, UpdatedAt: now,
 	}
 	require.NoError(t, ts.Create(ctx, tkOnTime))
 	tkOnTime.StatusID = closedSt.ID
 	require.NoError(t, ts.Update(ctx, tkOnTime))
+	seedHistory(t, ctx, ts, tkOnTime.ID, &newSt.ID, closedSt.ID, created.Add(10*time.Minute))
 	require.NoError(t, sls.CreateRecord(ctx, sla.Record{TicketID: tkOnTime.ID, PolicyID: policy.ID}))
+
+	// Fallback: same age again, but no history at all — the recovery rule
+	// has nothing to recover from and must fall back to updated_at, which
+	// here is set to a specific instant (15 minutes after creation, on time)
+	// rather than "now", so a wrong fallback to now() would read as late.
+	tkFallback := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF235F-" + uuid.NewString()[:8]),
+		Subject: "legacy close no history", Description: "legacy close no history",
+		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+		StatusID: newSt.ID, ReporterUserID: &reporter.ID,
+		CreatedAt: created, UpdatedAt: created.Add(15 * time.Minute),
+	}
+	require.NoError(t, ts.Create(ctx, tkFallback))
+	tkFallback.StatusID = closedSt.ID
+	// seedTicketState, not ts.Update: Update always stamps updated_at with
+	// time.Now(), which would defeat this exact fallback pin (see its doc
+	// comment).
+	seedTicketState(t, ctx, tx, tkFallback)
+	require.NoError(t, sls.CreateRecord(ctx, sla.Record{TicketID: tkFallback.ID, PolicyID: policy.ID}))
 
 	skipAlterTable := func(stmt string) bool { return strings.HasPrefix(strings.ToUpper(stmt), "ALTER TABLE") }
 	execMigrationFile(t, ctx, tx, "migrations/000027_sla_frozen_elapsed.up.sql", skipAlterTable)
 	execMigrationFile(t, ctx, tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
 
+	tkLateAfter, err := ts.GetByID(ctx, tkLate.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tkLateAfter.ClosedAt)
+	require.True(t, tkLateAfter.ClosedAt.Equal(created.Add(2*time.Hour)),
+		"#241: closed_at must be recovered from history, not stamped with now()")
+
 	recLate, err := sls.GetRecord(ctx, tkLate.ID)
 	require.NoError(t, err)
 	require.NotNil(t, recLate.ResolvedAt)
+	require.True(t, recLate.ResolvedAt.Equal(created.Add(2*time.Hour)))
 	require.NotNil(t, recLate.ResolutionBreachedAt,
 		"#235: a legacy ticket that really was late must have resolution_breached_at stamped by the backfill")
 	require.True(t, recLate.ResolutionBreachedAt.Equal(*recLate.ResolvedAt))
+	require.NotNil(t, recLate.FirstResponseAt)
+	require.True(t, recLate.FirstResponseAt.Equal(created.Add(2*time.Hour)))
 	require.NotNil(t, recLate.ResponseBreachedAt,
 		"#235: the #226(a) response cascade inherits the same late instant and must be stamped too")
+	require.True(t, recLate.ResponseBreachedAt.Equal(created.Add(2*time.Hour)))
+
+	tkOnTimeAfter, err := ts.GetByID(ctx, tkOnTime.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tkOnTimeAfter.ClosedAt)
+	require.True(t, tkOnTimeAfter.ClosedAt.Equal(created.Add(10*time.Minute)),
+		"#241: against the pre-fix SQL, closed_at = now() gives this ticket a ~4h elapsed reading and this assertion "+
+			"fails — the regression this fixture pins")
 
 	recOnTime, err := sls.GetRecord(ctx, tkOnTime.ID)
 	require.NoError(t, err)
 	require.NotNil(t, recOnTime.ResolvedAt)
+	require.True(t, recOnTime.ResolvedAt.Equal(created.Add(10*time.Minute)))
 	require.Nil(t, recOnTime.ResolutionBreachedAt, "control: an on-time legacy close must not be stamped as breached")
 	require.Nil(t, recOnTime.ResponseBreachedAt)
+
+	tkFallbackAfter, err := ts.GetByID(ctx, tkFallback.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tkFallbackAfter.ClosedAt)
+	require.True(t, tkFallbackAfter.ClosedAt.Equal(created.Add(15*time.Minute)),
+		"with no history, closed_at must fall back to updated_at")
+
+	recFallback, err := sls.GetRecord(ctx, tkFallback.ID)
+	require.NoError(t, err)
+	require.Nil(t, recFallback.ResolutionBreachedAt)
+	require.Nil(t, recFallback.ResponseBreachedAt)
+}
+
+// TestMigration_SLABackfillReachesResolvedTickets pins #238: before this fix,
+// the SLA backfill's status key was 'Closed' alone (see #231's own note in
+// migration 000028), so a ticket resolved under a pre-v1.2.0 build and still
+// sitting in Resolved at upgrade was never reached — its sla_records row kept
+// a permanently NULL resolved_at, and the very next breach sweep would stamp
+// a false breach dated at the sweep, which nothing could ever undo. It also
+// pins R2 (#237's companion fix, needed for #238 to be more than a partial
+// fix): a Resolved ticket whose OWN resolved_at is NULL (the pre-#102
+// UpdateStatus shape) needs that recovered before the SLA backfill's
+// COALESCE(t.resolved_at, t.closed_at) has anything to read.
+func TestMigration_SLABackfillReachesResolvedTickets(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+
+	tx, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	q := dbgen.New(tx)
+
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+	sls := slastore.New(q)
+
+	reporter := user.User{
+		ID: uuid.New(), Email: "backfill-238-" + uuid.NewString() + "@test.local",
+		DisplayName: "Reporter", Role: user.RoleUser,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, reporter))
+	cat := category.Category{ID: uuid.New(), Name: "Backfill 238 " + uuid.NewString()[:8], SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+	resolvedSt, err := ts.GetStatusByName(ctx, ticket.StatusNameResolved)
+	require.NoError(t, err)
+
+	// A tight policy: 30 minutes for both targets.
+	policy := sla.Policy{ID: uuid.New(), Name: "Backfill 238 policy", ResponseTargetMin: 30, ResolutionTargetMin: 30}
+	require.NoError(t, sls.CreatePolicy(ctx, policy))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	created := now.Add(-4 * time.Hour)
+
+	mkResolved := func(subject string, resolvedAt, closedAt *time.Time) ticket.Ticket {
+		tk := ticket.Ticket{
+			ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF238-" + uuid.NewString()[:8]),
+			Subject: subject, Description: subject,
+			CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+			StatusID: resolvedSt.ID, ReporterUserID: &reporter.ID,
+			ResolvedAt: resolvedAt, ClosedAt: closedAt,
+			CreatedAt: created, UpdatedAt: now,
+		}
+		require.NoError(t, ts.Create(ctx, tk))
+		require.NoError(t, ts.Update(ctx, tk)) // Create never sets resolved_at/closed_at; write them directly.
+		require.NoError(t, sls.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: policy.ID}))
+		return tk
+	}
+
+	resolvedLateAt := created.Add(2 * time.Hour)
+	resLate := mkResolved("resolved late", &resolvedLateAt, nil)
+
+	resolvedOnTimeAt := created.Add(10 * time.Minute)
+	resOnTime := mkResolved("resolved on time", &resolvedOnTimeAt, nil)
+
+	// A stale closed_at left over from resolving a previously-Closed ticket
+	// before that bug was fixed (see R3/#208) must not leak into the SLA
+	// backfill's resolution instant.
+	staleClosedAt := created.Add(1 * time.Hour)
+	resStaleClosed := mkResolved("resolved with stale closed_at", &resolvedLateAt, &staleClosedAt)
+
+	// Sitting in Resolved with NO resolved_at of its own (pre-#102
+	// UpdateStatus shape) — R2 must recover it from history before S1 can
+	// read anything.
+	resNoTicketResolvedAt := mkResolved("resolved no resolved_at", nil, nil)
+	seedHistory(t, ctx, ts, resNoTicketResolvedAt.ID, nil, newSt.ID, created)
+	seedHistory(t, ctx, ts, resNoTicketResolvedAt.ID, &newSt.ID, resolvedSt.ID, created.Add(20*time.Minute))
+
+	skipAlterTable := func(stmt string) bool { return strings.HasPrefix(strings.ToUpper(stmt), "ALTER TABLE") }
+	execMigrationFile(t, ctx, tx, "migrations/000027_sla_frozen_elapsed.up.sql", skipAlterTable)
+	execMigrationFile(t, ctx, tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
+
+	recLate, err := sls.GetRecord(ctx, resLate.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recLate.ResolvedAt, "#238: a Resolved ticket's sla_records row must be backfilled")
+	require.True(t, recLate.ResolvedAt.Equal(resolvedLateAt))
+	require.NotNil(t, recLate.ResolutionElapsedAtMetSeconds)
+	require.NotNil(t, recLate.ResponseElapsedAtMetSeconds)
+	require.NotNil(t, recLate.FirstResponseAt)
+	require.True(t, recLate.FirstResponseAt.Equal(resolvedLateAt))
+	require.NotNil(t, recLate.ResolutionBreachedAt)
+	require.True(t, recLate.ResolutionBreachedAt.Equal(resolvedLateAt))
+	require.NotNil(t, recLate.ResponseBreachedAt)
+	require.True(t, recLate.ResponseBreachedAt.Equal(resolvedLateAt))
+
+	recOnTime, err := sls.GetRecord(ctx, resOnTime.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recOnTime.ResolvedAt)
+	require.True(t, recOnTime.ResolvedAt.Equal(resolvedOnTimeAt))
+	require.Nil(t, recOnTime.ResolutionBreachedAt)
+	require.Nil(t, recOnTime.ResponseBreachedAt)
+
+	tkStaleClosedAfter, err := ts.GetByID(ctx, resStaleClosed.ID)
+	require.NoError(t, err)
+	require.Nil(t, tkStaleClosedAfter.ClosedAt, "R3: a Resolved ticket's stale closed_at must be cleared")
+	recStaleClosed, err := sls.GetRecord(ctx, resStaleClosed.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recStaleClosed.ResolvedAt)
+	require.True(t, recStaleClosed.ResolvedAt.Equal(resolvedLateAt), "the backfill must read the ticket's own resolved_at, not its stale closed_at")
+
+	tkNoResolvedAtAfter, err := ts.GetByID(ctx, resNoTicketResolvedAt.ID)
+	require.NoError(t, err)
+	require.NotNil(t, tkNoResolvedAtAfter.ResolvedAt, "R2: a Resolved ticket with no resolved_at must have one recovered from history")
+	require.True(t, tkNoResolvedAtAfter.ResolvedAt.Equal(created.Add(20*time.Minute)))
+	recNoResolvedAt, err := sls.GetRecord(ctx, resNoTicketResolvedAt.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recNoResolvedAt.ResolvedAt)
+	require.True(t, recNoResolvedAt.ResolvedAt.Equal(created.Add(20*time.Minute)))
+	require.Nil(t, recNoResolvedAt.ResolutionBreachedAt)
+	require.Nil(t, recNoResolvedAt.ResponseBreachedAt)
+
+	// None of these Resolved tickets should ever be picked up by the live
+	// breach sweep: the backfill above must have given each of them a
+	// resolved_at/first_response_at (real or recovered) before the sweep's
+	// first tick, so it never falsely stamps a breach dated at that tick.
+	candidates, err := sls.ListBreachCandidates(ctx, now)
+	require.NoError(t, err)
+	seeded := map[uuid.UUID]bool{
+		resLate.ID: true, resOnTime.ID: true, resStaleClosed.ID: true, resNoTicketResolvedAt.ID: true,
+	}
+	for _, id := range candidates {
+		require.False(t, seeded[id], "a Resolved ticket the backfill already reached must not be a live breach candidate")
+	}
+}
+
+// TestMigration_ClearsStaleClosedAtOnReopenedTickets pins #239: a ticket
+// moved off Closed by pre-fix UpdateStatus (or any other second door) without
+// clearing closed_at must have it cleared by R3, so
+// ListSLABreachCandidates/ListResolvedTicketsBefore/the guest-token lookups
+// all see it again once it is genuinely reopened.
+func TestMigration_ClearsStaleClosedAtOnReopenedTickets(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+
+	tx, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	q := dbgen.New(tx)
+
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+	sls := slastore.New(q)
+
+	reporter := user.User{
+		ID: uuid.New(), Email: "backfill-239-" + uuid.NewString() + "@test.local",
+		DisplayName: "Reporter", Role: user.RoleUser,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, reporter))
+	cat := category.Category{ID: uuid.New(), Name: "Backfill 239 " + uuid.NewString()[:8], SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+	inProgressSt, err := ts.GetStatusByName(ctx, "In Progress")
+	require.NoError(t, err)
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	var customStatusID uuid.UUID
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`INSERT INTO statuses (name, kind, sort_order, color) VALUES ($1, 'custom', 51, '#000000') RETURNING id`,
+		"Mig239 custom "+uuid.NewString()[:8]).Scan(&customStatusID))
+
+	// A wide policy: 30 minutes response, 480 minutes resolution — this
+	// ticket is 4 hours old, so it is well past the response target but
+	// nowhere near the resolution one, which is what makes it a breach
+	// CANDIDATE (response side outstanding) rather than an already-decided
+	// breach.
+	policy := sla.Policy{ID: uuid.New(), Name: "Backfill 239 policy", ResponseTargetMin: 30, ResolutionTargetMin: 480}
+	require.NoError(t, sls.CreatePolicy(ctx, policy))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	created := now.Add(-4 * time.Hour)
+	staleClosedAt := now.Add(-2 * time.Hour)
+
+	mkReopened := func(subject string, statusID uuid.UUID) ticket.Ticket {
+		tk := ticket.Ticket{
+			ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF239-" + uuid.NewString()[:8]),
+			Subject: subject, Description: subject,
+			CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+			StatusID: statusID, ReporterUserID: &reporter.ID,
+			ClosedAt:  &staleClosedAt,
+			CreatedAt: created, UpdatedAt: now,
+		}
+		require.NoError(t, ts.Create(ctx, tk))
+		require.NoError(t, ts.Update(ctx, tk)) // Create never sets closed_at; write it directly.
+		require.NoError(t, sls.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: policy.ID}))
+		return tk
+	}
+
+	reopened := mkReopened("reopened in progress", inProgressSt.ID)
+	reopenedNew := mkReopened("reopened new", newSt.ID)
+	reopenedCustom := mkReopened("reopened custom", customStatusID)
+
+	skipAlterTable := func(stmt string) bool { return strings.HasPrefix(strings.ToUpper(stmt), "ALTER TABLE") }
+	execMigrationFile(t, ctx, tx, "migrations/000027_sla_frozen_elapsed.up.sql", skipAlterTable)
+	execMigrationFile(t, ctx, tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
+
+	for _, tk := range []ticket.Ticket{reopened, reopenedNew, reopenedCustom} {
+		after, err := ts.GetByID(ctx, tk.ID)
+		require.NoError(t, err, tk.Subject)
+		require.Nil(t, after.ClosedAt, "#239: %s must have its stale closed_at cleared", tk.Subject)
+
+		rec, err := sls.GetRecord(ctx, tk.ID)
+		require.NoError(t, err, tk.Subject)
+		require.Nil(t, rec.ResolvedAt, tk.Subject)
+		require.Nil(t, rec.ResolutionElapsedAtMetSeconds, tk.Subject)
+		require.Nil(t, rec.ResolutionBreachedAt, tk.Subject)
+	}
+
+	candidates, err := sls.ListBreachCandidates(ctx, now)
+	require.NoError(t, err)
+	ids := map[uuid.UUID]bool{}
+	for _, id := range candidates {
+		ids[id] = true
+	}
+	require.True(t, ids[reopened.ID], "#239: a reopened ticket must be visible to the breach sweep again (response elapsed 4h > 30m)")
+	require.True(t, ids[reopenedNew.ID])
+	require.True(t, ids[reopenedCustom.ID])
+}
+
+// TestMigration_BreachStampReachesRowsFrozenBy000027 pins #240: a frozen
+// elapsed reading that migration 000027's OWN earlier backfill wrote (or that
+// this file's own S2/S5 wrote in an earlier upgrade) must still get a breach
+// stamp if it is late, even though the statement that froze it is not the one
+// that stamps it. Before this fix, each freeze statement also decided its own
+// breach in the same UPDATE, gated on the frozen column being NULL — so a row
+// already frozen by an earlier pass, with no stamp, was never revisited.
+func TestMigration_BreachStampReachesRowsFrozenBy000027(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+
+	tx, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	q := dbgen.New(tx)
+
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+	sls := slastore.New(q)
+
+	reporter := user.User{
+		ID: uuid.New(), Email: "backfill-240-" + uuid.NewString() + "@test.local",
+		DisplayName: "Reporter", Role: user.RoleUser,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	require.NoError(t, us.Create(ctx, reporter))
+	cat := category.Category{ID: uuid.New(), Name: "Backfill 240 " + uuid.NewString()[:8], SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+	closedSt, err := ts.GetStatusByName(ctx, ticket.StatusNameClosed)
+	require.NoError(t, err)
+	inProgressSt, err := ts.GetStatusByName(ctx, "In Progress")
+	require.NoError(t, err)
+
+	// A wide policy: 30 minutes response, 480 minutes resolution.
+	policy := sla.Policy{ID: uuid.New(), Name: "Backfill 240 policy", ResponseTargetMin: 30, ResolutionTargetMin: 480}
+	require.NoError(t, sls.CreatePolicy(ctx, policy))
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// frozenLate: rows come in with timestamps already set and breach columns
+	// NULL, as if an earlier upgrade's 000027 already froze the elapsed
+	// values (this ticket's OWN resolved_at/closed_at are already set, so
+	// this file's own S1/S2 skip it — r.resolved_at is already NOT NULL).
+	createdLate := now.Add(-24 * time.Hour)
+	resolvedAtLate := now.Add(-12 * time.Hour)
+	closedAtLate := now.Add(-10 * time.Hour)
+	tkFrozenLate := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240L-" + uuid.NewString()[:8]),
+		Subject: "frozen late", Description: "frozen late",
+		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+		StatusID: closedSt.ID, ReporterUserID: &reporter.ID,
+		ResolvedAt: &resolvedAtLate, ClosedAt: &closedAtLate,
+		CreatedAt: createdLate, UpdatedAt: now,
+	}
+	require.NoError(t, ts.Create(ctx, tkFrozenLate))
+	require.NoError(t, ts.Update(ctx, tkFrozenLate))
+	firstResponseAtLate := createdLate.Add(2 * time.Hour)
+	require.NoError(t, sls.CreateRecord(ctx, sla.Record{
+		TicketID: tkFrozenLate.ID, PolicyID: policy.ID,
+		FirstResponseAt: &firstResponseAtLate, ResolvedAt: &resolvedAtLate,
+	}))
+
+	// frozenOnTime: same shape, but both instants are within target.
+	tkFrozenOnTime := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240O-" + uuid.NewString()[:8]),
+		Subject: "frozen on time", Description: "frozen on time",
+		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+		StatusID: closedSt.ID, ReporterUserID: &reporter.ID,
+		ResolvedAt: &resolvedAtLate, ClosedAt: &closedAtLate,
+		CreatedAt: createdLate, UpdatedAt: now,
+	}
+	require.NoError(t, ts.Create(ctx, tkFrozenOnTime))
+	require.NoError(t, ts.Update(ctx, tkFrozenOnTime))
+	firstResponseAtOnTime := createdLate.Add(10 * time.Minute)
+	resolvedAtOnTime := createdLate.Add(4 * time.Hour)
+	require.NoError(t, sls.CreateRecord(ctx, sla.Record{
+		TicketID: tkFrozenOnTime.ID, PolicyID: policy.ID,
+		FirstResponseAt: &firstResponseAtOnTime, ResolvedAt: &resolvedAtOnTime,
+	}))
+
+	// frozenPreStamped: as frozenLate, but already carrying a breach stamp
+	// from an arbitrary earlier sweep instant — must survive untouched.
+	tkFrozenPreStamped := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240P-" + uuid.NewString()[:8]),
+		Subject: "frozen pre-stamped", Description: "frozen pre-stamped",
+		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+		StatusID: closedSt.ID, ReporterUserID: &reporter.ID,
+		ResolvedAt: &resolvedAtLate, ClosedAt: &closedAtLate,
+		CreatedAt: createdLate, UpdatedAt: now,
+	}
+	require.NoError(t, ts.Create(ctx, tkFrozenPreStamped))
+	require.NoError(t, ts.Update(ctx, tkFrozenPreStamped))
+	priorSweepInstant := createdLate.Add(6 * time.Hour)
+	require.NoError(t, sls.CreateRecord(ctx, sla.Record{
+		TicketID: tkFrozenPreStamped.ID, PolicyID: policy.ID,
+		FirstResponseAt: &firstResponseAtLate, ResolvedAt: &resolvedAtLate,
+		ResolutionBreachedAt: &priorSweepInstant,
+	}))
+
+	// frozenPauseGrown: the best-effort frozen value can only UNDERSTATE the
+	// true elapsed time — a pause that happened AFTER the response landed
+	// grows sla_paused_seconds, which only shrinks the (re)computed elapsed
+	// reading below what it truly was at met time. Documents that this can
+	// at worst miss a breach, never invent one.
+	tkFrozenPauseGrown := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240G-" + uuid.NewString()[:8]),
+		Subject: "frozen pause grown", Description: "frozen pause grown",
+		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+		StatusID: closedSt.ID, ReporterUserID: &reporter.ID,
+		ResolvedAt: &resolvedAtOnTime, ClosedAt: &closedAtLate,
+		CreatedAt:        createdLate,
+		UpdatedAt:        now,
+		SLAPausedSeconds: 3600, // an hour-long pause that happened AFTER the response
+	}
+	require.NoError(t, ts.Create(ctx, tkFrozenPauseGrown))
+	require.NoError(t, ts.Update(ctx, tkFrozenPauseGrown))
+	firstResponseAtPauseGrown := createdLate.Add(40 * time.Minute)
+	require.NoError(t, sls.CreateRecord(ctx, sla.Record{
+		TicketID: tkFrozenPauseGrown.ID, PolicyID: policy.ID,
+		FirstResponseAt: &firstResponseAtPauseGrown, ResolvedAt: &resolvedAtOnTime,
+	}))
+
+	// reopenedMet: the ticket is now back open (In Progress), but its
+	// sla_records row already carries a MET, LATE resolution from before it
+	// was reopened. R1 clears tickets.resolved_at (the ticket is no longer
+	// Resolved/Closed), but the sla_records fact — a resolution that DID
+	// happen, and was late — is a fact about the past and must survive.
+	resolvedAtBeforeReopen := createdLate.Add(10 * time.Hour)
+	tkReopenedMet := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: ticket.TrackingNumber("BF240R-" + uuid.NewString()[:8]),
+		Subject: "reopened after a late resolution", Description: "reopened after a late resolution",
+		CategoryID: cat.ID, Priority: ticket.PriorityMedium,
+		StatusID: inProgressSt.ID, ReporterUserID: &reporter.ID,
+		ResolvedAt: &resolvedAtBeforeReopen,
+		CreatedAt:  createdLate, UpdatedAt: now,
+	}
+	require.NoError(t, ts.Create(ctx, tkReopenedMet))
+	require.NoError(t, ts.Update(ctx, tkReopenedMet))
+	require.NoError(t, sls.CreateRecord(ctx, sla.Record{
+		TicketID: tkReopenedMet.ID, PolicyID: policy.ID,
+		FirstResponseAt: &resolvedAtBeforeReopen, ResolvedAt: &resolvedAtBeforeReopen,
+	}))
+
+	skipAlterTable := func(stmt string) bool { return strings.HasPrefix(strings.ToUpper(stmt), "ALTER TABLE") }
+	execMigrationFile(t, ctx, tx, "migrations/000027_sla_frozen_elapsed.up.sql", skipAlterTable)
+	execMigrationFile(t, ctx, tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
+
+	recLate, err := sls.GetRecord(ctx, tkFrozenLate.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recLate.ResponseBreachedAt, "#240: a row 000027 froze but never stamped must still get a response breach")
+	require.True(t, recLate.ResponseBreachedAt.Equal(firstResponseAtLate))
+	require.NotNil(t, recLate.ResolutionBreachedAt, "#240: same, for the resolution side")
+	require.True(t, recLate.ResolutionBreachedAt.Equal(resolvedAtLate))
+
+	recOnTime, err := sls.GetRecord(ctx, tkFrozenOnTime.ID)
+	require.NoError(t, err)
+	require.Nil(t, recOnTime.ResponseBreachedAt)
+	require.Nil(t, recOnTime.ResolutionBreachedAt)
+
+	recPreStamped, err := sls.GetRecord(ctx, tkFrozenPreStamped.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recPreStamped.ResolutionBreachedAt)
+	require.True(t, recPreStamped.ResolutionBreachedAt.Equal(priorSweepInstant), "an existing stamp must never move")
+
+	recPauseGrown, err := sls.GetRecord(ctx, tkFrozenPauseGrown.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recPauseGrown.ResponseElapsedAtMetSeconds)
+	require.Equal(t, int64(0), *recPauseGrown.ResponseElapsedAtMetSeconds,
+		"a pause that grew AFTER the target was met can only understate the frozen elapsed reading, clamped at 0")
+	require.Nil(t, recPauseGrown.ResponseBreachedAt)
+
+	tkReopenedMetAfter, err := ts.GetByID(ctx, tkReopenedMet.ID)
+	require.NoError(t, err)
+	require.Nil(t, tkReopenedMetAfter.ResolvedAt, "R1: a ticket no longer in Resolved/Closed must have resolved_at cleared")
+
+	recReopenedMet, err := sls.GetRecord(ctx, tkReopenedMet.ID)
+	require.NoError(t, err)
+	require.NotNil(t, recReopenedMet.ResolutionBreachedAt, "a met-late fact must survive the ticket being reopened")
+	require.True(t, recReopenedMet.ResolutionBreachedAt.Equal(resolvedAtBeforeReopen))
 }

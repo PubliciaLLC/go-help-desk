@@ -1,7 +1,12 @@
 -- No inverse: this migration repairs data, it does not change schema. The
--- values it overwrote (a stale resolved_at, a missing closed_at, and — since
--- #231 moved it here — a legacy sla_records row missing resolved_at/
--- first_response_at or their breach stamps) were bugs, not state worth
--- restoring, and there is no way to recover which rows had which stale
--- values before the up migration ran. Left as a no-op rather than silently
--- reintroducing the invariant violations the up migration fixed.
+-- values it overwrote — a stale resolved_at on a ticket no longer in
+-- Resolved, a stale closed_at on a ticket no longer in Closed, a missing
+-- resolved_at stamped (recovered from history where possible) on a ticket
+-- sitting in Resolved, a missing closed_at stamped the same way on a ticket
+-- sitting in Closed, and — since #231 moved it here — a legacy sla_records
+-- row missing resolved_at/first_response_at or their breach stamps, even one
+-- migration 000027's own earlier pass had already frozen but never stamped
+-- (#240) — were bugs, not state worth restoring, and there is no way to
+-- recover which rows had which stale or missing values before the up
+-- migration ran. Left as a no-op rather than silently reintroducing the
+-- invariant violations the up migration fixed.

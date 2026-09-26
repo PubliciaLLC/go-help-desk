@@ -1,10 +1,21 @@
--- Repair legacy rows that predate the invariant AutoClose now assumes: a
--- ticket sitting in Resolved has resolved_at set and nothing else does; a
--- ticket sitting in Closed has closed_at set. See #191.
+-- Repair legacy rows that predate the invariant AutoClose now assumes:
+--
+--   | current status   | resolved_at               | closed_at |
+--   |-------------------|---------------------------|-----------|
+--   | system Resolved   | set                       | NULL      |
+--   | system Closed     | kept as is (set or NULL)  | set       |
+--   | anything else     | NULL                      | NULL      |
+--
+-- (Round 4 adversarial review, #237-241, replaced the older, narrower
+-- statement of this invariant that used to sit here — see git history for
+-- the version that only promised "Resolved has resolved_at set and nothing
+-- else does", which was wrong: a Closed ticket legitimately keeps
+-- resolved_at from before it was closed.)
 --
 -- Before this, UpdateStatus (and any other second door into these statuses)
--- could move a ticket off Resolved without clearing resolved_at, or into
--- Closed without stamping closed_at. Combined with
+-- could move a ticket off Resolved without clearing resolved_at, move it off
+-- Closed without clearing closed_at, or move it INTO Resolved/Closed without
+-- ever stamping the timestamp the new status requires. Combined with
 -- ListResolvedTicketsBefore's now-added `status_id = $2` filter, a row that
 -- still carries a stale resolved_at but sits in some other status would
 -- simply stop being visible to the auto-close sweep at all — which is
@@ -13,12 +24,13 @@
 -- closed_at) not fully closed.
 
 -- #230: this migration's destructive statements below match rows by STATUS
--- NAME ('Resolved', 'Closed'), but the admin API blocks deactivating a system
--- status without blocking a RENAME of one (handleUpdateStatus / SaveStatus).
--- If an admin renames one between deploy and this migration actually running
--- on an upgrade, the name-based exclusion below silently stops matching the
--- renamed status, reproducing #208's original data-loss bug through a
--- different path — irreversibly, since the down migration is a no-op.
+-- NAME ('New', 'Resolved', 'Closed'), but the admin API blocks deactivating a
+-- system status without blocking a RENAME of one (handleUpdateStatus /
+-- SaveStatus). If an admin renames one between deploy and this migration
+-- actually running on an upgrade, the name-based exclusion below silently
+-- stops matching the renamed status, reproducing #208's original data-loss
+-- bug through a different path — irreversibly, since the down migration is a
+-- no-op.
 --
 -- Guard against that here: verify all three system status names this
 -- codebase's LoadSystemStatuses (ticket/service.go) depends on still exist,
@@ -39,6 +51,15 @@
 -- seeded for this discriminator; a status renamed away from "Closed" is no
 -- longer kind = 'system' AND name = 'Closed', so this guard now correctly
 -- finds zero such rows and aborts, rather than one row of the wrong kind.
+--
+-- #237: the check on 'New' below is no longer load-bearing for any statement
+-- in this file — after #237's fix, none of R1-R4 singles out 'New' any more
+-- (the old, narrower R1 depended on it only by accident, which is itself
+-- what #237 was filed against). It is kept anyway, unchanged, purely as a
+-- mirror of LoadSystemStatuses, which fails the app's own startup on exactly
+-- this shape — if this guard were dropped, an upgrade could apply this
+-- migration on a database where 'New' is already broken in a way the running
+-- app would refuse to start against.
 DO $$
 DECLARE
     n int;
@@ -59,77 +80,158 @@ BEGIN
     END IF;
 END $$;
 
--- Any ticket not currently in Resolved OR Closed has no business carrying a
--- resolved_at; NULL it so it no longer looks resolved to code that reads
--- resolved_at directly. Closed tickets are deliberately excluded:
--- applyStatusTimestamps's closedID case (ticket/service.go) only ever sets
--- ClosedAt and never touches ResolvedAt, by design, so a Closed ticket
--- keeping its old resolved_at is the CORRECT shape, not a violation. See
--- #208 — the original statement here (`s.name <> 'Resolved'`) also matched
--- every legitimately-Closed ticket and would have NULLed resolved_at across
--- the whole table.
---
--- #232: kind = 'system' added to this join too, alongside the guard above —
--- belt and suspenders, since the name column's UNIQUE constraint already
--- means a bare name join here can only ever match the row the (now
--- kind-checked) guard above just verified.
+-- ============================================================
+-- Phase A: repair the tickets table so every row matches the invariant
+-- table above. R1-R4 work on disjoint sets of rows (partitioned by which
+-- side of "is this ticket currently in system Resolved / system Closed" they
+-- match), so their relative order does not matter — but all four must run
+-- before phase B below, which trusts their result.
+-- ============================================================
+
+-- R1 (#237): no ticket outside system Resolved/Closed may carry resolved_at.
+-- This is the invariant table's default-branch rule, matching every status
+-- except the two system terminal ones — kind only narrows WHICH statuses are
+-- excluded, it does not narrow the set being repaired down to 'New'. The old
+-- statement here matched by `s.name NOT IN ('Resolved', 'Closed')` scoped to
+-- kind = 'system', which — because every CUSTOM status also has
+-- kind <> 'system', hence also fails that AND — only ever matched the
+-- system 'New' row, so 'In Progress', 'Pending', and any admin-created
+-- custom status kept a stale resolved_at forever. The #232 protection is
+-- unaffected: the guard above has already confirmed that exactly one system
+-- Resolved and one system Closed exist, and the name column is UNIQUE, so no
+-- custom status can be reusing either name.
 UPDATE tickets t
 SET resolved_at = NULL
 FROM statuses s
 WHERE t.status_id = s.id
-  AND s.kind = 'system'
-  AND s.name NOT IN ('Resolved', 'Closed')
+  AND NOT (s.kind = 'system' AND s.name IN ('Resolved', 'Closed'))
   AND t.resolved_at IS NOT NULL;
 
--- Any ticket sitting in Closed must carry a closed_at; stamp it with now()
--- for rows that were moved there without one. #232: kind = 'system', see above.
+-- R2 (#237/#238, new — see the file-level note below the guard for how this
+-- was found): a ticket sitting in system Resolved must carry resolved_at.
+-- Pre-#102 UpdateStatus (see that commit) could set StatusID alone, leaving a
+-- ticket resolved through it with a NULL resolved_at — invisible to
+-- ListResolvedTicketsBefore (which requires resolved_at < cutoff) and read as
+-- "permanently resolved" by lifecycleAllowsReply (ResolvedAt == nil). Left
+-- unrepaired it also silently defeats R3/S1 below: once R3 clears its stale
+-- closed_at, S1's COALESCE(t.resolved_at, t.closed_at) has nothing to read
+-- and the legacy sweep stamps a false breach dated at the sweep anyway.
+--
+-- Recovered from the start of the ticket's CURRENT Resolved stint, not
+-- now(): the subquery finds the most recent history row that both enters
+-- Resolved from a DIFFERENT status (so a Resolved→Resolved duplicate row,
+-- which pre-#102 Resolve appended on a re-resolve, is skipped) and has no
+-- later row leaving Resolved (so an earlier stint's entry, before the ticket
+-- was reopened and resolved again, is skipped too). If no such row exists —
+-- no history at all, or a door moved the ticket into Resolved without
+-- writing history — the second condition can never be satisfied and the
+-- subquery returns NULL, and COALESCE falls back to t.updated_at, which
+-- pre-#102 UpdateStatus set to time.Now() in the same transaction as the
+-- history write (or, absent any history, is still the best available
+-- estimate of the transition instant — see the file-level note on this
+-- fallback's known limits). now() is never used: t.updated_at is
+-- NOT NULL DEFAULT now() per migration 000001, so that fallback can never be
+-- reached.
 UPDATE tickets t
-SET closed_at = now()
+SET resolved_at = COALESCE(
+        (SELECT max(h.created_at)
+           FROM ticket_status_history h
+          WHERE h.ticket_id = t.id
+            AND h.to_status_id = s.id
+            AND h.from_status_id IS DISTINCT FROM s.id
+            AND NOT EXISTS (
+                    SELECT 1
+                      FROM ticket_status_history later
+                     WHERE later.ticket_id = t.id
+                       AND later.created_at > h.created_at
+                       AND later.to_status_id <> s.id)),
+        t.updated_at)
+FROM statuses s
+WHERE t.status_id = s.id
+  AND s.kind = 'system'
+  AND s.name = 'Resolved'
+  AND t.resolved_at IS NULL;
+
+-- R3 (#239): no ticket outside system Closed may carry closed_at — the
+-- invariant table's default-branch rule for closed_at, exactly mirroring R1
+-- for resolved_at. This subsumes the old Resolved-only statement that used
+-- to sit here (`s.name = 'Resolved' AND t.closed_at IS NOT NULL`, clearing a
+-- stale closed_at left over from resolving a previously-Closed ticket before
+-- resolveInTx's own fix), so that statement is deleted rather than kept
+-- alongside a now-overlapping rule. A ticket moved Closed→New or
+-- Closed→In Progress by pre-fix UpdateStatus without clearing closed_at now
+-- gets it cleared too: ListSLABreachCandidates (t.closed_at IS NULL) and
+-- ListResolvedTicketsBefore see it again once it is genuinely reopened, and
+-- both guest-token lookups (queries/guest_tokens.sql) work again. After
+-- R1-R4 finish, "closed_at is set" means exactly "the ticket is in system
+-- Closed" — see S1 below, which no longer needs any argument for tolerating
+-- a stale closed_at, because there no longer is one.
+UPDATE tickets t
+SET closed_at = NULL
+FROM statuses s
+WHERE t.status_id = s.id
+  AND NOT (s.kind = 'system' AND s.name = 'Closed')
+  AND t.closed_at IS NOT NULL;
+
+-- R4 (#241): a ticket sitting in system Closed must carry closed_at.
+-- Recovered from the start of the ticket's current Closed stint using the
+-- SAME rule as R2 above — NOT now(), which the very first version of this
+-- statement used, and NOT a plain `max(created_at) WHERE to_status_id =
+-- Closed`, which has two edge cases the from/NOT EXISTS form both handle:
+-- pre-#102 Close could append a Closed→Closed duplicate history row on a
+-- re-close (picking a later instant than the true close), and a door that
+-- moved the ticket OUT of Closed without writing history would otherwise
+-- return an earlier stint's close instant instead of falling back to
+-- updated_at. See R2's comment for the full rule and the fallback's known
+-- limits.
+UPDATE tickets t
+SET closed_at = COALESCE(
+        (SELECT max(h.created_at)
+           FROM ticket_status_history h
+          WHERE h.ticket_id = t.id
+            AND h.to_status_id = s.id
+            AND h.from_status_id IS DISTINCT FROM s.id
+            AND NOT EXISTS (
+                    SELECT 1
+                      FROM ticket_status_history later
+                     WHERE later.ticket_id = t.id
+                       AND later.created_at > h.created_at
+                       AND later.to_status_id <> s.id)),
+        t.updated_at)
 FROM statuses s
 WHERE t.status_id = s.id
   AND s.kind = 'system'
   AND s.name = 'Closed'
   AND t.closed_at IS NULL;
 
--- A ticket sitting in Resolved must not carry a closed_at: pre-existing bug
--- described in resolveInTx's comment ("resolving a closed ticket clears
--- closed_at") means a ticket resolved-from-closed before that fix shipped
--- may still carry a stale closed_at alongside its (correct) resolved_at.
--- Clear it so a Resolved ticket's shape is unambiguous. See #208. #232:
--- kind = 'system', see above.
-UPDATE tickets t
-SET closed_at = NULL
-FROM statuses s
-WHERE t.status_id = s.id
-  AND s.kind = 'system'
-  AND s.name = 'Resolved'
-  AND t.closed_at IS NOT NULL;
+-- ============================================================
+-- Phase B (#231: moved here from migration 000027_sla_frozen_elapsed.up.sql
+-- — see that file's own note): the #226(a)/(b) SLA backfill for pre-existing
+-- sla_records rows that violate the OLD rules #219/#220 fixed in code but not
+-- in already-written data. Must run AFTER phase A above, which is what
+-- guarantees S1's COALESCE below is never NULL for the rows it selects.
+-- ============================================================
 
--- #231: the #226(a)/(b) SLA backfill (moved here from migration
--- 000027_sla_frozen_elapsed.up.sql — see that file's own note) for
--- pre-existing sla_records rows that violate the OLD rules #219/#220 fixed
--- in code but not in already-written data. It has to run HERE, after the two
--- repairs directly above: it used to run inside 000027, BEFORE this file,
--- keyed on `t.closed_at IS NOT NULL` — but a Closed ticket that had never had
--- closed_at stamped (exactly the row the "must carry a closed_at" repair
--- above exists to fix) still had a NULL closed_at at that earlier point, so
--- 000027's old backfill skipped precisely the rows this file's own repair
--- was about to fix. These legacy rows landed in the permanent
--- live-growing-red-indicator state #226(b)/#220 were filed to eliminate,
--- with nothing in the running code ever touching them afterward
--- (RecordResolved's no-op guard and ListSLABreachCandidates' NULL-timestamp
--- selection both assume this backfill already ran once).
---
--- Keyed on the ticket's CURRENT status (name = 'Closed', kind = 'system' —
--- same #232 reasoning as the repairs above), never on closed_at at all: a
--- ticket carrying a STALE closed_at from the pre-fix UpdateStatus
--- Closed→open path — which the repair above does not clear, only Resolved
--- tickets have closed_at cleared — would otherwise still match
--- `closed_at IS NOT NULL` while it sits open and is actively being worked,
--- freezing a false "resolved" reading onto a ticket that has not resolved.
--- Restricted to 'Closed' (not 'Resolved' too): a ticket currently Resolved
--- already has its own resolved_at stamped by resolveInTx on every path into
--- that status, so backfilling it here is never this statement's job.
+-- S1 (#238): backfill sla_records.resolved_at for every ticket currently in
+-- system Resolved or Closed whose SLA record does not have one yet. Before
+-- this, the key was `name = 'Closed'` alone (see #231's note), so a ticket
+-- resolved under a pre-v1.2.0 build and still sitting in Resolved at upgrade
+-- was skipped here — the very next breach sweep would then read its NULL
+-- sla_records.resolved_at as "not yet resolved" and stamp a false breach
+-- dated at the sweep, which nothing could ever undo (RecordResolved's no-op
+-- guard means a real resolution never reaches this record again). Restoring
+-- 'Resolved' to the key alone would still have been a no-op in one shape — a
+-- Resolved ticket whose OWN t.resolved_at was itself NULL, the pre-#102
+-- UpdateStatus shape — the COALESCE below would have read
+-- COALESCE(NULL, closed_at), and closed_at is NULL for a Resolved ticket once
+-- R3 has run. R2 above closes that gap: after phase A, a system-Resolved
+-- ticket always has resolved_at, and a system-Closed ticket has resolved_at
+-- (its own, if it has one) or closed_at (guaranteed by R4) — the COALESCE
+-- here can no longer be NULL for any row this statement selects. Kept as a
+-- status key rather than dropped for `r.resolved_at IS NULL` alone (which
+-- would now be sufficient) as defence in depth: a row that is NOT currently
+-- in one of the two terminal statuses should not be having a resolution
+-- fabricated for it here at all, whatever COALESCE would compute.
 UPDATE sla_records r
 SET resolved_at = COALESCE(t.resolved_at, t.closed_at)
 FROM tickets t
@@ -137,90 +239,84 @@ JOIN statuses s ON s.id = t.status_id
 WHERE t.id = r.ticket_id
   AND r.resolved_at IS NULL
   AND s.kind = 'system'
-  AND s.name = 'Closed';
+  AND s.name IN ('Resolved', 'Closed');
 
--- Freeze resolution_elapsed_at_met_seconds for exactly the rows the backfill
--- above just gave a resolved_at to (its own WHERE excludes every row already
--- carrying one, including whatever migration 000027's own earlier pass
--- already froze) — same formula as that pass, now with a value to compute it
--- from.
---
--- #235: also stamps resolution_breached_at when the backfilled instant was
--- already past the policy's resolution target, using the same threshold
--- SetSLAResolved computes at record time (#217/#228). Migration 000027's
--- original comment claimed this backfill wrote "exactly what RecordResolved
--- would have written" — true for the timestamp and frozen-elapsed columns,
--- but RecordResolved (post-#217/#228) also stamps a breach, and the old
--- backfill never did. Left unstamped, a legacy ticket that really was late
--- gets a correct (red) frozen elapsed reading but a permanently NULL breach
--- column — and nothing can ever set it afterward: r.resolved_at is no longer
--- NULL once this runs, so ListSLABreachCandidates never selects the row
--- again.
--- Postgres does not allow the UPDATE target's own alias (r) inside a FROM
--- clause's JOIN ... ON — only in the WHERE clause — so sla_policies is
--- brought in as a second, comma-joined FROM item (p.id = r.policy_id moves to
--- WHERE) rather than an explicit JOIN against tickets.
+-- S2: freeze resolution_elapsed_at_met_seconds wherever it is still missing —
+-- exactly the rows S1 just gave a resolved_at to; every other row either
+-- already carries one (migration 000027's own backfill already froze it) or
+-- still has no resolved_at at all. Same formula as that earlier pass, now
+-- with a value to compute it from. #240: this statement ONLY freezes; it no
+-- longer also decides a breach in the same UPDATE (see S3 below for why that
+-- split matters).
 UPDATE sla_records r
 SET resolution_elapsed_at_met_seconds = GREATEST(
         0,
         EXTRACT(EPOCH FROM (r.resolved_at - t.created_at))::bigint - t.sla_paused_seconds
-    ),
-    resolution_breached_at = CASE
-        WHEN GREATEST(
-                 0,
-                 EXTRACT(EPOCH FROM (r.resolved_at - t.created_at))::bigint - t.sla_paused_seconds
-             ) > p.resolution_target_min * 60
-            THEN COALESCE(r.resolution_breached_at, r.resolved_at)
-        ELSE r.resolution_breached_at
-    END
-FROM tickets t, sla_policies p
+    )
+FROM tickets t
 WHERE t.id = r.ticket_id
-  AND p.id = r.policy_id
   AND r.resolved_at IS NOT NULL
   AND r.resolution_elapsed_at_met_seconds IS NULL;
 
--- #226(a): a ticket resolved without ever getting a prior staff reply was
--- allowed under the OLD rules, before #219 taught RecordResolved that "a
+-- S3 (#235 + #240): stamp a resolution breach on EVERY record whose frozen
+-- elapsed reading is already past the policy's resolution target and that
+-- has no breach stamp yet — whichever migration (this one, or 000027's own
+-- earlier best-effort pass) is the one that froze it. Same strict `>` and the
+-- same stamp instant (the resolution instant itself) as SetSLAResolved.
+--
+-- Before this, each freeze statement ALSO stamped its own breach, gated on
+-- `elapsed IS NULL` — so the breach decision was tied to whether THAT
+-- statement had just written the frozen value, and a row 000027 had frozen
+-- on an earlier upgrade (or one this file's own S2 skips because it is
+-- already frozen) could carry a genuinely late frozen reading with a
+-- permanently NULL breach column, because nothing revisited it once frozen.
+-- Splitting freeze and stamp into separate statements fixes this: S3 decides
+-- purely from the STORED frozen seconds, reaching every row regardless of
+-- which pass froze it. This cannot produce a FALSE stamp: 000027's
+-- best-effort frozen value can only UNDERSTATE the true elapsed time (the
+-- ticket's current sla_paused_seconds is at least what it was when the
+-- target was met, and the pending clip only ever subtracts more), so this
+-- can at worst miss a breach it should have caught, never invent one that
+-- did not happen. An existing stamp — from an earlier sweep, or from
+-- RecordResolved itself — is preserved by the `IS NULL` guard: a stamp is a
+-- fact about what happened and is never cleared here.
+--
+-- Single FROM item (sla_policies alone): the old comma-join workaround for
+-- "the UPDATE target's own alias cannot appear in a JOIN...ON" is no longer
+-- needed now that this statement does not also need to join tickets.
+UPDATE sla_records r
+SET resolution_breached_at = r.resolved_at
+FROM sla_policies p
+WHERE p.id = r.policy_id
+  AND r.resolved_at IS NOT NULL
+  AND r.resolution_breached_at IS NULL
+  AND r.resolution_elapsed_at_met_seconds > p.resolution_target_min::bigint * 60;
+
+-- S4 (#226(a)): a ticket resolved without ever getting a prior staff reply
+-- was allowed under the OLD rules, before #219 taught RecordResolved that "a
 -- resolution is a response in every practical sense." Left NULL,
 -- IsResponseBreached computes a live Elapsed(t, now) against a target that
 -- was, in fact, met the moment the ticket resolved — reading a promptly
 -- resolved ticket as a permanent response breach the instant wall-clock time
--- passes the response target. Worse: RecordResolved now returns early once
--- resolved_at is already set (#220's no-op guard), so nothing in the running
--- code will ever backfill this after upgrade — the sweep would otherwise be
--- the backstop, but it still selects this row every tick (first_response_at
--- IS NULL and not yet stamped) and, on its very first run after upgrade,
--- would stamp a PERMANENT false response_breached_at against it, since nothing
--- ever sets first_response_at through the normal code path for an
--- already-Resolved/Closed ticket. Backfilling here, before that first sweep
--- ever runs, is what prevents that.
---
--- This runs AFTER the resolved_at backfill above (not before): a ticket that
--- was BOTH closed-without-resolving AND never separately responded to needs
--- its resolved_at filled in first, so this pass has a resolution instant to
--- treat as the response too — first_response_at = resolved_at, exactly #219's
--- rule, whichever door originally supplied that resolved_at. Unlike the
--- resolved_at backfill above, this has no status-name key at all — it never
--- did, and needs none: it depends only on sla_records' own columns
--- (resolved_at IS NOT NULL, first_response_at IS NULL), which by this point
--- already reflect the correct, fully-repaired resolved_at, whichever door
--- supplied it.
+-- passes the response target. Runs after S1 (not before): a ticket that was
+-- both closed-without-resolving and never separately responded to needs its
+-- resolved_at filled in first, so this pass has a resolution instant to
+-- treat as the response too — first_response_at = resolved_at, exactly
+-- #219's rule, whichever door (a real resolution, or S1's backfill) supplied
+-- it. No ticket-status key needed here, and no `FROM tickets t` join either
+-- (the old join was never read from): this depends only on sla_records' own
+-- columns.
 UPDATE sla_records r
 SET first_response_at = r.resolved_at
-FROM tickets t
-WHERE t.id = r.ticket_id
-  AND r.resolved_at IS NOT NULL
+WHERE r.resolved_at IS NOT NULL
   AND r.first_response_at IS NULL;
 
--- Freeze response_elapsed_at_met_seconds for exactly the rows the backfill
--- above just gave a first_response_at to, using the same pending-aware clip
--- as migration 000027's own response_elapsed_at_met_seconds pass (see #222)
--- — first response and resolution landed at the same instant for these rows,
--- so the same formula applies.
---
--- #235: also stamps response_breached_at when that instant was already past
--- the policy's response target — same reasoning as the resolution-side pass
--- above.
+-- S5: freeze response_elapsed_at_met_seconds wherever it is still missing,
+-- using the same pending-aware clip as migration 000027's own
+-- response_elapsed_at_met_seconds pass (#222) — first response and
+-- resolution landed at the same instant for exactly the rows S4 just touched
+-- (every other row either already has one frozen, or still has no
+-- first_response_at at all).
 UPDATE sla_records r
 SET response_elapsed_at_met_seconds = GREATEST(
         0,
@@ -230,22 +326,18 @@ SET response_elapsed_at_met_seconds = GREATEST(
                   THEN GREATEST(0, EXTRACT(EPOCH FROM (r.first_response_at - t.pending_since)))::bigint
                   ELSE 0
               END
-    ),
-    response_breached_at = CASE
-        WHEN GREATEST(
-                 0,
-                 EXTRACT(EPOCH FROM (r.first_response_at - t.created_at))::bigint - t.sla_paused_seconds
-                     - CASE
-                           WHEN t.pending_since IS NOT NULL
-                           THEN GREATEST(0, EXTRACT(EPOCH FROM (r.first_response_at - t.pending_since)))::bigint
-                           ELSE 0
-                       END
-             ) > p.response_target_min * 60
-            THEN COALESCE(r.response_breached_at, r.first_response_at)
-        ELSE r.response_breached_at
-    END
-FROM tickets t, sla_policies p
+    )
+FROM tickets t
 WHERE t.id = r.ticket_id
-  AND p.id = r.policy_id
   AND r.first_response_at IS NOT NULL
   AND r.response_elapsed_at_met_seconds IS NULL;
+
+-- S6 (#235 + #240): the response-side twin of S3 — see that statement's
+-- comment for the reasoning, which applies identically here.
+UPDATE sla_records r
+SET response_breached_at = r.first_response_at
+FROM sla_policies p
+WHERE p.id = r.policy_id
+  AND r.first_response_at IS NOT NULL
+  AND r.response_breached_at IS NULL
+  AND r.response_elapsed_at_met_seconds > p.response_target_min::bigint * 60;

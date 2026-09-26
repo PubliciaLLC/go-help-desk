@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -97,17 +98,61 @@ func TestTicketStore_ListResolvedBefore_ExcludesWrongStatus(t *testing.T) {
 	require.False(t, ids[legacyClosed.ID], "a Closed ticket with a stale resolved_at must never be listed")
 }
 
+// seedTicketState directly overwrites the fields a real status transition
+// would change — status_id, resolved_at, closed_at, pending_since,
+// sla_paused_seconds — AND updated_at, exactly as given in tk.
+// ticketstore.Store.Update always stamps updated_at with time.Now() (correct
+// for the real app: every status door really does touch the row at the
+// instant it runs), which defeats a test that needs to control updated_at
+// precisely — to prove a migration's fallback reads THIS stored value, not
+// whatever moment the test happened to execute. Bypasses the store layer
+// deliberately, only for that one column; every other field still goes
+// through the same values Update would have written.
+func seedTicketState(t *testing.T, ctx context.Context, tx *sql.Tx, tk ticket.Ticket) {
+	t.Helper()
+	_, err := tx.ExecContext(ctx, `
+		UPDATE tickets
+		SET status_id = $2, resolved_at = $3, closed_at = $4,
+		    pending_since = $5, sla_paused_seconds = $6, updated_at = $7
+		WHERE id = $1`,
+		tk.ID, tk.StatusID, tk.ResolvedAt, tk.ClosedAt, tk.PendingSince, tk.SLAPausedSeconds, tk.UpdatedAt)
+	require.NoError(t, err)
+}
+
+// seedHistory writes one ticket_status_history row directly with an
+// explicit created_at, for tests that need to control the transition instant
+// exactly — CreateStatusHistoryEntry writes created_at as given, unlike a
+// real transition through Service, which always stamps time.Now().
+func seedHistory(t *testing.T, ctx context.Context, ts *ticketstore.Store, ticketID uuid.UUID, from *uuid.UUID, to uuid.UUID, at time.Time) {
+	t.Helper()
+	require.NoError(t, ts.CreateStatusHistoryEntry(ctx, ticket.StatusHistoryEntry{
+		ID:           uuid.New(),
+		TicketID:     ticketID,
+		FromStatusID: from,
+		ToStatusID:   to,
+		CreatedAt:    at,
+	}))
+}
+
 // TestMigration_RepairsResolvedStatusInvariant runs migration 000028's exact
 // SQL (read from disk, not reimplemented) against rows seeded directly to
-// violate the invariant it repairs — a stale resolved_at on a ticket no
-// longer in Resolved, and a Closed ticket with no closed_at — and checks it
-// fixes them, and only them.
+// violate the invariant it repairs:
+//
+//	| current status   | resolved_at               | closed_at |
+//	|-------------------|---------------------------|-----------|
+//	| system Resolved   | set                       | NULL      |
+//	| system Closed     | kept as is (set or NULL)  | set       |
+//	| anything else     | NULL                      | NULL      |
+//
+// and checks it fixes them, and only them. Round 4 adversarial review
+// (#237-241) added the In Progress/Pending/custom-status cases (#237), the
+// stale-closed_at-on-a-reopened-ticket case (#239), and the
+// history-recovered resolved_at/closed_at cases (#238 and #241, including
+// the duplicate-row and inconsistent-history edge cases the recovery rule
+// exists to handle).
 func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
-
-	sql, err := os.ReadFile("migrations/000028_repair_resolved_status_invariant.up.sql")
-	require.NoError(t, err)
 
 	tx, err := db.SQL.Begin()
 	require.NoError(t, err)
@@ -134,6 +179,15 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	require.NoError(t, err)
 	closedSt, err := ts.GetStatusByName(ctx, ticket.StatusNameClosed)
 	require.NoError(t, err)
+	inProgressSt, err := ts.GetStatusByName(ctx, "In Progress")
+	require.NoError(t, err)
+	pendingSt, err := ts.GetStatusByName(ctx, ticket.StatusNamePending)
+	require.NoError(t, err)
+
+	var customStatusID uuid.UUID
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`INSERT INTO statuses (name, kind, sort_order, color) VALUES ($1, 'custom', 50, '#000000') RETURNING id`,
+		"Mig custom "+uuid.NewString()[:8]).Scan(&customStatusID))
 
 	stale := time.Now().UTC().Add(-30 * 24 * time.Hour).Truncate(time.Millisecond)
 	mk := func(subject string, statusID uuid.UUID, resolvedAt, closedAt *time.Time) ticket.Ticket {
@@ -153,14 +207,18 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 		}
 		require.NoError(t, ts.Create(ctx, tk))
 		// Create never sets resolved_at/closed_at; write them the way a status
-		// change would, directly, to seed the pre-#191 invariant violation.
-		require.NoError(t, ts.Update(ctx, tk))
+		// change would, directly, to seed the pre-#191 invariant violation —
+		// via seedTicketState (see its doc comment), not ts.Update, so
+		// updated_at lands at the controlled "stale" value these tests assert
+		// against, not time.Now().
+		seedTicketState(t, ctx, tx, tk)
 		return tk
 	}
 
 	// Bad row #1: moved off Resolved, resolved_at never cleared.
 	badOpen := mk("Mig bad open", newSt.ID, &stale, nil)
-	// Bad row #2: sitting in Closed with no closed_at.
+	// Bad row #2: sitting in Closed with no closed_at, and no history to
+	// recover a transition instant from — must fall back to updated_at.
 	badClosed := mk("Mig bad closed", closedSt.ID, nil, nil)
 	// Bad row #3: sitting in Resolved with a stale closed_at left over from
 	// resolving a previously-Closed ticket before that bug was fixed.
@@ -174,27 +232,52 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	// ResolvedAt). Must survive untouched; see #208.
 	goodClosed := mk("Mig good closed", closedSt.ID, &stale, &stale)
 
-	// Run the migration's own SQL, verbatim (comments stripped first, since a
-	// naive split on ";" would otherwise break mid-statement on the semicolons
-	// inside the file's prose comments — and, since #230 added a DO $$ ... $$
-	// block, splitSQLStatements is dollar-quote aware too, so the semicolons
-	// INSIDE that block are not mistaken for statement boundaries either).
-	var stripped strings.Builder
-	for _, line := range strings.Split(string(sql), "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "--") {
-			continue
-		}
-		stripped.WriteString(line)
-		stripped.WriteByte('\n')
-	}
-	for _, stmt := range splitSQLStatements(stripped.String()) {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
-		}
-		_, err := tx.ExecContext(ctx, stmt)
-		require.NoError(t, err, "executing migration statement: %s", stmt)
-	}
+	// #237: any non-terminal status carrying a stale resolved_at must have it
+	// cleared, not just the system 'New' status the old, narrower R1
+	// accidentally singled out.
+	badInProgress := mk("Mig bad in progress", inProgressSt.ID, &stale, nil)
+	badCustom := mk("Mig bad custom", customStatusID, &stale, nil)
+	badPending := mk("Mig bad pending", pendingSt.ID, &stale, nil)
+
+	// #239: a reopened ticket's stale closed_at must be cleared too, not just
+	// a stale resolved_at.
+	badOpenStaleClosed := mk("Mig bad open stale closed", newSt.ID, nil, &stale)
+	badInProgressStaleBoth := mk("Mig bad in progress stale both", inProgressSt.ID, &stale, &stale)
+
+	// #238/R2: sitting in Resolved with resolved_at itself NULL (the pre-#102
+	// UpdateStatus shape) — recovered from history when it exists, and from
+	// updated_at when it does not.
+	badResolvedWithHistory := mk("Mig bad resolved no resolved_at with history", resolvedSt.ID, nil, nil)
+	seedHistory(t, ctx, ts, badResolvedWithHistory.ID, nil, newSt.ID, badResolvedWithHistory.CreatedAt)
+	seedHistory(t, ctx, ts, badResolvedWithHistory.ID, &newSt.ID, resolvedSt.ID, stale.Add(-2*time.Hour))
+	// Duplicate Resolved->Resolved row, as pre-#102 Resolve appended on a
+	// re-resolve — must not be picked over the real stint start.
+	seedHistory(t, ctx, ts, badResolvedWithHistory.ID, &resolvedSt.ID, resolvedSt.ID, stale.Add(-1*time.Hour))
+
+	badResolvedNoHistory := mk("Mig bad resolved no resolved_at no history", resolvedSt.ID, nil, nil)
+
+	// #241/R4: sitting in Closed with closed_at NULL, recovered from history.
+	badClosedWithHistory := mk("Mig bad closed with history", closedSt.ID, nil, nil)
+	seedHistory(t, ctx, ts, badClosedWithHistory.ID, &newSt.ID, closedSt.ID, stale.Add(-3*time.Hour))
+
+	// Inconsistent history: the ticket is now in Closed, but the last history
+	// row says it LEFT Closed, with no row recording it coming back — a door
+	// that moved it without writing history. The recovery rule must fall back
+	// to updated_at rather than resurrect the earlier, wrong stint.
+	badClosedInconsistentHistory := mk("Mig bad closed inconsistent history", closedSt.ID, nil, nil)
+	seedHistory(t, ctx, ts, badClosedInconsistentHistory.ID, &newSt.ID, closedSt.ID, stale.Add(-5*time.Hour))
+	seedHistory(t, ctx, ts, badClosedInconsistentHistory.ID, &closedSt.ID, inProgressSt.ID, stale.Add(-4*time.Hour))
+
+	// Duplicate Closed->Closed row, as pre-#102 Close appended on a re-close —
+	// must not be picked over the real stint start.
+	badClosedDupRows := mk("Mig bad closed dup rows", closedSt.ID, nil, nil)
+	seedHistory(t, ctx, ts, badClosedDupRows.ID, &newSt.ID, closedSt.ID, stale.Add(-3*time.Hour))
+	seedHistory(t, ctx, ts, badClosedDupRows.ID, &closedSt.ID, closedSt.ID, stale.Add(-1*time.Hour))
+
+	// Run the migration's own SQL, verbatim, statement by statement (comments
+	// stripped, dollar-quote aware, so the #230 DO $$ ... $$ guard block's
+	// internal semicolons are not mistaken for statement boundaries).
+	execMigrationFile(t, ctx, tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
 
 	get := func(id uuid.UUID) ticket.Ticket {
 		tk, err := ts.GetByID(ctx, id)
@@ -207,6 +290,8 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 
 	repairedClosed := get(badClosed.ID)
 	require.NotNil(t, repairedClosed.ClosedAt, "a Closed ticket must be stamped with closed_at")
+	require.True(t, repairedClosed.ClosedAt.Equal(stale),
+		"with no history to recover from, closed_at must fall back to updated_at, not now()")
 
 	stillResolved := get(goodResolved.ID)
 	require.NotNil(t, stillResolved.ResolvedAt, "a correctly-Resolved ticket must keep its timestamp")
@@ -222,6 +307,43 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	stillClosed := get(goodClosed.ID)
 	require.NotNil(t, stillClosed.ResolvedAt, "a Closed ticket must NOT have resolved_at cleared (#208)")
 	require.NotNil(t, stillClosed.ClosedAt, "a Closed ticket must keep its closed_at")
+	require.True(t, stillClosed.ClosedAt.Equal(stale), "a correctly-Closed ticket's closed_at must not move")
+
+	require.Nil(t, get(badInProgress.ID).ResolvedAt, "#237: a stale resolved_at on an In Progress ticket must be cleared")
+	require.Nil(t, get(badCustom.ID).ResolvedAt, "#237: a stale resolved_at on a custom-status ticket must be cleared")
+	require.Nil(t, get(badPending.ID).ResolvedAt, "#237: a stale resolved_at on a Pending ticket must be cleared")
+
+	require.Nil(t, get(badOpenStaleClosed.ID).ClosedAt, "#239: a stale closed_at on a reopened (New) ticket must be cleared")
+	reopenedBoth := get(badInProgressStaleBoth.ID)
+	require.Nil(t, reopenedBoth.ResolvedAt, "#237: In Progress with stale resolved_at AND closed_at: resolved_at cleared")
+	require.Nil(t, reopenedBoth.ClosedAt, "#239: In Progress with stale resolved_at AND closed_at: closed_at cleared")
+
+	repairedResolvedHistory := get(badResolvedWithHistory.ID)
+	require.NotNil(t, repairedResolvedHistory.ResolvedAt, "#238: a Resolved ticket with no resolved_at must have one recovered")
+	require.True(t, repairedResolvedHistory.ResolvedAt.Equal(stale.Add(-2*time.Hour)),
+		"the recovered resolved_at must be the start of the CURRENT Resolved stint, not the duplicate re-resolve row, "+
+			"and history must win over updated_at")
+
+	repairedResolvedNoHistory := get(badResolvedNoHistory.ID)
+	require.NotNil(t, repairedResolvedNoHistory.ResolvedAt)
+	require.True(t, repairedResolvedNoHistory.ResolvedAt.Equal(stale),
+		"with no history, a Resolved ticket's resolved_at must fall back to updated_at")
+
+	repairedClosedHistory := get(badClosedWithHistory.ID)
+	require.NotNil(t, repairedClosedHistory.ClosedAt)
+	require.True(t, repairedClosedHistory.ClosedAt.Equal(stale.Add(-3*time.Hour)),
+		"#241: the recovered closed_at must be the start of the CURRENT Closed stint")
+
+	repairedClosedInconsistent := get(badClosedInconsistentHistory.ID)
+	require.NotNil(t, repairedClosedInconsistent.ClosedAt)
+	require.True(t, repairedClosedInconsistent.ClosedAt.Equal(stale),
+		"when history says the ticket LEFT Closed with nothing recording it coming back, the recovery rule must fall "+
+			"back to updated_at rather than resurrect the earlier, wrong stint")
+
+	repairedClosedDup := get(badClosedDupRows.ID)
+	require.NotNil(t, repairedClosedDup.ClosedAt)
+	require.True(t, repairedClosedDup.ClosedAt.Equal(stale.Add(-3*time.Hour)),
+		"a duplicate Closed->Closed history row must not be picked over the real stint start")
 }
 
 // TestMigration_AbortsWhenSystemStatusRenamed pins #230: migration 000028's
