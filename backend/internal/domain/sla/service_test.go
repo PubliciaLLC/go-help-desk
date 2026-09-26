@@ -1163,12 +1163,22 @@ func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
 		{
 			// The store narrows to int32 (queries/sla.sql). Unchecked, this
 			// silently truncates on write instead of being refused here.
-			name:   "response target above int32",
-			modify: func(p sla.Policy) sla.Policy { p.ResponseTargetMin = math.MaxInt32 + 1; return p },
+			// math.MaxInt32+1 as a raw literal overflows int on a 32-bit
+			// build; incrementing at runtime keeps the case portable.
+			name: "response target above int32",
+			modify: func(p sla.Policy) sla.Policy {
+				p.ResponseTargetMin = math.MaxInt32
+				p.ResponseTargetMin++
+				return p
+			},
 		},
 		{
-			name:   "resolution target above int32",
-			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = math.MaxInt32 + 1; return p },
+			name: "resolution target above int32",
+			modify: func(p sla.Policy) sla.Policy {
+				p.ResolutionTargetMin = math.MaxInt32
+				p.ResolutionTargetMin++
+				return p
+			},
 		},
 	}
 
@@ -1185,6 +1195,21 @@ func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
 			require.ErrorIs(t, err, sla.ErrValidation)
 		})
 	}
+}
+
+// TestSLAService_PolicyValidation_AcceptsInt32Boundary pins the other side of
+// the bound above: math.MaxInt32 itself is a legitimate target and must not
+// be refused. Without this, a future "> " turning into ">=" would still pass
+// every other test in this file.
+func TestSLAService_PolicyValidation_AcceptsInt32Boundary(t *testing.T) {
+	valid := sla.Policy{Name: "P", ResponseTargetMin: math.MaxInt32, ResolutionTargetMin: math.MaxInt32}
+
+	svc := sla.NewService(newFakeSLAStore())
+	_, err := svc.CreatePolicy(context.Background(), valid)
+	require.NoError(t, err)
+
+	valid.ID = uuid.New()
+	require.NoError(t, svc.UpdatePolicy(context.Background(), valid))
 }
 
 // erroringSLAStore wraps fakeSLAStore so CreatePolicy/UpdatePolicy can be
