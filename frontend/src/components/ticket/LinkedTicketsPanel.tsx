@@ -320,10 +320,10 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                               setSelectedTicket(t)
                               setSearchInput('')
                               setPickerOpen(false)
-                              // Reset notes to null so default is shown for new ticket
-                              if (selectedRelation === 'duplicate_of') {
-                                setResolutionNotes(null)
-                              }
+                              // Deliberately no resolutionNotes reset here: when it's null
+                              // (not yet edited), the textarea already re-derives the default
+                              // template from the newly selected ticket below; when it's a
+                              // string (edited), it must survive the target change untouched.
                             }}
                           >
                             {t.tracking_number} · {t.subject}
