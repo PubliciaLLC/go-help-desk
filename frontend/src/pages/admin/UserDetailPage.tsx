@@ -54,6 +54,14 @@ export function UserDetailPage() {
   // ── Password state ──────────────────────────────────────────────────────────
   const [newPassword, setNewPassword] = useState('')
   const [passwordError, setPasswordError] = useState('')
+  // Shared by the account actions below. Each of them could be refused with a
+  // reason the server spells out — "this is the only administrator, so it
+  // cannot be disabled, demoted or deleted" is the one that bites — and each
+  // of them used to drop it: the button said "Disabling…", came back, and the
+  // account was still enabled with nothing said. The role change beside them
+  // showed its error all along, so the same refusal was explained on one
+  // button and swallowed on the next.
+  const [actionError, setActionError] = useState('')
   const [passwordSaved, setPasswordSaved] = useState(false)
 
   // ── Group state ─────────────────────────────────────────────────────────────
@@ -110,13 +118,15 @@ export function UserDetailPage() {
   // ── Toggle disabled ─────────────────────────────────────────────────────────
   const toggleDisabledMutation = useMutation({
     mutationFn: (disabled: boolean) => updateUser(id, { disabled }),
-    onSuccess: () => invalidate(),
+    onSuccess: () => { setActionError(''); invalidate() },
+    onError: (err) => setActionError(extractError(err)),
   })
 
   // ── Reset MFA ───────────────────────────────────────────────────────────────
   const resetMFAMutation = useMutation({
     mutationFn: () => updateUser(id, { reset_mfa: true }),
-    onSuccess: () => invalidate(),
+    onSuccess: () => { setActionError(''); invalidate() },
+    onError: (err) => setActionError(extractError(err)),
   })
 
   // ── Password reset ──────────────────────────────────────────────────────────
@@ -144,13 +154,17 @@ export function UserDetailPage() {
 
   const removeFromGroupMutation = useMutation({
     mutationFn: (groupId: string) => removeGroupMember(groupId, id),
-    onSuccess: () => invalidate(),
+    onSuccess: () => { setGroupError(''); invalidate() },
+    onError: (err) => setGroupError(extractError(err)),
   })
 
   // ── Delete ──────────────────────────────────────────────────────────────────
   const deleteMutation = useMutation({
     mutationFn: () => deleteUser(id),
     onSuccess: () => navigate({ to: '/admin/users' }),
+    // Deleting the only administrator is refused. The dialog used to close
+    // on its own and leave the account sitting there.
+    onError: () => setConfirmDelete(false),
   })
 
   if (isLoading || !user) {
@@ -289,6 +303,10 @@ export function UserDetailPage() {
                 </div>
               )}
 
+              {actionError && (
+                <p role="alert" className="text-sm text-red-600">{actionError}</p>
+              )}
+
               {/* Enable / Disable */}
               <div className="flex items-center justify-between">
                 <div>
@@ -403,6 +421,11 @@ export function UserDetailPage() {
             will show a removed user. This cannot be undone — disable the account instead if
             you may need to restore access.
           </p>
+          {deleteMutation.isError && (
+            <p role="alert" className="text-sm font-medium text-red-700 mb-3">
+              {extractError(deleteMutation.error)}
+            </p>
+          )}
           <Button
             size="sm"
             variant="outline"
