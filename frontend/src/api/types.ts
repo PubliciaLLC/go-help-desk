@@ -376,6 +376,12 @@ export interface OAuthClient {
   created_at: string
 }
 
+// payload_format reshapes the same lifecycle event for a chat/ITSM service's
+// incoming-webhook endpoint before it is POSTed. 'raw' (the default) is
+// today's full event payload; the others are Slack, Teams, Discord and JIRA
+// Automation shapes. See docs/DESIGN.md "Notifications" and #187.
+export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
+
 export interface WebhookConfig {
   id: string
   url: string
@@ -383,6 +389,7 @@ export interface WebhookConfig {
   secret: string
   enabled: boolean
   created_at: string
+  payload_format: WebhookPayloadFormat
 }
 
 export interface Settings {

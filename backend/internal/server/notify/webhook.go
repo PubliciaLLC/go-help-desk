@@ -23,14 +23,18 @@ type WebhookStore interface {
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
 type WebhookDispatcher struct {
-	store  WebhookStore
-	client *http.Client
+	store   WebhookStore
+	client  *http.Client
+	baseURL string // used only to build the staff ticket link chat/ITSM formats carry
 }
 
 // NewWebhookDispatcher returns a WebhookDispatcher with sensible timeouts.
-func NewWebhookDispatcher(store WebhookStore) *WebhookDispatcher {
+// baseURL is the same value the email dispatcher uses for ticket links
+// (cfg.BaseURL); it is never used to reach the hook target itself.
+func NewWebhookDispatcher(store WebhookStore, baseURL string) *WebhookDispatcher {
 	return &WebhookDispatcher{
-		store: store,
+		store:   store,
+		baseURL: baseURL,
 		// Guarded: the URL is operator-supplied and the app container can
 		// reach the database, the antivirus daemon and cloud metadata, none
 		// of which are reachable from outside.
@@ -46,6 +50,10 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		return nil // store failure is non-fatal
 	}
 
+	// Marshalled once, exactly as before: this is the raw wire body every
+	// "raw" (and pre-migration empty-format) subscription still receives
+	// byte-for-byte unchanged. bodyFor below reshapes a copy per format; it
+	// never touches this slice for those hooks.
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return nil
@@ -55,8 +63,15 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		if !hookSubscribes(hook, event.Type) {
 			continue
 		}
+		body, err := bodyFor(hook, event, payload, d.baseURL)
+		if err != nil {
+			// Unknown payload_format: skip this hook rather than falling
+			// back to raw. A Slack URL fed the full raw event is a
+			// delivery bug, not a degraded-but-working delivery.
+			continue
+		}
 		// Fire-and-forget per webhook; don't block on failures.
-		go d.send(hook, payload)
+		go d.send(hook, body)
 	}
 	return nil
 }

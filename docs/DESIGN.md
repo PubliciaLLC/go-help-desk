@@ -1178,6 +1178,13 @@ so they are not removed as dead weight:
   `internal` flag, so a subscriber can tell a staff-only note from a public
   reply. Before, it received the text of every internal note and could not tell
   them apart.
+- **Chat/ITSM payload formats escape mentions and never carry an internal
+  note body.** Slack escapes `&`, `<` and `>` in user-chosen text, so a
+  subject of `<!channel>` cannot page a channel; Discord always sends
+  `allowed_mentions: {"parse": []}`, so `@everyone`-style text cannot ping a
+  server. All four formats (Slack, Teams, Discord, JIRA) are built from the
+  same summary the raw format's internal-note omission already produces, so
+  an internal note's body reaches none of them, not just the raw payload.
 
 **Scopes were documented here before they were enforced.** Until 1.2.0 they were
 accepted, stored and returned by the API, and no code read them — every

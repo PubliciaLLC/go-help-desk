@@ -177,7 +177,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
-	webhookDisp := notify.NewWebhookDispatcher(authStore)
+	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL)
 	dispatcher := notify.NewMulti(emailDisp, webhookDisp)
 
 	// ── Registration service ──────────────────────────────────────────────────

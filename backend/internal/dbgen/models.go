@@ -302,10 +302,11 @@ type User struct {
 }
 
 type WebhookConfig struct {
-	ID        uuid.UUID `json:"id"`
-	Url       string    `json:"url"`
-	Events    []string  `json:"events"`
-	Secret    string    `json:"secret"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            uuid.UUID `json:"id"`
+	Url           string    `json:"url"`
+	Events        []string  `json:"events"`
+	Secret        string    `json:"secret"`
+	Enabled       bool      `json:"enabled"`
+	CreatedAt     time.Time `json:"created_at"`
+	PayloadFormat string    `json:"payload_format"`
 }

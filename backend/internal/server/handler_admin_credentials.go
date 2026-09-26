@@ -10,6 +10,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
 // Admin machine credentials: API keys, OAuth clients and webhooks.
@@ -224,11 +225,24 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, webhooks)
 }
 
+// validPayloadFormat reports whether v is empty (defaults to raw) or one of
+// notify.Formats. Checked here, before the row is written, so a typo is a
+// 400 at the moment it's made rather than a constraint violation surfaced as
+// a 500 — the CHECK on webhook_configs.payload_format is the last line of
+// defense, not the first.
+func validPayloadFormat(v string) bool {
+	if v == "" {
+		return true
+	}
+	return notify.Format(v).IsValid()
+}
+
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL    string   `json:"url"`
-		Events []string `json:"events"`
-		Secret string   `json:"secret"`
+		URL           string   `json:"url"`
+		Events        []string `json:"events"`
+		Secret        string   `json:"secret"`
+		PayloadFormat string   `json:"payload_format"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -241,13 +255,23 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_url", err.Error())
 		return
 	}
+	if !validPayloadFormat(body.PayloadFormat) {
+		Error(w, http.StatusBadRequest, "invalid_payload_format",
+			"payload_format must be one of: raw, slack, teams, discord, jira")
+		return
+	}
+	payloadFormat := body.PayloadFormat
+	if payloadFormat == "" {
+		payloadFormat = string(notify.FormatRaw)
+	}
 	wh := authstore.WebhookConfig{
-		ID:        uuid.New(),
-		URL:       body.URL,
-		Events:    body.Events,
-		Secret:    body.Secret,
-		Enabled:   true,
-		CreatedAt: time.Now(),
+		ID:            uuid.New(),
+		URL:           body.URL,
+		Events:        body.Events,
+		Secret:        body.Secret,
+		Enabled:       true,
+		CreatedAt:     time.Now(),
+		PayloadFormat: payloadFormat,
 	}
 	if err := s.authStore.CreateWebhook(r.Context(), wh); err != nil {
 		handleError(w, err)
@@ -268,10 +292,11 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		URL     *string  `json:"url"`
-		Events  []string `json:"events"`
-		Secret  *string  `json:"secret"`
-		Enabled *bool    `json:"enabled"`
+		URL           *string  `json:"url"`
+		Events        []string `json:"events"`
+		Secret        *string  `json:"secret"`
+		Enabled       *bool    `json:"enabled"`
+		PayloadFormat *string  `json:"payload_format"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -298,6 +323,19 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Enabled != nil {
 		existing.Enabled = *body.Enabled
+	}
+	if body.PayloadFormat != nil {
+		// Validated only when sent, like url above: a PATCH of {"enabled":
+		// false} must not be gated on a field it does not touch.
+		if !validPayloadFormat(*body.PayloadFormat) {
+			Error(w, http.StatusBadRequest, "invalid_payload_format",
+				"payload_format must be one of: raw, slack, teams, discord, jira")
+			return
+		}
+		existing.PayloadFormat = *body.PayloadFormat
+		if existing.PayloadFormat == "" {
+			existing.PayloadFormat = string(notify.FormatRaw)
+		}
 	}
 	if err := s.authStore.UpdateWebhook(r.Context(), existing); err != nil {
 		handleError(w, err)

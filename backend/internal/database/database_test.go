@@ -1415,6 +1415,38 @@ func TestAuthStore_Webhooks(t *testing.T) {
 	require.Error(t, err)
 }
 
+// A row inserted before the payload_format column existed — or by any code
+// that still constructs the INSERT without it — must read back as "raw", not
+// NULL and not an empty string, so nothing changes about how existing
+// subscriptions are dispatched. The CHECK constraint is the last line of
+// defense against a bad value that got past the admin handler's own check.
+func TestMigration_WebhookPayloadFormatDefaultsToRawAndChecksValue(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	ctx := context.Background()
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	id := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+		id, "https://example.com/hook")
+	require.NoError(t, err)
+
+	var format string
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT payload_format FROM webhook_configs WHERE id = $1`, id).Scan(&format))
+	require.Equal(t, "raw", format,
+		"a row inserted without payload_format must default to raw, not NULL")
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO webhook_configs (id, url, payload_format) VALUES ($1, $2, $3)`,
+		uuid.New(), "https://example.com/hook2", "xml")
+	require.Error(t, err,
+		"the CHECK constraint must refuse a value outside raw|slack|teams|discord|jira")
+}
+
 // ── Audit store ──────────────────────────────────────────────────────────────
 
 func TestAuditStore(t *testing.T) {

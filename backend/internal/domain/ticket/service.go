@@ -275,6 +275,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		TrackingNumber: emailTracking,
 		Recipient:      emailRecipient,
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -426,6 +427,8 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestNotifyTarget(t, closing),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
+		StatusName:     newStatus.Name,
 	})
 
 	return t, nil
@@ -459,10 +462,12 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketAssigned,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		OccurredAt: time.Now(),
+		Type:           notification.EventTicketAssigned,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     time.Now(),
+		TrackingNumber: string(t.TrackingNumber),
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -659,10 +664,12 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// email for a transition that did not happen.
 	if reopened {
 		_ = s.dispatcher.Dispatch(ctx, notification.Event{
-			Type:       notification.EventTicketReopened,
-			TicketID:   t.ID,
-			ActorID:    actor.UserID,
-			OccurredAt: time.Now(),
+			Type:           notification.EventTicketReopened,
+			TicketID:       t.ID,
+			ActorID:        actor.UserID,
+			OccurredAt:     time.Now(),
+			TrackingNumber: string(t.TrackingNumber),
+			Subject:        t.Subject,
 		})
 	}
 
@@ -690,6 +697,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      reporterEmail,
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address
@@ -792,6 +800,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -844,13 +853,17 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		_ = s.sla.RecordResolved(ctx, t.ID, now)
 	}
 
-	// Dispatch both the link event and the resolve event.
+	// Dispatch both the link event and the resolve event. t is the source
+	// ticket (resolveInTx returns the row it just resolved), so its Subject
+	// and TrackingNumber describe sourceID, the ticket TicketID names here.
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketLinked,
-		TicketID:   sourceID,
-		ActorID:    actor.UserID,
-		Payload:    map[string]any{"target_id": targetID, "link_type": LinkDuplicateOf},
-		OccurredAt: now,
+		Type:           notification.EventTicketLinked,
+		TicketID:       sourceID,
+		ActorID:        actor.UserID,
+		Payload:        map[string]any{"target_id": targetID, "link_type": LinkDuplicateOf},
+		OccurredAt:     now,
+		TrackingNumber: string(t.TrackingNumber),
+		Subject:        t.Subject,
 	})
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -861,6 +874,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -983,10 +997,12 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketClosed,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		OccurredAt: now,
+		Type:           notification.EventTicketClosed,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     now,
+		TrackingNumber: string(t.TrackingNumber),
+		Subject:        t.Subject,
 	})
 	return closed, nil
 }
@@ -1066,6 +1082,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 	return t, nil
 }
@@ -1096,12 +1113,24 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	if err := s.store.CreateLink(ctx, link); err != nil {
 		return fmt.Errorf("creating link: %w", err)
 	}
+	// Read for Subject/TrackingNumber only — a webhook renderer needs a
+	// human-readable line ("Linked to <target>") and the event otherwise
+	// carries only ids. Best-effort: a read failure here must not undo the
+	// link that already committed, so the event still dispatches, just
+	// without those two fields, same as before this existed.
+	var subject, tracking string
+	if t, err := s.store.GetByID(ctx, sourceID); err == nil {
+		subject = t.Subject
+		tracking = string(t.TrackingNumber)
+	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketLinked,
-		TicketID:   sourceID,
-		ActorID:    actor.UserID,
-		Payload:    map[string]any{"target_id": targetID, "link_type": lt},
-		OccurredAt: time.Now(),
+		Type:           notification.EventTicketLinked,
+		TicketID:       sourceID,
+		ActorID:        actor.UserID,
+		Payload:        map[string]any{"target_id": targetID, "link_type": lt},
+		OccurredAt:     time.Now(),
+		TrackingNumber: tracking,
+		Subject:        subject,
 	})
 	return nil
 }

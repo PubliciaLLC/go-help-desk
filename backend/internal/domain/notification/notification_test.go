@@ -26,6 +26,8 @@ func TestEvent_RecipientAndTrackingNumberStayOutOfTheWebhookPayload(t *testing.T
 		Payload:        map[string]any{"ReplyBody": "the reply"},
 		TrackingNumber: "GHD-2026-000001",
 		Recipient:      "customer@example.com",
+		Subject:        "Printer jammed",
+		StatusName:     "Resolved",
 	}
 
 	raw, err := json.Marshal(ev)
@@ -38,6 +40,13 @@ func TestEvent_RecipientAndTrackingNumberStayOutOfTheWebhookPayload(t *testing.T
 	require.NotContains(t, body, "TrackingNumber\":",
 		"the field must not be serialised; the payload key of the same name may be")
 	require.NotContains(t, body, "GHD-2026-000001")
+	// Subject and StatusName exist for the webhook renderers to read off the
+	// event directly; they must not move the raw wire shape either.
+	require.NotContains(t, body, "Subject\":",
+		"the field must not be serialised; a Payload key of the same name may be")
+	require.NotContains(t, body, "StatusName")
+	require.NotContains(t, body, "Printer jammed")
+	require.NotContains(t, body, "Resolved")
 
 	// What subscribers do get is unchanged.
 	var got map[string]any

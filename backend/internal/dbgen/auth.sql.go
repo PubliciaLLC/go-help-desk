@@ -69,17 +69,18 @@ func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientPa
 }
 
 const createWebhookConfig = `-- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type CreateWebhookConfigParams struct {
-	ID        uuid.UUID `json:"id"`
-	Url       string    `json:"url"`
-	Events    []string  `json:"events"`
-	Secret    string    `json:"secret"`
-	Enabled   bool      `json:"enabled"`
-	CreatedAt time.Time `json:"created_at"`
+	ID            uuid.UUID `json:"id"`
+	Url           string    `json:"url"`
+	Events        []string  `json:"events"`
+	Secret        string    `json:"secret"`
+	Enabled       bool      `json:"enabled"`
+	CreatedAt     time.Time `json:"created_at"`
+	PayloadFormat string    `json:"payload_format"`
 }
 
 func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error {
@@ -90,6 +91,7 @@ func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConf
 		arg.Secret,
 		arg.Enabled,
 		arg.CreatedAt,
+		arg.PayloadFormat,
 	)
 	return err
 }
@@ -160,7 +162,7 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 }
 
 const getWebhookConfig = `-- name: GetWebhookConfig :one
-SELECT id, url, events, secret, enabled, created_at FROM webhook_configs WHERE id = $1
+SELECT id, url, events, secret, enabled, created_at, payload_format FROM webhook_configs WHERE id = $1
 `
 
 func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
@@ -173,6 +175,7 @@ func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookCo
 		&i.Secret,
 		&i.Enabled,
 		&i.CreatedAt,
+		&i.PayloadFormat,
 	)
 	return i, err
 }
@@ -214,7 +217,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 }
 
 const listEnabledWebhookConfigs = `-- name: ListEnabledWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
 `
 
 func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error) {
@@ -233,6 +236,7 @@ func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfi
 			&i.Secret,
 			&i.Enabled,
 			&i.CreatedAt,
+			&i.PayloadFormat,
 		); err != nil {
 			return nil, err
 		}
@@ -296,15 +300,16 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 }
 
 const updateWebhookConfig = `-- name: UpdateWebhookConfig :exec
-UPDATE webhook_configs SET url = $2, events = $3, secret = $4, enabled = $5 WHERE id = $1
+UPDATE webhook_configs SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6 WHERE id = $1
 `
 
 type UpdateWebhookConfigParams struct {
-	ID      uuid.UUID `json:"id"`
-	Url     string    `json:"url"`
-	Events  []string  `json:"events"`
-	Secret  string    `json:"secret"`
-	Enabled bool      `json:"enabled"`
+	ID            uuid.UUID `json:"id"`
+	Url           string    `json:"url"`
+	Events        []string  `json:"events"`
+	Secret        string    `json:"secret"`
+	Enabled       bool      `json:"enabled"`
+	PayloadFormat string    `json:"payload_format"`
 }
 
 func (q *Queries) UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error {
@@ -314,6 +319,7 @@ func (q *Queries) UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConf
 		pq.Array(arg.Events),
 		arg.Secret,
 		arg.Enabled,
+		arg.PayloadFormat,
 	)
 	return err
 }

@@ -28,14 +28,14 @@ DELETE FROM oauth_clients WHERE id = $1;
 SELECT * FROM oauth_clients ORDER BY name;
 
 -- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at)
-VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format)
+VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: GetWebhookConfig :one
 SELECT * FROM webhook_configs WHERE id = $1;
 
 -- name: UpdateWebhookConfig :exec
-UPDATE webhook_configs SET url = $2, events = $3, secret = $4, enabled = $5 WHERE id = $1;
+UPDATE webhook_configs SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6 WHERE id = $1;
 
 -- name: DeleteWebhookConfig :exec
 DELETE FROM webhook_configs WHERE id = $1;
