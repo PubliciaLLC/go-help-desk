@@ -32,8 +32,9 @@ var errNotFound = errors.New("not found")
 type fakeStore struct {
 	forUpdateReads int
 
-	guestTokens   map[string]guestTokenRow
-	errGuestToken error
+	guestTokens       map[string]guestTokenRow
+	errGuestToken     error
+	guestTokenCreates int // total CreateGuestToken calls, across rotations
 
 	// onRead rewrites what a read returns, so a test can tell a value that came
 	// back from the store apart from the identical-looking one the caller
@@ -473,6 +474,7 @@ func (f *fakeStore) CreateGuestToken(_ context.Context, _, ticketID uuid.UUID, h
 		f.guestTokens = map[string]guestTokenRow{}
 	}
 	f.guestTokens[hash] = guestTokenRow{ticketID: ticketID, expiresAt: expiresAt}
+	f.guestTokenCreates++
 	return nil
 }
 

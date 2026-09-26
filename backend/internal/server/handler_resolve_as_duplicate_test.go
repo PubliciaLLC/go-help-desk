@@ -92,10 +92,15 @@ func TestResolveAsDuplicate_HTTP(t *testing.T) {
 		require.Equal(t, http.StatusOK, res.StatusCode,
 			"an already-satisfied identical link must resolve, not 409; body: %s", b)
 
+		// #209: the source ticket is already Resolved, so this double-submit
+		// must skip the resolve side effects entirely rather than re-running
+		// them with the new call's notes — the notes stay whatever the FIRST
+		// resolve set them to, not "second resolve".
 		var got ticket.Ticket
 		require.NoError(t, json.Unmarshal(b, &got))
 		require.NotNil(t, got.ResolutionNotes)
-		require.Equal(t, "second resolve", *got.ResolutionNotes)
+		require.Equal(t, "first resolve", *got.ResolutionNotes,
+			"a double-submit against an already-resolved ticket must not re-run the resolve (#209)")
 
 		// Still exactly one link — the second call did not duplicate the row.
 		links, err := h.ticketSvc.ListLinks(ctx, source.ID)

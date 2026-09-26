@@ -738,10 +738,21 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 // can reuse it. It transitions the ticket to Resolved, records resolution notes,
 // and performs all the necessary updates in one transaction.
 // Returns the updated ticket and the new guest token.
-func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ticketID uuid.UUID, notes string, actor Actor, now time.Time) (Ticket, string, error) {
+// The returned bool is true when the ticket was already Resolved: a
+// double-submit (e.g. a stale second browser tab) landing on an
+// already-resolved ticket must not re-run the resolve side effects — a
+// second status-history row, a second audit entry, another guest-token
+// rotation invalidating the link just emailed, and another
+// EventTicketResolved dispatch. Checked under the same FOR UPDATE lock as
+// the mutation itself, so two concurrent resolves cannot both pass it.
+// Same pattern as close()'s alreadyClosed guard. See #209.
+func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ticketID uuid.UUID, notes string, actor Actor, now time.Time) (Ticket, string, bool, error) {
 	t, err := st.GetByIDForUpdate(ctx, ticketID)
 	if err != nil {
-		return Ticket{}, "", err
+		return Ticket{}, "", false, err
+	}
+	if t.StatusID == s.sys.resolvedID {
+		return t, "", true, nil
 	}
 	before := ticketMap(t)
 	oldStatusID := t.StatusID
@@ -756,21 +767,21 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, tic
 	applyStatusTimestamps(&t, oldStatusID, s.sys.resolved, s.sys, now)
 
 	if err := st.Update(ctx, t); err != nil {
-		return Ticket{}, "", fmt.Errorf("resolving ticket: %w", err)
+		return Ticket{}, "", false, fmt.Errorf("resolving ticket: %w", err)
 	}
 	if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
-		return Ticket{}, "", fmt.Errorf("recording resolution: %w", err)
+		return Ticket{}, "", false, fmt.Errorf("recording resolution: %w", err)
 	}
 	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
-		return Ticket{}, "", fmt.Errorf("auditing resolution: %w", err)
+		return Ticket{}, "", false, fmt.Errorf("auditing resolution: %w", err)
 	}
 	// Rotate: the guest is told, and the link they are told with is the
 	// one they need to reopen inside the window.
 	guestToken, err := rotateGuestToken(ctx, st, t)
 	if err != nil {
-		return Ticket{}, "", err
+		return Ticket{}, "", false, err
 	}
-	return t, guestToken, nil
+	return t, guestToken, false, nil
 }
 
 // Resolve transitions a ticket to Resolved and records resolution notes.
@@ -780,13 +791,20 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	}
 	var t Ticket
 	var guestToken string
+	var alreadyResolved bool
 	now := time.Now()
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		var err error
-		t, guestToken, err = s.resolveInTx(ctx, st, au, ticketID, notes, actor, now)
+		t, guestToken, alreadyResolved, err = s.resolveInTx(ctx, st, au, ticketID, notes, actor, now)
 		return err
 	}); err != nil {
 		return Ticket{}, err
+	}
+
+	// Double-submit (e.g. a stale second tab): the resolve side effects
+	// already happened once. See #209.
+	if alreadyResolved {
+		return t, nil
 	}
 
 	// After the commit, like the dispatch below: an SLA record stamped for a
@@ -826,6 +844,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 
 	var t Ticket
 	var guestToken string
+	var alreadyResolved bool
 	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
@@ -907,17 +926,15 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 			}
 		}
 
-		// Resolve the source ticket.
+		// Resolve the source ticket. Link creation above is already
+		// idempotent-satisfied (#194) regardless of the ticket's resolved
+		// state, so it always runs; resolveInTx itself is the one that skips
+		// the resolve side effects on a double-submit. See #209.
 		var txErr error
-		t, guestToken, txErr = s.resolveInTx(ctx, st, au, sourceID, notes, actor, now)
+		t, guestToken, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, sourceID, notes, actor, now)
 		return txErr
 	}); err != nil {
 		return Ticket{}, err
-	}
-
-	// After the commit, dispatch events and record SLA, as Resolve does.
-	if s.sla != nil {
-		_ = s.sla.RecordResolved(ctx, t, now)
 	}
 
 	// Dispatch both the link event and the resolve event. t is the source
@@ -932,6 +949,17 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
 	})
+
+	// Double-submit (e.g. a stale second tab): the resolve side effects
+	// already happened once. See #209.
+	if alreadyResolved {
+		return t, nil
+	}
+
+	// After the commit, dispatch events and record SLA, as Resolve does.
+	if s.sla != nil {
+		_ = s.sla.RecordResolved(ctx, t, now)
+	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventTicketResolved,
@@ -1180,20 +1208,45 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	if !lt.Valid() {
 		return fmt.Errorf("%q: %w", lt, ErrInvalidLinkType)
 	}
-	link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
-	if err := s.store.CreateLink(ctx, link); err != nil {
-		return fmt.Errorf("creating link: %w", err)
-	}
-	// Read for Subject/TrackingNumber only — a webhook renderer needs a
-	// human-readable line ("Linked to <target>") and the event otherwise
-	// carries only ids. Best-effort: a read failure here must not undo the
-	// link that already committed, so the event still dispatches, just
-	// without those two fields, same as before this existed.
+
 	var subject, tracking string
-	if t, err := s.store.GetByID(ctx, sourceID); err == nil {
-		subject = t.Subject
-		tracking = string(t.TrackingNumber)
+	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		// Lock both ticket rows FOR UPDATE up front, in the same fixed order
+		// (lexicographically smaller id first) ResolveAsDuplicate uses, before
+		// the link insert. Without this, a plain AddLink relies only on
+		// CreateLink's FK-triggered FOR KEY SHARE lock, which does not
+		// participate in that ordering discipline — a concurrent
+		// ResolveAsDuplicate on the same ticket pair, holding its ordered FOR
+		// UPDATE locks, can still deadlock against it (40P01, surfacing as an
+		// unhandled 500). See #210.
+		first, second := sourceID, targetID
+		if bytes.Compare(second[:], first[:]) < 0 {
+			first, second = second, first
+		}
+		lockedFirst, err := st.GetByIDForUpdate(ctx, first)
+		if err != nil {
+			return err
+		}
+		lockedSecond, err := st.GetByIDForUpdate(ctx, second)
+		if err != nil {
+			return err
+		}
+		source := lockedFirst
+		if source.ID != sourceID {
+			source = lockedSecond
+		}
+		subject = source.Subject
+		tracking = string(source.TrackingNumber)
+
+		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
+		if err := st.CreateLink(ctx, link); err != nil {
+			return fmt.Errorf("creating link: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
+
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventTicketLinked,
 		TicketID:       sourceID,

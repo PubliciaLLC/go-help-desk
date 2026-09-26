@@ -195,6 +195,42 @@ func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
 	require.Empty(t, links, "nothing may have been written onto the foreign ticket")
 }
 
+// TestRemoveLink_ChecksTheTargetTicketToo pins #211: handleRemoveLink was
+// gated only on the path's own {id}, unlike handleAddLink which checks both
+// ends of the link (the link is written onto — and here, removed from — the
+// TARGET's thread too). A reporting user could otherwise remove a
+// staff-created link from their own ticket to a ticket they cannot see, even
+// though the ids are already visible via GET /links.
+func TestRemoveLink_ChecksTheTargetTicketToo(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	foreign := foreignTicket(t, h)
+
+	// Seed the link directly through the domain service (as staff would),
+	// bypassing the HTTP visibility gate that would otherwise refuse its own
+	// creation against a ticket the user cannot see.
+	staffActor := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
+	require.NoError(t, h.ticketSvc.AddLink(ctx, own.ID, foreign.ID, ticket.LinkRelatedTo, staffActor))
+
+	res := h.doAsUser(t, http.MethodDelete,
+		"/api/v1/tickets/"+own.ID.String()+"/links/"+foreign.ID.String()+"/related_to", nil)
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode,
+		"removing a link to a ticket the caller cannot read is a write onto that ticket; body %s", b)
+
+	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1, "the link must survive a forbidden removal attempt")
+}
+
 // TestAddLink_ReturnsInvalidLinkTypeWith400 verifies that an invalid link type
 // returns 400 Bad Request, not 500 Internal Server Error.
 func TestAddLink_ReturnsInvalidLinkTypeWith400(t *testing.T) {
