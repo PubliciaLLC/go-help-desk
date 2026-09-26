@@ -422,7 +422,9 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets),
 				authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
 			Get("/tags", s.handleListActiveTags)
-		// Category/type/item listing, active only.
+		// Category/type/item listing. Active only for a guest or a
+		// reporting user; the whole tree for staff and administrators, per
+		// DESIGN.md's role table — see catalogueIsFullyVisible.
 		//
 		// Open to anyone signed in, and to nobody else unless this instance
 		// takes guest submissions. It used to be open to everyone outright:
@@ -466,11 +468,36 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// catalogueIsFullyVisible reports whether this caller sees the whole
+// category/type/item tree rather than only the active part of it.
+//
+// DESIGN.md's "Ticket Submission by Role" table: a guest and a reporting user
+// get active categories and types only; staff and administrators get All.
+// Staff need the archived ones because filing or reclassifying an old ticket
+// under the classification it actually belongs to is ordinary work, and that
+// classification may well have been retired since.
+//
+// The form used to ask a different endpoint for staff — /admin/categories —
+// which is wrapped in RequireRole(admin). Staff got 403, the query failed,
+// the picker fell back to an empty list, and a staff member could not file a
+// ticket at all: the category is required and there was nothing in it to
+// pick. The same 403 emptied the type and item pickers. So this is one
+// endpoint that answers according to who asked, not two endpoints where the
+// caller has to guess which one it may use.
+//
+// MFAPassed as well as the role: a session that has passed the password and
+// not the second factor is not yet staff for this purpose, and the archived
+// half of an operator's structure is not something to hand it.
+func catalogueIsFullyVisible(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	return a != nil && a.MFAPassed && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
+}
+
 // handleListPublicCategories returns only active categories.
 // Used by the ticket-creation form for regular users and guests.
 // No admin auth required — any authenticated user or guest can call this.
 func (s *Server) handleListPublicCategories(w http.ResponseWriter, r *http.Request) {
-	cats, err := s.categories.ListCategories(r.Context(), true) // active only
+	cats, err := s.categories.ListCategories(r.Context(), !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -485,7 +512,7 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid category id")
 		return
 	}
-	types, err := s.categories.ListTypes(r.Context(), catID, true) // active only
+	types, err := s.categories.ListTypes(r.Context(), catID, !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -500,7 +527,7 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid type id")
 		return
 	}
-	items, err := s.categories.ListItems(r.Context(), typeID, true) // active only
+	items, err := s.categories.ListItems(r.Context(), typeID, !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return

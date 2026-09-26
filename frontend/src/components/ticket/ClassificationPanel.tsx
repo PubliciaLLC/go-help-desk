@@ -8,6 +8,22 @@ import { Select } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import type { Category, TicketType, TicketItem } from '@/api/types'
 
+// selectable is the options list for one tier: everything still in
+// circulation, plus the row this ticket already carries even if it has since
+// been archived.
+//
+// Two questions were being answered by one filter. "What may staff classify
+// NEW work under" is active only, and a test pins that. "May this ticket keep
+// the classification it already has" is a different question, and the answer
+// has to be yes — otherwise a ticket filed under a category that was retired
+// afterwards could be moved OUT of it but never left where it was, and
+// editing its Type alone would quietly strip its Category. The server allows
+// staff to reclassify into an archived classification for the same reason:
+// filing an old ticket where it actually belongs is ordinary work.
+function selectable<T extends { id: string; active: boolean }>(rows: T[], current?: string | null): T[] {
+  return rows.filter((r) => r.active || r.id === current)
+}
+
 export interface ClassificationPanelProps {
   ticketId: string
   categoryId: string
@@ -91,6 +107,10 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
   const typeSelectId = `cti-type-${ticketId}`
   const itemSelectId = `cti-item-${ticketId}`
 
+  // These resolve against the lists above, which for staff now include
+  // archived rows. Before, a ticket filed under a category that had since
+  // been retired showed "—" in the sidebar: the id was real, the row was
+  // simply missing from an active-only list.
   const categoryName = categories.find((c) => c.id === categoryId)?.name
   const typeName = types.find((t) => t.id === typeId)?.name
   const itemName = items.find((i) => i.id === itemId)?.name
@@ -121,7 +141,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                 onChange={(e) => { setDraftCategory(e.target.value); setDraftType(''); setDraftItem('') }}
               >
                 <option value="">— select —</option>
-                {categories.filter((c) => c.active).map((c) => (
+                {selectable(categories, categoryId).map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </Select>
@@ -136,7 +156,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                   onChange={(e) => { setDraftType(e.target.value); setDraftItem('') }}
                 >
                   <option value="">— none —</option>
-                  {types.filter((t) => t.active).map((t) => (
+                  {selectable(types, typeId).map((t) => (
                     <option key={t.id} value={t.id}>{t.name}</option>
                   ))}
                 </Select>
@@ -152,7 +172,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                   onChange={(e) => setDraftItem(e.target.value)}
                 >
                   <option value="">— none —</option>
-                  {items.filter((i) => i.active).map((i) => (
+                  {selectable(items, itemId).map((i) => (
                     <option key={i.id} value={i.id}>{i.name}</option>
                   ))}
                 </Select>

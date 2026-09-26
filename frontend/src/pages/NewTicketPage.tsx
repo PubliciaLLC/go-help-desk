@@ -4,11 +4,11 @@ import { useQuery } from '@tanstack/react-query'
 import {
   createTicket,
   listPublicCategories,
+  listPublicItems,
   listPublicTypes,
   resolveFieldsForCTI,
   uploadAttachment,
 } from '@/api/tickets'
-import { listCategories, listTypes, listItems } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
@@ -96,25 +96,32 @@ export function NewTicketPage() {
   const [submitting, setSubmitting] = useState(false)
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
 
-  // Staff/admin use the admin endpoints (all categories/types/items, active or inactive).
-  // Regular users use the public endpoints (active only, no items).
+  // One set of endpoints for everybody. They answer according to who is
+  // asking: active rows for a guest or a reporting user, the whole tree for
+  // staff and administrators, which is what DESIGN.md's role table says.
+  //
+  // This used to pick a different endpoint by role — /admin/categories for
+  // staff — and that route is wrapped in RequireRole(admin). Staff got 403,
+  // the query failed, `categories` fell back to [] and the picker was empty.
+  // A category is required, so a staff member could not file a ticket at
+  // all, and the same 403 emptied the type and item pickers behind it.
   const { data: categories = [] } = useQuery({
-    queryKey: isStaffOrAdmin ? ['admin-categories'] : ['public-categories'],
-    queryFn: isStaffOrAdmin ? listCategories : listPublicCategories,
+    queryKey: ['public-categories'],
+    queryFn: listPublicCategories,
   })
 
   const { data: types = [] } = useQuery({
-    queryKey: isStaffOrAdmin
-      ? ['admin-types', categoryId]
-      : ['public-types', categoryId],
-    queryFn: () =>
-      isStaffOrAdmin ? listTypes(categoryId) : listPublicTypes(categoryId),
+    queryKey: ['public-types', categoryId],
+    queryFn: () => listPublicTypes(categoryId),
     enabled: !!categoryId,
   })
 
+  // Items are staff-only on the form itself — the role table gives a
+  // reporting user no item picker at all — so this stays gated on the role
+  // even though the endpoint would answer either way.
   const { data: items = [] } = useQuery({
-    queryKey: ['admin-items', categoryId, typeId],
-    queryFn: () => listItems(categoryId, typeId),
+    queryKey: ['public-items', categoryId, typeId],
+    queryFn: () => listPublicItems(categoryId, typeId),
     enabled: isStaffOrAdmin && !!categoryId && !!typeId,
   })
 
