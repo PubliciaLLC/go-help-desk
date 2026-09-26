@@ -399,9 +399,10 @@ func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset in
 	return out, nil
 }
 
-func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
+func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListResolvedTicketsBefore(ctx, dbgen.ListResolvedTicketsBeforeParams{
 		ResolvedAt: sql.NullTime{Time: before, Valid: true},
+		StatusID:   resolvedStatusID,
 		Limit:      pageInt32(limit),
 	})
 	if err != nil {

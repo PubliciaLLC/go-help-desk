@@ -543,13 +543,14 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]Ticket
 
 const listResolvedTicketsBefore = `-- name: ListResolvedTicketsBefore :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
-WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND closed_at IS NULL
+WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND status_id = $2 AND closed_at IS NULL
 ORDER BY resolved_at ASC
-LIMIT $2
+LIMIT $3
 `
 
 type ListResolvedTicketsBeforeParams struct {
 	ResolvedAt sql.NullTime `json:"resolved_at"`
+	StatusID   uuid.UUID    `json:"status_id"`
 	Limit      int32        `json:"limit"`
 }
 
@@ -578,8 +579,14 @@ type ListResolvedTicketsBeforeRow struct {
 	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
 }
 
+// status_id is the Resolved status's id. Without this filter, a row that
+// satisfies resolved_at < $1 but sits in a different status (a legacy row
+// moved off Resolved by old code that cleared status_id without clearing
+// resolved_at, or a Closed ticket with a stale resolved_at) is listed on
+// every sweep, locked, skipped by stillEligible, and listed again forever —
+// see #191.
 func (q *Queries) ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error) {
-	rows, err := q.db.QueryContext(ctx, listResolvedTicketsBefore, arg.ResolvedAt, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, listResolvedTicketsBefore, arg.ResolvedAt, arg.StatusID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

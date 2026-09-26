@@ -205,6 +205,12 @@ type Querier interface {
 	ListOAuthClients(ctx context.Context) ([]OauthClient, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error)
+	// status_id is the Resolved status's id. Without this filter, a row that
+	// satisfies resolved_at < $1 but sits in a different status (a legacy row
+	// moved off Resolved by old code that cleared status_id without clearing
+	// resolved_at, or a Closed ticket with a stale resolved_at) is listed on
+	// every sweep, locked, skipped by stillEligible, and listed again forever —
+	// see #191.
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
 	// Tickets the breach sweep must evaluate: open, under a policy, with at least
 	// one target that is neither met nor already stamped, using the same

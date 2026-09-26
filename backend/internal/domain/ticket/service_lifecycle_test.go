@@ -1296,6 +1296,61 @@ func TestAutoClose_HonoursLimit(t *testing.T) {
 	require.Equal(t, 1, closed2)
 }
 
+// TestAutoClose_LegacyRowWithWrongStatusNeverListed pins #191: a row whose
+// resolved_at satisfies the cutoff but whose status is not Resolved (a legacy
+// row left behind by code that once moved a ticket off Resolved without
+// clearing resolved_at, or a Closed ticket with a stale resolved_at) must
+// never be listed as an auto-close candidate at all — not listed-then-skipped
+// on every sweep, which is what let ≥500 such rows permanently starve the
+// query for genuine candidates.
+func TestAutoClose_LegacyRowWithWrongStatusNeverListed(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	resolvedAt := time.Now().Add(-10 * 24 * time.Hour)
+
+	// A ticket moved back to New by old code, which left resolved_at set.
+	legacyOpen := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: "HD-000001",
+		Subject:        "Legacy row, wrong status (open)",
+		StatusID:       h.newStatus.ID,
+		ResolvedAt:     &resolvedAt,
+		CreatedAt:      time.Now().Add(-15 * 24 * time.Hour),
+		UpdatedAt:      resolvedAt,
+	}
+	h.store.seed(legacyOpen)
+
+	// A ticket already Closed, but with a stale resolved_at and no closed_at
+	// yet (also possible pre-#191).
+	legacyClosed := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: "HD-000002",
+		Subject:        "Legacy row, wrong status (closed)",
+		StatusID:       h.closedStatus.ID,
+		ResolvedAt:     &resolvedAt,
+		CreatedAt:      time.Now().Add(-15 * 24 * time.Hour),
+		UpdatedAt:      resolvedAt,
+	}
+	h.store.seed(legacyClosed)
+
+	// Directly pins the listing contract, not just AutoClose's behaviour on
+	// top of it.
+	candidates, err := h.svc.ListResolvedBefore(ctx, time.Now(), 100)
+	require.NoError(t, err)
+	for _, c := range candidates {
+		require.NotEqual(t, legacyOpen.ID, c.ID, "a row not in Resolved must never be listed as a candidate")
+		require.NotEqual(t, legacyClosed.ID, c.ID, "a row not in Resolved must never be listed as a candidate")
+	}
+
+	closed, err := h.svc.AutoClose(ctx, 7, 100)
+	require.NoError(t, err)
+	require.Equal(t, 0, closed, "neither legacy row is a Resolved ticket, so AutoClose must close nothing")
+
+	require.Equal(t, h.newStatus.ID, h.store.tickets[legacyOpen.ID].StatusID, "must not be touched")
+	require.Equal(t, h.closedStatus.ID, h.store.tickets[legacyClosed.ID].StatusID, "must not be touched")
+}
+
 // TestClose_BypassesTransitionRules pins the recorded decision: Close does not
 // consult CanTransitionStatus, so admins can force-close from any status and
 // the auto-close scheduler can close from Resolved.

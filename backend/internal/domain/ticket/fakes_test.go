@@ -213,12 +213,17 @@ func (f *fakeStore) ListAll(context.Context, int, int) ([]ticket.Ticket, error) 
 func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
-func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
-	// Filter: ResolvedAt != nil && ResolvedAt < before && ClosedAt == nil
+func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
+	// Filter: ResolvedAt != nil && ResolvedAt < before && StatusID == resolvedStatusID && ClosedAt == nil
 	// Sort by ResolvedAt ascending, apply limit.
+	//
+	// StatusID is checked here to mirror the real query's `status_id = $2`
+	// (#191): a row with a stale resolved_at that has since moved to a
+	// different status must not be listed, or the sweep would relock and skip
+	// it forever instead of it simply falling out of the candidate set.
 	var candidates []ticket.Ticket
 	for _, t := range f.tickets {
-		if t.ResolvedAt != nil && t.ResolvedAt.Before(before) && t.ClosedAt == nil {
+		if t.ResolvedAt != nil && t.ResolvedAt.Before(before) && t.StatusID == resolvedStatusID && t.ClosedAt == nil {
 			candidates = append(candidates, t)
 		}
 	}

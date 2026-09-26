@@ -47,7 +47,11 @@ type Store interface {
 	ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]Ticket, error)
 	ListAll(ctx context.Context, limit, offset int) ([]Ticket, error)
 	ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error)
-	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
+	// ListResolvedBefore lists tickets resolved before the given time.
+	// resolvedStatusID must be the Resolved status's id: without it, a row
+	// whose resolved_at predates the cutoff but whose status has since moved
+	// on (or never was Resolved) would be listed forever. See #191.
+	ListResolvedBefore(ctx context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]Ticket, error)
 
 	// Guest access tokens.
 	//

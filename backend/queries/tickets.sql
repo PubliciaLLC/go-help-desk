@@ -125,10 +125,16 @@ ORDER BY
 LIMIT $1 OFFSET $2;
 
 -- name: ListResolvedTicketsBefore :many
+-- status_id is the Resolved status's id. Without this filter, a row that
+-- satisfies resolved_at < $1 but sits in a different status (a legacy row
+-- moved off Resolved by old code that cleared status_id without clearing
+-- resolved_at, or a Closed ticket with a stale resolved_at) is listed on
+-- every sweep, locked, skipped by stillEligible, and listed again forever —
+-- see #191.
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
-WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND closed_at IS NULL
+WHERE resolved_at IS NOT NULL AND resolved_at < $1 AND status_id = $2 AND closed_at IS NULL
 ORDER BY resolved_at ASC
-LIMIT $2;
+LIMIT $3;
 
 -- name: CreateReply :exec
 -- author_id is NULL for a reply written by a guest, who has no account. That is

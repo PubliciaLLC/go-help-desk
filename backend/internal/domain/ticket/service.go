@@ -913,7 +913,7 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 // one ticket does not stop the others.
 func (s *Service) AutoClose(ctx context.Context, reopenWindowDays, limit int) (int, error) {
 	cutoff := time.Now().AddDate(0, 0, -reopenWindowDays)
-	candidates, err := s.store.ListResolvedBefore(ctx, cutoff, limit)
+	candidates, err := s.store.ListResolvedBefore(ctx, cutoff, s.sys.resolvedID, limit)
 	if err != nil {
 		return 0, fmt.Errorf("listing tickets to auto-close: %w", err)
 	}
@@ -1235,7 +1235,7 @@ func (s *Service) SearchUnassigned(ctx context.Context, q string, limit, offset 
 
 // ListResolvedBefore is used by the auto-close scheduler.
 func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error) {
-	return s.store.ListResolvedBefore(ctx, before, limit)
+	return s.store.ListResolvedBefore(ctx, before, s.sys.resolvedID, limit)
 }
 
 // ListStatuses returns all configured statuses.
