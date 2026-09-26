@@ -748,9 +748,16 @@ WHERE t.id = r.ticket_id
 -- S5's gate (the equality check fails), so it keeps a real frozen number
 -- here and this statement judges it normally — that reply's own breach
 -- decision, exactly as #240 requires. A real reply landing on the exact same
--- microsecond as an updated_at-derived estimate would still be treated as
--- the estimate (S5's gate cannot tell them apart either), which errs in the
--- safe direction, as before.
+-- instant as an updated_at-derived estimate (first_response_at = resolved_at,
+-- not later) is NOT treated as the estimate: #255's S4b below only corrects a
+-- STRICTLY later reply (`first_response_at > resolved_at`), so an exact-equal
+-- reply is left exactly where it was, keeps whatever real, non-estimated
+-- number 000027's earlier pass froze from it, and this statement judges that
+-- number normally — the same "real reply, judged on its own merits" path as
+-- the "real, earlier staff reply" case above, not the estimated-and-unstamped
+-- path. #255 exists for the general "later reply" case; hitting the exact
+-- equality boundary in addition would need `>=` there instead, and is not
+-- something this file currently does.
 --
 -- #253's S4a rows (a FACT resolution corrected because its stored reply
 -- postdated it) are judged the same way as any other fact-based record:
