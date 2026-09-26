@@ -1105,7 +1105,7 @@ function FeaturesPanel({
         <div>
           <SettingRow
             label="SLA tracking"
-            description="Show the SLA policy editor below, where response and resolution targets are set per priority and category. Tickets are not yet highlighted when a target is approaching or missed, and the targets are applied to new tickets only when SLA_ENABLED is set in the environment."
+            description="Track response and resolution targets per priority and category. A policy is attached when a ticket is created, a background sweep marks a target breached when it passes, and the queue shows each ticket's standing. This toggle is the switch; SLA_ENABLED in the environment turns it on at every start."
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
           </SettingRow>

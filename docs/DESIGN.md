@@ -444,6 +444,48 @@ in 1.2.0.
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
 
+### Small screens
+
+Two jobs are supported on a phone: **a staff member triaging away from their
+desk**, and **a reporter filing a request and following it**. Administration is
+not. An operator configuring categories, editing roles or managing API keys is
+at a desk, and the ten admin tables are built for one.
+
+That boundary is stated rather than implied, because the alternative is a
+product that appears to work on a phone until somebody reaches a page that
+does not.
+
+**What each job covers.** The staff path is the queue, a ticket, and the
+actions taken on it: read, reply, reassign, change status, resolve. The
+reporter path is the new-ticket form, their own list, and the thread they can
+read and reply to. Both include signing in.
+
+**Where the work actually is.** The unauthenticated pages — sign-in,
+registration, first-run setup, email verification, guest submission, the guest
+ticket view, and the tracking-number form — render outside the application
+shell, as centred cards with their own maximum widths. They already work at
+phone size; measured at 390 CSS pixels, each fits with nothing wider than the
+screen. Nothing in this section changes them.
+
+Everything inside the shell does not work, and for one reason: the sidebar is
+a fixed 240 pixels with no breakpoint, which is more than half of a 390-pixel
+viewport. The pages beneath it then inherit a column too narrow to lay
+anything out in. So the shell is the first change and the largest single
+improvement; the queue and the ticket page follow it.
+
+**The rule for the pages that are in scope.** No horizontal scrolling at 390
+pixels, controls large enough to hit with a thumb, and a layout that stacks
+rather than shrinks — a five-column table squeezed into a phone is not a
+mobile layout, it is the same table with less room. Where a table carries one
+row per thing, that becomes one card per thing.
+
+**Not a claim of feature parity.** Everything a staff member can do to a ticket
+from a desk they can do from a phone, because those actions live on the ticket
+page. Bulk selection across a queue is the exception and stays desktop-only:
+it is a multi-select over a table, which is the shape that does not translate.
+
+Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296).
+
 ### Ticket Submission by Role
 
 | Field | Guest | User (logged in) | Staff / Admin |
@@ -1585,9 +1627,16 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 
 ## SLA Tracking (v1)
 
-**Read this section as a specification of the intended feature, not a description of what runs.** What is implemented, with `SLA_ENABLED=true` in the environment: a policy is attached to a ticket when it is created, its deadlines are recorded, and the two timestamps needed to judge them — first response and resolution — are stamped as they happen. `EvaluateBreaches` and `IsResponseBreached` exist and have no callers, so nothing ever reads any of it.
+This section describes what runs. SLA tracking is off until an operator turns
+it on from **Admin → Settings → Features**. The setting is read live, so the
+toggle takes effect without a restart.
 
-The **Admin → Settings** toggle shows the SLA policy editor and does nothing else: it is how an operator reaches the editor, and it does not switch the feature on. `SLA_ENABLED` in the environment is what does that. Nothing else below is implemented — no scheduler, no breach detection, no notification, no indicator, no pause. Each gap is marked, and they are tracked as issues.
+`SLA_ENABLED=true` in the environment switches that setting on at **every**
+start, not only the first. It only ever switches it on and never off, so an
+unset variable cannot disable a feature an administrator enabled — but an
+administrator who turns the toggle off while the variable is still set will
+find it on again after the next restart. Treat it as "this instance has SLA
+tracking" rather than as a default.
 
 ### SLA Policies
 
