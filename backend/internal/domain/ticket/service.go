@@ -1483,8 +1483,21 @@ func (s *Service) AddStatus(ctx context.Context, st Status) error {
 	return s.statuses.CreateStatus(ctx, st)
 }
 
-// SaveStatus persists changes to an existing status record.
+// SaveStatus persists changes to an existing status record. Renaming a
+// system status is refused here as well as at the HTTP handler
+// (handleUpdateStatus): system statuses are found by name at startup
+// (LoadSystemStatuses) and compared by name in lifecycle rules, so a rename
+// that reached this method by any other route would reintroduce the
+// restart-crash hazard #263 closed. Mirrors RemoveStatus's own
+// system-status refusal below.
 func (s *Service) SaveStatus(ctx context.Context, st Status) error {
+	current, err := s.getStatusByID(ctx, st.ID)
+	if err != nil {
+		return err
+	}
+	if current.Kind == StatusKindSystem && st.Name != current.Name {
+		return fmt.Errorf("cannot rename system status %q", current.Name)
+	}
 	return s.statuses.UpdateStatus(ctx, st)
 }
 

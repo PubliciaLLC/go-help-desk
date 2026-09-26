@@ -321,6 +321,42 @@ func TestRemoveStatus_ProtectsSystemStatuses(t *testing.T) {
 	}
 }
 
+// TestSaveStatus_RefusesSystemStatusRename proves the rename refusal is
+// enforced by the domain layer itself, not only by handleUpdateStatus. It
+// calls Service.SaveStatus directly, bypassing the HTTP handler entirely, so
+// a future caller (an MCP status-management tool, a bulk-import endpoint)
+// cannot silently reintroduce the restart-crash hazard #263 closed: system
+// statuses are found by name at startup and compared by name in lifecycle
+// rules, so a rename that reached this method by any route breaks that.
+func TestSaveStatus_RefusesSystemStatusRename(t *testing.T) {
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			st := h.statusNamed(name)
+			st.Name = "Renamed"
+
+			err := h.svc.SaveStatus(context.Background(), st)
+
+			require.Error(t, err, "system status %q must not be renameable via SaveStatus", name)
+			require.Contains(t, err.Error(), "system status")
+		})
+	}
+}
+
+// TestSaveStatus_SystemStatusOtherFieldsStillEditable confirms the refusal is
+// scoped to the name: color and sort order on a system status still save
+// through the same method with no name change.
+func TestSaveStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
+	h := newHarness(t)
+	st := h.statusNamed(ticket.StatusNameNew)
+	st.Color = "#ff0000"
+	st.SortOrder = 42
+
+	err := h.svc.SaveStatus(context.Background(), st)
+
+	require.NoError(t, err)
+}
+
 // TestRemoveStatus_RefusesStatusInUse protects tickets from being orphaned on a
 // status that no longer exists.
 func TestRemoveStatus_RefusesStatusInUse(t *testing.T) {

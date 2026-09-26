@@ -1393,10 +1393,12 @@ When the SLA toggle is enabled, a **SLA Policies** management blade appears dire
 ([#219](https://github.com/PubliciaLLC/go-help-desk/issues/219)). If a
 ticket reaches Resolved, or Closed without passing through Resolved,
 before any staff reply, its first response is recorded at the resolution
-instant, in the same write as the resolution itself. The response target
-is judged against that instant, so a ticket resolved without a reply is
-never left reporting a response it can no longer receive. A ticket that
-already had an earlier staff reply keeps that reply as its first response.
+instant, in a single statement on the ticket's SLA record (separate from,
+and after, the ticket's own resolution write; a failure there is repaired
+on the next resolve/close). The response target is judged against that
+instant, so a ticket resolved without a reply is never left reporting a
+response it can no longer receive. A ticket that already had an earlier
+staff reply keeps that reply as its first response.
 
 **Deleting a policy.** A policy that any ticket has been tracked against
 cannot be deleted: those tickets' targets and breach stamps are measured
@@ -1425,9 +1427,11 @@ accumulates across possibly several Pending intervals, not a single flag:
   per-status "pauses the SLA" flag in v1. Renaming the status away from
   `Pending` stops tickets from pausing from then on. A ticket already in it
   stays paused until it leaves, since leaving closes the interval whatever the
-  status is called. Deactivating it hides it from the status pickers, and
-  deleting it removes the only way to pause. Whatever status is later named
-  `Pending`, renamed back or newly created, becomes the pause status.
+  status is called. Deactivating it does not stop it pausing: the
+  ticket-detail status picker still lists inactive statuses and the
+  transition is accepted. Deleting it removes the only way to pause. Whatever
+  status is later named `Pending`, renamed back or newly created, becomes the
+  pause status.
 - Each time a ticket enters Pending, that timestamp is recorded as the start
   of a paused interval; each time it leaves Pending (to any other status), the
   interval closes and its length is added to the ticket's accumulated

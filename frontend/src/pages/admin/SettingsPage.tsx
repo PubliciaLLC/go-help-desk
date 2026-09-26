@@ -979,6 +979,7 @@ function SLAPoliciesSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setPendingDelete(null)
+      setFormError('')
     },
     onError: (err) => {
       setPendingDelete(null)
@@ -1041,7 +1042,7 @@ function SLAPoliciesSection() {
                           <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
                           <button
                             className="text-xs text-red-600 hover:underline disabled:opacity-40"
-                            onClick={() => setPendingDelete(p)}
+                            onClick={() => { setFormError(''); setPendingDelete(p) }}
                             disabled={deleteMutation.isPending}
                           >
                             Delete
