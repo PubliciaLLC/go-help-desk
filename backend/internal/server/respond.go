@@ -63,10 +63,9 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
-	// The caller asked for something the ticket's state does not allow, or
-	// sent a value that is not one. Neither is a server fault, and both used
-	// to fall through to 500 "an internal error occurred" — which tells
-	// somebody their own ordinary mistake is a bug here.
+	// The caller sent a value that is not one. Not a server fault, and it
+	// used to fall through to 500 "an internal error occurred" — which
+	// tells somebody their own ordinary mistake is a bug here.
 	if errors.Is(err, ticket.ErrValidation) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -121,7 +120,7 @@ func handleError(w http.ResponseWriter, err error) {
 	}
 	// 403, not 500: refusing to rename or delete a system status is the
 	// domain layer working as designed, matching the sla.ErrPolicyInUse
-	// pattern just above for a refusal that used to fall through to 500 one
+	// pattern above for a refusal that used to fall through to 500 one
 	// layer down from its HTTP-handler check. See #269.
 	if errors.Is(err, ticket.ErrSystemStatusImmutable) {
 		Error(w, http.StatusForbidden, "forbidden", err.Error())
