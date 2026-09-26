@@ -1463,9 +1463,10 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 
 ## SLA Tracking (v1)
 
-**Read this section as a specification of the intended feature, not a description of what runs.** What is implemented, with `SLA_ENABLED=true` in the environment: a policy is attached to a ticket when it is created, its deadlines are recorded, and the two timestamps needed to judge them — first response and resolution — are stamped as they happen. `EvaluateBreaches` and `IsResponseBreached` exist and have no callers, so nothing ever reads any of it.
-
-The **Admin → Settings** toggle shows the SLA policy editor and does nothing else: it is how an operator reaches the editor, and it does not switch the feature on. `SLA_ENABLED` in the environment is what does that. Nothing else below is implemented — no scheduler, no breach detection, no notification, no indicator, no pause. Each gap is marked, and they are tracked as issues.
+This section describes what runs. SLA tracking is off until an operator turns
+it on from **Admin → Settings → Features**, and `SLA_ENABLED=true` in the
+environment pre-enables it at first start; the setting is read live, so the
+toggle takes effect without a restart.
 
 ### SLA Policies
 
