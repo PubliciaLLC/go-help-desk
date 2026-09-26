@@ -69,7 +69,10 @@ WHERE t.id = r.ticket_id
 -- the moment this file ran. Moved to the end of migration
 -- 000028_repair_resolved_status_invariant.up.sql, AFTER its own repairs. The
 -- ordering dependency was not eliminated, only made deliberate and
--- documented: that file's capture/repair statements (C1, R1-R4, C2, S1) each
--- have their own specific ordering requirements relative to tickets.closed_at
--- and .resolved_at, spelled out in that file's Phase A header and each
--- statement's own comment. See that file for the current statements.
+-- documented: that file's Phase A capture/repair statements (C1, R1-R4, C2)
+-- each have their own specific ordering requirements relative to
+-- tickets.closed_at and .resolved_at, spelled out in that file's Phase A
+-- header and each statement's own comment. S1 (#254) is Phase B, not Phase A,
+-- and has no such requirement — it reads only phase A's capture table for
+-- resolution instants, never the repaired tickets columns directly. See that
+-- file for the current statements.

@@ -388,6 +388,96 @@ func TestMigration_SLABackfillPreservesReopenedTicketsResolution(t *testing.T) {
 	require.True(t, recStale.ResolvedAt.Equal(T.Add(10*time.Minute)))
 }
 
+// TestMigration_SLABackfillCorrectsFirstResponsePostdatingResolution pins
+// #253: a real first_response_at already recorded on the sla_records row can
+// postdate the ticket's own (earlier) FACT resolution — reachable from
+// ordinary v1.2.0-era legacy data, where RecordResolved and
+// RecordFirstResponse were independent first-write-wins calls with no #219
+// folding. S4 (mirroring the live COALESCE) leaves an already-set
+// first_response_at untouched, so without S4a's fix the later reply would
+// stay recorded as the response even though the earlier resolution should
+// count as one first, per #219/#220 and the same "earliest fact wins"
+// principle #247 already established on the resolution-capture side.
+func TestMigration_SLABackfillCorrectsFirstResponsePostdatingResolution(t *testing.T) {
+	f := newMigration028Fixture(t, "backfill-response-postdate")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	T := now.Add(-4 * time.Hour)
+
+	// caseA (the issue's own reproduction): resolved on time at T+10m with no
+	// reply yet, reopened at T+60m, given a real reply at T+70m — AFTER the
+	// resolution — while reopened, then re-resolved at T+80m. The sla_records
+	// row already carries first_response_at = T+70m before this migration
+	// runs, simulating the independent first-write-wins RecordFirstResponse
+	// call v1.2.0 would have made.
+	firstResolveAt := T.Add(10 * time.Minute)
+	reopenAt := T.Add(60 * time.Minute)
+	replyAt := T.Add(70 * time.Minute)
+	reResolveAt := T.Add(80 * time.Minute)
+	lateReplyAfterOnTimeResolve := f.seed(t, "late reply after on-time resolve, re-resolved",
+		f.resolvedSt.ID, T, now, &reResolveAt, nil, nil)
+	seedHistory(t, f.ctx, f.ts, lateReplyAfterOnTimeResolve.ID, nil, f.newSt.ID, T)
+	seedHistory(t, f.ctx, f.ts, lateReplyAfterOnTimeResolve.ID, &f.newSt.ID, f.resolvedSt.ID, firstResolveAt)
+	seedHistory(t, f.ctx, f.ts, lateReplyAfterOnTimeResolve.ID, &f.resolvedSt.ID, f.inProgressSt.ID, reopenAt)
+	seedHistory(t, f.ctx, f.ts, lateReplyAfterOnTimeResolve.ID, &f.inProgressSt.ID, f.resolvedSt.ID, reResolveAt)
+	_, err := f.tx.ExecContext(f.ctx,
+		`UPDATE sla_records SET first_response_at = $2 WHERE ticket_id = $1`,
+		lateReplyAfterOnTimeResolve.ID, replyAt)
+	require.NoError(t, err)
+
+	// caseB (control): a real reply that genuinely precedes the resolution —
+	// must be completely unaffected by #253's fix. resolved_at is already
+	// stamped on the tickets row (T+10m); the reply is manually set to T+5m,
+	// before it.
+	resolveAtCaseB := T.Add(10 * time.Minute)
+	earlyReplyAt := T.Add(5 * time.Minute)
+	replyBeforeResolve := f.seed(t, "reply genuinely precedes resolve (control)",
+		f.resolvedSt.ID, T, now, &resolveAtCaseB, nil, nil)
+	_, err = f.tx.ExecContext(f.ctx,
+		`UPDATE sla_records SET first_response_at = $2 WHERE ticket_id = $1`,
+		replyBeforeResolve.ID, earlyReplyAt)
+	require.NoError(t, err)
+
+	runMigration027And028(t, f.ctx, f.tx)
+
+	// caseA: the SLA record must use the FIRST (on-time) resolve, not the
+	// re-resolve, and #253's fix must rewind first_response_at back to that
+	// same earlier instant, freezing response_elapsed_at_met_seconds to the
+	// SAME value already frozen for the resolution — not recomputed
+	// independently — with no false response breach left over from the
+	// pre-correction reply.
+	recA := f.getRecord(t, lateReplyAfterOnTimeResolve.ID)
+	require.NotNil(t, recA.ResolvedAt)
+	require.True(t, recA.ResolvedAt.Equal(firstResolveAt),
+		"the SLA record must keep the FIRST (on-time) resolve, not the re-resolve")
+	require.NotNil(t, recA.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *recA.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, recA.ResolutionBreachedAt, "on-time resolution: no breach")
+	require.NotNil(t, recA.FirstResponseAt)
+	require.True(t, recA.FirstResponseAt.Equal(firstResolveAt),
+		"#253: a real reply that postdates a FACT resolution must be corrected back to the earlier resolution instant")
+	require.NotNil(t, recA.ResponseElapsedAtMetSeconds)
+	require.Equal(t, *recA.ResolutionElapsedAtMetSeconds, *recA.ResponseElapsedAtMetSeconds,
+		"#253: response elapsed must reuse the SAME frozen value as the resolution, not be recomputed independently")
+	require.Nil(t, recA.ResponseBreachedAt,
+		"#253: no false response breach from the pre-correction reply, which was 60 minutes past the 30-minute target")
+
+	// caseB: completely unaffected — the reply already precedes the
+	// resolution, so S4a's `first_response_at > resolved_at` predicate never
+	// matches.
+	recB := f.getRecord(t, replyBeforeResolve.ID)
+	require.NotNil(t, recB.ResolvedAt)
+	require.True(t, recB.ResolvedAt.Equal(resolveAtCaseB))
+	require.NotNil(t, recB.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, int64(600), *recB.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, recB.ResolutionBreachedAt)
+	require.NotNil(t, recB.FirstResponseAt)
+	require.True(t, recB.FirstResponseAt.Equal(earlyReplyAt),
+		"#253 control: a reply that genuinely precedes the resolution must be completely unaffected")
+	require.NotNil(t, recB.ResponseElapsedAtMetSeconds)
+	require.Equal(t, int64(300), *recB.ResponseElapsedAtMetSeconds)
+	require.Nil(t, recB.ResponseBreachedAt)
+}
+
 // TestMigration_EstimatedResolutionIsRecordedButNeitherFrozenNorStamped pins
 // #243(a) and #246: a resolution instant recovered only from the updated_at
 // fallback (no fact anywhere) must still get sla_records.resolved_at and a
