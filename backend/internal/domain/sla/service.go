@@ -314,9 +314,9 @@ func validatePolicy(p Policy) error {
 		return fmt.Errorf("resolution target must be greater than zero: %w", ErrValidation)
 	}
 	// The store narrows to int32 (the int32() conversion in slastore.go,
-	// ahead of an INTEGER column). Left unchecked, a target
-	// above that range silently truncates on write: any value above it stores
-	// as its low 32 bits, so 2^31 stores as a large negative number and every
+	// ahead of an INTEGER column). Left unchecked, a target above that
+	// range silently truncates on write: any value above it stores as its
+	// low 32 bits, so 2^31 stores as a large negative number and every
 	// multiple of 2^32 stores as zero. math.MaxInt32 minutes is centuries, so
 	// this isn't a fat-fingered digit — it's malformed or unit-confused input
 	// (seconds mistaken for minutes, an accidental timestamp) reaching a
