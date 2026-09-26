@@ -545,6 +545,19 @@ var (
 	// the caller can resolve by deactivating instead, not a permissions or
 	// existence problem.
 	ErrStatusInUse = errors.New("status is in use")
+	// ErrStatusNameTaken is returned by AddStatus and SaveStatus when the
+	// requested name collides with another status's: statuses.name is TEXT NOT
+	// NULL UNIQUE (statuses_name_key), and until now nothing checked that
+	// ahead of the write, so the constraint violation reached handleError
+	// unrecognized and came back as a 500 for an admin typing a name that
+	// already exists (e.g. "In Progress") — the same shape as
+	// ErrLinkAlreadyExists (#195) and sla.ErrPolicyInUse, wrapped for the same
+	// reason. See #278.
+	ErrStatusNameTaken = errors.New("a status with this name already exists")
+	// ErrInvalidStatusName is returned by AddStatus and SaveStatus when the
+	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
+	// empty name was silently accepted before this check existed. See #278.
+	ErrInvalidStatusName = errors.New("status name must not be empty")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

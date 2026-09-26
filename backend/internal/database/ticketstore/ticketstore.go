@@ -629,28 +629,80 @@ func (s *Store) ListStatuses(ctx context.Context) ([]ticket.Status, error) {
 	return out, nil
 }
 
+// CreateStatus inserts a new status. statuses.name is TEXT NOT NULL UNIQUE
+// (statuses_name_key); a colliding name is mapped to ticket.ErrStatusNameTaken
+// here rather than reaching handleError as a raw pgconn error (#278).
 func (s *Store) CreateStatus(ctx context.Context, st ticket.Status) error {
-	return s.q.CreateStatus(ctx, dbgen.CreateStatusParams{
+	err := s.q.CreateStatus(ctx, dbgen.CreateStatusParams{
 		ID:        st.ID,
 		Name:      st.Name,
 		Kind:      string(st.Kind),
 		SortOrder: int32(st.SortOrder),
 		Color:     st.Color,
 	})
+	if err != nil && isStatusNameViolation(err) {
+		return ticket.ErrStatusNameTaken
+	}
+	return err
 }
 
+// UpdateStatus persists a status's fields, including a rename. Same
+// statuses_name_key collision as CreateStatus, mapped the same way (#278).
 func (s *Store) UpdateStatus(ctx context.Context, st ticket.Status) error {
-	return s.q.UpdateStatus(ctx, dbgen.UpdateStatusParams{
+	err := s.q.UpdateStatus(ctx, dbgen.UpdateStatusParams{
 		ID:        st.ID,
 		Name:      st.Name,
 		SortOrder: int32(st.SortOrder),
 		Color:     st.Color,
 		Active:    st.Active,
 	})
+	if err != nil && isStatusNameViolation(err) {
+		return ticket.ErrStatusNameTaken
+	}
+	return err
 }
 
+// isStatusNameViolation reports whether err is the statuses_name_key unique
+// constraint violation — detected off the typed Postgres error, never
+// err.Error()'s text, for the reason isDuplicateLinkViolation gives (#195).
+func isStatusNameViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "statuses_name_key"
+}
+
+// DeleteStatus hard-deletes a status. Service.RemoveStatus counts referencing
+// tickets and status-history rows before calling this, but the count and the
+// delete are separate statements, so a ticket can be PATCHed into this status
+// (or transitioned through it) between them; the foreign key then refuses the
+// DELETE, and that violation is mapped to ticket.ErrStatusInUse here rather
+// than surfacing as a 500 — the same backstop slastore.DeletePolicy has for
+// the identical count-then-delete race (#261), added here for #279.
 func (s *Store) DeleteStatus(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteStatus(ctx, id)
+	if err := s.q.DeleteStatus(ctx, id); err != nil {
+		if isStatusInUseViolation(err) {
+			return fmt.Errorf("%w: a ticket referenced it while it was being deleted", ticket.ErrStatusInUse)
+		}
+		return err
+	}
+	return nil
+}
+
+// isStatusInUseViolation reports whether err is one of the three foreign keys
+// that reference statuses(id) refusing a delete — tickets.status_id or either
+// side of ticket_status_history — detected off the typed Postgres error,
+// never err.Error()'s text, for the reason isDuplicateLinkViolation gives
+// (#195).
+func isStatusInUseViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		return false
+	}
+	switch pgErr.ConstraintName {
+	case "tickets_status_id_fkey", "ticket_status_history_from_status_id_fkey", "ticket_status_history_to_status_id_fkey":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) {

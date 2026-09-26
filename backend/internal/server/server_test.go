@@ -976,6 +976,49 @@ func TestCreateStatus_AsAdmin(t *testing.T) {
 	require.Equal(t, "Escalated", st["name"])
 }
 
+// TestCreateStatus_DuplicateName_ReturnsConflict pins #278: statuses.name is
+// TEXT NOT NULL UNIQUE (statuses_name_key), and before AddStatus/CreateStatus
+// mapped the violation to ticket.ErrStatusNameTaken, creating a status with a
+// name that already exists (a seeded default, or one created moments before)
+// fell through handleError unrecognized and came back as a 500 rather than
+// the 409 an admin retyping an existing name should see.
+func TestCreateStatus_DuplicateName_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// "In Progress" collides with a seeded default status of that name
+	// (migration 000001).
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "In Progress",
+		"sort_order": 14,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_name_taken", errBody.Error.Code)
+}
+
+// TestCreateStatus_EmptyName_ReturnsBadRequest pins the other half of #278:
+// NOT NULL alone doesn't reject "", so an empty name was accepted unvalidated
+// before AddStatus started checking it.
+func TestCreateStatus_EmptyName_ReturnsBadRequest(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "   ",
+		"sort_order": 15,
+		"color":      "#ff9900",
+	})
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
 func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -1328,6 +1371,40 @@ func TestUpdateStatus_CustomStatusCanBeRenamed(t *testing.T) {
 	var st map[string]any
 	decodeJSON(t, resp, &st)
 	require.Equal(t, "Awaiting Supplier", st["name"])
+}
+
+// TestUpdateStatus_RenameToDuplicateName_ReturnsConflict pins #278's other
+// half: renaming a status to a name that collides with another status's hits
+// the same statuses_name_key constraint CreateStatus does, and before
+// SaveStatus/UpdateStatus mapped it to ticket.ErrStatusNameTaken it fell
+// through handleError unrecognized and came back as a 500.
+func TestUpdateStatus_RenameToDuplicateName_ReturnsConflict(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Approval",
+		"sort_order": 16,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	// "Pending" collides with a seeded default status of that name
+	// (migration 000001).
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Pending"})
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, resp, &errBody)
+	require.Equal(t, "status_name_taken", errBody.Error.Code)
 }
 
 // TestUpdateStatus_PendingIsRenamable_ByDesign is a decision pin, the shape

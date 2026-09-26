@@ -1477,8 +1477,15 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 	return s.statuses.ListStatuses(ctx)
 }
 
-// AddStatus creates a new custom status entry.
+// AddStatus creates a new custom status entry. The name is checked for
+// emptiness here (NOT NULL alone doesn't reject "") and for uniqueness at the
+// store, which maps the statuses_name_key violation to ErrStatusNameTaken
+// (#278) rather than letting the raw pgconn error reach handleError
+// unrecognized.
 func (s *Service) AddStatus(ctx context.Context, st Status) error {
+	if strings.TrimSpace(st.Name) == "" {
+		return ErrInvalidStatusName
+	}
 	st.Active = true
 	return s.statuses.CreateStatus(ctx, st)
 }
@@ -1494,6 +1501,9 @@ func (s *Service) AddStatus(ctx context.Context, st Status) error {
 // a clean 403 rather than a bare 500 for any caller, HTTP or otherwise, that
 // reaches this method.
 func (s *Service) SaveStatus(ctx context.Context, st Status) error {
+	if strings.TrimSpace(st.Name) == "" {
+		return ErrInvalidStatusName
+	}
 	current, err := s.getStatusByID(ctx, st.ID)
 	if err != nil {
 		return err
@@ -1529,7 +1539,14 @@ func (s *Service) CountByStatusForAssignee(ctx context.Context, statusID, userID
 // wrap ErrStatusInUse for the same reason (#275): both were still bare
 // fmt.Errorf as of review round 4, so the "deactivate it instead" guidance
 // they carry never reached the caller — handleError had no case for either
-// and both fell through to a 500.
+// and both fell through to a 500. The counts and the final DeleteStatus below
+// are separate statements, so a ticket can be PATCHed into this status (or
+// transitioned through it) between the counts and the delete; that race is
+// backstopped at the store layer (ticketstore.Store.DeleteStatus), which maps
+// the resulting foreign-key violation to this same ErrStatusInUse rather than
+// letting it surface as a 500 — the identical shape slastore.DeletePolicy
+// established for the same count-then-delete race (#261), added here for
+// #279.
 func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	st, err := s.getStatusByID(ctx, id)
 	if err != nil {

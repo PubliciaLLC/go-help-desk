@@ -98,6 +98,13 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "status_in_use", err.Error())
 		return
 	}
+	// 409, not 500: statuses.name is TEXT NOT NULL UNIQUE, and creating or
+	// renaming a status to a name that already exists is the schema working
+	// as designed, not a server fault. See #278.
+	if errors.Is(err, ticket.ErrStatusNameTaken) {
+		Error(w, http.StatusConflict, "status_name_taken", err.Error())
+		return
+	}
 	// 403, not 500: refusing to rename or delete a system status is the
 	// domain layer working as designed, matching the sla.ErrPolicyInUse
 	// pattern just above for a refusal that used to fall through to 500 one
@@ -109,7 +116,7 @@ func handleError(w http.ResponseWriter, err error) {
 	// Bad input, not a fault. Without this a mistyped email address at signup,
 	// or on an admin's user edit, came back as 500 "an internal error
 	// occurred" and was logged as one.
-	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) {
+	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

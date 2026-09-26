@@ -94,7 +94,7 @@ export function StatusesPage() {
                   onChange={(e) => setName(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && name.trim()) createMutation.mutate()
-                    if (e.key === 'Escape') { setAddingStatus(false); setName('') }
+                    if (e.key === 'Escape') { setAddingStatus(false); setName(''); setFormError('') }
                   }}
                 />
               </div>
@@ -125,7 +125,7 @@ export function StatusesPage() {
                 >
                   {createMutation.isPending ? 'Adding…' : 'Add'}
                 </Button>
-                <Button variant="outline" onClick={() => { setAddingStatus(false); setName('') }}>
+                <Button variant="outline" onClick={() => { setAddingStatus(false); setName(''); setFormError('') }}>
                   Cancel
                 </Button>
               </div>
