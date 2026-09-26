@@ -125,7 +125,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		TicketID:       ev.TicketID,
 		Ref:            ref(ev),
 		Headline:       headline(ev.Type, ev.StatusName, internal, linkedTicketID, linkType),
-		Subject:        ev.Subject,
+		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
 		StatusName:     ev.StatusName,
 		Internal:       internal,
@@ -176,6 +176,66 @@ func headline(t notification.EventType, statusName string, internal bool, linked
 	default:
 		return string(t)
 	}
+}
+
+// sanitizeSubject strips CR/LF from a reporter-controlled subject before any
+// renderer sees it. Every chat renderer treats the subject as one line
+// within a fixed, known set of lines (headline+subject, optional quoted
+// body, URL); a subject containing a newline could otherwise forge an
+// extra line — e.g. a fake bolded "event line" in Discord or Slack — that
+// reads as if the server emitted it. Replacing with a space, rather than
+// deleting, avoids running two words together.
+func sanitizeSubject(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
+}
+
+// escapeChatMarkdown neutralizes the markdown control characters common to
+// Teams' Adaptive Card TextBlock and Discord's message content, so
+// reporter-controlled text (ticket Subject, reply Body) cannot become a
+// masked link ("[text](url)"), a heading, a code span, bold/italic/strike
+// markers, or a table pipe when either renderer parses it. Backslash-escaping
+// is the standard escape both renderers honour: it turns the character into
+// literal text instead of markup.
+//
+// Slack does not use this — its mrkdwn has no "[text](url)" link syntax (a
+// link there requires the "<url|text>" form the renderer itself constructs),
+// and it has its own escaping (slackEscape) for the characters that *are*
+// special to it (&, <, >).
+//
+// ">" is only special at the start of a line (blockquote syntax), so it is
+// escaped only there; escaping it mid-sentence would be visible noise for no
+// security benefit.
+func escapeChatMarkdown(s string) string {
+	var b strings.Builder
+	atLineStart := true
+	for _, r := range s {
+		switch r {
+		case '[', ']', '(', ')', '*', '_', '~', '`', '|', '#':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+			atLineStart = false
+		case '>':
+			if atLineStart {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(r)
+			atLineStart = false
+		case '\n':
+			b.WriteRune(r)
+			atLineStart = true
+		case ' ', '\t':
+			b.WriteRune(r)
+			// leading whitespace does not end "line start" — markdown
+			// blockquotes tolerate up to three leading spaces.
+		default:
+			b.WriteRune(r)
+			atLineStart = false
+		}
+	}
+	return b.String()
 }
 
 // truncateRunes caps a body at n runes rather than n bytes, so multi-byte

@@ -14,12 +14,21 @@ import (
 // operator's bot identity if it reached Slack unescaped — the chat-side
 // analogue of the email content-spoofing rule in DESIGN.md, bounded rather
 // than forbidden here because the operator chose the webhook target.
+//
+// Headline gets the same treatment. It is built from static, safe text for
+// every event except ticket.status_changed, where it embeds StatusName
+// verbatim — an admin-defined string, not reporter-controlled, but still
+// external to this package. A status literally named "Escalated <!channel>"
+// would otherwise page the channel on every transition into it. Escaping
+// the whole assembled headline (rather than just StatusName before it goes
+// in) is a no-op for the static cases and covers the one case that matters
+// without needing headline() to know which of its callers is dangerous.
 func renderSlack(s summary) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("*[")
 	b.WriteString(s.Ref)
 	b.WriteString("]* ")
-	b.WriteString(s.Headline)
+	b.WriteString(slackEscape(s.Headline))
 	if s.Subject != "" {
 		b.WriteString(" — ")
 		b.WriteString(slackEscape(s.Subject))

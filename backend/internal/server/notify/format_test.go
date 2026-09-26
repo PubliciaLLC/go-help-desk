@@ -2,6 +2,7 @@ package notify
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -434,6 +435,118 @@ func TestRenderDiscord_AlwaysDisablesMentionParsing(t *testing.T) {
 }
 
 // ── 5. Unknown format is skipped, not sent raw ──────────────────────────────
+
+// ── 4b. Masked-link / markdown injection (adversarial review, v1.3.0) ──────
+//
+// Adaptive Cards' TextBlock (Teams) and Discord message content both render
+// a markdown subset that includes masked links: "[text](url)". Unlike
+// Slack's mrkdwn (which has no such syntax — a link there requires the
+// "<url|text>" form the renderer itself controls), reporter-controlled
+// Subject/Body text reaching Teams or Discord unescaped can become a live,
+// clickable phishing link, posted under the operator's own webhook
+// identity. allowed_mentions: {parse: []} on Discord only suppresses
+// @-pings; it does nothing about this.
+
+const maskedLinkPayload = "[Open ticket](https://evil.tld/login)"
+
+func maskedLinkEvent() notification.Event {
+	return notification.Event{
+		Type:           notification.EventTicketReplied,
+		TicketID:       fixtureTicketID,
+		Payload:        map[string]any{"internal": false, "ReplyBody": maskedLinkPayload},
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        maskedLinkPayload,
+	}
+}
+
+func TestRenderTeams_EscapesMaskedLinkSyntax(t *testing.T) {
+	got, err := renderTeams(summarize(maskedLinkEvent(), fixtureBaseURL))
+	require.NoError(t, err)
+
+	var env teamsEnvelope
+	require.NoError(t, json.Unmarshal(got, &env))
+	require.Len(t, env.Attachments, 1)
+	require.Len(t, env.Attachments[0].Content.Body, 3)
+
+	subjectText := env.Attachments[0].Content.Body[1].Text
+	bodyText := env.Attachments[0].Content.Body[2].Text
+
+	for _, text := range []string{subjectText, bodyText} {
+		require.NotContains(t, text, maskedLinkPayload,
+			"an unescaped masked link would render as a clickable phishing link in the Adaptive Card, under the operator's webhook identity")
+		require.Contains(t, text, `\[Open ticket\]\(https://evil.tld/login\)`,
+			"brackets and parens must be backslash-escaped so the TextBlock renders them as literal text, not a link")
+	}
+}
+
+func TestRenderDiscord_EscapesMaskedLinkSyntax(t *testing.T) {
+	got, err := renderDiscord(summarize(maskedLinkEvent(), fixtureBaseURL))
+	require.NoError(t, err)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(got, &m))
+	content, ok := m["content"].(string)
+	require.True(t, ok)
+
+	require.NotContains(t, content, maskedLinkPayload,
+		"an unescaped masked link would render as a clickable phishing link in Discord, under the operator's webhook identity")
+	require.Contains(t, content, `\[Open ticket\]\(https://evil.tld/login\)`,
+		"brackets and parens must be backslash-escaped so Discord renders them as literal text, not a link")
+}
+
+// A Subject containing a newline must not let reporter-controlled text
+// forge a second bolded "event line" in the rendered Discord message — the
+// format only ever emits a fixed, known set of lines (headline+subject,
+// optional quoted body, URL).
+func TestRenderDiscord_SubjectNewlineDoesNotForgeLines(t *testing.T) {
+	forgedLine := "**[GHD-2026-000001]** Status changed to Resolved"
+	ev := notification.Event{
+		Type:           notification.EventTicketReplied,
+		TicketID:       fixtureTicketID,
+		Payload:        map[string]any{"internal": false, "ReplyBody": "Paper tray 2 was empty."},
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        "Printer jammed\n" + forgedLine,
+	}
+
+	got, err := renderDiscord(summarize(ev, fixtureBaseURL))
+	require.NoError(t, err)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(got, &m))
+	content, ok := m["content"].(string)
+	require.True(t, ok)
+
+	require.NotContains(t, content, "\n"+forgedLine,
+		"a newline in Subject must not let attacker text become its own line, impersonating a status-change event")
+	// Fixed shape: headline+subject line, "> body" line, URL line — a
+	// newline smuggled in via Subject must not add a fourth.
+	require.Equal(t, 2, strings.Count(content, "\n"),
+		"the message must still have exactly the two newlines the format's own framing introduces")
+}
+
+func TestRenderSlack_EscapesStatusNameInHeadline(t *testing.T) {
+	ev := notification.Event{
+		Type:           notification.EventTicketStatusChanged,
+		TicketID:       fixtureTicketID,
+		Payload:        map[string]any{"new_status_id": uuid.New()},
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        "Printer jammed",
+		StatusName:     "Escalated <!channel>",
+	}
+
+	got, err := renderSlack(summarize(ev, fixtureBaseURL))
+	require.NoError(t, err)
+
+	var decoded struct{ Text string }
+	require.NoError(t, json.Unmarshal(got, &decoded))
+
+	require.NotContains(t, decoded.Text, "<!channel>",
+		"an admin-named status containing <!channel> must not page the whole Slack channel on every transition into it")
+	require.Contains(t, decoded.Text, "Status changed to Escalated &lt;!channel&gt;")
+}
 
 func TestBodyFor_UnknownFormatIsRefusedNotSentRaw(t *testing.T) {
 	ev := fixtureReplyEvent(false)

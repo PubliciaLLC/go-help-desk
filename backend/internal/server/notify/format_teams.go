@@ -51,16 +51,22 @@ type teamsAction struct {
 // only — an internal note has no third block, not an empty one). actions is
 // always the single Action.OpenUrl back to the ticket. No mention entities
 // are emitted, so user-chosen text cannot page anyone through this format.
+//
+// Subject and Body are reporter-controlled and pass through
+// escapeChatMarkdown before they reach the card: Adaptive Cards' TextBlock
+// renders a markdown subset that includes masked links ("[text](url)"), and
+// without escaping, a subject/body containing one becomes a live, clickable
+// link posted under the operator's own webhook identity.
 func renderTeams(s summary) ([]byte, error) {
 	body := []teamsTextBlock{
 		{Type: "TextBlock", Size: "Medium", Weight: "Bolder", Wrap: true,
 			Text: fmt.Sprintf("[%s] %s", s.Ref, s.Headline)},
 	}
 	if s.Subject != "" {
-		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: s.Subject})
+		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Subject)})
 	}
 	if s.Body != "" {
-		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: s.Body})
+		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Body)})
 	}
 
 	env := teamsEnvelope{
