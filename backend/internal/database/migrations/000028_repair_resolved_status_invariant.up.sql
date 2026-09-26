@@ -140,12 +140,36 @@ END $$;
 -- (and, when S4 copies the same instant, response_elapsed_at_met_seconds)
 -- stays NULL forever — S1 below deliberately never freezes a number for a
 -- row it marks estimated. That NULL is not "missing"; it is now the durable
--- marker that tells a SECOND run of this file (or a rewind to 000027 and
--- back) which rows were only ever estimated, so it must never be filled in
--- later. The hazard this file must never reintroduce is a pass that freezes
--- a number into that NULL: the moment a met target has BOTH a timestamp and
--- a frozen elapsed reading, S3/S6 read it as a fact and stamp a breach from
--- it, which is exactly the false-stamp-on-rerun bug #246 was filed against.
+-- marker that tells a later run which rows were only ever estimated, so it
+-- must never be filled in later. The hazard this file must never
+-- reintroduce is a pass that freezes a number into that NULL: the moment a
+-- met target has BOTH a timestamp and a frozen elapsed reading, S3/S6 read
+-- it as a fact and stamp a breach from it, which is exactly the
+-- false-stamp-on-rerun bug #246 was filed against.
+--
+-- That marker's durability has a boundary, and #249 is what found it. It
+-- survives re-running 000028 up alone against data this file already
+-- repaired, and it survives a 028-only down (which is a no-op — see that
+-- file — so "down then up" replays this exact file against unchanged data,
+-- which is what TestMigration_028SecondRunChangesNothing exercises). It does
+-- NOT survive a rewind that goes down through 000027 itself: 000027's down
+-- drops the response_elapsed_at_met_seconds/resolution_elapsed_at_met_seconds
+-- columns entirely, and dropping them destroys the ONLY place the
+-- fact/estimate distinction was recorded — there is no SQL fix for this in
+-- either file, because the information the fix would need is gone, not
+-- merely unread. Once 000027's up recreates the columns, its own backfill
+-- unconditionally re-freezes elapsed from whatever sla_records.resolved_at
+-- (and first_response_at) already hold, with no way left to tell that one of
+-- those instants came from the updated_at fallback rather than a fact. For a
+-- row this file previously marked estimated, that re-frozen number is an
+-- upper bound and can be late, and it is now indistinguishable from a fact:
+-- the next 000028 up sees a non-NULL frozen elapsed reading past target and
+-- S3/S6 stamp a breach from it — permanently, for a resolution that was
+-- never actually confirmed. TestMigration_RewindThrough000027LosesEstimatedMarkerAndReStamps
+-- pins this exact sequence (028 up, 028 down, 027 down, 027 up, 028 up) and
+-- asserts the re-stamp happens, so this is a documented, accepted trade-off —
+-- not a bug to fix later, and not something a schema column should be added
+-- to prevent (that would be v2+ scope DESIGN.md does not describe).
 --
 -- The residual this leaves: targetStatus (status.go) reads MetAt set but
 -- frozenSeconds NULL as "no frozen number yet" and falls back to a live

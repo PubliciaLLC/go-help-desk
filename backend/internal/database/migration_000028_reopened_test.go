@@ -700,3 +700,69 @@ func TestMigration_028SecondRunChangesNothing(t *testing.T) {
 	require.Nil(t, second[resolvedNoHistory.ID].rec.ResponseBreachedAt)
 	require.Nil(t, second[estimatedWithRealLateResponse.ID].rec.ResolutionBreachedAt)
 }
+
+// TestMigration_RewindThrough000027LosesEstimatedMarkerAndReStamps pins #249:
+// the NULL resolution_elapsed_at_met_seconds marker #246 relies on to tell a
+// later run "this row was only ever estimated" survives a rewind that stops
+// at 000028 (TestMigration_028SecondRunChangesNothing above), but NOT one
+// that goes down through 000027 itself. 000027's down migration drops
+// resolution_elapsed_at_met_seconds/response_elapsed_at_met_seconds
+// entirely — the only place the fact/estimate distinction was recorded —
+// so once it is gone, 000027's own up-migration backfill unconditionally
+// re-freezes elapsed from whatever sla_records.resolved_at/first_response_at
+// already hold, and the re-frozen number is indistinguishable from a fact to
+// 000028's S3/S6, which stamp a breach from it. This is not fixable in SQL:
+// the distinguishing information is genuinely gone, not merely unread. This
+// test pins the known, accepted result — a re-stamp — as a deliberate,
+// documented trade-off rather than a regression that could slip in silently.
+// See the LIMITS block in 000028_repair_resolved_status_invariant.up.sql.
+func TestMigration_RewindThrough000027LosesEstimatedMarkerAndReStamps(t *testing.T) {
+	f := newMigration028Fixture(t, "rewind-027")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	T := now.Add(-4 * time.Hour)
+	lateAt := T.Add(3 * time.Hour) // 180min, past the 30-minute target
+
+	// The standard estimated shape: Closed, both timestamps NULL, no history —
+	// no fact anywhere, updated_at is the only recoverable instant.
+	tk := f.seed(t, "closed no history, rewound", f.closedSt.ID, T, lateAt, nil, nil, nil)
+
+	// Run 1: 000027 up (columns already exist, its ALTER TABLE is skipped) +
+	// 000028 up, exactly as TestMigration_EstimatedResolutionIsRecordedButNeitherFrozenNorStamped
+	// exercises: recorded, but neither frozen nor stamped.
+	runMigration027And028(t, f.ctx, f.tx)
+
+	rec1 := f.getRecord(t, tk.ID)
+	require.NotNil(t, rec1.ResolvedAt)
+	require.True(t, rec1.ResolvedAt.Equal(lateAt))
+	require.Nil(t, rec1.ResolutionElapsedAtMetSeconds, "estimated: never frozen on the first run")
+	require.Nil(t, rec1.ResolutionBreachedAt, "estimated: never stamped on the first run")
+	require.NotNil(t, rec1.FirstResponseAt)
+	require.True(t, rec1.FirstResponseAt.Equal(lateAt))
+	require.Nil(t, rec1.ResponseElapsedAtMetSeconds)
+	require.Nil(t, rec1.ResponseBreachedAt)
+
+	// The rewind from the issue: 000028 down (comment-only, a no-op) ->
+	// 000027 down (drops the two columns, taking the fact/estimate
+	// distinction with them) -> 000027 up again — this time NOT skipping its
+	// ALTER TABLE, since the columns are actually gone and it must recreate
+	// them -> 000028 up again.
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000028_repair_resolved_status_invariant.down.sql", nil)
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000027_sla_frozen_elapsed.down.sql", nil)
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000027_sla_frozen_elapsed.up.sql", nil)
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000028_repair_resolved_status_invariant.up.sql", nil)
+
+	// The accepted, documented result #249 pins: 000027's re-run backfill
+	// re-froze elapsed from the estimated instant sla_records already held
+	// (now indistinguishable from a fact, the column having been dropped and
+	// recreated), and 000028's S3/S6 then stamp a breach from it — for a
+	// resolution that was only ever an estimate.
+	rec2 := f.getRecord(t, tk.ID)
+	require.NotNil(t, rec2.ResolutionElapsedAtMetSeconds,
+		"#249: a rewind through 000027 itself re-freezes the estimated instant as if it were a fact")
+	require.NotNil(t, rec2.ResolutionBreachedAt,
+		"#249: accepted re-stamp — the fact/estimate distinction cannot survive a rewind through 000027 itself")
+	require.True(t, rec2.ResolutionBreachedAt.Equal(lateAt))
+	require.NotNil(t, rec2.ResponseElapsedAtMetSeconds, "#249: same, response side")
+	require.NotNil(t, rec2.ResponseBreachedAt, "#249: same, response side")
+	require.True(t, rec2.ResponseBreachedAt.Equal(lateAt))
+}
