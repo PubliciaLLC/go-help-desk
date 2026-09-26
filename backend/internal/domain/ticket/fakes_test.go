@@ -214,6 +214,47 @@ func (f *fakeStore) ListAll(context.Context, int, int) ([]ticket.Ticket, error) 
 func (f *fakeStore) ListUnassigned(context.Context, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
+
+// IsAssignableUser and IsAssignableGroup: this fake has no user table, so
+// everything it is asked about is assignable. The real rule lives in SQL and
+// is exercised against a real database.
+func (f *fakeStore) IsAssignableUser(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) UserExists(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (f *fakeStore) IsAssignableGroup(context.Context, uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+// UnassignForUser clears the assignee on every open ticket held by a user.
+func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
+	for id, t := range f.tickets {
+		if t.AssigneeUserID == nil || *t.AssigneeUserID != userID {
+			continue
+		}
+		if t.ResolvedAt != nil || t.ClosedAt != nil {
+			continue
+		}
+		t.AssigneeUserID = nil
+		f.tickets[id] = t
+		moved = append(moved, id)
+	}
+	return moved, nil
+}
+
 func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
 	// Filter: ResolvedAt != nil && ResolvedAt < before && StatusID == resolvedStatusID && ClosedAt == nil
 	// Sort by ResolvedAt ascending, apply limit.

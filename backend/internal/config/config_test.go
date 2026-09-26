@@ -76,7 +76,7 @@ func TestLoad_Defaults(t *testing.T) {
 	for _, key := range []string{
 		"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET",
 		"HTTP_PORT", "SMTP_PORT", "ATTACHMENT_DIR", "APP_ENV",
-		"SAML_ENABLED", "GUEST_SUBMISSION_ENABLED", "SLA_ENABLED", "MFA_ENABLED",
+		"SAML_ENABLED", "SLA_ENABLED",
 	} {
 		os.Unsetenv(key)
 	}
@@ -96,9 +96,7 @@ func TestLoad_Defaults(t *testing.T) {
 	require.Equal(t, 587, cfg.SMTPPort)
 	require.Equal(t, "/data/attachments", cfg.AttachmentDir)
 	require.Equal(t, "production", cfg.AppEnv)
-	require.False(t, cfg.GuestSubmissionEnabled)
 	require.False(t, cfg.SLAEnabled)
-	require.False(t, cfg.MFAEnabled)
 }
 
 func TestConfig_EmailEnabled(t *testing.T) {

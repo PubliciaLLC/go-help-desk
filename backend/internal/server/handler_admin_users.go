@@ -1,7 +1,9 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -173,6 +175,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {
+			// Disable refuses the last active administrator itself — the
+			// check and the write are one statement, because asking first
+			// and writing second lost the race to two parallel requests.
 			if err := s.users.Disable(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
@@ -229,25 +234,65 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			u.DisplayName = *body.DisplayName
 		}
 		if body.Email != nil {
-			u.Email = *body.Email
+			// Lowercased and trimmed, the same as Create, SAML and OIDC.
+			// Without it an administrator who typed a capital letter stored
+			// the address verbatim, and login — which lowercases before
+			// looking up — could no longer find the account under either
+			// spelling. The user was locked out and nothing said why.
+			u.Email = strings.ToLower(strings.TrimSpace(*body.Email))
 		}
-		if body.Role != nil {
-			u.Role = user.Role(*body.Role)
-		}
-		// A role change must not leave the old role live in an existing
-		// session, which carries Role in its payload. Only for a role change:
-		// renaming someone should not sign them out.
+		// A role change is its own operation, not part of the profile write.
+		//
+		// It revokes sessions, it is refused to machine credentials, and it
+		// is the one that can leave an instance with no administrator — so it
+		// goes through the statement that checks and writes together. Folding
+		// it into the general update would put the guard back in front of the
+		// write, which is where it lost.
 		roleChanged := body.Role != nil && user.Role(*body.Role) != originalRole
-
-		if err := s.users.Update(r.Context(), u); err != nil {
-			handleError(w, err)
-			return
-		}
 		if roleChanged {
+			if err := s.users.SetRole(r.Context(), id, user.Role(*body.Role)); err != nil {
+				handleError(w, err)
+				return
+			}
+			// And carried into the profile write below, which writes the role
+			// column too.
+			//
+			// Without this the request undid itself: SetRole wrote the new
+			// role and Update immediately wrote the old one back, so nobody
+			// could be promoted or demoted — while the target was still
+			// signed out for a change that did not happen. It answered 200
+			// and the response carried the old role, which is the shape that
+			// gets believed.
+			u.Role = user.Role(*body.Role)
+
+			// Revoked HERE, straight after the role is committed — not after
+			// the profile write below.
+			//
+			// A session carries the role in its payload, so a demoted
+			// administrator with a live cookie is still an administrator
+			// until it is revoked. Doing that after the profile write meant
+			// any failure in between — a blank display name, an email that
+			// belongs to somebody else — left the demotion committed and the
+			// session alive, answering 400. Retrying then saw the role
+			// already changed, so roleChanged was false and it never revoked
+			// at all: a demoted account kept full authority for the life of
+			// the cookie, and could promote itself straight back.
+			//
+			// The order that survives a failure is: change the authority,
+			// then revoke what was granted under the old one, then do the
+			// cosmetic part.
 			if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 				handleError(w, err)
 				return
 			}
+		}
+		// Only the address and the name. Update writes the whole row from
+		// the copy read at the top of this handler, so a password set, an MFA
+		// enrolment or another administrator's role change that landed in
+		// between would be written back.
+		if err := s.users.UpdateProfile(r.Context(), id, u.Email, u.DisplayName); err != nil {
+			handleError(w, err)
+			return
 		}
 	}
 
@@ -358,6 +403,8 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
+	// SoftDelete refuses the last active administrator itself: setup does not
+	// reopen, so the instance would be left with no way in at all.
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
@@ -368,5 +415,50 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// And their open tickets go back in the queue.
+	//
+	// The assignee column kept pointing at the soft-deleted row, which no
+	// longer appears in the user list — so the ticket showed as "Unassigned"
+	// on the page, was NOT in the unassigned queue because the column was not
+	// null, and was in nobody's "assigned to me". It sat in the gap between
+	// the two lists with nothing to prompt anyone to pick it up. Disabling an
+	// account does not have this problem, because a disabled user is still in
+	// the list.
+	//
+	// Not fatal if it fails: the account is already gone and refusing the
+	// request now would leave the caller unsure whether it worked. Logged
+	// instead, with the count, because an administrator watching a departure
+	// wants to know how many tickets just landed back in the queue.
+	actor := authmw.GetActor(r)
+	var actorID uuid.UUID
+	if actor != nil {
+		actorID = actor.UserID
+	}
+	moved, err := s.tickets.UnassignForUser(r.Context(), actorID, id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "could not unassign the deleted user's tickets",
+			"user_id", id, "error", err)
+	} else if moved > 0 {
+		slog.InfoContext(r.Context(), "returned the deleted user's open tickets to the queue",
+			"user_id", id, "tickets", moved)
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/v1/staff — who work can be given to.
+//
+// Staff-readable on purpose, and deliberately narrow: an id and a display
+// name, which is what assigning a ticket needs and what staff already see on
+// every ticket they can read. No email, no role, no login state — that is the
+// administrator's view and it stays there.
+func (s *Server) handleListAssignableStaff(w http.ResponseWriter, r *http.Request) {
+	staff, err := s.users.ListAssignableStaff(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if staff == nil {
+		staff = []user.AssignableStaff{}
+	}
+	JSON(w, http.StatusOK, staff)
 }

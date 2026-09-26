@@ -21,7 +21,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -99,6 +101,67 @@ var (
 func requireStaff(a *authmw.Actor) bool {
 	return a != nil && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 }
+
+// assignArgumentProblem reports what is wrong with an assign_ticket argument
+// set, or false when there is nothing wrong.
+//
+// Split out so the rules can be tested without a transport and a database:
+// the failure they prevent is a ticket quietly leaving somebody's queue, and
+// that is decided entirely here.
+func assignArgumentProblem(args map[string]any) (string, bool) {
+	id := func(name string) (string, string) {
+		v, present := args[name]
+		if !present {
+			return "", ""
+		}
+		str, isString := v.(string)
+		if !isString || str == "" {
+			return "", name + " must be an id; to take the ticket off whoever has it, " +
+				"pass clear_assignee: true"
+		}
+		return str, ""
+	}
+
+	userArg, problem := id("assignee_user_id")
+	if problem != "" {
+		return problem, true
+	}
+	groupArg, problem := id("assignee_group_id")
+	if problem != "" {
+		return problem, true
+	}
+
+	clear, _ := args["clear_assignee"].(bool)
+	switch {
+	case clear && (userArg != "" || groupArg != ""):
+		return "clear_assignee cannot be combined with an assignee id", true
+	case !clear && userArg == "" && groupArg == "":
+		return "give assignee_user_id or assignee_group_id, or clear_assignee: true to " +
+			"take the ticket off whoever has it", true
+	}
+	return "", false
+}
+
+// hasUserIdentity reports whether this caller is somebody, rather than merely
+// something.
+//
+// An OAuth client actor carries no user id. Every write tool records who
+// acted — a ticket's reporter, a reply's author, an audit entry, a
+// status-history row — and all of those are foreign keys to users, so a nil
+// id reached the insert and came back as a constraint violation: the caller
+// was told "create ticket failed" and the operator's log filled with table
+// and column names. create_ticket also took a tracking number from the
+// sequence first, so every attempt left a hole in the numbering.
+//
+// The REST API refuses the same thing plainly. This is that rule on the other
+// surface, which is the point of there being one rule — the transport does not
+// decide what a caller may do.
+func hasUserIdentity(a *authmw.Actor) bool {
+	return a != nil && a.UserID != uuid.Nil
+}
+
+// noUserIdentityMessage is what a machine credential is told instead.
+const noUserIdentityMessage = "this credential has no user identity, so it cannot be recorded as having acted on a ticket"
 
 // visible reports whether the caller may see this ticket, and is the check
 // every read path funnels through.
@@ -270,10 +333,14 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"assign_ticket",
-		mcpgo.WithDescription("Assign a ticket to a user or group"),
+		mcpgo.WithDescription("Assign a ticket to a user or group, or take it off whoever has it"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("assignee_user_id", mcpgo.Description("User UUID to assign to")),
 		mcpgo.WithString("assignee_group_id", mcpgo.Description("Group UUID to assign to")),
+		mcpgo.WithBoolean("clear_assignee", mcpgo.Description(
+			"Take the ticket off whoever has it. Required to unassign: omitting "+
+				"both ids is refused rather than treated as unassigning, because "+
+				"that silently took tickets off the people working them.")),
 		// No actor parameter: the actor is the authenticated caller.
 	), scoped(mcpWrite, s.handleAssignTicket))
 
@@ -322,7 +389,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		t, err = s.tickets.GetByTrackingNumber(ctx, ticket.TrackingNumber(id))
 	}
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "get ticket", err)
 	}
 	if !s.visible(ctx, t) {
 		return errResult(notFoundFor(id))
@@ -336,7 +403,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 	if includeReplies {
 		replies, err := s.tickets.ListReplies(ctx, t.ID)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "get ticket", err)
 		}
 		out.Replies = ticket.VisibleReplies(replies, caller.Role)
 
@@ -346,7 +413,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		// applies its own visibility check.
 		links, err := s.tickets.ListLinks(ctx, t.ID)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "get ticket", err)
 		}
 		out.Links = links
 	}
@@ -360,6 +427,9 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 	}
 	if !requireStaff(actor) {
 		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(actor) {
+		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
 	subject, _ := args["subject"].(string)
@@ -420,7 +490,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "create ticket", err)
 	}
 	return jsonResult(t)
 }
@@ -433,6 +503,9 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
 	tidStr, _ := args["ticket_id"].(string)
 	tid, err := uuid.Parse(tidStr)
@@ -443,7 +516,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	t, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "add reply", err)
 	}
 	if !s.visible(ctx, t) {
 		return errResult(notFoundFor(tidStr))
@@ -471,7 +544,7 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	reply, err := s.tickets.AddReply(ctx, tid, body, isInternal, notifyRequester, reporterEmail, actor, reopenWindowDays, reopenTargetStatusID)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "add reply", err)
 	}
 	return jsonResult(reply)
 }
@@ -542,16 +615,16 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 
 	vis, err := s.authz.TicketVisibility(ctx, caller)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 	f, err := buildListFilter(req.GetArguments(), vis, caller.UserID)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 
 	tickets, err := s.tickets.ListFiltered(ctx, f)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list tickets", err)
 	}
 	return jsonResult(tickets)
 }
@@ -564,6 +637,9 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
 	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
 	args := req.GetArguments()
 	tidStr, _ := args["ticket_id"].(string)
 	tid, err := uuid.Parse(tidStr)
@@ -573,29 +649,56 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "assign ticket", err)
 	}
 	if !s.visible(ctx, existing) {
 		return errResult(notFoundFor(tidStr))
 	}
 
-	var assigneeUserID, assigneeGroupID *uuid.UUID
-	if v, ok := args["assignee_user_id"].(string); ok {
-		if id, err := uuid.Parse(v); err == nil {
-			assigneeUserID = &id
-		}
+	// Assigning to nobody has to be asked for explicitly.
+	//
+	// Refusing an unparseable STRING was not enough: a number, a boolean, a
+	// JSON null and an omitted argument all fell through the type assertion,
+	// left the pointer nil, and nil means "to nobody" — so the tool answered
+	// success and took the ticket off whoever was working it. An agent
+	// sending null to mean "leave this alone" did exactly that. The REST API
+	// makes it explicit with clear_assignee; this is the same rule.
+	// An id has to BE an id. A key that is present but null, an empty string,
+	// a number or a boolean is refused rather than read as "to nobody" — see
+	// assignArgumentProblem, where the rules live and are tested.
+	if problem, bad := assignArgumentProblem(args); bad {
+		return errResult(problem)
 	}
-	if v, ok := args["assignee_group_id"].(string); ok {
-		if id, err := uuid.Parse(v); err == nil {
-			assigneeGroupID = &id
+
+	// An id that will not parse is refused, not ignored.
+	//
+	// Swallowing the error left the pointer nil, and a nil assignee means
+	// "to nobody" — so a single mistyped character took the ticket off the
+	// person working it and answered success. An agent driving this makes
+	// exactly that kind of typo, and nothing in the reply said anything had
+	// gone wrong. The REST API refuses the same input when it decodes the
+	// body; this is that rule, on the other surface.
+	var assigneeUserID, assigneeGroupID *uuid.UUID
+	if v, _ := args["assignee_user_id"].(string); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return errResult("assignee_user_id is not a valid id")
 		}
+		assigneeUserID = &id
+	}
+	if v, _ := args["assignee_group_id"].(string); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			return errResult("assignee_group_id is not a valid id")
+		}
+		assigneeGroupID = &id
 	}
 
 	actorID := caller.UserID
 	actor := ticket.Actor{UserID: &actorID, Role: caller.Role}
 	t, err := s.tickets.Assign(ctx, tid, assigneeUserID, assigneeGroupID, actor)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "assign ticket", err)
 	}
 	return jsonResult(t)
 }
@@ -607,6 +710,9 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	}
 	if !requireStaff(caller) {
 		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
 	}
 	args := req.GetArguments()
 	tid, err := uuid.Parse(str(args, "ticket_id"))
@@ -620,7 +726,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "update ticket status", err)
 	}
 	if !s.visible(ctx, existing) {
 		return errResult(notFoundFor(str(args, "ticket_id")))
@@ -631,7 +737,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	// caller's real role is what makes that check mean anything.
 	t, err := s.tickets.UpdateStatus(ctx, tid, statusID, ticket.Actor{UserID: &actorID, Role: caller.Role})
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "update ticket status", err)
 	}
 	return jsonResult(t)
 }
@@ -661,19 +767,19 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 
 	cats, err := s.categories.ListCategories(ctx, activeOnly)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list categories", err)
 	}
 	out := make([]catalogCategory, 0, len(cats))
 	for _, c := range cats {
 		types, err := s.categories.ListTypes(ctx, c.ID, activeOnly)
 		if err != nil {
-			return errResult(err.Error())
+			return storeErr(ctx, "list categories", err)
 		}
 		node := catalogCategory{Category: c, Types: make([]catalogType, 0, len(types))}
 		for _, ty := range types {
 			items, err := s.categories.ListItems(ctx, ty.ID, activeOnly)
 			if err != nil {
-				return errResult(err.Error())
+				return storeErr(ctx, "list categories", err)
 			}
 			node.Types = append(node.Types, catalogType{Type: ty, Items: items})
 		}
@@ -688,7 +794,7 @@ func (s *Server) handleListStatuses(ctx context.Context, _ mcpgo.CallToolRequest
 	}
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
-		return errResult(err.Error())
+		return storeErr(ctx, "list statuses", err)
 	}
 	return jsonResult(statuses)
 }
@@ -709,4 +815,25 @@ func jsonResult(v any) (*mcpgo.CallToolResult, error) {
 
 func errResult(msg string) (*mcpgo.CallToolResult, error) {
 	return mcpgo.NewToolResultError(msg), nil
+}
+
+// storeErr turns a failure from below into something a tool caller can be
+// told, and logs the rest.
+//
+// The raw error text was handed straight to the caller, and store errors carry
+// the database's own words: create_ticket with an unknown reporter id
+// answered `violates foreign key constraint "tickets_reporter_user_id_fkey"
+// (SQLSTATE 23503)`. That names a table, a column and a constraint to anyone
+// with a staff MCP client, and it is the sort of detail that makes the next
+// probe cheaper.
+//
+// Validation refusals are different and pass through unchanged: they are
+// about what the caller sent, the caller can act on them, and a tool that
+// answers "something went wrong" to a bad argument is a tool nobody can use.
+func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult, error) {
+	if errors.Is(err, ticket.ErrValidation) {
+		return errResult(err.Error())
+	}
+	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)
+	return errResult(op + " failed")
 }

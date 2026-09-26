@@ -116,7 +116,12 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	//
 	// Outermost, so the log line records the status the client actually saw,
 	// including the 401s and 403s the auth chain produces.
-	return chimw.RequestID(chimw.Recoverer(requestLogger(chain)))
+	//
+	// securityHeaders is here for the same reason the logger is: this mux sits
+	// outside the chi chain, so nothing else was setting them. DESIGN.md says
+	// "security headers on every response", and /mcp/ was one of the two
+	// places that was not true.
+	return securityHeaders(chimw.RequestID(chimw.Recoverer(requestLogger(chain))))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -149,6 +154,10 @@ type Server struct {
 	// restart and multiplied by the replica count, which is not a limit on a
 	// six-digit secret.
 	loginLimiter *authmw.RateLimiter
+
+	// loginThrottleDelay is how long an over-budget login waits before the
+	// password is checked. See config.AuthThrottleDelay.
+	loginThrottleDelay time.Duration
 
 	// No scanner field. It is built per use from the effective address,
 	// because the address is an operator setting and a scanner constructed
@@ -275,6 +284,7 @@ func New(
 		// Built here rather than injected: derived entirely from config, no
 		// other collaborators.
 		loginLimiter:       authmw.NewRateLimiter(cfg.AuthRateLimitPerMinute, time.Minute),
+		loginThrottleDelay: cfg.AuthThrottleDelay,
 		guestResendLimiter: authmw.NewRateLimiter(1, 5*time.Minute),
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
@@ -412,13 +422,41 @@ func (s *Server) buildRouter() *chi.Mux {
 			With(authmw.RequireResource(auth.ResourceTickets),
 				authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
 			Get("/tags", s.handleListActiveTags)
-		// Public category/type/item listing (active only, no admin required).
-		r.Get("/categories", s.handleListPublicCategories)
-		r.Get("/categories/{id}/types", s.handleListPublicTypes)
-		r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
+		// Category/type/item listing. Active only for a guest or a
+		// reporting user; the whole tree for staff and administrators, per
+		// DESIGN.md's role table — see catalogueIsFullyVisible.
+		//
+		// Open to anyone signed in, and to nobody else unless this instance
+		// takes guest submissions. It used to be open to everyone outright:
+		// an unauthenticated GET returned the whole catalogue, whatever the
+		// guest setting said. That is an operator's own structure — team
+		// names, service names, the shape of what they support — published to
+		// the internet by a deployment that had deliberately switched guest
+		// submission off.
+		//
+		// The guest form needs it, which is why it cannot simply require a
+		// session; when guests are enabled, the operator has chosen to make
+		// this list public, and that is the same choice.
+		r.With(s.requireSignedInOrGuestsEnabled).Group(func(r chi.Router) {
+			r.Get("/categories", s.handleListPublicCategories)
+			r.Get("/categories/{id}/types", s.handleListPublicTypes)
+			r.Get("/categories/{id}/types/{typeId}/items", s.handleListPublicItems)
+		})
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
+
+		// Who work can be given to: id and display name, for staff and
+		// admins.
+		//
+		// Mounted here rather than on the ticket router, which is where it
+		// first went — and that put it at /api/v1/tickets/staff while the
+		// page asked for /api/v1/staff. Every assignee picker was empty and
+		// every assigned ticket showed no name, for administrators as well as
+		// staff, which was worse than the problem it was added to fix.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).
+			Get("/staff", s.handleListAssignableStaff)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})
@@ -430,11 +468,36 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// catalogueIsFullyVisible reports whether this caller sees the whole
+// category/type/item tree rather than only the active part of it.
+//
+// DESIGN.md's "Ticket Submission by Role" table: a guest and a reporting user
+// get active categories and types only; staff and administrators get All.
+// Staff need the archived ones because filing or reclassifying an old ticket
+// under the classification it actually belongs to is ordinary work, and that
+// classification may well have been retired since.
+//
+// The form used to ask a different endpoint for staff — /admin/categories —
+// which is wrapped in RequireRole(admin). Staff got 403, the query failed,
+// the picker fell back to an empty list, and a staff member could not file a
+// ticket at all: the category is required and there was nothing in it to
+// pick. The same 403 emptied the type and item pickers. So this is one
+// endpoint that answers according to who asked, not two endpoints where the
+// caller has to guess which one it may use.
+//
+// MFAPassed as well as the role: a session that has passed the password and
+// not the second factor is not yet staff for this purpose, and the archived
+// half of an operator's structure is not something to hand it.
+func catalogueIsFullyVisible(r *http.Request) bool {
+	a := authmw.GetActor(r)
+	return a != nil && a.MFAPassed && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
+}
+
 // handleListPublicCategories returns only active categories.
 // Used by the ticket-creation form for regular users and guests.
 // No admin auth required — any authenticated user or guest can call this.
 func (s *Server) handleListPublicCategories(w http.ResponseWriter, r *http.Request) {
-	cats, err := s.categories.ListCategories(r.Context(), true) // active only
+	cats, err := s.categories.ListCategories(r.Context(), !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -449,7 +512,7 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid category id")
 		return
 	}
-	types, err := s.categories.ListTypes(r.Context(), catID, true) // active only
+	types, err := s.categories.ListTypes(r.Context(), catID, !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -464,7 +527,7 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid type id")
 		return
 	}
-	items, err := s.categories.ListItems(r.Context(), typeID, true) // active only
+	items, err := s.categories.ListItems(r.Context(), typeID, !catalogueIsFullyVisible(r))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -602,4 +665,32 @@ func (s *Server) scanner(ctx context.Context) *antivirus.Scanner {
 		return antivirus.New(addr)
 	}
 	return antivirus.New(s.cfg.ClamAVAddr)
+}
+
+// SetLoginThrottleDelayForTest sets how long an over-budget login waits.
+//
+// Exported for tests only, and named so that is unmistakable. The suite runs
+// with a delay of a millisecond — the queueing and the bound still apply, and
+// nothing spends a second per login proving that time passes — while the two
+// tests about the delay itself need one long enough to measure.
+func (s *Server) SetLoginThrottleDelayForTest(d time.Duration) {
+	s.loginThrottleDelay = d
+}
+
+// requireSignedInOrGuestsEnabled admits any authenticated caller, and an
+// anonymous one only when this instance takes guest submissions.
+//
+// The catalogue is the one list both the signed-in ticket form and the public
+// guest form need, so it cannot simply require a session. What it can do is
+// stop being public on an instance that has turned guests off — which is an
+// operator saying they do not want anonymous people filing tickets here, and
+// therefore do not want the anonymous internet reading their category tree.
+func (s *Server) requireSignedInOrGuestsEnabled(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authmw.GetActor(r) != nil || s.adminSvc.GuestSubmissionEnabled(r.Context()) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+	})
 }

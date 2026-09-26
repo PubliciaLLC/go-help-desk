@@ -43,7 +43,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Live ticket search — tracking number (prefix), plus relevance-ranked full-text search across subject and description (Postgres FTS, word-prefix matched as you type); staff/admin can jump directly to a ticket by tracking number or UUID
 - Email and webhook notifications
 - Optional SLA tracking
-- Configurable branding — site name and logo upload (PNG, SVG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI
+- Configurable branding — site name and logo upload (PNG, JPG, GIF; auto-scaled to 320 × 64 px) via the admin UI
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
@@ -70,7 +70,7 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `DATABASE_URL` | yes | — | `postgres://user:pass@host/db?sslmode=disable` |
 | `BASE_URL` | yes | — | Public URL (e.g. `https://helpdesk.example.com`) |
 | `SESSION_SECRET` | yes | — | Random secret ≥ 32 chars |
-| `JWT_SECRET` | yes | — | Random secret ≥ 32 chars |
+| `JWT_SECRET` | yes | — | Random secret. No minimum is enforced; 32+ characters is the sensible choice |
 | `HTTP_PORT` | | `8080` | Listen port |
 | `SMTP_HOST` | | — | Enables email notifications when set |
 | `SMTP_PORT` | | `587` | |
@@ -85,9 +85,15 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 
 > \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
 >
-> **Note:** SAML, MFA, SLA and guest submission are toggled in the Admin UI.
-> The matching environment variables still exist and set the value the instance
-> starts with; the Admin UI setting takes precedence once it has been saved.
+> **Note:** SAML, MFA and guest submission are toggled in the Admin UI, and
+> that setting is the switch. SLA is the exception and works the other way
+> round: `SLA_ENABLED` in the environment is what attaches policies to new
+> tickets, and the Admin UI toggle only shows the policy editor. There is no
+> scheduler and nothing reads the deadlines yet — see issue #180; there has never been
+> a SAML one, and the MFA and guest-submission variables were removed in
+> 1.3.0-beta because nothing read them — an operator setting
+> `GUEST_SUBMISSION_ENABLED=true` and expecting guests to be able to file
+> tickets got no error and no guests.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
@@ -244,8 +250,8 @@ The REST API is documented informally by the handler source at `backend/internal
 | `POST /api/v1/admin/tags/{id}/restore` | admin | Restore a deactivated tag |
 | `GET/POST /api/v1/tickets/{id}/tags` | staff / admin | List or add tags on a ticket |
 | `DELETE /api/v1/tickets/{id}/tags/{tagId}` | staff / admin | Remove a tag from a ticket |
-| `GET /api/v1/categories` | none | Active categories (for ticket creation) |
-| `GET /api/v1/categories/{id}/types` | none | Active types for a category |
+| `GET /api/v1/categories` | any signed-in user, or anyone when guest submission is on | Active categories (for ticket creation) |
+| `GET /api/v1/categories/{id}/types` | any signed-in user, or anyone when guest submission is on | Active types for a category |
 | `GET/POST /api/v1/tickets/{id}/attachments` | session / API key | List or upload attachments |
 | `GET /api/v1/tickets/{id}/attachments/{attachId}` | session / API key | Download an attachment |
 
@@ -273,11 +279,14 @@ Tests:
 cd backend
 go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...
 
-# Integration tests via Docker Compose
-docker-compose -f docker/docker-compose.yml --profile test run --rm test
+# Against a throwaway database (recommended)
+#
+# Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
+# and leaves nothing behind. Never points at the development database.
+./scripts/test-db.sh test
 
-# Integration tests from the host (port 5432 is exposed)
-TEST_DATABASE_URL=postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable go test ./...
+# Or against the development stack's database, which the suite will migrate
+TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
 ```
 
 Schema changes: edit `queries/*.sql`, add a migration under `internal/database/migrations/`, run `sqlc generate`. Never hand-edit `internal/dbgen/`.

@@ -107,6 +107,93 @@ ORDER BY
   created_at DESC
 LIMIT $1 OFFSET $2;
 
+-- name: CategoryExists :one
+-- Whether a category id is real. Checked before a tracking number is taken,
+-- because the foreign key only speaks at the INSERT — by which point the
+-- number is gone and the sequence has a permanent gap. Staff and MCP were
+-- never validated here; only a reporting user's category was checked, and
+-- that check is about whether the category is OPEN to them, not whether it
+-- exists.
+SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1);
+
+-- name: CTIIsCoherent :one
+-- Whether a category/type/item triple exists and hangs together: the type
+-- belongs to the category, and the item belongs to the type.
+--
+-- One question rather than three, because the foreign keys are the only thing
+-- that was asking and they speak at the INSERT — after the tracking number
+-- has been taken. Verified: five refused creates advanced the sequence by
+-- five. REST checked that the type belonged to the category; MCP checked
+-- neither; nobody checked the item at all, and there is no composite key for
+-- item-to-type, so a ticket could carry a type and an item that do not go
+-- together and then be routed on that.
+SELECT
+    (sqlc.narg('type_id')::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM types ty
+        WHERE ty.id = sqlc.narg('type_id') AND ty.category_id = sqlc.arg('category_id')))
+    AND
+    (sqlc.narg('item_id')::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM items it
+        JOIN types t2 ON t2.id = it.type_id
+        WHERE it.id = sqlc.narg('item_id')
+          AND it.type_id = sqlc.narg('type_id')
+          AND t2.category_id = sqlc.arg('category_id')));
+
+-- name: UserExists :one
+-- Whether a live account holds this id. Used for a supplied reporter, which
+-- unlike an assignee may be any role — a ticket is filed on behalf of whoever
+-- it is about.
+SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL);
+
+-- name: IsAssignableUser :one
+-- Whether a user can be given a ticket: the account exists, is not deleted,
+-- is not disabled, and is staff. A reporting user is not a queue.
+--
+-- Asked inside the assignment transaction rather than by the caller, because
+-- the caller is not the only caller. The REST handler checked this and MCP
+-- did not, so `assign_ticket` happily put tickets on deleted accounts and on
+-- reporting users — and a check the caller makes is a check every future
+-- caller has to remember to make. This one is where the write is.
+-- FOR SHARE, so a delete cannot land between this check and the write.
+--
+-- A plain read let them interleave: the check passed, a concurrent request
+-- soft-deleted the account and unassigned its tickets (finding none, because
+-- this one was not written yet), and then this transaction committed the
+-- assignment — leaving the ticket on a deleted account, which is the limbo
+-- the unassign-on-delete work exists to prevent. The share lock makes the
+-- delete wait for this transaction instead.
+SELECT id FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role IN ('staff', 'admin')
+FOR SHARE;
+
+-- name: IsAssignableGroup :one
+-- Whether a group can be given a ticket. An unknown id used to reach the
+-- foreign key and answer 500 for what is a caller's typo.
+SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1);
+
+-- name: UnassignTicketsForUser :many
+-- Takes a departing user off every ticket still assigned to them, and says
+-- which ones.
+--
+-- Deleting a user is a soft delete, so the assignee column kept pointing at a
+-- row that no longer appears anywhere: the ticket showed as "Unassigned" on
+-- the page (the lookup found nobody), was NOT in the unassigned queue (the
+-- column was not null), and was in nobody's "assigned to me". It sat in the
+-- gap between the two lists with nothing to prompt anyone to pick it up.
+--
+-- Only tickets that are still open are worth moving. A resolved or closed
+-- ticket assigned to somebody who has left is history, and history should
+-- record who actually handled it.
+UPDATE tickets
+SET assignee_user_id = NULL, updated_at = now()
+WHERE assignee_user_id = $1
+  AND resolved_at IS NULL
+  AND closed_at IS NULL
+RETURNING id;
+
 -- name: ListUnassignedTickets :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets
 WHERE assignee_user_id IS NULL AND assignee_group_id IS NULL
@@ -143,7 +230,21 @@ INSERT INTO ticket_replies (id, ticket_id, author_id, body, internal, notify_cus
 VALUES ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: ListReplies :many
-SELECT * FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC;
+-- The author's display name comes back with the reply.
+--
+-- Without it the ticket page had nothing but author_id to render, and rendered
+-- it: every reply from a registered account showed as a bare UUID, so a staff
+-- member reading a thread could not tell who had said what. A join here rather
+-- than a lookup in the browser, because the page cannot do the lookup for a
+-- reporting user -- it is not allowed to list users, and should not be.
+--
+-- LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+-- where there is genuinely no account behind the message.
+SELECT r.*, u.display_name AS author_display_name
+FROM ticket_replies r
+LEFT JOIN users u ON u.id = r.author_id
+WHERE r.ticket_id = $1
+ORDER BY r.created_at ASC;
 
 -- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,

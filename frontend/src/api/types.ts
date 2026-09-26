@@ -317,6 +317,10 @@ export interface Reply {
   id: string
   ticket_id: string
   author_id?: string
+  // The author's display name, sent with the reply. Absent for a guest's
+  // reply, which has no account behind it — that is the one case where
+  // author_id is genuinely missing too.
+  author_name?: string
   body: string
   internal: boolean
   notify_customer: boolean

@@ -47,8 +47,28 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// anyone their own account, because the correct password always works.
 	//
 	// (TOTP is the opposite case: verification is a cheap HMAC, so there the
-	// count has to gate before the check. It does — see CheckMFALock below.)
+	// count has to gate before the check. It does — see ClaimMFAAttempt.)
+	//
+	// What the counter could NOT do on its own is limit guessing, and
+	// measuring it said so: with a limit of three, eight wrong guesses
+	// answered 401 401 401 429 429 429 429 429, and every one of those 429s
+	// had still run the password check. Ignore the status code and the
+	// guesses were unlimited, bounded only by bcrypt — ten to fifteen a
+	// second per core. MFA is off by default, so on most instances that was
+	// the whole of the online defence.
+	//
+	// So an account over its budget waits before the password is checked.
+	// Measured, that costs a serial attacker about twenty times and costs one
+	// with a couple of hundred parallel connections nothing — a request that
+	// cannot get its turn goes ahead rather than being refused. Tarpit has
+	// the numbers and the reasoning for that trade. What it keeps is the
+	// property this ordering exists for: the right password always works, and
+	// nothing here can be used to keep somebody out of their own account.
 	loginKey := "login:" + loginRateKey(body.Email)
+
+	if s.loginLimiter.Exceeded(loginKey) {
+		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
+	}
 
 	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
 	if err != nil {
@@ -126,7 +146,11 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	// session that already passed the password, so burning someone's budget
 	// means you already hold their password — an alarm, not a denial of
 	// service.
-	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+	//
+	// Spent before the code is checked, not counted after it. The old order
+	// left a window: forty parallel wrong codes all read "not locked" and
+	// thirty-six of them were verified, against a limit of five.
+	if err := s.users.ClaimMFAAttempt(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
 			tooManyAttempts(w, user.MFALockDuration)
 			return
@@ -136,10 +160,6 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.users.VerifyMFACode(r.Context(), a.UserID, body.Code); err != nil {
-		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
-			handleError(w, lockErr)
-			return
-		}
 		Error(w, http.StatusUnauthorized, "invalid_mfa_code", "invalid TOTP code")
 		return
 	}
@@ -289,11 +309,32 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
 	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)
 	if err != nil {
-		if errors.Is(err, user.ErrDomainNotAllowed) {
+		// Every refusal the upsert can make, not just the one. Only
+		// ErrDomainNotAllowed was mapped, so a disabled user's SAML login —
+		// and a provider that sent no subject, or no email — answered 500
+		// "an internal error occurred" and was logged as a fault on this
+		// server. Nothing is wrong with this server in any of those cases;
+		// the login was refused, and the person needs to be told which.
+		//
+		// The OIDC handler has mapped all of these since it was written.
+		// This is the same list, redirected rather than JSON because this
+		// endpoint is reached by a browser following the identity provider.
+		switch {
+		case errors.Is(err, user.ErrDomainNotAllowed):
 			http.Redirect(w, r, "/login?error=domain_not_allowed", http.StatusSeeOther)
-			return
+		case errors.Is(err, user.ErrUserDisabled):
+			http.Redirect(w, r, "/login?error=account_disabled", http.StatusSeeOther)
+		case errors.Is(err, user.ErrAccountLinkRefused):
+			http.Redirect(w, r, "/login?error=account_link_refused", http.StatusSeeOther)
+		case errors.Is(err, user.ErrEmailTaken):
+			http.Redirect(w, r, "/login?error=email_taken", http.StatusSeeOther)
+		case errors.Is(err, user.ErrSubjectRequired):
+			http.Redirect(w, r, "/login?error=invalid_assertion", http.StatusSeeOther)
+		case errors.Is(err, user.ErrEmailRequired):
+			http.Redirect(w, r, "/login?error=email_not_verified", http.StatusSeeOther)
+		default:
+			handleError(w, err)
 		}
-		handleError(w, err)
 		return
 	}
 

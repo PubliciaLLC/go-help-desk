@@ -140,7 +140,7 @@ export function CustomFieldsPage() {
               </Button>
               <Button variant="outline" onClick={resetForm}>Cancel</Button>
             </div>
-            {formError && <p className="text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
           </div>
         )}
 

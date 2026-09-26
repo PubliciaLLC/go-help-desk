@@ -229,6 +229,13 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 				"the identity provider did not supply a verified email address")
 		case errors.Is(err, user.ErrDomainNotAllowed):
 			fail(http.StatusForbidden, "domain_not_allowed", "this email domain is not allowed")
+		case errors.Is(err, user.ErrEmailTaken):
+			// Somebody else here already holds the address the identity
+			// provider sends. That is an administrator's problem to resolve,
+			// not a fault, and it used to be reported as an internal error on
+			// every sign-in attempt.
+			fail(http.StatusConflict, "email_taken",
+				"another account on this help desk already uses that email address")
 		default:
 			failInternal(err)
 		}

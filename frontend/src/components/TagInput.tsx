@@ -146,7 +146,7 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
         </div>
       )}
 
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
     </div>
   )
 }

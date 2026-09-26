@@ -2,8 +2,10 @@
 #
 # Deliberately separate from docker-compose.yml, which runs the dev stack. That
 # one keeps its database on `restart: unless-stopped` with a bind-mounted data
-# directory, and points its `test` profile at the same `helpdesk` database dev
-# uses — so running the suite migrates the database you are developing against.
+# directory. It used to carry a `test` profile pointed at the same `helpdesk`
+# database dev uses — so the documented way to run the suite migrated the
+# database you were developing against. That profile is gone; this file is
+# what the docs point at now.
 #
 # This file is the opposite on every count: nothing persists, nothing restarts,
 # nothing is shared with dev, and it holds one service.

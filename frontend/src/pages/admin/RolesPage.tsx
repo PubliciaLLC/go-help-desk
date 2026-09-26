@@ -51,7 +51,7 @@ function RoleRow({ user, currentUserRole }: { user: User; currentUserRole: Role 
       <td className="px-4 py-3 text-gray-400">{new Date(user.created_at).toLocaleDateString()}</td>
       <td className="px-4 py-3 text-right">
         {mutation.isError && (
-          <span className="mr-2 text-xs text-red-500">{extractError(mutation.error)}</span>
+          <span role="alert" className="mr-2 text-xs text-red-500">{extractError(mutation.error)}</span>
         )}
         <Select
           value={user.role}

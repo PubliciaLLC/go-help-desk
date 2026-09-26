@@ -174,7 +174,7 @@ func TestChangePassword_KeepsTheCallerSignedIn(t *testing.T) {
 	elsewhere := loggedIn(t, h) // a second, independent login
 
 	res, body := caller.send(t, http.MethodPatch, "/api/v1/me/password",
-		map[string]any{"password": "a-much-better-password"})
+		map[string]any{"current_password": "password", "new_password": "a-much-better-password"})
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 
 	res, _ = caller.send(t, http.MethodGet, "/api/v1/me", nil)

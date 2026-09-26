@@ -861,7 +861,7 @@ export function CategoriesPage() {
               </Button>
               <Button variant="outline" onClick={() => { setAddingCategory(false); setCatName('') }}>Cancel</Button>
             </div>
-            {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="mt-2 text-sm text-red-600">{formError}</p>}
           </div>
         )}
 

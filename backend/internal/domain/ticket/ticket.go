@@ -161,11 +161,19 @@ type Reply struct {
 	// That is the only way it is NULL — every other path passes the acting
 	// user — so a reply with no author on a ticket with a guest address came
 	// from the customer. TestReply_OnlyGuestsWriteAnAuthorlessReply pins it.
-	AuthorID       *uuid.UUID `json:"author_id,omitempty"`
-	Body           string     `json:"body"`
-	Internal       bool       `json:"internal"`
-	NotifyCustomer bool       `json:"notify_customer"`
-	CreatedAt      time.Time  `json:"created_at"`
+	AuthorID *uuid.UUID `json:"author_id,omitempty"`
+	// AuthorName is the author's display name, read alongside the reply.
+	//
+	// Carried on the reply because the page cannot look it up: a reporting
+	// user is not allowed to list users and should not be, so without this
+	// the thread had nothing to render but the id — and rendered it, as a
+	// bare UUID against every message from a registered account. Empty for a
+	// guest's reply, which has no account behind it.
+	AuthorName     string    `json:"author_name,omitempty"`
+	Body           string    `json:"body"`
+	Internal       bool      `json:"internal"`
+	NotifyCustomer bool      `json:"notify_customer"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // Attachment stores file metadata. Bytes live on disk at StoragePath.

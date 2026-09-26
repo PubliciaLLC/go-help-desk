@@ -205,6 +205,171 @@ func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
 }
 
+// EmailIsTaken covers deleted rows, because the real unique constraint does.
+func (f *fakeUserStore) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	_, ok := f.byEmail[email]
+	return ok, nil
+}
+
+// UpdateProfile writes only the address and the name, leaving everything else
+// on the row alone — which is the whole point of it existing.
+func (f *fakeUserStore) UpdateProfile(_ context.Context, id uuid.UUID, email, displayName string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	delete(f.byEmail, u.Email)
+	u.Email = email
+	u.DisplayName = displayName
+	u.UpdatedAt = time.Now()
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+// The narrow writes. Each touches the one thing it names and leaves the rest
+// of the row alone — which is the property the whole-row Update did not have.
+func (f *fakeUserStore) SetPasswordHash(_ context.Context, id uuid.UUID, hash string) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.PasswordHash = hash
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+func (f *fakeUserStore) SetMFA(_ context.Context, id uuid.UUID, secret string, enabled bool) error {
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.MFASecret, u.MFAEnabled = secret, enabled
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+// SyncFederated counts as an update, because that is what the OIDC and SAML
+// tests are asking about: whether the sign-in wrote the profile back. It goes
+// through the narrow statement now rather than the whole-row one, which is
+// the point of it existing — a sign-in must not carry a role or a password
+// hash along with the name.
+func (f *fakeUserStore) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	f.updates++
+	return f.UpdateProfile(ctx, id, email, displayName)
+}
+
+// EnableMFAIfStillEnrolled mirrors the statement: the flag only, and only
+// while a secret is still there. A fake that wrote the secret back would hide
+// the very thing this exists to stop.
+func (f *fakeUserStore) EnableMFAIfStillEnrolled(_ context.Context, id uuid.UUID) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok || u.MFASecret == "" || u.DeletedAt != nil {
+		return false, nil
+	}
+	u.MFAEnabled = true
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// AdoptOIDCSubject applies the same conditions the statement does, from the
+// stored row rather than from whatever the caller read earlier — which is the
+// whole reason the real one is a single statement.
+func (f *fakeUserStore) AdoptOIDCSubject(_ context.Context, id uuid.UUID, subject, displayName string) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return false, nil
+	}
+	if u.Disabled || u.DeletedAt != nil || u.Role == user.RoleAdmin ||
+		u.SAMLSubject != "" || (u.OIDCSubject != "" && u.OIDCSubject != subject) {
+		return false, nil
+	}
+	f.updates++
+	u.OIDCSubject = subject
+	if displayName != "" {
+		u.DisplayName = displayName
+	}
+	f.byID[u.ID] = u
+	f.byEmail[u.Email] = u
+	f.byOIDC[subject] = u
+	return true, nil
+}
+
+// The three guarded writes. This fake applies the same rule the SQL does:
+// refuse when the change would leave no active administrator.
+func (f *fakeUserStore) lastActiveAdmin(id uuid.UUID) bool {
+	for otherID, u := range f.byID {
+		if otherID == id || u.Role != user.RoleAdmin || u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func (f *fakeUserStore) DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	if f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	return true, f.Disable(ctx, id)
+}
+
+func (f *fakeUserStore) SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error) {
+	if f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	return true, f.SoftDelete(ctx, id)
+}
+
+func (f *fakeUserStore) SetRoleUnlessLastAdmin(_ context.Context, id uuid.UUID, role string) (bool, error) {
+	if role != string(user.RoleAdmin) && f.byID[id].Role == user.RoleAdmin && f.lastActiveAdmin(id) {
+		return false, nil
+	}
+	u := f.byID[id]
+	u.Role = user.Role(role)
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
+// ListAssignableStaff returns the active staff and admins in this fake.
+func (f *fakeUserStore) ListAssignableStaff(_ context.Context) ([]user.AssignableStaff, error) {
+	var out []user.AssignableStaff
+	for _, u := range f.byID {
+		if u.DeletedAt != nil {
+			continue
+		}
+		out = append(out, user.AssignableStaff{
+			ID: u.ID, DisplayName: u.DisplayName,
+			Assignable: u.Role == user.RoleStaff || u.Role == user.RoleAdmin,
+		})
+	}
+	return out, nil
+}
+
+// CountOtherActiveAdmins counts the administrators left if this one stopped
+// being one.
+func (f *fakeUserStore) CountOtherActiveAdmins(_ context.Context, excluding uuid.UUID) (int64, error) {
+	var n int64
+	for id, u := range f.byID {
+		if id == excluding || u.Role != user.RoleAdmin || u.Disabled || u.DeletedAt != nil {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// CountAll counts every row. This fake never removes one, so it is the same
+// number — which is the point: the real store's two counts differ, and that
+// difference is what reopened the setup route.
+func (f *fakeUserStore) CountAll(_ context.Context) (int64, error) {
+	return int64(len(f.byID)), nil
+}
+
 func (f *fakeUserStore) ClearMFA(_ context.Context, id uuid.UUID) error {
 	u, ok := f.byID[id]
 	if !ok {
@@ -289,12 +454,12 @@ func TestUserService_VerifyPassword_InactiveUser(t *testing.T) {
 		Email:       "dave@example.com",
 		DisplayName: "Dave",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 	require.NoError(t, svc.SoftDelete(context.Background(), u.ID))
 
-	_, err = svc.VerifyPassword(context.Background(), "dave@example.com", "pass")
+	_, err = svc.VerifyPassword(context.Background(), "dave@example.com", "a-passphrase")
 	require.Error(t, err)
 }
 
@@ -304,16 +469,16 @@ func TestUserService_SetPassword(t *testing.T) {
 		Email:       "eve@example.com",
 		DisplayName: "Eve",
 		Role:        user.RoleUser,
-		Password:    "oldpass",
+		Password:    "old-passphrase",
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, svc.SetPassword(context.Background(), u.ID, "newpass"))
+	require.NoError(t, svc.SetPassword(context.Background(), u.ID, "new-passphrase"))
 
-	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "oldpass")
+	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "old-passphrase")
 	require.Error(t, err, "old password should no longer work")
 
-	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "newpass")
+	_, err = svc.VerifyPassword(context.Background(), "eve@example.com", "new-passphrase")
 	require.NoError(t, err, "new password should work")
 }
 
@@ -323,7 +488,7 @@ func TestUserService_EnrollMFA(t *testing.T) {
 		Email:       "frank@example.com",
 		DisplayName: "Frank",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -339,7 +504,7 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 		Email:       "grace@example.com",
 		DisplayName: "Grace",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -417,7 +582,7 @@ func TestUserService_EnrollMFA_RefusesSilentReEnrolment(t *testing.T) {
 		Email:       "heidi@example.com",
 		DisplayName: "Heidi",
 		Role:        user.RoleUser,
-		Password:    "pass",
+		Password:    "a-passphrase",
 	})
 	require.NoError(t, err)
 
@@ -482,6 +647,27 @@ func TestVerifyPassword_MissCostsTheSameAsAHit(t *testing.T) {
 
 // MFA attempt tracking. The fake keeps it in the struct so a test can assert
 // that failures are counted and cleared.
+// ClaimMFAAttempt mirrors the real statement: an expired lock resets the
+// window, a live one holds its deadline while the count keeps rising, and
+// otherwise the attempt is counted and the lock set once the budget is spent.
+func (f *fakeUserStore) ClaimMFAAttempt(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
+	if until := f.mfaLocks[id]; until != nil {
+		if time.Now().After(*until) {
+			f.mfaFailures[id] = 1
+			f.mfaLocks[id] = nil
+			return 1, nil, nil
+		}
+		f.mfaFailures[id]++
+		return f.mfaFailures[id], until, nil
+	}
+	f.mfaFailures[id]++
+	if f.mfaFailures[id] >= maxAttempts {
+		lockedUntil := time.Now().Add(lockFor)
+		f.mfaLocks[id] = &lockedUntil
+	}
+	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
 func (f *fakeUserStore) RecordMFAFailure(_ context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (int, *time.Time, error) {
 	f.mfaFailures[id]++
 	if f.mfaFailures[id] >= maxAttempts {

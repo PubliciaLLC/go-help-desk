@@ -31,11 +31,20 @@ CREATE TABLE attachment_reputation (
 
     -- unseen | unscanned | clean | detected | known | unavailable.
     --
-    -- NOT NULL, and every row records one of the six. "unavailable" is a
-    -- state and not an absence: a lookup that failed, timed out or was
-    -- rate-limited must never come back as clean. This is the same mistake
-    -- the ClamAV scanner has now had fixed twice, and storing it as a real
-    -- state is what keeps it from being reintroduced at the read side.
+    -- NOT NULL. "unavailable" is a state and not an absence: a lookup that
+    -- failed, timed out or was rate-limited must never come back as clean.
+    -- This is the same mistake the ClamAV scanner has now had fixed twice,
+    -- and having a real name for it is what keeps it from being reintroduced
+    -- at the read side.
+    --
+    -- But no row here ever holds it. The service returns "unavailable" to its
+    -- caller and never writes it (internal/reputation/service.go), because a
+    -- verdict is kept forever: cache a transient failure and a file whose
+    -- scan was in progress the first time anyone looked would read "no
+    -- answer" for the life of the instance. It is listed in the constraint
+    -- rather than left out so that the column can hold the full vocabulary if
+    -- that decision is ever revisited -- a CHECK that refuses a value the
+    -- type has is a migration away from a name change.
     --
     -- CHECKed rather than merely documented. The value this refuses is the
     -- empty string: a zero-valued reputation.Reputation has State "", nothing

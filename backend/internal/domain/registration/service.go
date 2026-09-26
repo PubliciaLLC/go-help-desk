@@ -20,6 +20,28 @@ var ErrTokenExpired = fmt.Errorf("verification token has expired")
 // two it was.
 var ErrInvalidEmail = fmt.Errorf("invalid email address")
 
+// ErrAlreadyRegistered is a signup for an address that already has an
+// account, deleted accounts included — the unique constraint covers those
+// too, so a deleted account still owns its address.
+//
+// Never shown to the person signing up: the endpoint answers the same 202
+// either way, so this cannot be used to find out who has an account here. It
+// stops the verification email, which is what turned this into a dead end —
+// the link arrived, the account could not be created, and the verify page
+// said the token was invalid or already used.
+var ErrAlreadyRegistered = fmt.Errorf("an account already exists for that address")
+
+// ErrDisplayNameRequired is a signup with no name on it.
+//
+// Refused at registration rather than at verification, where the same rule
+// already applied: by then the person has been told they are registered and
+// sent a link that cannot work.
+var ErrDisplayNameRequired = fmt.Errorf("display name is required")
+
+// ErrPasswordTooShort is the refusal for a signup password below
+// user.MinPasswordLength.
+var ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", user.MinPasswordLength)
+
 // ErrDomainNotAllowed is returned when the email domain is not permitted.
 var ErrDomainNotAllowed = fmt.Errorf("email domain not allowed")
 
@@ -30,6 +52,12 @@ var ErrOpenRegistrationRequired = fmt.Errorf("open registration must be enabled 
 // userCreator is the subset of user.Service needed by the registration service.
 type userCreator interface {
 	Create(ctx context.Context, in user.CreateUserInput) (user.User, error)
+	// EmailIsTaken so a signup for an address that already has an account can
+	// be stopped before the verification email goes out, rather than failing
+	// at the end of the flow with a message about the token. Deleted accounts
+	// count: the unique constraint covers them, so one still owns its
+	// address.
+	EmailIsTaken(ctx context.Context, email string) (bool, error)
 }
 
 // Service handles the sign-up and email-verification workflow.
@@ -66,9 +94,48 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 		return ErrDomainNotAllowed
 	}
 
+	// The fifth path that sets a password, and the one that was missed when
+	// the minimum was made one rule. Nothing checked the length here, and
+	// Verify creates the account from the stored hash — which skips the check
+	// in user.Service.Create — so a signup with an EMPTY password produced a
+	// real account whose login accepted an empty password. Signup is off by
+	// default, which was the only thing standing in front of it.
+	if len(password) < user.MinPasswordLength {
+		return ErrPasswordTooShort
+	}
+	// A display name is required by user.Validate, which runs at Verify —
+	// long after the person has been told their registration was accepted and
+	// an email has been sent. Without this they follow the link and are told
+	// the token is invalid or already used, which is neither. Refuse it here,
+	// where they can still fix it.
+	if displayName == "" {
+		return ErrDisplayNameRequired
+	}
+	// An address that already has an account is refused HERE and not
+	// disclosed to the requester — the 202 is deliberately the same either
+	// way, so signing up is not a way to find out who has an account. What
+	// changes is that the verification email is not sent, so nobody follows a
+	// link and is told their token is invalid or already used, which it is
+	// not. Same shape as the display-name case above: fail where the failure
+	// is true rather than where it is confusing.
+	taken, err := s.users.EmailIsTaken(ctx, email)
+	if err != nil {
+		return fmt.Errorf("checking the address: %w", err)
+	}
+
+	// Hashed before the taken check is acted on, deliberately.
+	//
+	// The endpoint answers the same 202 either way so that signing up is not
+	// a way to find out who has an account here — and the first version of
+	// this returned before the hash, which made the two paths 3 ms and 70 ms.
+	// Measured, with no overlap across a dozen samples. An identical body
+	// that takes a twentieth of the time is not identical.
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
+	}
+	if taken {
+		return ErrAlreadyRegistered
 	}
 
 	now := time.Now()

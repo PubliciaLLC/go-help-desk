@@ -82,7 +82,7 @@ function SaveBar({ onSave, isPending, error, saved }: {
       <Button onClick={onSave} disabled={isPending}>
         {isPending ? 'Saving…' : 'Save changes'}
       </Button>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
       {saved && <p className="text-sm text-green-600">Saved.</p>}
     </div>
   )
@@ -218,7 +218,7 @@ function SAMLSection() {
         <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           {saveMutation.isPending ? 'Saving…' : 'Save SAML config'}
         </Button>
-        {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-sm text-red-600">{saveError}</p>}
         {saved && !warning && <p className="text-sm text-green-600">SAML config saved.</p>}
         {warning && <p className="text-sm text-amber-600">{warning}</p>}
       </div>
@@ -395,7 +395,7 @@ function OIDCSection() {
         </Button>
 
         {saveError && (
-          <p className="text-sm text-red-600">{saveError}</p>
+          <p role="alert" className="text-sm text-red-600">{saveError}</p>
         )}
 
         {saved && (
@@ -664,7 +664,7 @@ function BrandingPanel({
             />
           </div>
 
-          {logoError && <p className="text-sm text-red-600">{logoError}</p>}
+          {logoError && <p role="alert" className="text-sm text-red-600">{logoError}</p>}
         </div>
       </Section>
 
@@ -1068,7 +1068,7 @@ function SLAPoliciesSection() {
         ) : (
           <p className="text-sm text-gray-500">No SLA policies defined.</p>
         )}
-        {formError && <p className="text-sm text-red-600">{formError}</p>}
+        {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
         {!showAdd && !editingId && (
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}
@@ -1105,7 +1105,7 @@ function FeaturesPanel({
         <div>
           <SettingRow
             label="SLA tracking"
-            description="Enable SLA response and resolution time targets configurable per priority and category. When enabled, tickets approaching or breaching their SLA target are highlighted."
+            description="Show the SLA policy editor below, where response and resolution targets are set per priority and category. Tickets are not yet highlighted when a target is approaching or missed, and the targets are applied to new tickets only when SLA_ENABLED is set in the environment."
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
           </SettingRow>
@@ -1357,13 +1357,13 @@ function PolySwarmTerms() {
   return (
     <>
       <p className="font-semibold">
-        ⚠ PolySwarm's free tier is one lookup a minute, and its published terms are from 2018
+        ⚠ PolySwarm's free tier is 60 lookups an hour, and its published terms are from 2018
       </p>
       <p>
-        The free tier allows <strong>60 lookups an hour</strong> — one a minute, with no daily figure
-        published. A ticket carrying ten quarantined attachments spends ten minutes of that allowance in a
-        burst. Go Help Desk asks once for each quarantined attachment, stores the answer and asks again only
-        when the interval below has passed. Lookups beyond the allowance show as <em>not checked</em> —
+        The free tier allows <strong>60 lookups an hour</strong>, with no daily figure published. It is an
+        hourly bucket rather than a pace: a ticket carrying ten quarantined attachments spends ten of the
+        sixty at once, and the hour has to pass before they come back. Go Help Desk asks once for each
+        quarantined attachment, stores the answer and asks again only when the interval below has passed. Lookups beyond the allowance show as <em>not checked</em> —
         never as clean.
       </p>
       <p>
@@ -1702,7 +1702,7 @@ function AttachmentsPanel({
               switched VirusTotal off and still sees VirusTotal links will
               reasonably conclude the setting does not work. */}
           <p>
-            A hash on a ticket always links to VirusTotal, whatever these toggles say. That link opens in the
+            A flagged attachment always links to VirusTotal, whatever these toggles say. That link opens in the
             reader's own browser and this instance sends nothing there unless VirusTotal is switched on
             below; the toggles govern what this server discloses, not where staff may look.
           </p>

@@ -584,3 +584,32 @@ export async function getSecurityWarnings(): Promise<SecurityWarnings> {
   const res = await api.get<SecurityWarnings>('/admin/security-warnings')
   return res.data
 }
+
+/**
+ * The people work can be given to: id and display name only.
+ *
+ * Staff-readable, unlike `listUsers`, which is `/admin/users` and answers 403
+ * to anybody who is not an administrator. That is why this exists: the
+ * assignee picker was empty for every staff member and no colleague's name
+ * could be resolved on a ticket, because the only list the page knew about
+ * was one staff cannot read.
+ */
+export interface AssignableStaff {
+  id: string
+  display_name: string
+  /**
+   * False for somebody still here who cannot be given work — suspended, or
+   * moved to a reporting role.
+   *
+   * Their name is still in the list on purpose. A ticket already assigned to
+   * them has to show who has it, and filtering them out made the page call a
+   * suspended colleague a former staff member, which is a claim about
+   * somebody having left that was not true.
+   */
+  assignable: boolean
+}
+
+export async function listAssignableStaff(): Promise<AssignableStaff[]> {
+  const res = await api.get<AssignableStaff[]>('/staff')
+  return res.data
+}

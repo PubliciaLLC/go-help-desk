@@ -103,7 +103,7 @@ Admins manage accounts from **Admin → Users**. The user list is clickable — 
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
 - **Groups** — view current group membership, add to groups, or remove from groups.
-- **Delete** — permanently removes the account. Tickets and replies the user created are preserved with a "removed user" attribution. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
+- **Delete** — marks the account deleted. It stops authenticating immediately, every session is revoked, and it drops out of the admin list; the row itself stays, because the tickets and replies that reference it do. Those keep the person's display name on them: a thread that renamed its participants after the fact would not be an accurate record of what happened. There is no hard delete and no anonymisation, so this is not the tool for a request to erase somebody's data. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
 
 ### Ticket Lifecycle
 
@@ -115,7 +115,7 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
 - **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window. Set to 0 to disable user-initiated reopening entirely.
-- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the first active custom status when unset.
+- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status.
 - **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
 
   **Auto-close scheduling.** This transition is driven by a periodic background
@@ -176,7 +176,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - The query is tokenized into words and each word is prefix-matched (e.g. `print jam` requires a word starting with "print" **and** a word starting with "jam", in any order) — this is what keeps "search as you type" working on partial words, not just whole ones.
 - Subject is weighted higher than description, so a match in the subject line ranks above one buried in a long description.
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
-- Results appear after 2 characters are entered. Fetching is shown inline with a spinner.
+- Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
 - Reply bodies are not indexed in v2 — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
@@ -291,13 +291,21 @@ in 1.2.0.
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
 
-Attachment upload is available to all authenticated (non-guest) users. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+Attachment upload is available to all authenticated (non-guest) users on the
+API. The reply composer currently offers the control to staff only, so a
+reporter can attach a file when they create a ticket and not when they reply
+to it; nothing refuses them, the button is simply absent. Tracked as an issue. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
 
 ### Attachment scanning
 
-The scanner is configured with `CLAMAV_ADDR`, which an administrator can
-override under **Admin → Settings**; the environment value is what the instance
-starts with. Docker Compose ships ClamAV by default.
+The scanner is configured with `CLAMAV_ADDR`. Docker Compose ships ClamAV by
+default.
+
+The setting `attachment_scan_address` overrides it and takes precedence once
+saved — but **there is no field for it in the admin UI yet**, so the only way
+to set it is a PATCH to `/api/v1/admin/settings`. This document said an
+administrator could change it under Admin → Settings, which sent operators
+looking for a control that is not there. Tracked as an issue.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -822,9 +830,15 @@ key failing.
 
 The expanded view carries each provider on its own line — named, with its own
 verdict, its own `analysed_at`, its own `fetched_at`, its own link and its own
-*Check again* control where the state allows one. The line the summary was taken
-from is marked, or the row's single sentence looks as though it came from
-nowhere.
+*Check again* control where the state allows one.
+
+The wire carries an `inline` flag saying which of those lines the one-line
+summary was taken from, and **nothing renders it yet**. The intent is that the
+summary's source is marked, so the row's single sentence does not look as
+though it came from nowhere; today a reader has to work it out from the
+verdict ordering. Tracked as an issue. Stated here rather than left implied
+because this document is what the next person builds from, and a sentence
+describing a marker that does not exist is how a gap becomes invisible.
 
 **All four off is a supported configuration, not a broken one.** It means
 attachments are judged by this instance's own scanner alone, which is a complete
@@ -946,11 +960,17 @@ flagged it, seen it and some did, or **known** — a named vendor feed has this
 exact hash in its catalogue. The distinctions are the value of the feature and
 none of them may collapse into the others.
 
-**`known` is the one verdict here that renders as reassurance**, and it is an
-exception for a reason worth stating: a named feed made a positive claim about
-the file. Everywhere else in this feature an absence must never read as safety
-— `clean` only means engines ran and found nothing, `unseen` only means nobody
-has submitted it — and none of those has anybody standing behind it.
+**`known` is the one verdict here with somebody standing behind it**, and it
+is an exception for a reason worth stating: a named feed made a positive claim
+about the file. Everywhere else in this feature an absence must never read as
+safety — `clean` only means engines ran and found nothing, `unseen` only means
+nobody has submitted it — and none of those has anybody behind it.
+
+It does not render as reassurance, and that is deliberate. Only a file the
+local scanner has already flagged is ever looked up, so a catalogue hit is
+never the stronger claim: it is context on a sample somebody has already
+called malicious, which is a reason to look harder rather than a reason to
+relax. The row says so — amber, with the caveat attached — and a test pins it.
 
 It is `known` and deliberately **not** `known_good`, because how much the claim
 is worth depends entirely on which feed is speaking, and the state name must
@@ -967,8 +987,9 @@ are not worth the same and neither of them is "known good". A bare `known` with
 no feed named would be a claim from nowhere, which is the shape this feature
 refuses everywhere else.
 
-Only PolySwarm can produce it today, from its `KNOWN_GOOD` state; the other two
-providers never return it.
+Two providers produce it today: PolySwarm, from its `KNOWN_GOOD` state, and
+CIRCL, when a hash set it re-publishes carries the file. VirusTotal and
+MetaDefender never return it.
 
 **What it does not do**, stated plainly because every one of these is the
 mistake that has already been made twice in the virus scanner:
@@ -1045,7 +1066,14 @@ caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
 not see reports "not found" rather than "forbidden", so tracking numbers cannot
-be probed.
+be probed **over MCP**.
+
+The REST API answers `403` for a ticket that exists and `404` for one that does
+not, which is the opposite of that and lets a signed-in reporter walk the
+sequential numbers to learn which exist. It reveals no content. It is not
+changed here because the status code is the REST contract — a dozen tests pin
+it and a client may branch on it — so tightening it belongs to a major version
+rather than a beta's bug fixes. Tracked as an issue.
 
 ### Authentication Methods
 
@@ -1171,9 +1199,27 @@ so they are not removed as dead weight:
   caller's own tickets with each of their groups', so it reads each source to
   the end of the requested page and slices after merging — pushing the window
   into each query returns limit × (1 + groups) rows.
-- **Uploaded images are capped at 25 megapixels**, checked from the header
-  before any decode. A byte-size limit is not a memory limit: compressed formats
-  expand, and a 169 KB PNG decodes to 142 MB.
+- **Uploaded images are capped by what decoding them will cost**, checked from
+  the header before any decode. A byte-size limit is not a memory limit:
+  compressed formats expand, and a 169 KB PNG decodes to 142 MB.
+
+  Two bounds, and the second took five rounds of review to get right. Twenty-
+  five megapixels, and 100 MB of decoder allocation — which is not the same
+  number as the picture's size, because the JPEG decoder allocates far more
+  than the picture it produces. A progressive JPEG holds every DCT coefficient
+  until the image is reconstructed; a CMYK or RGB one decodes through a second
+  full-resolution image. Counting pixels and assuming four bytes each let a
+  214 KB file cost 403 MB, and each narrower rule that replaced it let a
+  differently-shaped file through: 16-bit, then progressive, then CMYK, then
+  RGB, then an Adobe marker moved after the scan data.
+
+  So the rule is no longer "know every shape". A JPEG whose header cannot be
+  read is **refused**, rather than falling back to a weaker estimate. Every
+  real JPEG parses; one that does not is one somebody built not to, and "I
+  cannot tell how much this will cost" is a reason to refuse. That converts
+  the next gap in the estimate from a way through into a refusal, which is
+  worth more than any single thing the estimate knows. A limit on how many
+  images are decoded at once bounds the process rather than the request.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
   with a stricter, sandboxed policy, so a file that got past the upload check
@@ -1313,7 +1359,7 @@ The fields available on a ticket are the union of all fields assigned to its sel
 
 Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
 
-Guests see and can fill only category-level fields with `visible_on_new = true`. Regular authenticated users see category + type fields. Staff/admin see all levels.
+Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. Regular authenticated users see category + type fields. Staff/admin see all levels.
 
 ---
 
@@ -1375,7 +1421,9 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 
 ## SLA Tracking (v1)
 
-SLA tracking is an optional feature toggle available in **Admin → Settings → Features → SLA tracking**. It can also be pre-enabled at startup via the `SLA_ENABLED=true` environment variable.
+**Read this section as a specification of the intended feature, not a description of what runs.** What is implemented, with `SLA_ENABLED=true` in the environment: a policy is attached to a ticket when it is created, its deadlines are recorded, and the two timestamps needed to judge them — first response and resolution — are stamped as they happen. `EvaluateBreaches` and `IsResponseBreached` exist and have no callers, so nothing ever reads any of it.
+
+The **Admin → Settings** toggle shows the SLA policy editor and does nothing else: it is how an operator reaches the editor, and it does not switch the feature on. `SLA_ENABLED` in the environment is what does that. Nothing else below is implemented — no scheduler, no breach detection, no notification, no indicator, no pause. Each gap is marked, and they are tracked as issues.
 
 ### SLA Policies
 

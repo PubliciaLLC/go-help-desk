@@ -50,6 +50,20 @@ func (s *Server) requireTicketAccess(next http.Handler) http.Handler {
 			return
 		}
 		if !ok {
+			// 403, not 404 — and that is a known, deliberate inconsistency
+			// with the MCP surface, which answers "not found" here.
+			//
+			// The difference is an oracle: tracking numbers are sequential,
+			// so a signed-in reporter can walk GHD-2026-000001 upwards and
+			// learn which numbers exist and roughly how many tickets this
+			// instance has. It reveals no content.
+			//
+			// Not changed here because this status is the REST API's
+			// published contract — a dozen tests pin it and a client may
+			// branch on it — and tightening it is a breaking change that
+			// belongs to a major version, not to a beta's bug fixes. Tracked
+			// as an issue; DESIGN.md states the current behaviour rather than
+			// the intended one.
 			Error(w, http.StatusForbidden, "forbidden", "not your ticket")
 			return
 		}

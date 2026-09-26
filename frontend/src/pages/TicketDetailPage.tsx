@@ -18,8 +18,8 @@ import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
-import { listStatuses, listUsers } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
+import { apiRefusal, extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -31,7 +31,7 @@ import { Select } from '@/components/ui/select'
 import { api } from '@/api/client'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import type { Group, User, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
+import type { Group, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
 import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 
@@ -51,12 +51,18 @@ interface AssigneePanelProps {
   ticketId: string
   assigneeUserId?: string
   assigneeGroupId?: string
-  users: User[]
+  users: AssignableStaff[]
+  // haveStaffList says the list above actually loaded. Without it the panel
+  // cannot tell "this assignee has left" from "I could not read the list",
+  // and the first version of this guessed the first — so for a staff member,
+  // who could not read the list at all, every live colleague was reported as
+  // having left.
+  haveStaffList: boolean
   groups: Group[]
   onUpdated: () => void
 }
 
-function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, groups, onUpdated }: AssigneePanelProps) {
+function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, onUpdated }: AssigneePanelProps) {
   const [mode, setMode] = useState<'user' | 'group'>('user')
   const [selectedId, setSelectedId] = useState('')
   const [error, setError] = useState('')
@@ -89,7 +95,10 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
   const currentUser = users.find((u) => u.id === assigneeUserId)
   const currentGroup = groups.find((g) => g.id === assigneeGroupId)
 
-  const staffUsers = users.filter((u) => u.role === 'staff' || u.role === 'admin')
+  // Everyone in the list can be NAMED; only some can be PICKED. A suspended
+  // colleague still holds the tickets they were given, so their name belongs
+  // on those tickets — they just should not be offered for new ones.
+  const staffUsers = users.filter((u) => u.assignable)
 
   return (
     <div className="space-y-2">
@@ -102,6 +111,20 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
             <span className="h-2 w-2 rounded-full bg-blue-400" />
             {currentGroup.name}
           </span>
+        ) : assigneeUserId && haveStaffList ? (
+          // Assigned to somebody who is not in the list of people work can be
+          // given to — a deleted account. Saying "Unassigned" here was a lie
+          // the page told about its own history: a resolved ticket keeps its
+          // assignee deliberately, so the record shows who handled it, and the
+          // page was erasing exactly that.
+          //
+          // Only when the list actually loaded. The first version of this said
+          // "Former staff member" whenever the list was empty, which for a
+          // staff member was always — so every live colleague was reported as
+          // having left. A page that cannot tell should say nothing, not guess.
+          <span className="text-gray-500 italic">Former staff member</span>
+        ) : assigneeUserId ? (
+          <span className="text-gray-400">Assigned</span>
         ) : (
           <span className="text-gray-400">Unassigned</span>
         )}
@@ -157,7 +180,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, group
           Clear assignment
         </button>
       )}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
     </div>
   )
 }
@@ -297,7 +320,7 @@ function CustomFieldsPanel({ ticketId, isStaffOrAdmin }: CustomFieldsPanelProps)
             </Button>
           </div>
         )}
-        {saveError && <p className="text-xs text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-xs text-red-600">{saveError}</p>}
       </CardContent>
     </Card>
   )
@@ -309,7 +332,6 @@ export function TicketDetailPage() {
   const { id } = useParams({ from: '/tickets/$id' })
   const { user } = useAuthStore()
   const qc = useQueryClient()
-  const [reopenError, setReopenError] = useState('')
 
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
@@ -351,9 +373,15 @@ export function TicketDetailPage() {
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
 
-  const { data: allUsers = [] } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => listUsers(),
+  // The staff-readable list, not /admin/users.
+  //
+  // listUsers answers 403 to anybody who is not an administrator, so for a
+  // staff member this query failed silently, the list was empty, and the
+  // assignee picker had nothing in it — while the server would have accepted
+  // the assignment perfectly well.
+  const { data: allUsers = [], isSuccess: haveStaffList } = useQuery({
+    queryKey: ['assignable-staff'],
+    queryFn: listAssignableStaff,
     enabled: isStaffOrAdmin,
   })
 
@@ -393,13 +421,11 @@ export function TicketDetailPage() {
   const reopenMutation = useMutation({
     mutationFn: () => reopenTicket(id),
     onSuccess: () => {
-      setReopenError('')
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
-    onError: (err) => {
-      setReopenError(extractError(err))
+    onError: () => {
       // A 409 means this page is stale (someone else already reopened it):
       // refetch so the header shows the real status and the button goes away.
       qc.invalidateQueries({ queryKey: ['ticket', id] })
@@ -416,8 +442,28 @@ export function TicketDetailPage() {
     },
   })
 
+  // Whichever of the three last failed. They are mutually exclusive in
+  // practice — a ticket is never resolvable and reopenable at once.
+  const lifecycleError =
+    (resolveMutation.isError && extractError(resolveMutation.error)) ||
+    (reopenMutation.isError && extractError(reopenMutation.error)) ||
+    (closeMutation.isError && extractError(closeMutation.error)) ||
+    ''
+
   if (isLoading) return <Layout><div className="flex justify-center py-12"><Spinner size="lg" /></div></Layout>
-  if (error || !ticket) return <Layout><p className="text-red-600">Ticket not found.</p></Layout>
+  if (error || !ticket) {
+    // Not every failure here is a missing ticket. A 403 means it exists and
+    // is not yours to read — which the server says in as many words — and a
+    // 500 or a proxy's 503 is not about this ticket at all. All three used
+    // to print "Ticket not found."
+    const { status, message } = apiRefusal(error)
+    const text =
+      status === 404 ? 'Ticket not found.'
+      : message ? message
+      : status ? `This ticket could not be loaded (error ${status}).`
+      : 'This ticket could not be loaded.'
+    return <Layout><p role="alert" className="text-red-600">{text}</p></Layout>
+  }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
   // Reopen is Closed-only on the server (ticket.Service.Reopen). A Resolved
@@ -488,7 +534,14 @@ export function TicketDetailPage() {
           </div>
         </div>
 
-        {reopenError && <p role="alert" className="text-sm text-red-600">{reopenError}</p>}
+        {/* The server explains why it refused — a transition the lifecycle
+            does not allow, a ticket outside this staff member's scope, an
+            expired session. Without this the button simply re-enabled and
+            the status did not change, which reads as the app being broken.
+            The status picker below already did this; these three did not. */}
+        {lifecycleError && (
+          <p role="alert" className="text-sm text-red-600">{lifecycleError}</p>
+        )}
 
         <div className="grid grid-cols-3 gap-6">
           {/* Main column */}
@@ -520,7 +573,14 @@ export function TicketDetailPage() {
                       className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
                     >
                       <div className="mb-1 flex items-center justify-between text-xs text-gray-500">
-                        <span>{r.author_id ?? 'Customer'}</span>
+                        {/* The name, not the id. This printed r.author_id,
+                            so every reply from a registered account showed as
+                            a bare UUID and nobody could tell who had said
+                            what. A reply with no author came from a guest —
+                            that is the only way it is null. */}
+                        <span className="min-w-0 truncate" title={r.author_name || undefined}>
+                          {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
+                        </span>
                         <span className="flex items-center gap-2">
                           {r.internal && <span className="text-yellow-600 font-medium">Internal note</span>}
                           {formatDate(r.created_at)}
@@ -585,6 +645,7 @@ export function TicketDetailPage() {
                     assigneeUserId={ticket.assignee_user_id}
                     assigneeGroupId={ticket.assignee_group_id}
                     users={allUsers}
+                    haveStaffList={haveStaffList}
                     groups={groups}
                     onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
                   />
@@ -611,7 +672,7 @@ export function TicketDetailPage() {
                     ))}
                   </Select>
                   {statusMutation.isError && (
-                    <p className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
+                    <p role="alert" className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
                   )}
                 </CardContent>
               </Card>

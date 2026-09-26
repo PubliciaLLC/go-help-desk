@@ -75,6 +75,7 @@ type harness struct {
 	groupSvc        *group.Service
 	userSvc         *user.Service
 	categorySvc     *category.Service
+	customFieldSvc  *customfield.Service
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
 	ticketStore     *ticketstore.Store
@@ -97,6 +98,16 @@ func newHarness(t *testing.T) (*harness, func()) {
 func newHarnessWithRateLimit(t *testing.T, authRateLimit int) (*harness, func()) {
 	t.Helper()
 	return newHarnessWith(t, authRateLimit, "")
+}
+
+// newHarnessWithThrottle builds a harness with both halves of the credential
+// throttle set: the per-minute budget and the delay an over-budget login
+// waits. Only the tarpit tests need a delay long enough to measure.
+func newHarnessWithThrottle(t *testing.T, authRateLimit int, delay time.Duration) (*harness, func()) {
+	t.Helper()
+	h, cleanup := newHarnessWith(t, authRateLimit, "")
+	h.srv.SetLoginThrottleDelayForTest(delay)
+	return h, cleanup
 }
 
 // newHarnessWith builds a harness with a scanner address, so a test can tell
@@ -246,6 +257,11 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		// times from one address in a few seconds, which is not an attack;
 		// TestAuthRateLimit covers the limiter with it switched on.
 		AuthRateLimitPerMinute: authRateLimit,
+		// The tarpit's duration, not its existence: the queueing and the
+		// bound still apply at 1ms, and the suite does not spend a second per
+		// over-budget login proving that time passes.
+		// TestLoginTarpit_SlowsAnOverBudgetAccount sets a measurable one.
+		AuthThrottleDelay: time.Millisecond,
 	}
 	// Derived exactly as main.go does, so tests exercise the real store rather
 	// than a shape production never uses.
@@ -296,6 +312,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		groupSvc:        groupSvc,
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
+		customFieldSvc:  customFieldSvc,
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
 		ticketStore:     tStore,
@@ -1590,7 +1607,7 @@ func TestChangePassword_AsStaff(t *testing.T) {
 
 	sess := loggedIn(t, h)
 	res, body := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
-		"password": "newpassword123",
+		"current_password": "password", "new_password": "newpassword123",
 	})
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 }
@@ -1601,7 +1618,7 @@ func TestChangePassword_TooShort(t *testing.T) {
 
 	sess := loggedIn(t, h)
 	res, _ := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
-		"password": "short",
+		"current_password": "password", "new_password": "short",
 	})
 	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
