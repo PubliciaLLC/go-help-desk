@@ -447,7 +447,7 @@ Facilities
 <p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>
 
 <h3>Reopen target status</h3>
-<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the first active custom status alphabetically.</p>
+<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>.</p>
 
 
 <h2 id="admin-sla">SLA policies</h2>
@@ -482,13 +482,15 @@ Facilities
 <p>The ticket list shows a visual indicator for each ticket's SLA status:</p>
 <ul>
   <li><span style="color:var(--green);font-weight:600;">Green</span> — within SLA</li>
-  <li><span style="color:#f59e0b;font-weight:600;">Amber</span> — within 20% of the deadline</li>
-  <li><span style="color:#ef4444;font-weight:600;">Red</span> — SLA breached</li>
+  <li><span style="color:#f59e0b;font-weight:600;">Amber</span> — at or past 80% of the target</li>
+  <li><span style="color:#ef4444;font-weight:600;">Red</span> — at or past the target</li>
 </ul>
-<p>Staff can sort the ticket queue by SLA status to prioritize tickets at risk of breaching.</p>
+<p>The colour is computed fresh on every read from elapsed-time-against-target, not from the stored breach stamp — so it never lags behind the sweep that writes those stamps. The queue cannot be sorted by it: the column shows where each ticket stands, but the order is still by creation date.</p>
+<p><strong>Who sees it.</strong> The indicator, the policy name, the targets and the breach state are shown to staff and administrators only. A reporting user never sees any of it on their own ticket — the API returns <code>"sla": null</code> for them whether or not a policy is attached — so a customer cannot tell how their ticket is being timed, or that it has breached.</p>
 
 <h3>Pausing SLA timers</h3>
-<p>When a ticket is moved to the <em>Pending</em> status (waiting on the user), the SLA timer is paused. The timer resumes when the ticket moves out of Pending. This prevents SLA breaches for tickets that are legitimately waiting on a response from the submitter.</p>
+<p>When a ticket is moved to the <em>Pending</em> status (waiting on the user), the SLA timer is paused. The timer resumes when the ticket moves out of Pending. This prevents SLA breaches for tickets that are legitimately waiting on a response from the submitter. A ticket can pause and resume as many times as it needs to; the paused time accumulates, and reopening a ticket carries that total forward rather than starting a fresh clock.</p>
+<p><strong>It is matched by name.</strong> &ldquo;Pending&rdquo; is an ordinary custom status that the seed data creates — there is no per-status &ldquo;pauses the SLA&rdquo; switch. The consequences are worth knowing before you edit it: <strong>renaming</strong> it stops tickets pausing from that point on, though one already in it stays paused until it leaves; <strong>deactivating</strong> it does not stop it pausing, because the status picker still offers inactive statuses and the transition is accepted; and <strong>deleting</strong> it removes the only way to pause an SLA at all. Whatever status is named Pending — renamed back, or newly created — becomes the pause status.</p>
 
 
 <h2 id="admin-email-tpl">Email templates</h2>
