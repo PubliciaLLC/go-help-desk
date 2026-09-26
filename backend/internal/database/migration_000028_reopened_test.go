@@ -478,6 +478,111 @@ func TestMigration_SLABackfillCorrectsFirstResponsePostdatingResolution(t *testi
 	require.Nil(t, recB.ResponseBreachedAt)
 }
 
+// TestMigration_SLABackfillCorrectsFirstResponsePostdatingEstimatedResolution
+// pins #255: the ESTIMATED twin of #253/S4a. An estimated resolution instant
+// (recovered only from the updated_at fallback, no fact anywhere) can ALSO
+// have a real, later first_response_at already recorded on the sla_records
+// row — a genuine staff reply, or (pre-#221) an internal note, posted after
+// the ticket went terminal. Because updated_at is an upper bound on the true
+// transition, the true transition happened no later than the estimate, which
+// is therefore no later than the reply either, so the estimate itself is the
+// correct stand-in for the first response — not the later reply. Without
+// S4b, S4 leaves first_response_at untouched (already non-NULL), S4a's
+// fact-only gate skips an estimated row entirely, and 000027's own earlier,
+// unconditional response-freeze pass has already frozen
+// response_elapsed_at_met_seconds from the untouched real reply, so S6 would
+// stamp a false response breach from that frozen (but wrong) number.
+func TestMigration_SLABackfillCorrectsFirstResponsePostdatingEstimatedResolution(t *testing.T) {
+	f := newMigration028Fixture(t, "backfill-estimated-response-postdate")
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	T := now.Add(-6 * time.Hour)
+
+	setFirstResponse := func(id uuid.UUID, at time.Time) {
+		_, err := f.tx.ExecContext(f.ctx,
+			`UPDATE sla_records SET first_response_at = $2 WHERE ticket_id = $1`, id, at)
+		require.NoError(t, err)
+	}
+
+	// caseA: Closed, no history, resolved_at/closed_at both NULL, updated_at =
+	// T+10m (an ON-TIME estimate — well inside the 30-minute target), with a
+	// real reply recorded well after it (T+2h). Without S4b this reply's
+	// frozen elapsed (7200s) would falsely breach a ticket whose true
+	// transition provably happened no later than T+10m.
+	onTimeEstimateAt := T.Add(10 * time.Minute)
+	lateRealReplyA := T.Add(2 * time.Hour)
+	closedOnTimeEstimateLateReply := f.seed(t, "closed on-time estimate, late real reply",
+		f.closedSt.ID, T, onTimeEstimateAt, nil, nil, nil)
+	setFirstResponse(closedOnTimeEstimateLateReply.ID, lateRealReplyA)
+
+	// caseB: identical shape, but Resolved instead of Closed (R2's fallback
+	// instead of R4's).
+	lateRealReplyB := T.Add(3 * time.Hour)
+	resolvedOnTimeEstimateLateReply := f.seed(t, "resolved on-time estimate, late real reply",
+		f.resolvedSt.ID, T, onTimeEstimateAt, nil, nil, nil)
+	setFirstResponse(resolvedOnTimeEstimateLateReply.ID, lateRealReplyB)
+
+	// caseC: a LATE-estimate variant (Closed) — the estimate itself is past
+	// the 30-minute target (updated_at = T+3h), with a real reply later still
+	// (T+5h). Even though the estimate reads as late, it must still never be
+	// frozen or stamped (#246's invariant for every estimated instant), and
+	// the corrected first_response_at must be the estimate, not the reply.
+	lateEstimateAt := T.Add(3 * time.Hour)
+	lateRealReplyC := T.Add(5 * time.Hour)
+	closedLateEstimateLateReply := f.seed(t, "closed late estimate, later real reply",
+		f.closedSt.ID, T, lateEstimateAt, nil, nil, nil)
+	setFirstResponse(closedLateEstimateLateReply.ID, lateRealReplyC)
+
+	runMigration027And028(t, f.ctx, f.tx)
+
+	// caseA
+	tkA := f.getTicket(t, closedOnTimeEstimateLateReply.ID)
+	require.NotNil(t, tkA.ClosedAt, "R4 fallback: no history, no fact")
+	require.True(t, tkA.ClosedAt.Equal(onTimeEstimateAt))
+	recA := f.getRecord(t, closedOnTimeEstimateLateReply.ID)
+	require.NotNil(t, recA.ResolvedAt)
+	require.True(t, recA.ResolvedAt.Equal(onTimeEstimateAt), "estimated resolution instant")
+	require.Nil(t, recA.ResolutionElapsedAtMetSeconds, "estimated: never frozen")
+	require.Nil(t, recA.ResolutionBreachedAt, "estimated: never stamped")
+	require.NotNil(t, recA.FirstResponseAt)
+	require.True(t, recA.FirstResponseAt.Equal(onTimeEstimateAt),
+		"#255: S4b must correct first_response_at back to the estimate, not leave the later real reply")
+	require.Nil(t, recA.ResponseElapsedAtMetSeconds,
+		"#255: S4b must explicitly clear the number 000027's earlier pass froze from the untouched real reply")
+	require.Nil(t, recA.ResponseBreachedAt,
+		"#255: no false response breach — the reply was 110 minutes past the 30-minute target before the fix")
+
+	// caseB: same shape, Resolved.
+	tkB := f.getTicket(t, resolvedOnTimeEstimateLateReply.ID)
+	require.NotNil(t, tkB.ResolvedAt, "R2 fallback: no history, no fact")
+	require.True(t, tkB.ResolvedAt.Equal(onTimeEstimateAt))
+	recB := f.getRecord(t, resolvedOnTimeEstimateLateReply.ID)
+	require.NotNil(t, recB.ResolvedAt)
+	require.True(t, recB.ResolvedAt.Equal(onTimeEstimateAt))
+	require.Nil(t, recB.ResolutionElapsedAtMetSeconds)
+	require.Nil(t, recB.ResolutionBreachedAt)
+	require.NotNil(t, recB.FirstResponseAt)
+	require.True(t, recB.FirstResponseAt.Equal(onTimeEstimateAt),
+		"#255: same correction for a Resolved ticket")
+	require.Nil(t, recB.ResponseElapsedAtMetSeconds)
+	require.Nil(t, recB.ResponseBreachedAt)
+
+	// caseC: late-estimate variant — still recorded, unfrozen, unstamped.
+	tkC := f.getTicket(t, closedLateEstimateLateReply.ID)
+	require.NotNil(t, tkC.ClosedAt)
+	require.True(t, tkC.ClosedAt.Equal(lateEstimateAt))
+	recC := f.getRecord(t, closedLateEstimateLateReply.ID)
+	require.NotNil(t, recC.ResolvedAt)
+	require.True(t, recC.ResolvedAt.Equal(lateEstimateAt))
+	require.Nil(t, recC.ResolutionElapsedAtMetSeconds, "estimated: never frozen, however late it reads")
+	require.Nil(t, recC.ResolutionBreachedAt, "estimated: never stamped, however late it reads")
+	require.NotNil(t, recC.FirstResponseAt)
+	require.True(t, recC.FirstResponseAt.Equal(lateEstimateAt),
+		"#255: corrected to the (late) estimate, not the even-later real reply")
+	require.Nil(t, recC.ResponseElapsedAtMetSeconds,
+		"#255: an estimated instant is never frozen on the response side either, on time or late")
+	require.Nil(t, recC.ResponseBreachedAt)
+}
+
 // TestMigration_EstimatedResolutionIsRecordedButNeitherFrozenNorStamped pins
 // #243(a) and #246: a resolution instant recovered only from the updated_at
 // fallback (no fact anywhere) must still get sla_records.resolved_at and a

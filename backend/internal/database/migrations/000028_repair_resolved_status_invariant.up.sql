@@ -576,13 +576,25 @@ WHERE r.resolved_at IS NOT NULL
 -- postdate the ticket's own resolution when the resolution is a FACT
 -- (resolution_elapsed_at_met_seconds IS NOT NULL — the #246 marker already
 -- excludes an estimated instant, so a real reply can never be moved onto an
--- updated_at-derived estimate here). Under the currently-shipping code this
--- shape cannot arise going forward: SetSLAResolvedAndFirstResponse's own
--- COALESCE locks in first_response_at at the moment of resolve if it was
--- NULL then, and a later real reply's RecordFirstResponse call is a no-op
--- fast path once first_response_at is non-NULL. It IS reachable in
--- v1.2.0-era legacy data, where RecordResolved and RecordFirstResponse were
--- independent first-write-wins calls with no such folding: a ticket
+-- updated_at-derived estimate here). This shape cannot arise from an
+-- ordinary event sequence under the currently-shipping code:
+-- SetSLAResolvedAndFirstResponse's own COALESCE locks in first_response_at
+-- at the moment of resolve if it was NULL then, and a later real reply's
+-- RecordFirstResponse call is a no-op fast path once first_response_at is
+-- non-NULL. It can still arise through the #227/#234 resolutionInstant()
+-- repair path, live and post-upgrade, not only historically: if a
+-- RecordResolved call fails and is silently swallowed (an already-accepted
+-- best-effort limitation), a later reply sets first_response_at, and then a
+-- later close()/re-resolve/UpdateStatus call recovers the lost resolve fact
+-- via RecordResolved(ctx, t, resolutionInstant(t, now)) —
+-- SetSLAResolvedAndFirstResponse's COALESCE leaves the already-set
+-- first_response_at untouched, producing first_response_at > resolved_at in
+-- live data. No behavioral change follows from this: this migration runs
+-- once at upgrade time and never sees post-upgrade rows, so it does not and
+-- need not revisit that path — this statement's own correction is the same
+-- either way. It is also reachable in v1.2.0-era legacy data, where
+-- RecordResolved and RecordFirstResponse were independent first-write-wins
+-- calls with no such folding: a ticket
 -- resolved on time with no prior reply, reopened, given a real reply (or,
 -- per #221, even an internal note) while Resolved/Closed, then re-resolved
 -- or closed, leaves first_response_at already set to that later reply —
@@ -616,6 +628,48 @@ UPDATE sla_records r
 SET first_response_at = r.resolved_at,
     response_elapsed_at_met_seconds = r.resolution_elapsed_at_met_seconds
 WHERE r.resolution_elapsed_at_met_seconds IS NOT NULL
+  AND r.first_response_at > r.resolved_at;
+
+-- S4b (#255): the ESTIMATED twin of S4a. S4a's gate
+-- (resolution_elapsed_at_met_seconds IS NOT NULL) deliberately excludes an
+-- estimated resolution — but an estimated row can carry exactly the same
+-- shape: resolved_at here came from the updated_at fallback (see LIMITS),
+-- which is an UPPER BOUND on the true terminal transition, never a moment
+-- that could be too early. If first_response_at is later still, the true
+-- transition happened no later than the estimate, which is therefore no
+-- later than the reply either — so the true first response is AT LATEST the
+-- estimate instant, and the estimate itself may well be on time even though
+-- the recorded reply came much later. Nothing else corrects this: S4 leaves
+-- first_response_at alone (already non-NULL), S4a's fact-only gate skips it,
+-- and 000027's own earlier, unconditional response-freeze pass (which has no
+-- fact/estimate concept and runs before this file even starts) has already
+-- frozen response_elapsed_at_met_seconds from the untouched, later real
+-- reply — so without this statement S6 below would stamp a false response
+-- breach from that frozen (but wrong) number.
+--
+-- The correction mirrors S4a exactly (first_response_at rewound to
+-- resolved_at), but response_elapsed_at_met_seconds is set to an explicit
+-- NULL rather than reused from resolution_elapsed_at_met_seconds: S1 never
+-- freezes a resolution number for an estimated row (#246), so there is
+-- nothing to reuse, and the explicit NULL is required to UNDO whatever
+-- 000027's earlier pass already froze from the untouched real reply — it
+-- must not be left as it was found. With this, S5's existing trailing gate
+-- (resolved_at set, resolution_elapsed_at_met_seconds NULL,
+-- first_response_at = resolved_at) excludes the corrected row exactly as it
+-- already does for S4's own copy of an estimated instant, and S6 stamps
+-- nothing for it: the row becomes "recorded, unfrozen, unstamped", the same
+-- treatment every other estimated instant gets elsewhere in this file.
+--
+-- Idempotent on rerun: once corrected, first_response_at equals resolved_at,
+-- so `first_response_at > resolved_at` no longer matches. Never touches a
+-- FACT row (resolution_elapsed_at_met_seconds IS NOT NULL fails the gate —
+-- S4a already handled that case above) nor a row whose reply genuinely
+-- precedes the estimate (the inequality does not match).
+UPDATE sla_records r
+SET first_response_at = r.resolved_at,
+    response_elapsed_at_met_seconds = NULL
+WHERE r.resolved_at IS NOT NULL
+  AND r.resolution_elapsed_at_met_seconds IS NULL
   AND r.first_response_at > r.resolved_at;
 
 -- S5 (#246): freeze response_elapsed_at_met_seconds wherever it is still
@@ -659,6 +713,14 @@ WHERE r.resolution_elapsed_at_met_seconds IS NOT NULL
 -- conjunct is false for every row S4a touches, since S4a only ever operates
 -- on FACT rows. Nothing here needed to change for S4a to be handled
 -- correctly.
+--
+-- #255 added S4b directly after S4a for the mirror-image case — an
+-- ESTIMATED resolution whose stored reply postdated it. S4b produces the
+-- IDENTICAL signature this gate was built for (resolved_at set,
+-- resolution_elapsed_at_met_seconds NULL, first_response_at equal to it),
+-- because S4b's correction IS that signature: an estimated instant copied
+-- into first_response_at, exactly like S4's own original copy. No change
+-- was needed here either — the trailing NOT (...) already excludes it.
 UPDATE sla_records r
 SET response_elapsed_at_met_seconds = GREATEST(
         0,
@@ -696,6 +758,16 @@ WHERE t.id = r.ticket_id
 -- equal to the resolution's own frozen value, so there is nothing special
 -- about these rows by the time this statement runs — it stamps, or does
 -- not, purely from that number, same as it always has.
+--
+-- #255's S4b rows (an ESTIMATED resolution corrected because its stored
+-- reply postdated it, not merely preceded it) are exactly the rows this
+-- comment's first paragraph already covers: S5's gate excludes them (S4b
+-- leaves response_elapsed_at_met_seconds NULL, on purpose), so this
+-- statement never reaches them — `NULL > target` is never true. Unlike the
+-- "real, earlier staff reply" case above, a real LATER reply on an estimated
+-- row is never judged on its own frozen number; S4b has already established
+-- that the estimate itself, not the reply, is what stands in for the first
+-- response.
 UPDATE sla_records r
 SET response_breached_at = r.first_response_at
 FROM sla_policies p
