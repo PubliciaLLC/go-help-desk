@@ -99,7 +99,7 @@ END $$;
 
 -- ============================================================
 -- LIMITS: where this file's recovered instants come from, and which way
--- each can be wrong. Referenced by name from C1, C2, R2, R4, S1 and S3.
+-- each can be wrong. Referenced by name from C1, C1b, C2, R2, R4, S1 and S3.
 --
 -- Two sources:
 --
@@ -192,9 +192,21 @@ END $$;
 -- Phase A: capture, repair, capture again.
 --
 -- C1 runs FIRST: R1 destroys a fact it needs (#244), and R2/R4 write
--- fallback values that must never be mistaken for facts. R1-R4 then repair
--- the tickets table. C2 runs LAST, after R2/R4, because its job is to pick
--- up exactly the instants those two took from the updated_at fallback.
+-- fallback values that must never be mistaken for facts. C1b runs
+-- immediately after C1, for the same reason and one more: it revises an
+-- sla_records row C1 skipped (one that already has a resolved_at) against
+-- an earlier fact, and #258's earlier fact is very often a close that R4
+-- would otherwise paper over with the updated_at fallback before C1b ever
+-- sees it. R1-R4 then repair the tickets table. C2 runs LAST, after R2/R4,
+-- because its job is to pick up exactly the instants those two took from
+-- the updated_at fallback.
+--
+-- C1b writes sla_records, a table none of R1-R4 or C2 reads (C2 reads only
+-- r.resolved_at IS NULL, and C1b never changes that column's null-ness — it
+-- only ever revises an already non-NULL resolved_at to an earlier instant),
+-- so C1b's own position relative to R1-R4/C2 matters only through the
+-- TICKETS columns it reads (t.resolved_at, t.closed_at, and the history
+-- those two are compared against), not through anything it writes.
 --
 -- R1-R4's relative order does not matter, and the reason is COLUMNS, not
 -- rows. R1/R2 read and write only resolved_at, and R3/R4 read and write
@@ -221,7 +233,8 @@ CREATE TEMP TABLE m28_sla_resolution (
 
 -- C1 (#242, #244): capture every SLA resolution instant a FACT supports
 -- (see LIMITS), before anything below rewrites the columns it reads. Only
--- tickets whose sla_records row still has no resolved_at are captured.
+-- tickets whose sla_records row still has no resolved_at are captured — a
+-- row that already has one is C1b's job, immediately below, not this one's.
 --
 -- The instant is the ticket's FIRST resolution, because that is what the
 -- SLA record holds when resolutions are recorded as they happen:
@@ -298,6 +311,125 @@ SELECT f.ticket_id, f.at, false
            AND rs.kind = 'system' AND rs.name = 'Resolved'
            AND cs.kind = 'system' AND cs.name = 'Closed') f
  WHERE f.at IS NOT NULL;
+
+-- C1b (#258): the revision twin of C1. C1 only captures a resolution
+-- instant when sla_records.resolved_at is still NULL — a row the live
+-- service (or an earlier run of this migration) already wrote was never
+-- compared against an earlier FACT at all, which is exactly what #258
+-- reported: an sla_records row can already hold a resolved_at that is NOT
+-- the ticket's earliest resolution, with no statement anywhere in this file
+-- (before this one) ever revisiting it.
+--
+-- #258's own reproduction is the CLOSE-fact shape: a ticket closed once
+-- (T+10m, on time against a 30-minute target), reopened, resolved late, and
+-- re-closed (T+150m). v1.2.0's live RecordResolved recorded T+120m — the
+-- resolve, the only fact it looked at — and never compared it against the
+-- earlier close sitting in ticket_status_history. Left alone, that row
+-- carries a permanent false late stamp and a false response stamp (S4
+-- copies the same wrong instant) that an identically-shaped, never-recorded
+-- ticket (C1's own row A) would never get.
+--
+-- The identical defect also reaches the RESOLVE-facts arm, independently of
+-- #258's own close-fact reproduction: a ticket resolved once, reopened, and
+-- resolved again keeps its FIRST resolve's resolved_at on the tickets row
+-- (pre-#102/live #219 folding — see LIMITS and C1's own comment), but
+-- v1.2.0's RecordResolved is a first-writer-wins call with no comparison of
+-- its own, so it can just as easily have recorded the LATER re-resolve. That
+-- is the same bug — an already-recorded fact never checked against an
+-- earlier one — under a different arm of C1's own LEAST, not a new one, so
+-- this statement uses C1's full four-argument LEAST applied to exactly the
+-- rows C1 skips, rather than a narrower variant scoped to close facts alone
+-- that would leave the resolve-arm shape unfixed.
+--
+-- Same gating as C1, applied to the complementary row set: close facts are
+-- compared in only for a ticket CURRENTLY system Closed (the same rs/cs
+-- CROSS JOIN and CASE pair, so a Resolved or reopened ticket's close arm is
+-- NULL here exactly as it is in C1 — #238, #239, #244 are unaffected). This
+-- statement only changes WHICH facts an sla_records row that already has a
+-- resolved_at gets compared against; it never changes which tickets are
+-- eligible to have a close fact considered at all.
+--
+-- Overwrites unconditionally rather than filling a NULL: 000027 (which runs
+-- before this file, in the same upgrade) has already frozen
+-- resolution_elapsed_at_met_seconds from whatever resolved_at the row
+-- happened to hold when 000027 ran, so the too-late number this statement
+-- exists to fix is already sitting there, not NULL — an IS NULL guard like
+-- S1's would leave it untouched and S3 would still stamp from it. Instead
+-- this is gated by three explicit conditions:
+--   - r.resolution_elapsed_at_met_seconds IS NOT NULL: never touch a row
+--     THIS run's own C2/S1 marked estimated (#246 — see LIMITS). An
+--     estimated row's resolved_at came from the updated_at fallback, not a
+--     fact, so there is no fact here to revise it against, and freezing a
+--     number into that NULL is exactly the hazard LIMITS says this file must
+--     never reintroduce.
+--   - r.resolution_breached_at IS NULL: never contradict an existing breach
+--     stamp. A stamp is a fact and is never cleared or moved anywhere else
+--     in this file (see S3's own comment); the untagged v1.3.0-beta branch
+--     ships its own, older 000028 and schedules a real breach sweep, so a
+--     database that manually replays this exact file (`migrate down 1` then
+--     `up` against a beta-versioned schema) can already carry a stamp next
+--     to a resolved_at this statement would otherwise want to revise, and
+--     the stamp must win.
+--   - f.at < r.resolved_at, STRICT: the idempotence predicate. Once
+--     corrected, the stored resolved_at equals the earliest fact, so a rerun
+--     no longer matches. With <=, a rerun would recompute elapsed from the
+--     ticket's CURRENT sla_paused_seconds, which only grows after the
+--     upgrade, silently drifting an already-frozen, already-met number —
+--     exactly what 000027's own comment says "a met target must never move
+--     again" forbids. TestMigration_028SecondRunChangesNothing pins this by
+--     growing sla_paused_seconds between its two runs.
+--
+-- Must run before R1, R2 and R4: R1 clears resolved_at for a reopened
+-- ticket (a real fact, #244) that this statement's resolve arm still needs
+-- to read; R2/R4 fill a NULL resolved_at/closed_at with the updated_at
+-- fallback, which — per #258 and LIMITS — must never be read back as a
+-- close/resolve FACT, exactly what would happen if this statement ran after
+-- them. R3's own row set (closed_at on a non-Closed ticket) never overlaps
+-- this statement's close arm, and C1's row set (r.resolved_at IS NULL) is
+-- this statement's exact complement (r.resolved_at IS NOT NULL), so ordering
+-- against either does not matter. This statement writes only sla_records,
+-- never tickets, so nothing R1-R4 or C2 read is changed by it either.
+UPDATE sla_records r
+SET resolved_at = f.at,
+    resolution_elapsed_at_met_seconds = GREATEST(
+        0,
+        EXTRACT(EPOCH FROM (f.at - f.created_at))::bigint - f.sla_paused_seconds
+            - CASE
+                  WHEN f.pending_since IS NOT NULL
+                  THEN GREATEST(0, EXTRACT(EPOCH FROM (f.at - f.pending_since)))::bigint
+                  ELSE 0
+              END)
+  FROM (SELECT t.id AS ticket_id,
+               t.created_at,
+               t.sla_paused_seconds,
+               t.pending_since,
+               LEAST(
+                   t.resolved_at,
+                   (SELECT min(h.created_at)
+                      FROM ticket_status_history h
+                     WHERE h.ticket_id = t.id
+                       AND h.to_status_id = rs.id
+                       AND h.from_status_id IS DISTINCT FROM rs.id),
+                   CASE WHEN t.status_id = cs.id THEN t.closed_at END,
+                   CASE WHEN t.status_id = cs.id THEN
+                       (SELECT min(h.created_at)
+                          FROM ticket_status_history h
+                         WHERE h.ticket_id = t.id
+                           AND h.to_status_id = cs.id
+                           AND h.from_status_id IS DISTINCT FROM cs.id)
+                   END) AS at
+          FROM tickets t
+          JOIN sla_records r0 ON r0.ticket_id = t.id
+         CROSS JOIN statuses rs
+         CROSS JOIN statuses cs
+         WHERE r0.resolved_at IS NOT NULL
+           AND rs.kind = 'system' AND rs.name = 'Resolved'
+           AND cs.kind = 'system' AND cs.name = 'Closed') f
+ WHERE f.ticket_id = r.ticket_id
+   AND r.resolved_at IS NOT NULL                       -- C1's complement, explicit (as the file does elsewhere)
+   AND r.resolution_elapsed_at_met_seconds IS NOT NULL  -- never touch a #246 estimated marker
+   AND r.resolution_breached_at IS NULL                 -- never contradict an existing stamp
+   AND f.at < r.resolved_at;                            -- strict: the idempotence predicate
 
 -- R1 (#237): no ticket outside system Resolved/Closed may carry resolved_at.
 -- This is the invariant table's default-branch rule, matching every status
@@ -463,7 +595,11 @@ SELECT t.id, COALESCE(t.resolved_at, t.closed_at), true
 -- and every row C1 added rests on a real resolve or close, so nothing is
 -- invented for a ticket that was never resolved. `r.resolved_at IS NULL` is
 -- redundant with the capture's own filter and is kept as the same
--- first-writer-wins guard SetSLAResolved uses.
+-- first-writer-wins guard SetSLAResolved uses. C1b, immediately after C1
+-- above, is the one deliberate exception to that guard in this file, on the
+-- same basis S4a is an exception to first_response_at's equivalent
+-- first-writer-wins rule below: a fact that was never compared against an
+-- earlier one is not "already handled" merely because something got written.
 --
 -- #246: this is the fix for the second-run bug. The old, separate S2 froze
 -- resolution_elapsed_at_met_seconds for every row with resolved_at set and
@@ -536,11 +672,15 @@ WHERE c.ticket_id = r.ticket_id
 -- from: 000027's best-effort pass can only UNDERSTATE (the ticket's current
 -- sla_paused_seconds is at least what it was when the target was met). S1
 -- over a C1 fact is exact up to that same pause approximation, which only
--- understates. S1 never freezes a number over a C2 estimate at all (see
--- above and LIMITS), so there is no OVERSTATED number for this statement to
--- ever read. At worst this misses a breach. It never invents one. An
--- existing stamp is preserved by the IS NULL guard: a stamp is a fact and is
--- never cleared here.
+-- understates. C1b over a strictly earlier fact is exact up to the same
+-- approximation too, for the same reason: it is a fact, not an estimate, and
+-- its own gate (r.resolution_elapsed_at_met_seconds IS NOT NULL) already
+-- keeps it off every row S1 left estimated. S1 never freezes a number over a
+-- C2 estimate at all (see above and LIMITS), so there is no OVERSTATED
+-- number for this statement to ever read. At worst this misses a breach. It
+-- never invents one. An existing stamp is preserved by the IS NULL guard: a
+-- stamp is a fact and is never cleared here — the same guard C1b's own
+-- `resolution_breached_at IS NULL` condition mirrors, for the same reason.
 --
 -- Single FROM item (sla_policies alone): the old comma-join workaround for
 -- "the UPDATE target's own alias cannot appear in a JOIN...ON" is no longer
@@ -566,7 +706,10 @@ WHERE p.id = r.policy_id
 -- #219's rule, whichever door (a real resolution, or S1's backfill) supplied
 -- it. No ticket-status key needed here, and no `FROM tickets t` join either
 -- (the old join was never read from): this depends only on sla_records' own
--- columns.
+-- columns. A row C1b (#258) revised to an earlier fact reaches this pass
+-- exactly like any other: if that row's first_response_at is still NULL,
+-- this copies C1b's corrected resolved_at, not the pre-correction one —
+-- C1b runs in Phase A, long before this statement.
 UPDATE sla_records r
 SET first_response_at = r.resolved_at
 WHERE r.resolved_at IS NOT NULL
@@ -576,8 +719,13 @@ WHERE r.resolved_at IS NOT NULL
 -- postdate the ticket's own resolution when the resolution is a FACT
 -- (resolution_elapsed_at_met_seconds IS NOT NULL — the #246 marker already
 -- excludes an estimated instant, so a real reply can never be moved onto an
--- updated_at-derived estimate here). This shape cannot arise from an
--- ordinary event sequence under the currently-shipping code:
+-- updated_at-derived estimate here). C1b-corrected rows reach this
+-- statement too: C1b (#258) can rewrite resolved_at to an earlier fact while
+-- leaving an already-recorded first_response_at later still, which is
+-- exactly this statement's own shape — and correcting it is exactly what
+-- #258 requires: the earlier resolution is also the earlier response,
+-- per #219/#220. This shape cannot arise from an ordinary event sequence
+-- under the currently-shipping code, that reservation aside:
 -- SetSLAResolvedAndFirstResponse's own COALESCE locks in first_response_at
 -- at the moment of resolve if it was NULL then, and a later real reply's
 -- RecordFirstResponse call is a no-op fast path once first_response_at is
