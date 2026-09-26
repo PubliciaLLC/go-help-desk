@@ -225,6 +225,68 @@ func TestTicketSLA_DisabledFeature_NullEvenWithRecord(t *testing.T) {
 	require.Nil(t, detail["sla"], "the toggle being off must suppress the field even though a record exists")
 }
 
+// SLA visibility is staff/admin only: a reporting user must never see the
+// indicator, the policy name, the targets, or the breach/late status on their
+// own ticket. Same ticket, same underlying SLA data — fetched as the
+// reporting user the sla field is null, fetched as staff/admin it is the live
+// status, and nothing else in the response differs.
+func TestTicketSLA_UserRoleNeverSeesSLA(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeySLAEnabled, true))
+	createCatchAllSLAPolicy(t, h, 60, 480)
+
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "My printer is broken",
+		"description": "x",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeJSON(t, resp, &created)
+
+	// Sanity check: the policy really did attach, so the staff/admin view
+	// below is proving something (a live status), not just another null.
+	staffResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
+	require.Equal(t, http.StatusOK, staffResp.StatusCode)
+	var staffView map[string]any
+	decodeJSON(t, staffResp, &staffView)
+	require.NotNil(t, staffView["sla"], "sanity check: staff must see the live SLA status")
+
+	userResp := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
+	require.Equal(t, http.StatusOK, userResp.StatusCode)
+	var userView map[string]any
+	decodeJSON(t, userResp, &userView)
+	require.Contains(t, userView, "sla", "the key must still be present, just null")
+	require.Nil(t, userView["sla"], "a reporting user must never see their own ticket's SLA data")
+
+	// Re-fetch both right after one another so nothing but the actor's role
+	// can explain a difference, then diff the two views: sla must be the
+	// only field that differs.
+	staffResp = h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
+	decodeJSON(t, staffResp, &staffView)
+	userResp = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
+	decodeJSON(t, userResp, &userView)
+
+	delete(staffView, "sla")
+	delete(userView, "sla")
+	require.Equal(t, staffView, userView, "every field other than sla must be identical between the two views")
+
+	// The list endpoint must apply the same rule.
+	listResp := h.doAsUser(t, http.MethodGet, "/api/v1/tickets", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var list []map[string]any
+	decodeJSON(t, listResp, &list)
+	require.NotEmpty(t, list)
+	for _, row := range list {
+		require.Contains(t, row, "sla")
+		require.Nil(t, row["sla"], "a reporting user's ticket list must never carry SLA data either")
+	}
+}
+
 // Mirrors TestListTickets_PagingOnTheMergedStaffView: with policies attached,
 // paging over the merged staff view still returns exactly `limit` rows, every
 // one carrying the sla key, and no id repeats across pages — proving the SLA

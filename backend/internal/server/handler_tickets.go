@@ -432,7 +432,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	views, err := s.ticketViews(r.Context(), []ticket.Ticket{t})
+	views, err := s.ticketViews(r.Context(), []ticket.Ticket{t}, authmw.GetActor(r))
 	if err != nil {
 		handleError(w, err)
 		return

@@ -1452,3 +1452,9 @@ The response and resolution targets are indicated separately when both are
 outstanding (e.g. resolution can be amber while response is already breached);
 once a target's timestamp (`responded_at` / `resolved_at`) is set, that
 target's indicator stops updating and shows its final color.
+
+**Visibility:** the indicator, the policy name, the targets, and the
+breach/late status are staff/admin only. A reporting user's own ticket never
+carries any of it — the API returns `"sla": null` on that response regardless
+of whether a policy is attached — so a customer cannot see how their ticket is
+being timed or that it has breached.
