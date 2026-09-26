@@ -953,6 +953,7 @@ function SLAPoliciesSection() {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setShowAdd(false)
       setForm(EMPTY_FORM)
+      setFormError('')
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -970,6 +971,7 @@ function SLAPoliciesSection() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setEditingId(null)
+      setFormError('')
     },
     onError: (err) => setFormError(extractError(err)),
   })

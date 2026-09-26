@@ -1489,14 +1489,16 @@ func (s *Service) AddStatus(ctx context.Context, st Status) error {
 // (LoadSystemStatuses) and compared by name in lifecycle rules, so a rename
 // that reached this method by any other route would reintroduce the
 // restart-crash hazard #263 closed. Mirrors RemoveStatus's own
-// system-status refusal below.
+// system-status refusal below. The refusal wraps ErrSystemStatusImmutable
+// (#269) so handleError can map it to a clean 403 rather than a bare 500 for
+// any caller that reaches this method without going through the handler.
 func (s *Service) SaveStatus(ctx context.Context, st Status) error {
 	current, err := s.getStatusByID(ctx, st.ID)
 	if err != nil {
 		return err
 	}
 	if current.Kind == StatusKindSystem && st.Name != current.Name {
-		return fmt.Errorf("cannot rename system status %q", current.Name)
+		return fmt.Errorf("system status %q cannot be renamed: %w", current.Name, ErrSystemStatusImmutable)
 	}
 	return s.statuses.UpdateStatus(ctx, st)
 }
@@ -1518,14 +1520,18 @@ func (s *Service) CountByStatusForAssignee(ctx context.Context, statusID, userID
 }
 
 // RemoveStatus hard-deletes a custom status. Blocked if the status is a
-// system status or if any tickets currently have this status.
+// system status or if any tickets currently have this status. The
+// system-status refusal wraps ErrSystemStatusImmutable (#269) for the same
+// reason SaveStatus's does: a bare fmt.Errorf here maps to a bare 500 for
+// any caller, and DELETE on a system status is reachable via the HTTP
+// handler with no inline guard of its own.
 func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	st, err := s.getStatusByID(ctx, id)
 	if err != nil {
 		return err
 	}
 	if st.Kind != StatusKindCustom {
-		return fmt.Errorf("cannot delete system status %q", st.Name)
+		return fmt.Errorf("system status %q cannot be deleted: %w", st.Name, ErrSystemStatusImmutable)
 	}
 	count, err := s.statuses.CountByStatus(ctx, id)
 	if err != nil {

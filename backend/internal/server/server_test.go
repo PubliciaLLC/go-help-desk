@@ -996,6 +996,47 @@ func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
+// TestDeleteStatus_System_AsAdmin pins #269: DELETE on a system status
+// (New, Resolved, Closed) has no inline handler guard the way rename and
+// deactivate do, so before RemoveStatus wrapped its refusal in
+// ticket.ErrSystemStatusImmutable this reached handleError as a bare,
+// unrecognized error and came back as a 500 internal_error rather than a
+// clean, expected refusal.
+func TestDeleteStatus_System_AsAdmin(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			var id string
+			for _, st := range statuses {
+				if st["name"] == name {
+					id = st["id"].(string)
+				}
+			}
+			require.NotEmpty(t, id, "seeded system status %q must exist", name)
+
+			resp := h.doAsAdmin(t, http.MethodDelete,
+				fmt.Sprintf("/api/v1/admin/statuses/%s", id), nil)
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			var errBody struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			decodeJSON(t, resp, &errBody)
+			require.Equal(t, "forbidden", errBody.Error.Code)
+			require.Contains(t, errBody.Error.Message, "cannot be deleted")
+		})
+	}
+}
+
 // TestUpdateStatus_SystemStatusCannotBeRenamed pins #263: renaming a system
 // status broke the next server restart (LoadSystemStatuses looks them up by
 // name), so the admin API now refuses the rename outright rather than

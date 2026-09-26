@@ -90,6 +90,14 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "policy_in_use", err.Error())
 		return
 	}
+	// 403, not 500: refusing to rename or delete a system status is the
+	// domain layer working as designed, matching the sla.ErrPolicyInUse
+	// pattern just above for a refusal that used to fall through to 500 one
+	// layer down from its HTTP-handler check. See #269.
+	if errors.Is(err, ticket.ErrSystemStatusImmutable) {
+		Error(w, http.StatusForbidden, "forbidden", err.Error())
+		return
+	}
 	// Bad input, not a fault. Without this a mistyped email address at signup,
 	// or on an admin's user edit, came back as 500 "an internal error
 	// occurred" and was logged as one.

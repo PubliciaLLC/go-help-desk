@@ -317,6 +317,9 @@ func TestRemoveStatus_ProtectsSystemStatuses(t *testing.T) {
 			err := h.svc.RemoveStatus(context.Background(), h.statusNamed(name).ID)
 			require.Error(t, err, "system status %q must not be deletable", name)
 			require.Contains(t, err.Error(), "system status")
+			// #269: the refusal is the sentinel handleError maps to 403,
+			// not a bare error a future caller sees as a 500.
+			require.ErrorIs(t, err, ticket.ErrSystemStatusImmutable)
 		})
 	}
 }
@@ -339,6 +342,8 @@ func TestSaveStatus_RefusesSystemStatusRename(t *testing.T) {
 
 			require.Error(t, err, "system status %q must not be renameable via SaveStatus", name)
 			require.Contains(t, err.Error(), "system status")
+			require.ErrorIs(t, err, ticket.ErrSystemStatusImmutable)
+			require.Equal(t, 0, h.statuses.updates, "a refused rename must never reach the store")
 		})
 	}
 }
@@ -355,6 +360,7 @@ func TestSaveStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
 	err := h.svc.SaveStatus(context.Background(), st)
 
 	require.NoError(t, err)
+	require.Equal(t, 1, h.statuses.updates, "the edit must actually reach the store")
 }
 
 // TestRemoveStatus_RefusesStatusInUse protects tickets from being orphaned on a

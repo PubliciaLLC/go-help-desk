@@ -510,6 +510,16 @@ var (
 	// #192: AddLink and ResolveAsDuplicate both used to refuse a self-link
 	// with a bare fmt.Errorf, which handleError has nothing to recognise.
 	ErrSelfLink = errors.New("cannot link a ticket to itself")
+	// ErrSystemStatusImmutable is returned by SaveStatus and RemoveStatus when
+	// asked to rename or delete a system status (New, Resolved, Closed).
+	// System statuses are found by name at startup (LoadSystemStatuses) and
+	// compared by name in lifecycle rules, so either operation reaching the
+	// store would reintroduce the restart-crash hazard #263 closed. Wrapped
+	// rather than returned bare — like ErrSelfLink and ErrPolicyInUse in the
+	// sla package — so handleError maps it to a clean refusal instead of
+	// falling through to 500 for any caller that reaches these methods by a
+	// route other than the HTTP handler's own inline check. See #269.
+	ErrSystemStatusImmutable = errors.New("system status is immutable")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

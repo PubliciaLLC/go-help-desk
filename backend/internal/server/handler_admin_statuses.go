@@ -123,10 +123,11 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		// against those names. Renaming one broke the next restart (#263) and
 		// is the gap migration 000028's #230 guard was written around.
 		// Resending the unchanged name is not a rename.
-		if st.Kind == ticket.StatusKindSystem && *body.Name != st.Name {
-			Error(w, http.StatusForbidden, "forbidden", "system statuses cannot be renamed")
-			return
-		}
+		//
+		// The refusal itself now lives entirely in SaveStatus (#269): it
+		// returns ticket.ErrSystemStatusImmutable, which handleError maps to
+		// this same 403, so there is no need to duplicate the Kind/name
+		// check at this layer too.
 		st.Name = *body.Name
 	}
 	if body.SortOrder != nil {
