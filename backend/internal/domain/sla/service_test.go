@@ -1163,10 +1163,11 @@ func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
 			modify: func(p sla.Policy) sla.Policy { p.ResolutionTargetMin = -1; return p },
 		},
 		{
-			// The store narrows to int32 (queries/sla.sql). Unchecked, this
-			// silently truncates on write instead of being refused here.
-			// math.MaxInt32+1 as a raw literal overflows int on a 32-bit
-			// build; incrementing at runtime keeps the case portable.
+			// The store narrows to int32 (the int32() conversion in
+			// slastore.go). Unchecked, this silently truncates on write
+			// instead of being refused here. math.MaxInt32+1 as a raw
+			// literal overflows int on a 32-bit build; incrementing at
+			// runtime keeps the case portable.
 			name: "response target above int32",
 			modify: func(p sla.Policy) sla.Policy {
 				p.ResponseTargetMin = math.MaxInt32
