@@ -47,7 +47,7 @@ function ticketWithStatus(statusId: string) {
 }
 
 function mockApiGet(ticket: ReturnType<typeof ticketWithStatus>) {
-  vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+  return vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === `/tickets/${TICKET_ID}`) return Promise.resolve({ data: ticket })
     if (url === `/tickets/${TICKET_ID}/attachments`) return Promise.resolve({ data: [] })
     if (url === `/tickets/${TICKET_ID}/replies`) return Promise.resolve({ data: [] })
@@ -98,7 +98,7 @@ describe('reopening a ticket', () => {
   })
 
   it('shows the server message when reopen fails with 409 ticket_not_closed', async () => {
-    mockApiGet(ticketWithStatus('st-closed'))
+    const getSpy = mockApiGet(ticketWithStatus('st-closed'))
     vi.spyOn(api, 'post').mockRejectedValue({
       isAxiosError: true,
       response: {
@@ -111,11 +111,21 @@ describe('reopening a ticket', () => {
       expect(document.body.textContent).toContain('Printer is on fire')
     })
 
+    const ticketCallsBefore = getSpy.mock.calls.filter((c) => c[0] === `/tickets/${TICKET_ID}`).length
+
     await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
 
     await waitFor(() => {
       const alert = screen.getByRole('alert')
       expect(alert.textContent).toContain('only a closed ticket can be reopened')
+    })
+
+    // A 409 means this page is stale (someone else already reopened it):
+    // the failed mutation must refetch so the header would show the real
+    // status once it changes, not just display an error and go stale.
+    await waitFor(() => {
+      const ticketCallsAfter = getSpy.mock.calls.filter((c) => c[0] === `/tickets/${TICKET_ID}`).length
+      expect(ticketCallsAfter).toBeGreaterThan(ticketCallsBefore)
     })
   })
 })

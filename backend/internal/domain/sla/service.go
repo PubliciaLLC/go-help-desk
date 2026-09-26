@@ -314,13 +314,18 @@ func validatePolicy(p Policy) error {
 		return fmt.Errorf("resolution target must be greater than zero: %w", ErrValidation)
 	}
 	// The store narrows to int32 (queries/sla.sql). Left unchecked, a target
-	// above that range silently truncates on write — any value above it
-	// stores as its low 32 bits, so 2^31 stores as a large negative number
-	// and every multiple of 2^32 stores as zero. A stored zero means every
-	// ticket under the policy is already breached the moment it is created,
-	// and the breach stamps that produces are permanent by design (see
-	// sla_frozen_elapsed), so a typo with one extra digit writes history
-	// that fixing the number afterward cannot undo.
+	// above that range silently truncates on write: any value above it stores
+	// as its low 32 bits, so 2^31 stores as a large negative number and every
+	// multiple of 2^32 stores as zero. math.MaxInt32 minutes is centuries, so
+	// this isn't a fat-fingered digit — it's malformed or unit-confused input
+	// (seconds mistaken for minutes, an accidental timestamp) reaching a
+	// target nobody meant to set. Whatever it truncates to, the result is
+	// either a target already breached the moment the ticket is created
+	// (zero, or negative — Elapsed(t, now) > a negative target is always
+	// true) or a wrong-but-plausible-looking one (any other truncated
+	// value). Either way the breach stamps this produces are permanent by
+	// design (see sla_frozen_elapsed), so refusing the input here is the
+	// only point where fixing it is still possible.
 	if p.ResponseTargetMin > math.MaxInt32 {
 		return fmt.Errorf("response target is too large: %w", ErrValidation)
 	}

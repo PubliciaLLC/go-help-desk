@@ -1077,13 +1077,15 @@ func TestIsResolutionBreached_UsesTheResolutionTime(t *testing.T) {
 		"unresolved past the deadline is a breach")
 }
 
-// A policy's priority was written to the database unvalidated. An unknown value
-// reached the column's CHECK constraint and surfaced as a 500; a nil one is the
-// catch-all tier and must be allowed through.
-// TestSLAService_PolicyPriorityValidation pins #276: validatePolicy's errors
-// now wrap sla.ErrValidation, so the HTTP layer (respond.go) can tell a bad
-// request apart from a store or driver failure instead of reporting every
-// CreatePolicy/UpdatePolicy error as 400 with its raw text.
+// TestSLAService_PolicyPriorityValidation covers priority: a policy's
+// priority used to be written to the database unvalidated, so an unknown
+// value reached the column's CHECK constraint and its raw driver error was
+// handed back as the 400's message; a nil priority is the catch-all tier
+// and must still be allowed through. It also pins #276: validatePolicy's
+// errors now wrap sla.ErrValidation, so the HTTP layer (respond.go) can tell
+// a bad request apart from a store or driver failure instead of reporting
+// every CreatePolicy/UpdatePolicy error as a raw-text 400 regardless of
+// cause.
 func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 	bogus := ticket.Priority("urgent")
 	high := ticket.PriorityHigh

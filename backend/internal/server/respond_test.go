@@ -14,10 +14,12 @@ import (
 
 // TestHandleError_MapsSentinelsToStatus runs entirely without a database
 // (package server, not server_test, so it can call the unexported handleError
-// directly): it is the single place that pins the status code every mapped
-// sentinel gets, so a future addition or reshuffle of the errors.Is chain in
-// handleError is caught here instead of only through an integration test.
-// Runs in CI's non-DB `go test ./...` step.
+// directly): it pins the four sentinels this PR's fixes touch (#276, #277)
+// plus the 500 fallthrough, so a reshuffle of their specific arms in the
+// errors.Is chain is caught here instead of only through an integration
+// test. It does not cover every sentinel handleError maps — the rest are
+// exercised through their own handlers' integration tests. Runs in CI's
+// non-DB `go test ./...` step.
 func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 	cases := []struct {
 		name       string
