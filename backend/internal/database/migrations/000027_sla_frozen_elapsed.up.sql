@@ -67,7 +67,9 @@ WHERE t.id = r.ticket_id
 -- one), so the exact rows 000028 exists to fix were skipped by this
 -- migration's backfill every time — closed_at was still NULL right now, at
 -- the moment this file ran. Moved to the end of migration
--- 000028_repair_resolved_status_invariant.up.sql, AFTER its own repairs,
--- and re-keyed on the ticket's current status name (not on closed_at at
--- all) so the ordering dependency is gone rather than just reordered around.
--- See that file for the current statements.
+-- 000028_repair_resolved_status_invariant.up.sql, AFTER its own repairs. The
+-- ordering dependency was not eliminated, only made deliberate and
+-- documented: that file's capture/repair statements (C1, R1-R4, C2, S1) each
+-- have their own specific ordering requirements relative to tickets.closed_at
+-- and .resolved_at, spelled out in that file's Phase A header and each
+-- statement's own comment. See that file for the current statements.
