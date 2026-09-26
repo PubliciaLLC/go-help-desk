@@ -59,3 +59,88 @@ SET resolution_elapsed_at_met_seconds = GREATEST(
 FROM tickets t
 WHERE t.id = r.ticket_id
   AND r.resolved_at IS NOT NULL;
+
+-- #226(b): a ticket closed WITHOUT ever being resolved (an admin moving it
+-- straight from an open status to Closed, or the reopen window simply never
+-- being used) has resolved_at NULL under the OLD rules — nothing wrote it
+-- before #220 taught close()/UpdateStatus to always record a resolution on
+-- the way into Closed. Left NULL, the indicator has no MetAt to freeze
+-- against and keeps computing a live, ever-growing Elapsed(t, now) against a
+-- ticket that will never move again. Backfill it from whichever of the
+-- ticket's own resolved_at/closed_at is available — matching #220's "closed
+-- without resolving still gets a resolution recorded" rule, and exactly what
+-- RecordResolved would have written had this ticket reached Closed under the
+-- new code. COALESCE(t.resolved_at, t.closed_at) rather than t.closed_at
+-- alone: a ticket already correctly Resolved-then-Closed has t.resolved_at
+-- set to the REAL, earlier resolution instant, and that must win over the
+-- later closed_at (see #227 — the same "the real instant, not the closing
+-- one" rule this migration's backfill has to respect too).
+UPDATE sla_records r
+SET resolved_at = COALESCE(t.resolved_at, t.closed_at)
+FROM tickets t
+WHERE t.id = r.ticket_id
+  AND r.resolved_at IS NULL
+  AND t.closed_at IS NOT NULL;
+
+-- Freeze resolution_elapsed_at_met_seconds for exactly the rows the backfill
+-- above just gave a resolved_at to (its own WHERE excludes every row already
+-- carrying one, including the rows the first resolution_elapsed_at_met_seconds
+-- pass above already froze) — same formula, now with a value to compute it
+-- from.
+UPDATE sla_records r
+SET resolution_elapsed_at_met_seconds = GREATEST(
+        0,
+        EXTRACT(EPOCH FROM (r.resolved_at - t.created_at))::bigint - t.sla_paused_seconds
+    )
+FROM tickets t
+WHERE t.id = r.ticket_id
+  AND r.resolved_at IS NOT NULL
+  AND r.resolution_elapsed_at_met_seconds IS NULL;
+
+-- #226(a): a ticket resolved without ever getting a prior staff reply was
+-- allowed under the OLD rules, before #219 taught RecordResolved that "a
+-- resolution is a response in every practical sense." Left NULL,
+-- IsResponseBreached computes a live Elapsed(t, now) against a target that
+-- was, in fact, met the moment the ticket resolved — reading a promptly
+-- resolved ticket as a permanent response breach the instant wall-clock time
+-- passes the response target. Worse: RecordResolved now returns early once
+-- resolved_at is already set (#220's no-op guard), so nothing in the running
+-- code will ever backfill this after upgrade — the sweep would otherwise be
+-- the backstop, but it still selects this row every tick (first_response_at
+-- IS NULL and not yet stamped) and, on its very first run after upgrade,
+-- would stamp a PERMANENT false response_breached_at against it, since nothing
+-- ever sets first_response_at through the normal code path for an
+-- already-Resolved/Closed ticket. Backfilling here, before that first sweep
+-- ever runs, is what prevents that.
+--
+-- This runs AFTER the resolved_at backfill above (not before): a ticket that
+-- was BOTH closed-without-resolving AND never separately responded to needs
+-- its resolved_at filled in first, so this pass has a resolution instant to
+-- treat as the response too — first_response_at = resolved_at, exactly #219's
+-- rule, whichever door originally supplied that resolved_at.
+UPDATE sla_records r
+SET first_response_at = r.resolved_at
+FROM tickets t
+WHERE t.id = r.ticket_id
+  AND r.resolved_at IS NOT NULL
+  AND r.first_response_at IS NULL;
+
+-- Freeze response_elapsed_at_met_seconds for exactly the rows the backfill
+-- above just gave a first_response_at to, using the same pending-aware clip
+-- as the first response_elapsed_at_met_seconds pass above (see #222) — first
+-- response and resolution landed at the same instant for these rows, so the
+-- same formula applies.
+UPDATE sla_records r
+SET response_elapsed_at_met_seconds = GREATEST(
+        0,
+        EXTRACT(EPOCH FROM (r.first_response_at - t.created_at))::bigint - t.sla_paused_seconds
+            - CASE
+                  WHEN t.pending_since IS NOT NULL
+                  THEN GREATEST(0, EXTRACT(EPOCH FROM (r.first_response_at - t.pending_since)))::bigint
+                  ELSE 0
+              END
+    )
+FROM tickets t
+WHERE t.id = r.ticket_id
+  AND r.first_response_at IS NOT NULL
+  AND r.response_elapsed_at_met_seconds IS NULL;

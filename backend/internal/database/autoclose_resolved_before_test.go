@@ -176,7 +176,9 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 
 	// Run the migration's own SQL, verbatim (comments stripped first, since a
 	// naive split on ";" would otherwise break mid-statement on the semicolons
-	// inside the file's prose comments).
+	// inside the file's prose comments — and, since #230 added a DO $$ ... $$
+	// block, splitSQLStatements is dollar-quote aware too, so the semicolons
+	// INSIDE that block are not mistaken for statement boundaries either).
 	var stripped strings.Builder
 	for _, line := range strings.Split(string(sql), "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "--") {
@@ -185,7 +187,7 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 		stripped.WriteString(line)
 		stripped.WriteByte('\n')
 	}
-	for _, stmt := range strings.Split(stripped.String(), ";") {
+	for _, stmt := range splitSQLStatements(stripped.String()) {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" {
 			continue
@@ -220,4 +222,59 @@ func TestMigration_RepairsResolvedStatusInvariant(t *testing.T) {
 	stillClosed := get(goodClosed.ID)
 	require.NotNil(t, stillClosed.ResolvedAt, "a Closed ticket must NOT have resolved_at cleared (#208)")
 	require.NotNil(t, stillClosed.ClosedAt, "a Closed ticket must keep its closed_at")
+}
+
+// TestMigration_AbortsWhenSystemStatusRenamed pins #230: migration 000028's
+// destructive first statement matches by status NAME ('Resolved', 'Closed'),
+// which the admin API cannot fully guard against — it blocks DEACTIVATING a
+// system status but not RENAMING one (handleUpdateStatus / SaveStatus has no
+// such check). If "Closed" were renamed on a running instance before this
+// migration next ran on an upgrade, the name-based exclusion would silently
+// stop matching every genuinely-Closed ticket, reproducing #208's original
+// data-loss bug through a different path — irreversibly, since the down
+// migration is a no-op.
+//
+// This renames the Closed status directly at the SQL level (the admin API's
+// own guard is out of scope for a migration test — the defense this pins is
+// the migration's own, independent of whatever the API layer enforces) and
+// confirms the migration now fails loudly instead of silently wiping data.
+func TestMigration_AbortsWhenSystemStatusRenamed(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	sql, err := os.ReadFile("migrations/000028_repair_resolved_status_invariant.up.sql")
+	require.NoError(t, err)
+
+	tx, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	ctx := context.Background()
+
+	_, err = tx.ExecContext(ctx, `UPDATE statuses SET name = 'Finished' WHERE name = 'Closed'`)
+	require.NoError(t, err, "seeding the rename this migration must guard against")
+
+	var stripped strings.Builder
+	for _, line := range strings.Split(string(sql), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		stripped.WriteString(line)
+		stripped.WriteByte('\n')
+	}
+
+	var execErr error
+	for _, stmt := range splitSQLStatements(stripped.String()) {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, execErr = tx.ExecContext(ctx, stmt); execErr != nil {
+			break
+		}
+	}
+
+	require.Error(t, execErr,
+		"the migration must fail loudly when a system status has been renamed, not silently misclassify rows by name (#230)")
+	require.Contains(t, execErr.Error(), "Closed",
+		"the failure should name which system status it could not find, to make the cause obvious")
 }
