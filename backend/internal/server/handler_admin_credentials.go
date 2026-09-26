@@ -248,6 +248,14 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// A webhook subscription with zero events would silently never fire.
+	// Require events to be present and non-empty.
+	if len(body.Events) == 0 {
+		Error(w, http.StatusBadRequest, "missing_events",
+			"events is required: a webhook with no events is refused. "+
+				"Provide at least one event type.")
+		return
+	}
 	// Checked here so a bad target is reported when the form is saved. The
 	// real boundary is the guarded dialer in notify — a name that passes now
 	// can resolve somewhere else by delivery time.
@@ -316,6 +324,15 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		existing.URL = *body.URL
 	}
 	if body.Events != nil {
+		// Validated only when sent, like url above: a PATCH of {"enabled":
+		// false} must not be gated on a field it does not touch.
+		// A webhook subscription with zero events would silently never fire.
+		if len(body.Events) == 0 {
+			Error(w, http.StatusBadRequest, "missing_events",
+				"events is required: a webhook with no events is refused. "+
+					"Provide at least one event type.")
+			return
+		}
 		existing.Events = body.Events
 	}
 	if body.Secret != nil {

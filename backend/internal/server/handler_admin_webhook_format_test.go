@@ -126,3 +126,92 @@ func TestWebhookUpdate_OtherFieldsAreNotGatedOnPayloadFormat(t *testing.T) {
 	require.False(t, stored.Enabled)
 	require.Equal(t, "raw", stored.PayloadFormat, "unrelated to what this PATCH touched")
 }
+
+// A webhook subscription with zero events would silently never fire: a footgun.
+// Require events to be present and non-empty.
+func TestWebhookCreate_RejectsWithoutEvents(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
+		map[string]any{"url": "https://example.com/hook"})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+	var body struct {
+		Error struct{ Code, Message string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, "missing_events", body.Error.Code)
+}
+
+func TestWebhookCreate_RejectsWithEmptyEvents(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
+		map[string]any{"url": "https://example.com/hook", "events": []string{}})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+	var body struct {
+		Error struct{ Code, Message string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, "missing_events", body.Error.Code)
+}
+
+func TestWebhookCreate_AcceptsWithNonEmptyEvents(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
+		map[string]any{"url": "https://example.com/hook", "events": []string{"ticket.created"}})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+
+	var created struct {
+		ID     string   `json:"id"`
+		Events []string `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&created))
+	require.Equal(t, []string{"ticket.created"}, created.Events)
+}
+
+func TestWebhookUpdate_OmittingEventsDoesNotChangeIt(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := seedWebhook(t, h)
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
+		map[string]any{"enabled": false})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	stored, err := h.authStore.GetWebhook(context.Background(), id)
+	require.NoError(t, err)
+	require.False(t, stored.Enabled)
+	require.Equal(t, []string{"ticket.created"}, stored.Events)
+}
+
+func TestWebhookUpdate_RejectsWithEmptyEvents(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := seedWebhook(t, h)
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
+		map[string]any{"events": []string{}})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+	var body struct {
+		Error struct{ Code, Message string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, "missing_events", body.Error.Code)
+
+	// A refused update must not half-apply.
+	stored, err := h.authStore.GetWebhook(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"ticket.created"}, stored.Events)
+}
