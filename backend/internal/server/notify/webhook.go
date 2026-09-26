@@ -7,14 +7,44 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
+
+// WebhookEvents is the list of event types that can be subscribed to via webhooks.
+// guest.link_resent is excluded because webhooks are defined as HTTP callbacks
+// for ticket lifecycle events; guest link resends are not ticket changes.
+var WebhookEvents = []notification.EventType{
+	notification.EventTicketCreated,
+	notification.EventTicketAssigned,
+	notification.EventTicketStatusChanged,
+	notification.EventTicketReplied,
+	notification.EventTicketResolved,
+	notification.EventTicketClosed,
+	notification.EventTicketReopened,
+	notification.EventTicketLinked,
+}
+
+// IsWebhookEvent reports whether e is "*" or one of WebhookEvents.
+// Exact, case-sensitive, untrimmed: the same comparison hookSubscribes makes.
+func IsWebhookEvent(e string) bool {
+	if e == "*" {
+		return true
+	}
+	for _, event := range WebhookEvents {
+		if e == string(event) {
+			return true
+		}
+	}
+	return false
+}
 
 // WebhookStore is the interface needed to load enabled webhook configs.
 type WebhookStore interface {
@@ -23,14 +53,28 @@ type WebhookStore interface {
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
 type WebhookDispatcher struct {
-	store  WebhookStore
-	client *http.Client
+	store   WebhookStore
+	client  *http.Client
+	baseURL string // used only to build the staff ticket link chat/ITSM formats carry
+	log     *slog.Logger
 }
 
 // NewWebhookDispatcher returns a WebhookDispatcher with sensible timeouts.
-func NewWebhookDispatcher(store WebhookStore) *WebhookDispatcher {
+// baseURL is the same value the email dispatcher uses for ticket links
+// (cfg.BaseURL); it is never used to reach the hook target itself.
+// log is used to report delivery failures and other operational issues.
+func NewWebhookDispatcher(store WebhookStore, baseURL string, log *slog.Logger) *WebhookDispatcher {
+	if log == nil {
+		// send runs unrecovered in its own goroutine; a nil logger would
+		// panic there on the first delivery failure and take the process
+		// down with it. Defaulting here removes that trap for any caller
+		// that builds a dispatcher without one.
+		log = slog.Default()
+	}
 	return &WebhookDispatcher{
-		store: store,
+		store:   store,
+		baseURL: baseURL,
+		log:     log,
 		// Guarded: the URL is operator-supplied and the app container can
 		// reach the database, the antivirus daemon and cloud metadata, none
 		// of which are reachable from outside.
@@ -41,13 +85,36 @@ func NewWebhookDispatcher(store WebhookStore) *WebhookDispatcher {
 // Dispatch sends the event as JSON to every enabled webhook that subscribes
 // to this event type. Failures are logged but do not propagate.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Event) error {
+	// guest.link_resent (and any other event type not in WebhookEvents) is
+	// deliberately excluded from webhooks — IsWebhookEvent already rejects it
+	// on create/update — but hookSubscribes has no event-type filter of its
+	// own, so a "*" (or legacy empty-events) subscription would otherwise
+	// receive it anyway, contradicting that exclusion. Filtered here, before
+	// any hook is considered, rather than inside hookSubscribes: it is a
+	// property of the EVENT, not of any one hook's subscription shape. See
+	// #212.
+	if !IsWebhookEvent(string(event.Type)) {
+		return nil
+	}
+
 	hooks, err := d.store.ListEnabledWebhooks(ctx)
 	if err != nil {
+		// A DB error listing hooks means zero deliveries to every webhook;
+		// previously this was indistinguishable from "nothing subscribed".
+		// See #213.
+		d.log.ErrorContext(ctx, "webhook dispatch skipped: could not list enabled webhooks",
+			"event", event.Type, "error", err)
 		return nil // store failure is non-fatal
 	}
 
+	// Marshalled once, exactly as before: this is the raw wire body every
+	// "raw" (and pre-migration empty-format) subscription still receives
+	// byte-for-byte unchanged. bodyFor below reshapes a copy per format; it
+	// never touches this slice for those hooks.
 	payload, err := json.Marshal(event)
 	if err != nil {
+		d.log.ErrorContext(ctx, "webhook dispatch skipped: event could not be marshalled",
+			"event", event.Type, "error", err)
 		return nil
 	}
 
@@ -55,8 +122,18 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		if !hookSubscribes(hook, event.Type) {
 			continue
 		}
+		body, err := bodyFor(hook, event, payload, d.baseURL)
+		if err != nil {
+			// Unknown payload_format: skip this hook rather than falling
+			// back to raw. A Slack URL fed the full raw event is a
+			// delivery bug, not a degraded-but-working delivery.
+			d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
+				"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
+				"event", event.Type, "error", err)
+			continue
+		}
 		// Fire-and-forget per webhook; don't block on failures.
-		go d.send(hook, payload)
+		go d.send(hook, body)
 	}
 	return nil
 }
@@ -76,6 +153,7 @@ const (
 func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, hook.URL, bytes.NewReader(payload))
 	if err != nil {
+		d.log.Warn("webhook request could not be built", "webhook_id", hook.ID)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -98,9 +176,14 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
+		d.log.Warn("webhook delivery failed", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "error", withoutURL(err))
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		d.log.Warn("webhook delivery rejected", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "status", resp.StatusCode)
+		return
+	}
 	// Retry logic for v2: for now, accept any 2xx.
 }
 
@@ -122,5 +205,12 @@ func hmacSHA256(secret string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// Prevent unused import
-var _ = fmt.Sprintf
+// withoutURL removes the URL that http.Client wraps around every error.
+// The URL in *url.Error can contain credentials, so we unwrap it before logging.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}

@@ -6,8 +6,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -50,8 +52,37 @@ func (s *Store) UpdatePolicy(ctx context.Context, p sla.Policy) error {
 	})
 }
 
+// DeletePolicy removes a policy that no ticket's SLA record references.
+//
+// Counted first so the refusal can say how many tickets depend on the policy,
+// and so the ordinary refusal never issues a failing statement (which would
+// abort an enclosing transaction). The count and the delete are separate
+// statements, so a ticket created between them can still attach a record;
+// the foreign key then refuses the delete, and that violation is mapped to
+// the same sentinel rather than surfacing as a 500 (#261).
 func (s *Store) DeletePolicy(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteSLAPolicy(ctx, id)
+	n, err := s.q.CountSLARecordsByPolicy(ctx, id)
+	if err != nil {
+		return fmt.Errorf("counting SLA records for policy %s: %w", id, err)
+	}
+	if n > 0 {
+		return fmt.Errorf("%w: it is attached to %d ticket(s), whose SLA history is measured against it", sla.ErrPolicyInUse, n)
+	}
+	if err := s.q.DeleteSLAPolicy(ctx, id); err != nil {
+		if isPolicyInUseViolation(err) {
+			return fmt.Errorf("%w: a ticket was attached to it while it was being deleted", sla.ErrPolicyInUse)
+		}
+		return fmt.Errorf("deleting SLA policy %s: %w", id, err)
+	}
+	return nil
+}
+
+// isPolicyInUseViolation reports whether err is sla_records' foreign key to
+// sla_policies refusing a delete -- detected off the typed Postgres error,
+// never err.Error()'s text, for the reason isDuplicateLinkViolation gives (#195).
+func isPolicyInUseViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "sla_records_policy_id_fkey"
 }
 
 func (s *Store) ListPolicies(ctx context.Context) ([]sla.Policy, error) {
@@ -100,14 +131,7 @@ func (s *Store) GetRecord(ctx context.Context, ticketID uuid.UUID) (sla.Record, 
 		}
 		return sla.Record{}, fmt.Errorf("getting SLA record %s: %w", ticketID, err)
 	}
-	return sla.Record{
-		TicketID:             r.TicketID,
-		PolicyID:             r.PolicyID,
-		FirstResponseAt:      database.TimePtr(r.FirstResponseAt),
-		ResolvedAt:           database.TimePtr(r.ResolvedAt),
-		ResponseBreachedAt:   database.TimePtr(r.ResponseBreachedAt),
-		ResolutionBreachedAt: database.TimePtr(r.ResolutionBreachedAt),
-	}, nil
+	return recordFromRow(r), nil
 }
 
 func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
@@ -118,6 +142,87 @@ func (s *Store) UpdateRecord(ctx context.Context, r sla.Record) error {
 		ResponseBreachedAt:   database.NullTime(r.ResponseBreachedAt),
 		ResolutionBreachedAt: database.NullTime(r.ResolutionBreachedAt),
 	})
+}
+
+func (s *Store) SetFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
+	if err := s.q.SetSLAFirstResponse(ctx, dbgen.SetSLAFirstResponseParams{
+		TicketID:              ticketID,
+		At:                    at,
+		ElapsedSeconds:        elapsedSeconds,
+		ResponseTargetSeconds: responseTargetSeconds,
+	}); err != nil {
+		return fmt.Errorf("setting SLA first response for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
+func (s *Store) SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
+	if err := s.q.SetSLAResolved(ctx, dbgen.SetSLAResolvedParams{
+		TicketID:                ticketID,
+		At:                      at,
+		ElapsedSeconds:          elapsedSeconds,
+		ResolutionTargetSeconds: resolutionTargetSeconds,
+	}); err != nil {
+		return fmt.Errorf("setting SLA resolution for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
+func (s *Store) SetResolvedAndFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	if err := s.q.SetSLAResolvedAndFirstResponse(ctx, dbgen.SetSLAResolvedAndFirstResponseParams{
+		TicketID:                ticketID,
+		At:                      at,
+		ElapsedSeconds:          elapsedSeconds,
+		ResolutionTargetSeconds: resolutionTargetSeconds,
+		ResponseTargetSeconds:   responseTargetSeconds,
+	}); err != nil {
+		return fmt.Errorf("recording SLA resolution and first response for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
+func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]sla.Record, error) {
+	rows, err := s.q.ListSLARecordsByTicketIDs(ctx, ticketIDs)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA records for tickets: %w", err)
+	}
+	out := make([]sla.Record, len(rows))
+	for i, r := range rows {
+		out[i] = recordFromRow(r)
+	}
+	return out, nil
+}
+
+func recordFromRow(r dbgen.SlaRecord) sla.Record {
+	return sla.Record{
+		TicketID:                      r.TicketID,
+		PolicyID:                      r.PolicyID,
+		FirstResponseAt:               database.TimePtr(r.FirstResponseAt),
+		ResolvedAt:                    database.TimePtr(r.ResolvedAt),
+		ResponseBreachedAt:            database.TimePtr(r.ResponseBreachedAt),
+		ResolutionBreachedAt:          database.TimePtr(r.ResolutionBreachedAt),
+		ResponseElapsedAtMetSeconds:   database.Int64Ptr(r.ResponseElapsedAtMetSeconds),
+		ResolutionElapsedAtMetSeconds: database.Int64Ptr(r.ResolutionElapsedAtMetSeconds),
+	}
+}
+
+func (s *Store) ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+	ids, err := s.q.ListSLABreachCandidates(ctx, now)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA breach candidates: %w", err)
+	}
+	return ids, nil
+}
+
+func (s *Store) StampBreaches(ctx context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
+	if err := s.q.StampSLABreaches(ctx, dbgen.StampSLABreachesParams{
+		TicketID:             ticketID,
+		ResponseBreachedAt:   database.NullTime(response),
+		ResolutionBreachedAt: database.NullTime(resolution),
+	}); err != nil {
+		return fmt.Errorf("stamping SLA breaches for ticket %s: %w", ticketID, err)
+	}
+	return nil
 }
 
 func policyFromRow(r dbgen.SlaPolicy) sla.Policy {

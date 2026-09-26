@@ -87,7 +87,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -131,7 +131,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -182,7 +182,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -206,7 +206,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, tickets)
+		s.writeTickets(w, r, tickets)
 		return
 	}
 
@@ -277,10 +277,10 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if offset >= len(all) {
-		JSON(w, http.StatusOK, []ticket.Ticket{})
+		s.writeTickets(w, r, nil)
 		return
 	}
-	JSON(w, http.StatusOK, all[offset:min(offset+limit, len(all))])
+	s.writeTickets(w, r, all[offset:min(offset+limit, len(all))])
 }
 
 // POST /api/v1/tickets
@@ -509,7 +509,12 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	JSON(w, http.StatusOK, t)
+	views, err := s.ticketViews(r.Context(), []ticket.Ticket{t}, authmw.GetActor(r))
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, views[0])
 }
 
 // PATCH /api/v1/tickets/{id}
@@ -804,8 +809,10 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		TargetID uuid.UUID `json:"target_id"`
-		LinkType string    `json:"link_type"`
+		TargetID           uuid.UUID `json:"target_id"`
+		LinkType           string    `json:"link_type"`
+		ResolveAsDuplicate bool      `json:"resolve_as_duplicate"`
+		ResolutionNotes    string    `json:"resolution_notes"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -830,6 +837,25 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+
+	// If resolve_as_duplicate is true, validate that link_type is actually duplicate_of
+	if body.ResolveAsDuplicate && ticket.LinkType(body.LinkType) != ticket.LinkDuplicateOf {
+		Error(w, http.StatusBadRequest, "bad_request", "resolve_as_duplicate can only be used with duplicate_of link type")
+		return
+	}
+
+	if body.ResolveAsDuplicate {
+		// Resolve the source ticket as a duplicate of the target in one transaction.
+		t, err := s.tickets.ResolveAsDuplicate(r.Context(), sourceID, body.TargetID, body.ResolutionNotes, actor)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		JSON(w, http.StatusOK, t)
+		return
+	}
+
+	// Original path: just create the link.
 	if err := s.tickets.AddLink(r.Context(), sourceID, body.TargetID, ticket.LinkType(body.LinkType), actor); err != nil {
 		handleError(w, err)
 		return
@@ -856,7 +882,7 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 	// "duplicate of GHD-2026-000123" is a staff judgement about the queue,
 	// not something the reporter gets to overrule — and could tell a real
 	// target id from an invented one by the difference between 204 and a
-	// failure.
+	// failure. See #211.
 	ok, err := s.canViewTicketID(r, targetID)
 	if err != nil {
 		handleError(w, err)
@@ -877,6 +903,13 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	lt := ticket.LinkType(chi.URLParam(r, "linkType"))
+	// An unrecognized link type would otherwise delete nothing and still
+	// answer 204 — not incorrect (there is indeed no such link), but silently
+	// misleading about why nothing happened. See #201.
+	if !lt.Valid() {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid link type")
+		return
+	}
 	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
 		handleError(w, err)
 		return

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -108,19 +109,21 @@ func (s *Store) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID,
 
 func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 	return s.q.UpdateTicket(ctx, dbgen.UpdateTicketParams{
-		ID:              t.ID,
-		Subject:         t.Subject,
-		Description:     t.Description,
-		TypeID:          database.NullUUID(t.TypeID),
-		ItemID:          database.NullUUID(t.ItemID),
-		Priority:        string(t.Priority),
-		StatusID:        t.StatusID,
-		AssigneeUserID:  database.NullUUID(t.AssigneeUserID),
-		AssigneeGroupID: database.NullUUID(t.AssigneeGroupID),
-		ResolutionNotes: database.NullString(t.ResolutionNotes),
-		ResolvedAt:      database.NullTime(t.ResolvedAt),
-		ClosedAt:        database.NullTime(t.ClosedAt),
-		UpdatedAt:       time.Now(),
+		ID:               t.ID,
+		Subject:          t.Subject,
+		Description:      t.Description,
+		TypeID:           database.NullUUID(t.TypeID),
+		ItemID:           database.NullUUID(t.ItemID),
+		Priority:         string(t.Priority),
+		StatusID:         t.StatusID,
+		AssigneeUserID:   database.NullUUID(t.AssigneeUserID),
+		AssigneeGroupID:  database.NullUUID(t.AssigneeGroupID),
+		ResolutionNotes:  database.NullString(t.ResolutionNotes),
+		ResolvedAt:       database.NullTime(t.ResolvedAt),
+		ClosedAt:         database.NullTime(t.ClosedAt),
+		UpdatedAt:        time.Now(),
+		PendingSince:     database.NullTime(t.PendingSince),
+		SlaPausedSeconds: t.SLAPausedSeconds,
 	})
 }
 
@@ -397,9 +400,10 @@ func (s *Store) SearchUnassigned(ctx context.Context, q string, limit, offset in
 	return out, nil
 }
 
-func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]ticket.Ticket, error) {
+func (s *Store) ListResolvedBefore(ctx context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
 	rows, err := s.q.ListResolvedTicketsBefore(ctx, dbgen.ListResolvedTicketsBeforeParams{
 		ResolvedAt: sql.NullTime{Time: before, Valid: true},
+		StatusID:   resolvedStatusID,
 		Limit:      pageInt32(limit),
 	})
 	if err != nil {
@@ -582,11 +586,32 @@ func (s *Store) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *Store) CreateLink(ctx context.Context, link ticket.TicketLink) error {
-	return s.q.CreateTicketLink(ctx, dbgen.CreateTicketLinkParams{
+	err := s.q.CreateTicketLink(ctx, dbgen.CreateTicketLinkParams{
 		SourceTicketID: link.SourceTicketID,
 		TargetTicketID: link.TargetTicketID,
 		LinkType:       string(link.LinkType),
 	})
+	if err != nil && isDuplicateLinkViolation(err) {
+		return ticket.ErrLinkAlreadyExists
+	}
+	return err
+}
+
+// isDuplicateLinkViolation reports whether err is the ticket_links_unique
+// constraint violation — detected off the typed Postgres error, not off
+// err.Error()'s text (#195). The previous
+// strings.Contains(err.Error(), "ticket_links_unique") &&
+// strings.Contains(err.Error(), "23505") check happened to be correct for
+// pgx stdlib's current Error() format, but it depended on that exact format:
+// a driver change, or lib/pq (also in go.mod) instead of pgx, would silently
+// turn every duplicate-link request back into an unhandled 500 with no
+// compile-time or obvious runtime signal. errors.As sees through wrapping —
+// see TestIsDuplicateLinkViolation for a case where the error arrives
+// wrapped in additional context, which the old text-matching approach also
+// happened to tolerate, but only by accident of where the substrings landed.
+func isDuplicateLinkViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "ticket_links_unique"
 }
 
 func (s *Store) DeleteLink(ctx context.Context, source, target uuid.UUID, lt ticket.LinkType) error {
@@ -670,28 +695,80 @@ func (s *Store) ListStatuses(ctx context.Context) ([]ticket.Status, error) {
 	return out, nil
 }
 
+// CreateStatus inserts a new status. statuses.name is TEXT NOT NULL UNIQUE
+// (statuses_name_key); a colliding name is mapped to ticket.ErrStatusNameTaken
+// here rather than reaching handleError as a raw pgconn error (#278).
 func (s *Store) CreateStatus(ctx context.Context, st ticket.Status) error {
-	return s.q.CreateStatus(ctx, dbgen.CreateStatusParams{
+	err := s.q.CreateStatus(ctx, dbgen.CreateStatusParams{
 		ID:        st.ID,
 		Name:      st.Name,
 		Kind:      string(st.Kind),
 		SortOrder: int32(st.SortOrder),
 		Color:     st.Color,
 	})
+	if err != nil && isStatusNameViolation(err) {
+		return ticket.ErrStatusNameTaken
+	}
+	return err
 }
 
+// UpdateStatus persists a status's fields, including a rename. Same
+// statuses_name_key collision as CreateStatus, mapped the same way (#278).
 func (s *Store) UpdateStatus(ctx context.Context, st ticket.Status) error {
-	return s.q.UpdateStatus(ctx, dbgen.UpdateStatusParams{
+	err := s.q.UpdateStatus(ctx, dbgen.UpdateStatusParams{
 		ID:        st.ID,
 		Name:      st.Name,
 		SortOrder: int32(st.SortOrder),
 		Color:     st.Color,
 		Active:    st.Active,
 	})
+	if err != nil && isStatusNameViolation(err) {
+		return ticket.ErrStatusNameTaken
+	}
+	return err
 }
 
+// isStatusNameViolation reports whether err is the statuses_name_key unique
+// constraint violation — detected off the typed Postgres error, never
+// err.Error()'s text, for the reason isDuplicateLinkViolation gives (#195).
+func isStatusNameViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "statuses_name_key"
+}
+
+// DeleteStatus hard-deletes a status. Service.RemoveStatus counts referencing
+// tickets and status-history rows before calling this, but the count and the
+// delete are separate statements, so a ticket can be PATCHed into this status
+// (or transitioned through it) between them; the foreign key then refuses the
+// DELETE, and that violation is mapped to ticket.ErrStatusInUse here rather
+// than surfacing as a 500 — the same backstop slastore.DeletePolicy has for
+// the identical count-then-delete race (#261), added here for #279.
 func (s *Store) DeleteStatus(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteStatus(ctx, id)
+	if err := s.q.DeleteStatus(ctx, id); err != nil {
+		if isStatusInUseViolation(err) {
+			return fmt.Errorf("%w: a ticket referenced it while it was being deleted", ticket.ErrStatusInUse)
+		}
+		return err
+	}
+	return nil
+}
+
+// isStatusInUseViolation reports whether err is one of the three foreign keys
+// that reference statuses(id) refusing a delete — tickets.status_id or either
+// side of ticket_status_history — detected off the typed Postgres error,
+// never err.Error()'s text, for the reason isDuplicateLinkViolation gives
+// (#195).
+func isStatusInUseViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		return false
+	}
+	switch pgErr.ConstraintName {
+	case "tickets_status_id_fkey", "ticket_status_history_from_status_id_fkey", "ticket_status_history_to_status_id_fkey":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) CountByStatus(ctx context.Context, id uuid.UUID) (int64, error) {
@@ -739,50 +816,54 @@ func (s *Store) CountByStatusForAssignee(ctx context.Context, statusID, userID u
 // underlying types, tags ignored). That lets fromRow's mapping logic live
 // in exactly one place instead of being duplicated per query.
 type ticketRow struct {
-	ID              uuid.UUID
-	TrackingNumber  string
-	Subject         string
-	Description     string
-	CategoryID      uuid.UUID
-	TypeID          uuid.NullUUID
-	ItemID          uuid.NullUUID
-	Priority        string
-	StatusID        uuid.UUID
-	AssigneeUserID  uuid.NullUUID
-	AssigneeGroupID uuid.NullUUID
-	ReporterUserID  uuid.NullUUID
-	GuestEmail      sql.NullString
-	ResolutionNotes sql.NullString
-	ResolvedAt      sql.NullTime
-	ClosedAt        sql.NullTime
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	GuestName       string
-	GuestPhone      string
+	ID               uuid.UUID
+	TrackingNumber   string
+	Subject          string
+	Description      string
+	CategoryID       uuid.UUID
+	TypeID           uuid.NullUUID
+	ItemID           uuid.NullUUID
+	Priority         string
+	StatusID         uuid.UUID
+	AssigneeUserID   uuid.NullUUID
+	AssigneeGroupID  uuid.NullUUID
+	ReporterUserID   uuid.NullUUID
+	GuestEmail       sql.NullString
+	ResolutionNotes  sql.NullString
+	ResolvedAt       sql.NullTime
+	ClosedAt         sql.NullTime
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	GuestName        string
+	GuestPhone       string
+	PendingSince     sql.NullTime
+	SlaPausedSeconds int64
 }
 
 func fromRow(r ticketRow) ticket.Ticket {
 	return ticket.Ticket{
-		ID:              r.ID,
-		TrackingNumber:  ticket.TrackingNumber(r.TrackingNumber),
-		Subject:         r.Subject,
-		Description:     r.Description,
-		CategoryID:      r.CategoryID,
-		TypeID:          database.UUIDPtr(r.TypeID),
-		ItemID:          database.UUIDPtr(r.ItemID),
-		Priority:        ticket.Priority(r.Priority),
-		StatusID:        r.StatusID,
-		AssigneeUserID:  database.UUIDPtr(r.AssigneeUserID),
-		AssigneeGroupID: database.UUIDPtr(r.AssigneeGroupID),
-		ReporterUserID:  database.UUIDPtr(r.ReporterUserID),
-		GuestEmail:      database.StringPtr(r.GuestEmail),
-		GuestName:       r.GuestName,
-		GuestPhone:      r.GuestPhone,
-		ResolutionNotes: database.StringPtr(r.ResolutionNotes),
-		ResolvedAt:      database.TimePtr(r.ResolvedAt),
-		ClosedAt:        database.TimePtr(r.ClosedAt),
-		CreatedAt:       r.CreatedAt,
-		UpdatedAt:       r.UpdatedAt,
+		ID:               r.ID,
+		TrackingNumber:   ticket.TrackingNumber(r.TrackingNumber),
+		Subject:          r.Subject,
+		Description:      r.Description,
+		CategoryID:       r.CategoryID,
+		TypeID:           database.UUIDPtr(r.TypeID),
+		ItemID:           database.UUIDPtr(r.ItemID),
+		Priority:         ticket.Priority(r.Priority),
+		StatusID:         r.StatusID,
+		AssigneeUserID:   database.UUIDPtr(r.AssigneeUserID),
+		AssigneeGroupID:  database.UUIDPtr(r.AssigneeGroupID),
+		ReporterUserID:   database.UUIDPtr(r.ReporterUserID),
+		GuestEmail:       database.StringPtr(r.GuestEmail),
+		GuestName:        r.GuestName,
+		GuestPhone:       r.GuestPhone,
+		ResolutionNotes:  database.StringPtr(r.ResolutionNotes),
+		ResolvedAt:       database.TimePtr(r.ResolvedAt),
+		ClosedAt:         database.TimePtr(r.ClosedAt),
+		CreatedAt:        r.CreatedAt,
+		UpdatedAt:        r.UpdatedAt,
+		PendingSince:     database.TimePtr(r.PendingSince),
+		SLAPausedSeconds: r.SlaPausedSeconds,
 	}
 }
 

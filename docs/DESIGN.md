@@ -8,10 +8,23 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS) |
+| **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), REST API, MCP interface, email + webhook notifications (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
+| **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
+
+**1.3 note:** Custom fields, CTI-linked group management, and canned responses were
+built ahead of the original v2 schedule and are already in production — this
+table reflects that rather than the sequence they were originally planned in.
+Full-text search was likewise already implemented as core v1 functionality;
+see Ticket Search below. Plugins move the other direction: the admin UI lists
+and toggles a plugin record, but install/uninstall return `501` and no event
+ever reaches a plugin (`plugin.Registry.Dispatch` is built but never wired into
+the notification chain) — there is no working plugin system today, so it is
+rescheduled to v2 rather than left claiming v1 status it doesn't have. The one
+piece of the original plugin pitch worth keeping on the v1 timeline — chat/ITSM
+notifications — ships as formats on the existing webhook feature instead of
+through the plugin system; see Notifications below.
 
 ---
 
@@ -103,10 +116,45 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
 - **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window. Set to 0 to disable user-initiated reopening entirely.
 - **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status.
-- **Closed**: no further user updates. Staff/admin can still reopen manually. **The automatic transition is not implemented** — `ListResolvedBefore` exists for a scheduler that was never written, and nothing calls it, so a resolved ticket stays Resolved until somebody closes it. Tracked as an issue.
-- Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
-- Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
-- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (a user's display name, or "System" for a change nobody made — which today means the automatic reopen on a reply, since auto-close is not implemented), and the timestamp. The initial status assignment at ticket creation is also recorded.
+- **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
+
+  **Auto-close scheduling.** This transition is driven by a periodic background
+  sweep, not computed on read: a ticket sitting in Resolved past its window
+  must actually flip to Closed even if nobody opens it again, because the
+  point of Closed is "no further user updates," and a status nobody re-derives
+  until the next page view can't enforce that. The sweep finds tickets whose
+  `resolved_at` plus the reopen-window setting (in days, as configured at the
+  time the sweep runs) has passed, and calls the same `Close` operation for
+  each — attributed to "System" in the status history, per the existing rule
+  above. It is safe to run repeatedly: a ticket that is already Closed no
+  longer matches the query, so a re-run or an overlapping run does nothing to
+  it. **A reopen window of 0 does not skip this transition** — it removes the
+  grace period, not the close itself, so a ticket resolved under a 0-day
+  window is eligible for auto-close on the very next sweep. The sweep interval
+  is an implementation detail rather than a user-facing setting; a few
+  minutes of slack between "the window elapsed" and "the ticket shows Closed"
+  is immaterial against a window denominated in days. The sweep runs every
+  five minutes from a goroutine started in `cmd/server/main.go`, alongside the
+  session-expiry sweep. Each tick reads the reopen-window setting afresh and
+  calls `ticket.Service.AutoClose`, which lists up to 500 candidates
+  (`ListResolvedBefore`) and closes each through the same code path as
+  `Close`. Under the row lock it re-checks that the ticket is still Resolved
+  and still past the cutoff, so a ticket reopened between the query and the
+  lock is left untouched: no write, no history row, no notification. Eligible
+  tickets beyond the 500 are picked up on the next tick, and a failure closing
+  one ticket is logged without stopping the rest. (Originally tracked as
+  [#184](https://github.com/PubliciaLLC/go-help-desk/issues/184).)
+- Statuses are customizable — admins can add intermediate statuses, but
+  New, Resolved and Closed are system statuses with special behavior. The
+  server finds them by name at startup and compares lifecycle rules by
+  name, so a system status's name is fixed: the admin API refuses to rename
+  one (403), just as it refuses to deactivate one. Color and sort order
+  remain editable.
+- Custom statuses can be **deactivated** (hidden from new-ticket flows) and
+  **reactivated**. They can only be **deleted** when no ticket is in that
+  status and no status-history entry references it; otherwise deactivate
+  it. System statuses can never be renamed, deactivated or deleted.
+- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
 
 ### Tags
 
@@ -136,12 +184,40 @@ The ticket list includes a live search bar with a 300 ms debounce:
 
 ### Linked Tickets
 
-Tickets can be linked to any other ticket regardless of status (including Closed). Link types:
+Tickets can be linked to any other ticket regardless of status (including
+Closed). The backend (`ticket.LinkType`; `GET`/`POST /tickets/{id}/links`
+and `DELETE /tickets/{id}/links/{targetId}/{linkType}` in
+`handler_tickets.go`) is the canonical spelling, and the frontend's
+`LinkType` in `frontend/src/api/types.ts` uses the same four values. Links
+are viewed, created and removed from the **Linked tickets** panel on the
+ticket detail page (`LinkedTicketsPanel.tsx`), which is shown to staff and
+admins. (Wiring the UI and reconciling the enum was
+[#185](https://github.com/PubliciaLLC/go-help-desk/issues/185); the
+duplicate-of auto-resolve option was
+[#186](https://github.com/PubliciaLLC/go-help-desk/issues/186).)
 
-- **Related to** — informational association
-- **Parent / Child** — hierarchical grouping (e.g. a Problem with multiple Incidents)
-- **Caused by** — causal relationship
-- **Duplicate of** — marks a ticket as a duplicate. It records the relationship and nothing else; there is no auto-resolve.
+Link types — four, not five. A link is directional (source ticket → target
+ticket), and that direction *is* the parent/child distinction rather than a
+separate value for each direction:
+
+- **Related to** (`related_to`) — informational association, symmetric
+- **Parent / Child** (`parent_child`) — hierarchical grouping (e.g. a Problem
+  with multiple Incidents). The ticket the link is created *from* is the
+  parent; the ticket it is created *to* is the child. There is no separate
+  `parent_of` / `child_of` pair — a link's direction already says which end is
+  which, and a UI renders "Parent" or "Child" by comparing the ticket it's
+  displaying against the link's source and target, not by storing two types
+  for one relationship.
+- **Caused by** (`caused_by`) — causal relationship, directional (source was
+  caused by target)
+- **Duplicate of** (`duplicate_of`) — marks the source ticket as a duplicate of
+  the target. Creating this link offers a checkbox, **"Also resolve this
+  ticket as a duplicate"** — when checked, the source ticket is transitioned to
+  Resolved in the same action, with its resolution notes pre-filled as
+  "Duplicate of `<target tracking number>`" (staff can edit before saving).
+  Unchecked, the link is recorded with no status change. This is the
+  "optionally" in "optionally auto-resolves the duplicate" — it is a choice
+  made per link, not an instance-wide setting.
 
 ### Groups & Scope
 
@@ -1158,6 +1234,13 @@ so they are not removed as dead weight:
   `internal` flag, so a subscriber can tell a staff-only note from a public
   reply. Before, it received the text of every internal note and could not tell
   them apart.
+- **Chat/ITSM payload formats escape mentions and never carry an internal
+  note body.** Slack escapes `&`, `<` and `>` in user-chosen text, so a
+  subject of `<!channel>` cannot page a channel; Discord always sends
+  `allowed_mentions: {"parse": []}`, so `@everyone`-style text cannot ping a
+  server. All four formats (Slack, Teams, Discord, JIRA) are built from the
+  same summary the raw format's internal-note omission already produces, so
+  an internal note's body reaches none of them, not just the raw payload.
 
 **Scopes were documented here before they were enforced.** Until 1.2.0 they were
 accepted, stored and returned by the API, and no code read them — every
@@ -1167,13 +1250,25 @@ denied, and must be re-issued.
 
 ---
 
-## Plugin Infrastructure
+## Plugin Infrastructure (v2)
 
-### Capabilities (v1)
+Deferred from v1. The data model and an admin CRUD shell exist
+(`internal/domain/plugin/`, `handler_admin_plugins.go`) — a plugin record can be
+listed, enabled and disabled — but none of the capabilities below are wired up:
+install and uninstall return `501 not_implemented`, no WASM runtime is linked
+in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
+so an enabled plugin still receives no events. Treat this section as the
+target design for v2, not a description of what 1.3 ships.
+
+External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
+for this — see Notifications below, where they ship in v1 as payload formats
+on the existing webhook feature instead of as plugins.
+
+### Capabilities (v2)
 
 - React to **ticket lifecycle events** (created, assigned, status changed, resolved, etc.)
 - Add **custom fields / UI panels** to tickets
-- Integrate **external systems** (Slack, Teams, Discord, JIRA, etc.)
+- Integrate **external systems** generically, beyond what a webhook payload format can express
 
 ### Theming
 
@@ -1189,7 +1284,7 @@ denied, and must be re-issued.
 
 | Version | Method |
 |---------|--------|
-| v1 | Install/manage via **admin UI** (upload or URL) |
+| v2 | Install/manage via **admin UI** (upload or URL) |
 | v4 | **Plugin registry** for discovery and installation |
 
 ---
@@ -1215,11 +1310,28 @@ denied, and must be re-issued.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
-- Additional channels (Slack, Teams, Discord) are plugin territory
+- **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
+  1.3. Not a plugin, and not a separate integration surface: a webhook
+  subscription gains a `payload_format` setting (`raw` — today's behavior —
+  `slack`, `teams`, `discord`, `jira`) that reshapes the same lifecycle event
+  into the body that service expects (Slack/Discord: a message body such as
+  `text`/`content` plus blocks or an embed; Teams: an Adaptive Card; JIRA: a
+  comment/webhook-automation-compatible body) before it is POSTed to the
+  operator's configured URL — a Slack incoming webhook, a Teams connector URL,
+  a Discord webhook URL, or a JIRA automation webhook endpoint. This reuses the
+  existing webhook admin surface, its SSRF address-checking, and its
+  administrator-only registration; it adds a format field and a set of
+  renderers, not a new credential type, a new event source, or new
+  infrastructure. Detailed field-by-field mapping per service is tracked in
+  [#187](https://github.com/PubliciaLLC/go-help-desk/issues/187) rather than
+  duplicated here.
+- Anything beyond reshaping this payload — a plugin polling Slack for replies,
+  a two-way JIRA sync, a Discord bot — is genuinely plugin territory and stays
+  on the v2 plugin timeline above.
 
 ---
 
-## Custom Fields (v2)
+## Custom Fields
 
 Admins can attach arbitrary structured data to tickets beyond the fixed fields (subject, description, priority, CTI).
 
@@ -1251,7 +1363,7 @@ Guests are shown no custom fields at all. The guest endpoint accepts none — a 
 
 ---
 
-## CTI-Linked Group Management (v2)
+## CTI-Linked Group Management
 
 Admins can manage which groups handle each CTI node directly from the CTI editor (**Admin → Categories**), without navigating to the Groups page.
 
@@ -1263,7 +1375,7 @@ Admins can manage which groups handle each CTI node directly from the CTI editor
 
 ---
 
-## Canned Responses (v2)
+## Canned Responses
 
 Staff insert reusable reply templates into ticket replies with one click, so common acknowledgements, fixes, and closure messages don't have to be retyped.
 
@@ -1322,8 +1434,24 @@ When the SLA toggle is enabled, a **SLA Policies** management blade appears dire
 | **Name** | Display label, e.g. "Critical — 1h response" |
 | **Priority** | Optional. `critical`, `high`, `medium`, or `low` — restricts the policy to tickets of that priority. Leave blank for "Any priority". |
 | **Category** | Optional. Restricts the policy to a specific category. Leave blank for "All categories". |
-| **Response target** | Minutes from ticket creation to first staff reply |
+| **Response target** | Minutes from ticket creation to the first staff reply visible to the reporter (internal notes do not count). A resolution also counts as the first response — see below. |
 | **Resolution target** | Minutes from ticket creation to ticket resolved |
+
+**A resolution counts as the first response**
+([#219](https://github.com/PubliciaLLC/go-help-desk/issues/219)). If a
+ticket reaches Resolved, or Closed without passing through Resolved,
+before any staff reply, its first response is recorded at the resolution
+instant, in a single statement on the ticket's SLA record (separate from,
+and after, the ticket's own resolution write; a failure there is repaired
+on the next resolve/close). The response target is judged against that
+instant, so a ticket resolved without a reply is never left reporting a
+response it can no longer receive. A ticket that already had an earlier
+staff reply keeps that reply as its first response.
+
+**Deleting a policy.** A policy that any ticket has been tracked against
+cannot be deleted: those tickets' targets and breach stamps are measured
+against it. The API refuses with 409, naming how many tickets depend on
+it. A policy that has never matched a ticket can be deleted freely.
 
 ### Policy Matching
 
@@ -1335,12 +1463,101 @@ When a ticket is created, the system selects an SLA policy by specificity:
 4. A catch-all (no Priority, no Category)
 5. No SLA — if no policy matches
 
-### SLA Indicators — not implemented
+### Timer Mechanics (pause / resume)
 
-Intended: the ticket queue shows a colour-coded SLA indicator per ticket. There is no SLA code in the queue page today.
+A target is measured against **elapsed time since creation, minus time spent
+Pending** — not wall-clock time since creation. That subtraction is the part
+that has to be modeled explicitly, because "paused" is a duration a ticket
+accumulates across possibly several Pending intervals, not a single flag:
 
-- **Green** — within SLA
-- **Amber** — within 20% of the deadline
-- **Red** — SLA breached
+- "Pending" means the status **named** `Pending`: a seeded *custom* status,
+  not a system one, matched by name (`ticket.StatusNamePending`). There is no
+  per-status "pauses the SLA" flag in v1. Renaming the status away from
+  `Pending` stops tickets from pausing from then on. A ticket already in it
+  stays paused until it leaves, since leaving closes the interval whatever the
+  status is called. Deactivating it does not stop it pausing: the
+  ticket-detail status picker still lists inactive statuses and the
+  transition is accepted. Deleting it removes the only way to pause. Whatever
+  status is later named `Pending`, renamed back or newly created, becomes the
+  pause status.
+- Each time a ticket enters Pending, that timestamp is recorded as the start
+  of a paused interval; each time it leaves Pending (to any other status), the
+  interval closes and its length is added to the ticket's accumulated
+  `tickets.sla_paused_seconds`.
+- **Elapsed-toward-target**, at any instant, is `now - created_at -
+  sla_paused_seconds`, with one adjustment: if the ticket is *currently*
+  Pending, the still-open interval's length (from its start to now) is added
+  on top, so a ticket does not appear to be making progress toward breach
+  while it is actively paused.
+- A response or resolution that lands while paused stops that clock the same
+  way a status change would: `sla_records.first_response_at` / `resolved_at`
+  is a timestamp, not a running total, so once it's set the elapsed-time
+  formula above is irrelevant to it — only breaches still open at that
+  moment continue to accrue pause time.
+- Re-entering Pending after a reopen (see Ticket Lifecycle) resumes
+  accumulating against the same policy and the same accumulated pause
+  duration; a reopened ticket is not treated as a new SLA clock.
 
-Intended: SLA timers pause while a ticket is in a "Pending" status (waiting on the user) and resume when it moves to any other status. There is no pause logic in the code.
+### Breach Evaluation
+
+Because elapsed-toward-target keeps moving without any action on the ticket, a
+breach can occur while nobody touches it — so, like ticket auto-close, this
+cannot be computed only on read. A periodic background sweep evaluates every
+open ticket with an attached policy and no existing breach timestamp for a
+target still outstanding, and stamps `response_breached_at` /
+`resolution_breached_at` the first time elapsed-toward-target exceeds the
+policy's minutes for that target. The stamp, once set, does not clear itself
+if a ticket is later reopened or its policy changes — a breach that happened
+is a fact about what happened, not a live status.
+
+The sweep runs every minute from a goroutine started in
+`cmd/server/main.go` and calls `sla.Service.SweepBreaches`. That selects
+candidates with a pause-aware prefilter query (`ListSLABreachCandidates`)
+and re-checks each against a fresh read of the ticket before stamping.
+One minute because targets are whole minutes and a sweep stamp records
+when a breach was *detected*, so the interval is the stamp's worst-case
+error. The goroutine always runs, but each tick first reads the SLA toggle
+and does nothing while it is off. A failure on one ticket is logged and
+does not stop the pass.
+
+The sweep is not the only writer. When a first response or a resolution is
+recorded (`RecordFirstResponse` / `RecordResolved`), the same statement that
+stores the timestamp also stamps that target's breach if it was already
+exceeded at that instant. A late response or resolution is therefore
+stamped when it happens, even between sweep ticks. These record-time writes
+are not gated on the SLA toggle: a ticket that already has an SLA record
+gets its facts recorded truthfully while the feature is off. The toggle
+governs whether new tickets get a record and whether the sweep runs. Every
+writer is write-once per column (the first stamp wins, and none overwrites
+a stamp already set).
+
+Timer mechanics were tracked as
+[#181](https://github.com/PubliciaLLC/go-help-desk/issues/181), the scheduler
+as [#182](https://github.com/PubliciaLLC/go-help-desk/issues/182), and the
+queue indicator below as
+[#183](https://github.com/PubliciaLLC/go-help-desk/issues/183).
+
+### SLA Indicators
+
+The ticket queue shows a color-coded SLA indicator per ticket, computed from
+the same elapsed-toward-target calculation used for breach evaluation (not
+from the breach stamp alone, since amber has to render before a breach
+timestamp would ever be set):
+
+- **Green** — elapsed-toward-target is under 80% of the applicable minutes
+- **Amber** — elapsed-toward-target is at or past 80% but under 100%
+- **Red** — elapsed-toward-target is at or past 100% (breached), whether or
+  not the background sweep has stamped it yet — the stamp is for reporting and
+  for freezing a fact in time, the color is a live read
+- A ticket with no matching policy shows no indicator at all, not green.
+
+The response and resolution targets are indicated separately when both are
+outstanding (e.g. resolution can be amber while response is already breached);
+once a target's timestamp (`sla_records.first_response_at` / `resolved_at`)
+is set, that target's indicator stops updating and shows its final color.
+
+**Visibility:** the indicator, the policy name, the targets, and the
+breach/late status are staff/admin only. A reporting user's own ticket never
+carries any of it — the API returns `"sla": null` on that response regardless
+of whether a policy is attached — so a customer cannot see how their ticket is
+being timed or that it has breached.

@@ -187,7 +187,6 @@ func (s *Service) GuestSubmissionEnabled(ctx context.Context) bool {
 	return v
 }
 
-// SLAEnabled returns whether SLA tracking is active.
 // TicketPrefix returns the configured tracking-number prefix, falling back to
 // the default when unset or invalid.
 func (s *Service) TicketPrefix(ctx context.Context) string {
@@ -211,9 +210,18 @@ func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
 	return v
 }
 
-func (s *Service) SLAEnabled(ctx context.Context) bool {
-	v, _ := s.GetBool(ctx, KeySLAEnabled)
-	return v
+// SLAEnabled returns whether SLA tracking is active, and any error reading
+// the underlying setting.
+//
+// Unlike every other *Enabled helper on this Service, the read failure is
+// returned rather than swallowed: a caller here gates whether SLA facts
+// (first_response_at, resolved_at) get recorded at all, and CLAUDE.md keeps
+// logging out of domain code, so the caller — cmd/server's gatedSLA, or the
+// handler in internal/server/ticket_view.go — is where a transient read
+// failure can actually be reported instead of silently defaulting to
+// "disabled" with nothing to explain why. See #216.
+func (s *Service) SLAEnabled(ctx context.Context) (bool, error) {
+	return s.GetBool(ctx, KeySLAEnabled)
 }
 
 // MFAEnabled returns whether MFA is available.

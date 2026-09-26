@@ -32,8 +32,9 @@ var errNotFound = errors.New("not found")
 type fakeStore struct {
 	forUpdateReads int
 
-	guestTokens   map[string]guestTokenRow
-	errGuestToken error
+	guestTokens       map[string]guestTokenRow
+	errGuestToken     error
+	guestTokenCreates int // total CreateGuestToken calls, across rotations
 
 	// onRead rewrites what a read returns, so a test can tell a value that came
 	// back from the store apart from the identical-looking one the caller
@@ -59,6 +60,7 @@ type fakeStore struct {
 	errGetByID       error
 	errNextSeq       error
 	errCreateHistory error
+	errCreateLink    error
 }
 
 func newFakeStore() *fakeStore {
@@ -173,6 +175,15 @@ func (f *fakeStore) ListStatusHistory(_ context.Context, ticketID uuid.UUID) ([]
 }
 
 func (f *fakeStore) CreateLink(_ context.Context, link ticket.TicketLink) error {
+	if f.errCreateLink != nil {
+		return f.errCreateLink
+	}
+	// Simulate unique constraint: check if link already exists
+	for _, existing := range f.links[link.SourceTicketID] {
+		if existing.TargetTicketID == link.TargetTicketID && existing.LinkType == link.LinkType {
+			return ticket.ErrLinkAlreadyExists
+		}
+	}
 	f.links[link.SourceTicketID] = append(f.links[link.SourceTicketID], link)
 	return nil
 }
@@ -244,8 +255,32 @@ func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid
 	return moved, nil
 }
 
-func (f *fakeStore) ListResolvedBefore(context.Context, time.Time, int) ([]ticket.Ticket, error) {
-	return nil, nil
+func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
+	// Filter: ResolvedAt != nil && ResolvedAt < before && StatusID == resolvedStatusID && ClosedAt == nil
+	// Sort by ResolvedAt ascending, apply limit.
+	//
+	// StatusID is checked here to mirror the real query's `status_id = $2`
+	// (#191): a row with a stale resolved_at that has since moved to a
+	// different status must not be listed, or the sweep would relock and skip
+	// it forever instead of it simply falling out of the candidate set.
+	var candidates []ticket.Ticket
+	for _, t := range f.tickets {
+		if t.ResolvedAt != nil && t.ResolvedAt.Before(before) && t.StatusID == resolvedStatusID && t.ClosedAt == nil {
+			candidates = append(candidates, t)
+		}
+	}
+	// Sort by ResolvedAt ascending (earliest first).
+	for i := 0; i < len(candidates)-1; i++ {
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].ResolvedAt.Before(*candidates[i].ResolvedAt) {
+				candidates[i], candidates[j] = candidates[j], candidates[i]
+			}
+		}
+	}
+	if limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates, nil
 }
 func (f *fakeStore) SearchByReporter(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
@@ -297,6 +332,7 @@ type fakeStatusStore struct {
 	counts map[uuid.UUID]int64
 
 	deletes int
+	updates int
 }
 
 func (f *fakeStatusStore) GetStatusByName(_ context.Context, name string) (ticket.Status, error) {
@@ -316,7 +352,10 @@ func (f *fakeStatusStore) ListStatuses(context.Context) ([]ticket.Status, error)
 }
 
 func (f *fakeStatusStore) CreateStatus(context.Context, ticket.Status) error { return nil }
-func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error { return nil }
+func (f *fakeStatusStore) UpdateStatus(context.Context, ticket.Status) error {
+	f.updates++
+	return nil
+}
 func (f *fakeStatusStore) DeleteStatus(context.Context, uuid.UUID) error {
 	f.deletes++
 	return nil
@@ -383,19 +422,26 @@ type fakeSLA struct {
 	firstResponses int
 	resolutions    int
 	err            error
+
+	// lastResolvedAt is the `at` argument RecordResolved was last called
+	// with, so a test can assert WHICH instant close()/UpdateStatus recorded
+	// a resolution against — the real ticket's own ResolvedAt, not a bare
+	// close-time now(). See #227.
+	lastResolvedAt time.Time
 }
 
 func (f *fakeSLA) AttachPolicy(context.Context, ticket.Ticket) error { return nil }
 
-func (f *fakeSLA) RecordResolved(_ context.Context, _ uuid.UUID, _ time.Time) error {
+func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, at time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
 	f.resolutions++
+	f.lastResolvedAt = at
 	return nil
 }
 
-func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ uuid.UUID, _ time.Time) error {
+func (f *fakeSLA) RecordFirstResponse(_ context.Context, _ ticket.Ticket, _ time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
@@ -439,6 +485,10 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 	}
 	history := append([]ticket.StatusHistoryEntry(nil), a.store.history...)
 	entries := append([]audit.Entry(nil), a.audit.entries...)
+	links := make(map[uuid.UUID][]ticket.TicketLink, len(a.store.links))
+	for k, v := range a.store.links {
+		links[k] = append([]ticket.TicketLink(nil), v...)
+	}
 	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
 
 	if err := fn(a.store, a.audit); err != nil {
@@ -446,6 +496,7 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 		a.store.replies = replies
 		a.store.history = history
 		a.audit.entries = entries
+		a.store.links = links
 		a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates =
 			counters[0], counters[1], counters[2], counters[3]
 		a.rollbacks++
@@ -475,6 +526,7 @@ func (f *fakeStore) CreateGuestToken(_ context.Context, _, ticketID uuid.UUID, h
 		f.guestTokens = map[string]guestTokenRow{}
 	}
 	f.guestTokens[hash] = guestTokenRow{ticketID: ticketID, expiresAt: expiresAt}
+	f.guestTokenCreates++
 	return nil
 }
 

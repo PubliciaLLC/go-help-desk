@@ -195,6 +195,210 @@ func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
 	require.Empty(t, links, "nothing may have been written onto the foreign ticket")
 }
 
+// TestRemoveLink_ChecksTheTargetTicketToo pins #211: handleRemoveLink was
+// gated only on the path's own {id}, unlike handleAddLink which checks both
+// ends of the link (the link is written onto — and here, removed from — the
+// TARGET's thread too). A reporting user could otherwise remove a
+// staff-created link from their own ticket to a ticket they cannot see, even
+// though the ids are already visible via GET /links.
+func TestRemoveLink_ChecksTheTargetTicketToo(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	foreign := foreignTicket(t, h)
+
+	// Seed the link directly through the domain service (as staff would),
+	// bypassing the HTTP visibility gate that would otherwise refuse its own
+	// creation against a ticket the user cannot see.
+	staffActor := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
+	require.NoError(t, h.ticketSvc.AddLink(ctx, own.ID, foreign.ID, ticket.LinkRelatedTo, staffActor))
+
+	res := h.doAsUser(t, http.MethodDelete,
+		"/api/v1/tickets/"+own.ID.String()+"/links/"+foreign.ID.String()+"/related_to", nil)
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusForbidden, res.StatusCode,
+		"removing a link to a ticket the caller cannot read is a write onto that ticket; body %s", b)
+
+	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1, "the link must survive a forbidden removal attempt")
+}
+
+// TestAddLink_ReturnsInvalidLinkTypeWith400 verifies that an invalid link type
+// returns 400 Bad Request, not 500 Internal Server Error.
+func TestAddLink_ReturnsInvalidLinkTypeWith400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": target.ID.String(), "link_type": "invalid_type"})
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, res.StatusCode,
+		"invalid link type must return 400, not 500; body: %s", b)
+
+	var errResp map[string]any
+	json.Unmarshal(b, &errResp)
+	errObj := errResp["error"].(map[string]any)
+	require.Equal(t, "bad_request", errObj["code"])
+
+	// Verify no link was created
+	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
+	require.NoError(t, err)
+	require.Empty(t, links, "no link should exist after invalid type error")
+}
+
+// TestAddLink_SelfLinkReturns400 verifies that linking a ticket to itself
+// returns 400 Bad Request, not 500, for both the plain AddLink path and the
+// resolve-as-duplicate path. See #192.
+func TestAddLink_SelfLinkReturns400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	base := "/api/v1/tickets/" + own.ID.String() + "/links"
+
+	t.Run("plain AddLink", func(t *testing.T) {
+		res := h.doAsUser(t, http.MethodPost, base,
+			map[string]any{"target_id": own.ID.String(), "link_type": "related_to"})
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "self-link must return 400, not 500; body: %s", b)
+
+		var errResp map[string]any
+		json.Unmarshal(b, &errResp)
+		errObj := errResp["error"].(map[string]any)
+		require.Equal(t, "cannot_link_self", errObj["code"])
+	})
+
+	t.Run("resolve-as-duplicate", func(t *testing.T) {
+		res := h.do(t, http.MethodPost, base, map[string]any{
+			"target_id": own.ID.String(), "link_type": "duplicate_of",
+			"resolve_as_duplicate": true, "resolution_notes": "x",
+		})
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "self-link must return 400, not 500; body: %s", b)
+
+		var errResp map[string]any
+		json.Unmarshal(b, &errResp)
+		errObj := errResp["error"].(map[string]any)
+		require.Equal(t, "cannot_link_self", errObj["code"])
+	})
+}
+
+// TestRemoveLink_InvalidLinkTypeReturns400 verifies that DELETE
+// .../links/{targetId}/{linkType} with an unrecognized linkType returns 400
+// rather than silently deleting nothing and answering 204. See #201.
+//
+// Asked as staff, because removing a link is a staff decision: a reporter is
+// refused before the link type is ever looked at, and that refusal is pinned
+// by the subtest below. Authorisation comes first on purpose — telling a
+// caller who may not do this at all whether their input parsed is answering
+// a question they were not entitled to ask.
+//
+// This test used to send the request as a reporting user. It was written
+// against a handler that had no role check on removal, which is the defect
+// the role check fixed; the property it is really about — an unrecognized
+// type must not answer 204 — is unchanged and still asserted here.
+func TestRemoveLink_InvalidLinkTypeReturns400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	res := h.do(t, http.MethodDelete,
+		"/api/v1/tickets/"+own.ID.String()+"/links/"+target.ID.String()+"/not_a_real_type", nil)
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode,
+		"an unrecognized link type must return 400, not silently answer 204; body: %s", b)
+
+	// The other half: a reporter is refused outright. "Duplicate of
+	// GHD-2026-000123" is a staff judgement about the queue, and removal had
+	// no role check at all — so a reporter could undo staff classification on
+	// their own ticket, and could tell a real target id from an invented one
+	// by the difference between 204 and a failure.
+	asUser := h.doAsUser(t, http.MethodDelete,
+		"/api/v1/tickets/"+own.ID.String()+"/links/"+target.ID.String()+"/duplicate_of", nil)
+	ub, _ := io.ReadAll(asUser.Body)
+	asUser.Body.Close()
+	require.Equal(t, http.StatusForbidden, asUser.StatusCode,
+		"a reporter removed a link from their own ticket; body: %s", ub)
+}
+
+// TestAddLink_ReturnsDuplicateLinkWith409 verifies that creating a duplicate link
+// returns 409 Conflict, not 500 Internal Server Error.
+func TestAddLink_ReturnsDuplicateLinkWith409(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	// Create the link the first time
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": target.ID.String(), "link_type": "related_to"})
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "first link creation should succeed")
+
+	// Verify the first link was created successfully
+	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1, "first link should be created")
+
+	// Try to create the same link again
+	res = h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": target.ID.String(), "link_type": "related_to"})
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusConflict, res.StatusCode,
+		"duplicate link must return 409, not 500; body: %s", b)
+
+	var errResp map[string]any
+	json.Unmarshal(b, &errResp)
+	errObj := errResp["error"].(map[string]any)
+	require.Equal(t, "link_already_exists", errObj["code"])
+}
+
 // Staff are the other half of the bug: with scope enforcement on, a staff
 // member outside a ticket's scope must be refused on the subroutes too, not
 // just on GET /{id}.

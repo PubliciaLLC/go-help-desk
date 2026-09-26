@@ -1,9 +1,11 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"testing"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/stretchr/testify/require"
@@ -134,3 +136,79 @@ func TestUpdateSLAPolicy_ClearPriority(t *testing.T) {
 }
 
 func priorityOf(p ticket.Priority) *ticket.Priority { return &p }
+
+// TestDeleteSLAPolicy_InUse_Returns409 pins #261: a policy attached to at
+// least one ticket's SLA record is refused with 409 policy_in_use naming how
+// many tickets depend on it, rather than the 500 that sla_records' ON DELETE
+// RESTRICT foreign key used to surface as. The GET afterward also proves the
+// refusal took the count path and never issued (and aborted on) a failing
+// DELETE inside the shared test transaction.
+func TestDeleteSLAPolicy_InUse_Returns409(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySLAEnabled, true))
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Catch-all",
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var policy sla.Policy
+	decodeJSON(t, createResp, &policy)
+
+	createTicketForSLA(t, h, "First ticket under the policy")
+	createTicketForSLA(t, h, "Second ticket under the policy")
+
+	deleteResp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/sla/policies/"+policy.ID.String(), nil)
+	require.Equal(t, http.StatusConflict, deleteResp.StatusCode)
+	var errBody struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeJSON(t, deleteResp, &errBody)
+	require.Equal(t, "policy_in_use", errBody.Error.Code)
+	require.Contains(t, errBody.Error.Message, "2 ticket(s)")
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/sla/policies", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var list []sla.Policy
+	decodeJSON(t, listResp, &list)
+	var found bool
+	for _, p := range list {
+		if p.ID == policy.ID {
+			found = true
+		}
+	}
+	require.True(t, found, "policy must still be listed after the refused delete")
+}
+
+// TestDeleteSLAPolicy_Unused_Returns204 pins the existing behaviour: a policy
+// with no attached tickets deletes cleanly.
+func TestDeleteSLAPolicy_Unused_Returns204(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySLAEnabled, true))
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/sla/policies", map[string]any{
+		"name":                  "Unused",
+		"response_target_min":   60,
+		"resolution_target_min": 480,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var policy sla.Policy
+	decodeJSON(t, createResp, &policy)
+
+	deleteResp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/sla/policies/"+policy.ID.String(), nil)
+	require.Equal(t, http.StatusNoContent, deleteResp.StatusCode)
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/sla/policies", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var list []sla.Policy
+	decodeJSON(t, listResp, &list)
+	for _, p := range list {
+		require.NotEqual(t, policy.ID, p.ID, "deleted policy must not still be listed")
+	}
+}

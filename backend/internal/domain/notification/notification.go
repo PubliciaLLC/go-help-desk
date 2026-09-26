@@ -55,6 +55,17 @@ type Event struct {
 	// excluded from JSON like the two above — a webhook subscriber receiving
 	// one would hold the customer's access to their own ticket.
 	GuestToken string `json:"-"`
+
+	// Subject and StatusName exist for the webhook chat/ITSM renderers
+	// (internal/server/notify), which need a human-readable line for events
+	// whose Payload carries only ids — ticket.status_changed's Payload is
+	// {"new_status_id": <uuid>}, and "moved to 3f2a..." is useless in a Slack
+	// message. Adding a key to Payload for this would change the raw webhook
+	// body, which is exactly what a "raw" subscription promises not to do,
+	// so these follow the same json:"-" precedent as TrackingNumber above
+	// instead: readable by a dispatcher, invisible on the wire.
+	Subject    string `json:"-"`
+	StatusName string `json:"-"`
 }
 
 // Dispatcher delivers events to whatever sinks are registered.

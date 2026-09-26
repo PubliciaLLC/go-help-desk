@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, SearchIcon } from 'lucide-react'
 import { priorityVariant } from '@/lib/format'
+import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 
 function emptyMessageFor(scope: TicketScope) {
   switch (scope) {
@@ -87,6 +88,10 @@ export function TicketListPage() {
     // Keeping the previous page visible while the next loads stops the table
     // collapsing to empty on every click.
     placeholderData: (previous) => previous,
+    // Re-polls only once this page has actually shown a live SLA status — an
+    // instance with SLA tracking off, or a page of tickets with no matching
+    // policy, never polls for it. See TicketDetailPage for the same choice.
+    refetchInterval: (query) => (query.state.data?.some(t => t.sla != null) ? 60_000 : false),
   })
 
   // A full page means there is probably another. The server returns an array,
@@ -105,6 +110,11 @@ export function TicketListPage() {
     if (statusFilter) list = list.filter(t => t.status_id === statusFilter)
     return list
   }, [allTickets, includeClosed, closedIds, statusFilter])
+
+  // Shown only when at least one row actually has a status to show — an
+  // instance with SLA tracking off, or a reporter whose tickets carry no
+  // policy, sees the same table it saw before this column existed.
+  const showSLAColumn = useMemo(() => tickets.some(t => t.sla != null), [tickets])
 
   function statusFor(id: string) {
     return statuses.find(s => s.id === id)
@@ -314,6 +324,7 @@ export function TicketListPage() {
                   <th className="px-4 py-2 text-left">Subject</th>
                   <th className="px-4 py-2 text-left">Status</th>
                   <th className="px-4 py-2 text-left">Priority</th>
+                  {showSLAColumn && <th className="px-4 py-2 text-left">SLA</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 bg-white">
@@ -357,6 +368,13 @@ export function TicketListPage() {
                           {t.priority}
                         </Badge>
                       </td>
+                      {showSLAColumn && (
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-1.5">
+                            <SLAIndicator sla={t.sla} compact />
+                          </div>
+                        </td>
+                      )}
                     </tr>
                   )
                 })}

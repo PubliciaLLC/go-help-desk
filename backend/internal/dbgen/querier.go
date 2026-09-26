@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"time"
 
 	uuid "github.com/google/uuid"
 )
@@ -103,6 +104,11 @@ type Querier interface {
 	// and setup does not reopen (HasUsers counts every row, deliberately). The
 	// instance was then left with no way in at all short of editing the database.
 	CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error)
+	// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
+	// stamps only mean something against the policy that set them. Counting first
+	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
+	// on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
+	CountSLARecordsByPolicy(ctx context.Context, policyID uuid.UUID) (int64, error)
 	// Rows in ticket_status_history that reference a status, in either direction.
 	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
 	// so a status with zero CURRENT tickets can still be undeletable because a past
@@ -378,8 +384,33 @@ type Querier interface {
 	// LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
 	// where there is genuinely no account behind the message.
 	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRepliesRow, error)
+	// status_id is the Resolved status's id. Without this filter, a row that
+	// satisfies resolved_at < $1 but sits in a different status (a legacy row
+	// moved off Resolved by old code that cleared status_id without clearing
+	// resolved_at, or a Closed ticket with a stale resolved_at) is listed on
+	// every sweep, locked, skipped by stillEligible, and listed again forever —
+	// see #191.
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
+	// Tickets the breach sweep must evaluate: open, under a policy, with at least
+	// one target that is neither met nor already stamped, using the same
+	// pause-aware elapsed time as sla.Elapsed (see that function's doc comment;
+	// the two must change together). LEAST(COALESCE(pending_since, now), now) is
+	// the instant the SLA clock stopped: pending_since while the ticket is
+	// currently Pending, clipped to now the same way Elapsed clips with
+	// at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
+	// elapsed time is still under target is therefore never selected. This
+	// prefilter must still return everything EvaluateBreaches would stamp — it
+	// stays a superset via <=, where Go's strict > decides the exact equality
+	// instant on a fresh read of the row — see
+	// TestSLAStore_ListBreachCandidates's superset invariant check.
+	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error)
+	// Batch lookup for the per-ticket SLA status embedded on GET /tickets and
+	// GET /tickets/{id} (#183): one query for the whole page, after it is
+	// sliced, rather than a JOIN pushed into every one of the ~12 list/search
+	// queries that would compute SLA for limit×(1+groups) rows and throw most
+	// of them away. See sla.Service.StatusesFor.
+	ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
 	ListStatuses(ctx context.Context) ([]Status, error)
 	ListTicketLinks(ctx context.Context, sourceTicketID uuid.UUID) ([]TicketLink, error)
@@ -438,6 +469,67 @@ type Querier interface {
 	// ranking used by the other ticket searches.
 	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
+	// Marks the first response, freezes elapsed-toward-target as of that same
+	// moment, AND stamps a response breach if it is already late — all in ONE
+	// statement. COALESCE-guarded like StampSLABreaches below: it only ever
+	// writes first_response_at / response_elapsed_at_met_seconds /
+	// response_breached_at, and only while each is still NULL, so it cannot race
+	// with StampSLABreaches clobbering a breach stamp the way a full-row
+	// UpdateSLARecord read-then-write could (see CLAUDE.md). Idempotent for the
+	// same reason: a retried call finds every column already set and changes
+	// nothing.
+	//
+	// #228: this used to be the fact write alone, with the caller separately
+	// reading the record, deciding whether to breach from that (possibly stale)
+	// read, and issuing a second StampSLABreaches statement. Two consequences:
+	// two near-simultaneous calls could both decide from a stale pre-write read,
+	// so the LOSING call's own (later, larger) elapsed reading could still land
+	// a breach stamp even though the WINNING call's earlier, on-time write is
+	// what actually took — a stray, uncleared breach stamp next to a frozen
+	// green elapsed reading. And a failure between the fact write and the
+	// now-separate breach-stamp statement could lose a genuine late-response
+	// signal permanently (ListSLABreachCandidates excludes a ticket once
+	// first_response_at is set, so nothing ever revisits it).
+	//
+	// Folding both into one statement removes the gap entirely: every column
+	// reference on the right of "=" reads this row as it stood BEFORE this
+	// statement (a single UPDATE's SET list is computed once, from the pre-image
+	// row, never from another SET clause's new value), so
+	// "first_response_at IS NULL" means "nothing has won this race yet — THIS
+	// call's write is the one that lands, and its own elapsed reading is the one
+	// the breach decision is made from." A losing call (first_response_at
+	// already NOT NULL) touches nothing at all, including response_breached_at,
+	// so it can never stamp a breach the winning call did not itself decide.
+	SetSLAFirstResponse(ctx context.Context, arg SetSLAFirstResponseParams) error
+	// The resolution-side twin of SetSLAFirstResponse: see its comment for why
+	// the fact write and the breach stamp are one statement (#228), and why
+	// every right-hand-side column reference here reads the PRE-UPDATE row.
+	SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) error
+	// #233: RecordResolved's own fold of TWO facts into one statement, the same
+	// way #228 folded each fact with its own breach decision. Before this,
+	// RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
+	// separate statements (the #219 "a resolution is a response too" backfill).
+	// A failure between them left resolved_at set and first_response_at
+	// permanently NULL: RecordResolved's own fast no-op guard (resolved_at
+	// already set) blocks any later call from ever retrying the second write,
+	// and ListSLABreachCandidates' first_response_at IS NULL branch keeps
+	// selecting the row on every sweep tick, which then stamps a PERMANENT false
+	// response_breached_at. One statement makes that intermediate state
+	// impossible: both writes commit together, in the same row version, or
+	// neither does.
+	//
+	// Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
+	// SetSLAResolved, applied to both column pairs independently: each pair's
+	// CASE reads only ITS OWN pre-image column (resolution_breached_at's
+	// condition reads resolved_at; response_breached_at's reads
+	// first_response_at), so a ticket that already has a genuine EARLIER
+	// first_response_at (a real staff reply before the resolution) keeps it —
+	// and its own already-decided response_breached_at — completely untouched;
+	// only the resolution pair is written for it. This is exactly
+	// RecordResolved's existing "SetFirstResponse's own COALESCE guard already
+	// makes this the correct no-op" reasoning, now inside one statement instead
+	// of two.
+	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	// Writes only the TOTP secret and whether it is enabled. Same reason: the
 	// enrolment confirmation read the whole row, checked a code, and wrote every
@@ -468,6 +560,11 @@ type Querier interface {
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
 	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Sets only the breach columns, and only where still NULL. Two evaluators
+	// racing on the same row cannot overwrite each other's stamp or, worse, the
+	// request path's first_response_at / resolved_at. A stamp, once set, is a
+	// fact about what happened (DESIGN.md) and is never cleared here.
+	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error
 	// What a federated login is allowed to change about an account it recognises:
 	// the address, the name, and nothing else.
 	//

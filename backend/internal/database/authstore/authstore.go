@@ -142,16 +142,35 @@ type WebhookConfig struct {
 	Secret    string    `json:"-"`
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// PayloadFormat is one of notify.Formats: "raw" (default; today's full
+	// event payload) or a chat/ITSM shape ("slack", "teams", "discord",
+	// "jira"). Not typed as notify.Format here — that would make this package
+	// import notify, and the dependency runs the other way (notify's
+	// WebhookDispatcher reads this store).
+	PayloadFormat string `json:"payload_format"`
 }
 
+// defaultPayloadFormat is "raw": the column is NOT NULL with no useful
+// zero value, and the Go zero value for WebhookConfig.PayloadFormat is "" —
+// which the CHECK constraint rejects outright. Defaulting it here, not only
+// in the admin handler, means any caller that predates this field (existing
+// tests included) keeps working without having to learn about it.
+const defaultPayloadFormat = "raw"
+
 func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
+	format := wh.PayloadFormat
+	if format == "" {
+		format = defaultPayloadFormat
+	}
 	return s.q.CreateWebhookConfig(ctx, dbgen.CreateWebhookConfigParams{
-		ID:        wh.ID,
-		Url:       wh.URL,
-		Events:    wh.Events,
-		Secret:    wh.Secret,
-		Enabled:   wh.Enabled,
-		CreatedAt: wh.CreatedAt,
+		ID:            wh.ID,
+		Url:           wh.URL,
+		Events:        wh.Events,
+		Secret:        wh.Secret,
+		Enabled:       wh.Enabled,
+		CreatedAt:     wh.CreatedAt,
+		PayloadFormat: format,
 	})
 }
 
@@ -160,16 +179,21 @@ func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, er
 	if err != nil {
 		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
 	}
-	return WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt}, nil
+	return WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}, nil
 }
 
 func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
+	format := wh.PayloadFormat
+	if format == "" {
+		format = defaultPayloadFormat
+	}
 	return s.q.UpdateWebhookConfig(ctx, dbgen.UpdateWebhookConfigParams{
-		ID:      wh.ID,
-		Url:     wh.URL,
-		Events:  wh.Events,
-		Secret:  wh.Secret,
-		Enabled: wh.Enabled,
+		ID:            wh.ID,
+		Url:           wh.URL,
+		Events:        wh.Events,
+		Secret:        wh.Secret,
+		Enabled:       wh.Enabled,
+		PayloadFormat: format,
 	})
 }
 
@@ -184,7 +208,7 @@ func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt}
+		out[i] = WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
 	}
 	return out, nil
 }

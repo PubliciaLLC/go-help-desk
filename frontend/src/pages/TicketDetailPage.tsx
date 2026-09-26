@@ -15,6 +15,7 @@ import {
 } from '@/api/tickets'
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
+import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
@@ -32,6 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { Group, StatusHistoryEntry, TicketFieldValue } from '@/api/types'
 import { priorityVariant } from '@/lib/format'
+import { SLAIndicator } from '@/components/ticket/SLAIndicator'
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleString()
@@ -335,6 +337,12 @@ export function TicketDetailPage() {
   const { data: ticket, isLoading, error } = useQuery({
     queryKey: ['ticket', id],
     queryFn: () => getTicket(id),
+    // The server computes SLA status at fetch time; re-polling is simpler
+    // and less error-prone than re-deriving color against a ticking clock in
+    // the browser. 60s is finer than the 80% band of any realistic target,
+    // and only runs at all once this ticket has actually shown a status —
+    // an instance with SLA off never polls for it.
+    refetchInterval: (query) => (query.state.data?.sla != null ? 60_000 : false),
   })
 
   const { data: replies = [] } = useQuery({
@@ -461,6 +469,7 @@ export function TicketDetailPage() {
               <Badge variant={priorityVariant(ticket.priority) as never}>
                 {ticket.priority}
               </Badge>
+              <SLAIndicator sla={ticket.sla} />
             </div>
           </div>
 
@@ -648,6 +657,8 @@ export function TicketDetailPage() {
                 {isStaffOrAdmin && <TagInput ticketId={id} readonly={false} />}
               </CardContent>
             </Card>
+
+            {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
 
             {attachments.length > 0 && (
               <Card>

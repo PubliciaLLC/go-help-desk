@@ -46,6 +46,15 @@ const (
 	StatusNameNew      = "New"
 	StatusNameResolved = "Resolved"
 	StatusNameClosed   = "Closed"
+
+	// StatusNamePending is a seeded *custom* status (migration 000001), not a
+	// system one, so there is no cached ID for it the way there is for the
+	// three above. It is identified by name, matching how
+	// lifecycleAllowsReply already compares Resolved/Closed. Known
+	// consequence, accepted: an admin who renames the status stops future
+	// SLA pauses (see sla.Elapsed and applyStatusTimestamps). Documented in
+	// DESIGN.md → SLA Tracking → Timer Mechanics (#263).
+	StatusNamePending = "Pending"
 )
 
 // Status represents a ticket state. System statuses have special lifecycle
@@ -85,11 +94,9 @@ const (
 	LinkDuplicateOf LinkType = "duplicate_of"
 )
 
-// Valid reports whether this is one of the four link types the column accepts.
-//
-// Checked in the service rather than left to the database's own constraint: a
-// bad value came back as a check violation, which the handler could only
-// render as 500 — an internal error, for a word the caller typed.
+// Valid reports whether lt is one of the four link types. The database enforces the
+// same set with a CHECK constraint; this lets a caller reject a bad value with
+// a useful message instead of a constraint violation.
 func (lt LinkType) Valid() bool {
 	switch lt {
 	case LinkRelatedTo, LinkParentChild, LinkCausedBy, LinkDuplicateOf:
@@ -134,6 +141,13 @@ type Ticket struct {
 	ClosedAt        *time.Time     `json:"closed_at,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
+
+	// PendingSince is when the ticket entered its current Pending interval; nil
+	// when it is not Pending. SLAPausedSeconds is the sum of every Pending
+	// interval that has already closed. Both are maintained by
+	// applyStatusTimestamps and read by sla.Elapsed; nothing else writes them.
+	PendingSince     *time.Time `json:"pending_since,omitempty"`
+	SLAPausedSeconds int64      `json:"sla_paused_seconds"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the
@@ -497,6 +511,61 @@ var (
 	// expired is the window, and telling them "you do not have permission"
 	// sends them to an administrator for something no administrator can grant.
 	ErrReopenWindowClosed = errors.New("the reopen window for this ticket has closed")
+	ErrInvalidLinkType    = errors.New("invalid link type")
+	ErrLinkAlreadyExists  = errors.New("link already exists")
+	// ErrSelfLink is bad input, not a fault — wrapped like ErrInvalidLinkType
+	// so the HTTP layer maps it to 400 instead of falling through to 500. See
+	// #192: AddLink and ResolveAsDuplicate both used to refuse a self-link
+	// with a bare fmt.Errorf, which handleError has nothing to recognise.
+	ErrSelfLink = errors.New("cannot link a ticket to itself")
+	// ErrSystemStatusImmutable is returned by SaveStatus and RemoveStatus when
+	// asked to rename or delete a system status (New, Resolved, Closed).
+	// System statuses are found by name at startup (LoadSystemStatuses) and
+	// compared by name in lifecycle rules, so either operation reaching the
+	// store would reintroduce the restart-crash hazard #263 closed. Wrapped
+	// rather than returned bare — like ErrSelfLink and ErrPolicyInUse in the
+	// sla package — so handleError maps it to a clean refusal instead of
+	// falling through to 500. The HTTP handler (handleUpdateStatus) has no
+	// inline rename check of its own: #269 removed it in favor of relying
+	// entirely on this refusal. (handleUpdateStatus does still check Active
+	// inline before a system status ever reaches SaveStatus, which is why a
+	// request that both renames and deactivates a system status is refused
+	// for the deactivate, not the rename — see #272.) RemoveStatus's delete
+	// refusal was never duplicated at the handler either.
+	ErrSystemStatusImmutable = errors.New("system status is immutable")
+	// ErrStatusNotFound is returned by getStatusByID (and so by SaveStatus and
+	// RemoveStatus) when no status matches the given ID — a nonexistent or
+	// already-deleted id, most commonly. Wrapped for the same reason
+	// ErrSystemStatusImmutable is: the bare error it replaces reached
+	// handleError unrecognized and came back as a 500, though the fault was
+	// in the request, not the server. See #273.
+	ErrStatusNotFound = errors.New("status not found")
+	// ErrStatusInUse is returned by RemoveStatus when a custom status cannot
+	// be hard-deleted: either a ticket currently has this status, or a past
+	// ticket_status_history entry references it (the table has no ON DELETE
+	// action on that foreign key, so a zero current-count status can still
+	// fail the DELETE). Wrapped for the same reason ErrSystemStatusImmutable
+	// and ErrStatusNotFound are: both refusals used to be bare fmt.Errorf,
+	// reaching handleError unrecognized and coming back as a 500 for an
+	// ordinary, expected refusal. See #275 (found four review rounds into
+	// #264, the same pass that added the two sentinels above it). 409, not
+	// 403 or 404: this is the sla.ErrPolicyInUse shape — a conflicting state
+	// the caller can resolve by deactivating instead, not a permissions or
+	// existence problem.
+	ErrStatusInUse = errors.New("status is in use")
+	// ErrStatusNameTaken is returned by AddStatus and SaveStatus when the
+	// requested name collides with another status's: statuses.name is TEXT NOT
+	// NULL UNIQUE (statuses_name_key), and until now nothing checked that
+	// ahead of the write, so the constraint violation reached handleError
+	// unrecognized and came back as a 500 for an admin typing a name that
+	// already exists (e.g. "In Progress") — the same shape as
+	// ErrLinkAlreadyExists (#195) and sla.ErrPolicyInUse, wrapped for the same
+	// reason. See #278.
+	ErrStatusNameTaken = errors.New("a status with this name already exists")
+	// ErrInvalidStatusName is returned by AddStatus and SaveStatus when the
+	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
+	// empty name was silently accepted before this check existed. See #278.
+	ErrInvalidStatusName = errors.New("status name must not be empty")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.
@@ -596,6 +665,12 @@ func CanTransitionStatus(to Status, role user.Role) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+// DuplicateResolutionNotes is the default resolution note for a ticket
+// resolved as a duplicate.
+func DuplicateResolutionNotes(targetTrackingNumber TrackingNumber) string {
+	return "Duplicate of " + string(targetTrackingNumber)
 }
 
 // VisibleReplies drops internal notes for a caller who is not staff.

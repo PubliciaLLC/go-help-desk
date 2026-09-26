@@ -1,6 +1,7 @@
 package ticket
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -51,11 +52,17 @@ type Service struct {
 	sys *systemStatuses
 }
 
-// SLAService is the narrow interface the ticket service needs from the SLA layer.
+// SLAService is the narrow interface the ticket service needs from the SLA
+// layer. RecordFirstResponse and RecordResolved take the full ticket, not
+// just its id: the SLA layer freezes elapsed-toward-target as of this exact
+// moment (see sla.Service.RecordFirstResponse), which needs CreatedAt,
+// SLAPausedSeconds and PendingSince as they stood right now — not whatever
+// they read back on a second trip to the store, by which time a pause
+// interval could have opened or closed.
 type SLAService interface {
 	AttachPolicy(ctx context.Context, t Ticket) error
-	RecordFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time) error
-	RecordResolved(ctx context.Context, ticketID uuid.UUID, at time.Time) error
+	RecordFirstResponse(ctx context.Context, t Ticket, at time.Time) error
+	RecordResolved(ctx context.Context, t Ticket, at time.Time) error
 }
 
 // NewService constructs a Service. Call LoadSystemStatuses before use.
@@ -319,6 +326,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		TrackingNumber: emailTracking,
 		Recipient:      emailRecipient,
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -326,14 +334,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 
 // UpdateStatus changes the ticket status after verifying the actor has
 // permission to make that transition.
-// applyStatusTimestamps keeps resolved_at and closed_at consistent with the
-// status a ticket is being moved to.
+// applyStatusTimestamps keeps resolved_at, closed_at and the SLA pause fields
+// consistent with the status a ticket is being moved to.
 //
 // Pure and taking the cached system statuses explicitly so the rule lives in
-// one place rather than being re-derived at each of the four call sites that
-// change a status.
-func applyStatusTimestamps(t *Ticket, oldStatusID, newStatusID uuid.UUID, sys *systemStatuses, now time.Time) {
-	switch newStatusID {
+// one place rather than being re-derived at each of the five call sites that
+// change a status. Called by every door that changes a status, inside its
+// transaction, on the locked row.
+func applyStatusTimestamps(t *Ticket, oldStatusID uuid.UUID, newStatus Status, sys *systemStatuses, now time.Time) {
+	switch newStatus.ID {
 	case sys.resolvedID:
 		// Preserve the timestamp only when the ticket is ALREADY Resolved, so
 		// re-resolving does not silently extend the reopen window. A ticket
@@ -356,6 +365,41 @@ func applyStatusTimestamps(t *Ticket, oldStatusID, newStatusID uuid.UUID, sys *s
 		t.ResolvedAt = nil
 		t.ClosedAt = nil
 	}
+
+	// SLA pause. Decided from the ROW, not from oldStatusID: t.PendingSince
+	// being set is the fact that an interval is open, so Pending→Pending is a
+	// no-op, leaving Pending by any door closes the interval, and a status
+	// renamed away from "Pending" still closes the interval it opened.
+	entering := newStatus.Name == StatusNamePending
+	switch {
+	case entering && t.PendingSince == nil:
+		t.PendingSince = &now
+	case !entering && t.PendingSince != nil:
+		// Clamped at zero: PendingSince may have been written by a different
+		// app replica than the one computing now. With clock skew between
+		// them, entering Pending on a fast-clocked replica and leaving on a
+		// slow-clocked one within the skew window makes the delta negative,
+		// which migration 000025's CHECK (sla_paused_seconds >= 0) rejects —
+		// failing whichever door is leaving Pending (UpdateStatus,
+		// reply-reopen, resolve, close) with a 500 until the skew elapses.
+		// See #223.
+		if delta := now.Sub(*t.PendingSince); delta > 0 {
+			t.SLAPausedSeconds += int64(delta / time.Second)
+		}
+		t.PendingSince = nil
+	}
+}
+
+// resolutionInstant is the instant a resolution should be recorded against
+// for SLA purposes: the ticket's own ResolvedAt when it already has one
+// (applyStatusTimestamps' closedID case never sets or clears it, so it holds
+// whatever it held when the ticket entered — or last sat in — Resolved), and
+// now only when the ticket has genuinely never been resolved. See #227.
+func resolutionInstant(t Ticket, now time.Time) time.Time {
+	if t.ResolvedAt != nil {
+		return *t.ResolvedAt
+	}
+	return now
 }
 
 func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.UUID, actor Actor) (Ticket, error) {
@@ -401,7 +445,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		oldStatusID = t.StatusID
 		t.StatusID = newStatusID
 		t.UpdatedAt = now
-		applyStatusTimestamps(&t, oldStatusID, newStatusID, s.sys, now)
+		applyStatusTimestamps(&t, oldStatusID, newStatus, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("updating ticket status: %w", err)
@@ -444,7 +488,33 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		// describes. Discarded here rather than logged because domain code
 		// does not log — cmd/server wraps the SLA service so the boundary
 		// reports these, which is where a failure can actually be seen.
-		_ = s.sla.RecordResolved(ctx, t.ID, now)
+		//
+		// #234: resolutionInstant, not a bare now — a genuine re-resolve
+		// through this door (#225) preserves t.ResolvedAt at its ORIGINAL
+		// instant (applyStatusTimestamps never moves it forward), but
+		// RecordResolved's own no-op guard only fires once sla_records
+		// already has a resolution — if an earlier call was dropped (a
+		// pre-#216 toggle gap, or a transient failure) this is the repair
+		// path, and it must stamp the real original instant, not this later
+		// re-resolve's now. See the identical reasoning on the Closed door
+		// just below.
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
+	}
+	// The other door into Closed. Same #220 reasoning as close(): a ticket
+	// moved straight to Closed here without ever resolving would otherwise
+	// carry a NULL sla_records.resolved_at forever. RecordResolved no-ops
+	// when a resolution is already recorded, so this is a no-op on the
+	// ordinary Resolved-then-Closed path.
+	//
+	// #227: resolutionInstant, not a bare now — applyStatusTimestamps' closedID
+	// case never touches ResolvedAt, so t.ResolvedAt already holds the real
+	// resolution instant whenever one exists (e.g. an earlier RecordResolved
+	// call that failed non-fatally, or was dropped by the pre-#216 toggle
+	// bug). Stamping breaches against the LATER close instant instead can
+	// manufacture a false breach on a ticket that was actually resolved on
+	// time.
+	if s.sla != nil && newStatusID == s.sys.closedID {
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -456,6 +526,8 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestNotifyTarget(t, closing),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
+		StatusName:     newStatus.Name,
 	})
 
 	return t, nil
@@ -521,10 +593,12 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketAssigned,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		OccurredAt: time.Now(),
+		Type:           notification.EventTicketAssigned,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     time.Now(),
+		TrackingNumber: string(t.TrackingNumber),
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -610,6 +684,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// Auto-reopen: user reply to a Resolved ticket within the window.
 	reopened := actor.Role == user.RoleUser && currentStatus.Name == StatusNameResolved
 	oldStatusID := t.StatusID
+	var target Status
 	if reopened {
 		// An unresolvable configured status arrives here as uuid.Nil. Left
 		// alone it reached the status_id foreign key, rolled the transaction
@@ -618,6 +693,13 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		// the write and says what is actually wrong.
 		if reopenTargetStatusID == uuid.Nil {
 			return Reply{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
+		}
+		// Fetched once, up front: the reopen target can be Pending (any
+		// active non-system status), and applyStatusTimestamps needs its
+		// Name, not just its ID.
+		target, err = s.getStatusByID(ctx, reopenTargetStatusID)
+		if err != nil {
+			return Reply{}, err
 		}
 		t.StatusID = reopenTargetStatusID
 		t.ResolvedAt = nil
@@ -695,7 +777,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		// Through the shared rule, so this door agrees with the others about
 		// resolved_at and closed_at rather than clearing one and forgetting
 		// the other.
-		applyStatusTimestamps(&locked, oldStatusID, reopenTargetStatusID, s.sys, t.UpdatedAt)
+		applyStatusTimestamps(&locked, oldStatusID, target, s.sys, t.UpdatedAt)
 		t = locked
 
 		if err := st.Update(ctx, t); err != nil {
@@ -713,10 +795,12 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// email for a transition that did not happen.
 	if reopened {
 		_ = s.dispatcher.Dispatch(ctx, notification.Event{
-			Type:       notification.EventTicketReopened,
-			TicketID:   t.ID,
-			ActorID:    actor.UserID,
-			OccurredAt: time.Now(),
+			Type:           notification.EventTicketReopened,
+			TicketID:       t.ID,
+			ActorID:        actor.UserID,
+			OccurredAt:     time.Now(),
+			TrackingNumber: string(t.TrackingNumber),
+			Subject:        t.Subject,
 		})
 	}
 
@@ -724,8 +808,15 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// is already persisted and this is a metric, not the user's intent, so an
 	// SLA outage must not fail a reply that succeeded. Unlike the reopen above,
 	// nothing is announced on the strength of this write.
-	if s.sla != nil && actor.Role != user.RoleUser {
-		_ = s.sla.RecordFirstResponse(ctx, ticketID, reply.CreatedAt)
+	//
+	// !internal: DESIGN.md defines the response target as "first staff
+	// reply", and this codebase already distinguishes internal notes from
+	// customer-visible replies everywhere else (VisibleReplies, webhook/email
+	// suppression of internal-note content). A staff-to-staff note the
+	// customer never sees must not freeze the response target as met. See
+	// #221.
+	if s.sla != nil && actor.Role != user.RoleUser && !internal {
+		_ = s.sla.RecordFirstResponse(ctx, t, reply.CreatedAt)
 	}
 
 	// Dispatch reply event. reporter_email is only populated when notifyCustomer
@@ -744,6 +835,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      reporterEmail,
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address
@@ -773,51 +865,104 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	return reply, nil
 }
 
+// resolutionNotesMatch reports whether notes is exactly what a ticket already
+// has recorded as its resolution notes. A nil stored value (a ticket moved to
+// Resolved through a door other than Resolve/ResolveAsDuplicate — UpdateStatus
+// never touches ResolutionNotes) never matches, so the first call through this
+// door always writes, however coincidentally.
+func resolutionNotesMatch(stored *string, notes string) bool {
+	return stored != nil && *stored == notes
+}
+
+// resolveInTx is the transactional body of Resolve, extracted so ResolveAsDuplicate
+// can reuse it. It transitions the ticket to Resolved, records resolution notes,
+// and performs all the necessary updates in one transaction.
+// Returns the updated ticket and the new guest token.
+//
+// The returned bool is true when the call was a true no-op: the ticket was
+// already Resolved AND notes (and, via sameTarget, whatever else the caller
+// considers part of "what's already stored") match what is already recorded.
+// A double-submit (e.g. a stale second browser tab) landing on an
+// already-resolved ticket with the SAME notes must not re-run the resolve
+// side effects — a second status-history row, a second audit entry, another
+// guest-token rotation invalidating the link just emailed, and another
+// EventTicketResolved dispatch. Checked under the same FOR UPDATE lock as
+// the mutation itself, so two concurrent resolves cannot both pass it.
+// Same pattern as close()'s alreadyClosed guard. See #209.
+//
+// Before #225's fix, this short-circuited on t.StatusID alone, so a
+// LEGITIMATE re-resolve with genuinely different notes was silently dropped:
+// 200 response, stale notes, no re-recorded resolution. Notes now have to
+// match too, or this proceeds as a real re-resolve — updating
+// ResolutionNotes and re-running the side effects — while still preserving
+// the original resolved_at via applyStatusTimestamps' existing rule.
+//
+// sameTarget lets ResolveAsDuplicate fold its own "the link already points
+// where this call asked" check into the same no-op decision: Resolve has no
+// notion of a target and always passes true, so its no-op decision rests on
+// notes alone. See #225's scope note on ResolveAsDuplicate.
+func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ticketID uuid.UUID, notes string, actor Actor, now time.Time, sameTarget bool) (Ticket, string, bool, error) {
+	t, err := st.GetByIDForUpdate(ctx, ticketID)
+	if err != nil {
+		return Ticket{}, "", false, err
+	}
+	if t.StatusID == s.sys.resolvedID && sameTarget && resolutionNotesMatch(t.ResolutionNotes, notes) {
+		return t, "", true, nil
+	}
+	before := ticketMap(t)
+	oldStatusID := t.StatusID
+	t.StatusID = s.sys.resolvedID
+	t.ResolutionNotes = &notes
+	t.UpdatedAt = now
+	// Through the shared rule, not by hand. Setting ResolvedAt directly
+	// here was how this door came to disagree with UpdateStatus: it
+	// restarted the reopen window on a re-resolve, and resolving a CLOSED
+	// ticket left closed_at set on an open ticket, which hides it from the
+	// auto-close query forever.
+	applyStatusTimestamps(&t, oldStatusID, s.sys.resolved, s.sys, now)
+
+	if err := st.Update(ctx, t); err != nil {
+		return Ticket{}, "", false, fmt.Errorf("resolving ticket: %w", err)
+	}
+	if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
+		return Ticket{}, "", false, fmt.Errorf("recording resolution: %w", err)
+	}
+	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
+		return Ticket{}, "", false, fmt.Errorf("auditing resolution: %w", err)
+	}
+	// Rotate: the guest is told, and the link they are told with is the
+	// one they need to reopen inside the window.
+	guestToken, err := rotateGuestToken(ctx, st, t)
+	if err != nil {
+		return Ticket{}, "", false, err
+	}
+	return t, guestToken, false, nil
+}
+
 // Resolve transitions a ticket to Resolved and records resolution notes.
 func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string, actor Actor) (Ticket, error) {
 	if err := CanTransitionStatus(s.sys.resolved, actor.Role); err != nil {
 		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
 	}
 	var t Ticket
-	var before map[string]any
-	var oldStatusID uuid.UUID
 	var guestToken string
+	var alreadyResolved bool
 	now := time.Now()
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		var err error
-		t, err = st.GetByIDForUpdate(ctx, ticketID)
-		if err != nil {
-			return err
-		}
-		before = ticketMap(t)
-		oldStatusID = t.StatusID
-		t.StatusID = s.sys.resolvedID
-		t.ResolutionNotes = &notes
-		t.UpdatedAt = now
-		// Through the shared rule, not by hand. Setting ResolvedAt directly
-		// here was how this door came to disagree with UpdateStatus: it
-		// restarted the reopen window on a re-resolve, and resolving a CLOSED
-		// ticket left closed_at set on an open ticket, which hides it from the
-		// auto-close query forever.
-		applyStatusTimestamps(&t, oldStatusID, s.sys.resolvedID, s.sys, now)
-
-		if err := st.Update(ctx, t); err != nil {
-			return fmt.Errorf("resolving ticket: %w", err)
-		}
-		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
-			return fmt.Errorf("recording resolution: %w", err)
-		}
-		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
-			return fmt.Errorf("auditing resolution: %w", err)
-		}
-		// Rotate: the guest is told, and the link they are told with is the
-		// one they need to reopen inside the window.
-		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
-			return err
-		}
-		return nil
+		// Resolve has no target of its own, so its no-op decision rests on
+		// notes alone — sameTarget is unconditionally true.
+		t, guestToken, alreadyResolved, err = s.resolveInTx(ctx, st, au, ticketID, notes, actor, now, true)
+		return err
 	}); err != nil {
 		return Ticket{}, err
+	}
+
+	// True double-submit (e.g. a stale second tab): identical notes against
+	// an already-resolved ticket, so the resolve side effects already
+	// happened once. See #209 and #225.
+	if alreadyResolved {
+		return t, nil
 	}
 
 	// After the commit, like the dispatch below: an SLA record stamped for a
@@ -827,7 +972,13 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	if s.sla != nil {
 		// See UpdateStatus: non-fatal, and reported by the boundary wrapper in
 		// cmd/server rather than logged from the domain.
-		_ = s.sla.RecordResolved(ctx, t.ID, now)
+		//
+		// #234: resolutionInstant, not a bare now — see the comment on the
+		// equivalent call in UpdateStatus. alreadyResolved above already
+		// returned early for a true double-submit; a re-resolve that reaches
+		// here (different notes, per #225) still resolved at t.ResolvedAt's
+		// original instant, not this call's now.
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -838,6 +989,170 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
+	})
+
+	return t, nil
+}
+
+// ResolveAsDuplicate creates a duplicate_of link and resolves the source ticket
+// in one atomic transaction. It combines the link creation with the resolution,
+// ensuring both succeed or both fail together.
+func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uuid.UUID, notes string, actor Actor) (Ticket, error) {
+	if err := CanTransitionStatus(s.sys.resolved, actor.Role); err != nil {
+		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
+	}
+	if sourceID == targetID {
+		return Ticket{}, fmt.Errorf("cannot resolve as duplicate: %w", ErrSelfLink)
+	}
+
+	var t Ticket
+	var guestToken string
+	var alreadyResolved bool
+	var alreadyLinked bool
+	now := time.Now()
+
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// Lock both ticket rows FOR UPDATE up front, always in the same order
+		// regardless of which is source and which is target.
+		//
+		// Without this, two opposite-direction calls on the same pair (A
+		// dup-of B, and concurrently B dup-of A) deadlock (#196): CreateLink's
+		// FK check takes a FOR KEY SHARE lock on both referenced rows, and
+		// resolveInTx's GetByIDForUpdate later takes FOR UPDATE on the source.
+		// Call 1 ends up holding KEY SHARE on {A,B} and waiting for FOR UPDATE
+		// on A, while call 2 holds KEY SHARE on {B,A} and waits for FOR
+		// UPDATE on B — a cycle Postgres has to abort with 40P01. Taking a
+		// FOR UPDATE lock on both rows here first, in a fixed order (the
+		// lexicographically smaller id first), means both calls queue behind
+		// the same single row instead of forming a cycle: whichever call gets
+		// there first holds both locks by the time it reaches CreateLink and
+		// resolveInTx, and the second call simply waits for the whole first
+		// transaction to finish.
+		first, second := sourceID, targetID
+		if bytes.Compare(second[:], first[:]) < 0 {
+			first, second = second, first
+		}
+		lockedFirst, err := st.GetByIDForUpdate(ctx, first)
+		if err != nil {
+			return err
+		}
+		lockedSecond, err := st.GetByIDForUpdate(ctx, second)
+		if err != nil {
+			return err
+		}
+		target := lockedFirst
+		if target.ID != targetID {
+			target = lockedSecond
+		}
+
+		// Apply default notes if empty.
+		if strings.TrimSpace(notes) == "" {
+			notes = DuplicateResolutionNotes(target.TrackingNumber)
+		}
+
+		// Check for the exact link before inserting, rather than attempting the
+		// insert and catching ErrLinkAlreadyExists: Postgres marks the whole
+		// transaction aborted the instant one statement fails a constraint, so
+		// catching that error in Go and carrying on does not work here — every
+		// statement after it (resolveInTx's own reads and writes) would fail
+		// with "current transaction is aborted" (25P02), turning the intended
+		// 200 into a 500. A plain existence check has no such cost, and it is
+		// race-safe here specifically because the FOR UPDATE locks taken above
+		// already cover both sourceID and targetID: CreateLink's FK check
+		// requires a FOR KEY SHARE lock on each referenced row, which
+		// conflicts with the FOR UPDATE this transaction already holds, so no
+		// concurrent link insert on this exact pair can land between this
+		// check and this transaction's commit.
+		existingLinks, err := st.ListLinks(ctx, sourceID)
+		if err != nil {
+			return fmt.Errorf("checking for an existing duplicate link: %w", err)
+		}
+		for _, l := range existingLinks {
+			if l.TargetTicketID == targetID && l.LinkType == LinkDuplicateOf {
+				alreadyLinked = true
+				break
+			}
+		}
+		if !alreadyLinked {
+			// The identical duplicate_of link not existing yet is the normal
+			// case; when it does, it is satisfied, not a conflict (#194).
+			// Staff may have linked the two tickets earlier without checking
+			// "resolve as duplicate", and later want to resolve — aborting
+			// the whole transaction over a link that already says exactly
+			// what this call asked for left the ticket stuck unresolved for
+			// no reason. A same-pair link of a DIFFERENT type does not match
+			// this check, so it is created normally alongside the new one,
+			// with no special-casing needed.
+			link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: LinkDuplicateOf}
+			if err := st.CreateLink(ctx, link); err != nil {
+				return fmt.Errorf("creating duplicate link: %w", err)
+			}
+		}
+
+		// Resolve the source ticket. Link creation above is already
+		// idempotent-satisfied (#194) regardless of the ticket's resolved
+		// state, so it always runs; resolveInTx itself is the one that skips
+		// the resolve side effects on a double-submit. See #209.
+		//
+		// sameTarget: alreadyLinked. #225's narrower no-op guard requires the
+		// TARGET to match what's already stored, not just the notes text —
+		// two custom-notes calls that happen to use identical wording but
+		// name a DIFFERENT target must not be treated as a no-op merely
+		// because the strings match; alreadyLinked (a new link was NOT just
+		// created) is exactly "this call's target is the one already on
+		// record."
+		var txErr error
+		t, guestToken, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, sourceID, notes, actor, now, alreadyLinked)
+		return txErr
+	}); err != nil {
+		return Ticket{}, err
+	}
+
+	// #229: no new link was created when alreadyLinked is true, so there is
+	// nothing new to announce — AddLink (or an earlier ResolveAsDuplicate
+	// call) already dispatched EventTicketLinked for this exact pair.
+	// Dispatching it again here on every repeat call, including a genuine
+	// double-submit, reported the same link as freshly made every time.
+	if !alreadyLinked {
+		// t is the source ticket (resolveInTx returns the row it just
+		// resolved), so its Subject and TrackingNumber describe sourceID, the
+		// ticket TicketID names here.
+		_ = s.dispatcher.Dispatch(ctx, notification.Event{
+			Type:           notification.EventTicketLinked,
+			TicketID:       sourceID,
+			ActorID:        actor.UserID,
+			Payload:        map[string]any{"target_id": targetID, "link_type": LinkDuplicateOf},
+			OccurredAt:     now,
+			TrackingNumber: string(t.TrackingNumber),
+			Subject:        t.Subject,
+		})
+	}
+
+	// True double-submit (e.g. a stale second tab): identical notes against
+	// the same already-linked target, so the resolve side effects already
+	// happened once. See #209 and #225.
+	if alreadyResolved {
+		return t, nil
+	}
+
+	// After the commit, dispatch events and record SLA, as Resolve does.
+	//
+	// #234: resolutionInstant, not a bare now — same reasoning as Resolve and
+	// UpdateStatus.
+	if s.sla != nil {
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
+	}
+
+	_ = s.dispatcher.Dispatch(ctx, notification.Event{
+		Type:           notification.EventTicketResolved,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     now,
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 
 	return t, nil
@@ -846,7 +1161,6 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 // Close transitions a ticket to Closed. Used by the auto-close scheduler and
 // admin overrides. It does NOT call CanTransitionStatus — the caller decides
 // whether this is authorised.
-// Close closes a ticket.
 //
 // It deliberately does NOT consult CanTransitionStatus: the auto-close
 // scheduler has no actor, and the authorisation decision belongs to the
@@ -860,8 +1174,46 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 // close showed as "System" in the timeline and wrote no audit entry at all,
 // while DESIGN.md requires history to name whoever made the change.
 func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
+	_, err := s.close(ctx, ticketID, actor, nil)
+	return err
+}
+
+// AutoClose closes every ticket whose Resolved state has outlived the reopen
+// window, attributed to SystemActor. One page per call; rows that close or
+// are reopened both fall out of the query, so the next call continues.
+// Returns the number closed and the joined per-ticket errors; a failure on
+// one ticket does not stop the others.
+func (s *Service) AutoClose(ctx context.Context, reopenWindowDays, limit int) (int, error) {
+	cutoff := time.Now().AddDate(0, 0, -reopenWindowDays)
+	candidates, err := s.store.ListResolvedBefore(ctx, cutoff, s.sys.resolvedID, limit)
+	if err != nil {
+		return 0, fmt.Errorf("listing tickets to auto-close: %w", err)
+	}
+	stillEligible := func(t Ticket) bool {
+		return t.StatusID == s.sys.resolvedID && t.ResolvedAt != nil && t.ResolvedAt.Before(cutoff)
+	}
+	var closed int
+	var errs []error
+	for _, c := range candidates {
+		n, err := s.close(ctx, c.ID, SystemActor, stillEligible)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("auto-closing %s: %w", c.TrackingNumber, err))
+			continue
+		}
+		closed += n
+	}
+	return closed, errors.Join(errs...)
+}
+
+// close is Close's body. eligible, when non-nil, is re-evaluated on the row
+// read under FOR UPDATE; a ticket that no longer qualifies is left untouched:
+// no write, no history row, no notification. Returns (0, error) if skipped
+// or already closed, (1, error) if successfully closed.
+func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, eligible func(Ticket) bool) (int, error) {
 	var t Ticket
+	var closed int
 	alreadyClosed := false
+	skipped := false
 	now := time.Now()
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
@@ -869,6 +1221,13 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		t, err = st.GetByIDForUpdate(ctx, ticketID)
 		if err != nil {
 			return err
+		}
+		if eligible != nil && !eligible(t) {
+			// Listed as a candidate, then moved by someone else before the lock was
+			// taken. The row that decided this is the row being written, so the
+			// decision holds. Same skip path as alreadyClosed: no write, no dispatch.
+			skipped = true
+			return nil
 		}
 		if t.StatusID == s.sys.closedID {
 			// Already closed. Without this, re-closing appends a duplicate
@@ -881,8 +1240,10 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		before := ticketMap(t)
 		oldStatusID := t.StatusID
 		t.StatusID = s.sys.closedID
-		t.ClosedAt = &now
 		t.UpdatedAt = now
+		// Through the shared rule rather than by hand, so closing a Pending
+		// ticket closes its SLA pause interval too.
+		applyStatusTimestamps(&t, oldStatusID, s.sys.closed, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("closing ticket: %w", err)
@@ -902,24 +1263,43 @@ func (s *Service) Close(ctx context.Context, ticketID uuid.UUID, actor Actor) er
 		if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
 			return fmt.Errorf("revoking guest access: %w", err)
 		}
+		closed = 1
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 
-	// Re-closing dispatches nothing, same as before: the check moved under the
-	// lock but its meaning did not.
-	if alreadyClosed {
-		return nil
+	// Skip and re-close dispatch nothing, same as before.
+	if skipped || alreadyClosed {
+		return 0, nil
+	}
+
+	// A ticket can reach Closed without ever passing through Resolved (an
+	// admin moving it straight from an open status, or the reopen window
+	// simply never being used). Without this, sla_records.resolved_at stays
+	// NULL forever: the sweep's closed_at IS NULL guard then excludes it from
+	// ever being evaluated again, but the indicator has no MetAt to freeze
+	// against, so it keeps computing a live, ever-growing Elapsed(t, now)
+	// against a ticket that will never move again. RecordResolved is a no-op
+	// when a resolution is already recorded (the ordinary Resolved-then-Closed
+	// path), so this only ever does anything for the case it exists to fix.
+	// Non-fatal and after the commit, matching Resolve/UpdateStatus. See #220.
+	//
+	// #227: resolutionInstant, not a bare now — see the comment on the
+	// equivalent call in UpdateStatus.
+	if s.sla != nil {
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketClosed,
-		TicketID:   t.ID,
-		ActorID:    actor.UserID,
-		OccurredAt: now,
+		Type:           notification.EventTicketClosed,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     now,
+		TrackingNumber: string(t.TrackingNumber),
+		Subject:        t.Subject,
 	})
-	return nil
+	return closed, nil
 }
 
 // Reopen transitions a Closed ticket back to the target status. Staff/Admin only.
@@ -940,6 +1320,10 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 	if targetStatusID == uuid.Nil {
 		return Ticket{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
 	}
+	target, err := s.getStatusByID(ctx, targetStatusID)
+	if err != nil {
+		return Ticket{}, err
+	}
 
 	now := time.Now()
 	var oldStatusID uuid.UUID
@@ -959,9 +1343,12 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		before := ticketMap(t)
 		oldStatusID = t.StatusID
 		t.StatusID = targetStatusID
-		t.ClosedAt = nil
-		t.ResolvedAt = nil
 		t.UpdatedAt = now
+		// Through the shared rule: its default arm clears ClosedAt/ResolvedAt
+		// exactly as the two hand assignments did, and now also carries the
+		// accumulated SLA pause forward and opens a fresh interval if the
+		// reopen target is Pending — a reopened ticket is not a new SLA clock.
+		applyStatusTimestamps(&t, oldStatusID, target, s.sys, now)
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("reopening ticket: %w", err)
@@ -990,6 +1377,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
 		GuestToken:     guestToken,
+		Subject:        t.Subject,
 	})
 	return t, nil
 }
@@ -1014,31 +1402,66 @@ func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]
 // AddLink creates a directed link between two tickets.
 func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType, actor Actor) error {
 	if sourceID == targetID {
-		return fmt.Errorf("%w: a ticket cannot be linked to itself", ErrValidation)
+		return fmt.Errorf("cannot add link: %w", ErrSelfLink)
 	}
+	// Validate LinkType before attempting to write to the database.
 	if !lt.Valid() {
-		// Checked here rather than left to the column's constraint. A bad
-		// link type came back from the database as a check violation, which
-		// the handler could only render as 500 — an internal error, for a
-		// word the caller typed.
-		return fmt.Errorf("%w: %q is not a link type", ErrValidation, lt)
+		return fmt.Errorf("%q: %w", lt, ErrInvalidLinkType)
 	}
-	link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
-	if err := s.store.CreateLink(ctx, link); err != nil {
-		// A pair that is already linked is not a fault either. The unique
-		// constraint is doing its job and the caller asked for something that
-		// is already true.
-		if isUniqueViolation(err) {
-			return fmt.Errorf("%w: these tickets are already linked that way", ErrValidation)
+
+	var subject, tracking string
+	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		// Lock both ticket rows FOR UPDATE up front, in the same fixed order
+		// (lexicographically smaller id first) ResolveAsDuplicate uses, before
+		// the link insert. Without this, a plain AddLink relies only on
+		// CreateLink's FK-triggered FOR KEY SHARE lock, which does not
+		// participate in that ordering discipline — a concurrent
+		// ResolveAsDuplicate on the same ticket pair, holding its ordered FOR
+		// UPDATE locks, can still deadlock against it (40P01, surfacing as an
+		// unhandled 500). See #210.
+		first, second := sourceID, targetID
+		if bytes.Compare(second[:], first[:]) < 0 {
+			first, second = second, first
 		}
-		return fmt.Errorf("creating link: %w", err)
+		lockedFirst, err := st.GetByIDForUpdate(ctx, first)
+		if err != nil {
+			return err
+		}
+		lockedSecond, err := st.GetByIDForUpdate(ctx, second)
+		if err != nil {
+			return err
+		}
+		source := lockedFirst
+		if source.ID != sourceID {
+			source = lockedSecond
+		}
+		subject = source.Subject
+		tracking = string(source.TrackingNumber)
+
+		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
+		if err := st.CreateLink(ctx, link); err != nil {
+			// A pair that is already linked is not a fault. The unique
+			// constraint is doing its job and the caller asked for something
+			// that is already true — it came back as a raw error and the
+			// handler could only render it as 500.
+			if isUniqueViolation(err) {
+				return fmt.Errorf("%w: these tickets are already linked that way", ErrValidation)
+			}
+			return fmt.Errorf("creating link: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
+
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:       notification.EventTicketLinked,
-		TicketID:   sourceID,
-		ActorID:    actor.UserID,
-		Payload:    map[string]any{"target_id": targetID, "link_type": lt},
-		OccurredAt: time.Now(),
+		Type:           notification.EventTicketLinked,
+		TicketID:       sourceID,
+		ActorID:        actor.UserID,
+		Payload:        map[string]any{"target_id": targetID, "link_type": lt},
+		OccurredAt:     time.Now(),
+		TrackingNumber: tracking,
+		Subject:        subject,
 	})
 	return nil
 }
@@ -1150,7 +1573,7 @@ func (s *Service) SearchUnassigned(ctx context.Context, q string, limit, offset 
 
 // ListResolvedBefore is used by the auto-close scheduler.
 func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error) {
-	return s.store.ListResolvedBefore(ctx, before, limit)
+	return s.store.ListResolvedBefore(ctx, before, s.sys.resolvedID, limit)
 }
 
 // ListStatuses returns all configured statuses.
@@ -1158,15 +1581,62 @@ func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 	return s.statuses.ListStatuses(ctx)
 }
 
-// AddStatus creates a new custom status entry.
-func (s *Service) AddStatus(ctx context.Context, st Status) error {
+// AddStatus creates a new custom status entry. The name is checked for
+// emptiness here (NOT NULL alone doesn't reject "") and for uniqueness at the
+// store, which maps the statuses_name_key violation to ErrStatusNameTaken
+// (#278) rather than letting the raw pgconn error reach handleError
+// unrecognized.
+//
+// Returns the saved Status — with Name trimmed and Active set — rather than
+// leaving the caller's own pre-call copy to be echoed back. handleCreateStatus
+// used to serialize its own copy, whose Name was never trimmed: a name with
+// trailing whitespace came back untrimmed in the 201 body while the stored
+// (and trimmed) row disagreed with it (#285). Mirrors
+// category.Service.CreateCategory, which returns the saved Category for the
+// same reason.
+func (s *Service) AddStatus(ctx context.Context, st Status) (Status, error) {
+	st.Name = strings.TrimSpace(st.Name)
+	if st.Name == "" {
+		return Status{}, ErrInvalidStatusName
+	}
 	st.Active = true
-	return s.statuses.CreateStatus(ctx, st)
+	if err := s.statuses.CreateStatus(ctx, st); err != nil {
+		return Status{}, err
+	}
+	return st, nil
 }
 
-// SaveStatus persists changes to an existing status record.
-func (s *Service) SaveStatus(ctx context.Context, st Status) error {
-	return s.statuses.UpdateStatus(ctx, st)
+// SaveStatus persists changes to an existing status record. Renaming a
+// system status is refused here, and only here (#269 removed the HTTP
+// handler's own inline rename check, so handleUpdateStatus now relies
+// entirely on this refusal): system statuses are found by name at startup
+// (LoadSystemStatuses) and compared by name in lifecycle rules, so a rename
+// that reached the store would reintroduce the restart-crash hazard #263
+// closed. Mirrors RemoveStatus's own system-status refusal below. The
+// refusal wraps ErrSystemStatusImmutable (#269) so handleError can map it to
+// a clean 403 rather than a bare 500 for any caller, HTTP or otherwise, that
+// reaches this method.
+//
+// Returns the saved Status — with Name trimmed — rather than leaving the
+// caller's own pre-call copy to be echoed back. handleUpdateStatus used to
+// serialize its own copy, whose Name was never trimmed, the same #285
+// mismatch AddStatus had. Mirrors AddStatus's own return above.
+func (s *Service) SaveStatus(ctx context.Context, st Status) (Status, error) {
+	st.Name = strings.TrimSpace(st.Name)
+	if st.Name == "" {
+		return Status{}, ErrInvalidStatusName
+	}
+	current, err := s.getStatusByID(ctx, st.ID)
+	if err != nil {
+		return Status{}, err
+	}
+	if current.Kind == StatusKindSystem && st.Name != current.Name {
+		return Status{}, fmt.Errorf("system status %q cannot be renamed: %w", current.Name, ErrSystemStatusImmutable)
+	}
+	if err := s.statuses.UpdateStatus(ctx, st); err != nil {
+		return Status{}, err
+	}
+	return st, nil
 }
 
 // CountByStatus returns the number of tickets currently in the given status.
@@ -1186,21 +1656,36 @@ func (s *Service) CountByStatusForAssignee(ctx context.Context, statusID, userID
 }
 
 // RemoveStatus hard-deletes a custom status. Blocked if the status is a
-// system status or if any tickets currently have this status.
+// system status or if any tickets currently have this status. The
+// system-status refusal wraps ErrSystemStatusImmutable (#269) for the same
+// reason SaveStatus's does: a bare fmt.Errorf here maps to a bare 500 for
+// any caller, and DELETE on a system status is reachable via the HTTP
+// handler with no inline guard of its own. The two in-use refusals below
+// wrap ErrStatusInUse for the same reason (#275): both were still bare
+// fmt.Errorf as of review round 4, so the "deactivate it instead" guidance
+// they carry never reached the caller — handleError had no case for either
+// and both fell through to a 500. The counts and the final DeleteStatus below
+// are separate statements, so a ticket can be PATCHed into this status (or
+// transitioned through it) between the counts and the delete; that race is
+// backstopped at the store layer (ticketstore.Store.DeleteStatus), which maps
+// the resulting foreign-key violation to this same ErrStatusInUse rather than
+// letting it surface as a 500 — the identical shape slastore.DeletePolicy
+// established for the same count-then-delete race (#261), added here for
+// #279.
 func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 	st, err := s.getStatusByID(ctx, id)
 	if err != nil {
 		return err
 	}
 	if st.Kind != StatusKindCustom {
-		return fmt.Errorf("cannot delete system status %q", st.Name)
+		return fmt.Errorf("system status %q cannot be deleted: %w", st.Name, ErrSystemStatusImmutable)
 	}
 	count, err := s.statuses.CountByStatus(ctx, id)
 	if err != nil {
 		return fmt.Errorf("counting tickets for status: %w", err)
 	}
 	if count > 0 {
-		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting", st.Name, count)
+		return fmt.Errorf("status %q has %d ticket(s); deactivate it instead of deleting: %w", st.Name, count, ErrStatusInUse)
 	}
 	// Zero current tickets is not enough: ticket_status_history references
 	// statuses with no ON DELETE action, so any past transition through this
@@ -1212,12 +1697,15 @@ func (s *Service) RemoveStatus(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("counting status history: %w", err)
 	}
 	if histCount > 0 {
-		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead", st.Name, histCount)
+		return fmt.Errorf("status %q appears in %d past ticket transition(s) and cannot be deleted; deactivate it instead: %w", st.Name, histCount, ErrStatusInUse)
 	}
 	return s.statuses.DeleteStatus(ctx, id)
 }
 
-// getStatusByID fetches a status; returns a descriptive error on miss.
+// getStatusByID fetches a status; returns a descriptive error on miss. The
+// miss wraps ErrStatusNotFound (#273) so handleError maps it to a 404
+// instead of falling through to a 500 for callers that don't do their own
+// existence check first — handleDeleteStatus is the one that doesn't.
 func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, error) {
 	statuses, err := s.statuses.ListStatuses(ctx)
 	if err != nil {
@@ -1228,7 +1716,7 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 			return st, nil
 		}
 	}
-	return Status{}, fmt.Errorf("status %s not found", id)
+	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
 }
 
 // auditEntry builds an audit row. Callers write it through the transaction's

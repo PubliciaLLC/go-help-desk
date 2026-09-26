@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -191,6 +192,16 @@ func TestOperations_CommitOnce(t *testing.T) {
 				return err
 			},
 		},
+		{
+			name: "ResolveAsDuplicate",
+			run: func(h *harness) error {
+				source := h.seedOpen()
+				target := h.seedOpen()
+				_, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "custom notes",
+					ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+				return err
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -217,4 +228,215 @@ func TestCreate_TransactionUnavailable(t *testing.T) {
 	require.ErrorIs(t, err, errStoreDown)
 	require.Equal(t, 0, h.store.creates)
 	require.Empty(t, h.dispatcher.events)
+}
+
+func TestResolveAsDuplicate_CreatesLinkAndResolvesTicket(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	agent := uuid.New()
+
+	result, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "duplicate of this",
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+	require.NoError(t, err)
+	require.Equal(t, h.resolvedStatus.ID, result.StatusID)
+	require.NotNil(t, result.ResolutionNotes)
+	require.Equal(t, "duplicate of this", *result.ResolutionNotes)
+	require.NotNil(t, result.ResolvedAt)
+
+	// Verify link was created
+	links, _ := h.store.ListLinks(context.Background(), source.ID)
+	require.Len(t, links, 1)
+	require.Equal(t, source.ID, links[0].SourceTicketID)
+	require.Equal(t, target.ID, links[0].TargetTicketID)
+	require.Equal(t, ticket.LinkDuplicateOf, links[0].LinkType)
+
+	// Verify history entry was created
+	require.Len(t, h.store.history, 1)
+	require.Equal(t, source.ID, h.store.history[0].TicketID)
+	require.Equal(t, h.resolvedStatus.ID, h.store.history[0].ToStatusID)
+
+	// Verify audit entry was created with "resolved" action
+	require.Len(t, h.auditStore.entries, 1)
+	require.Equal(t, "resolved", h.auditStore.entries[0].Action)
+
+	// Both events should be dispatched
+	require.Len(t, h.dispatcher.events, 2)
+}
+
+func TestResolveAsDuplicate_DefaultsTheNotes(t *testing.T) {
+	cases := []struct {
+		name  string
+		notes string
+	}{
+		{"empty", ""},
+		{"whitespace", "  "},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			source := h.seedOpen()
+			target := h.seedOpen()
+			agent := uuid.New()
+
+			result, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, tc.notes,
+				ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+			require.NoError(t, err)
+			expected := ticket.DuplicateResolutionNotes(target.TrackingNumber)
+			require.Equal(t, expected, *result.ResolutionNotes)
+		})
+	}
+}
+
+func TestResolveAsDuplicate_UserMayNotResolve(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	userID := uuid.New()
+
+	_, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "dup",
+		ticket.Actor{UserID: &userID, Role: user.RoleUser})
+
+	require.ErrorIs(t, err, ticket.ErrForbidden)
+	// Verify nothing was written
+	require.Equal(t, 0, h.store.updates)
+	links, _ := h.store.ListLinks(context.Background(), source.ID)
+	require.Empty(t, links)
+	require.Equal(t, 0, h.atomic.rollbacks) // error was before InTx
+}
+
+func TestResolveAsDuplicate_AuditFailureRollsBackTheLink(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	agent := uuid.New()
+	h.auditStore.err = errStoreDown
+
+	_, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "dup",
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+	require.Error(t, err)
+	// Ticket status should not have changed
+	stored, _ := h.store.GetByID(context.Background(), source.ID)
+	require.Equal(t, h.newStatus.ID, stored.StatusID)
+	require.Nil(t, stored.ResolvedAt)
+	// Link should not have been created
+	links, _ := h.store.ListLinks(context.Background(), source.ID)
+	require.Empty(t, links)
+	// Should have rolled back
+	require.Equal(t, 1, h.atomic.rollbacks)
+}
+
+func TestResolveAsDuplicate_SelfLinkRefused(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	agent := uuid.New()
+
+	_, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, source.ID, "dup",
+		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "cannot link a ticket to itself")
+	// #192: must map to 400, not 500 — which requires the typed sentinel,
+	// not just matching text.
+	require.ErrorIs(t, err, ticket.ErrSelfLink)
+}
+
+// TestResolveAsDuplicate_AlreadyLinkedIsSatisfiedNotConflict pins #194: if the
+// exact duplicate_of link already exists (e.g. staff linked A duplicate-of B
+// earlier without checking the resolve box, or a stale second tab), resolving
+// must still succeed with the given notes rather than aborting with a
+// conflict.
+func TestResolveAsDuplicate_AlreadyLinkedIsSatisfiedNotConflict(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	agent := uuid.New()
+	staff := ticket.Actor{UserID: &agent, Role: user.RoleStaff}
+
+	// Staff already linked the two tickets without resolving.
+	require.NoError(t, h.svc.AddLink(context.Background(), source.ID, target.ID, ticket.LinkDuplicateOf, staff))
+
+	result, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "resolved on second pass", staff)
+
+	require.NoError(t, err, "an already-existing identical link must not abort the resolve")
+	require.Equal(t, h.resolvedStatus.ID, result.StatusID)
+	require.NotNil(t, result.ResolutionNotes)
+	require.Equal(t, "resolved on second pass", *result.ResolutionNotes)
+
+	// Still exactly one link — the pre-existing row, not a duplicate of it.
+	links, err := h.store.ListLinks(context.Background(), source.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1)
+	require.Equal(t, ticket.LinkDuplicateOf, links[0].LinkType)
+
+	// #229: AddLink above already dispatched its own EventTicketLinked for
+	// this pair. This resolve created no new link, so it must not dispatch a
+	// second one — only the resolve's own EventTicketResolved.
+	require.Equal(t, 1, countType(h.dispatcher.events, notification.EventTicketLinked),
+		"AddLink's own dispatch, not a second one from the resolve that found nothing new to link")
+	require.Equal(t, 1, countType(h.dispatcher.events, notification.EventTicketResolved))
+}
+
+// TestResolveAsDuplicate_ReResolvePreservesOriginalSLAInstant pins #234:
+// ResolveAsDuplicate still passed a bare now to RecordResolved. A source
+// ticket already Resolved, already linked to the same target (so this call's
+// own no-op check rests on notes alone, same as Resolve), re-resolved with
+// different notes genuinely re-executes (#225) and applyStatusTimestamps
+// preserves the ticket's ORIGINAL ResolvedAt — the SLA call must use that
+// same original instant, not this call's now.
+func TestResolveAsDuplicate_ReResolvePreservesOriginalSLAInstant(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedResolved(uuid.New())
+	originalResolvedAt := *source.ResolvedAt
+	target := h.seedOpen()
+	agent := uuid.New()
+	staff := ticket.Actor{UserID: &agent, Role: user.RoleStaff}
+
+	require.NoError(t, h.svc.AddLink(context.Background(), source.ID, target.ID, ticket.LinkDuplicateOf, staff))
+
+	_, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID,
+		"resolved again, different notes", staff)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"a re-resolve via ResolveAsDuplicate (#225) must repair/record the SLA resolution at the ticket's real original instant (#234), not this call's now")
+}
+
+// TestResolveAsDuplicate_SamePairDifferentTypeIsUnaffected pins the other half
+// of #194: a link between the same two tickets but of a DIFFERENT type must
+// not be special-cased — it is unrelated to the duplicate_of link this call
+// creates, so both must end up existing.
+func TestResolveAsDuplicate_SamePairDifferentTypeIsUnaffected(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedOpen()
+	target := h.seedOpen()
+	agent := uuid.New()
+	staff := ticket.Actor{UserID: &agent, Role: user.RoleStaff}
+
+	require.NoError(t, h.svc.AddLink(context.Background(), source.ID, target.ID, ticket.LinkRelatedTo, staff))
+
+	result, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID, "actually a duplicate", staff)
+	require.NoError(t, err)
+	require.Equal(t, h.resolvedStatus.ID, result.StatusID)
+
+	links, err := h.store.ListLinks(context.Background(), source.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 2, "the related_to link and the new duplicate_of link must both exist")
+	types := map[ticket.LinkType]bool{}
+	for _, l := range links {
+		types[l.LinkType] = true
+	}
+	require.True(t, types[ticket.LinkRelatedTo])
+	require.True(t, types[ticket.LinkDuplicateOf])
+}
+
+func TestDuplicateResolutionNotes(t *testing.T) {
+	tn := ticket.TrackingNumber("GHD-2026-000042")
+	notes := ticket.DuplicateResolutionNotes(tn)
+	require.Equal(t, "Duplicate of GHD-2026-000042", notes)
 }

@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -382,6 +382,7 @@ export async function createWebhook(input: {
   url: string
   events?: string[]
   secret?: string
+  payload_format?: WebhookPayloadFormat
 }): Promise<WebhookConfig> {
   const res = await api.post<WebhookConfig>('/admin/webhooks', input)
   return res.data
@@ -389,7 +390,7 @@ export async function createWebhook(input: {
 
 export async function updateWebhook(
   id: string,
-  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'secret' | 'enabled'>>
+  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'secret' | 'enabled' | 'payload_format'>>
 ): Promise<WebhookConfig> {
   const res = await api.patch<WebhookConfig>(`/admin/webhooks/${id}`, patch)
   return res.data
