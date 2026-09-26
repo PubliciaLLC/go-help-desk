@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -42,6 +43,7 @@ func TestResolveAsDuplicate_HTTP(t *testing.T) {
 	require.NoError(t, err)
 
 	base := "/api/v1/tickets/" + source.ID.String() + "/links"
+	var firstResolvedAt, secondResolvedAt *time.Time
 
 	t.Run("403: a reporting user may not resolve, and nothing is written", func(t *testing.T) {
 		res := h.doAsUser(t, http.MethodPost, base, map[string]any{
@@ -75,6 +77,7 @@ func TestResolveAsDuplicate_HTTP(t *testing.T) {
 		require.NotNil(t, got.ResolutionNotes)
 		require.Equal(t, "first resolve", *got.ResolutionNotes)
 		require.NotNil(t, got.ResolvedAt)
+		firstResolvedAt = got.ResolvedAt
 
 		links, err := h.ticketSvc.ListLinks(ctx, source.ID)
 		require.NoError(t, err)
@@ -82,7 +85,7 @@ func TestResolveAsDuplicate_HTTP(t *testing.T) {
 		require.Equal(t, ticket.LinkDuplicateOf, links[0].LinkType)
 	})
 
-	t.Run("200 again: the identical link already existing is satisfied, not a conflict (#194)", func(t *testing.T) {
+	t.Run("200 again: the identical link already existing is satisfied, and DIFFERENT notes genuinely re-resolve (#194, #225)", func(t *testing.T) {
 		res := h.do(t, http.MethodPost, base, map[string]any{
 			"target_id": target.ID.String(), "link_type": "duplicate_of",
 			"resolve_as_duplicate": true, "resolution_notes": "second resolve",
@@ -92,19 +95,52 @@ func TestResolveAsDuplicate_HTTP(t *testing.T) {
 		require.Equal(t, http.StatusOK, res.StatusCode,
 			"an already-satisfied identical link must resolve, not 409; body: %s", b)
 
-		// #209: the source ticket is already Resolved, so this double-submit
-		// must skip the resolve side effects entirely rather than re-running
-		// them with the new call's notes — the notes stay whatever the FIRST
-		// resolve set them to, not "second resolve".
+		// #225: the source ticket is already Resolved, but this call's notes
+		// genuinely differ from what's stored — a legitimate re-resolve, not
+		// a double-submit, so the new notes must win rather than being
+		// silently dropped in favor of the first call's. The original
+		// resolved_at must still be preserved (the reopen-window anchor),
+		// which is applyStatusTimestamps' existing rule, untouched by #225.
 		var got ticket.Ticket
 		require.NoError(t, json.Unmarshal(b, &got))
 		require.NotNil(t, got.ResolutionNotes)
-		require.Equal(t, "first resolve", *got.ResolutionNotes,
-			"a double-submit against an already-resolved ticket must not re-run the resolve (#209)")
+		require.Equal(t, "second resolve", *got.ResolutionNotes,
+			"a genuine re-resolve with different notes must update them, not silently drop them (#225)")
+		require.NotNil(t, got.ResolvedAt)
+		// Truncated to Postgres' timestamptz precision (microseconds): the
+		// FIRST response's value is still the in-process nanosecond-precision
+		// time.Time from before its own round trip through the database, so
+		// comparing at full precision would fail on the sub-microsecond
+		// digits alone, not on any real difference.
+		require.True(t, firstResolvedAt.Truncate(time.Microsecond).Equal(got.ResolvedAt.Truncate(time.Microsecond)),
+			"a re-resolve must preserve the ORIGINAL resolved_at, not restart the reopen window")
+		secondResolvedAt = got.ResolvedAt
 
 		// Still exactly one link — the second call did not duplicate the row.
 		links, err := h.ticketSvc.ListLinks(ctx, source.ID)
 		require.NoError(t, err)
 		require.Len(t, links, 1)
+	})
+
+	t.Run("200 again: IDENTICAL notes and target against an already-resolved ticket is a true no-op (#209, #225)", func(t *testing.T) {
+		res := h.do(t, http.MethodPost, base, map[string]any{
+			"target_id": target.ID.String(), "link_type": "duplicate_of",
+			"resolve_as_duplicate": true, "resolution_notes": "second resolve",
+		})
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+
+		var got ticket.Ticket
+		require.NoError(t, json.Unmarshal(b, &got))
+		require.NotNil(t, got.ResolutionNotes)
+		require.Equal(t, "second resolve", *got.ResolutionNotes,
+			"a true double-submit (same notes, same target) must not change the stored notes")
+		require.NotNil(t, got.ResolvedAt)
+		require.True(t, secondResolvedAt.Truncate(time.Microsecond).Equal(got.ResolvedAt.Truncate(time.Microsecond)))
+
+		links, err := h.ticketSvc.ListLinks(ctx, source.ID)
+		require.NoError(t, err)
+		require.Len(t, links, 1, "a true double-submit must not duplicate the link")
 	})
 }

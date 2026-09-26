@@ -700,6 +700,60 @@ func TestUpdateStatus_RecordsSLAForClosedToo(t *testing.T) {
 	require.Equal(t, 1, h.sla.resolutions)
 }
 
+// TestClose_RecordsSLAAtTheOriginalResolvedInstant pins #227: close() must
+// record the SLA resolution against the ticket's OWN resolved_at when one is
+// already set — not the close instant. applyStatusTimestamps' closedID case
+// never touches ResolvedAt, so a ticket that was already Resolved (including
+// one whose earlier RecordResolved call failed non-fatally, or was dropped by
+// the pre-#216 toggle-gating bug) still carries its real resolution instant
+// on the row. Stamping breaches against the LATER close time instead can
+// manufacture a false breach on a ticket that was actually resolved on time.
+func TestClose_RecordsSLAAtTheOriginalResolvedInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"close() must record the SLA resolution at the ticket's real (earlier) resolved_at, not the close instant")
+}
+
+// TestUpdateStatus_ToClosed_RecordsSLAAtTheOriginalResolvedInstant is
+// TestClose_RecordsSLAAtTheOriginalResolvedInstant's twin for the other door
+// into Closed. See #227.
+func TestUpdateStatus_ToClosed_RecordsSLAAtTheOriginalResolvedInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.closedStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleAdmin})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"UpdateStatus->Closed must record the SLA resolution at the ticket's real (earlier) resolved_at, not the close instant")
+}
+
+// TestClose_RecordsSLAAtNowWhenNeverResolved is the control for
+// TestClose_RecordsSLAAtTheOriginalResolvedInstant: a ticket closed straight
+// from an open status, never separately resolved, has no earlier instant to
+// fall back to, so #220's close-time recording still applies.
+func TestClose_RecordsSLAAtNowWhenNeverResolved(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedOpen()
+	before := time.Now()
+
+	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
+	after := time.Now()
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.False(t, h.sla.lastResolvedAt.Before(before))
+	require.False(t, h.sla.lastResolvedAt.After(after))
+}
+
 // Every lifecycle write must read the row it is about to overwrite from inside
 // its transaction. Update rewrites every column, so a copy read on the pool is
 // a lost update waiting for a second writer.

@@ -377,15 +377,22 @@ type fakeSLA struct {
 	firstResponses int
 	resolutions    int
 	err            error
+
+	// lastResolvedAt is the `at` argument RecordResolved was last called
+	// with, so a test can assert WHICH instant close()/UpdateStatus recorded
+	// a resolution against — the real ticket's own ResolvedAt, not a bare
+	// close-time now(). See #227.
+	lastResolvedAt time.Time
 }
 
 func (f *fakeSLA) AttachPolicy(context.Context, ticket.Ticket) error { return nil }
 
-func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, _ time.Time) error {
+func (f *fakeSLA) RecordResolved(_ context.Context, _ ticket.Ticket, at time.Time) error {
 	if f.err != nil {
 		return f.err
 	}
 	f.resolutions++
+	f.lastResolvedAt = at
 	return nil
 }
 

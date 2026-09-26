@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -371,6 +372,13 @@ func TestResolveAsDuplicate_AlreadyLinkedIsSatisfiedNotConflict(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, links, 1)
 	require.Equal(t, ticket.LinkDuplicateOf, links[0].LinkType)
+
+	// #229: AddLink above already dispatched its own EventTicketLinked for
+	// this pair. This resolve created no new link, so it must not dispatch a
+	// second one — only the resolve's own EventTicketResolved.
+	require.Equal(t, 1, countType(h.dispatcher.events, notification.EventTicketLinked),
+		"AddLink's own dispatch, not a second one from the resolve that found nothing new to link")
+	require.Equal(t, 1, countType(h.dispatcher.events, notification.EventTicketResolved))
 }
 
 // TestResolveAsDuplicate_SamePairDifferentTypeIsUnaffected pins the other half
