@@ -85,8 +85,25 @@ func NewWebhookDispatcher(store WebhookStore, baseURL string, log *slog.Logger) 
 // Dispatch sends the event as JSON to every enabled webhook that subscribes
 // to this event type. Failures are logged but do not propagate.
 func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Event) error {
+	// guest.link_resent (and any other event type not in WebhookEvents) is
+	// deliberately excluded from webhooks — IsWebhookEvent already rejects it
+	// on create/update — but hookSubscribes has no event-type filter of its
+	// own, so a "*" (or legacy empty-events) subscription would otherwise
+	// receive it anyway, contradicting that exclusion. Filtered here, before
+	// any hook is considered, rather than inside hookSubscribes: it is a
+	// property of the EVENT, not of any one hook's subscription shape. See
+	// #212.
+	if !IsWebhookEvent(string(event.Type)) {
+		return nil
+	}
+
 	hooks, err := d.store.ListEnabledWebhooks(ctx)
 	if err != nil {
+		// A DB error listing hooks means zero deliveries to every webhook;
+		// previously this was indistinguishable from "nothing subscribed".
+		// See #213.
+		d.log.ErrorContext(ctx, "webhook dispatch skipped: could not list enabled webhooks",
+			"event", event.Type, "error", err)
 		return nil // store failure is non-fatal
 	}
 
@@ -96,6 +113,8 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	// never touches this slice for those hooks.
 	payload, err := json.Marshal(event)
 	if err != nil {
+		d.log.ErrorContext(ctx, "webhook dispatch skipped: event could not be marshalled",
+			"event", event.Type, "error", err)
 		return nil
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 // ── Event Validation ──────────────────────────────────────────────────────────
@@ -211,6 +212,112 @@ func TestDispatch_UnknownFormatIsLoggedAndSkipped(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for webhook delivery")
 	}
+}
+
+// TestDispatch_WildcardExcludesGuestLinkResent pins #212: notify.WebhookEvents
+// deliberately excludes guest.link_resent, and IsWebhookEvent correctly
+// rejects it on webhook create/update, but Dispatch itself had no event-type
+// filter — hookSubscribes returns true for a "*" (or legacy empty-events)
+// hook regardless of event type, so every wildcard subscription received it
+// anyway. A "*" hook and a legacy empty-events hook must each receive zero
+// deliveries for EventGuestLinkResent.
+func TestDispatch_WildcardExcludesGuestLinkResent(t *testing.T) {
+	deliveries := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		deliveries <- r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	store := fakeWebhookStore{
+		{ID: uuid.New(), PayloadFormat: "raw", Events: []string{"*"}, URL: server.URL + "/wildcard"},
+		{ID: uuid.New(), PayloadFormat: "raw", Events: nil, URL: server.URL + "/legacy-empty"},
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	disp := &WebhookDispatcher{store: store, client: server.Client(), baseURL: fixtureBaseURL, log: logger}
+
+	ev := notification.Event{
+		Type:           notification.EventGuestLinkResent,
+		TicketID:       fixtureTicketID,
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        "Printer jammed",
+	}
+	require.NoError(t, disp.Dispatch(context.Background(), ev))
+
+	select {
+	case path := <-deliveries:
+		t.Fatalf("guest.link_resent must never reach a webhook, wildcard or not; got a delivery to %s", path)
+	case <-time.After(200 * time.Millisecond):
+		// No delivery within the window: correct.
+	}
+
+	// The same event type IS delivered when it's one WebhookEvents actually
+	// lists, proving the filter isn't just silently dropping everything.
+	okEv := fixtureReplyEvent(false)
+	require.NoError(t, disp.Dispatch(context.Background(), okEv))
+	select {
+	case <-deliveries:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a real webhook event type must still be delivered to a wildcard hook")
+	}
+}
+
+// ── Dispatch boundary logging (#213) ─────────────────────────────────────────
+
+type fakeWebhookStoreErr struct{ err error }
+
+func (f fakeWebhookStoreErr) ListEnabledWebhooks(context.Context) ([]authstore.WebhookConfig, error) {
+	return nil, f.err
+}
+
+// TestDispatch_ListEnabledWebhooksFailureIsLogged pins #213: a database error
+// listing hooks used to `return nil` silently, indistinguishable from
+// "nothing subscribed." It must now be logged at the dispatch boundary.
+func TestDispatch_ListEnabledWebhooksFailureIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	storeErr := errors.New("connection reset by peer")
+	disp := &WebhookDispatcher{store: fakeWebhookStoreErr{err: storeErr}, log: logger}
+
+	err := disp.Dispatch(context.Background(), fixtureReplyEvent(false))
+	require.NoError(t, err, "a store failure is non-fatal to the caller")
+
+	logged := buf.String()
+	require.Contains(t, logged, "could not list enabled webhooks")
+	require.Contains(t, logged, "connection reset by peer")
+	require.Contains(t, logged, "event=ticket.replied")
+}
+
+// TestDispatch_MarshalFailureIsLogged pins #213's other silent path: the
+// initial json.Marshal(event) failing used to `return nil` with no log line.
+func TestDispatch_MarshalFailureIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	store := fakeWebhookStore{
+		{ID: uuid.New(), PayloadFormat: "raw", Events: []string{"*"}, URL: "http://unused.invalid"},
+	}
+	disp := &WebhookDispatcher{store: store, log: logger}
+
+	// A channel value in Payload cannot be marshalled to JSON.
+	ev := notification.Event{
+		Type:           notification.EventTicketReplied,
+		TicketID:       fixtureTicketID,
+		Payload:        map[string]any{"bad": make(chan int)},
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        "Printer jammed",
+	}
+	err := disp.Dispatch(context.Background(), ev)
+	require.NoError(t, err, "a marshal failure is non-fatal to the caller")
+
+	logged := buf.String()
+	require.Contains(t, logged, "could not be marshalled")
+	require.Contains(t, logged, "event=ticket.replied")
 }
 
 // TestNewWebhookDispatcher_NilLoggerDefaultsInsteadOfPanicking pins that a nil

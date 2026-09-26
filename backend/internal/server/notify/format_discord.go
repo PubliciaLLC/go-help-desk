@@ -8,7 +8,16 @@ import (
 type discordPayload struct {
 	Content         string                 `json:"content"`
 	AllowedMentions discordAllowedMentions `json:"allowed_mentions"`
+	// Flags: 4 is SUPPRESS_EMBEDS. Masked-link escaping neutralizes
+	// "[text](url)", but Discord still auto-embeds and previews a bare URL
+	// regardless of escaping — a ticket subject containing one would render
+	// as a clickable, previewed link under the operator's own webhook
+	// identity. See #214.
+	Flags int `json:"flags"`
 }
+
+// discordSuppressEmbeds is Discord's SUPPRESS_EMBEDS message flag.
+const discordSuppressEmbeds = 4
 
 type discordAllowedMentions struct {
 	Parse []string `json:"parse"`
@@ -62,5 +71,6 @@ func renderDiscord(s summary) ([]byte, error) {
 	return json.Marshal(discordPayload{
 		Content:         content,
 		AllowedMentions: discordAllowedMentions{Parse: []string{}},
+		Flags:           discordSuppressEmbeds,
 	})
 }
