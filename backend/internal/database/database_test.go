@@ -1048,10 +1048,22 @@ func TestSLAStore_FindPolicyTiers(t *testing.T) {
 }
 
 // TestSLAStore_ListBreachCandidates exercises the sweep's selection query
-// directly. It is a necessary-but-not-sufficient prefilter driven only by
-// wall-clock age against a fixed policy (30-minute response target, 120-minute
-// resolution target); each case seeds one ticket's sla_records columns
+// directly, against a fixed policy (30-minute response target, 120-minute
+// resolution target). Each case seeds one ticket's sla_records columns
 // directly and checks whether its id is returned for a fixed `now`.
+//
+// pendingAt is the ticket's age (time since CreatedAt) when its *current*
+// Pending interval started; zero means the ticket is not currently Pending.
+// pausedSec is SLAPausedSeconds: time already paused by earlier, now-closed
+// Pending intervals, before the current one (if any) opened. Together with
+// age they pin down PendingSince and SLAPausedSeconds the same way
+// applyStatusTimestamps would have set them.
+//
+// Every case that has a record and is not closed also asserts the superset
+// invariant: whatever sla.IsResponseBreached / IsResolutionBreached would
+// newly stamp, this query must have already returned as a candidate. That
+// is what guards against SQL's pause-aware elapsed time drifting out of sync
+// with sla.Elapsed.
 func TestSLAStore_ListBreachCandidates(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
@@ -1067,6 +1079,8 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 		resolutionBreachedAt bool
 		closed               bool
 		noRecord             bool
+		pendingAt            time.Duration
+		pausedSec            int64
 		want                 bool
 	}{
 		{name: "no response, age past response target", age: 40 * time.Minute, want: true},
@@ -1078,6 +1092,40 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 		{name: "responded and resolved", age: 3 * time.Hour, firstResponseAt: true, resolvedAt: true, want: false},
 		{name: "closed ticket, overdue", age: 3 * time.Hour, closed: true, want: false},
 		{name: "no SLA record at all", age: 3 * time.Hour, noRecord: true, want: false},
+
+		// #200: pause-aware selection.
+		{
+			name: "pending, entered before response target, wall-clock past both",
+			age:  3 * time.Hour, pendingAt: 10 * time.Minute, want: false,
+		},
+		{
+			name: "pending, breached then parked, never stamped",
+			age:  3 * time.Hour, pendingAt: 40 * time.Minute, want: true,
+		},
+		{
+			name: "pending, responded, parked between the two targets",
+			age:  3 * time.Hour, firstResponseAt: true, pendingAt: 40 * time.Minute, want: false,
+		},
+		{
+			name: "pending, parked past resolution target, response stamped",
+			age:  3 * time.Hour, responseBreachedAt: true, pendingAt: 130 * time.Minute, want: true,
+		},
+		{
+			name: "pending, parked past both targets, both stamped",
+			age:  3 * time.Hour, responseBreachedAt: true, resolutionBreachedAt: true, pendingAt: 130 * time.Minute, want: false,
+		},
+		{
+			name: "pending, earlier pauses keep frozen elapsed under target",
+			age:  3 * time.Hour, pendingAt: 170 * time.Minute, pausedSec: int64((150 * time.Minute) / time.Second), want: false,
+		},
+		{
+			name: "not pending, earlier pauses keep elapsed under target",
+			age:  60 * time.Minute, pausedSec: int64((40 * time.Minute) / time.Second), want: false,
+		},
+		{
+			name: "not pending, earlier pauses, elapsed exactly at target",
+			age:  70 * time.Minute, pausedSec: int64((40 * time.Minute) / time.Second), want: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1115,20 +1163,32 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 			}
 			require.NoError(t, ts.Create(ctx, tk))
 
+			needsUpdate := tc.closed || tc.pendingAt > 0 || tc.pausedSec > 0
+			if tc.pendingAt > 0 {
+				pendingSt, err := ts.GetStatusByName(ctx, ticket.StatusNamePending)
+				require.NoError(t, err)
+				tk.StatusID = pendingSt.ID
+				pendingSince := createdAt.Add(tc.pendingAt)
+				tk.PendingSince = &pendingSince
+			}
+			tk.SLAPausedSeconds = tc.pausedSec
 			if tc.closed {
 				closedAt := now
 				tk.ClosedAt = &closedAt
+			}
+			if needsUpdate {
 				require.NoError(t, ts.Update(ctx, tk))
 			}
 
+			var policy sla.Policy
 			if !tc.noRecord {
-				p := sla.Policy{
+				policy = sla.Policy{
 					ID: uuid.New(), Name: "Cand policy " + tc.name,
 					ResponseTargetMin: 30, ResolutionTargetMin: 120,
 				}
-				require.NoError(t, ss.CreatePolicy(ctx, p))
+				require.NoError(t, ss.CreatePolicy(ctx, policy))
 
-				rec := sla.Record{TicketID: tk.ID, PolicyID: p.ID}
+				rec := sla.Record{TicketID: tk.ID, PolicyID: policy.ID}
 				stamp := createdAt.Add(time.Minute) // any time before `now`; only nil-ness matters here
 				if tc.firstResponseAt {
 					rec.FirstResponseAt = &stamp
@@ -1148,8 +1208,116 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 			got, err := ss.ListBreachCandidates(ctx, now)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, containsUUID(got, tk.ID))
+
+			// Superset invariant: anything Go would newly stamp must already
+			// have been a candidate.
+			if !tc.noRecord && !tc.closed {
+				loaded, err := ts.GetByID(ctx, tk.ID)
+				require.NoError(t, err)
+				rec, err := ss.GetRecord(ctx, tk.ID)
+				require.NoError(t, err)
+
+				goWants := (rec.ResponseBreachedAt == nil && sla.IsResponseBreached(rec, policy, loaded, now)) ||
+					(rec.ResolvedAt == nil && rec.ResolutionBreachedAt == nil && sla.IsResolutionBreached(rec, policy, loaded, now))
+				if goWants {
+					require.True(t, got != nil && containsUUID(got, tk.ID), "SQL candidate query missed a ticket Go would stamp")
+				}
+			}
 		})
 	}
+}
+
+// TestSLAStore_ListBreachCandidates_LeavingPending is the #200 scenario named
+// in the issue's third bullet: a ticket parked in Pending under target, then
+// released, becomes a candidate again once real (unpaused) elapsed time
+// catches up — and the sweep actually stamps it then.
+func TestSLAStore_ListBreachCandidates_LeavingPending(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	ss := slastore.New(q)
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	u := user.User{
+		ID: uuid.New(), Email: uuid.NewString() + "@example.com", DisplayName: "LeavingPending",
+		Role: user.RoleUser, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, us.Create(ctx, u))
+	cat := category.Category{ID: uuid.New(), Name: "LeavingPending cat", SortOrder: 1, Active: true}
+	require.NoError(t, cs.CreateCategory(ctx, cat))
+
+	pendingSt, err := ts.GetStatusByName(ctx, ticket.StatusNamePending)
+	require.NoError(t, err)
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	createdAt := now.Add(-3 * time.Hour)
+	pendingSince := createdAt.Add(10 * time.Minute)
+	tk := ticket.Ticket{
+		ID:             uuid.New(),
+		TrackingNumber: ticket.GenerateTrackingNumber(ticket.DefaultTrackingPrefix, 2025, 800),
+		Subject:        "Leaving pending test ticket",
+		CategoryID:     cat.ID,
+		Priority:       ticket.PriorityHigh,
+		StatusID:       pendingSt.ID,
+		ReporterUserID: &u.ID,
+		CreatedAt:      createdAt,
+		UpdatedAt:      createdAt,
+	}
+	require.NoError(t, ts.Create(ctx, tk))
+
+	// Create does not persist PendingSince/SLAPausedSeconds (only Update
+	// does, matching how applyStatusTimestamps sets them on a real status
+	// transition), so entering Pending is itself a separate Update call.
+	tk.PendingSince = &pendingSince
+	require.NoError(t, ts.Update(ctx, tk))
+
+	policy := sla.Policy{ID: uuid.New(), Name: "LeavingPending policy", ResponseTargetMin: 30, ResolutionTargetMin: 120}
+	require.NoError(t, ss.CreatePolicy(ctx, policy))
+	require.NoError(t, ss.CreateRecord(ctx, sla.Record{TicketID: tk.ID, PolicyID: policy.ID}))
+
+	// 1. Still Pending, frozen elapsed (10m) under target: not a candidate.
+	got, err := ss.ListBreachCandidates(ctx, now)
+	require.NoError(t, err)
+	require.False(t, containsUUID(got, tk.ID))
+
+	// 2. Leave Pending the way applyStatusTimestamps does: clear
+	// PendingSince, fold the closed interval into SLAPausedSeconds, and move
+	// off the Pending status.
+	tk.PendingSince = nil
+	tk.SLAPausedSeconds += int64((170 * time.Minute) / time.Second)
+	tk.StatusID = newSt.ID
+	require.NoError(t, ts.Update(ctx, tk))
+
+	// Real elapsed is still only 10m (age 3h - paused 170m = 10m): still not
+	// a candidate at the same instant.
+	got, err = ss.ListBreachCandidates(ctx, now)
+	require.NoError(t, err)
+	require.False(t, containsUUID(got, tk.ID))
+
+	// 3. 20 minutes later, real elapsed reaches 30m: now a candidate.
+	later := now.Add(20 * time.Minute)
+	got, err = ss.ListBreachCandidates(ctx, later)
+	require.NoError(t, err)
+	require.True(t, containsUUID(got, tk.ID))
+
+	// 4. A sweep at that point stamps it, and it drops out of the next sweep
+	// at the same instant.
+	svc := sla.NewService(ss)
+	res, err := svc.SweepBreaches(ctx, ts, now.Add(21*time.Minute))
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Stamped)
+
+	got, err = ss.ListBreachCandidates(ctx, now.Add(21*time.Minute))
+	require.NoError(t, err)
+	require.False(t, containsUUID(got, tk.ID))
 }
 
 func containsUUID(ids []uuid.UUID, id uuid.UUID) bool {

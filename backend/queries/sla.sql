@@ -75,11 +75,17 @@ WHERE ticket_id = $1;
 
 -- name: ListSLABreachCandidates :many
 -- Tickets the breach sweep must evaluate: open, under a policy, with at least
--- one target that is neither met nor already stamped. The age check is a
--- necessary condition only: elapsed-toward-target can never exceed wall-clock
--- age (pausing only subtracts), so a ticket younger than its target cannot
--- have breached under any accounting. The sufficient check — pause-aware — is
--- EvaluateBreaches' job, not this query's.
+-- one target that is neither met nor already stamped, using the same
+-- pause-aware elapsed time as sla.Elapsed (see that function's doc comment;
+-- the two must change together). LEAST(COALESCE(pending_since, now), now) is
+-- the instant the SLA clock stopped: pending_since while the ticket is
+-- currently Pending, clipped to now the same way Elapsed clips with
+-- at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
+-- elapsed time is still under target is therefore never selected. This
+-- prefilter must still return everything EvaluateBreaches would stamp — it
+-- stays a superset via <=, where Go's strict > decides the exact equality
+-- instant on a fresh read of the row — see
+-- TestSLAStore_ListBreachCandidates's superset invariant check.
 SELECT r.ticket_id
 FROM sla_records r
 JOIN tickets      t ON t.id = r.ticket_id
@@ -87,9 +93,15 @@ JOIN sla_policies p ON p.id = r.policy_id
 WHERE t.closed_at IS NULL
   AND (
        (r.first_response_at IS NULL AND r.response_breached_at IS NULL
-          AND t.created_at + make_interval(mins => p.response_target_min) <= sqlc.arg(now)::timestamptz)
+          AND t.created_at
+              + make_interval(secs => t.sla_paused_seconds::double precision)
+              + make_interval(mins => p.response_target_min)
+              <= LEAST(COALESCE(t.pending_since, sqlc.arg(now)::timestamptz), sqlc.arg(now)::timestamptz))
     OR (r.resolved_at IS NULL AND r.resolution_breached_at IS NULL
-          AND t.created_at + make_interval(mins => p.resolution_target_min) <= sqlc.arg(now)::timestamptz)
+          AND t.created_at
+              + make_interval(secs => t.sla_paused_seconds::double precision)
+              + make_interval(mins => p.resolution_target_min)
+              <= LEAST(COALESCE(t.pending_since, sqlc.arg(now)::timestamptz), sqlc.arg(now)::timestamptz))
   )
 ORDER BY t.created_at;
 

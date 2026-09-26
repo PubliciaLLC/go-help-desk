@@ -67,13 +67,11 @@ type Store interface {
 
 	// ListBreachCandidates returns the ids of tickets the breach sweep must
 	// evaluate: open, under a policy, with at least one target that is
-	// neither met nor already stamped, and whose wall-clock age has passed
-	// that target. It is a necessary but not sufficient prefilter — pausing
-	// only ever subtracts from elapsed-toward-target, so a ticket younger
-	// than its target by the wall clock cannot have breached under any
-	// accounting, but one older than its target may still not have breached
-	// once pause time is accounted for. The sufficient, pause-aware decision
-	// is EvaluateBreaches' job.
+	// neither met nor already stamped. The prefilter uses the same
+	// pause-aware elapsed time as sla.Elapsed, so a ticket parked in Pending
+	// whose frozen elapsed time is still under target is never selected. It
+	// still returns a superset, not an exact answer: Go makes the final call
+	// at the equality instant, from a fresh read of the row.
 	ListBreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 
 	// StampBreaches sets response and/or resolution as the record's breach

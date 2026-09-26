@@ -207,11 +207,17 @@ type Querier interface {
 	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error)
 	ListResolvedTicketsBefore(ctx context.Context, arg ListResolvedTicketsBeforeParams) ([]ListResolvedTicketsBeforeRow, error)
 	// Tickets the breach sweep must evaluate: open, under a policy, with at least
-	// one target that is neither met nor already stamped. The age check is a
-	// necessary condition only: elapsed-toward-target can never exceed wall-clock
-	// age (pausing only subtracts), so a ticket younger than its target cannot
-	// have breached under any accounting. The sufficient check — pause-aware — is
-	// EvaluateBreaches' job, not this query's.
+	// one target that is neither met nor already stamped, using the same
+	// pause-aware elapsed time as sla.Elapsed (see that function's doc comment;
+	// the two must change together). LEAST(COALESCE(pending_since, now), now) is
+	// the instant the SLA clock stopped: pending_since while the ticket is
+	// currently Pending, clipped to now the same way Elapsed clips with
+	// at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
+	// elapsed time is still under target is therefore never selected. This
+	// prefilter must still return everything EvaluateBreaches would stamp — it
+	// stays a superset via <=, where Go's strict > decides the exact equality
+	// instant on a fresh read of the row — see
+	// TestSLAStore_ListBreachCandidates's superset invariant check.
 	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error)
 	// Batch lookup for the per-ticket SLA status embedded on GET /tickets and

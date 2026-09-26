@@ -55,6 +55,11 @@ type Record struct {
 // The open interval is clipped to at so a reading taken "as of" an instant
 // before the ticket went Pending — the resolution time, re-read later — does
 // not subtract time that had not been paused yet.
+//
+// This formula is mirrored in SQL by ListSLABreachCandidates, and the two
+// must change together: SQL elapsed must stay greater than or equal to Go
+// elapsed (for example, if business hours are added later), so the query
+// remains a superset of what EvaluateBreaches would stamp.
 func Elapsed(t ticket.Ticket, at time.Time) time.Duration {
 	e := at.Sub(t.CreatedAt) - time.Duration(t.SLAPausedSeconds)*time.Second
 	if t.PendingSince != nil && at.After(*t.PendingSince) {
