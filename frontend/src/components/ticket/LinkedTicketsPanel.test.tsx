@@ -10,7 +10,6 @@ import type { Ticket, TicketLink, LinkType } from '@/api/types'
 // Mock the Link component since it needs a router provider
 vi.mock('@tanstack/react-router', () => ({
   Link: ({ to, params, children, ...rest }: { to: string; params: Record<string, string>; children: React.ReactNode }) => (
-    // eslint-disable-next-line jsx-a11y/anchor-has-content
     <a href={to.replace('$id', params.id)} {...rest}>
       {children}
     </a>

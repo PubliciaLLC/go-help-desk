@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -34,6 +36,23 @@ import (
 
 const (
 	attachMaxBytes = 25 << 20 // 25 MB
+
+	// bodyTransferTimeout is how long one attachment body may take to arrive
+	// or to leave, replacing the server-wide 15s read and 30s write deadlines
+	// for these two routes alone.
+	//
+	// Those deadlines cover a whole request, body included, and the app is
+	// exposed directly in docker-compose with no proxy in front. At 15
+	// seconds, a 25 MB upload needs a sustained 13 Mbit/s uplink and a 10 MB
+	// one needs 5.3 — and a user below that got "could not parse upload",
+	// which blames their request for their connection. Downloads were cut off
+	// mid-stream below about 7 Mbit/s.
+	//
+	// Five minutes is 25 MB at roughly 700 kbit/s: a bad hotel connection
+	// still finishes, and a connection that has genuinely stopped is still
+	// closed. The short deadlines stay everywhere else, where a body is a
+	// JSON document and slow means something is wrong.
+	bodyTransferTimeout = 5 * time.Minute
 
 	// maxFilenameBytes is the longest uploaded name that is stored. See the
 	// check in handleUploadAttachment for why the ceiling exists at all.
@@ -76,28 +95,421 @@ var imageExt = map[string]bool{
 // camera, a 5K display) and far below what it takes to exhaust a server.
 const maxImagePixels = 25 << 20
 
-// decodedSizeWithin reports whether the image's dimensions are within budget,
-// reading only the header. This is the whole defence: it must happen before any
-// full decode, because the allocation is the attack.
-func decodedSizeWithin(data []byte, limit int64) error {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+// maxDecodedBytes is the real budget, and the pixel cap above is the second
+// half of it.
+//
+// Counting pixels alone was wrong, and wrong in the direction that matters: it
+// assumed four bytes each. A 16-bit RGBA PNG decodes to EIGHT, so a 5120x5120
+// image — 26.2 megapixels, which passes the pixel cap — is 210 MB decoded, and
+// both encoders then run on it. Measured: one such file is 214 KB on the wire
+// and left 403 MB live on the heap, and five concurrent uploads of it reached
+// 1,990 MB. A reporting-role user uploading to their own ticket could do it,
+// which makes a 214 KB request a way to have the help desk killed for running
+// out of memory.
+//
+// 100 MB is what 25 megapixels was always meant to cost. Both caps are kept
+// because they bound different things: this one bounds the pixel buffer, and
+// the pixel count still bounds the per-pixel work the encoders do on a cheap
+// format — a 100-megapixel greyscale image is only 100 MB but is not something
+// a help desk receives.
+const maxDecodedBytes = 100 << 20
+
+// bytesPerPixel is how much heap one pixel of this colour model costs once
+// decoded.
+//
+// Unknown models get the worst case rather than a guess. The point of this
+// function is to be pessimistic where it is unsure: an underestimate is the
+// bug it exists to fix.
+func bytesPerPixel(m color.Model) int64 {
+	switch m {
+	case color.GrayModel, color.AlphaModel:
+		return 1
+	case color.Gray16Model, color.Alpha16Model:
+		return 2
+	case color.YCbCrModel:
+		// Three planes. 4:4:4 is the worst case and the only one worth
+		// budgeting for; a subsampled JPEG costs less.
+		return 3
+	case color.RGBAModel, color.NRGBAModel, color.CMYKModel:
+		return 4
+	case color.RGBA64Model, color.NRGBA64Model:
+		return 8
+	}
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	return 8
+}
+
+// decodedSizeWithin reports whether the image fits in budget, reading only the
+// header. This is the whole defence: it must happen before any full decode,
+// because the allocation is the attack.
+func decodedSizeWithin(data []byte, maxPixels, maxBytes int64) error {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return fmt.Errorf("reading image header: %w", err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
 		return fmt.Errorf("image reports a non-positive size (%dx%d)", cfg.Width, cfg.Height)
 	}
-	if px := int64(cfg.Width) * int64(cfg.Height); px > limit {
-		return fmt.Errorf("image is %dx%d (%d pixels); the limit is %d", cfg.Width, cfg.Height, px, limit)
+	px := int64(cfg.Width) * int64(cfg.Height)
+	if px > maxPixels {
+		return fmt.Errorf("image is %dx%d (%d pixels); the limit is %d", cfg.Width, cfg.Height, px, maxPixels)
+	}
+
+	// JPEG is asked directly, because its decoder allocates far more than the
+	// picture it produces and the colour model says nothing about it — and a
+	// JPEG this cannot read is REFUSED rather than fallen back on.
+	//
+	// The fallback was the hole. It took the colour model's number whenever
+	// the header could not be parsed, which is the number that does not know
+	// about progressive coefficients or RGB conversion — so anything that
+	// made the parser give up got the budget the parser exists to replace.
+	// Eight bytes of malformed tail did it: a real 5120x5120 progressive
+	// image estimated at 75 MB, accepted, and decoded to 375 MB.
+	//
+	// Every real JPEG parses. A JPEG this cannot read is one somebody built
+	// to be unreadable, and "I cannot tell how much memory this needs" is not
+	// a reason to allow it — it is the reason to refuse it. That is the
+	// difference between failing open and failing closed, and it is worth
+	// more than any single thing the parser knows: a future gap in it becomes
+	// a refusal rather than a way through.
+	need := px * bytesPerPixel(cfg.ColorModel)
+	switch format {
+	case "jpeg":
+		b, ok := jpegDecodeBytes(data)
+		if !ok {
+			return errors.New("this JPEG's header could not be read, so there is no way to tell " +
+				"how much memory decoding it would take")
+		}
+		need = b
+	case "png":
+		// A grayscale PNG carrying a tRNS chunk decodes four times wider than
+		// its colour model says, and DecodeConfig cannot tell you so.
+		//
+		// The reason is an ordering detail in image/png: DecodeConfig returns
+		// as soon as it reaches IDAT, and for a non-paletted image the colour
+		// model it reports comes from IHDR's colour type alone. There is no
+		// branch in it for transparency. But parsetRNS sets useTransparent,
+		// and readImagePass reads that flag and builds an NRGBA instead of a
+		// Gray, or an NRGBA64 instead of a Gray16.
+		//
+		// Measured, 5120x5120: 8-bit grayscale estimated at 25 MB and cost
+		// 100 MB; 16-bit estimated at 50 MB and cost 200 MB, which is twice
+		// the whole per-request budget on one upload. Both compress to almost
+		// nothing, because the pixels can all be the same value.
+		//
+		// Only grayscale moves. Truecolor allocates 4 or 8 bytes either way —
+		// RGBA without the chunk, NRGBA with it — and paletted stays one byte
+		// per pixel whatever its palette holds.
+		//
+		// Walking only as far as IDAT is safe here, unlike the equivalent
+		// question in JPEG, where a marker after the scan still counted. Go's
+		// decoder enforces chunk order: for a grayscale image tRNS is only
+		// accepted at dsSeenIHDR, so one placed after the pixel data is a
+		// chunkOrderError and the file does not decode at all.
+		if pngUsesTransparency(data) {
+			switch cfg.ColorModel {
+			case color.GrayModel:
+				need = px * 4 // image.NRGBA
+			case color.Gray16Model:
+				need = px * 8 // image.NRGBA64
+			}
+		}
+	}
+	if need > maxBytes {
+		return fmt.Errorf("image is %dx%d and would need %d MB to decode; the limit is %d MB",
+			cfg.Width, cfg.Height, need>>20, maxBytes>>20)
 	}
 	return nil
 }
 
+// pngUsesTransparency reports whether the decoder will treat this PNG as
+// carrying transparency — a tRNS chunk before the pixel data.
+//
+// It answers TRUE when the chunk stream cannot be walked, which is the
+// fail-closed direction: an unreadable stream is budgeted as though the
+// expensive thing were there rather than as though it were not. That is the
+// same rule the JPEG header follows, arrived at differently — a JPEG that
+// cannot be read is refused outright, but here refusing would throw out
+// files that decode perfectly well, so the conservative estimate does the
+// job instead.
+//
+// Walking only as far as IDAT is safe, unlike the equivalent question in
+// JPEG where a marker after the scan still counted. image/png enforces chunk
+// order: for a grayscale image tRNS is accepted only at dsSeenIHDR, so one
+// placed after the pixel data is a chunkOrderError and the file does not
+// decode at all.
+func pngUsesTransparency(data []byte) bool {
+	const sig = 8 // \x89PNG\r\n\x1a\n
+	if len(data) < sig {
+		return true
+	}
+	for off := sig; ; {
+		// length (4) + type (4) + data + crc (4)
+		if off+8 > len(data) {
+			return true
+		}
+		length := int64(binary.BigEndian.Uint32(data[off : off+4]))
+		switch string(data[off+4 : off+8]) {
+		case "tRNS":
+			return true
+		case "IDAT", "IEND":
+			return false
+		}
+		// int64 throughout: a length near 2^32 overflows an int on a 32-bit
+		// build, and the offset then walks backwards into a loop with no end.
+		next := int64(off) + 8 + length + 4
+		if length < 0 || next > int64(len(data)) {
+			return true
+		}
+		off = int(next)
+	}
+}
+
+// jpegDecodeBytes is what image/jpeg will allocate for this file, read out of
+// its own header. The second return is false for anything that is not a JPEG
+// with a frame header this understands.
+//
+// A budget built from the colour model alone was wrong for JPEG, and wrong in
+// the direction that matters. Two shapes get nowhere near their estimate:
+//
+//   - A progressive JPEG holds every DCT coefficient in memory until the
+//     image is reconstructed — 256 bytes per 8x8 block per component, which
+//     for 4:4:4 is twelve bytes a pixel on top of the three the picture
+//     needs.
+//   - A CMYK JPEG decodes into a YCbCr image, a separate black plane, and
+//     then a third CMYK image, so it costs roughly eight bytes a pixel where
+//     the colour model says four.
+//
+// Measured, both pass the pixel cap exactly at 5120x5120 and then allocate
+// four to six times the ceiling: a 308 KB progressive file leaves 375 MB
+// live, and a 615 KB progressive CMYK one leaves 600 MB. That is the same
+// denial of service the byte budget was written to close, arriving through a
+// file type this application accepts by default and any signed-in reporter
+// can upload.
+//
+// The arithmetic is the decoder's own, which is why it is worth reading the
+// header rather than applying a blanket surcharge: a blanket one large enough
+// to be safe for 4:4:4 would refuse ordinary 4:2:0 photographs, and this
+// matches every fixture measured to the megabyte.
+func jpegDecodeBytes(data []byte) (int64, bool) {
+	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
+		return 0, false
+	}
+
+	// Collected in one pass, because the decoder reads them all before it
+	// allocates anything and the order they arrive in is the file's choice.
+	var (
+		haveFrame   bool
+		progressive bool
+		width       int64
+		height      int64
+		comps       []sampling
+		ids         []byte
+
+		jfif                bool
+		adobeTransform      byte
+		adobeTransformValid bool
+	)
+
+	for i := 2; i+4 <= len(data); {
+		if data[i] != 0xFF {
+			i++
+			continue
+		}
+		marker := data[i+1]
+		// Markers that carry no length: padding, the standalone ones, and a
+		// stuffed zero.
+		//
+		// The zero matters. Go's decoder treats FF 00 outside a scan as
+		// extraneous and skips it; this used to read the next two bytes as a
+		// segment length, overrun the buffer, and give up — throwing away a
+		// frame header it had already parsed correctly. Eight bytes of tail
+		// were enough to do it. That is fixed at the other end too, by
+		// refusing a JPEG this cannot read rather than falling back, but a
+		// parser that agrees with the decoder is better than one that only
+		// fails safely when it disagrees.
+		if marker == 0x00 || marker == 0xFF || marker == 0x01 || marker == 0xD8 ||
+			(marker >= 0xD0 && marker <= 0xD7) {
+			i += 2
+			continue
+		}
+		// End of image. The decoder stops here and so does this.
+		if marker == 0xD9 {
+			break
+		}
+		segLen := int(data[i+2])<<8 | int(data[i+3])
+		if segLen < 2 || i+2+segLen > len(data) {
+			return 0, false
+		}
+
+		// Start of scan. Skip its header and then the compressed data after
+		// it, and keep going — do NOT stop here.
+		//
+		// Stopping at the scan was the obvious reading and it was wrong. Go's
+		// decoder keeps reading markers until end-of-image and decides
+		// whether the file is RGB at the very end, so an Adobe marker placed
+		// AFTER the scan data still flips it — and a parser that stopped at
+		// the scan never saw it. Measured: the same 5120x5120 image with its
+		// Adobe marker moved to just before end-of-image was estimated at
+		// 37 MB, sailed through the budget, and decoded to 137 MB. The whole
+		// value of this estimate is that the number means something.
+		//
+		// DecodeConfig stops at the scan too, so the colour-model fallback
+		// would not have caught it either.
+		if marker == 0xDA {
+			i += 2 + segLen
+			for i+1 < len(data) {
+				if data[i] != 0xFF {
+					i++
+					continue
+				}
+				// Inside compressed data a 0xFF is either stuffed with a
+				// following zero, a fill byte, or a restart marker. None of
+				// those ends the scan.
+				next := data[i+1]
+				if next == 0x00 || next == 0xFF || (next >= 0xD0 && next <= 0xD7) {
+					i += 2
+					continue
+				}
+				break
+			}
+			continue
+		}
+
+		payload := data[i+4 : i+2+segLen]
+
+		switch {
+		case marker == 0xE0: // APP0
+			jfif = len(payload) >= 5 && string(payload[:5]) == "JFIF\x00"
+
+		case marker == 0xEE: // APP14
+			if len(payload) >= 12 && string(payload[:5]) == "Adobe" {
+				adobeTransformValid = true
+				adobeTransform = payload[11]
+			}
+
+		case isJPEGFrameHeader(marker):
+			if len(payload) < 6 {
+				return 0, false
+			}
+			height = int64(payload[1])<<8 | int64(payload[2])
+			width = int64(payload[3])<<8 | int64(payload[4])
+			count := int(payload[5])
+			if width <= 0 || height <= 0 || count <= 0 || count > 4 {
+				return 0, false
+			}
+			if len(payload) < 6+3*count {
+				return 0, false
+			}
+			for c := range count {
+				b := payload[6+3*c:]
+				h := int64(b[1] >> 4)
+				v := int64(b[1] & 0x0f)
+				if h < 1 || v < 1 || h > 4 || v > 4 {
+					return 0, false
+				}
+				comps = append(comps, sampling{h, v})
+				ids = append(ids, b[0])
+			}
+			progressive = marker == 0xC2 || marker == 0xC6 || marker == 0xCA || marker == 0xCE
+			haveFrame = true
+		}
+		i += 2 + segLen
+	}
+
+	if !haveFrame {
+		return 0, false
+	}
+
+	var hmax, vmax int64 = 1, 1
+	for _, c := range comps {
+		hmax = max(hmax, c.h)
+		vmax = max(vmax, c.v)
+	}
+
+	// Blocks across and down, in units of the largest sampling factor.
+	mxx := (width + 8*hmax - 1) / (8 * hmax)
+	myy := (height + 8*vmax - 1) / (8 * vmax)
+
+	var total int64
+	for _, c := range comps {
+		total += (mxx * 8 * c.h) * (myy * 8 * c.v)
+		if progressive {
+			total += mxx * myy * c.h * c.v * 256
+		}
+	}
+
+	// A whole second image, at full resolution, whenever the decoder converts
+	// rather than returning the planes it already has.
+	//
+	// Four components is the CMYK case: applyBlack builds a CMYK image beside
+	// the planes and the black plane. Three components does it too whenever
+	// the file says it is RGB rather than YCbCr, which was missed the first
+	// time and is not a rare shape — cjpeg -rgb writes one, and so does
+	// anything Adobe tags with transform 0. Measured, a 6 MB RGB 4:4:4 file
+	// estimated at 75 MB and left 175 MB live.
+	//
+	// The test for RGB is the decoder's own, because guessing it wrong in
+	// either direction is expensive: assume every three-component file
+	// converts and an ordinary 24-megapixel 4:2:0 photograph goes from 34 MB
+	// to 130 MB and is refused.
+	if len(comps) == 4 || jpegIsRGB(jfif, adobeTransformValid, adobeTransform, ids) {
+		total += width * height * 4
+	}
+	return total, true
+}
+
+// jpegIsRGB mirrors image/jpeg's own isRGB: a three-component file whose
+// samples are red, green and blue rather than luma and chroma. The decoder
+// allocates a whole extra image to convert one.
+//
+// JFIF settles it: that header means YCbCr, whatever else the file says.
+// Otherwise an Adobe marker with a transform of zero means RGB, and failing
+// that the component identifiers are read as letters — 'R', 'G', 'B'.
+func jpegIsRGB(jfif, adobeValid bool, adobeTransform byte, ids []byte) bool {
+	if len(ids) != 3 {
+		return false
+	}
+	if jfif {
+		return false
+	}
+	if adobeValid && adobeTransform == 0 {
+		return true
+	}
+	return ids[0] == 'R' && ids[1] == 'G' && ids[2] == 'B'
+}
+
+// isJPEGFrameHeader reports whether a marker starts a frame header (SOF0
+// through SOF15, less the two that are not frames: DHT at 0xC4 and DAC at
+// 0xC8).
+func isJPEGFrameHeader(m byte) bool {
+	return m >= 0xC0 && m <= 0xCF && m != 0xC4 && m != 0xC8
+}
+
+// imageWork bounds how many images are decoded and re-encoded at once.
+//
+// The size check above bounds ONE request. Nothing bounds how many arrive
+// together, and the handler has no other concurrency limit — the rate limiter
+// covers login, signup and guest resend, not uploads. Five requests each
+// legitimately inside the budget still add up, so the budget has to be a
+// budget for the process, not for a request.
+//
+// A package-level value rather than a field on Server, deliberately and
+// against the usual rule: what this protects is the machine's memory. Two
+// Servers in one test process share one heap, and a limiter each would not
+// bound it.
+var imageWork = make(chan struct{}, 4)
+
 func compressImage(data []byte, ext string) ([]byte, string, error) {
 	// Before the decode, never after.
-	if err := decodedSizeWithin(data, maxImagePixels); err != nil {
+	if err := decodedSizeWithin(data, maxImagePixels, maxDecodedBytes); err != nil {
 		return nil, "", err
 	}
+
+	imageWork <- struct{}{}
+	defer func() { <-imageWork }()
 
 	var img image.Image
 	var err error
@@ -112,13 +524,37 @@ func compressImage(data []byte, ext string) ([]byte, string, error) {
 		return nil, "", fmt.Errorf("decoding image: %w", err)
 	}
 
-	var jpegBuf, pngBuf bytes.Buffer
-
-	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
-		return nil, "", fmt.Errorf("encoding JPEG: %w", err)
-	}
+	var pngBuf bytes.Buffer
 	if err := png.Encode(&pngBuf, img); err != nil {
 		return nil, "", fmt.Errorf("encoding PNG: %w", err)
+	}
+
+	// JPEG is only a candidate for an image with nothing transparent in it.
+	//
+	// JPEG has no alpha channel, so encoding a transparent image to it does
+	// not compress the transparency — it deletes it, replacing every
+	// see-through pixel with opaque black. Measured: a 313 KB PNG with a
+	// fully transparent half came back 37 KB, "smaller", and every pixel that
+	// had been invisible was black. The file kept its .png name, so the
+	// person who uploaded a logo or an annotated screenshot got back a
+	// different picture under the name they chose, with nothing said.
+	//
+	// Smaller is the wrong question when the two candidates are not the same
+	// image. Every type the standard library decodes answers Opaque; an
+	// unknown one is assumed to have transparency, because the cost of being
+	// wrong that way is a larger file and the cost of being wrong the other
+	// way is a destroyed one.
+	opaque := false
+	if o, ok := img.(interface{ Opaque() bool }); ok {
+		opaque = o.Opaque()
+	}
+	if !opaque {
+		return pngBuf.Bytes(), ".png", nil
+	}
+
+	var jpegBuf bytes.Buffer
+	if err := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: jpegQuality}); err != nil {
+		return nil, "", fmt.Errorf("encoding JPEG: %w", err)
 	}
 
 	if jpegBuf.Len() <= pngBuf.Len() {
@@ -154,8 +590,42 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Parse the multipart body. Limit memory; spill to temp files.
+	// This body is up to 25 MB and the server-wide read deadline assumes a
+	// body is a JSON document. See bodyTransferTimeout.
+	//
+	// Best effort: SetReadDeadline fails on a connection that does not
+	// support one, which in this codebase means a test using an unusual
+	// transport. Failing the upload over it would be worse than keeping the
+	// shorter deadline.
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
+	}
+
+	// Cap the body before parsing it, not after.
+	//
+	// ParseMultipartForm's argument is a MEMORY limit, not a body limit:
+	// everything past it spills to a temp file with no ceiling, so a 120 MB
+	// body was read to completion and written to disk in full before the
+	// handler answered 413. Any authenticated user could run several at once
+	// and fill the container's writable layer. MaxBytesReader stops the read
+	// at the limit instead, which is what the logo handler already does.
+	//
+	// The extra megabyte is for the multipart framing — boundaries, part
+	// headers, the field name — so that a file of exactly attachMaxBytes is
+	// refused by the size check below, with the message about the size, and
+	// not by the reader with a parse error.
+	r.Body = http.MaxBytesReader(w, r.Body, attachMaxBytes+(1<<20))
+
 	if err := r.ParseMultipartForm(attachMaxBytes); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			// The same status, code and message the two size checks further
+			// down already return, so a client that handles one handles all
+			// three. The only difference is where it is decided: here, before
+			// the body has been read, rather than after.
+			Error(w, http.StatusRequestEntityTooLarge, "too_large", "file exceeds 25 MB limit")
+			return
+		}
 		Error(w, http.StatusBadRequest, "bad_request", "could not parse upload")
 		return
 	}
@@ -200,6 +670,27 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	if !utf8.ValidString(origName) || strings.ContainsRune(origName, 0) {
 		Error(w, http.StatusBadRequest, "invalid_filename",
 			"filename must be valid UTF-8 and contain no NUL")
+		return
+	}
+
+	// And no character whose job is to make the name display as something
+	// other than what it is.
+	//
+	// Three families, all accepted before this and all stored verbatim:
+	// C0 and C1 control characters, including ESC — so a name carrying a
+	// terminal escape sequence coloured or moved the cursor in any log or
+	// shell that printed it, and CR LF split it across lines; and the bidi
+	// overrides, where U+202E turns "invoice<U+202E>txt.pdf" into
+	// "invoicefdp.txt" on screen, which is the oldest trick there is for
+	// making an executable look like a document.
+	//
+	// The download header already strips ASCII controls, so this is not about
+	// the header. It is about every other place the name is shown — the
+	// ticket page, a log line, the entry name inside a quarantine archive —
+	// none of which can sanitise a name they were handed as truth.
+	if i := strings.IndexFunc(origName, deceptiveRune); i >= 0 {
+		Error(w, http.StatusBadRequest, "invalid_filename",
+			"filename contains a control or text-direction character")
 		return
 	}
 
@@ -456,12 +947,23 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// Write to disk with obfuscated filename: <uuid><ext>
 	storageID := uuid.New()
 	subdir := filepath.Join(s.cfg.AttachmentDir, attachSubdir, ticketID.String())
-	if err := os.MkdirAll(subdir, 0o755); err != nil {
+	// 0700 and 0600, not 0755 and 0644. Nothing but this process ever reads
+	// these files — they are served through a handler that checks who is
+	// asking — and on a host where the help desk shares a machine with other
+	// accounts, world-readable meant every local user could read every
+	// customer's attachments, quarantined malware included. Inside the Docker
+	// image this changes nothing; outside it, it is the difference.
+	if err := os.MkdirAll(subdir, 0o700); err != nil {
 		Error(w, http.StatusInternalServerError, "storage_error", "could not create storage directory")
 		return
 	}
 	diskPath := filepath.Join(subdir, storageID.String()+storedExt)
-	if err := os.WriteFile(diskPath, data, 0o644); err != nil {
+	if err := os.WriteFile(diskPath, data, 0o600); err != nil {
+		// A partial write leaves a file behind, and nothing in this system
+		// ever deletes an attachment file — so an orphan is permanent. The
+		// database-failure path below already cleans up after itself; this
+		// one did not.
+		_ = os.Remove(diskPath)
 		Error(w, http.StatusInternalServerError, "storage_error", "could not write file")
 		return
 	}
@@ -875,6 +1377,13 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Vary", "Sec-Fetch-Dest")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 
+	// The same reasoning as the upload, pointing the other way: a 25 MB file
+	// leaving over a slow link outlasts the server-wide 30s write deadline
+	// and the download is cut off part-written. See bodyTransferTimeout.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+		slog.DebugContext(r.Context(), "could not extend the download write deadline", "error", err)
+	}
+
 	// ServeContent, not io.Copy: it handles range requests and conditional
 	// gets. It would otherwise set Content-Type by sniffing the body, which is
 	// exactly what this function has just decided against — so the header is
@@ -1182,3 +1691,33 @@ func shippedExt(ext string) bool {
 	_, ok := allowedExt[ext]
 	return ok
 }
+
+// deceptiveRune reports whether a rune's purpose is to make text display as
+// something other than what it is.
+//
+// The C0 and C1 control blocks, plus the bidirectional formatting characters.
+// Tab, carriage return and newline are in C0 and are refused with the rest:
+// none of them belongs in a filename, and a name that splits across two lines
+// in a log is exactly the problem.
+//
+// The bidi set is the whole of it, not just U+202E. An override can be opened
+// with LRO or RLO and closed with PDF, and the isolates (U+2066-U+2069) do the
+// same job with different characters — leaving any one of them in means the
+// trick still works, with one more keystroke.
+func deceptiveRune(r rune) bool {
+	switch {
+	case r < 0x20, r == 0x7F: // C0 and DEL
+		return true
+	case r >= 0x80 && r <= 0x9F: // C1
+		return true
+	case r >= 0x202A && r <= 0x202E: // LRE, RLE, PDF, LRO, RLO
+		return true
+	case r >= 0x2066 && r <= 0x2069: // LRI, RLI, FSI, PDI
+		return true
+	}
+	return false
+}
+
+// sampling is one JPEG component's horizontal and vertical sampling factors,
+// which is what decides how much of the image that component's plane holds.
+type sampling struct{ h, v int64 }

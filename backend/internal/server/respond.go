@@ -56,7 +56,10 @@ func DecodeJSON(r *http.Request, dst any) error {
 
 // handleError maps common sentinel errors to HTTP status codes.
 func handleError(w http.ResponseWriter, err error) {
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) {
+	// user.ErrNotFound as well as userstore.ErrNotFound: the store sentinel
+	// WRAPS the domain one, so errors.Is does not run the other way, and a
+	// domain method returning the bare sentinel fell through to 500.
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
@@ -67,6 +70,20 @@ func handleError(w http.ResponseWriter, err error) {
 	// Not a permission problem: the caller may well own this ticket. The ticket
 	// is in a state that does not accept the change, which is what 409 is for.
 	// It fell through to 500 for the same reason ErrForbidden did.
+	// The caller asked for something the ticket's state does not allow, or
+	// sent a value that is not one. Neither is a server fault, and both used
+	// to fall through to 500 "an internal error occurred" — which tells
+	// somebody their own ordinary mistake is a bug here.
+	if errors.Is(err, ticket.ErrValidation) {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	// 409, like ErrClosed: the ticket's state refuses a reopen, not the
+	// caller's permissions. Was a bare error falling through to 500 (#277).
+	if errors.Is(err, ticket.ErrNotClosed) {
+		Error(w, http.StatusConflict, "ticket_not_closed", "only a closed ticket can be reopened")
+		return
+	}
 	if errors.Is(err, ticket.ErrClosed) {
 		Error(w, http.StatusConflict, "ticket_closed", "this ticket is closed")
 		return
@@ -116,6 +133,14 @@ func handleError(w http.ResponseWriter, err error) {
 	// Bad input, not a fault. Without this a mistyped email address at signup,
 	// or on an admin's user edit, came back as 500 "an internal error
 	// occurred" and was logged as one.
+	// Checked before the general validation arm below, which it is a kind of:
+	// a taken address is a conflict, and saying so lets the admin form tell
+	// the difference between "that is not an address" and "somebody already
+	// has it".
+	if errors.Is(err, user.ErrEmailTaken) {
+		Error(w, http.StatusConflict, "email_taken", err.Error())
+		return
+	}
 	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

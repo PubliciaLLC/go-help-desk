@@ -158,7 +158,7 @@ export function GuestTicketViewPage() {
               aria-label="Add a reply"
             />
             {send.isError && (
-              <p className="text-sm text-red-600">
+              <p role="alert" className="text-sm text-red-600">
                 We could not add your reply. The ticket may have been closed.
               </p>
             )}

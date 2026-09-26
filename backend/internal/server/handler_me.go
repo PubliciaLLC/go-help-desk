@@ -3,10 +3,12 @@ package server
 import (
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 
 	qrcode "github.com/skip2/go-qrcode"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -15,6 +17,24 @@ import (
 // GET /api/v1/me
 func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
+
+	// An OAuth client is not a person, and this route is deliberately open to
+	// machine credentials because an integration legitimately needs to know
+	// what it is acting as. It used to look up the nil user id and answer
+	// 404 "user 00000000-0000-0000-0000-000000000000", which is nonsense
+	// dressed as an error.
+	//
+	// What it can honestly say is what the credential is: its role and the
+	// scopes it holds, which is the part an integration checks.
+	if a.UserID == uuid.Nil {
+		JSON(w, http.StatusOK, map[string]any{
+			"machine": true,
+			"role":    a.Role,
+			"scopes":  a.Scopes,
+		})
+		return
+	}
+
 	u, err := s.users.GetByID(r.Context(), a.UserID)
 	if err != nil {
 		handleError(w, err)
@@ -27,17 +47,50 @@ func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+		// Deprecated: the original name for NewPassword. Kept so an API
+		// consumer using it is not broken by the rename; it is only honoured
+		// when new_password is absent, and current_password is required
+		// either way.
 		Password string `json:"password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if len(body.Password) < 8 {
-		Error(w, http.StatusBadRequest, "bad_request", "password must be at least 8 characters")
+	next := body.NewPassword
+	if next == "" {
+		next = body.Password
+	}
+	if len(next) < user.MinPasswordLength {
+		Error(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("password must be at least %d characters", user.MinPasswordLength))
 		return
 	}
-	if err := s.users.SetPassword(r.Context(), a.UserID, body.Password); err != nil {
+
+	// The current password, checked.
+	//
+	// It was not asked for at all: a session cookie was the whole of it. So
+	// anyone who got hold of a session — a shared machine left unlocked, a
+	// stolen cookie — could set a new password, and the owner was locked out
+	// of their own account permanently, because the change also revokes every
+	// other session. The cost of asking is one field; the cost of not asking
+	// is that a borrowed session becomes a taken account.
+	//
+	// The frontend's API client has sent current_password since it was
+	// written. Nothing read it.
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if _, err := s.users.VerifyPassword(r.Context(), u.Email, body.CurrentPassword); err != nil {
+		Error(w, http.StatusUnauthorized, "invalid_credentials", "current password is incorrect")
+		return
+	}
+
+	if err := s.users.SetPassword(r.Context(), a.UserID, next); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -119,8 +172,10 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	// Same durable budget as verification: this also takes a six-digit code.
-	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+	// Same durable budget as verification, and spent the same way: before the
+	// code is checked, so concurrent attempts cannot all pass an unchanged
+	// count.
+	if err := s.users.ClaimMFAAttempt(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
 			tooManyAttempts(w, user.MFALockDuration)
 			return
@@ -132,10 +187,6 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
 
 	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code); err != nil {
-		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
-			handleError(w, lockErr)
-			return
-		}
 		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
 		return
 	}

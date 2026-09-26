@@ -1,6 +1,10 @@
 package config
 
-import "github.com/kelseyhightower/envconfig"
+import (
+	"time"
+
+	"github.com/kelseyhightower/envconfig"
+)
 
 // Config holds all runtime configuration loaded from environment variables.
 type Config struct {
@@ -23,7 +27,30 @@ type Config struct {
 	//
 	// Only failures count and a correct password is always honoured, so this
 	// cannot be used to lock someone out of their own account.
+	//
+	// It caps the status code, not the guessing: see AuthThrottleDelay, which
+	// is what actually limits throughput.
 	AuthRateLimitPerMinute int `envconfig:"AUTH_RATE_LIMIT_PER_MINUTE" default:"10"`
+
+	// AuthThrottleDelay is how long a login for an account that has spent its
+	// budget waits before the password is checked.
+	//
+	// The counter above could not limit guessing on its own, and measuring it
+	// showed exactly that: with a limit of three, eight wrong guesses answered
+	// 401 401 401 429 429 429 429 429 — and every one of those 429s had still
+	// run the password check. An attacker who ignores the status code had
+	// unlimited online guesses, bounded only by this server's bcrypt
+	// throughput, around ten to fifteen a second per core. MFA is off by
+	// default, so on most instances that was the only online defence.
+	//
+	// The delay is taken one request at a time per account, so it bounds
+	// guesses per second rather than just slowing each one down. A legitimate
+	// user is never refused — their correct password still works, one second
+	// later — which is the property the ordering of this handler exists to
+	// protect.
+	//
+	// 0 disables it, which the test harness uses.
+	AuthThrottleDelay time.Duration `envconfig:"AUTH_THROTTLE_DELAY" default:"1s"`
 
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`
 	JWTSecret     string `envconfig:"JWT_SECRET" required:"true"`
@@ -34,11 +61,7 @@ type Config struct {
 	SMTPUser     string `envconfig:"SMTP_USER"`
 	SMTPPassword string `envconfig:"SMTP_PASSWORD"`
 	SMTPFrom     string `envconfig:"SMTP_FROM"`
-
-	// Features
-	GuestSubmissionEnabled bool `envconfig:"GUEST_SUBMISSION_ENABLED" default:"false"`
-	SLAEnabled             bool `envconfig:"SLA_ENABLED" default:"false"`
-	MFAEnabled             bool `envconfig:"MFA_ENABLED" default:"false"`
+	SLAEnabled   bool   `envconfig:"SLA_ENABLED" default:"false"`
 
 	// Storage
 	AttachmentDir string `envconfig:"ATTACHMENT_DIR" default:"/data/attachments"`

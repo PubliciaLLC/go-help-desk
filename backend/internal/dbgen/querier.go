@@ -6,6 +6,7 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 
@@ -17,10 +18,92 @@ type Querier interface {
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
 	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
+	// Binds an OIDC subject to a local account found by email address, and
+	// reports whether it applied.
+	//
+	// The conditions are the adoption rules, asked at the write rather than by
+	// the caller: the account is live, it is not an administrator, it does not
+	// federate via SAML, and it is not already bound to a different OIDC
+	// subject. Adoption hands an account to whoever the identity provider says
+	// owns that address, so every one of them matters.
+	//
+	// One statement, because this used to be a read, a check in Go, and a write
+	// of the whole row. That carried role, password hash and MFA state from the
+	// read back over anything an administrator changed in between, and the checks
+	// themselves were answered from the same stale copy: an account promoted
+	// between the read and the write was adopted anyway, as an administrator.
+	//
+	// The Go-side check still runs first, because it is what tells the person
+	// WHICH rule refused them. This one is what binds.
+	AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error)
+	// Whether a category/type/item triple exists and hangs together: the type
+	// belongs to the category, and the item belongs to the type.
+	//
+	// One question rather than three, because the foreign keys are the only thing
+	// that was asking and they speak at the INSERT — after the tracking number
+	// has been taken. Verified: five refused creates advanced the sequence by
+	// five. REST checked that the type belonged to the category; MCP checked
+	// neither; nobody checked the item at all, and there is no composite key for
+	// item-to-type, so a ticket could carry a type and an item that do not go
+	// together and then be routed on that.
+	CTIIsCoherent(ctx context.Context, arg CTIIsCoherentParams) (sql.NullBool, error)
+	// Whether a category id is real. Checked before a tracking number is taken,
+	// because the foreign key only speaks at the INSERT — by which point the
+	// number is gone and the sequence has a permanent gap. Staff and MCP were
+	// never validated here; only a reporting user's category was checked, and
+	// that check is about whether the category is OPEN to them, not whether it
+	// exists.
+	CategoryExists(ctx context.Context, id uuid.UUID) (bool, error)
+	// Takes one attempt off the account's TOTP budget, and reports what is left.
+	//
+	// Called BEFORE the code is checked, which is the whole point. The previous
+	// order was read the lock, check the code, then count a failure -- three
+	// statements, and every request that started before the first UPDATE landed
+	// read "not locked" and went on to verify. Measured against the real server:
+	// forty parallel wrong codes, thirty-six of them verified, limit five. An
+	// attacker holding the password -- the exact case MFA exists for -- got a few
+	// hundred guesses per window instead of five.
+	//
+	// One UPDATE has no such window. Concurrent updates of one row serialise in
+	// Postgres and each re-reads the row it is updating, so forty requests take
+	// the numbers one to forty and the caller refuses everything past the budget.
+	//
+	// Three cases, in the order the CASE tests them:
+	//
+	//   locked and still locked   the count keeps rising and the deadline does
+	//                             NOT move, so an attacker hammering a locked
+	//                             account cannot hold the owner out forever by
+	//                             pushing the lock further away.
+	//   locked and expired        the window is over: back to one, lock cleared.
+	//                             Without this the count stays at the maximum and
+	//                             the next single attempt re-locks immediately.
+	//   not locked                count it, and lock once the budget is spent.
+	ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams) (ClaimMFAAttemptRow, error)
 	ClearMFA(ctx context.Context, id uuid.UUID) error
 	// Called after a correct code. NIST SP 800-63B has the verifier disregard
 	// prior failed attempts once the user authenticates successfully.
 	ClearMFAFailures(ctx context.Context, id uuid.UUID) error
+	// Every row, including disabled and soft-deleted accounts.
+	//
+	// This is what gates /setup, and the filtered count above is why it had to
+	// exist. Soft-delete or disable every account -- which an administrator can do
+	// to their own, sole, admin account, since nothing stops them -- and the
+	// filtered count returns zero, /setup/status answers {"needed": true}, and
+	// anyone on the internet can POST /setup and be handed an administrator over
+	// the existing data: every ticket, every customer, every attachment.
+	//
+	// "Setup is permanently blocked once complete" is what the design says. A
+	// count of live accounts cannot express "permanently"; a count of rows can,
+	// because nothing in this system hard-deletes a user.
+	CountAllUsers(ctx context.Context) (int64, error)
+	// How many administrators this instance would still have if $1 stopped being
+	// one.
+	//
+	// Nothing stopped an administrator disabling, demoting or deleting their own
+	// sole admin account: all three answered 200 or 204, the next request was 401,
+	// and setup does not reopen (HasUsers counts every row, deliberately). The
+	// instance was then left with no way in at all short of editing the database.
+	CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error)
 	// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
 	// stamps only mean something against the policy that set them. Counting first
 	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
@@ -90,6 +173,60 @@ type Querier interface {
 	DeleteType(ctx context.Context, id uuid.UUID) error
 	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
 	DisableUser(ctx context.Context, id uuid.UUID) error
+	// Disables a user, refusing if that would leave the instance with no active
+	// administrator. Returns the id when it applied, nothing when it did not.
+	//
+	// Count and write in one statement, locking every active administrator row
+	// first. Counting in Go and then writing was two statements with nothing
+	// between them, and it lost: two parallel requests both counted before either
+	// wrote. Measured, twenty-eight rounds in thirty ended with zero
+	// administrators — and it did not need two people. One administrator sending
+	// "remove Bob" and "remove me" together did it every time.
+	//
+	// The target carries `deleted_at IS NULL` of its own. The guard counted the
+	// OTHER administrators as live ones, but the row it wrote was matched on id
+	// alone — so an administrator holding a soft-deleted account's id could still
+	// act on it, and SetUserRoleUnlessLastAdmin would happily mark a deleted row
+	// `admin`. It could not tip the live-administrator count either way, since a
+	// deleted row was never counted, and nothing restores such a row today. It is
+	// closed anyway: a guarantee that holds only because no restore path happens
+	// to exist is one that breaks the day somebody writes one.
+	//
+	// deleted_at and not disabled: a suspended account is still an account, and
+	// demoting, deleting or re-disabling one is ordinary administration. A
+	// deleted account is gone.
+	//
+	// FOR UPDATE over ALL of them, not just the others, because the lock sets
+	// have to overlap: locking only the other administrators means two requests
+	// lock different rows and neither waits. ORDER BY id so two of these cannot
+	// deadlock. When the second one unblocks, Postgres re-checks the locked rows
+	// against the WHERE, so a row the first request just demoted is no longer
+	// counted.
+	DisableUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Whether any row holds this address, INCLUDING a deleted one.
+	//
+	// GetUserByEmail hides deleted rows, which is right for logging in and wrong
+	// for this: the unique constraint is on every row, so a deleted account still
+	// owns its address. Checking with the login query meant a signup for a
+	// deleted account's address was accepted, a verification email went out, and
+	// the link failed at the end with "invalid or already used token" — which is
+	// exactly the dead end that check was added to prevent.
+	EmailIsTaken(ctx context.Context, email string) (bool, error)
+	// Turns MFA on using whatever secret the row still holds, and reports whether
+	// it applied.
+	//
+	// The flag and nothing else. ConfirmMFAEnrollment used to read the row,
+	// validate a code against the secret it found, and then write that same
+	// secret back alongside the flag — a read-modify-write with a TOTP validation
+	// in the middle of it. An administrator's "reset MFA" committing in that
+	// window was undone: the cleared secret came back and MFA was re-enabled with
+	// the authenticator the reset existed to revoke.
+	//
+	// Writing only the flag removes the carried copy. The `mfa_secret <> ''` test
+	// is what makes the reset win: once the secret is cleared there is nothing to
+	// enable, no row comes back, and the caller reports that enrolment was
+	// reset rather than silently turning MFA on against an empty secret.
+	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	EnableUser(ctx context.Context, id uuid.UUID) error
 	// The four tiers DESIGN.md documents, most specific first:
 	//   1. Priority + Category
@@ -136,6 +273,22 @@ type Querier interface {
 	// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 	// PKCE verifier) into a session before anybody has authenticated, and an inner
 	// join would drop those and break the login it is protecting.
+	// The role comes back with it, and it is the one in the database rather than
+	// the one in the cookie.
+	//
+	// The session payload carries a role, written when the session was minted.
+	// That made the cookie the authority on what somebody may do, and it went
+	// stale exactly when it mattered: demoting an administrator revokes their
+	// sessions, but a request already in flight — a password change, which the
+	// account holder can time and which spends 50-odd milliseconds hashing —
+	// finished afterwards and minted a NEW session carrying the role it had read
+	// on the way in. The demotion was in the database and the attacker was an
+	// administrator again. Measured: the demotion landed 52ms into a 93ms
+	// request, and the re-issued cookie read /admin/users afterwards.
+	//
+	// Disabling and deleting were never vulnerable to this, because the join
+	// below already drops those rows on every request. Role was the one piece of
+	// authority left being carried rather than looked up.
 	GetSession(ctx context.Context, id string) (GetSessionRow, error)
 	GetSetting(ctx context.Context, key string) (json.RawMessage, error)
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
@@ -187,10 +340,49 @@ type Querier interface {
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
+	// Whether a group can be given a ticket. An unknown id used to reach the
+	// foreign key and answer 500 for what is a caller's typo.
+	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
+	// Whether a user can be given a ticket: the account exists, is not deleted,
+	// is not disabled, and is staff. A reporting user is not a queue.
+	//
+	// Asked inside the assignment transaction rather than by the caller, because
+	// the caller is not the only caller. The REST handler checked this and MCP
+	// did not, so `assign_ticket` happily put tickets on deleted accounts and on
+	// reporting users — and a check the caller makes is a check every future
+	// caller has to remember to make. This one is where the write is.
+	// FOR SHARE, so a delete cannot land between this check and the write.
+	//
+	// A plain read let them interleave: the check passed, a concurrent request
+	// soft-deleted the account and unassigned its tickets (finding none, because
+	// this one was not written yet), and then this transaction committed the
+	// assignment — leaving the ticket on a deleted account, which is the limbo
+	// the unassign-on-delete work exists to prevent. The share lock makes the
+	// delete wait for this transaction instead.
+	IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)
 	ListAllTickets(ctx context.Context, arg ListAllTicketsParams) ([]ListAllTicketsRow, error)
+	// The people work can be given to: active staff and administrators, name and
+	// id only.
+	//
+	// Staff had no way to read a list of users at all — /admin/users is
+	// administrator-only — so the assignee picker on the ticket page was empty
+	// for every staff member, and no name could be resolved for anybody. The page
+	// had to guess, and guessed wrong.
+	//
+	// Everyone who is not deleted, with a flag for whether work can be given to
+	// them. The flag rather than a filter, because the page needs both answers:
+	// who can be picked, and whose name to show on a ticket that is already
+	// assigned. Filtering to the assignable ones made a suspended colleague, or
+	// one moved to a reporting role, render as "Former staff member" — which is a
+	// statement about somebody having left, and it was not true. Re-enabling them
+	// would have made the name reappear.
+	//
+	// Deliberately narrow: an id, a display name and that flag. No email, no
+	// role, no login state — that is the administrator's view.
+	ListAssignableStaff(ctx context.Context) ([]ListAssignableStaffRow, error)
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
@@ -209,7 +401,17 @@ type Querier interface {
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
 	ListOAuthClients(ctx context.Context) ([]OauthClient, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
-	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error)
+	// The author's display name comes back with the reply.
+	//
+	// Without it the ticket page had nothing but author_id to render, and rendered
+	// it: every reply from a registered account showed as a bare UUID, so a staff
+	// member reading a thread could not tell who had said what. A join here rather
+	// than a lookup in the browser, because the page cannot do the lookup for a
+	// reporting user -- it is not allowed to list users, and should not be.
+	//
+	// LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+	// where there is genuinely no account behind the message.
+	ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRepliesRow, error)
 	// status_id is the Resolved status's id. Without this filter, a row that
 	// satisfies resolved_at < $1 but sits in a different status (a legacy row
 	// moved off Resolved by old code that cleared status_id without clearing
@@ -357,16 +559,65 @@ type Querier interface {
 	// of two.
 	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// Writes only the TOTP secret and whether it is enabled. Same reason: the
+	// enrolment confirmation read the whole row, checked a code, and wrote every
+	// column back over whatever had happened in between.
+	SetUserMFA(ctx context.Context, arg SetUserMFAParams) error
+	// Writes only the password hash.
+	//
+	// SetPassword used to read the whole row, spend 45 to 66 milliseconds on
+	// bcrypt, and then write every column back — so anything committed during
+	// that window was undone. The window is controlled by the account holder,
+	// which is what makes it serious: demote a compromised account, and a
+	// password change already in flight writes `admin` back over the demotion.
+	// The attacker then signs in, with their new password, as an administrator.
+	// The same window undoes an administrator's MFA reset and reverts a
+	// corrected email address.
+	//
+	// AdminSetPassword has always been a narrow statement. This is the same thing
+	// for the self-service path, which is the one an attacker can drive.
+	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
+	// The same guard for a role change. See DisableUserUnlessLastAdmin.
+	//
+	// A separate statement from UpdateUser because a role change is a different
+	// operation from renaming somebody: it revokes sessions, it is refused to
+	// machine credentials, and it is the one that can leave an instance with no
+	// administrator.
+	SetUserRoleUnlessLastAdmin(ctx context.Context, arg SetUserRoleUnlessLastAdminParams) (uuid.UUID, error)
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
+	// The same guard for deletion. See DisableUserUnlessLastAdmin.
+	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// Sets only the breach columns, and only where still NULL. Two evaluators
 	// racing on the same row cannot overwrite each other's stamp or, worse, the
 	// request path's first_response_at / resolved_at. A stamp, once set, is a
 	// fact about what happened (DESIGN.md) and is never cleared here.
 	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error
+	// What a federated login is allowed to change about an account it recognises:
+	// the address, the name, and nothing else.
+	//
+	// The known-identity paths of the SAML and OIDC upserts wrote the whole row
+	// on every sign-in, carrying role, password hash and MFA state from a read a
+	// few statements earlier. A login is something the account holder triggers at
+	// will, so a demotion or a password reset landing in that window was written
+	// back by the next sign-in.
+	SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
+	// Takes a departing user off every ticket still assigned to them, and says
+	// which ones.
+	//
+	// Deleting a user is a soft delete, so the assignee column kept pointing at a
+	// row that no longer appears anywhere: the ticket showed as "Unassigned" on
+	// the page (the lookup found nobody), was NOT in the unassigned queue (the
+	// column was not null), and was in nobody's "assigned to me". It sat in the
+	// gap between the two lists with nothing to prompt anyone to pick it up.
+	//
+	// Only tickets that are still open are worth moving. A resolved or closed
+	// ticket assigned to somebody who has left is history, and history should
+	// record who actually handled it.
+	UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error
@@ -382,6 +633,19 @@ type Querier interface {
 	UpdateTicketCTI(ctx context.Context, arg UpdateTicketCTIParams) error
 	UpdateType(ctx context.Context, arg UpdateTypeParams) error
 	UpdateUser(ctx context.Context, arg UpdateUserParams) error
+	// The parts of a user an administrator edits: the address and the name.
+	//
+	// Its own statement because UpdateUser writes the WHOLE row from a struct
+	// read earlier in the request — role, password hash, MFA secret, federated
+	// subjects — so anything that changed in between was silently written back.
+	// Measured: read a user for a rename, have them change their password, let
+	// the rename land, and the new password is refused while the old one works
+	// again. The same shape undoes an MFA enrolment and another administrator's
+	// role change.
+	//
+	// A rename should rename. Everything else has its own path, and the role has
+	// a guarded one.
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error
 	// Records a completed lookup.
 	//
@@ -435,6 +699,10 @@ type Querier interface {
 	// reason inverted: a frozen, earlier now() would keep an expired session
 	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
+	// Whether a live account holds this id. Used for a supplied reporter, which
+	// unlike an assignee may be any role — a ticket is filed on behalf of whoever
+	// it is about.
+	UserExists(ctx context.Context, id uuid.UUID) (bool, error)
 }
 
 var _ Querier = (*Queries)(nil)

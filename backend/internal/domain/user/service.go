@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Service orchestrates user-related business operations.
@@ -107,6 +109,14 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 	}
 	switch {
 	case in.Password != "":
+		// The same minimum every other path applies. Admin create and
+		// first-run setup accepted one character; a one-character password on
+		// an administrator account created during setup is the worst case of
+		// the four and was the least guarded.
+		if len(in.Password) < MinPasswordLength {
+			return User{}, fmt.Errorf("%w: password must be at least %d characters",
+				ErrValidation, MinPasswordLength)
+		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.hashCost)
 		if err != nil {
 			return User{}, fmt.Errorf("hashing password: %w", err)
@@ -116,6 +126,9 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 		u.PasswordHash = in.PasswordHash
 	}
 	if err := s.store.Create(ctx, u); err != nil {
+		if isUniqueViolation(err) {
+			return User{}, ErrEmailTaken
+		}
 		return User{}, fmt.Errorf("creating user: %w", err)
 	}
 	return u, nil
@@ -123,17 +136,144 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 
 // SetPassword hashes and stores a new password for the given user.
 func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain string) error {
-	u, err := s.store.GetByID(ctx, userID)
-	if err != nil {
+	// The fourth path, held to the same minimum as the other three. The
+	// handler checks it too; this is the check that cannot be bypassed by a
+	// future caller that forgets.
+	if len(plain) < MinPasswordLength {
+		return fmt.Errorf("%w: password must be at least %d characters",
+			ErrValidation, MinPasswordLength)
+	}
+	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
 	}
-	u.PasswordHash = string(hash)
-	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	// Only the hash. This used to write every column back from the copy read
+	// above, with a bcrypt hash in between — 45 to 66 milliseconds at the
+	// production cost, and the account holder chooses the moment. So demoting
+	// a compromised account while its owner was changing their password wrote
+	// `admin` back over the demotion, and they signed in again with the new
+	// password as an administrator. The same window undid an administrator's
+	// MFA reset and reverted a corrected address.
+	return s.store.SetPasswordHash(ctx, userID, string(hash))
+}
+
+// ErrLastAdmin is the refusal to remove the only administrator.
+//
+// Disabling, demoting or deleting a sole admin account all answered success,
+// and the next request answered 401. Setup does not reopen — that is
+// deliberate, and it is what makes this unrecoverable: the instance is left
+// with no way in short of editing the database by hand.
+var ErrLastAdmin = fmt.Errorf("%w: this is the only administrator, so it cannot be disabled, demoted or deleted", ErrValidation)
+
+// Disable, SoftDelete and SetRole each refuse to remove the last active
+// administrator, and each decides that in the same statement that writes.
+//
+// The first version asked a separate question first — count the other
+// administrators, then write if there were any — and that lost the race it
+// was written for. Measured against a live database: two administrators
+// demoting each other, twenty-eight rounds in thirty ended with none. It did
+// not even need two people; one administrator sending "remove Bob" and
+// "remove me" at the same moment did it in all thirty. The window is the gap
+// between the two statements, and the only way to close it is not to have
+// one.
+
+// refusalFor turns a guarded write that did not apply into the reason it did
+// not.
+//
+// The three ...UnlessLastAdmin statements report one bit: applied, or not.
+// Not-applied has two causes — the guard refused because this is the last
+// administrator, or there was no live row to act on at all — and reporting
+// both as ErrLastAdmin told an administrator "this is the only
+// administrator" about an account that had been deleted, which is a lie
+// about a different thing. It did that before these statements filtered
+// their own target row, too: an id that matched nothing already came back
+// that way.
+//
+// Read on the failure path only. The write has already been refused, so this
+// is choosing a message rather than deciding an outcome, and a row deleted
+// between the two simply gets the other true answer.
+func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
+	u, err := s.store.GetByIDAdmin(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.DeletedAt != nil {
+		return ErrNotFound
+	}
+	return ErrLastAdmin
+}
+
+func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
+	switch role {
+	case RoleAdmin, RoleStaff, RoleUser:
+	default:
+		return fmt.Errorf("%w: invalid role", ErrValidation)
+	}
+	applied, err := s.store.SetRoleUnlessLastAdmin(ctx, id, string(role))
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return s.refusalFor(ctx, id)
+	}
+	return nil
+}
+
+// EmailIsTaken reports whether an address already belongs to an account here,
+// deleted accounts included.
+//
+// The deleted ones are the point. GetByEmail hides them, which is right for
+// logging in and wrong for "can this be registered": the unique constraint is
+// on every row, so a deleted account still owns its address. Checking with
+// the login lookup let a signup through, sent a verification email, and then
+// failed at the end with a message about the token.
+func (s *Service) EmailIsTaken(ctx context.Context, email string) (bool, error) {
+	addr, err := ValidateEmail(email)
+	if err != nil {
+		return false, err
+	}
+	return s.store.EmailIsTaken(ctx, addr)
+}
+
+// UpdateProfile changes an account's address and name, and nothing else.
+//
+// Update writes the whole row from a struct the caller read earlier, so
+// anything that changed in between is written back: a password set moments
+// ago stops working, an MFA enrolment is undone, another administrator's role
+// change is reverted. A rename should rename.
+func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
+	addr, err := ValidateEmail(email)
+	if err != nil {
+		return err
+	}
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return fmt.Errorf("%w: display name is required", ErrValidation)
+	}
+	return s.store.UpdateProfile(ctx, id, addr, name)
+}
+
+// ListAssignableStaff returns the people work can be given to.
+func (s *Service) ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error) {
+	return s.store.ListAssignableStaff(ctx)
+}
+
+// GetByEmail returns the account holding an address.
+//
+// Exported for the signup flow, which needs to know whether an address is
+// already taken BEFORE it sends a verification email — otherwise the person
+// follows a link that cannot work and is told their token is invalid. The
+// answer is never shown to whoever is signing up; see
+// registration.ErrAlreadyRegistered.
+func (s *Service) GetByEmail(ctx context.Context, email string) (User, error) {
+	addr, err := ValidateEmail(email)
+	if err != nil {
+		return User{}, err
+	}
+	return s.store.GetByEmail(ctx, addr)
 }
 
 // VerifyPassword looks up a user by email and checks the plain-text password.
@@ -199,14 +339,12 @@ func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID
 	if !totp.Validate(code, pendingSecret) {
 		return fmt.Errorf("invalid TOTP code")
 	}
-	u, err := s.store.GetByID(ctx, userID)
-	if err != nil {
+	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
 	}
-	u.MFASecret = pendingSecret
-	u.MFAEnabled = true
-	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	// Only the secret and the flag: the same reason as SetPassword. This read
+	// the row, validated a code, and wrote everything back.
+	return s.store.SetMFA(ctx, userID, pendingSecret, true)
 }
 
 // GenerateMFASecret mints a secret and its otpauth URL WITHOUT persisting
@@ -267,9 +405,23 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, userID uuid.UUID, co
 	if !totp.Validate(code, u.MFASecret) {
 		return fmt.Errorf("invalid TOTP code")
 	}
-	u.MFAEnabled = true
-	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	// The flag alone, against the secret the row holds NOW — not the copy
+	// read above.
+	//
+	// Validating a TOTP code takes time, and an administrator's "reset MFA"
+	// committing in that window used to be undone: the secret from the read
+	// was written back with the flag, so the cleared authenticator came back
+	// and MFA was re-enabled with exactly the credential the reset existed to
+	// revoke. The statement refuses when no secret is left, so the reset
+	// wins.
+	applied, err := s.store.EnableMFAIfStillEnrolled(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("MFA enrollment was reset before it could be confirmed")
+	}
+	return nil
 }
 
 // VerifyMFACode checks that the TOTP code is valid for the user.
@@ -406,8 +558,21 @@ func (s *Service) UpsertOIDCUser(
 			u.DisplayName = displayName
 		}
 		u.UpdatedAt = time.Now()
-		if err := s.store.Update(ctx, u); err != nil {
-			return User{}, fmt.Errorf("updating OIDC user: %w", err)
+		// The address and the name, and nothing else.
+		//
+		// This used to write the whole row on every sign-in, carrying role,
+		// password hash and MFA state from the read a few statements up. A
+		// login is something the account holder triggers whenever they like,
+		// so a demotion or an administrator's password reset landing in that
+		// window was written back by their next sign-in — and they were an
+		// administrator again, with their old password.
+		//
+		// ErrEmailTaken because the address the provider now sends may belong
+		// to another account here. Without it the person got "an internal
+		// error occurred" on every attempt and nothing told the administrator
+		// which two accounts collide.
+		if err := s.store.SyncFederated(ctx, u.ID, u.Email, u.DisplayName); err != nil {
+			return User{}, err
 		}
 		return u, nil
 	case !errors.Is(err, ErrNotFound):
@@ -423,14 +588,31 @@ func (s *Service) UpsertOIDCUser(
 			if err := canAdoptByEmail(u, oidcSubject); err != nil {
 				return User{}, err
 			}
+			// The subject and, if the provider sent one, the name. Nothing
+			// else.
+			//
+			// This used to write the whole row from the read above, so an
+			// administrator's password reset, disable or promotion landing
+			// between the two was written back. The rules in
+			// canAdoptByEmail were read from that same stale copy, so an
+			// account promoted in the window was adopted as an
+			// administrator — which is the one account type adoption is
+			// never allowed to take. The statement asks them again at the
+			// write; canAdoptByEmail stays because it is what says which
+			// rule refused.
+			applied, err := s.store.AdoptOIDCSubject(ctx, u.ID, oidcSubject, displayName)
+			if err != nil {
+				return User{}, fmt.Errorf("linking OIDC subject to user: %w", err)
+			}
+			if !applied {
+				return User{}, fmt.Errorf("%w: the account changed while it was being linked",
+					ErrAccountLinkRefused)
+			}
 			u.OIDCSubject = oidcSubject
 			if displayName != "" {
 				u.DisplayName = displayName
 			}
 			u.UpdatedAt = time.Now()
-			if err := s.store.Update(ctx, u); err != nil {
-				return User{}, fmt.Errorf("linking OIDC subject to user: %w", err)
-			}
 			return u, nil
 		case !errors.Is(err, ErrNotFound):
 			return User{}, fmt.Errorf("looking up user by email: %w", err)
@@ -498,8 +680,21 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 			u.DisplayName = displayName
 		}
 		u.UpdatedAt = time.Now()
-		if err := s.store.Update(ctx, u); err != nil {
-			return User{}, fmt.Errorf("updating SAML user: %w", err)
+		// The address and the name, and nothing else.
+		//
+		// This used to write the whole row on every sign-in, carrying role,
+		// password hash and MFA state from the read a few statements up. A
+		// login is something the account holder triggers whenever they like,
+		// so a demotion or an administrator's password reset landing in that
+		// window was written back by their next sign-in — and they were an
+		// administrator again, with their old password.
+		//
+		// ErrEmailTaken because the address the provider now sends may belong
+		// to another account here. Without it the person got "an internal
+		// error occurred" on every attempt and nothing told the administrator
+		// which two accounts collide.
+		if err := s.store.SyncFederated(ctx, u.ID, u.Email, u.DisplayName); err != nil {
+			return User{}, err
 		}
 		return u, nil
 	case !errors.Is(err, ErrNotFound):
@@ -520,9 +715,21 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 	})
 }
 
-// HasUsers returns true when at least one user record exists.
+// HasUsers returns true when at least one user record exists, in the sense
+// that decides whether first-run setup is still open.
+//
+// Every row, not every usable account. Counting only live accounts made the
+// setup route reopen the moment the last one was disabled or soft-deleted —
+// and an administrator can do that to their own, sole, admin account, because
+// nothing stops them. The route then answered {"needed": true} to anyone on
+// the internet, and a POST handed them an administrator over the existing
+// data: every ticket, every customer, every attachment. Proven against the
+// real server.
+//
+// Nothing hard-deletes a user, so a row count is a durable record that this
+// instance was set up once.
 func (s *Service) HasUsers(ctx context.Context) (bool, error) {
-	n, err := s.store.Count(ctx)
+	n, err := s.store.CountAll(ctx)
 	if err != nil {
 		return false, fmt.Errorf("counting users: %w", err)
 	}
@@ -541,16 +748,38 @@ func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
 
 // SoftDelete marks a user as deleted without removing their data.
 func (s *Service) SoftDelete(ctx context.Context, id uuid.UUID) error {
-	return s.store.SoftDelete(ctx, id)
+	applied, err := s.store.SoftDeleteUnlessLastAdmin(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return s.refusalFor(ctx, id)
+	}
+	return nil
 }
 
-// Update persists changes to an existing user.
+// Deprecated: Update writes every column from a copy the caller read
+// earlier, so anything an administrator changed in between — a role, a
+// password, an MFA enrolment — is written back. Use the narrow writers
+// instead: UpdateProfile, SetPassword, SetRole, ConfirmMFAEnrollmentWith.
+// No production caller remains; kept only because tests still exercise it,
+// and removal belongs in its own commit.
 func (s *Service) Update(ctx context.Context, u User) error {
 	if err := u.Validate(); err != nil {
 		return err
 	}
 	u.UpdatedAt = time.Now()
-	return s.store.Update(ctx, u)
+	if err := s.store.Update(ctx, u); err != nil {
+		// The admin edit is the route this actually happens on — somebody
+		// correcting an address and typing one another account already has.
+		// It answered 500 "an internal error occurred", which is the wrong
+		// thing to tell somebody about their own typo.
+		if isUniqueViolation(err) {
+			return ErrEmailTaken
+		}
+		return err
+	}
+	return nil
 }
 
 // GetByIDAdmin returns the user with the given ID, including disabled users.
@@ -563,9 +792,18 @@ func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, err
 	return s.store.ListAdmin(ctx, limit, offset)
 }
 
-// Disable marks a user account as disabled without deleting it.
+// Disable marks a user account as disabled without deleting it, unless it is
+// the last active administrator. See SetRole for why the guard is in the
+// statement rather than in front of it.
 func (s *Service) Disable(ctx context.Context, id uuid.UUID) error {
-	return s.store.Disable(ctx, id)
+	applied, err := s.store.DisableUnlessLastAdmin(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return s.refusalFor(ctx, id)
+	}
+	return nil
 }
 
 // Enable re-activates a disabled user account.
@@ -581,7 +819,13 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID) error {
 // AdminSetPassword hashes and stores a new password without requiring the old one.
 func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string) error {
 	if strings.TrimSpace(plain) == "" {
-		return fmt.Errorf("password is required")
+		return fmt.Errorf("%w: password is required", ErrValidation)
+	}
+	// Reset was the loosest of the four paths: it refused only a blank
+	// password, so an administrator could reset an account to "b".
+	if len(plain) < MinPasswordLength {
+		return fmt.Errorf("%w: password must be at least %d characters",
+			ErrValidation, MinPasswordLength)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -603,11 +847,68 @@ const (
 	MFALockDuration      = 15 * time.Minute
 )
 
+// MinPasswordLength is the shortest password this application will store,
+// wherever it is set.
+//
+// One number, because it was three: self-service change required eight, and
+// admin create, admin reset and first-run setup each required one character —
+// an administrator could create an account with the password "a", and did not
+// have to be trying to. A minimum that applies on one of four paths is not a
+// minimum.
+const MinPasswordLength = 8
+
 // ErrMFALocked reports that an account has spent its TOTP attempts.
 var ErrMFALocked = errors.New("too many incorrect codes; try again later")
 
+// ClaimMFAAttempt spends one of the account's TOTP attempts and reports
+// ErrMFALocked when there are none left.
+//
+// Called BEFORE the code is checked, and that ordering is the control. The
+// previous shape was CheckMFALock, then VerifyMFACode, then RecordMFAFailure:
+// three statements with a window between the first and the last, so every
+// request that started before the first UPDATE landed read "not locked" and
+// went on to verify a guess. Measured against the real server: forty parallel
+// wrong codes, thirty-six verified, limit five. An attacker who already holds
+// the password — the exact case MFA exists for — got a few hundred guesses per
+// fifteen-minute window instead of five.
+//
+// Counting before verifying means a correct code also costs an attempt. It
+// does not matter: success clears the counter, so a legitimate user never
+// meets the limit, and the alternative is a window an attacker can drive a
+// bus through.
+//
+// The lock is time-based rather than administrator-cleared on purpose: it
+// expires on its own, so a user locked out by a wrong code gets back in
+// without needing anyone, and an administrator is not drawn into clearing MFA
+// — which would leave the account open to whoever already knows the password
+// until the legitimate user re-enrols.
+func (s *Service) ClaimMFAAttempt(ctx context.Context, id uuid.UUID) error {
+	attempts, lockedUntil, err := s.store.ClaimMFAAttempt(ctx, id, MFAMaxFailedAttempts, MFALockDuration)
+	if err != nil {
+		return err
+	}
+	// Strictly greater than: the attempt that spends the last of the budget
+	// is still allowed to verify — it is the fifth of five, not the sixth —
+	// and it is the one that sets the lock for everything after it.
+	if attempts > MFAMaxFailedAttempts {
+		return ErrMFALocked
+	}
+	if lockedUntil != nil && attempts >= MFAMaxFailedAttempts && time.Now().After(*lockedUntil) {
+		// Cannot happen: the statement clears an expired lock and resets the
+		// count in the same breath. Here so that a future edit to that SQL
+		// which breaks the reset fails closed rather than open.
+		return ErrMFALocked
+	}
+	return nil
+}
+
 // CheckMFALock reports whether the account is currently locked out of TOTP
 // verification.
+//
+// Deprecated: racy when used as a gate. It reads the lock and returns, so
+// several requests can pass it at once and each go on to check a code — see
+// ClaimMFAAttempt, which is what the handlers use. Kept because removing an
+// exported method is a separate commit; it has no callers outside tests.
 func (s *Service) CheckMFALock(ctx context.Context, id uuid.UUID) error {
 	_, lockedUntil, err := s.store.GetMFALock(ctx, id)
 	if err != nil {
@@ -621,6 +922,9 @@ func (s *Service) CheckMFALock(ctx context.Context, id uuid.UUID) error {
 
 // RecordMFAFailure counts a wrong code and reports ErrMFALocked once the
 // account has spent its attempts.
+//
+// Deprecated: counting after the check is the half of the race that let
+// concurrent guesses through. Use ClaimMFAAttempt, which counts first.
 //
 // The lock is time-based rather than administrator-cleared on purpose: it
 // expires on its own, so a user locked out by a wrong code gets back in
@@ -642,4 +946,24 @@ func (s *Service) RecordMFAFailure(ctx context.Context, id uuid.UUID) error {
 // 800-63B.
 func (s *Service) ClearMFAFailures(ctx context.Context, id uuid.UUID) error {
 	return s.store.ClearMFAFailures(ctx, id)
+}
+
+// ErrEmailTaken is another account already holding this address.
+//
+// Named so the handler can answer 409 rather than 500. An administrator
+// typing an address that already exists is an ordinary mistake, and "an
+// internal error occurred" is both wrong and unhelpful — the one thing they
+// need to know is that the address is taken.
+//
+// It covers a deleted account too, because the unique constraint does: the
+// row stays and keeps its address. That is worth knowing when re-hiring
+// somebody, and it is why the message says so.
+var ErrEmailTaken = errors.New("that email address is already in use, possibly by a deleted account")
+
+// isUniqueViolation reports whether a store error is Postgres refusing a
+// duplicate row. Matched on the SQLSTATE rather than the message, which is
+// localised and names tables this layer should not be reading.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

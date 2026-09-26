@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net/http"
@@ -246,10 +247,31 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	// Which fields this ticket actually has, resolved from its own
+	// classification.
+	//
+	// There was no check at all: any field id reached SetValue and was
+	// stored. A reporting user could write a staff-only field — one assigned
+	// to no scope, so not rendered anywhere and not offered to anyone — on
+	// their own ticket, and DESIGN.md says users see category and type fields
+	// only. Everyone is held to it, not just reporters: a value on a field
+	// the ticket does not have is a row nothing will ever display, which is
+	// not a thing worth writing for any role.
+	allowed, err := s.fieldsForTicket(r.Context(), ticketID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
 	for fieldDefIDStr, value := range body {
 		fieldDefID, err := uuid.Parse(fieldDefIDStr)
 		if err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", "invalid field_def_id: "+fieldDefIDStr)
+			return
+		}
+		if !allowed[fieldDefID] {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"field_def_id is not a field on this ticket: "+fieldDefIDStr)
 			return
 		}
 		if err := s.customFields.SetValue(r.Context(), ticketID, fieldDefID, value); err != nil {
@@ -298,4 +320,27 @@ func handleFieldDefNotFound(w http.ResponseWriter, err error) {
 		return
 	}
 	handleError(w, err)
+}
+
+// fieldsForTicket is the set of custom fields a ticket has, resolved from its
+// own category, type and item.
+//
+// The same resolution the ticket page renders from, so what can be written is
+// what can be seen. Anything else is a value stored against a field the
+// ticket does not have — invisible, unreportable, and on a field an
+// administrator may have scoped deliberately narrowly.
+func (s *Server) fieldsForTicket(ctx context.Context, ticketID uuid.UUID) (map[uuid.UUID]bool, error) {
+	t, err := s.tickets.GetByID(ctx, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	assignments, err := s.customFields.ResolveFieldsForCTI(ctx, t.CategoryID, t.TypeID, t.ItemID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]bool, len(assignments))
+	for _, a := range assignments {
+		out[a.FieldDefID] = true
+	}
+	return out, nil
 }

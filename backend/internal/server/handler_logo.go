@@ -77,9 +77,14 @@ func resizeRasterLogo(data []byte, kind string) ([]byte, error) {
 	// a 949 KB file that decodes to 859 MB. Lower blast radius — the caller is
 	// an administrator — but a leaked credential should not be a one-request
 	// denial of service.
-	if err := decodedSizeWithin(data, maxImagePixels); err != nil {
+	if err := decodedSizeWithin(data, maxImagePixels, maxDecodedBytes); err != nil {
 		return nil, err
 	}
+
+	// And the same limit on how many run at once, for the same reason: the
+	// size check bounds one request and nothing bounds how many arrive.
+	imageWork <- struct{}{}
+	defer func() { <-imageWork }()
 
 	var src image.Image
 	var err error

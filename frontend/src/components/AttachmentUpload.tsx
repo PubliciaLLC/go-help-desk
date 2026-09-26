@@ -28,7 +28,7 @@ function statusIcon(state?: UploadState) {
   if (state.status === 'uploading') return <span className="text-xs text-blue-600 shrink-0">Uploading…</span>
   if (state.status === 'done') return <span className="text-xs text-green-600 shrink-0">Done</span>
   if (state.status === 'error') return (
-    <span className="text-xs text-red-600 shrink-0" title={state.error}>
+    <span role="alert" className="text-xs text-red-600 shrink-0" title={state.error}>
       {state.error ?? 'Failed'}
     </span>
   )

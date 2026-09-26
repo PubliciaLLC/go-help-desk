@@ -13,6 +13,60 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const cTIIsCoherent = `-- name: CTIIsCoherent :one
+SELECT
+    ($1::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM types ty
+        WHERE ty.id = $1 AND ty.category_id = $2))
+    AND
+    ($3::uuid IS NULL OR EXISTS (
+        SELECT 1 FROM items it
+        JOIN types t2 ON t2.id = it.type_id
+        WHERE it.id = $3
+          AND it.type_id = $1
+          AND t2.category_id = $2))
+`
+
+type CTIIsCoherentParams struct {
+	TypeID     uuid.NullUUID `json:"type_id"`
+	CategoryID uuid.UUID     `json:"category_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// Whether a category/type/item triple exists and hangs together: the type
+// belongs to the category, and the item belongs to the type.
+//
+// One question rather than three, because the foreign keys are the only thing
+// that was asking and they speak at the INSERT — after the tracking number
+// has been taken. Verified: five refused creates advanced the sequence by
+// five. REST checked that the type belonged to the category; MCP checked
+// neither; nobody checked the item at all, and there is no composite key for
+// item-to-type, so a ticket could carry a type and an item that do not go
+// together and then be routed on that.
+func (q *Queries) CTIIsCoherent(ctx context.Context, arg CTIIsCoherentParams) (sql.NullBool, error) {
+	row := q.db.QueryRowContext(ctx, cTIIsCoherent, arg.TypeID, arg.CategoryID, arg.ItemID)
+	var column_1 sql.NullBool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const categoryExists = `-- name: CategoryExists :one
+SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1)
+`
+
+// Whether a category id is real. Checked before a tracking number is taken,
+// because the foreign key only speaks at the INSERT — by which point the
+// number is gone and the sequence has a permanent gap. Staff and MCP were
+// never validated here; only a reporting user's category was checked, and
+// that check is about whether the category is OPEN to them, not whether it
+// exists.
+func (q *Queries) CategoryExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, categoryExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const createAttachment = `-- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
                          detected_mime, sha256, virus_name, content_mismatch)
@@ -387,6 +441,51 @@ func (q *Queries) GetTicketByTrackingNumber(ctx context.Context, trackingNumber 
 	return i, err
 }
 
+const isAssignableGroup = `-- name: IsAssignableGroup :one
+SELECT EXISTS (SELECT 1 FROM groups WHERE id = $1)
+`
+
+// Whether a group can be given a ticket. An unknown id used to reach the
+// foreign key and answer 500 for what is a caller's typo.
+func (q *Queries) IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, isAssignableGroup, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const isAssignableUser = `-- name: IsAssignableUser :one
+SELECT id FROM users
+WHERE id = $1
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND role IN ('staff', 'admin')
+FOR SHARE
+`
+
+// Whether a user can be given a ticket: the account exists, is not deleted,
+// is not disabled, and is staff. A reporting user is not a queue.
+//
+// Asked inside the assignment transaction rather than by the caller, because
+// the caller is not the only caller. The REST handler checked this and MCP
+// did not, so `assign_ticket` happily put tickets on deleted accounts and on
+// reporting users — and a check the caller makes is a check every future
+// caller has to remember to make. This one is where the write is.
+// FOR SHARE, so a delete cannot land between this check and the write.
+//
+// A plain read let them interleave: the check passed, a concurrent request
+// soft-deleted the account and unassigned its tickets (finding none, because
+// this one was not written yet), and then this transaction committed the
+// assignment — leaving the ticket on a deleted account, which is the limbo
+// the unassign-on-delete work exists to prevent. The share lock makes the
+// delete wait for this transaction instead.
+func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, isAssignableUser, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const listAllTickets = `-- name: ListAllTickets :many
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds FROM tickets ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
@@ -507,18 +606,43 @@ func (q *Queries) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]At
 }
 
 const listReplies = `-- name: ListReplies :many
-SELECT id, ticket_id, author_id, body, internal, created_at, notify_customer FROM ticket_replies WHERE ticket_id = $1 ORDER BY created_at ASC
+SELECT r.id, r.ticket_id, r.author_id, r.body, r.internal, r.created_at, r.notify_customer, u.display_name AS author_display_name
+FROM ticket_replies r
+LEFT JOIN users u ON u.id = r.author_id
+WHERE r.ticket_id = $1
+ORDER BY r.created_at ASC
 `
 
-func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]TicketReply, error) {
+type ListRepliesRow struct {
+	ID                uuid.UUID      `json:"id"`
+	TicketID          uuid.UUID      `json:"ticket_id"`
+	AuthorID          uuid.NullUUID  `json:"author_id"`
+	Body              string         `json:"body"`
+	Internal          bool           `json:"internal"`
+	CreatedAt         time.Time      `json:"created_at"`
+	NotifyCustomer    bool           `json:"notify_customer"`
+	AuthorDisplayName sql.NullString `json:"author_display_name"`
+}
+
+// The author's display name comes back with the reply.
+//
+// Without it the ticket page had nothing but author_id to render, and rendered
+// it: every reply from a registered account showed as a bare UUID, so a staff
+// member reading a thread could not tell who had said what. A join here rather
+// than a lookup in the browser, because the page cannot do the lookup for a
+// reporting user -- it is not allowed to list users, and should not be.
+//
+// LEFT JOIN: author_id is NULL for a guest's reply, which is the one case
+// where there is genuinely no account behind the message.
+func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ListRepliesRow, error) {
 	rows, err := q.db.QueryContext(ctx, listReplies, ticketID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []TicketReply
+	var items []ListRepliesRow
 	for rows.Next() {
-		var i TicketReply
+		var i ListRepliesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TicketID,
@@ -527,6 +651,7 @@ func (q *Queries) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]Ticket
 			&i.Internal,
 			&i.CreatedAt,
 			&i.NotifyCustomer,
+			&i.AuthorDisplayName,
 		); err != nil {
 			return nil, err
 		}
@@ -1938,6 +2063,50 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 	return items, nil
 }
 
+const unassignTicketsForUser = `-- name: UnassignTicketsForUser :many
+UPDATE tickets
+SET assignee_user_id = NULL, updated_at = now()
+WHERE assignee_user_id = $1
+  AND resolved_at IS NULL
+  AND closed_at IS NULL
+RETURNING id
+`
+
+// Takes a departing user off every ticket still assigned to them, and says
+// which ones.
+//
+// Deleting a user is a soft delete, so the assignee column kept pointing at a
+// row that no longer appears anywhere: the ticket showed as "Unassigned" on
+// the page (the lookup found nobody), was NOT in the unassigned queue (the
+// column was not null), and was in nobody's "assigned to me". It sat in the
+// gap between the two lists with nothing to prompt anyone to pick it up.
+//
+// Only tickets that are still open are worth moving. A resolved or closed
+// ticket assigned to somebody who has left is history, and history should
+// record who actually handled it.
+func (q *Queries) UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, unassignTicketsForUser, assigneeUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateTicket = `-- name: UpdateTicket :exec
 UPDATE tickets
 SET subject = $2, description = $3, type_id = $4, item_id = $5,
@@ -2009,4 +2178,18 @@ func (q *Queries) UpdateTicketCTI(ctx context.Context, arg UpdateTicketCTIParams
 		arg.UpdatedAt,
 	)
 	return err
+}
+
+const userExists = `-- name: UserExists :one
+SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)
+`
+
+// Whether a live account holds this id. Used for a supplied reporter, which
+// unlike an assignee may be any role — a ticket is filed on behalf of whoever
+// it is about.
+func (q *Queries) UserExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, userExists, id)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }

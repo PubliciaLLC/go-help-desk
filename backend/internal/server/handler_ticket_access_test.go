@@ -312,6 +312,17 @@ func TestAddLink_SelfLinkReturns400(t *testing.T) {
 // TestRemoveLink_InvalidLinkTypeReturns400 verifies that DELETE
 // .../links/{targetId}/{linkType} with an unrecognized linkType returns 400
 // rather than silently deleting nothing and answering 204. See #201.
+//
+// Asked as staff, because removing a link is a staff decision: a reporter is
+// refused before the link type is ever looked at, and that refusal is pinned
+// by the subtest below. Authorisation comes first on purpose — telling a
+// caller who may not do this at all whether their input parsed is answering
+// a question they were not entitled to ask.
+//
+// This test used to send the request as a reporting user. It was written
+// against a handler that had no role check on removal, which is the defect
+// the role check fixed; the property it is really about — an unrecognized
+// type must not answer 204 — is unchanged and still asserted here.
 func TestRemoveLink_InvalidLinkTypeReturns400(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -326,12 +337,24 @@ func TestRemoveLink_InvalidLinkTypeReturns400(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	res := h.doAsUser(t, http.MethodDelete,
+	res := h.do(t, http.MethodDelete,
 		"/api/v1/tickets/"+own.ID.String()+"/links/"+target.ID.String()+"/not_a_real_type", nil)
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 	require.Equal(t, http.StatusBadRequest, res.StatusCode,
 		"an unrecognized link type must return 400, not silently answer 204; body: %s", b)
+
+	// The other half: a reporter is refused outright. "Duplicate of
+	// GHD-2026-000123" is a staff judgement about the queue, and removal had
+	// no role check at all — so a reporter could undo staff classification on
+	// their own ticket, and could tell a real target id from an invented one
+	// by the difference between 204 and a failure.
+	asUser := h.doAsUser(t, http.MethodDelete,
+		"/api/v1/tickets/"+own.ID.String()+"/links/"+target.ID.String()+"/duplicate_of", nil)
+	ub, _ := io.ReadAll(asUser.Body)
+	asUser.Body.Close()
+	require.Equal(t, http.StatusForbidden, asUser.StatusCode,
+		"a reporter removed a link from their own ticket; body: %s", ub)
 }
 
 // TestAddLink_ReturnsDuplicateLinkWith409 verifies that creating a duplicate link

@@ -432,6 +432,71 @@ func (s *Store) CreateReply(ctx context.Context, r ticket.Reply) error {
 	})
 }
 
+// UnassignForUser clears the assignee on every open ticket held by a user,
+// and returns how many moved.
+// UserExists reports whether a live account holds this id.
+func (s *Store) UserExists(ctx context.Context, userID uuid.UUID) (bool, error) {
+	ok, err := s.q.UserExists(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("checking reporter: %w", err)
+	}
+	return ok, nil
+}
+
+// CTIIsCoherent reports whether the classification hangs together: the type
+// belongs to the category and the item belongs to the type.
+func (s *Store) CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error) {
+	ok, err := s.q.CTIIsCoherent(ctx, dbgen.CTIIsCoherentParams{
+		CategoryID: categoryID,
+		TypeID:     database.NullUUID(typeID),
+		ItemID:     database.NullUUID(itemID),
+	})
+	if err != nil {
+		return false, fmt.Errorf("checking classification: %w", err)
+	}
+	return ok.Bool, nil
+}
+
+// CategoryExists reports whether a category id is real.
+func (s *Store) CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error) {
+	ok, err := s.q.CategoryExists(ctx, categoryID)
+	if err != nil {
+		return false, fmt.Errorf("checking category: %w", err)
+	}
+	return ok, nil
+}
+
+// IsAssignableUser reports whether a user can be given a ticket.
+func (s *Store) IsAssignableUser(ctx context.Context, userID uuid.UUID) (bool, error) {
+	// No row means not assignable. The query takes a share lock on the row it
+	// finds, so a concurrent delete waits for this transaction rather than
+	// slipping in between the check and the write.
+	if _, err := s.q.IsAssignableUser(ctx, userID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking assignee: %w", err)
+	}
+	return true, nil
+}
+
+// IsAssignableGroup reports whether a group exists.
+func (s *Store) IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error) {
+	ok, err := s.q.IsAssignableGroup(ctx, groupID)
+	if err != nil {
+		return false, fmt.Errorf("checking assignee group: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
+	ids, err := s.q.UnassignTicketsForUser(ctx, database.NullUUID(&userID))
+	if err != nil {
+		return nil, fmt.Errorf("unassigning tickets: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.Reply, error) {
 	rows, err := s.q.ListReplies(ctx, ticketID)
 	if err != nil {
@@ -443,6 +508,7 @@ func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.R
 			ID:             r.ID,
 			TicketID:       r.TicketID,
 			AuthorID:       database.UUIDPtr(r.AuthorID),
+			AuthorName:     r.AuthorDisplayName.String,
 			Body:           r.Body,
 			Internal:       r.Internal,
 			NotifyCustomer: r.NotifyCustomer,

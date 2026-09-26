@@ -341,6 +341,53 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	} else if !isStaffOrAdmin {
 		// Regular authenticated user: no item allowed
 		body.ItemID = nil
+
+		// And no priority. A reporter setting their own ticket to critical is
+		// a queue every account holder can jump, which is why the guest form
+		// has never taken it from the request either — the only difference
+		// here was that this handler forgot. DESIGN.md's role table says
+		// "— (defaults to Medium)" for User, and now it does.
+		body.Priority = ""
+
+		// Active categories only, the same rule the guest form applies. An
+		// archived category is one an administrator has taken out of
+		// circulation; anyone who kept the id could still file into it.
+		if err := s.categoryIsOpen(r.Context(), body.CategoryID); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	}
+
+	// A type has to belong to the category it is filed under, and this is
+	// checked before anything is written.
+	//
+	// The database says so too — there is a foreign key on the pair — but it
+	// says so at the INSERT, which happens after the tracking number has
+	// already been taken from the sequence. So a mismatched pair answered 500
+	// with a constraint name in the log and left a gap in the ticket numbers:
+	// GHD-2026-000001, a failure, then GHD-2026-000003. The guest handler
+	// already checked its own one id up front for exactly this reason.
+	if body.TypeID != nil {
+		ty, err := s.categories.GetType(r.Context(), *body.TypeID)
+		if err != nil || ty.CategoryID != body.CategoryID {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"type_id does not belong to category_id")
+			return
+		}
+		// And for a reporter, it has to still be in circulation — the same
+		// rule their category is held to, and the one DESIGN.md's role table
+		// states for them. The picker they are shown only lists active types,
+		// so an archived one means the id came from somewhere else.
+		//
+		// Staff and administrators are not held to this, for the same reason
+		// they are not held to it on the category: filing or reclassifying an
+		// old ticket under the classification it actually belongs to is
+		// ordinary work, and that classification may well be archived.
+		if !isStaffOrAdmin && !ty.Active {
+			Error(w, http.StatusBadRequest, "bad_request",
+				"type_id is not an active type")
+			return
+		}
 	}
 
 	in := ticket.CreateInput{
@@ -356,6 +403,10 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !isGuest {
+		// A credential with no person behind it cannot be a reporter.
+		if !s.requireUserIdentity(w, r) {
+			return
+		}
 		in.ReporterUserID = &a.UserID
 	} else {
 		email := body.GuestEmail
@@ -383,20 +434,46 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	} else if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
 		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, gid, ticket.SystemActor)
 	} else if uids := s.adminSvc.AutoAssignUserIDs(r.Context()); len(uids) > 0 {
-		uid := uids[s.rrIdx.Add(1)%uint64(len(uids))]
-		_, _ = s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor)
+		// Round-robin, skipping anybody the assignment refuses.
+		//
+		// Nothing removes a departed colleague from this setting, so the list
+		// outlives them. Assign now refuses a deleted, disabled or
+		// non-staff account — but taking their slot and giving up would
+		// silently leave every Nth ticket unassigned, which is a queue that
+		// quietly loses a share of its work. Try the next one instead.
+		start := s.rrIdx.Add(1)
+		for i := range uids {
+			uid := uids[(start+uint64(i))%uint64(len(uids))]
+			if _, err := s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor); err == nil {
+				break
+			}
+		}
 	}
 
-	// Set any custom field values supplied on creation (best-effort; skip invalid IDs).
-	for fieldDefIDStr, value := range body.CustomFields {
-		if value == "" {
-			continue
+	// Set any custom field values supplied on creation.
+	//
+	// Best-effort — the ticket exists and is not going to be refused over a
+	// field — but only for fields this ticket actually has. Without the
+	// check, any field id supplied on creation was stored, including one
+	// assigned to no scope and therefore offered to nobody.
+	if len(body.CustomFields) > 0 {
+		allowed, err := s.customFields.ResolveFieldsForCTI(r.Context(), t.CategoryID, t.TypeID, t.ItemID)
+		if err == nil {
+			onTicket := make(map[uuid.UUID]bool, len(allowed))
+			for _, a := range allowed {
+				onTicket[a.FieldDefID] = true
+			}
+			for fieldDefIDStr, value := range body.CustomFields {
+				if value == "" {
+					continue
+				}
+				fieldDefID, parseErr := uuid.Parse(fieldDefIDStr)
+				if parseErr != nil || !onTicket[fieldDefID] {
+					continue
+				}
+				_ = s.customFields.SetValue(r.Context(), t.ID, fieldDefID, value)
+			}
 		}
-		fieldDefID, parseErr := uuid.Parse(fieldDefIDStr)
-		if parseErr != nil {
-			continue
-		}
-		_ = s.customFields.SetValue(r.Context(), t.ID, fieldDefID, value)
 	}
 
 	JSON(w, http.StatusCreated, t)
@@ -468,6 +545,9 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
 	if body.StatusID != nil {
@@ -495,6 +575,22 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+		// Checked before the write, because the column's foreign key is the
+		// only thing that was checking it — and a foreign key can only
+		// answer 500.
+		//
+		// Four things got through: an unknown id (a typo, answered with "an
+		// internal error occurred"), a deleted account (which puts the ticket
+		// straight back into the limbo that deleting a user was just fixed to
+		// avoid — it shows as unassigned and is missing from the unassigned
+		// queue), a disabled account, and a reporting user, who is not
+		// somebody work can be assigned to.
+		if body.AssigneeUserID != nil {
+			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
+				Error(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+		}
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
 			handleError(w, err)
 			return
@@ -542,6 +638,11 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A reply is written by somebody.
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
+
 	// Internal replies are staff/admin only.
 	if body.Internal && a.Role == user.RoleUser {
 		Error(w, http.StatusForbidden, "forbidden", "only staff can post internal notes")
@@ -574,6 +675,9 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	reopenStatusID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
+		return
+	}
+	if !s.requireUserIdentity(w, r) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
@@ -616,6 +720,9 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = DecodeJSON(r, &body)
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	t, err := s.tickets.Resolve(r.Context(), id, body.Notes, actor)
 	if err != nil {
@@ -652,6 +759,9 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 	t, err := s.tickets.Reopen(r.Context(), id, targetID, actor)
 	if err != nil {
@@ -675,6 +785,9 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	// The admin who pressed the button, not SystemActor: the authorisation
 	// check above is this handler's job, and the actor is for attribution.
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	if err := s.tickets.Close(r.Context(), id, ticket.Actor{UserID: &a.UserID, Role: a.Role}); err != nil {
 		handleError(w, err)
 		return
@@ -720,6 +833,9 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
 	// If resolve_as_duplicate is true, validate that link_type is actually duplicate_of
@@ -759,19 +875,14 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid target ID")
 		return
 	}
-	lt := ticket.LinkType(chi.URLParam(r, "linkType"))
-	// An unrecognized link type would otherwise delete nothing and still
-	// answer 204 — not incorrect (there is indeed no such link), but silently
-	// misleading about why nothing happened. See #201.
-	if !lt.Valid() {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid link type")
-		return
-	}
-	// The path gate authorised {id}; targetId names a second ticket. Match
-	// handleAddLink's check on the other end: the link's ids are already
-	// visible via GET /links, and without this a reporting user could remove
-	// a staff-created link from their own ticket to a ticket they cannot
-	// view. See #211.
+	// The same check the other end of this pair makes, and for the same
+	// reason: the link lives on the TARGET's thread too, so removing one
+	// touches a ticket this request has not been authorised for. Without it a
+	// reporting user could delete a link staff had put on their ticket —
+	// "duplicate of GHD-2026-000123" is a staff judgement about the queue,
+	// not something the reporter gets to overrule — and could tell a real
+	// target id from an invented one by the difference between 204 and a
+	// failure. See #211.
 	ok, err := s.canViewTicketID(r, targetID)
 	if err != nil {
 		handleError(w, err)
@@ -779,6 +890,24 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		return
+	}
+
+	// And it is a staff decision to make. handleAddLink is reachable by a
+	// reporter only for two tickets they own; removal had no role check at
+	// all, so staff classification on a reporter's own ticket was theirs to
+	// undo.
+	if a := authmw.GetActor(r); a == nil || (a.Role != user.RoleAdmin && a.Role != user.RoleStaff) {
+		Error(w, http.StatusForbidden, "forbidden", "only staff can remove a ticket link")
+		return
+	}
+
+	lt := ticket.LinkType(chi.URLParam(r, "linkType"))
+	// An unrecognized link type would otherwise delete nothing and still
+	// answer 204 — not incorrect (there is indeed no such link), but silently
+	// misleading about why nothing happened. See #201.
+	if !lt.Valid() {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid link type")
 		return
 	}
 	if err := s.tickets.RemoveLink(r.Context(), sourceID, targetID, lt); err != nil {
@@ -871,4 +1000,72 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		}
 	}
 	return uuid.Nil, nil
+}
+
+// categoryIsOpen reports whether a category is one a reporter may file into.
+//
+// Active categories only. An archived category is one an administrator has
+// deliberately taken out of circulation, and the list a reporter is offered
+// does not contain it — so filing into one means the id came from somewhere
+// else, which is not a thing to accept silently.
+//
+// Staff are not held to this: reclassifying an old ticket into the category
+// it actually belongs to is ordinary work, and that category may well be
+// archived.
+func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
+	cats, err := s.categories.ListCategories(ctx, true)
+	if err != nil {
+		return err
+	}
+	for _, c := range cats {
+		if c.ID == id {
+			return nil
+		}
+	}
+	return errors.New("category_id is not an active category")
+}
+
+// requireUserIdentity refuses a credential that has nobody behind it, and
+// reports whether the caller may go on.
+//
+// An OAuth client actor carries no user id. Everything below records who
+// acted — an audit entry, a status-history row, a reply's author, a ticket's
+// reporter — and all of those are foreign keys to users, so uuid.Nil reached
+// the insert and came back 500 with a constraint name in the log. Some of
+// those writes had already taken a tracking number from the sequence.
+//
+// The scope catalogue advertises tickets:write to OAuth clients, so this is a
+// capability the API offers and cannot deliver. Saying so is the honest
+// answer: the request is not malformed and the server is not broken, the
+// credential simply is not a person.
+func (s *Server) requireUserIdentity(w http.ResponseWriter, r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a == nil || a.UserID == uuid.Nil {
+		Error(w, http.StatusForbidden, "user_identity_required",
+			"this credential has no user identity, so it cannot be recorded as having acted on a ticket")
+		return false
+	}
+	return true
+}
+
+// assignableUser reports why a user cannot be given a ticket, or nil.
+//
+// Work goes to somebody who can do it: an account that exists, is not
+// deleted, is not disabled, and belongs to staff. A reporting user is not a
+// queue.
+func (s *Server) assignableUser(ctx context.Context, id uuid.UUID) error {
+	u, err := s.users.GetByID(ctx, id)
+	if err != nil {
+		return errors.New("assignee_user_id is not a user on this help desk")
+	}
+	if u.DeletedAt != nil {
+		return errors.New("that account has been deleted")
+	}
+	if u.Disabled {
+		return errors.New("that account is disabled")
+	}
+	if u.Role == user.RoleUser {
+		return errors.New("tickets are assigned to staff, and that account is a reporting user")
+	}
+	return nil
 }

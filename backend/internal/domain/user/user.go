@@ -81,10 +81,17 @@ func ValidateEmail(s string) (string, error) {
 	return strings.ToLower(addr.Address), nil
 }
 
-func (u User) Validate() error {
-	if _, err := ValidateEmail(u.Email); err != nil {
+func (u *User) Validate() error {
+	// The parsed form is kept, not discarded. ValidateEmail accepts the
+	// angle-bracket spelling — mail.ParseAddress does — and throwing its
+	// answer away stored "<someone@example.com>" verbatim, brackets and all.
+	// Login looks up the bare address, so the account could only be signed
+	// into by typing the brackets, which nobody does.
+	addr, err := ValidateEmail(u.Email)
+	if err != nil {
 		return err
 	}
+	u.Email = addr
 	if strings.TrimSpace(u.DisplayName) == "" {
 		return fmt.Errorf("%w: display name is required", ErrValidation)
 	}
@@ -104,4 +111,21 @@ func IsLocalAuthAllowed(u User, samlEnabled bool) bool {
 		return true
 	}
 	return u.Role == RoleAdmin
+}
+
+// AssignableStaff is somebody work can be given to: an id and a name, and
+// nothing else.
+//
+// Its own type rather than a User with most fields blank, because what staff
+// may read about their colleagues is narrower than what an administrator may:
+// an email address, a role and a login state are not needed to assign a
+// ticket, so they are not in this.
+type AssignableStaff struct {
+	ID          uuid.UUID `json:"id"`
+	DisplayName string    `json:"display_name"`
+	// Assignable is false for somebody who is still here but cannot be given
+	// work — suspended, or moved to a reporting role. Their name is still
+	// needed: a ticket already assigned to them has to show who has it, and
+	// calling them a former staff member would be untrue.
+	Assignable bool `json:"assignable"`
 }

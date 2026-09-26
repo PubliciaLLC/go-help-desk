@@ -73,7 +73,7 @@ function GroupNameEditor({ group, onSaved }: { group: Group; onSaved: () => void
         className="h-7 text-xs"
         placeholder="Description (optional)"
       />
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
       <div className="flex gap-1">
         <button
           onClick={() => mutation.mutate()}
@@ -175,7 +175,7 @@ function MembersPanel({ group, allUsers }: { group: Group; allUsers: User[] }) {
           </Button>
         </div>
       )}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
     </div>
   )
 }
@@ -291,7 +291,7 @@ export function GroupsPage() {
                 />
               </div>
             </div>
-            {formError && <p className="text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
             <Button
               onClick={() => createMutation.mutate()}
               disabled={!newName.trim() || createMutation.isPending}

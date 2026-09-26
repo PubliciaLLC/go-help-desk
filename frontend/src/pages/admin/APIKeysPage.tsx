@@ -126,7 +126,7 @@ export function APIKeysPage() {
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </Button>
           </div>
-          {createError && <p className="mt-2 text-sm text-red-600">{createError}</p>}
+          {createError && <p role="alert" className="mt-2 text-sm text-red-600">{createError}</p>}
         </div>
 
         {isLoading ? (

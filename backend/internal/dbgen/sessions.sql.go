@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 
 	uuid "github.com/google/uuid"
 )
@@ -45,7 +46,7 @@ func (q *Queries) DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUI
 }
 
 const getSession = `-- name: GetSession :one
-SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at FROM sessions s
+SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at, u.role AS user_role FROM sessions s
 LEFT JOIN users u ON u.id = s.user_id
 WHERE s.id = $1
   AND s.expires_at > clock_timestamp()
@@ -53,7 +54,8 @@ WHERE s.id = $1
 `
 
 type GetSessionRow struct {
-	Session Session `json:"session"`
+	Session  Session        `json:"session"`
+	UserRole sql.NullString `json:"user_role"`
 }
 
 // Only unexpired rows: an expired session must behave exactly like a missing
@@ -70,6 +72,22 @@ type GetSessionRow struct {
 // LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 // PKCE verifier) into a session before anybody has authenticated, and an inner
 // join would drop those and break the login it is protecting.
+// The role comes back with it, and it is the one in the database rather than
+// the one in the cookie.
+//
+// The session payload carries a role, written when the session was minted.
+// That made the cookie the authority on what somebody may do, and it went
+// stale exactly when it mattered: demoting an administrator revokes their
+// sessions, but a request already in flight — a password change, which the
+// account holder can time and which spends 50-odd milliseconds hashing —
+// finished afterwards and minted a NEW session carrying the role it had read
+// on the way in. The demotion was in the database and the attacker was an
+// administrator again. Measured: the demotion landed 52ms into a 93ms
+// request, and the re-issued cookie read /admin/users afterwards.
+//
+// Disabling and deleting were never vulnerable to this, because the join
+// below already drops those rows on every request. Role was the one piece of
+// authority left being carried rather than looked up.
 func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, error) {
 	row := q.db.QueryRowContext(ctx, getSession, id)
 	var i GetSessionRow
@@ -80,6 +98,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 		&i.Session.ExpiresAt,
 		&i.Session.CreatedAt,
 		&i.Session.UpdatedAt,
+		&i.UserRole,
 	)
 	return i, err
 }

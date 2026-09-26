@@ -71,6 +71,34 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The expiry was decoded and then dropped on the floor: the field was
+	// read off the request, never copied onto the key, and the key never
+	// expired. The middleware honours ExpiresAt, the client type declares it,
+	// and the admin page has an "Expires" column that could therefore never
+	// be filled. Create a key with a date in 2020 and it worked — which is
+	// precisely the person this bites, somebody putting an expiry on a
+	// script's credential.
+	//
+	// Refused rather than ignored when it cannot be read, and refused when it
+	// is already past: a credential that expires before it is issued is a
+	// request nobody means, and silently issuing a working key for it is how
+	// this defect looked from outside.
+	var expiresAt *time.Time
+	if body.ExpiresAt != nil && strings.TrimSpace(*body.ExpiresAt) != "" {
+		at, err := time.Parse(time.RFC3339, *body.ExpiresAt)
+		if err != nil {
+			Error(w, http.StatusBadRequest, "invalid_expires_at",
+				"expires_at must be an RFC 3339 timestamp, for example 2027-01-31T00:00:00Z")
+			return
+		}
+		if !at.After(time.Now()) {
+			Error(w, http.StatusBadRequest, "invalid_expires_at",
+				"expires_at is in the past, so this credential would be refused on every request")
+			return
+		}
+		expiresAt = &at
+	}
+
 	raw, _, err := auth.GenerateToken()
 	if err != nil {
 		handleError(w, err)
@@ -84,6 +112,7 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		HashedToken: hashed,
 		UserID:      a.UserID,
 		Scopes:      body.Scopes,
+		ExpiresAt:   expiresAt,
 		CreatedAt:   time.Now(),
 	}
 	if err := s.authStore.CreateAPIKey(r.Context(), key); err != nil {
@@ -92,9 +121,10 @@ func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return the raw token once — it will never be shown again.
 	JSON(w, http.StatusCreated, map[string]any{
-		"id":    key.ID,
-		"token": raw, // shown once
-		"name":  key.Name,
+		"id":         key.ID,
+		"token":      raw, // shown once
+		"name":       key.Name,
+		"expires_at": key.ExpiresAt,
 	})
 }
 

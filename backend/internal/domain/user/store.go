@@ -19,9 +19,52 @@ var ErrNotFound = errors.New("not found")
 type Store interface {
 	// MFA attempt tracking. Durable rather than in memory, because a counter
 	// that a restart clears is not a limit on a six-digit secret.
+	ClaimMFAAttempt(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (attempts int, lockedUntil *time.Time, err error)
 	RecordMFAFailure(ctx context.Context, id uuid.UUID, maxAttempts int, lockFor time.Duration) (attempts int, lockedUntil *time.Time, err error)
 	ClearMFAFailures(ctx context.Context, id uuid.UUID) error
 	GetMFALock(ctx context.Context, id uuid.UUID) (attempts int, lockedUntil *time.Time, err error)
+
+	// CountAll counts every row, including disabled and soft-deleted
+	// accounts. Count, which excludes them, is the wrong question for
+	// "has this instance ever been set up".
+	CountAll(ctx context.Context) (int64, error)
+	// ListAssignableStaff is the id-and-name list staff need to assign work.
+	ListAssignableStaff(ctx context.Context) ([]AssignableStaff, error)
+	// UpdateProfile writes only the address and the name, so an edit cannot
+	// silently revert a role, a password or an MFA enrolment that changed
+	// while the request was in flight.
+	UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error
+	// SetPasswordHash, SetMFA and SyncFederated each write the one thing they
+	// name. The whole-row Update below carries a copy of every column, so a
+	// caller that reads, thinks, and then writes puts back whatever changed
+	// while it was thinking — and for a password change, the thinking is a
+	// bcrypt hash the account holder chose the moment of.
+	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
+	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
+	// EnableMFAIfStillEnrolled turns the flag on using the secret already on
+	// the row, so a caller that read, validated a code, and then wrote does
+	// not carry a copy of the secret across that gap. False means there was
+	// no secret left to enable.
+	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (bool, error)
+	SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error
+	// AdoptOIDCSubject binds an OIDC subject to an account found by email
+	// address, and reports whether it applied. The adoption rules live in
+	// the statement, so an account promoted or disabled between the lookup
+	// and the write is not adopted on the strength of the older read.
+	AdoptOIDCSubject(ctx context.Context, id uuid.UUID, subject, displayName string) (bool, error)
+	// EmailIsTaken covers deleted rows too, because the unique constraint
+	// does. GetByEmail is the login lookup and hides them.
+	EmailIsTaken(ctx context.Context, email string) (bool, error)
+	// CountOtherActiveAdmins counts the administrators left if this one
+	// stopped being one, so the last of them cannot be removed.
+	// These three do their check and their write in one statement, so two of
+	// them racing cannot both decide they are allowed. Each reports whether
+	// it applied. Counting first and writing second lost that race: measured,
+	// one administrator sending "remove Bob" and "remove me" together left
+	// the instance with no administrator every time.
+	DisableUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error)
+	SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error)
+	SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role string) (bool, error)
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)

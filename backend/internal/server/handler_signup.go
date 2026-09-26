@@ -56,6 +56,19 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	err := s.registration.Register(ctx, body.Email, body.DisplayName, body.Password, allowedDomains, openReg)
 	if err != nil {
 		switch {
+		case errors.Is(err, registration.ErrAlreadyRegistered):
+			// Deliberately the same answer as a successful registration. The
+			// person is not told whether the address is taken — that would
+			// make this endpoint a way to find out who has an account here —
+			// and no verification email is sent, so nobody follows a link
+			// that cannot work. Somebody who genuinely has an account and has
+			// forgotten will reach for the login page, which is where the
+			// answer belongs.
+			signupAccepted(w)
+		case errors.Is(err, registration.ErrDisplayNameRequired):
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		case errors.Is(err, registration.ErrPasswordTooShort):
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		case errors.Is(err, registration.ErrDomainNotAllowed):
 			Error(w, http.StatusUnprocessableEntity, "domain_not_allowed", "your email domain is not permitted")
 		case errors.Is(err, registration.ErrOpenRegistrationRequired):
@@ -66,6 +79,15 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	signupAccepted(w)
+}
+
+// signupAccepted is the one answer this endpoint gives whether or not the
+// address could be registered.
+//
+// Identical on purpose. Anything that distinguished them would make signing
+// up a way to find out who already has an account here.
+func signupAccepted(w http.ResponseWriter) {
 	JSON(w, http.StatusAccepted, map[string]string{
 		"message": "Check your email to complete registration.",
 	})

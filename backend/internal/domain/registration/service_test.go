@@ -51,6 +51,16 @@ func (f *fakeStore) Delete(_ context.Context, _ uuid.UUID) error {
 type fakeUsers struct {
 	created user.User
 	err     error
+	// existing is the set of addresses that already have an account, so the
+	// pre-check can be exercised.
+	existing map[string]bool
+}
+
+// EmailIsTaken reports an existing account, which stops a signup before the
+// verification email goes out. Deleted accounts count here, as they do in the
+// real store — that is the case the first version of this missed.
+func (f *fakeUsers) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	return f.existing[email], nil
 }
 
 func (f *fakeUsers) Create(_ context.Context, in user.CreateUserInput) (user.User, error) {
@@ -113,7 +123,7 @@ func TestIsEmailDomainAllowed(t *testing.T) {
 func TestRegister(t *testing.T) {
 	t.Run("domain not allowed", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@other.com", "Alice", "pass", []string{"example.com"}, false)
+		err := svc.Register(context.Background(), "a@other.com", "Alice", "a-passphrase", []string{"example.com"}, false)
 		if !errors.Is(err, ErrDomainNotAllowed) {
 			t.Fatalf("want ErrDomainNotAllowed, got %v", err)
 		}
@@ -121,7 +131,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("open registration required", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "Alice", "pass", nil, false)
+		err := svc.Register(context.Background(), "a@any.com", "Alice", "a-passphrase", nil, false)
 		if !errors.Is(err, ErrOpenRegistrationRequired) {
 			t.Fatalf("want ErrOpenRegistrationRequired, got %v", err)
 		}
@@ -146,7 +156,7 @@ func TestRegister(t *testing.T) {
 	t.Run("open registration", func(t *testing.T) {
 		mailer := &fakeMailer{}
 		svc := NewService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "A", "pass", nil, true)
+		err := svc.Register(context.Background(), "a@any.com", "A", "a-passphrase", nil, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -285,4 +295,135 @@ type recordingMailer struct{ to string }
 func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
 	m.to = to
 	return nil
+}
+
+// Signup is held to the same password minimum as every other path that sets
+// one.
+//
+// It was the fifth path, and the one missed when the minimum was made a
+// single rule: nothing checked the length here, and Verify creates the
+// account from the stored hash, which skips the check in user.Service.Create.
+// So a signup with an EMPTY password produced a real account whose login
+// accepted an empty password. Self-service signup is off by default, which
+// was the only thing standing in front of it.
+func TestRegister_HoldsThePasswordMinimum(t *testing.T) {
+	cases := []struct {
+		name     string
+		password string
+		wantErr  bool
+	}{
+		{name: "empty", password: "", wantErr: true},
+		{name: "one character", password: "a", wantErr: true},
+		{name: "one short of the minimum", password: "passwor", wantErr: true},
+		{name: "exactly the minimum", password: "password"},
+		{name: "comfortably over", password: "a-real-passphrase"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+			err := svc.Register(context.Background(), "a@any.com", "Alice", tc.password, nil, true)
+
+			if tc.wantErr {
+				if !errors.Is(err, ErrPasswordTooShort) {
+					t.Fatalf("a %d-character password was accepted (err=%v)", len(tc.password), err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("an acceptable password was refused: %v", err)
+			}
+		})
+	}
+
+	if user.MinPasswordLength != 8 {
+		t.Fatalf("the cases above are written against a minimum of 8, not %d", user.MinPasswordLength)
+	}
+}
+
+// A signup for an address that already has an account stops here, and says
+// nothing about it to the person signing up.
+//
+// It used to go all the way through: the row was written, the email was sent,
+// and the person clicked the link to be told their token was invalid or
+// already used — which it was not. Somebody whose old account was deleted
+// could never register again and was told every time that their link was
+// broken.
+//
+// The endpoint's answer is unchanged, deliberately. A 202 either way is what
+// stops signup being a way to find out who has an account here; what changes
+// is that a link which cannot work is never sent.
+func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
+	mailer := &fakeMailer{}
+	svc := NewService(
+		&fakeStore{},
+		&fakeUsers{existing: map[string]bool{"taken@any.com": true}},
+		mailer, "http://localhost")
+
+	err := svc.Register(context.Background(), "taken@any.com", "A", "a-passphrase", nil, true)
+	if !errors.Is(err, ErrAlreadyRegistered) {
+		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
+	}
+	if mailer.sent {
+		t.Error("a verification email was sent for an address that cannot be registered")
+	}
+}
+
+// A deleted account still owns its address, so a signup for it is stopped
+// too.
+//
+// This was the case the first version of the check missed: it asked the login
+// lookup, which hides deleted rows, while the unique constraint covers every
+// row. So the signup was accepted, the email went out, and the link failed at
+// the end with "invalid or already used token" — the exact dead end the check
+// was added to prevent, still there for the exact person it was added for.
+func TestRegister_ADeletedAccountStillOwnsItsAddress(t *testing.T) {
+	mailer := &fakeMailer{}
+	svc := NewService(
+		&fakeStore{},
+		&fakeUsers{existing: map[string]bool{"gone@any.com": true}},
+		mailer, "http://localhost")
+
+	err := svc.Register(context.Background(), "gone@any.com", "A", "a-passphrase", nil, true)
+	if !errors.Is(err, ErrAlreadyRegistered) {
+		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
+	}
+	if mailer.sent {
+		t.Error("a verification email was sent for an address that cannot be registered")
+	}
+}
+
+// Both paths pay for the password hash, so the answer does not give the
+// address away by how long it takes.
+//
+// The endpoint answers the same 202 either way, which is what stops signing
+// up being a way to find out who has an account here. The first version
+// returned before the hash: measured against a real server, a taken address
+// answered in 3 ms and a fresh one in 70 ms, with no overlap across a dozen
+// samples. An identical body that takes a twentieth of the time is not
+// identical.
+func TestRegister_TheTwoAnswersCostTheSame(t *testing.T) {
+	const samples = 3
+	taken := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
+
+	var takenTotal, freshTotal time.Duration
+	for range samples {
+		start := time.Now()
+		_ = NewService(&fakeStore{}, taken, &fakeMailer{}, "http://localhost").
+			Register(context.Background(), "taken@any.com", "A", "a-passphrase", nil, true)
+		takenTotal += time.Since(start)
+
+		start = time.Now()
+		_ = NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost").
+			Register(context.Background(), "fresh@any.com", "A", "a-passphrase", nil, true)
+		freshTotal += time.Since(start)
+	}
+
+	// bcrypt dominates both, so they land within a small factor of each
+	// other. The defect this catches was a factor of twenty.
+	ratio := float64(freshTotal) / float64(takenTotal)
+	if ratio > 4 || ratio < 0.25 {
+		t.Errorf("a fresh address took %v and a taken one %v (%.1fx) — the timing gives the answer away",
+			freshTotal/samples, takenTotal/samples, ratio)
+	}
 }

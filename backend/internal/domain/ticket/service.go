@@ -12,6 +12,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Actor is the identity performing an operation. Both authenticated users and
@@ -181,6 +183,48 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	}
 	if !in.Priority.Valid() {
 		return Ticket{}, fmt.Errorf("priority must be one of critical, high, medium, low: %w", ErrValidation)
+	}
+
+	// The category, checked for the same reason as everything else here:
+	// after this point a tracking number has been taken, and an id the
+	// foreign key refuses costs a 500 and a permanent gap in the sequence.
+	// Only a reporting user's category was checked, and that check asks
+	// whether it is OPEN to them — not whether it exists at all, which is
+	// what staff and MCP needed.
+	if ok, err := s.store.CategoryExists(ctx, in.CategoryID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+	}
+
+	// And the rest of the classification: that the type belongs to the
+	// category, and the item to the type.
+	//
+	// Verified before this existed: five refused creates advanced the
+	// sequence by five. The REST handler checked type-against-category and
+	// MCP checked nothing, and nobody checked the item — there is no
+	// composite key for item-to-type, so a ticket could carry a type and an
+	// item that do not go together and then be routed on that pairing.
+	if ok, err := s.store.CTIIsCoherent(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf(
+			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
+	}
+
+	// A supplied reporter, checked for the same reason the priority above is:
+	// everything after this takes a tracking number first, so an id the
+	// foreign key refuses costs a 500 and a permanent gap in the sequence.
+	// MCP's create_ticket takes a reporter_user_id from the caller, which is
+	// how an unknown one gets here.
+	if in.ReporterUserID != nil {
+		ok, err := s.store.UserExists(ctx, *in.ReporterUserID)
+		if err != nil {
+			return Ticket{}, err
+		}
+		if !ok {
+			return Ticket{}, fmt.Errorf("%w: reporter_user_id is not a user on this help desk", ErrValidation)
+		}
 	}
 
 	seq, err := s.store.NextSeq(ctx)
@@ -500,6 +544,38 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		if err != nil {
 			return err
 		}
+		// Checked here, inside the transaction that writes it, because the
+		// caller is not the only caller.
+		//
+		// The REST handler checked the assignee and MCP did not, so
+		// assign_ticket put tickets on deleted accounts and on reporting
+		// users — and a ticket assigned to a deleted account is invisible:
+		// it renders with no assignee anyone can resolve and it is missing
+		// from the unassigned queue, because the column is not null. The
+		// auto-assign list has the same problem, since nothing removes
+		// somebody from it when they leave.
+		//
+		// A check the caller makes is a check every future caller has to
+		// remember to make. This one is where the write is.
+		if assigneeUserID != nil {
+			ok, err := st.IsAssignableUser(ctx, *assigneeUserID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("%w: that account cannot be given a ticket — it may be deleted, disabled, or not staff", ErrValidation)
+			}
+		}
+		if assigneeGroupID != nil {
+			ok, err := st.IsAssignableGroup(ctx, *assigneeGroupID)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("%w: no such group", ErrValidation)
+			}
+		}
+
 		before := ticketMap(t)
 		t.AssigneeUserID = assigneeUserID
 		t.AssigneeGroupID = assigneeGroupID
@@ -1236,7 +1312,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		return Ticket{}, err
 	}
 	if t.StatusID != s.sys.closedID {
-		return Ticket{}, fmt.Errorf("ticket is not closed")
+		return Ticket{}, fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
 	}
 	// Same guard as AddReply's auto-reopen: an unresolvable configured status
 	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
@@ -1262,7 +1338,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 			return err
 		}
 		if t.StatusID != s.sys.closedID {
-			return fmt.Errorf("ticket is not closed")
+			return fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
 		}
 		before := ticketMap(t)
 		oldStatusID = t.StatusID
@@ -1364,6 +1440,13 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 
 		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 		if err := st.CreateLink(ctx, link); err != nil {
+			// A pair that is already linked is not a fault. The unique
+			// constraint is doing its job and the caller asked for something
+			// that is already true — it came back as a raw error and the
+			// handler could only render it as 500.
+			if isUniqueViolation(err) {
+				return fmt.Errorf("%w: these tickets are already linked that way", ErrValidation)
+			}
 			return fmt.Errorf("creating link: %w", err)
 		}
 		return nil
@@ -1396,6 +1479,27 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
 // UpdateCTI changes the category/type/item classification of a ticket.
 // Only staff and admin may call this; enforcement is at the handler layer.
 func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (Ticket, error) {
+	// The same checks Create makes, because reclassifying is creating a
+	// classification.
+	//
+	// They were on the create path only, so the pairing that path refuses was
+	// one PATCH away: a category from one tree with an item from another
+	// stored happily, and an item with no type at all. Group routing keys on
+	// this triple, so a ticket could be routed on a pairing that does not
+	// exist. An unknown id answered 500 from the foreign key rather than
+	// saying which id was wrong.
+	if ok, err := s.store.CategoryExists(ctx, categoryID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+	}
+	if ok, err := s.store.CTIIsCoherent(ctx, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, err
+	} else if !ok {
+		return Ticket{}, fmt.Errorf(
+			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
+	}
+
 	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
 		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
 	}
@@ -1645,6 +1749,45 @@ func ticketMap(t Ticket) map[string]any {
 // ErrValidation wraps input-validation failures from Create, so callers
 // (the HTTP handler) can map them to 400 instead of the 500 handleError
 // falls back to for an unrecognized error.
+// UnassignForUser returns a departing user's open tickets to the queue, and
+// reports how many moved.
+//
+// Deleting a user is a soft delete, so the assignee column kept pointing at a
+// row that no longer appears in the user list: the ticket rendered as
+// "Unassigned" because the lookup found nobody, was absent from the
+// unassigned queue because the column was not null, and was in nobody's
+// "assigned to me". It sat between the two lists with nothing to prompt
+// anyone to pick it up.
+//
+// Open tickets only. A resolved or closed one assigned to somebody who has
+// left is history, and history should record who actually handled it.
+func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID) (int, error) {
+	var moved int
+	// In one transaction with the audit entries, like every other assignment
+	// change. Assign records who moved a ticket and what it looked like
+	// before; this moved N tickets and recorded nothing, so the trail for a
+	// ticket read "created, assigned to Ann" and then showed no assignee with
+	// no row explaining it. An audit entry written apart from the change it
+	// describes is not an audit trail, and one that is missing entirely is
+	// worse.
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		ids, err := st.UnassignForUser(ctx, userID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			before := map[string]any{"assignee_user_id": userID.String()}
+			after := map[string]any{"assignee_user_id": nil}
+			if err := au.Create(ctx, auditEntry(&actorID, "ticket", id, "unassigned", before, after)); err != nil {
+				return fmt.Errorf("auditing unassignment: %w", err)
+			}
+		}
+		moved = len(ids)
+		return nil
+	})
+	return moved, err
+}
+
 var ErrValidation = errors.New("validation failed")
 
 // ── Attachments ───────────────────────────────────────────────────────────────
@@ -1686,4 +1829,18 @@ func (s *Service) ListFiltered(ctx context.Context, f Filter) ([]Ticket, error) 
 // SearchVisibleToStaff is ListVisibleToStaff with a search term.
 func (s *Service) SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error) {
 	return s.store.SearchVisibleToStaff(ctx, userID, q, limit, offset)
+}
+
+// isUniqueViolation reports whether a store error is Postgres refusing a
+// duplicate row.
+//
+// Matched on the SQLSTATE rather than the message, which is localised and
+// carries table and constraint names this layer should not be reading. The
+// point is to tell "you asked for something that is already true" from "the
+// database is broken": the first is the caller's answer and the second is a
+// fault, and rendering both as 500 tells somebody their own ordinary mistake
+// is a server error.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

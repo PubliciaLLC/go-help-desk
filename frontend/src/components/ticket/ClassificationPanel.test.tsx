@@ -84,6 +84,31 @@ describe('edit mode', () => {
     expect(screen.queryByRole('option', { name: 'Decommissioned' })).toBeNull()
   })
 
+  // The other half of the same question. "Not selectable for NEW work" is not
+  // the same as "cannot be kept": a ticket filed under a classification that
+  // was retired afterwards has to be able to stay where it is.
+  //
+  // It could not. The lists were filtered to active rows for display as well
+  // as for the dropdowns, so the sidebar resolved the ticket's own category
+  // to nothing and printed "—", and opening the editor showed an empty
+  // Category select — meaning staff could move the ticket OUT of the
+  // archived category but never leave it there, and editing its Type alone
+  // would quietly strip the Category with it.
+  it('still offers the archived classification the ticket already has', async () => {
+    const user = userEvent.setup()
+    renderPanel({ categoryId: 'cat-old', typeId: null, itemId: null })
+
+    // Named in the sidebar rather than shown as an em dash.
+    expect(await screen.findByText('Retired')).toBeDefined()
+
+    await user.click(await screen.findByRole('button', { name: 'Edit' }))
+
+    // Offered, so it can be kept — while the OTHER archived category stays
+    // out of the list, which is what the test above is about.
+    expect(await screen.findByRole('option', { name: 'Retired' })).toBeDefined()
+    expect(screen.queryByRole('option', { name: 'Decommissioned' })).toBeNull()
+  })
+
   // The cascade is the reason this component owns all three values: choosing a
   // Category invalidates a Type that belonged to the previous one. Leaving the
   // stale Type selected would submit a Type from a different Category, which

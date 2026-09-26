@@ -27,6 +27,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // sessionIDBytes is the entropy in a session id.
@@ -146,6 +147,28 @@ func (s *Store) New(r *http.Request, name string) (*sessions.Session, error) {
 		session.Values = map[any]any{}
 		return session, nil
 	}
+	// The role is taken from the database, not from what the cookie was
+	// carrying.
+	//
+	// A session payload records the role it was minted with, and that went
+	// stale in the one case where it mattered: demoting somebody revokes
+	// their sessions, but a request already in flight finishes afterwards and
+	// can mint a new session from the role it read on the way in. A password
+	// change is the worst of those — the account holder picks the moment and
+	// it spends fifty-odd milliseconds hashing. The demotion was in the
+	// database and the attacker was an administrator again.
+	//
+	// Overwriting it here rather than fixing that one handler is the point: a
+	// handler that carries a role forward is an ordinary thing to write, and
+	// there is no longer a stale one to carry. Disabled and deleted have
+	// worked this way all along, in the join above.
+	if row.UserRole.Valid {
+		if sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData); ok {
+			sd.Role = user.Role(row.UserRole.String)
+			session.Values[auth.SessionDataKey] = sd
+		}
+	}
+
 	session.ID = id
 	session.IsNew = false
 	return session, nil
