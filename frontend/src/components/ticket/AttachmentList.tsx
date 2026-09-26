@@ -333,7 +333,7 @@ function HashLine({ attachment }: { attachment: Attachment }) {
           type="button"
           aria-label="Copy SHA-256"
           onClick={() => void navigator.clipboard?.writeText(hash)}
-          className="rounded border border-gray-300 px-1 py-0.5 text-[10px] font-medium text-gray-600 hover:bg-gray-100"
+          className="min-h-6 rounded border border-gray-300 px-2 py-1 text-[10px] font-medium text-gray-600 hover:bg-gray-100"
         >
           Copy
         </button>

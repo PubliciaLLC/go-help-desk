@@ -203,7 +203,10 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
             Linked Tickets
           </CardTitle>
           {!showForm && (
-            <button className="text-xs text-blue-600 hover:underline" onClick={() => setShowForm(true)}>
+            <button
+              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+              onClick={() => setShowForm(true)}
+            >
               Add link
             </button>
           )}

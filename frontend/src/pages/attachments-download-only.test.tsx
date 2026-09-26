@@ -98,8 +98,12 @@ describe('attachments are never rendered inline', () => {
   // logoCSP in security_headers.go). LoginPage.tsx is the TOTP enrolment QR
   // code, a data: URL the server generates during MFA setup — not an upload at
   // all.
+  //
+  // Layout.tsx is 2, not 1, since #296: the same logo renders once in the
+  // permanent sidebar (md and up) and once in the mobile top bar that
+  // replaces it below md — never both at once, but both exist in the DOM.
   const allowedRenderers: Record<string, number> = {
-    'src/components/Layout.tsx': 1,
+    'src/components/Layout.tsx': 2,
     'src/pages/LoginPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
   }

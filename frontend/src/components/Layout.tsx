@@ -1,12 +1,14 @@
 import { useState } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
 import { Button } from '@/components/ui/button'
-import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon } from 'lucide-react'
+import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, MenuIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import type { User } from '@/api/types'
 
 interface NavItemProps {
   to: string
@@ -33,6 +35,72 @@ function NavItem({ to, icon, label }: NavItemProps) {
   )
 }
 
+interface SidebarContentProps {
+  user: User | null
+  branding: { showLogo: boolean; logoURL: string; siteName: string; onLogoError: () => void }
+  onNavigate?: () => void
+  onLogout: () => void
+}
+
+// The sidebar's actual content — branding, nav, sign-out — shared between the
+// permanent desktop <aside> and the mobile drawer so the two never drift.
+function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContentProps) {
+  const { showLogo, logoURL, siteName, onLogoError } = branding
+  return (
+    <>
+      <div className="flex h-14 items-center border-b px-4">
+        {showLogo ? (
+          <img
+            src={logoURL}
+            alt={siteName}
+            className="h-8 max-w-[160px] object-contain"
+            onError={onLogoError}
+          />
+        ) : (
+          <span className="text-lg font-semibold text-gray-900">{siteName}</span>
+        )}
+      </div>
+
+      {/* Closing on any click inside covers every NavItem without wiring
+          each one individually — there is nothing else in here to click. */}
+      <nav className="flex-1 space-y-1 overflow-y-auto p-3" onClick={onNavigate}>
+        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" />
+        <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" />
+        {user?.role === 'admin' && (
+          <>
+            <div className="px-3 pt-4 pb-1">
+              <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Admin</span>
+            </div>
+            <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" />
+          </>
+        )}
+        {user?.role === 'admin' && (
+          <>
+            <NavItem to="/admin/groups" icon={<UsersRoundIcon className="h-4 w-4" />} label="Groups" />
+            <NavItem to="/admin/roles" icon={<ShieldIcon className="h-4 w-4" />} label="Roles" />
+            <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" />
+            <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" />
+            <NavItem to="/admin/tags" icon={<TagIcon className="h-4 w-4" />} label="Tags" />
+            <NavItem to="/admin/canned-responses" icon={<MessageSquareTextIcon className="h-4 w-4" />} label="Canned Responses" />
+            <NavItem to="/admin/custom-fields" icon={<SlidersIcon className="h-4 w-4" />} label="Custom Fields" />
+            <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" />
+            <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" />
+            <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" />
+          </>
+        )}
+      </nav>
+
+      <div className="border-t p-3 space-y-2">
+        <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
+        <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={onLogout}>
+          <LogOutIcon className="h-4 w-4" />
+          Sign out
+        </Button>
+      </div>
+    </>
+  )
+}
+
 interface LayoutProps {
   children: React.ReactNode
 }
@@ -47,6 +115,12 @@ export function Layout({ children }: LayoutProps) {
   // URL left it blank with no way to tell what instance you were looking at.
   const [logoBroken, setLogoBroken] = useState(false)
   const showLogo = logoURL !== '' && !logoBroken
+  const branding = { showLogo, logoURL, siteName, onLogoError: () => setLogoBroken(true) }
+
+  // Below md the permanent sidebar (240px of a ~390px phone) would consume
+  // most of the screen, so it is replaced by this drawer instead — closed by
+  // default, opened from the mobile top bar's own trigger. See #296.
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   async function handleLogout() {
     await logout().catch(() => {})
@@ -59,64 +133,63 @@ export function Layout({ children }: LayoutProps) {
       {/* Above everything, including the sidebar: an instance signing sessions
           with a published key is not a detail to scroll past. */}
       <InsecureConfigBanner isAdmin={user?.role === 'admin'} />
+
+      {/* Mobile top bar: the sidebar's branding plus the drawer trigger,
+          replacing the permanent sidebar below md. */}
+      <div className="flex h-14 shrink-0 items-center gap-2 border-b bg-white px-3 md:hidden">
+        <button
+          type="button"
+          aria-label="Open navigation menu"
+          onClick={() => setDrawerOpen(true)}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100"
+        >
+          <MenuIcon className="h-5 w-5" />
+        </button>
+        {showLogo ? (
+          <img
+            src={logoURL}
+            alt={siteName}
+            className="h-7 max-w-[140px] object-contain"
+            onError={branding.onLogoError}
+          />
+        ) : (
+          <span className="truncate text-base font-semibold text-gray-900">{siteName}</span>
+        )}
+      </div>
+
       {/* Body row: sidebar + main */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Sidebar */}
-        <aside className="flex w-60 flex-col border-r bg-white">
-          {/* Branding */}
-          <div className="flex h-14 items-center border-b px-4">
-            {showLogo ? (
-              <img
-                src={logoURL}
-                alt={siteName}
-                className="h-8 max-w-[160px] object-contain"
-                onError={() => setLogoBroken(true)}
-              />
-            ) : (
-              <span className="text-lg font-semibold text-gray-900">{siteName}</span>
-            )}
-          </div>
-
-          <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-            <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" />
-            <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" />
-            {user?.role === 'admin' && (
-              <>
-                <div className="px-3 pt-4 pb-1">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Admin</span>
-                </div>
-                <NavItem to="/admin/users" icon={<UsersIcon className="h-4 w-4" />} label="Users" />
-              </>
-            )}
-            {user?.role === 'admin' && (
-              <>
-                <NavItem to="/admin/groups" icon={<UsersRoundIcon className="h-4 w-4" />} label="Groups" />
-                <NavItem to="/admin/roles" icon={<ShieldIcon className="h-4 w-4" />} label="Roles" />
-                <NavItem to="/admin/categories" icon={<FolderIcon className="h-4 w-4" />} label="Categories" />
-                <NavItem to="/admin/statuses" icon={<CircleDotIcon className="h-4 w-4" />} label="Statuses" />
-                <NavItem to="/admin/tags" icon={<TagIcon className="h-4 w-4" />} label="Tags" />
-                <NavItem to="/admin/canned-responses" icon={<MessageSquareTextIcon className="h-4 w-4" />} label="Canned Responses" />
-                <NavItem to="/admin/custom-fields" icon={<SlidersIcon className="h-4 w-4" />} label="Custom Fields" />
-                <NavItem to="/admin/api-keys" icon={<KeyIcon className="h-4 w-4" />} label="API Keys" />
-                <NavItem to="/admin/oauth-clients" icon={<PlugIcon className="h-4 w-4" />} label="OAuth Clients" />
-                <NavItem to="/admin/settings" icon={<SettingsIcon className="h-4 w-4" />} label="Settings" />
-              </>
-            )}
-          </nav>
-
-          {/* User */}
-          <div className="border-t p-3 space-y-2">
-            <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
-            <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={handleLogout}>
-              <LogOutIcon className="h-4 w-4" />
-              Sign out
-            </Button>
-          </div>
+        {/* Sidebar — permanent from md up */}
+        <aside className="hidden w-60 flex-col border-r bg-white md:flex">
+          <SidebarContent user={user} branding={branding} onLogout={handleLogout} />
         </aside>
+
+        {/* Sidebar — a drawer below md, over the content rather than beside
+            it, since there is no room to share. */}
+        <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 md:hidden" />
+            <Dialog.Content
+              className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col bg-white shadow-lg outline-none md:hidden"
+              aria-describedby={undefined}
+            >
+              {/* Visually redundant with the top bar's own branding right
+                  behind the overlay — present only so the drawer has an
+                  accessible name, per Radix's own a11y requirement. */}
+              <Dialog.Title className="sr-only">Navigation</Dialog.Title>
+              <SidebarContent
+                user={user}
+                branding={branding}
+                onLogout={handleLogout}
+                onNavigate={() => setDrawerOpen(false)}
+              />
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
 
         {/* Main */}
         <main className="flex-1 overflow-auto">
-          <div className="mx-auto max-w-5xl p-6">{children}</div>
+          <div className="mx-auto max-w-5xl p-4 md:p-6">{children}</div>
         </main>
       </div>
 
@@ -128,7 +201,7 @@ export function Layout({ children }: LayoutProps) {
             href="https://github.com/PubliciaLLC/go-help-desk"
             target="_blank"
             rel="noopener noreferrer"
-            className="underline decoration-dotted hover:decoration-solid"
+            className="inline-block min-h-6 py-1.5 underline decoration-dotted hover:decoration-solid"
           >
             Go Help Desk
           </a>{' '}

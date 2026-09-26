@@ -123,7 +123,10 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
             Classification
           </CardTitle>
           {canEdit && !editing && (
-            <button className="text-xs text-blue-600 hover:underline" onClick={startEdit}>
+            <button
+              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+              onClick={startEdit}
+            >
               Edit
             </button>
           )}

@@ -133,13 +133,13 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
       {/* Assignment controls */}
       <div className="flex gap-1 text-xs">
         <button
-          className={`px-2 py-0.5 rounded ${mode === 'user' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'user' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
           onClick={() => setMode('user')}
         >
           User
         </button>
         <button
-          className={`px-2 py-0.5 rounded ${mode === 'group' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'group' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
           onClick={() => setMode('group')}
         >
           Group
@@ -543,9 +543,12 @@ export function TicketDetailPage() {
           <p role="alert" className="text-sm text-red-600">{lifecycleError}</p>
         )}
 
-        <div className="grid grid-cols-3 gap-6">
+        {/* Below md this stacks: main column first, then what is the sidebar
+            above it as full-width cards beneath — not the three-column grid
+            shrunk, which at 390px would leave each column ~90px wide. */}
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
           {/* Main column */}
-          <div className="col-span-2 space-y-6 min-w-0">
+          <div className="space-y-6 min-w-0 md:col-span-2">
             {/* Description */}
             <Card>
               <CardHeader>
