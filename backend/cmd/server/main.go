@@ -79,6 +79,29 @@ func main() {
 // regardless of interval.
 const slaSweepInterval = time.Minute
 
+// runSLASweepTick runs one breach-sweep pass if and only if enabled(ctx)
+// reports the SLA feature on — read fresh on every call, not decided once at
+// boot, per gatedSLA's doc comment in sla_wiring.go. ran reports whether
+// sweep was actually invoked, so a disabled tick can be told apart from an
+// enabled tick that swept zero candidates.
+//
+// Extracted out of the goroutine in run() so this gating is unit-testable
+// (see sla_wiring_test.go) without booting a database or an HTTP server:
+// enabled and sweep are both narrow function values, not the concrete
+// admin.Service / sla.Service types.
+func runSLASweepTick(
+	ctx context.Context,
+	enabled func(ctx context.Context) bool,
+	sweep func(ctx context.Context, now time.Time) (sla.SweepResult, error),
+	now time.Time,
+) (ran bool, res sla.SweepResult, err error) {
+	if !enabled(ctx) {
+		return false, sla.SweepResult{}, nil
+	}
+	res, err = sweep(ctx, now)
+	return true, res, err
+}
+
 // autoCloseBatch is the page size for the auto-close sweep. Resolved tickets
 // past the reopen window flip to Closed on each tick.
 const autoCloseBatch = 500
@@ -160,16 +183,34 @@ func run() error {
 	// regardless of whether SLA enforcement is active.
 	slaPolicySvc := sla.NewService(slStore)
 
-	// slaSvc is passed to the ticket service for enforcement; nil when disabled
-	// via the SLA_ENABLED env var (preserves existing behaviour).
-	// Declared as the interface type so the zero value is a true nil interface,
-	// not a (*sla.Service)(nil) wrapped in an interface (which would pass != nil checks).
-	var slaSvc ticket.SLAService
+	// slaSvc is always wired into the ticket service now — never nil. What
+	// used to gate it (cfg.SLAEnabled, decided once here at boot) and what
+	// actually governs the feature (adminSvc.SLAEnabled, the Settings-page
+	// toggle DESIGN.md documents as the real switch) used to be two
+	// independent gates: an admin turning the UI toggle on, with the env var
+	// at its default of false, attached no records and ran no sweep until the
+	// process was restarted. gatedSLA closes that gap by checking the DB
+	// setting live, on every call, so main.go no longer decides this at all.
+	// See gatedSLA's doc comment in sla_wiring.go.
+	//
+	// loggingSLA still wraps the outside, so a real failure from the inner
+	// sla.Service (as opposed to gatedSLA's own no-op when the feature is
+	// off) is still reported — the ticket service treats these as non-fatal
+	// and drops them, and domain code does not log, so without this wrapper
+	// they would vanish entirely.
+	slaSvc := ticket.SLAService(newLoggingSLA(newGatedSLA(sla.NewService(slStore), adminSvc), slog.Default()))
+
+	// SLA_ENABLED is a startup-time convenience only: DESIGN.md documents it
+	// as a way to pre-enable the feature so a fresh instance works from first
+	// boot, without an admin needing to find the Settings toggle first. It
+	// only ever turns the DB setting ON; it never turns it off, so it can
+	// never override an admin's own choice to enable the feature via the UI
+	// (or, for that matter, a previous run's pre-enable) with an unset or
+	// false env var on a later boot.
 	if cfg.SLAEnabled {
-		// Wrapped so SLA bookkeeping failures are reported. The ticket
-		// service treats them as non-fatal and drops them, and the domain
-		// does not log — so without this they vanish entirely.
-		slaSvc = newLoggingSLA(sla.NewService(slStore), slog.Default())
+		if err := adminSvc.SetBool(ctx, admin.KeySLAEnabled, true); err != nil {
+			return fmt.Errorf("pre-enabling SLA tracking: %w", err)
+		}
 	}
 
 	// ── Notifications ─────────────────────────────────────────────────────────
@@ -312,29 +353,41 @@ func run() error {
 	// Breach stamps are facts about time passing, so like session expiry they
 	// cannot be computed on read: a ticket nobody touches still breaches.
 	// See DESIGN.md → SLA Tracking → Breach Evaluation.
-	if cfg.SLAEnabled {
-		go func() {
-			t := time.NewTicker(slaSweepInterval)
-			defer t.Stop()
-			for {
-				select {
-				case <-sweepCtx.Done():
-					return
-				case <-t.C:
-					res, err := slaPolicySvc.SweepBreaches(sweepCtx, tStore, time.Now())
-					if err != nil {
-						// Partial failures are joined; res is still meaningful.
-						slog.WarnContext(sweepCtx, "sweeping SLA breaches failed", "error", err,
-							"evaluated", res.Evaluated, "stamped", res.Stamped)
-					}
-					if res.Stamped > 0 {
-						slog.InfoContext(sweepCtx, "stamped SLA breaches",
-							"evaluated", res.Evaluated, "stamped", res.Stamped)
-					}
+	//
+	// Always started — never gated on cfg.SLAEnabled — because whether the
+	// sweep actually does anything on a given tick is decided live, inside
+	// runSLASweepTick, by the same admin Settings toggle everything else SLA
+	// now reads (see slaSvc's wiring above). Gating the goroutine itself on
+	// the env var was the other half of the two-disconnected-gates bug: an
+	// admin enabling SLA tracking only through the Settings UI got a sweep
+	// that never ran until the process was restarted with SLA_ENABLED=true.
+	go func() {
+		t := time.NewTicker(slaSweepInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				ran, res, err := runSLASweepTick(sweepCtx, adminSvc.SLAEnabled,
+					func(ctx context.Context, now time.Time) (sla.SweepResult, error) {
+						return slaPolicySvc.SweepBreaches(ctx, tStore, now)
+					}, time.Now())
+				if !ran {
+					continue
+				}
+				if err != nil {
+					// Partial failures are joined; res is still meaningful.
+					slog.WarnContext(sweepCtx, "sweeping SLA breaches failed", "error", err,
+						"evaluated", res.Evaluated, "stamped", res.Stamped)
+				}
+				if res.Stamped > 0 {
+					slog.InfoContext(sweepCtx, "stamped SLA breaches",
+						"evaluated", res.Evaluated, "stamped", res.Stamped)
 				}
 			}
-		}()
-	}
+		}
+	}()
 
 	// Resolved tickets past the reopen window flip to Closed here, not on read:
 	// DESIGN.md → Ticket Lifecycle → Auto-close scheduling. Five minutes because
