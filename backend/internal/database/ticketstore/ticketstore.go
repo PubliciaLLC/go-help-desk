@@ -518,11 +518,19 @@ func (s *Store) DeleteAttachment(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *Store) CreateLink(ctx context.Context, link ticket.TicketLink) error {
-	return s.q.CreateTicketLink(ctx, dbgen.CreateTicketLinkParams{
+	err := s.q.CreateTicketLink(ctx, dbgen.CreateTicketLinkParams{
 		SourceTicketID: link.SourceTicketID,
 		TargetTicketID: link.TargetTicketID,
 		LinkType:       string(link.LinkType),
 	})
+	if err != nil {
+		// Check if this is a unique constraint violation (link already exists)
+		// The pq library wraps the error, so we check the message string for the constraint name
+		if strings.Contains(err.Error(), "ticket_links_unique") && strings.Contains(err.Error(), "23505") {
+			return ticket.ErrLinkAlreadyExists
+		}
+	}
+	return err
 }
 
 func (s *Store) DeleteLink(ctx context.Context, source, target uuid.UUID, lt ticket.LinkType) error {

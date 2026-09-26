@@ -59,6 +59,7 @@ type fakeStore struct {
 	errGetByID       error
 	errNextSeq       error
 	errCreateHistory error
+	errCreateLink    error
 }
 
 func newFakeStore() *fakeStore {
@@ -173,6 +174,15 @@ func (f *fakeStore) ListStatusHistory(_ context.Context, ticketID uuid.UUID) ([]
 }
 
 func (f *fakeStore) CreateLink(_ context.Context, link ticket.TicketLink) error {
+	if f.errCreateLink != nil {
+		return f.errCreateLink
+	}
+	// Simulate unique constraint: check if link already exists
+	for _, existing := range f.links[link.SourceTicketID] {
+		if existing.TargetTicketID == link.TargetTicketID && existing.LinkType == link.LinkType {
+			return ticket.ErrLinkAlreadyExists
+		}
+	}
 	f.links[link.SourceTicketID] = append(f.links[link.SourceTicketID], link)
 	return nil
 }

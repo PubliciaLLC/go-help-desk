@@ -93,6 +93,17 @@ const (
 	LinkDuplicateOf LinkType = "duplicate_of"
 )
 
+// Valid reports whether lt is one of the four link types. The database enforces the
+// same set with a CHECK constraint; this lets a caller reject a bad value with
+// a useful message instead of a constraint violation.
+func (lt LinkType) Valid() bool {
+	switch lt {
+	case LinkRelatedTo, LinkParentChild, LinkCausedBy, LinkDuplicateOf:
+		return true
+	}
+	return false
+}
+
 // TicketLink records a directional relationship between two tickets.
 // Both tickets are identified by UUID; no embedding is done to keep the
 // type flat.
@@ -491,6 +502,8 @@ var (
 	// expired is the window, and telling them "you do not have permission"
 	// sends them to an administrator for something no administrator can grant.
 	ErrReopenWindowClosed = errors.New("the reopen window for this ticket has closed")
+	ErrInvalidLinkType   = errors.New("invalid link type")
+	ErrLinkAlreadyExists = errors.New("link already exists")
 )
 
 // CanUserUpdate returns nil if the actor may modify this ticket.

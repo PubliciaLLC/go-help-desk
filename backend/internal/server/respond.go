@@ -77,10 +77,15 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
 		return
 	}
+	// 409 Conflict: link already exists
+	if errors.Is(err, ticket.ErrLinkAlreadyExists) {
+		Error(w, http.StatusConflict, "link_already_exists", "this link already exists")
+		return
+	}
 	// Bad input, not a fault. Without this a mistyped email address at signup,
 	// or on an admin's user edit, came back as 500 "an internal error
 	// occurred" and was logged as one.
-	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) {
+	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) || errors.Is(err, ticket.ErrInvalidLinkType) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}

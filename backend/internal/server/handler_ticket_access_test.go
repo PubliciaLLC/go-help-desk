@@ -195,6 +195,83 @@ func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
 	require.Empty(t, links, "nothing may have been written onto the foreign ticket")
 }
 
+// TestAddLink_ReturnsInvalidLinkTypeWith400 verifies that an invalid link type
+// returns 400 Bad Request, not 500 Internal Server Error.
+func TestAddLink_ReturnsInvalidLinkTypeWith400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": target.ID.String(), "link_type": "invalid_type"})
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusBadRequest, res.StatusCode,
+		"invalid link type must return 400, not 500; body: %s", b)
+
+	var errResp map[string]any
+	json.Unmarshal(b, &errResp)
+	errObj := errResp["error"].(map[string]any)
+	require.Equal(t, "bad_request", errObj["code"])
+
+	// Verify no link was created
+	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
+	require.NoError(t, err)
+	require.Empty(t, links, "no link should exist after invalid type error")
+}
+
+// TestAddLink_ReturnsDuplicateLinkWith409 verifies that creating a duplicate link
+// returns 409 Conflict, not 500 Internal Server Error.
+func TestAddLink_ReturnsDuplicateLinkWith409(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	own, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	target, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Target", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	// Create the link the first time
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": target.ID.String(), "link_type": "related_to"})
+	res.Body.Close()
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "first link creation should succeed")
+
+	// Verify the first link was created successfully
+	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
+	require.NoError(t, err)
+	require.Len(t, links, 1, "first link should be created")
+
+	// Try to create the same link again
+	res = h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+own.ID.String()+"/links",
+		map[string]any{"target_id": target.ID.String(), "link_type": "related_to"})
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+
+	require.Equal(t, http.StatusConflict, res.StatusCode,
+		"duplicate link must return 409, not 500; body: %s", b)
+
+	var errResp map[string]any
+	json.Unmarshal(b, &errResp)
+	errObj := errResp["error"].(map[string]any)
+	require.Equal(t, "link_already_exists", errObj["code"])
+}
+
 // Staff are the other half of the bug: with scope enforcement on, a staff
 // member outside a ticket's scope must be refused on the subroutes too, not
 // just on GET /{id}.
