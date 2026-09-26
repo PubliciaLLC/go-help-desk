@@ -996,6 +996,150 @@ func TestDeleteStatus_Custom_AsAdmin(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }
 
+// TestUpdateStatus_SystemStatusCannotBeRenamed pins #263: renaming a system
+// status broke the next server restart (LoadSystemStatuses looks them up by
+// name), so the admin API now refuses the rename outright rather than
+// writing it.
+func TestUpdateStatus_SystemStatusCannotBeRenamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+
+	for _, name := range []string{ticket.StatusNameNew, ticket.StatusNameResolved, ticket.StatusNameClosed} {
+		t.Run(name, func(t *testing.T) {
+			var id string
+			for _, st := range statuses {
+				if st["name"] == name {
+					id = st["id"].(string)
+				}
+			}
+			require.NotEmpty(t, id, "seeded system status %q must exist", name)
+
+			resp := h.doAsAdmin(t, http.MethodPatch,
+				fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{"name": "Done"})
+			require.Equal(t, http.StatusForbidden, resp.StatusCode)
+			var errBody struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			decodeJSON(t, resp, &errBody)
+			require.Equal(t, "forbidden", errBody.Error.Code)
+			require.Contains(t, errBody.Error.Message, "cannot be renamed")
+
+			// The name must be unchanged.
+			getResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+			require.Equal(t, http.StatusOK, getResp.StatusCode)
+			var after []map[string]any
+			decodeJSON(t, getResp, &after)
+			var stillNamed bool
+			for _, st := range after {
+				if st["id"] == id && st["name"] == name {
+					stillNamed = true
+				}
+			}
+			require.True(t, stillNamed, "system status %q must keep its name", name)
+		})
+	}
+
+	// The "restart" from the issue's reproduction: LoadSystemStatuses must
+	// still find New/Resolved/Closed by name after every refused rename.
+	require.NoError(t, h.ticketSvc.LoadSystemStatuses(ctx))
+}
+
+// TestUpdateStatus_SystemStatusOtherFieldsStillEditable pins that the #263
+// guard is scoped to the name field alone, and that resending the unchanged
+// name (an idempotent PATCH echoing the resource) is not treated as a rename.
+func TestUpdateStatus_SystemStatusOtherFieldsStillEditable(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNameResolved {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id)
+
+	resp := h.doAsAdmin(t, http.MethodPatch, fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{
+		"name":       ticket.StatusNameResolved,
+		"color":      "#123456",
+		"sort_order": 97,
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, ticket.StatusNameResolved, st["name"])
+	require.Equal(t, "#123456", st["color"])
+	require.EqualValues(t, 97, st["sort_order"])
+}
+
+// TestUpdateStatus_CustomStatusCanBeRenamed pins that the #263 refusal does
+// not spread to custom statuses, which remain freely renamable.
+func TestUpdateStatus_CustomStatusCanBeRenamed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/statuses", map[string]any{
+		"name":       "Awaiting Vendor",
+		"sort_order": 12,
+		"color":      "#aabbcc",
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var created map[string]any
+	decodeJSON(t, createResp, &created)
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", created["id"]),
+		map[string]any{"name": "Awaiting Supplier"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Awaiting Supplier", st["name"])
+}
+
+// TestUpdateStatus_PendingIsRenamable_ByDesign is a decision pin, the shape
+// CLAUDE.md describes for ticket.Service.Close: Pending is a seeded *custom*
+// status (ticket.StatusNamePending), not a system one, so the #263 guard does
+// not cover it. See DESIGN.md → SLA Tracking → Timer Mechanics for why this is
+// accepted rather than "fixed" — renaming Pending only stops future SLA
+// pauses, a mild and reversible consequence, whereas protecting it would need
+// a special case keyed on the string "Pending".
+func TestUpdateStatus_PendingIsRenamable_ByDesign(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	listResp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/statuses", nil)
+	require.Equal(t, http.StatusOK, listResp.StatusCode)
+	var statuses []map[string]any
+	decodeJSON(t, listResp, &statuses)
+	var id string
+	for _, st := range statuses {
+		if st["name"] == ticket.StatusNamePending {
+			id = st["id"].(string)
+		}
+	}
+	require.NotEmpty(t, id, "seeded Pending status must exist")
+
+	resp := h.doAsAdmin(t, http.MethodPatch,
+		fmt.Sprintf("/api/v1/admin/statuses/%s", id), map[string]any{"name": "Waiting on customer"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var st map[string]any
+	decodeJSON(t, resp, &st)
+	require.Equal(t, "Waiting on customer", st["name"])
+}
+
 // ── Admin: settings ───────────────────────────────────────────────────────────
 
 func TestGetSettings_AsAdmin(t *testing.T) {

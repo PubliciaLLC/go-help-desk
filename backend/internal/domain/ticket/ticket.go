@@ -52,7 +52,8 @@ const (
 	// three above. It is identified by name, matching how
 	// lifecycleAllowsReply already compares Resolved/Closed. Known
 	// consequence, accepted: an admin who renames the status stops future
-	// SLA pauses (see sla.Elapsed and applyStatusTimestamps).
+	// SLA pauses (see sla.Elapsed and applyStatusTimestamps). Documented in
+	// DESIGN.md → SLA Tracking → Timer Mechanics (#263).
 	StatusNamePending = "Pending"
 )
 

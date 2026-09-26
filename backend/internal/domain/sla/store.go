@@ -18,6 +18,13 @@ import (
 // reads as a genuine breach.
 var ErrNoRecord = errors.New("no SLA record for ticket")
 
+// ErrPolicyInUse reports that an SLA policy cannot be deleted because at least
+// one ticket's SLA record is measured against it. sla_records.policy_id is
+// ON DELETE RESTRICT, and it has to be: a record's targets and breach stamps
+// only mean something against the policy that set them. Before this the
+// violation reached the API as a bare 500 (#261).
+var ErrPolicyInUse = errors.New("SLA policy is in use and cannot be deleted")
+
 // Store is the persistence interface for SLA policies and records.
 type Store interface {
 	// Policies

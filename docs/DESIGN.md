@@ -133,14 +133,27 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
   window is eligible for auto-close on the very next sweep. The sweep interval
   is an implementation detail rather than a user-facing setting; a few
   minutes of slack between "the window elapsed" and "the ticket shows Closed"
-  is immaterial against a window denominated in days. `ticket.Service.Close`
-  and `ticket.Service.ListResolvedBefore` already implement the per-ticket
-  transition and the query — what is missing today is the scheduler that
-  calls them — nothing in `main.go` currently starts one, the same way it
-  starts the session-expiry sweep. Tracked as
-  [#184](https://github.com/PubliciaLLC/go-help-desk/issues/184).
-- Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
-- Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
+  is immaterial against a window denominated in days. The sweep runs every
+  five minutes from a goroutine started in `cmd/server/main.go`, alongside the
+  session-expiry sweep. Each tick reads the reopen-window setting afresh and
+  calls `ticket.Service.AutoClose`, which lists up to 500 candidates
+  (`ListResolvedBefore`) and closes each through the same code path as
+  `Close`. Under the row lock it re-checks that the ticket is still Resolved
+  and still past the cutoff, so a ticket reopened between the query and the
+  lock is left untouched: no write, no history row, no notification. Eligible
+  tickets beyond the 500 are picked up on the next tick, and a failure closing
+  one ticket is logged without stopping the rest. (Originally tracked as
+  [#184](https://github.com/PubliciaLLC/go-help-desk/issues/184).)
+- Statuses are customizable — admins can add intermediate statuses, but
+  New, Resolved and Closed are system statuses with special behavior. The
+  server finds them by name at startup and compares lifecycle rules by
+  name, so a system status's name is fixed: the admin API refuses to rename
+  one (403), just as it refuses to deactivate one. Color and sort order
+  remain editable.
+- Custom statuses can be **deactivated** (hidden from new-ticket flows) and
+  **reactivated**. They can only be **deleted** when no ticket is in that
+  status and no status-history entry references it; otherwise deactivate
+  it. System statuses can never be renamed, deactivated or deleted.
 - Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
 
 ### Tags
@@ -171,15 +184,17 @@ The ticket list includes a live search bar with a 300 ms debounce:
 
 ### Linked Tickets
 
-Tickets can be linked to any other ticket regardless of status (including Closed).
-The backend (`ticket.LinkType`, `handler_tickets.go` AddLink/RemoveLink/ListLinks)
-is implemented and is the canonical spelling; **the frontend is not wired to it
-yet** — `listLinks`/`createLink`/`deleteLink` exist in the API client but no
-page calls them, so there is currently no way to view or create a link from the
-UI. That, plus the enum drift below, is tracked as
-[#185](https://github.com/PubliciaLLC/go-help-desk/issues/185) rather than
-silently left inconsistent; "duplicate of" auto-resolve is
-[#186](https://github.com/PubliciaLLC/go-help-desk/issues/186).
+Tickets can be linked to any other ticket regardless of status (including
+Closed). The backend (`ticket.LinkType`; `GET`/`POST /tickets/{id}/links`
+and `DELETE /tickets/{id}/links/{targetId}/{linkType}` in
+`handler_tickets.go`) is the canonical spelling, and the frontend's
+`LinkType` in `frontend/src/api/types.ts` uses the same four values. Links
+are viewed, created and removed from the **Linked tickets** panel on the
+ticket detail page (`LinkedTicketsPanel.tsx`), which is shown to staff and
+admins. (Wiring the UI and reconciling the enum was
+[#185](https://github.com/PubliciaLLC/go-help-desk/issues/185); the
+duplicate-of auto-resolve option was
+[#186](https://github.com/PubliciaLLC/go-help-desk/issues/186).)
 
 Link types — four, not five. A link is directional (source ticket → target
 ticket), and that direction *is* the parent/child distinction rather than a
@@ -203,11 +218,6 @@ separate value for each direction:
   Unchecked, the link is recorded with no status change. This is the
   "optionally" in "optionally auto-resolves the duplicate" — it is a choice
   made per link, not an instance-wide setting.
-
-The frontend's current `LinkType` (`related_to | parent_of | child_of |
-caused_by | duplicate_of`) does not match this and would fail the backend's
-validation if the dormant UI code were ever called — fixing that is part of
-wiring up the UI, not a separate decision.
 
 ### Groups & Scope
 
@@ -1376,8 +1386,22 @@ When the SLA toggle is enabled, a **SLA Policies** management blade appears dire
 | **Name** | Display label, e.g. "Critical — 1h response" |
 | **Priority** | Optional. `critical`, `high`, `medium`, or `low` — restricts the policy to tickets of that priority. Leave blank for "Any priority". |
 | **Category** | Optional. Restricts the policy to a specific category. Leave blank for "All categories". |
-| **Response target** | Minutes from ticket creation to first staff reply |
+| **Response target** | Minutes from ticket creation to the first staff reply visible to the reporter (internal notes do not count). A resolution also counts as the first response — see below. |
 | **Resolution target** | Minutes from ticket creation to ticket resolved |
+
+**A resolution counts as the first response**
+([#219](https://github.com/PubliciaLLC/go-help-desk/issues/219)). If a
+ticket reaches Resolved, or Closed without passing through Resolved,
+before any staff reply, its first response is recorded at the resolution
+instant, in the same write as the resolution itself. The response target
+is judged against that instant, so a ticket resolved without a reply is
+never left reporting a response it can no longer receive. A ticket that
+already had an earlier staff reply keeps that reply as its first response.
+
+**Deleting a policy.** A policy that any ticket has been tracked against
+cannot be deleted: those tickets' targets and breach stamps are measured
+against it. The API refuses with 409, naming how many tickets depend on
+it. A policy that has never matched a ticket can be deleted freely.
 
 ### Policy Matching
 
@@ -1396,20 +1420,28 @@ Pending** — not wall-clock time since creation. That subtraction is the part
 that has to be modeled explicitly, because "paused" is a duration a ticket
 accumulates across possibly several Pending intervals, not a single flag:
 
+- "Pending" means the status **named** `Pending`: a seeded *custom* status,
+  not a system one, matched by name (`ticket.StatusNamePending`). There is no
+  per-status "pauses the SLA" flag in v1. Renaming the status away from
+  `Pending` stops tickets from pausing from then on. A ticket already in it
+  stays paused until it leaves, since leaving closes the interval whatever the
+  status is called. Deactivating it hides it from the status pickers, and
+  deleting it removes the only way to pause. Whatever status is later named
+  `Pending`, renamed back or newly created, becomes the pause status.
 - Each time a ticket enters Pending, that timestamp is recorded as the start
   of a paused interval; each time it leaves Pending (to any other status), the
   interval closes and its length is added to the ticket's accumulated
-  `sla_paused_duration`.
+  `tickets.sla_paused_seconds`.
 - **Elapsed-toward-target**, at any instant, is `now - created_at -
-  sla_paused_duration`, with one adjustment: if the ticket is *currently*
+  sla_paused_seconds`, with one adjustment: if the ticket is *currently*
   Pending, the still-open interval's length (from its start to now) is added
   on top, so a ticket does not appear to be making progress toward breach
   while it is actively paused.
 - A response or resolution that lands while paused stops that clock the same
-  way a status change would: `responded_at` / `resolved_at` is a timestamp,
-  not a running total, so once it's set the elapsed-time formula above is
-  irrelevant to it — only breaches still open at that moment continue to
-  accrue pause time.
+  way a status change would: `sla_records.first_response_at` / `resolved_at`
+  is a timestamp, not a running total, so once it's set the elapsed-time
+  formula above is irrelevant to it — only breaches still open at that
+  moment continue to accrue pause time.
 - Re-entering Pending after a reopen (see Ticket Lifecycle) resumes
   accumulating against the same policy and the same accumulated pause
   duration; a reopened ticket is not treated as a new SLA clock.
@@ -1424,11 +1456,30 @@ target still outstanding, and stamps `response_breached_at` /
 `resolution_breached_at` the first time elapsed-toward-target exceeds the
 policy's minutes for that target. The stamp, once set, does not clear itself
 if a ticket is later reopened or its policy changes — a breach that happened
-is a fact about what happened, not a live status. `sla.Service.EvaluateBreaches`
-already implements the per-ticket check; what's missing is the scheduler that
-calls it on an interval, the same shape of gap as ticket auto-close — today
-only tests call it, so no instance stamps a breach in production. Timer
-mechanics are tracked as
+is a fact about what happened, not a live status.
+
+The sweep runs every minute from a goroutine started in
+`cmd/server/main.go` and calls `sla.Service.SweepBreaches`. That selects
+candidates with a pause-aware prefilter query (`ListSLABreachCandidates`)
+and re-checks each against a fresh read of the ticket before stamping.
+One minute because targets are whole minutes and a sweep stamp records
+when a breach was *detected*, so the interval is the stamp's worst-case
+error. The goroutine always runs, but each tick first reads the SLA toggle
+and does nothing while it is off. A failure on one ticket is logged and
+does not stop the pass.
+
+The sweep is not the only writer. When a first response or a resolution is
+recorded (`RecordFirstResponse` / `RecordResolved`), the same statement that
+stores the timestamp also stamps that target's breach if it was already
+exceeded at that instant. A late response or resolution is therefore
+stamped when it happens, even between sweep ticks. These record-time writes
+are not gated on the SLA toggle: a ticket that already has an SLA record
+gets its facts recorded truthfully while the feature is off. The toggle
+governs whether new tickets get a record and whether the sweep runs. Every
+writer is write-once per column (the first stamp wins, and none overwrites
+a stamp already set).
+
+Timer mechanics were tracked as
 [#181](https://github.com/PubliciaLLC/go-help-desk/issues/181), the scheduler
 as [#182](https://github.com/PubliciaLLC/go-help-desk/issues/182), and the
 queue indicator below as
@@ -1450,8 +1501,8 @@ timestamp would ever be set):
 
 The response and resolution targets are indicated separately when both are
 outstanding (e.g. resolution can be amber while response is already breached);
-once a target's timestamp (`responded_at` / `resolved_at`) is set, that
-target's indicator stops updating and shows its final color.
+once a target's timestamp (`sla_records.first_response_at` / `resolved_at`)
+is set, that target's indicator stops updating and shows its final color.
 
 **Visibility:** the indicator, the policy name, the targets, and the
 breach/late status are staff/admin only. A reporting user's own ticket never

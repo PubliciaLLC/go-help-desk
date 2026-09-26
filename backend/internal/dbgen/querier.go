@@ -21,6 +21,11 @@ type Querier interface {
 	// Called after a correct code. NIST SP 800-63B has the verifier disregard
 	// prior failed attempts once the user authenticates successfully.
 	ClearMFAFailures(ctx context.Context, id uuid.UUID) error
+	// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
+	// stamps only mean something against the policy that set them. Counting first
+	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
+	// on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
+	CountSLARecordsByPolicy(ctx context.Context, policyID uuid.UUID) (int64, error)
 	// Rows in ticket_status_history that reference a status, in either direction.
 	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
 	// so a status with zero CURRENT tickets can still be undeletable because a past

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -51,8 +52,37 @@ func (s *Store) UpdatePolicy(ctx context.Context, p sla.Policy) error {
 	})
 }
 
+// DeletePolicy removes a policy that no ticket's SLA record references.
+//
+// Counted first so the refusal can say how many tickets depend on the policy,
+// and so the ordinary refusal never issues a failing statement (which would
+// abort an enclosing transaction). The count and the delete are separate
+// statements, so a ticket created between them can still attach a record;
+// the foreign key then refuses the delete, and that violation is mapped to
+// the same sentinel rather than surfacing as a 500 (#261).
 func (s *Store) DeletePolicy(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteSLAPolicy(ctx, id)
+	n, err := s.q.CountSLARecordsByPolicy(ctx, id)
+	if err != nil {
+		return fmt.Errorf("counting SLA records for policy %s: %w", id, err)
+	}
+	if n > 0 {
+		return fmt.Errorf("%w: it is attached to %d ticket(s), whose SLA history is measured against it", sla.ErrPolicyInUse, n)
+	}
+	if err := s.q.DeleteSLAPolicy(ctx, id); err != nil {
+		if isPolicyInUseViolation(err) {
+			return fmt.Errorf("%w: a ticket was attached to it while it was being deleted", sla.ErrPolicyInUse)
+		}
+		return fmt.Errorf("deleting SLA policy %s: %w", id, err)
+	}
+	return nil
+}
+
+// isPolicyInUseViolation reports whether err is sla_records' foreign key to
+// sla_policies refusing a delete -- detected off the typed Postgres error,
+// never err.Error()'s text, for the reason isDuplicateLinkViolation gives (#195).
+func isPolicyInUseViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "sla_records_policy_id_fkey"
 }
 
 func (s *Store) ListPolicies(ctx context.Context) ([]sla.Policy, error) {

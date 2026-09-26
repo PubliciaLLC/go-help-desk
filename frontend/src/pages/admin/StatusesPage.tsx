@@ -67,7 +67,7 @@ export function StatusesPage() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Ticket Statuses</h1>
             <p className="mt-1 text-sm text-gray-500">
-              Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be removed or deactivated.
+              Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be renamed, removed, or deactivated.
             </p>
           </div>
           <Button onClick={() => setAddingStatus(true)} className="ml-6 shrink-0">

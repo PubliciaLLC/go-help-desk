@@ -12,6 +12,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -80,6 +81,13 @@ func handleError(w http.ResponseWriter, err error) {
 	// 409 Conflict: link already exists
 	if errors.Is(err, ticket.ErrLinkAlreadyExists) {
 		Error(w, http.StatusConflict, "link_already_exists", "this link already exists")
+		return
+	}
+	// 409, not 500: a policy some ticket's SLA record is measured against is
+	// refused by the schema (ON DELETE RESTRICT), which is the database working
+	// as designed. The message carries the ticket count (#261).
+	if errors.Is(err, sla.ErrPolicyInUse) {
+		Error(w, http.StatusConflict, "policy_in_use", err.Error())
 		return
 	}
 	// Bad input, not a fault. Without this a mistyped email address at signup,

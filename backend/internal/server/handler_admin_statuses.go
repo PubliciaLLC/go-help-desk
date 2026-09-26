@@ -118,6 +118,15 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Name != nil {
+		// System statuses are found by name: LoadSystemStatuses fails startup
+		// if New/Resolved/Closed is missing, and lifecycle rules compare
+		// against those names. Renaming one broke the next restart (#263) and
+		// is the gap migration 000028's #230 guard was written around.
+		// Resending the unchanged name is not a rename.
+		if st.Kind == ticket.StatusKindSystem && *body.Name != st.Name {
+			Error(w, http.StatusForbidden, "forbidden", "system statuses cannot be renamed")
+			return
+		}
 		st.Name = *body.Name
 	}
 	if body.SortOrder != nil {

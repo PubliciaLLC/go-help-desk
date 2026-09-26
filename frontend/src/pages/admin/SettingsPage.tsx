@@ -980,6 +980,10 @@ function SLAPoliciesSection() {
       qc.invalidateQueries({ queryKey: ['sla-policies'] })
       setPendingDelete(null)
     },
+    onError: (err) => {
+      setPendingDelete(null)
+      setFormError(extractError(err))
+    },
   })
 
   const showTable = policies.length > 0 || showAdd
@@ -1070,7 +1074,7 @@ function SLAPoliciesSection() {
         open={pendingDelete !== null}
         onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
         title={`Delete SLA policy "${pendingDelete?.name ?? ''}"?`}
-        description="Tickets currently tracking against this policy will lose their SLA targets."
+        description="This cannot be undone. A policy that any ticket has been tracked against cannot be deleted."
         confirmLabel="Delete policy"
         isPending={deleteMutation.isPending}
         onConfirm={() => { if (pendingDelete) deleteMutation.mutate(pendingDelete.id) }}
