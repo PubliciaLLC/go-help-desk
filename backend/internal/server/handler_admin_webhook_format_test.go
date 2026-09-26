@@ -3,11 +3,14 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
 // A webhook's payload_format defaults to "raw" so every subscription that
@@ -214,4 +217,131 @@ func TestWebhookUpdate_RejectsWithEmptyEvents(t *testing.T) {
 	stored, err := h.authStore.GetWebhook(context.Background(), id)
 	require.NoError(t, err)
 	require.Equal(t, []string{"ticket.created"}, stored.Events)
+}
+
+// ── Event Validation ──────────────────────────────────────────────────────────
+
+// The dispatcher's matcher compares strings exactly, so event names must be
+// validated at creation and update time, not left to the dispatcher.
+func TestWebhookCreate_RejectsUnknownEventName(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	cases := []struct {
+		name   string
+		events []string
+	}{
+		{name: "typo in event name", events: []string{"ticket.creatd"}},
+		{name: "bad event in array", events: []string{"ticket.created", "bogus"}},
+		{name: "empty string in array", events: []string{""}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
+				map[string]any{"url": "https://example.com/hook", "events": tc.events})
+			defer res.Body.Close()
+			require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+			var body struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+			require.Equal(t, "invalid_event_name", body.Error.Code)
+			// The message must name the bad value in %q form - find the bad value
+			badValue := tc.events[0]
+			if len(tc.events) > 1 {
+				// For arrays with multiple values, find the first bad one
+				for _, e := range tc.events {
+					if e == "bogus" || e == "" {
+						badValue = e
+						break
+					}
+				}
+			}
+			require.Contains(t, body.Error.Message, fmt.Sprintf("%q", badValue))
+		})
+	}
+}
+
+func TestWebhookCreate_AcceptsEveryKnownEventName(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Test with "*"
+	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
+		map[string]any{"url": "https://example.com/hook1", "events": []string{"*"}})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+
+	var created1 struct {
+		Events []string `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&created1))
+	require.Equal(t, []string{"*"}, created1.Events)
+
+	// Test with all known events from notify.WebhookEvents
+	eventNames := make([]string, 0)
+	for _, evt := range notify.WebhookEvents {
+		eventNames = append(eventNames, string(evt))
+	}
+
+	res = h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
+		map[string]any{"url": "https://example.com/hook2", "events": eventNames})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+
+	var created2 struct {
+		Events []string `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&created2))
+	require.Equal(t, eventNames, created2.Events)
+}
+
+func TestWebhookUpdate_RejectsUnknownEventName(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := seedWebhook(t, h)
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
+		map[string]any{"events": []string{"ticket.creatd"}})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+	var body struct {
+		Error struct{
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, "invalid_event_name", body.Error.Code)
+
+	// A refused update must not half-apply.
+	stored, err := h.authStore.GetWebhook(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"ticket.created"}, stored.Events)
+}
+
+func TestWebhookUpdate_AcceptsKnownEventNames(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := seedWebhook(t, h)
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
+		map[string]any{"events": []string{"ticket.closed", "*"}})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	var body struct {
+		Events []string `json:"events"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, []string{"ticket.closed", "*"}, body.Events)
+
+	stored, err := h.authStore.GetWebhook(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"ticket.closed", "*"}, stored.Events)
 }

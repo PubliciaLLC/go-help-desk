@@ -1,8 +1,10 @@
 package server
 
 import (
+	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -237,6 +239,32 @@ func validPayloadFormat(v string) bool {
 	return notify.Format(v).IsValid()
 }
 
+// checkEvents validates that events is not empty and every entry is a valid event.
+// Empty list: 400 `missing_events`, with the existing message unchanged.
+// Otherwise, the first invalid entry gets 400 `invalid_event_name`.
+// Returns false after writing the error.
+func checkEvents(w http.ResponseWriter, events []string) bool {
+	if len(events) == 0 {
+		Error(w, http.StatusBadRequest, "missing_events",
+			"events is required: a webhook with no events is refused. "+
+				"Provide at least one event type.")
+		return false
+	}
+	for _, e := range events {
+		if !notify.IsWebhookEvent(e) {
+			eventList := make([]string, len(notify.WebhookEvents))
+			for i, evt := range notify.WebhookEvents {
+				eventList[i] = string(evt)
+			}
+			msg := fmt.Sprintf("unknown event %q: events must be \"*\" or any of: %s",
+				e, strings.Join(eventList, ", "))
+			Error(w, http.StatusBadRequest, "invalid_event_name", msg)
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		URL           string   `json:"url"`
@@ -250,10 +278,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	// A webhook subscription with zero events would silently never fire.
 	// Require events to be present and non-empty.
-	if len(body.Events) == 0 {
-		Error(w, http.StatusBadRequest, "missing_events",
-			"events is required: a webhook with no events is refused. "+
-				"Provide at least one event type.")
+	if !checkEvents(w, body.Events) {
 		return
 	}
 	// Checked here so a bad target is reported when the form is saved. The
@@ -326,11 +351,7 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 	if body.Events != nil {
 		// Validated only when sent, like url above: a PATCH of {"enabled":
 		// false} must not be gated on a field it does not touch.
-		// A webhook subscription with zero events would silently never fire.
-		if len(body.Events) == 0 {
-			Error(w, http.StatusBadRequest, "missing_events",
-				"events is required: a webhook with no events is refused. "+
-					"Provide at least one event type.")
+		if !checkEvents(w, body.Events) {
 			return
 		}
 		existing.Events = body.Events

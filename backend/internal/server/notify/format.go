@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/google/uuid"
 
@@ -263,4 +264,31 @@ func bodyFor(hook authstore.WebhookConfig, ev notification.Event, raw []byte, ba
 		return nil, fmt.Errorf("webhook %s: unknown payload_format %q", hook.ID, hook.PayloadFormat)
 	}
 	return r(summarize(ev, baseURL))
+}
+
+// utf16Len returns the number of UTF-16 code units needed to encode s.
+// Each rune takes either 1 or 2 units (surrogates for code points outside BMP).
+func utf16Len(s string) int {
+	count := 0
+	for _, r := range s {
+		count += utf16.RuneLen(r)
+	}
+	return count
+}
+
+// truncateUTF16 returns the longest prefix of s that fits within n UTF-16 code
+// units, never splitting a rune. Returns s itself if it is already short enough.
+func truncateUTF16(s string, n int) string {
+	if n < 0 {
+		n = 0
+	}
+	units := 0
+	for i, r := range s {
+		rlen := utf16.RuneLen(r)
+		if units+rlen > n {
+			return s[:i]
+		}
+		units += rlen
+	}
+	return s
 }

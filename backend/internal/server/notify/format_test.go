@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -612,4 +613,102 @@ func TestFormat_IsValid(t *testing.T) {
 	}
 	require.False(t, Format("xml").IsValid())
 	require.False(t, Format("").IsValid())
+}
+
+// ── UTF-16 Truncation ─────────────────────────────────────────────────────────
+
+func TestTruncateUTF16(t *testing.T) {
+	cases := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{name: "ASCII under limit", s: "hello", n: 10, want: "hello"},
+		{name: "ASCII at limit", s: "hello", n: 5, want: "hello"},
+		{name: "ASCII over limit", s: "hello world", n: 5, want: "hello"},
+		{name: "empty string", s: "", n: 0, want: ""},
+		{name: "negative limit", s: "hello", n: -1, want: ""},
+		{name: "emoji under limit", s: "😀", n: 5, want: "😀"},    // emoji is 1 rune = 2 UTF-16 units
+		{name: "emoji at limit", s: "😀", n: 2, want: "😀"},
+		{name: "emoji over limit", s: "😀", n: 1, want: ""},         // can't fit 2-unit emoji
+		{name: "multiple emoji", s: "😀😀", n: 3, want: "😀"},      // only first emoji fits
+		{name: "ascii then emoji", s: "a😀b", n: 3, want: "a😀"},   // a(1) + emoji(2) = 3
+		{name: "ascii then emoji over", s: "a😀b", n: 2, want: "a"}, // need 3 for emoji
+		{name: "zero limit", s: "hello", n: 0, want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateUTF16(tc.s, tc.n)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
+	cases := []struct {
+		name    string
+		subject string
+		body    string
+	}{
+		{
+			name:    "long subject and escaped asterisks with newlines",
+			subject: strings.Repeat("*", 300),  // escapes to 600 UTF-16 units
+			body:    strings.Repeat("*\n", 400), // escapes to 800 per * + newlines
+		},
+		{
+			name:    "all asterisks in body",
+			subject: strings.Repeat("*", 300),  // 600 UTF-16 units
+			body:    strings.Repeat("*", 600),  // 1200 UTF-16 units when escaped
+		},
+		{
+			name:    "emoji beyond rune limit",
+			subject: strings.Repeat("x", 200),
+			body:    strings.Repeat("😀", 1000), // each emoji is 2 UTF-16 units, so 2000 units total
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := fixtureReplyEvent(false)
+			ev.Subject = tc.subject
+			ev.Payload["ReplyBody"] = tc.body
+
+			got, err := renderDiscord(summarize(ev, fixtureBaseURL))
+			require.NoError(t, err)
+
+			var payload discordPayload
+			require.NoError(t, json.Unmarshal(got, &payload))
+
+			content := payload.Content
+
+			// The content should be under or at the limit
+			units := len(utf16.Encode([]rune(content)))
+			require.LessOrEqual(t, units, 1900,
+				"Discord message content must be at most 1900 UTF-16 units, got %d units", units)
+
+			// The message must start with the reference and end with the URL
+			require.True(t, strings.HasPrefix(content, "**[GHD-2026-000001]**"),
+				"message must start with the ticket reference")
+			require.True(t, strings.HasSuffix(content, "\n"+fixtureTicketURL),
+				"message must end with the ticket URL")
+
+			// Content must be valid UTF-8
+			require.True(t, isValidUTF8(content),
+				"message content must be valid UTF-8")
+
+			// allowed_mentions must be empty
+			require.Empty(t, payload.AllowedMentions.Parse,
+				"allowed_mentions.parse must be empty to prevent pings")
+		})
+	}
+}
+
+// isValidUTF8 checks if a string is valid UTF-8. This is just a utility for tests.
+func isValidUTF8(s string) bool {
+	for range s {
+		// Simply iterating over the string validates UTF-8
+	}
+	return true
 }

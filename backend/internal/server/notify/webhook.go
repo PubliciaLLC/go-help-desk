@@ -7,14 +7,44 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
+
+// WebhookEvents is the list of event types that can be subscribed to via webhooks.
+// guest.link_resent is excluded because webhooks are defined as HTTP callbacks
+// for ticket lifecycle events; guest link resends are not ticket changes.
+var WebhookEvents = []notification.EventType{
+	notification.EventTicketCreated,
+	notification.EventTicketAssigned,
+	notification.EventTicketStatusChanged,
+	notification.EventTicketReplied,
+	notification.EventTicketResolved,
+	notification.EventTicketClosed,
+	notification.EventTicketReopened,
+	notification.EventTicketLinked,
+}
+
+// IsWebhookEvent reports whether e is "*" or one of WebhookEvents.
+// Exact, case-sensitive, untrimmed: the same comparison hookSubscribes makes.
+func IsWebhookEvent(e string) bool {
+	if e == "*" {
+		return true
+	}
+	for _, event := range WebhookEvents {
+		if e == string(event) {
+			return true
+		}
+	}
+	return false
+}
 
 // WebhookStore is the interface needed to load enabled webhook configs.
 type WebhookStore interface {
@@ -26,15 +56,18 @@ type WebhookDispatcher struct {
 	store   WebhookStore
 	client  *http.Client
 	baseURL string // used only to build the staff ticket link chat/ITSM formats carry
+	log     *slog.Logger
 }
 
 // NewWebhookDispatcher returns a WebhookDispatcher with sensible timeouts.
 // baseURL is the same value the email dispatcher uses for ticket links
 // (cfg.BaseURL); it is never used to reach the hook target itself.
-func NewWebhookDispatcher(store WebhookStore, baseURL string) *WebhookDispatcher {
+// log is used to report delivery failures and other operational issues.
+func NewWebhookDispatcher(store WebhookStore, baseURL string, log *slog.Logger) *WebhookDispatcher {
 	return &WebhookDispatcher{
 		store:   store,
 		baseURL: baseURL,
+		log:     log,
 		// Guarded: the URL is operator-supplied and the app container can
 		// reach the database, the antivirus daemon and cloud metadata, none
 		// of which are reachable from outside.
@@ -68,6 +101,9 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 			// Unknown payload_format: skip this hook rather than falling
 			// back to raw. A Slack URL fed the full raw event is a
 			// delivery bug, not a degraded-but-working delivery.
+			d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
+				"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
+				"event", event.Type, "error", err)
 			continue
 		}
 		// Fire-and-forget per webhook; don't block on failures.
@@ -91,6 +127,7 @@ const (
 func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, hook.URL, bytes.NewReader(payload))
 	if err != nil {
+		d.log.Warn("webhook request could not be built", "webhook_id", hook.ID)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -113,9 +150,14 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
+		d.log.Warn("webhook delivery failed", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "error", withoutURL(err))
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		d.log.Warn("webhook delivery rejected", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "status", resp.StatusCode)
+		return
+	}
 	// Retry logic for v2: for now, accept any 2xx.
 }
 
@@ -137,5 +179,12 @@ func hmacSHA256(secret string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// Prevent unused import
-var _ = fmt.Sprintf
+// withoutURL removes the URL that http.Client wraps around every error.
+// The URL in *url.Error can contain credentials, so we unwrap it before logging.
+func withoutURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return ue.Err
+	}
+	return err
+}

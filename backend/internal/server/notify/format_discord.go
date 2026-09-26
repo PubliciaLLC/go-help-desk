@@ -14,6 +14,8 @@ type discordAllowedMentions struct {
 	Parse []string `json:"parse"`
 }
 
+const discordContentLimit = 1900 // Discord rejects >2000 with 400; counted in UTF-16 units
+
 // renderDiscord builds a Discord webhook body.
 //
 // allowed_mentions: {"parse": []} is sent on every message, unconditionally —
@@ -26,11 +28,18 @@ type discordAllowedMentions struct {
 // subset that includes masked links ("[text](url)"), and allowed_mentions
 // does nothing about those — any of them containing one would otherwise
 // become a live, clickable link posted under the operator's own webhook
-// identity. content
-// is capped at 2000 characters by Discord; the 1000-rune body truncation in
-// summarize plus the fixed framing here keeps every message well under
-// that. Discord auto-links bare URLs, so the ticket link is not wrapped in
-// markup.
+// identity.
+//
+// Content is capped at 2000 UTF-16 units by Discord. The message is built
+// and then truncated as a whole, with the URL preserved even if the text
+// must be cut short. This ensures the ticket link always survives.
+//
+// Why the cut is safe for markdown: Everything user-controlled is already
+// escaped. The only markup the renderer adds is the leading "**[ref]**",
+// which a cut can't reach unless the URL is about 1870 units long, and the
+// "> " prefixes. The worst a cut can do is leave a lone trailing "\" in
+// front of the "\n" we append. It escapes nothing and at most shows as a
+// visible backslash. No ellipsis and no extra branch.
 func renderDiscord(s summary) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("**[")
@@ -46,11 +55,12 @@ func renderDiscord(s summary) ([]byte, error) {
 		b.WriteString("\n> ")
 		b.WriteString(strings.ReplaceAll(body, "\n", "\n> "))
 	}
-	b.WriteString("\n")
-	b.WriteString(s.URL)
+
+	text := truncateUTF16(b.String(), max(0, discordContentLimit-1-utf16Len(s.URL)))
+	content := text + "\n" + s.URL
 
 	return json.Marshal(discordPayload{
-		Content:         b.String(),
+		Content:         content,
 		AllowedMentions: discordAllowedMentions{Parse: []string{}},
 	})
 }
