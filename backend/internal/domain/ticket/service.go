@@ -444,7 +444,17 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		// describes. Discarded here rather than logged because domain code
 		// does not log — cmd/server wraps the SLA service so the boundary
 		// reports these, which is where a failure can actually be seen.
-		_ = s.sla.RecordResolved(ctx, t, now)
+		//
+		// #234: resolutionInstant, not a bare now — a genuine re-resolve
+		// through this door (#225) preserves t.ResolvedAt at its ORIGINAL
+		// instant (applyStatusTimestamps never moves it forward), but
+		// RecordResolved's own no-op guard only fires once sla_records
+		// already has a resolution — if an earlier call was dropped (a
+		// pre-#216 toggle gap, or a transient failure) this is the repair
+		// path, and it must stamp the real original instant, not this later
+		// re-resolve's now. See the identical reasoning on the Closed door
+		// just below.
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
 	}
 	// The other door into Closed. Same #220 reasoning as close(): a ticket
 	// moved straight to Closed here without ever resolving would otherwise
@@ -886,7 +896,13 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 	if s.sla != nil {
 		// See UpdateStatus: non-fatal, and reported by the boundary wrapper in
 		// cmd/server rather than logged from the domain.
-		_ = s.sla.RecordResolved(ctx, t, now)
+		//
+		// #234: resolutionInstant, not a bare now — see the comment on the
+		// equivalent call in UpdateStatus. alreadyResolved above already
+		// returned early for a true double-submit; a re-resolve that reaches
+		// here (different notes, per #225) still resolved at t.ResolvedAt's
+		// original instant, not this call's now.
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
@@ -1045,8 +1061,11 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 	}
 
 	// After the commit, dispatch events and record SLA, as Resolve does.
+	//
+	// #234: resolutionInstant, not a bare now — same reasoning as Resolve and
+	// UpdateStatus.
 	if s.sla != nil {
-		_ = s.sla.RecordResolved(ctx, t, now)
+		_ = s.sla.RecordResolved(ctx, t, resolutionInstant(t, now))
 	}
 
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{

@@ -115,14 +115,28 @@ func (g *gatedSLA) AttachPolicy(ctx context.Context, t ticket.Ticket) error {
 
 // RecordFirstResponse and RecordResolved are NOT gated on the toggle (#216).
 // Unlike AttachPolicy (which must not create a new record while the feature
-// is off) and the sweep (which must not stamp a new breach while it is off),
-// a record here is being written onto an sla_records row that only exists
-// because the toggle was ON when the ticket was created — writing a fact onto
-// an existing record is always safe. Gating these silently DROPPED the fact
-// instead of deferring it: if staff replied to or resolved a ticket during an
-// off period, first_response_at/resolved_at were never written, and flipping
-// the toggle back on left the ticket looking still-unresolved to the next
-// sweep tick, which then stamped a false breach that never clears.
+// is off), a record here is being written onto an sla_records row that only
+// exists because the toggle was ON when the ticket was created — writing a
+// fact onto an existing record is always safe. Gating these silently DROPPED
+// the fact instead of deferring it: if staff replied to or resolved a ticket
+// during an off period, first_response_at/resolved_at were never written, and
+// flipping the toggle back on left the ticket looking still-unresolved to the
+// next sweep tick, which then stamped a false breach that never clears.
+//
+// #236: #217/#228 later folded breach-stamping INTO these same methods, so
+// with the toggle off, a late reply or late resolution now DOES stamp a
+// breach right here, at record time — this is intentional, not a gap this
+// wrapper needs to close. A breach stamp is an objective fact about what
+// already happened (the ticket WAS late), independent of whether an admin
+// currently has the SLA indicator toggled on for display; the toggle governs
+// whether SLA tracking is visible and whether new records get created, never
+// whether a fact already in progress gets recorded truthfully. The sweep
+// (gated separately, in cmd/server/main.go's runSLASweepTick) stays off while
+// the toggle is off for a different reason entirely: it is a periodic
+// RE-EVALUATION of records still outstanding, and there is no point spending
+// a query re-checking records for a feature nobody can currently see the
+// result of — not because a breach must never be stamped while the toggle is
+// off, which is no longer true (and, per these two methods, never fully was).
 func (g *gatedSLA) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at time.Time) error {
 	return g.inner.RecordFirstResponse(ctx, t, at)
 }

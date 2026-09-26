@@ -278,3 +278,63 @@ func TestMigration_AbortsWhenSystemStatusRenamed(t *testing.T) {
 	require.Contains(t, execErr.Error(), "Closed",
 		"the failure should name which system status it could not find, to make the cause obvious")
 }
+
+// TestMigration_AbortsWhenSystemStatusRenamedAndNameReused pins #232: the
+// guard TestMigration_AbortsWhenSystemStatusRenamed exercises counted rows by
+// bare NAME only, not kind = 'system' — the column migration 000001 seeded
+// specifically for this. Since the status name column is UNIQUE, renaming
+// the real system-kind "Closed" status frees that name for a brand new
+// CUSTOM-kind status to reuse. Before #232, count(*) = 1 for name = 'Closed'
+// still passed in that exact shape (there is, once again, exactly one row
+// named "Closed" — it is just the wrong one), so the guard did not catch it,
+// and the destructive statements below would have gone on to operate on the
+// new custom status instead of the real system one — #208's data loss,
+// through yet another path. This seeds exactly that shape (rename, then
+// recreate with the freed name as a CUSTOM status) and confirms the
+// migration now aborts loudly instead of silently misclassifying rows.
+func TestMigration_AbortsWhenSystemStatusRenamedAndNameReused(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	sql, err := os.ReadFile("migrations/000028_repair_resolved_status_invariant.up.sql")
+	require.NoError(t, err)
+
+	tx, err := db.SQL.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	ctx := context.Background()
+
+	_, err = tx.ExecContext(ctx, `UPDATE statuses SET name = 'Finished' WHERE name = 'Closed'`)
+	require.NoError(t, err, "seeding the rename this migration must guard against")
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO statuses (name, kind, sort_order, color) VALUES ('Closed', 'custom', 999, '#000000')`)
+	require.NoError(t, err, "seeding a NEW custom status reusing the freed 'Closed' name")
+
+	var stripped strings.Builder
+	for _, line := range strings.Split(string(sql), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		stripped.WriteString(line)
+		stripped.WriteByte('\n')
+	}
+
+	var execErr error
+	for _, stmt := range splitSQLStatements(stripped.String()) {
+		stmt = strings.TrimSpace(stmt)
+		if stmt == "" {
+			continue
+		}
+		if _, execErr = tx.ExecContext(ctx, stmt); execErr != nil {
+			break
+		}
+	}
+
+	require.Error(t, execErr,
+		"the migration must fail loudly when a system status has been renamed and its name reused by a new "+
+			"custom status, not silently operate on the wrong row (#232)")
+	require.Contains(t, execErr.Error(), "Closed",
+		"the failure should name which system status it could not find, to make the cause obvious")
+	require.Contains(t, execErr.Error(), "SYSTEM",
+		"the failure should make clear this is about the SYSTEM status specifically, not merely the name")
+}

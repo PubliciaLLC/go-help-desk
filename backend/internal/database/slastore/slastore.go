@@ -138,6 +138,19 @@ func (s *Store) SetResolved(ctx context.Context, ticketID uuid.UUID, at time.Tim
 	return nil
 }
 
+func (s *Store) SetResolvedAndFirstResponse(ctx context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	if err := s.q.SetSLAResolvedAndFirstResponse(ctx, dbgen.SetSLAResolvedAndFirstResponseParams{
+		TicketID:                ticketID,
+		At:                      at,
+		ElapsedSeconds:          elapsedSeconds,
+		ResolutionTargetSeconds: resolutionTargetSeconds,
+		ResponseTargetSeconds:   responseTargetSeconds,
+	}); err != nil {
+		return fmt.Errorf("recording SLA resolution and first response for ticket %s: %w", ticketID, err)
+	}
+	return nil
+}
+
 func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]sla.Record, error) {
 	rows, err := s.q.ListSLARecordsByTicketIDs(ctx, ticketIDs)
 	if err != nil {

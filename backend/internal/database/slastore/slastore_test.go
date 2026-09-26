@@ -114,6 +114,126 @@ func TestSetResolved_ConcurrentCallsLeaveNoStrayBreachStamp(t *testing.T) {
 		"the losing call's own breaching elapsed must never land a stray stamp once its write lost the race")
 }
 
+// TestSetResolvedAndFirstResponse_FoldsBothFactsIntoOneStatement pins #233
+// against the real SQL: RecordResolved's resolution fact and its #219
+// response backfill must commit together, in the same statement, so a
+// process death or dropped connection between them (which used to be
+// possible when they were SetResolved then SetFirstResponse, two separate
+// statements) cannot happen at all — there is no "between" left for it to
+// land in.
+func TestSetResolvedAndFirstResponse_FoldsBothFactsIntoOneStatement(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	ctx := context.Background()
+
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+	sls := slastore.New(q)
+
+	const responseTargetMin = 30
+	const resolutionTargetMin = 60
+	ticketID := seedTicketAndRecord(t, ctx, ts, cs, us, sls, responseTargetMin, resolutionTargetMin)
+
+	resolvedAt := time.Now().UTC().Truncate(time.Millisecond)
+	elapsed := int64(20 * 60) // 20 minutes: under both targets
+
+	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, ticketID, resolvedAt, elapsed,
+		resolutionTargetMin*60, responseTargetMin*60))
+
+	rec, err := sls.GetRecord(ctx, ticketID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.ResolvedAt)
+	require.True(t, rec.ResolvedAt.Equal(resolvedAt))
+	require.NotNil(t, rec.ResolutionElapsedAtMetSeconds)
+	require.Equal(t, elapsed, *rec.ResolutionElapsedAtMetSeconds)
+	require.NotNil(t, rec.FirstResponseAt, "#219: the resolution backfills the response in the same statement")
+	require.True(t, rec.FirstResponseAt.Equal(resolvedAt))
+	require.NotNil(t, rec.ResponseElapsedAtMetSeconds)
+	require.Equal(t, elapsed, *rec.ResponseElapsedAtMetSeconds)
+	require.Nil(t, rec.ResponseBreachedAt, "on time toward both targets: no breach")
+	require.Nil(t, rec.ResolutionBreachedAt)
+}
+
+// TestSetResolvedAndFirstResponse_StampsBothBreachesWhenLate is the late
+// control: a resolution recorded past both targets must stamp BOTH breach
+// columns, in the same call, mirroring what two separate #217/#228-folded
+// SetSLAResolved/SetSLAFirstResponse calls would have produced — but as one
+// statement instead of two.
+func TestSetResolvedAndFirstResponse_StampsBothBreachesWhenLate(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	ctx := context.Background()
+
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+	sls := slastore.New(q)
+
+	const responseTargetMin = 10
+	const resolutionTargetMin = 20
+	ticketID := seedTicketAndRecord(t, ctx, ts, cs, us, sls, responseTargetMin, resolutionTargetMin)
+
+	resolvedAt := time.Now().UTC().Truncate(time.Millisecond)
+	elapsed := int64(90 * 60) // 90 minutes: past both targets
+
+	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, ticketID, resolvedAt, elapsed,
+		resolutionTargetMin*60, responseTargetMin*60))
+
+	rec, err := sls.GetRecord(ctx, ticketID)
+	require.NoError(t, err)
+	require.NotNil(t, rec.ResolutionBreachedAt, "the resolution was late")
+	require.True(t, rec.ResolutionBreachedAt.Equal(resolvedAt))
+	require.NotNil(t, rec.ResponseBreachedAt, "the backfilled response was, by the same instant, also late")
+	require.True(t, rec.ResponseBreachedAt.Equal(resolvedAt))
+}
+
+// TestSetResolvedAndFirstResponse_LeavesAnEarlierGenuineResponseUntouched
+// proves the two column pairs are decided independently within the one
+// statement: a ticket that already has a real, earlier first_response_at
+// (and whatever breach decision was already made for it) must keep BOTH
+// completely unchanged — only the resolution pair is written.
+func TestSetResolvedAndFirstResponse_LeavesAnEarlierGenuineResponseUntouched(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	ctx := context.Background()
+
+	us := userstore.New(q)
+	cs := categorystore.New(q)
+	ts := ticketstore.New(q)
+	sls := slastore.New(q)
+
+	const responseTargetMin = 30
+	const resolutionTargetMin = 60
+	ticketID := seedTicketAndRecord(t, ctx, ts, cs, us, sls, responseTargetMin, resolutionTargetMin)
+
+	// A genuine earlier reply, on time.
+	firstResponseAt := time.Now().UTC().Truncate(time.Millisecond)
+	require.NoError(t, sls.SetFirstResponse(ctx, ticketID, firstResponseAt, int64(10*60), responseTargetMin*60))
+
+	// The resolution comes later, past the resolution target.
+	resolvedAt := firstResponseAt.Add(90 * time.Minute)
+	elapsed := int64(90 * 60)
+	require.NoError(t, sls.SetResolvedAndFirstResponse(ctx, ticketID, resolvedAt, elapsed,
+		resolutionTargetMin*60, responseTargetMin*60))
+
+	rec, err := sls.GetRecord(ctx, ticketID)
+	require.NoError(t, err)
+	require.True(t, rec.FirstResponseAt.Equal(firstResponseAt),
+		"the real earlier response must not be overwritten by the resolution's own instant")
+	require.Equal(t, int64(10*60), *rec.ResponseElapsedAtMetSeconds,
+		"the real response's own frozen elapsed reading must survive untouched")
+	require.Nil(t, rec.ResponseBreachedAt, "the real response was on time and must still read as such")
+	require.NotNil(t, rec.ResolutionBreachedAt, "the resolution itself was late and must still be stamped")
+	require.True(t, rec.ResolutionBreachedAt.Equal(resolvedAt))
+}
+
 // TestSetFirstResponse_StampsBreachAtomicallyWithTheFact pins the other half
 // of #228 against the real SQL: a late first response must land its breach
 // stamp in the SAME statement as the fact, so there is no window between them

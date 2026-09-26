@@ -29,12 +29,13 @@ type fakeSLAStore struct {
 	// SetResolved, so StampBreaches failing must not touch them).
 	stampErr error
 
-	updateRecordCalls     int
-	setFirstResponseCalls int
-	setResolvedCalls      int
-	stampCalls            int
-	listRecordsByIDsCalls int
-	listPoliciesCalls     int
+	updateRecordCalls                int
+	setFirstResponseCalls            int
+	setResolvedCalls                 int
+	setResolvedAndFirstResponseCalls int
+	stampCalls                       int
+	listRecordsByIDsCalls            int
+	listPoliciesCalls                int
 }
 
 func newFakeSLAStore() *fakeSLAStore {
@@ -132,6 +133,36 @@ func (f *fakeSLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at tim
 		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
 		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
 			r.ResolutionBreachedAt = &at
+		}
+	}
+	f.records[ticketID] = r
+	return nil
+}
+
+// SetResolvedAndFirstResponse applies the #233 fold's semantics: BOTH pairs
+// (resolution and response), each independently COALESCE-guarded and each
+// with its own breach decision made from THIS call's own elapsed/target
+// arguments — never a separately-read record — in what is, in the real
+// store, a single statement. This fake makes both writes in a single Go call
+// with no possibility of a partial update, mirroring that.
+func (f *fakeSLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	f.setResolvedAndFirstResponseCalls++
+	r, ok := f.records[ticketID]
+	if !ok {
+		return nil
+	}
+	if r.ResolvedAt == nil {
+		r.ResolvedAt = &at
+		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
+			r.ResolutionBreachedAt = &at
+		}
+	}
+	if r.FirstResponseAt == nil {
+		r.FirstResponseAt = &at
+		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > responseTargetSeconds && r.ResponseBreachedAt == nil {
+			r.ResponseBreachedAt = &at
 		}
 	}
 	f.records[ticketID] = r
@@ -699,6 +730,36 @@ func (f *swallowProbeStore) SetResolved(_ context.Context, _ uuid.UUID, at time.
 	return nil
 }
 
+// SetResolvedAndFirstResponse is the #233 fold Service.RecordResolved
+// actually calls: ONE update (f.updates increments once, not twice) writing
+// both the resolution pair and the response backfill pair, each
+// independently COALESCE-guarded, exactly like the real single UPDATE
+// statement.
+func (f *swallowProbeStore) SetResolvedAndFirstResponse(_ context.Context, _ uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
+	if !f.hasRecord {
+		return nil
+	}
+	f.updates++
+	if f.record.ResolvedAt == nil {
+		f.record.ResolvedAt = &at
+		f.record.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > resolutionTargetSeconds && f.record.ResolutionBreachedAt == nil {
+			f.record.ResolutionBreachedAt = &at
+		}
+	}
+	if f.record.FirstResponseAt == nil {
+		f.record.FirstResponseAt = &at
+		f.record.ResponseElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > responseTargetSeconds && f.record.ResponseBreachedAt == nil {
+			f.record.ResponseBreachedAt = &at
+		}
+	}
+	return nil
+}
+
 func (f *swallowProbeStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
 	return nil, nil
 }
@@ -755,13 +816,16 @@ func TestEvaluateBreaches_PropagatesStoreFailures(t *testing.T) {
 // however promptly it had been resolved.
 //
 // #219 and #220 changed this test's shape: a resolution with no prior reply
-// now ALSO backfills first_response_at (SetResolved + SetFirstResponse, two
-// store writes), and RecordResolved itself now short-circuits when the record
-// is already resolved (checked in the service, before touching the store
-// again at all) rather than relying on the store's own COALESCE guard to make
-// a second call a no-op — the service has to decide this early so it does not
-// re-read the policy and re-evaluate breach state against a later "now" that
-// has nothing to do with when the ticket actually resolved.
+// now ALSO backfills first_response_at. #233 folds that backfill and the
+// resolution fact into ONE store write (SetResolvedAndFirstResponse), not two
+// separate SetResolved/SetFirstResponse calls — see
+// TestRecordResolved_FoldsIntoOneStoreCall for the regression that pins this.
+// RecordResolved itself still short-circuits when the record is already
+// resolved (checked in the service, before touching the store again at all)
+// rather than relying on the store's own COALESCE guard to make a second call
+// a no-op — the service has to decide this early so it does not re-read the
+// policy and re-evaluate breach state against a later "now" that has nothing
+// to do with when the ticket actually resolved.
 func TestRecordResolved(t *testing.T) {
 	now := time.Now()
 	ticketID := uuid.New()
@@ -775,7 +839,7 @@ func TestRecordResolved(t *testing.T) {
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-3 * time.Hour)}
 
 	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, now))
-	require.Equal(t, 2, f.updates, "SetResolved, plus SetFirstResponse backfilling the response (#219)")
+	require.Equal(t, 1, f.updates, "#233: the resolution fact and the #219 response backfill are ONE store write")
 	require.NotNil(t, f.record.ResolvedAt)
 	require.True(t, f.record.ResolvedAt.Equal(now))
 	require.NotNil(t, f.record.ResolutionElapsedAtMetSeconds)
@@ -787,9 +851,33 @@ func TestRecordResolved(t *testing.T) {
 	// resolved, so RecordResolved is a full no-op (#220).
 	later := now.Add(2 * time.Hour)
 	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, later))
-	require.Equal(t, 2, f.updates, "already resolved: no further store writes")
+	require.Equal(t, 1, f.updates, "already resolved: no further store writes")
 	require.True(t, f.record.ResolvedAt.Equal(now), "already recorded")
 	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
+}
+
+// TestRecordResolved_FoldsIntoOneStoreCall pins #233 directly: RecordResolved
+// must issue exactly ONE store call (SetResolvedAndFirstResponse), never the
+// old two-call SetResolved-then-SetFirstResponse sequence, so a failure
+// between two separate writes is not just handled but structurally
+// impossible — there is no "between" for a crash or a dropped connection to
+// land in.
+func TestRecordResolved_FoldsIntoOneStoreCall(t *testing.T) {
+	store := newFakeSLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 1000, ResolutionTargetMin: 1000}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: time.Now().Add(-time.Hour)}
+	require.NoError(t, sla.NewService(store).RecordResolved(context.Background(), tk, time.Now()))
+
+	require.Equal(t, 1, store.setResolvedAndFirstResponseCalls,
+		"RecordResolved must fold both facts into the one combined store call")
+	require.Zero(t, store.setResolvedCalls,
+		"RecordResolved must not call the old two-statement SetResolved any more (#233)")
+	require.Zero(t, store.setFirstResponseCalls,
+		"RecordResolved must not call the old two-statement SetFirstResponse any more (#233)")
 }
 
 // TestSetResolved_ConcurrentCallsLeaveNoStrayBreachStamp pins #228 directly

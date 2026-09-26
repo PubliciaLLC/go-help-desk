@@ -330,3 +330,147 @@ func TestSLAFullyActivatesFromTheDBSettingAloneNoEnvVar(t *testing.T) {
 	require.Equal(t, 1, inner.firstResponseCalls)
 	require.Equal(t, 1, inner.resolvedCalls)
 }
+
+// tinySLAStore is a minimal in-memory sla.Store, just enough to run the real
+// sla.Service (not a fake ticket.SLAService) through gatedSLA, so
+// TestSLAToggleOff_StillStampsALateBreachAtRecordTime below exercises the
+// actual breach-stamping logic (#217/#228), not a stand-in that only counts
+// calls.
+type tinySLAStore struct {
+	policies map[uuid.UUID]sla.Policy
+	records  map[uuid.UUID]sla.Record
+}
+
+func newTinySLAStore() *tinySLAStore {
+	return &tinySLAStore{policies: map[uuid.UUID]sla.Policy{}, records: map[uuid.UUID]sla.Record{}}
+}
+
+func (s *tinySLAStore) CreatePolicy(context.Context, sla.Policy) error { return nil }
+func (s *tinySLAStore) GetPolicy(_ context.Context, id uuid.UUID) (sla.Policy, error) {
+	return s.policies[id], nil
+}
+func (s *tinySLAStore) UpdatePolicy(context.Context, sla.Policy) error     { return nil }
+func (s *tinySLAStore) DeletePolicy(context.Context, uuid.UUID) error      { return nil }
+func (s *tinySLAStore) ListPolicies(context.Context) ([]sla.Policy, error) { return nil, nil }
+func (s *tinySLAStore) FindPolicy(context.Context, ticket.Priority, uuid.UUID) (*sla.Policy, error) {
+	return nil, nil
+}
+func (s *tinySLAStore) CreateRecord(_ context.Context, r sla.Record) error {
+	s.records[r.TicketID] = r
+	return nil
+}
+func (s *tinySLAStore) GetRecord(_ context.Context, ticketID uuid.UUID) (sla.Record, error) {
+	r, ok := s.records[ticketID]
+	if !ok {
+		return sla.Record{}, sla.ErrNoRecord
+	}
+	return r, nil
+}
+func (s *tinySLAStore) UpdateRecord(_ context.Context, r sla.Record) error {
+	s.records[r.TicketID] = r
+	return nil
+}
+func (s *tinySLAStore) SetResolved(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds int64) error {
+	r, ok := s.records[ticketID]
+	if !ok {
+		return nil
+	}
+	if r.ResolvedAt == nil {
+		r.ResolvedAt = &at
+		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
+			r.ResolutionBreachedAt = &at
+		}
+	}
+	s.records[ticketID] = r
+	return nil
+}
+func (s *tinySLAStore) SetFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, responseTargetSeconds int64) error {
+	r, ok := s.records[ticketID]
+	if !ok {
+		return nil
+	}
+	if r.FirstResponseAt == nil {
+		r.FirstResponseAt = &at
+		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > responseTargetSeconds && r.ResponseBreachedAt == nil {
+			r.ResponseBreachedAt = &at
+		}
+	}
+	s.records[ticketID] = r
+	return nil
+}
+func (s *tinySLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID uuid.UUID, at time.Time, elapsedSeconds, resolutionTargetSeconds, responseTargetSeconds int64) error {
+	r, ok := s.records[ticketID]
+	if !ok {
+		return nil
+	}
+	if r.ResolvedAt == nil {
+		r.ResolvedAt = &at
+		r.ResolutionElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > resolutionTargetSeconds && r.ResolutionBreachedAt == nil {
+			r.ResolutionBreachedAt = &at
+		}
+	}
+	if r.FirstResponseAt == nil {
+		r.FirstResponseAt = &at
+		r.ResponseElapsedAtMetSeconds = &elapsedSeconds
+		if elapsedSeconds > responseTargetSeconds && r.ResponseBreachedAt == nil {
+			r.ResponseBreachedAt = &at
+		}
+	}
+	s.records[ticketID] = r
+	return nil
+}
+func (s *tinySLAStore) ListRecordsByTicketIDs(context.Context, []uuid.UUID) ([]sla.Record, error) {
+	return nil, nil
+}
+func (s *tinySLAStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (s *tinySLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
+	r, ok := s.records[ticketID]
+	if !ok {
+		return nil
+	}
+	if r.ResponseBreachedAt == nil {
+		r.ResponseBreachedAt = response
+	}
+	if r.ResolutionBreachedAt == nil {
+		r.ResolutionBreachedAt = resolution
+	}
+	s.records[ticketID] = r
+	return nil
+}
+
+// TestSLAToggleOff_StillStampsALateBreachAtRecordTime pins #236. The comment
+// above gatedSLA.RecordResolved/RecordFirstResponse used to justify leaving
+// them ungated by pointing at the sweep staying gated ("must not stamp a new
+// breach while it is off"), as if that protected the whole invariant. #217/#228
+// later folded breach-stamping into these same two methods, so with the
+// toggle OFF, a genuinely late resolution recorded through this exact stack —
+// gatedSLA wrapping the REAL sla.Service, not a call-counting fake — still
+// stamps resolution_breached_at. This is the behavior the corrected comment
+// now documents as intentional, not a gap to close.
+func TestSLAToggleOff_StillStampsALateBreachAtRecordTime(t *testing.T) {
+	store := newTinySLAStore()
+	policyID := uuid.New()
+	ticketID := uuid.New()
+	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 60}
+	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
+
+	real := sla.NewService(store)
+	toggle := &mutableEnabler{on: false}
+	g := newGatedSLA(real, toggle, discardLogger())
+
+	createdAt := time.Now().Add(-2 * time.Hour)
+	resolvedAt := createdAt.Add(90 * time.Minute) // later than the 60-minute resolution target
+	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
+
+	require.NoError(t, g.RecordResolved(context.Background(), tk, resolvedAt))
+
+	rec := store.records[ticketID]
+	require.NotNil(t, rec.ResolutionBreachedAt,
+		"a late resolution must be stamped at record time even with the SLA toggle off (#236): "+
+			"the stamp is a fact about lateness, not gated on the indicator's visibility")
+}

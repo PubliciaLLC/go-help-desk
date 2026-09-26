@@ -326,6 +326,31 @@ type Querier interface {
 	// the fact write and the breach stamp are one statement (#228), and why
 	// every right-hand-side column reference here reads the PRE-UPDATE row.
 	SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) error
+	// #233: RecordResolved's own fold of TWO facts into one statement, the same
+	// way #228 folded each fact with its own breach decision. Before this,
+	// RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
+	// separate statements (the #219 "a resolution is a response too" backfill).
+	// A failure between them left resolved_at set and first_response_at
+	// permanently NULL: RecordResolved's own fast no-op guard (resolved_at
+	// already set) blocks any later call from ever retrying the second write,
+	// and ListSLABreachCandidates' first_response_at IS NULL branch keeps
+	// selecting the row on every sweep tick, which then stamps a PERMANENT false
+	// response_breached_at. One statement makes that intermediate state
+	// impossible: both writes commit together, in the same row version, or
+	// neither does.
+	//
+	// Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
+	// SetSLAResolved, applied to both column pairs independently: each pair's
+	// CASE reads only ITS OWN pre-image column (resolution_breached_at's
+	// condition reads resolved_at; response_breached_at's reads
+	// first_response_at), so a ticket that already has a genuine EARLIER
+	// first_response_at (a real staff reply before the resolution) keeps it —
+	// and its own already-decided response_breached_at — completely untouched;
+	// only the resolution pair is written for it. This is exactly
+	// RecordResolved's existing "SetFirstResponse's own COALESCE guard already
+	// makes this the correct no-op" reasoning, now inside one statement instead
+	// of two.
+	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error
 	SetSetting(ctx context.Context, arg SetSettingParams) error
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error

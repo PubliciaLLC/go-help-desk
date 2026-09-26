@@ -111,6 +111,50 @@ SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
     END
 WHERE ticket_id = $1;
 
+-- name: SetSLAResolvedAndFirstResponse :exec
+-- #233: RecordResolved's own fold of TWO facts into one statement, the same
+-- way #228 folded each fact with its own breach decision. Before this,
+-- RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
+-- separate statements (the #219 "a resolution is a response too" backfill).
+-- A failure between them left resolved_at set and first_response_at
+-- permanently NULL: RecordResolved's own fast no-op guard (resolved_at
+-- already set) blocks any later call from ever retrying the second write,
+-- and ListSLABreachCandidates' first_response_at IS NULL branch keeps
+-- selecting the row on every sweep tick, which then stamps a PERMANENT false
+-- response_breached_at. One statement makes that intermediate state
+-- impossible: both writes commit together, in the same row version, or
+-- neither does.
+--
+-- Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
+-- SetSLAResolved, applied to both column pairs independently: each pair's
+-- CASE reads only ITS OWN pre-image column (resolution_breached_at's
+-- condition reads resolved_at; response_breached_at's reads
+-- first_response_at), so a ticket that already has a genuine EARLIER
+-- first_response_at (a real staff reply before the resolution) keeps it —
+-- and its own already-decided response_breached_at — completely untouched;
+-- only the resolution pair is written for it. This is exactly
+-- RecordResolved's existing "SetFirstResponse's own COALESCE guard already
+-- makes this the correct no-op" reasoning, now inside one statement instead
+-- of two.
+UPDATE sla_records
+SET resolved_at = COALESCE(resolved_at, sqlc.arg(at)::timestamptz),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    resolution_breached_at = CASE
+        WHEN resolved_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(resolution_target_seconds)::bigint
+            THEN COALESCE(resolution_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE resolution_breached_at
+    END,
+    first_response_at = COALESCE(first_response_at, sqlc.arg(at)::timestamptz),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, sqlc.arg(elapsed_seconds)::bigint),
+    response_breached_at = CASE
+        WHEN first_response_at IS NULL
+             AND sqlc.arg(elapsed_seconds)::bigint > sqlc.arg(response_target_seconds)::bigint
+            THEN COALESCE(response_breached_at, sqlc.arg(at)::timestamptz)
+        ELSE response_breached_at
+    END
+WHERE ticket_id = $1;
+
 -- name: ListSLABreachCandidates :many
 -- Tickets the breach sweep must evaluate: open, under a policy, with at least
 -- one target that is neither met nor already stamped, using the same

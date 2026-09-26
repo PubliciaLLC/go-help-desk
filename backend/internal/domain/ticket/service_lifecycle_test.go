@@ -754,6 +754,45 @@ func TestClose_RecordsSLAAtNowWhenNeverResolved(t *testing.T) {
 	require.False(t, h.sla.lastResolvedAt.After(after))
 }
 
+// TestResolve_ReResolvePreservesOriginalSLAInstant pins #234: #227 taught
+// close()/UpdateStatus->Closed to record SLA against resolutionInstant(t, now)
+// rather than a bare now, but Resolve itself still passed a bare now. Since
+// #225 made a genuine re-resolve (different notes) actually re-execute,
+// applyStatusTimestamps preserves the ticket's ORIGINAL ResolvedAt on that
+// re-resolve — so the SLA call must use the same original instant, not the
+// re-resolve's now, or it can stamp a false breach (via #217) repairing a
+// dropped SLA fact against the wrong instant.
+func TestResolve_ReResolvePreservesOriginalSLAInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	_, err := h.svc.Resolve(context.Background(), seeded.ID, "resolved again, different notes",
+		ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"a re-resolve (#225) must repair/record the SLA resolution at the ticket's real original instant (#234), not this call's now")
+}
+
+// TestUpdateStatus_ResolvedToResolved_PreservesOriginalSLAInstant is
+// TestResolve_ReResolvePreservesOriginalSLAInstant's twin for the other door
+// into Resolved. See #234.
+func TestUpdateStatus_ResolvedToResolved_PreservesOriginalSLAInstant(t *testing.T) {
+	h := newHarness(t)
+	seeded := h.seedResolved(uuid.New())
+	originalResolvedAt := *seeded.ResolvedAt
+
+	_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
+		ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"UpdateStatus->Resolved must repair/record the SLA resolution at the ticket's real original instant (#234), not this call's now")
+}
+
 // Every lifecycle write must read the row it is about to overwrite from inside
 // its transaction. Update rewrites every column, so a copy read on the pool is
 // a lost update waiting for a second writer.

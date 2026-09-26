@@ -93,17 +93,21 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 //
 // #217: like RecordFirstResponse, this stamps a late RESOLUTION breach right
 // here, at the instant it is recorded, rather than relying solely on the
-// sweep to notice an outstanding record later. #228: SetResolved decides that
-// stamp atomically with its own write — see its store.go doc comment.
+// sweep to notice an outstanding record later.
 //
-// #219: a resolution is a response in every practical sense. The call to
-// SetFirstResponse below always runs, unconditionally — not gated on a
-// separately-read "is it already set" check, which is exactly the kind of
-// stale-record decision #228 removes. SetFirstResponse's own COALESCE guard
-// already makes this the correct no-op when a real earlier reply exists: it
-// leaves first_response_at, response_elapsed_at_met_seconds, and
-// response_breached_at every one untouched, so an actual earlier reply's own
-// frozen elapsed/breach decision (made at ITS instant, not this one) stands.
+// #219: a resolution is a response in every practical sense. #233: the write
+// that backfills the response, and the write that records the resolution
+// itself, are ONE call to store.SetResolvedAndFirstResponse below — not two
+// separate statements. Two separate calls here used to mean a failure
+// between them left resolved_at set and first_response_at permanently NULL,
+// with no self-heal path: this method's own fast no-op guard above (which
+// exists precisely so a later retry does not re-decide a breach against a
+// new "now") blocks any later call from ever retrying the dropped second
+// write, and the sweep would then stamp a permanent false response breach.
+// #228's store-level fold (breach stamp atomic with its own fact write)
+// composes with this one: SetResolvedAndFirstResponse folds all FOUR
+// writes — both facts and both of their own breach decisions — into a
+// single statement. See its store.go doc comment.
 func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
 	record, err := s.store.GetRecord(ctx, t.ID)
 	if errors.Is(err, ErrNoRecord) {
@@ -113,7 +117,7 @@ func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.T
 		return fmt.Errorf("recording SLA resolution: %w", err)
 	}
 	if record.ResolvedAt != nil {
-		return nil // fast path; the store writes below would no-op anyway
+		return nil // fast path; the store write below would no-op anyway
 	}
 	policy, err := s.store.GetPolicy(ctx, record.PolicyID)
 	if err != nil {
@@ -121,11 +125,9 @@ func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.T
 	}
 
 	elapsed := int64(Elapsed(t, at) / time.Second)
-	if err := s.store.SetResolved(ctx, t.ID, at, elapsed, int64(policy.ResolutionTargetMin)*60); err != nil {
+	if err := s.store.SetResolvedAndFirstResponse(ctx, t.ID, at, elapsed,
+		int64(policy.ResolutionTargetMin)*60, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA resolution: %w", err)
-	}
-	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
-		return fmt.Errorf("recording SLA response at resolution: %w", err)
 	}
 	return nil
 }

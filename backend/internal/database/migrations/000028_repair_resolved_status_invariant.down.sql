@@ -1,5 +1,7 @@
 -- No inverse: this migration repairs data, it does not change schema. The
--- values it overwrote (a stale resolved_at, a missing closed_at) were bugs,
--- not state worth restoring, and there is no way to recover which rows had
--- which stale values before the up migration ran. Left as a no-op rather than
--- silently reintroducing the invariant violation the up migration fixed.
+-- values it overwrote (a stale resolved_at, a missing closed_at, and — since
+-- #231 moved it here — a legacy sla_records row missing resolved_at/
+-- first_response_at or their breach stamps) were bugs, not state worth
+-- restoring, and there is no way to recover which rows had which stale
+-- values before the up migration ran. Left as a no-op rather than silently
+-- reintroducing the invariant violations the up migration fixed.

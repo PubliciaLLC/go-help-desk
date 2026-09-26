@@ -381,6 +381,32 @@ func TestResolveAsDuplicate_AlreadyLinkedIsSatisfiedNotConflict(t *testing.T) {
 	require.Equal(t, 1, countType(h.dispatcher.events, notification.EventTicketResolved))
 }
 
+// TestResolveAsDuplicate_ReResolvePreservesOriginalSLAInstant pins #234:
+// ResolveAsDuplicate still passed a bare now to RecordResolved. A source
+// ticket already Resolved, already linked to the same target (so this call's
+// own no-op check rests on notes alone, same as Resolve), re-resolved with
+// different notes genuinely re-executes (#225) and applyStatusTimestamps
+// preserves the ticket's ORIGINAL ResolvedAt — the SLA call must use that
+// same original instant, not this call's now.
+func TestResolveAsDuplicate_ReResolvePreservesOriginalSLAInstant(t *testing.T) {
+	h := newHarness(t)
+	source := h.seedResolved(uuid.New())
+	originalResolvedAt := *source.ResolvedAt
+	target := h.seedOpen()
+	agent := uuid.New()
+	staff := ticket.Actor{UserID: &agent, Role: user.RoleStaff}
+
+	require.NoError(t, h.svc.AddLink(context.Background(), source.ID, target.ID, ticket.LinkDuplicateOf, staff))
+
+	_, err := h.svc.ResolveAsDuplicate(context.Background(), source.ID, target.ID,
+		"resolved again, different notes", staff)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, h.sla.resolutions)
+	require.True(t, originalResolvedAt.Equal(h.sla.lastResolvedAt),
+		"a re-resolve via ResolveAsDuplicate (#225) must repair/record the SLA resolution at the ticket's real original instant (#234), not this call's now")
+}
+
 // TestResolveAsDuplicate_SamePairDifferentTypeIsUnaffected pins the other half
 // of #194: a link between the same two tickets but of a DIFFERENT type must
 // not be special-cased — it is unrelated to the duplicate_of link this call

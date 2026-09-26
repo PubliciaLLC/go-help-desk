@@ -381,6 +381,70 @@ func (q *Queries) SetSLAResolved(ctx context.Context, arg SetSLAResolvedParams) 
 	return err
 }
 
+const setSLAResolvedAndFirstResponse = `-- name: SetSLAResolvedAndFirstResponse :exec
+UPDATE sla_records
+SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
+    resolution_elapsed_at_met_seconds = COALESCE(resolution_elapsed_at_met_seconds, $3::bigint),
+    resolution_breached_at = CASE
+        WHEN resolved_at IS NULL
+             AND $3::bigint > $4::bigint
+            THEN COALESCE(resolution_breached_at, $2::timestamptz)
+        ELSE resolution_breached_at
+    END,
+    first_response_at = COALESCE(first_response_at, $2::timestamptz),
+    response_elapsed_at_met_seconds = COALESCE(response_elapsed_at_met_seconds, $3::bigint),
+    response_breached_at = CASE
+        WHEN first_response_at IS NULL
+             AND $3::bigint > $5::bigint
+            THEN COALESCE(response_breached_at, $2::timestamptz)
+        ELSE response_breached_at
+    END
+WHERE ticket_id = $1
+`
+
+type SetSLAResolvedAndFirstResponseParams struct {
+	TicketID                uuid.UUID `json:"ticket_id"`
+	At                      time.Time `json:"at"`
+	ElapsedSeconds          int64     `json:"elapsed_seconds"`
+	ResolutionTargetSeconds int64     `json:"resolution_target_seconds"`
+	ResponseTargetSeconds   int64     `json:"response_target_seconds"`
+}
+
+// #233: RecordResolved's own fold of TWO facts into one statement, the same
+// way #228 folded each fact with its own breach decision. Before this,
+// RecordResolved issued SetSLAResolved then SetSLAFirstResponse as two
+// separate statements (the #219 "a resolution is a response too" backfill).
+// A failure between them left resolved_at set and first_response_at
+// permanently NULL: RecordResolved's own fast no-op guard (resolved_at
+// already set) blocks any later call from ever retrying the second write,
+// and ListSLABreachCandidates' first_response_at IS NULL branch keeps
+// selecting the row on every sweep tick, which then stamps a PERMANENT false
+// response_breached_at. One statement makes that intermediate state
+// impossible: both writes commit together, in the same row version, or
+// neither does.
+//
+// Same COALESCE-guarded, first-writer-wins shape as SetSLAFirstResponse /
+// SetSLAResolved, applied to both column pairs independently: each pair's
+// CASE reads only ITS OWN pre-image column (resolution_breached_at's
+// condition reads resolved_at; response_breached_at's reads
+// first_response_at), so a ticket that already has a genuine EARLIER
+// first_response_at (a real staff reply before the resolution) keeps it —
+// and its own already-decided response_breached_at — completely untouched;
+// only the resolution pair is written for it. This is exactly
+// RecordResolved's existing "SetFirstResponse's own COALESCE guard already
+// makes this the correct no-op" reasoning, now inside one statement instead
+// of two.
+func (q *Queries) SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) error {
+	_, err := q.db.ExecContext(ctx, setSLAResolvedAndFirstResponse,
+		arg.TicketID,
+		arg.At,
+		arg.ElapsedSeconds,
+		arg.ResolutionTargetSeconds,
+		arg.ResponseTargetSeconds,
+	)
+	return err
+}
+
 const stampSLABreaches = `-- name: StampSLABreaches :exec
 UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   $2::timestamptz),
