@@ -20,11 +20,13 @@ type discordAllowedMentions struct {
 // it is Discord's own mechanism for turning @everyone, @here, and role/user
 // mentions in user-chosen text into plain text instead of a ping. Without
 // it, a ticket subject can ping a whole server. That mechanism only covers
-// mentions, though: Subject and Body also pass through escapeChatMarkdown,
-// because Discord's message content renders a markdown subset that includes
-// masked links ("[text](url)"), and allowed_mentions does nothing about
-// those — a subject/body containing one would otherwise become a live,
-// clickable link posted under the operator's own webhook identity. content
+// mentions, though: Subject and Body, and Headline (which carries an
+// admin-defined StatusName on ticket.status_changed), also pass through
+// escapeChatMarkdown, because Discord's message content renders a markdown
+// subset that includes masked links ("[text](url)"), and allowed_mentions
+// does nothing about those — any of them containing one would otherwise
+// become a live, clickable link posted under the operator's own webhook
+// identity. content
 // is capped at 2000 characters by Discord; the 1000-rune body truncation in
 // summarize plus the fixed framing here keeps every message well under
 // that. Discord auto-links bare URLs, so the ticket link is not wrapped in
@@ -34,7 +36,7 @@ func renderDiscord(s summary) ([]byte, error) {
 	b.WriteString("**[")
 	b.WriteString(s.Ref)
 	b.WriteString("]** ")
-	b.WriteString(s.Headline)
+	b.WriteString(escapeChatMarkdown(s.Headline))
 	if s.Subject != "" {
 		b.WriteString(" — ")
 		b.WriteString(escapeChatMarkdown(s.Subject))

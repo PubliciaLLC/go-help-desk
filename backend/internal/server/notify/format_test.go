@@ -548,6 +548,54 @@ func TestRenderSlack_EscapesStatusNameInHeadline(t *testing.T) {
 	require.Contains(t, decoded.Text, "Status changed to Escalated &lt;!channel&gt;")
 }
 
+func TestRenderTeams_EscapesStatusNameInHeadline(t *testing.T) {
+	ev := notification.Event{
+		Type:           notification.EventTicketStatusChanged,
+		TicketID:       fixtureTicketID,
+		Payload:        map[string]any{"new_status_id": uuid.New()},
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        "Printer jammed",
+		StatusName:     "Escalated [Click here](https://evil.tld)",
+	}
+
+	got, err := renderTeams(summarize(ev, fixtureBaseURL))
+	require.NoError(t, err)
+
+	var env teamsEnvelope
+	require.NoError(t, json.Unmarshal(got, &env))
+	require.Len(t, env.Attachments, 1)
+	headline := env.Attachments[0].Content.Body[0].Text
+
+	require.NotContains(t, headline, "[Click here](https://evil.tld)",
+		"an admin-named status must not render as a clickable link in the Adaptive Card headline")
+	require.Contains(t, headline, `\[Click here\]\(https://evil.tld\)`)
+}
+
+func TestRenderDiscord_EscapesStatusNameInHeadline(t *testing.T) {
+	ev := notification.Event{
+		Type:           notification.EventTicketStatusChanged,
+		TicketID:       fixtureTicketID,
+		Payload:        map[string]any{"new_status_id": uuid.New()},
+		OccurredAt:     fixtureOccurred,
+		TrackingNumber: "GHD-2026-000001",
+		Subject:        "Printer jammed",
+		StatusName:     "Escalated [Click here](https://evil.tld)",
+	}
+
+	got, err := renderDiscord(summarize(ev, fixtureBaseURL))
+	require.NoError(t, err)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(got, &m))
+	content, ok := m["content"].(string)
+	require.True(t, ok)
+
+	require.NotContains(t, content, "[Click here](https://evil.tld)",
+		"an admin-named status must not render as a clickable link in Discord")
+	require.Contains(t, content, `\[Click here\]\(https://evil.tld\)`)
+}
+
 func TestBodyFor_UnknownFormatIsRefusedNotSentRaw(t *testing.T) {
 	ev := fixtureReplyEvent(false)
 	raw, err := json.Marshal(ev)

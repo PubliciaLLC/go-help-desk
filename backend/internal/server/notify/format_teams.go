@@ -52,15 +52,16 @@ type teamsAction struct {
 // always the single Action.OpenUrl back to the ticket. No mention entities
 // are emitted, so user-chosen text cannot page anyone through this format.
 //
-// Subject and Body are reporter-controlled and pass through
+// Subject and Body are reporter-controlled, and Headline carries an
+// admin-defined StatusName on ticket.status_changed — all three pass through
 // escapeChatMarkdown before they reach the card: Adaptive Cards' TextBlock
 // renders a markdown subset that includes masked links ("[text](url)"), and
-// without escaping, a subject/body containing one becomes a live, clickable
+// without escaping, any of them containing one becomes a live, clickable
 // link posted under the operator's own webhook identity.
 func renderTeams(s summary) ([]byte, error) {
 	body := []teamsTextBlock{
 		{Type: "TextBlock", Size: "Medium", Weight: "Bolder", Wrap: true,
-			Text: fmt.Sprintf("[%s] %s", s.Ref, s.Headline)},
+			Text: fmt.Sprintf("[%s] %s", s.Ref, escapeChatMarkdown(s.Headline))},
 	}
 	if s.Subject != "" {
 		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Subject)})
