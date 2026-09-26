@@ -86,15 +86,13 @@ func TestReopenTicket_Closed_Returns200(t *testing.T) {
 
 // TestReopenTicket_MisconfiguredTarget_FallsBackToNew pins the misconfigured-
 // target half of #277: adminSvc.ReopenTargetStatusName returning a name that
-// matches no status used to make handleReopenTicket pass uuid.Nil straight
-// to Reopen, which refused it with ticket.ErrValidation -- so an
-// administrator's typo in a settings field turned every manual reopen into
-// a 500, since handleReopenTicket had its own inline ListStatuses loop
-// instead of the shared fallback the reply paths already used. This fix is
-// that shared helper; the ErrValidation -> 400 mapping itself came from the
-// v1.3.0-beta merge, not from this branch. handleReopenTicket now goes
-// through the same reopenTargetStatusID helper the reply paths use, which
-// falls back to New.
+// matches no status used to make handleReopenTicket pass uuid.Nil straight to
+// Reopen, which refused it with ticket.ErrValidation -- mapped to 400 on the
+// v1.3.0-beta merge base regardless of this fix, so an administrator's typo
+// in a settings field answered "bad request" to an administrator's perfectly
+// good reopen click, rather than falling back to a sensible default the way
+// the reply paths already did. handleReopenTicket now goes through the same
+// reopenTargetStatusID helper those paths use, which falls back to New.
 func TestReopenTicket_MisconfiguredTarget_FallsBackToNew(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
