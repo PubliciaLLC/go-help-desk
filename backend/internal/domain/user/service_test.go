@@ -201,6 +201,16 @@ func (f *fakeUserStore) ListAdmin(_ context.Context, _, _ int) ([]user.User, err
 	return out, nil
 }
 
+func (f *fakeUserStore) ListActiveAdmins(_ context.Context) ([]user.User, error) {
+	out := make([]user.User, 0, len(f.byID))
+	for _, u := range f.byID {
+		if u.Role == user.RoleAdmin && u.IsActive() {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeUserStore) Count(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
 }

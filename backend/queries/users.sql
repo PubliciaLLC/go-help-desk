@@ -236,6 +236,15 @@ WHERE role = 'admin'
   AND disabled = FALSE
   AND id <> $1;
 
+-- name: ListActiveAdmins :many
+-- Every active administrator, in full — not a count, because #300's guard has
+-- to know WHICH of them still has a way to authenticate after an SSO
+-- settings change, not just how many there are. See settings_sso_guard.go.
+SELECT * FROM users
+WHERE role = 'admin'
+  AND deleted_at IS NULL
+  AND disabled = FALSE;
+
 -- name: CountAllUsers :one
 -- Every row, including disabled and soft-deleted accounts.
 --

@@ -525,6 +525,55 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 	return i, err
 }
 
+const listActiveAdmins = `-- name: ListActiveAdmins :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users
+WHERE role = 'admin'
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+`
+
+// Every active administrator, in full — not a count, because #300's guard has
+// to know WHICH of them still has a way to authenticate after an SSO
+// settings change, not just how many there are. See settings_sso_guard.go.
+func (q *Queries) ListActiveAdmins(ctx context.Context) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveAdmins)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.Disabled,
+			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAssignableStaff = `-- name: ListAssignableStaff :many
 SELECT id, display_name,
        (disabled = FALSE AND role IN ('staff', 'admin')) AS assignable

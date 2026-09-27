@@ -262,6 +262,50 @@ separate value for each direction:
 - Google Workspace
 - (Standard SAML 2.0 — additional IdPs should work via metadata import)
 
+### Identity provider lockout guard (#300)
+
+A federated account (SAML or OIDC) can have no local password at all —
+`password_hash` empty, local login refuses it with 401. Its only way in is
+that specific provider. Disabling or clearing that provider's configuration
+in **Admin → Settings** removes the account's only channel while leaving the
+row, the role and the active-administrator count completely untouched — the
+same class of mistake the last-administrator guard (see User Management,
+above) exists to prevent, reached through a door that guard does not watch,
+since it watches the administrator ROW, not their ability to authenticate.
+
+Saving the OIDC or SAML configuration checks what each provider's
+reachability will be immediately afterward and looks at every active
+administrator:
+
+- If the change would leave **every** active administrator with no way to
+  authenticate, the save is refused (400) — the same severity as
+  `ErrLastAdmin`, and for the same reason: this is the unrecoverable case.
+- If it strands **some** administrators but at least one other can still
+  sign in and fix things, the save is allowed and a warning names who is
+  affected — refusing here would just move the unrecoverable-lockout shape
+  onto somebody else's account instead of preventing it, and an operator
+  migrating providers deliberately should not be blocked by a stranding they
+  already know about.
+- A password is always a viable channel, independent of either provider's
+  state. A federated subject is only viable while its OWN provider is
+  reachable — an OIDC subject is not a channel through SAML, and vice versa.
+  MFA (TOTP, and passkeys where that lands) is deliberately not consulted: a
+  second factor is never a way IN on its own, so it cannot rescue an
+  otherwise-stranded administrator and cannot strand one either.
+
+This reads the active-administrator list, decides, and only then writes the
+setting — unlike the last-administrator guard's own statements, which decide
+and write a single row atomically in one UPDATE. A narrow race against a
+concurrent user-role change or a second settings save is accepted rather
+than closed: this is a deliberate, infrequent action from the admin settings
+page, not a path an unauthenticated attacker can drive.
+
+Extending `reset-factors` to also set a password, so a locked-out federated
+administrator has a complete way back rather than merely a warning that
+would have stopped them getting here, is tracked separately (#300's option
+4) and depends on `reset-factors` itself, which does not exist on this
+branch.
+
 ### Guest Submission (Optional, Off by Default)
 
 A visitor with no account files a ticket and is sent a per-ticket link. The link
