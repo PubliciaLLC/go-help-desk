@@ -15,6 +15,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Admin instance settings, and the denylist of keys never returned to a client.
@@ -337,6 +338,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 // still a genuine improvement over the no-check-at-all this PATCH had before
 // — it is what stopped this route being a complete, unconditional bypass of
 // the dedicated endpoints' own refusal.
+//
+// Every merge step below refuses on a JSON type mismatch rather than
+// discarding the error and keeping the old value — found by review on #304:
+// a malformed value (saml_enabled sent as the JSON STRING "false" rather
+// than the boolean false, say) would previously leave THIS guard reasoning
+// about the OLD value, concluding truthfully-but-uselessly that nothing
+// about reachability changed, while the SetRaw loop below persisted the
+// malformed value regardless — and the real reader every other code path
+// uses (GetBool/GetString, under SAMLEnabled/OIDCEnabled/GetSAMLConfig/
+// GetOIDCConfig) fails the identical unmarshal and silently returns the zero
+// value, flipping the persisted setting to disabled/blank from that write
+// onward. The guard would have seen "unaffected" for a write that just
+// disabled SAML. validateReputationConfig's own comment two hundred lines up
+// already refuses exactly this shape for the reputation toggles ("a setting
+// accepted and then ignored is worse than a refusal"); the SSO enable flags
+// need the same rule, especially here, since the whole point of this
+// function is to be the thing that notices.
 func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
 	touchesSAML := false
 	touchesOIDC := false
@@ -357,30 +375,46 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 	samlEnabled := s.adminSvc.SAMLEnabled(ctx)
 	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
 	if raw, ok := body[admin.KeySAMLEnabled]; ok {
-		_ = json.Unmarshal(raw, &samlEnabled)
+		if err := json.Unmarshal(raw, &samlEnabled); err != nil {
+			return "", fmt.Errorf("%w: saml_enabled must be a boolean", user.ErrValidation)
+		}
 	}
 	if raw, ok := body[admin.KeySAMLMetadataURL]; ok {
-		_ = json.Unmarshal(raw, &metadataURL)
+		if err := json.Unmarshal(raw, &metadataURL); err != nil {
+			return "", fmt.Errorf("%w: saml_metadata_url must be a string", user.ErrValidation)
+		}
 	}
 	if raw, ok := body[admin.KeySAMLCertPEM]; ok {
-		_ = json.Unmarshal(raw, &certPEM)
+		if err := json.Unmarshal(raw, &certPEM); err != nil {
+			return "", fmt.Errorf("%w: saml_cert_pem must be a string", user.ErrValidation)
+		}
 	}
 	if raw, ok := body[admin.KeySAMLKeyPEM]; ok {
-		_ = json.Unmarshal(raw, &keyPEM)
+		if err := json.Unmarshal(raw, &keyPEM); err != nil {
+			return "", fmt.Errorf("%w: saml_key_pem must be a string", user.ErrValidation)
+		}
 	}
 
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
 	if raw, ok := body[admin.KeyOIDCEnabled]; ok {
-		_ = json.Unmarshal(raw, &cfg.Enabled)
+		if err := json.Unmarshal(raw, &cfg.Enabled); err != nil {
+			return "", fmt.Errorf("%w: oidc_enabled must be a boolean", user.ErrValidation)
+		}
 	}
 	if raw, ok := body[admin.KeyOIDCIssuerURL]; ok {
-		_ = json.Unmarshal(raw, &cfg.IssuerURL)
+		if err := json.Unmarshal(raw, &cfg.IssuerURL); err != nil {
+			return "", fmt.Errorf("%w: oidc_issuer_url must be a string", user.ErrValidation)
+		}
 	}
 	if raw, ok := body[admin.KeyOIDCClientID]; ok {
-		_ = json.Unmarshal(raw, &cfg.ClientID)
+		if err := json.Unmarshal(raw, &cfg.ClientID); err != nil {
+			return "", fmt.Errorf("%w: oidc_client_id must be a string", user.ErrValidation)
+		}
 	}
 	if raw, ok := body[admin.KeyOIDCClientSecret]; ok {
-		_ = json.Unmarshal(raw, &cfg.ClientSecret)
+		if err := json.Unmarshal(raw, &cfg.ClientSecret); err != nil {
+			return "", fmt.Errorf("%w: oidc_client_secret must be a string", user.ErrValidation)
+		}
 	}
 
 	// Same refusal as handleSaveOIDCConfig, and for the same reason: this

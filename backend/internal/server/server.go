@@ -565,31 +565,47 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 // save through that silently orphans an administrator once discovery turns
 // out to fail. See #300 (the PR that added this) and #297b for background.
 //
-// Reachable is unambiguous (true or false) except for two fail-safe cases,
-// which return whatever the LIVE provider's current reachability already is:
-// disabled-vs-error aside, InitOIDC has never cleared a working provider over
-// an incomplete edit or a transient discovery failure, and this preserves
-// that rather than reporting a state that will not actually take effect.
+// commit is InitOIDC's own fail-safe: it has never cleared a working
+// provider over an incomplete edit or a transient discovery failure, and
+// commit=false here is what lets a caller preserve that — the LIVE process
+// keeps whatever provider is already running.
+//
+// reachable is a DIFFERENT question and must not be answered from the same
+// fail-safe: it is what a caller uses to decide whether persisting cfg would
+// strand anybody, and the row being persisted has no live process to fall
+// back on — the next ordinary restart calls InitOIDC against exactly this
+// cfg with no existing provider to keep, so whatever fails here fails there
+// too. A review round on #304 found this returning s.oidcReachableNow() (the
+// OLD, unrelated provider's live state) for both fail-safe branches below,
+// which let a save through the guard as "reachable" purely because a
+// DIFFERENT, still-working config happened to be loaded at the moment of
+// saving — reachable is now unconditionally false whenever cfg itself would
+// not build, live process notwithstanding.
 func (s *Server) buildOIDCProvider(ctx context.Context, cfg auth.OIDCConfig) (reachable bool, provider *auth.OIDCProvider, commit bool, err error) {
 	if !cfg.Enabled {
 		return false, nil, true, nil
 	}
 	if cfg.IssuerURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
-		// Enabled but incomplete: InitOIDC's own long-standing fail-safe
-		// leaves whatever provider is already live untouched, so reachability
-		// after this write is whatever it already is, not automatically false.
-		return s.oidcReachableNow(), nil, false, fmt.Errorf("OIDC configuration is incomplete")
+		// Both write paths (handleSaveOIDCConfig, ssoSettingsWarning) now
+		// refuse an enabled-but-incomplete cfg outright before ever calling
+		// this, so in practice only InitOIDC reaches this branch today — at
+		// startup, with no provider loaded yet, for which false is simply
+		// correct. Kept as its own branch (rather than falling into the
+		// buildErr one below) because there is nothing to attempt: an empty
+		// issuer URL is not a discovery failure, it is nothing to discover.
+		return false, nil, false, fmt.Errorf("OIDC configuration is incomplete")
 	}
 	if cfg.RedirectURL == "" {
 		cfg.RedirectURL = s.cfg.BaseURL + "/api/v1/auth/oidc/callback"
 	}
 	// Discovery runs here, against the candidate config, before anything is
-	// persisted. On failure this is the same fail-safe as above: keep
-	// whatever is already live rather than clearing it or optimistically
-	// pretending the new config already answered.
+	// persisted. commit=false on failure is the same fail-safe as above: the
+	// LIVE process keeps whatever provider is already running rather than
+	// clearing it. reachable is false regardless — see the function's own
+	// comment on why this cannot reuse the live process's state.
 	provider, buildErr := auth.NewOIDCProvider(ctx, cfg)
 	if buildErr != nil {
-		return s.oidcReachableNow(), nil, false, fmt.Errorf("OIDC provider initialization failed: %w", buildErr)
+		return false, nil, false, fmt.Errorf("OIDC provider initialization failed: %w", buildErr)
 	}
 	return true, provider, true, nil
 }
@@ -632,10 +648,16 @@ func (s *Server) InitSAML(ctx context.Context) {
 // see admin.Service.SetSAMLEnabled's own comment for why this key existed
 // and did nothing before. Below that, an incomplete config (any of the three
 // fields blank) has never had a fail-safe here — reloadSAML always cleared
-// the handler outright for it — so only a construction/metadata-fetch
-// FAILURE on an otherwise-complete config falls back to "whatever is already
-// live", matching reloadSAML's own long-standing behavior of leaving a
-// working middleware in place over a transient IdP outage.
+// the handler outright for it.
+//
+// commit=false on a construction/metadata-fetch failure is the same
+// fail-safe InitSAML/reloadSAML have always had: the LIVE process keeps
+// whatever middleware is already running rather than clearing it. reachable
+// does NOT get the same treatment — see buildOIDCProvider's own comment for
+// why (a review round on #304 found this exact confusion in both
+// functions): the row being persisted has no live process to fall back on,
+// so reachable is false whenever cfg itself fails to build, regardless of
+// what a DIFFERENT, currently-live config says.
 func (s *Server) buildSAMLMiddleware(ctx context.Context, enabled bool, metadataURL, certPEM, keyPEM string) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
 	if !enabled || metadataURL == "" || certPEM == "" || keyPEM == "" {
 		return false, nil, true, nil
@@ -647,7 +669,7 @@ func (s *Server) buildSAMLMiddleware(ctx context.Context, enabled bool, metadata
 		KeyPEM:      []byte(keyPEM),
 	})
 	if buildErr != nil {
-		return s.samlReachableNow(), nil, false, buildErr
+		return false, nil, false, buildErr
 	}
 	return true, mw, true, nil
 }

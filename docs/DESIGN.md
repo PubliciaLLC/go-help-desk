@@ -339,16 +339,45 @@ difference is deliberate rather than an inconsistency to fix:
 An enabled-but-incomplete OIDC configuration (a blank issuer URL, client ID
 or client secret) is refused outright (400) rather than reachability-checked,
 through either write path. `buildOIDCProvider`'s own fail-safe for that shape
-reports reachability as whatever the currently-live provider already says —
-correct for the running process, which still has the old provider to fall
-back on, but wrong for the row being persisted: at the next restart there is
-no live provider left, so `InitOIDC` comes up with no OIDC at all. A save
-that only looked safe because an old, unrelated config was still live at the
-moment of saving is exactly the gap this guard exists to close, so it isn't
-allowed to reach the guard in the first place. SAML has no equivalent case —
-`buildSAMLMiddleware` treats any blank field, or `enabled = false`, as
-unreachable unconditionally, with no fail-safe carve-out, so its guard
-decision and its restart-time behavior always agree.
+used to report reachability as whatever the currently-live provider already
+says — correct for the running process, which still has the old provider to
+fall back on, but wrong for the row being persisted: at the next restart
+there is no live provider left, so `InitOIDC` comes up with no OIDC at all. A
+save that only looked safe because an old, unrelated config was still live at
+the moment of saving is exactly the gap this guard exists to close, so it
+isn't allowed to reach the guard in the first place. SAML has no equivalent
+case for an incomplete config specifically — `buildSAMLMiddleware` treats any
+blank field, or `enabled = false`, as unreachable unconditionally, with no
+fail-safe carve-out there.
+
+A second, closely related review round found the same confusion one branch
+over: a **complete** candidate configuration whose real construction attempt
+genuinely fails (a typo'd issuer URL, an IdP that is briefly unreachable) was
+*also* reported as reachable-or-not by asking the live process, rather than
+by asking what the persisted row itself would do on a cold load — and this
+half applies to both providers equally, not just OIDC. `buildOIDCProvider`
+and `buildSAMLMiddleware` now answer these two different questions
+separately: `commit` still drives the long-standing fail-safe for the LIVE
+process (a bad edit or a transient outage leaves whatever is currently
+running untouched, exactly as before), but the `reachable` value the guard
+reasons about is unconditionally `false` whenever the candidate itself fails
+to build — regardless of what a different, currently-live provider happens
+to still be answering with at the moment of saving. Reasoning about the live
+process and reasoning about the row being persisted are different questions,
+and only one of them survives a restart.
+
+The generic settings PATCH has its own version of the same principle at the
+type level: `ssoSettingsWarning`'s merge of the request body over stored
+values refuses outright (400) on any JSON type mismatch (`saml_enabled` sent
+as the string `"false"` rather than the boolean, say) rather than discarding
+the `json.Unmarshal` error and reasoning about the old value — because the
+`SetRaw` write immediately below persists the malformed value regardless, and
+every real reader (`GetBool`/`GetString`, under `SAMLEnabled`, `OIDCEnabled`,
+`GetSAMLConfig`, `GetOIDCConfig`) fails that same unmarshal and silently
+returns the Go zero value, flipping the actual setting to disabled/blank from
+that write onward. A guard reasoning about one value while the real system
+reads a different one from the identical bytes is worse than not reasoning
+at all, because it reports confidence it does not have.
 
 Extending `reset-factors` to also set a password, so a locked-out federated
 administrator has a complete way back rather than merely a warning that

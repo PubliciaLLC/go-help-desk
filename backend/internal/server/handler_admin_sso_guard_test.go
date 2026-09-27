@@ -177,6 +177,146 @@ func TestUpdateSettings_RefusesEnabledButIncompleteOIDCConfig(t *testing.T) {
 	require.False(t, cfg.Enabled, "the refused write must not have been persisted")
 }
 
+// TestSaveOIDCConfig_RefusesWhenCandidateFailsToBuildEvenIfOldProviderIsLive
+// pins a second review finding on PR #304: buildOIDCProvider's fail-safe for
+// a COMPLETE candidate config that genuinely fails to build (bad issuer,
+// unreachable IdP) reported reachability as whatever the OLD, currently-live
+// provider says — which can be true purely because a DIFFERENT, unrelated
+// config is still loaded in this process at the moment of saving. The row
+// being persisted has no live process to fall back on: the next ordinary
+// restart calls buildOIDCProvider against this exact broken candidate with
+// nothing cached, and gets nothing. A save that only looked safe because of
+// what happened to still be running must be refused, not reachability-
+// checked against that stale state.
+func TestSaveOIDCConfig_RefusesWhenCandidateFailsToBuildEvenIfOldProviderIsLive(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	cookies := createOIDCAdmin(t, oh, "sole-oidc-admin-stale-live@test.local", "sole-oidc-admin-stale-live-sub")
+	require.NoError(t, oh.userSvc.SetRole(ctx, oh.adminID, user.RoleStaff))
+
+	// oh's own working fake IdP (from newOIDCHarness's setup) is still loaded
+	// live in this process. This candidate points somewhere that will not
+	// build at all.
+	sess := &session{h: oh.harness, jar: cookies}
+	res, body := sess.send(t, http.MethodPut, "/api/v1/admin/oidc", map[string]any{
+		"enabled":       true,
+		"issuer_url":    "https://idp.test",
+		"client_id":     "x",
+		"client_secret": "y",
+	})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	cfg := oh.adminSvc.GetOIDCConfig(ctx)
+	require.Equal(t, oh.idp.issuer(), cfg.IssuerURL,
+		"the refused write must not have clobbered the working configuration")
+}
+
+// TestSaveSAMLConfig_WarnsEvenWhenOldMiddlewareIsStillLive is the SAML side
+// of the same finding, in its "some stranded" shape rather than "all
+// stranded" (SAML has no real-login helper in this package to make the
+// stranded administrator the caller the way createOIDCAdmin does for OIDC —
+// see the comment on TestSaveSAMLConfig_WarnsWithoutRefusingWhenOnlySomeAdminsAreStranded
+// above for why that is out of proportion here too). A working middleware is
+// established first via the real fake IdP, then a DIFFERENT candidate
+// metadata_url that will not build is submitted while that working
+// middleware is still loaded — before the fix, buildSAMLMiddleware's
+// samlReachableNow() would have reported true from the OLD, still-live
+// middleware, and the stranded administrator would never have been named.
+func TestSaveSAMLConfig_WarnsEvenWhenOldMiddlewareIsStillLive(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "stale-live-saml-admin@test.local",
+		DisplayName: "SAML Admin",
+		Role:        user.RoleAdmin,
+		SAMLSubject: "stale-live-saml-admin-sub",
+	})
+	require.NoError(t, err)
+
+	sess := signInAsAdmin(t, h)
+
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"saml_enabled": true})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+
+	idp := newFakeSAMLIdP(t)
+	res, body = sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": idp.URL,
+		"cert_pem":     validSAMLCert,
+		"key_pem":      validSAMLKey,
+	})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "seeding save must succeed cleanly; body: %s", body)
+
+	// The middleware from the seeding save above is still loaded live in this
+	// process. This candidate metadata_url will not build at all.
+	res, body = sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": "https://idp.test/metadata",
+		"cert_pem":     validSAMLCert,
+		"key_pem":      validSAMLKey,
+	})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	require.Contains(t, string(body), "stale-live-saml-admin@test.local",
+		"a build failure must warn about who it strands even though the OLD middleware is still loaded")
+}
+
+// TestUpdateSettings_RefusesMalformedSAMLEnabledType pins a third review
+// finding on PR #304: ssoSettingsWarning's merge of the PATCH body over the
+// stored value used to discard a json.Unmarshal error and keep reasoning
+// about the OLD value — so saml_enabled sent as the JSON STRING "false"
+// (rather than the boolean false) left the guard concluding nothing about
+// reachability had changed, while the SetRaw loop below persisted the
+// malformed value regardless, and the real reader (admin.Service.GetBool,
+// under SAMLEnabled) fails the identical unmarshal and silently returns
+// false — flipping SAML to disabled from that write onward with no warning
+// ever shown, for the one administrator who depends on it.
+func TestUpdateSettings_RefusesMalformedSAMLEnabledType(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "malformed-type-saml-admin@test.local",
+		DisplayName: "SAML Admin",
+		Role:        user.RoleAdmin,
+		SAMLSubject: "malformed-type-saml-admin-sub",
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.adminSvc.SetSAMLEnabled(ctx, true))
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, "https://idp.test/metadata", validSAMLCert, validSAMLKey))
+
+	sess := signInAsAdmin(t, h)
+
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"saml_enabled": "false"})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	require.True(t, h.adminSvc.SAMLEnabled(ctx), "the malformed write must not have been persisted")
+}
+
+// TestUpdateSettings_RefusesMalformedOIDCEnabledType is the OIDC side of the
+// same finding.
+func TestUpdateSettings_RefusesMalformedOIDCEnabledType(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	sess := &session{h: oh.harness}
+	res, body := sess.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "admin@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "admin login; body: %s", body)
+
+	res, body = sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"oidc_enabled": "false"})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	cfg := oh.adminSvc.GetOIDCConfig(ctx)
+	require.True(t, cfg.Enabled, "the malformed write must not have been persisted")
+}
+
 // samlIDPMetadataXML is TestShib's real IdP metadata fixture, vendored
 // (unmodified) from github.com/crewjam/saml's own test suite
 // (samlsp/testdata/idp_metadata.xml) — genuine, parseable SAML 2.0 IdP
