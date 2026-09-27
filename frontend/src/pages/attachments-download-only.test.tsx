@@ -93,13 +93,18 @@ describe('attachments are never rendered inline', () => {
   // guarding. A count still fails on a new renderer, and survives the file
   // being reordered.
   //
-  // Layout.tsx and SettingsPage.tsx are the instance logo: an admin-uploaded
-  // image served from its own route under a policy that blocks scripts (see
-  // logoCSP in security_headers.go). LoginPage.tsx is the TOTP enrolment QR
-  // code, a data: URL the server generates during MFA setup — not an upload at
-  // all.
+  // BrandLogo.tsx and SettingsPage.tsx are the instance logo: an
+  // admin-uploaded image served from its own route under a policy that blocks
+  // scripts (see logoCSP in security_headers.go). LoginPage.tsx is the TOTP
+  // enrolment QR code, a data: URL the server generates during MFA setup —
+  // not an upload at all.
+  //
+  // Since #296, BrandLogo is mounted three times at once (permanent sidebar,
+  // mobile top bar, drawer) — but it is one <img>, in one file, used three
+  // times, not three renderers to keep in sync. Layout.tsx itself renders no
+  // <img> of its own any more, which is the reason it is off this list.
   const allowedRenderers: Record<string, number> = {
-    'src/components/Layout.tsx': 1,
+    'src/components/BrandLogo.tsx': 1,
     'src/pages/LoginPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
   }

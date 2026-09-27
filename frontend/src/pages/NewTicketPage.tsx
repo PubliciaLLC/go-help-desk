@@ -238,7 +238,7 @@ export function NewTicketPage() {
                 />
               </div>
 
-              <div className={`grid gap-4 ${isStaffOrAdmin ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                 <div className="space-y-1">
                   <Label htmlFor="category">Category *</Label>
                   <Select

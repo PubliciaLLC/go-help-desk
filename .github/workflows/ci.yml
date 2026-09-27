@@ -56,6 +56,12 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Install Playwright's browser
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E (mobile layout — #296)
+        run: npm run test:e2e
+
       - name: Build (runs tsc -b, so this is also the type-check)
         run: npm run build
 

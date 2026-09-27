@@ -308,9 +308,13 @@ export function TicketListPage() {
           )
         })()}
 
-        {/* Bulk action bar */}
+        {/* Bulk action bar — desktop-only, like the selection checkboxes it
+            controls (see the table/card split below): below md there is
+            nothing left to select, so a bar surviving a resize down would
+            float with no controls under it and overflow the 390px card view
+            besides. */}
         {someSelected && isStaffOrAdmin && (
-          <div className="space-y-2">
+          <div className="hidden space-y-2 md:block">
           <div className="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
             <span className="text-blue-700 font-medium">{selectedIds.size} selected</span>
             <select
@@ -356,95 +360,142 @@ export function TicketListPage() {
               : emptyMessageFor(effectiveScope)}
           </p>
         ) : (
-          <div className="overflow-hidden rounded-md border border-gray-200">
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
-                <tr>
-                  {isStaffOrAdmin && (
-                    <th className="w-8 px-3 py-2">
-                      <input
-                        type="checkbox"
-                        aria-label="Select every ticket on this page"
-                        className="h-4 w-4 rounded border-gray-300"
-                        checked={allSelected}
-                        onChange={toggleAll}
-                      />
-                    </th>
-                  )}
-                  <th className="px-4 py-2 text-left">Ticket</th>
-                  <th className="px-4 py-2 text-left">Subject</th>
-                  <th className="px-4 py-2 text-left">Status</th>
-                  <th className="px-4 py-2 text-left">Priority</th>
-                  {showSLAColumn && <th className="px-4 py-2 text-left">SLA</th>}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 bg-white">
-                {tickets.map(t => {
-                  const status = statusFor(t.status_id)
-                  return (
-                    <tr
-                      key={t.id}
-                      className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(t.id) ? 'bg-blue-50' : ''}`}
-                      onClick={() => navigate({ to: '/tickets/$id', params: { id: t.id } })}
-                    >
-                      {isStaffOrAdmin && (
-                        <td className="w-8 px-3 py-2" onClick={e => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
-                            aria-label={`Select ticket ${t.tracking_number}`}
-                            className="h-4 w-4 rounded border-gray-300"
-                            checked={selectedIds.has(t.id)}
-                            onChange={() => toggleOne(t.id)}
-                          />
+          <>
+            {/* Desktop: the table, with the selection column bulk actions
+                depend on. Bulk selection stays desktop-only (see DESIGN.md's
+                Small screens section) — a checkbox per card plus a floating
+                action bar is a different feature, not this one at a smaller
+                size, so the card view below has no selection UI at all. */}
+            <div className="hidden overflow-hidden rounded-md border border-gray-200 md:block">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
+                  <tr>
+                    {isStaffOrAdmin && (
+                      <th className="w-8 px-3 py-2">
+                        <input
+                          type="checkbox"
+                          aria-label="Select every ticket on this page"
+                          className="h-4 w-4 rounded border-gray-300"
+                          checked={allSelected}
+                          onChange={toggleAll}
+                        />
+                      </th>
+                    )}
+                    <th className="px-4 py-2 text-left">Ticket</th>
+                    <th className="px-4 py-2 text-left">Subject</th>
+                    <th className="px-4 py-2 text-left">Status</th>
+                    <th className="px-4 py-2 text-left">Priority</th>
+                    {showSLAColumn && <th className="px-4 py-2 text-left">SLA</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 bg-white">
+                  {tickets.map(t => {
+                    const status = statusFor(t.status_id)
+                    return (
+                      <tr
+                        key={t.id}
+                        className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(t.id) ? 'bg-blue-50' : ''}`}
+                        onClick={() => navigate({ to: '/tickets/$id', params: { id: t.id } })}
+                      >
+                        {isStaffOrAdmin && (
+                          <td className="w-8 px-3 py-2" onClick={e => e.stopPropagation()}>
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ticket ${t.tracking_number}`}
+                              className="h-4 w-4 rounded border-gray-300"
+                              checked={selectedIds.has(t.id)}
+                              onChange={() => toggleOne(t.id)}
+                            />
+                          </td>
+                        )}
+                        <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-500">
+                          {t.tracking_number}
                         </td>
-                      )}
-                      <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-gray-500">
-                        {t.tracking_number}
-                      </td>
-                      <td className="px-4 py-2 font-medium text-gray-900 max-w-xs truncate">
-                        {/* A real link, not just a row click. The row was a
-                            <tr onClick>, which no amount of tabbing reaches,
-                            so a keyboard-only user had no way into a ticket
-                            at all — and a reporting user had no way in by any
-                            route, since "Jump to ticket" is staff-only.
-                            Anchors also give middle-click and copy-link. */}
-                        <Link
-                          to="/tickets/$id"
-                          params={{ id: t.id }}
-                          className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                        >
-                          {t.subject}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-2">
+                        <td className="px-4 py-2 font-medium text-gray-900 max-w-xs truncate">
+                          {/* A real link, not just a row click. The row was a
+                              <tr onClick>, which no amount of tabbing reaches,
+                              so a keyboard-only user had no way into a ticket
+                              at all — and a reporting user had no way in by any
+                              route, since "Jump to ticket" is staff-only.
+                              Anchors also give middle-click and copy-link. */}
+                          <Link
+                            to="/tickets/$id"
+                            params={{ id: t.id }}
+                            className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                          >
+                            {t.subject}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-2">
+                          {status ? (
+                            <span
+                              className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                              style={{ borderColor: status.color, color: status.color }}
+                            >
+                              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
+                              {status.name}
+                            </span>
+                          ) : '—'}
+                        </td>
+                        <td className="px-4 py-2">
+                          <Badge variant={priorityVariant(t.priority) as never}>
+                            {t.priority}
+                          </Badge>
+                        </td>
+                        {showSLAColumn && (
+                          <td className="px-4 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <SLAIndicator sla={t.sla} compact />
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile: one card per ticket, the same table shrunk into a row
+                is not a mobile layout — it is the same table with less room.
+                The subject stays the anchor #9ff0e9a added: the card is a
+                link, not a click handler, so a keyboard or reporting user
+                reaches it the same way. */}
+            <ul className="space-y-2 md:hidden">
+              {tickets.map(t => {
+                const status = statusFor(t.status_id)
+                return (
+                  <li key={t.id} className="rounded-md border border-gray-200 bg-white p-3">
+                    <Link
+                      to="/tickets/$id"
+                      params={{ id: t.id }}
+                      className="block rounded-sm text-inherit focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-gray-500">{t.tracking_number}</span>
                         {status ? (
                           <span
-                            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                            className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
                             style={{ borderColor: status.color, color: status.color }}
                           >
                             <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: status.color }} />
                             {status.name}
                           </span>
                         ) : '—'}
-                      </td>
-                      <td className="px-4 py-2">
+                      </div>
+                      <p className="mt-1.5 break-words font-medium text-gray-900">{t.subject}</p>
+                      <div className="mt-1.5 flex items-center gap-2">
                         <Badge variant={priorityVariant(t.priority) as never}>
                           {t.priority}
                         </Badge>
-                      </td>
-                      {showSLAColumn && (
-                        <td className="px-4 py-2">
-                          <div className="flex items-center gap-1.5">
-                            <SLAIndicator sla={t.sla} compact />
-                          </div>
-                        </td>
-                      )}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+                        {showSLAColumn && <SLAIndicator sla={t.sla} compact />}
+                      </div>
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </>
         )}
 
         {/* Shown whenever there is more than one page to move between. The

@@ -89,7 +89,7 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
             {!readonly && (
               <button
                 onClick={() => removeMutation.mutate(t.id)}
-                className="ml-0.5 rounded-full hover:bg-blue-200 p-0.5"
+                className="ml-0.5 flex h-6 w-6 items-center justify-center rounded-full hover:bg-blue-200"
                 aria-label={`Remove tag ${t.name}`}
               >
                 <XIcon className="h-3 w-3" />
