@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
 
 // Service orchestrates user-related business operations.
@@ -24,6 +27,10 @@ type Service struct {
 
 	// dummyHash makes a miss cost the same as a hit; see compareAgainstDummyHash.
 	dummyHash []byte
+
+	// audit records factor- and credential-clearing actions; see WithAuditStore.
+	// Nil in most test harnesses, which is fine — writeAuditEntry no-ops without it.
+	audit audit.Store
 }
 
 // NewService returns a Service backed by the given Store.
@@ -78,6 +85,36 @@ func WithBcryptCost(cost int) Option {
 			cost = bcrypt.MinCost
 		}
 		s.hashCost = cost
+	}
+}
+
+// WithAuditStore makes ResetMFA and AdminSetPassword record who cleared a
+// factor or reset a password. Omitted, both still work; they just leave no
+// trail — see #306.
+func WithAuditStore(store audit.Store) Option {
+	return func(s *Service) {
+		s.audit = store
+	}
+}
+
+// writeAuditEntry records e if an audit store was configured.
+//
+// A write failure here is logged and swallowed rather than returned: an
+// audit entry does not gate anything the caller is doing (see audit.Store's
+// own doc comment), and a factor reset or password reset that already
+// applied must not be reported as failed, or retried, because a separate
+// logging table had a bad moment. Domain code otherwise never logs — this is
+// the one exception, matching the same trade-off webauthn.Service makes for
+// its own non-fatal anomaly signal.
+func (s *Service) writeAuditEntry(ctx context.Context, e audit.Entry) {
+	if s.audit == nil {
+		return
+	}
+	e.ID = uuid.New()
+	e.CreatedAt = time.Now()
+	if err := s.audit.Create(ctx, e); err != nil {
+		slog.ErrorContext(ctx, "writing audit entry failed",
+			"entity_type", e.EntityType, "entity_id", e.EntityID, "action", e.Action, "error", err)
 	}
 }
 
@@ -817,13 +854,27 @@ func (s *Service) Enable(ctx context.Context, id uuid.UUID) error {
 	return s.store.Enable(ctx, id)
 }
 
-// ResetMFA clears the user's TOTP secret and disables MFA.
-func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID) error {
-	return s.store.ClearMFA(ctx, id)
+// ResetMFA clears the user's TOTP secret and disables MFA, and records who
+// did it. actorID is nil for a reset with no signed-in actor — the
+// reset-factors CLI, which writes its own, differently-shaped entry instead
+// of calling this, because "nobody was signed in" and "an administrator did
+// it through the web" are different facts worth telling apart; see #306.
+func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	if err := s.store.ClearMFA(ctx, id); err != nil {
+		return err
+	}
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID:    actorID,
+		EntityType: "user",
+		EntityID:   id,
+		Action:     "mfa_reset",
+	})
+	return nil
 }
 
-// AdminSetPassword hashes and stores a new password without requiring the old one.
-func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string) error {
+// AdminSetPassword hashes and stores a new password without requiring the
+// old one, and records who did it. See ResetMFA on actorID.
+func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string, actorID *uuid.UUID) error {
 	if strings.TrimSpace(plain) == "" {
 		return fmt.Errorf("%w: password is required", ErrValidation)
 	}
@@ -837,7 +888,16 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
 	}
-	return s.store.AdminSetPassword(ctx, id, string(hash))
+	if err := s.store.AdminSetPassword(ctx, id, string(hash)); err != nil {
+		return err
+	}
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID:    actorID,
+		EntityType: "user",
+		EntityID:   id,
+		Action:     "password_reset_by_admin",
+	})
+	return nil
 }
 
 // MFA attempt policy.

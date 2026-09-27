@@ -89,6 +89,7 @@ type harness struct {
 	userID          uuid.UUID // the seeded reporting (RoleUser) user
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
+	auditStore      *auditstore.Store
 	attachDir       string // where uploads land, so a test can check the disk
 }
 
@@ -142,7 +143,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	// Services
 	// bcrypt at the production cost dominates this suite's runtime — ~140s of
 	// 152s under -race, hashing passwords no assertion depends on.
-	userSvc := user.NewService(uStore, user.WithBcryptCost(bcrypt.MinCost))
+	userSvc := user.NewService(uStore, user.WithBcryptCost(bcrypt.MinCost), user.WithAuditStore(auStore))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	adminSvc := admin.NewService(aStore)
@@ -331,6 +332,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		userID:          reportingUser.ID,
 		sessions:        sessionStore,
 		authStore:       authSt,
+		auditStore:      auStore,
 		attachDir:       cfg.AttachmentDir,
 	}
 	cleanup := func() {

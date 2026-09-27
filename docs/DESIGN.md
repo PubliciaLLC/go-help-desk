@@ -476,6 +476,18 @@ is what makes it the right channel: it does not widen the web-facing surface
 at all, which a recovery code — another secret at rest, worth stealing, and
 the exact property passkeys exist to remove — would.
 
+**It writes an audit entry**, naming the account and the operating system
+user and host that ran the command, with no actor ID — nobody signed in to do
+this, and inventing one would record a claim rather than a fact. The same
+entry shape (`entity_type: "user"`, `action: "mfa_reset"`) is written by the
+admin page's "Reset MFA", and by an administrator resetting somebody's
+password (`action: "password_reset_by_admin"`), naming the administrator's
+account as the actor. This does not prevent anything — whoever can run this
+command already holds everything an audit entry could gate — but the
+ordinary use of it is an administrator helping a colleague who lost a phone,
+and that is a normal operational event that belongs in the trail alongside
+every other account change. See [#306](https://github.com/PubliciaLLC/go-help-desk/issues/306).
+
 **This command is a precondition for the guard's fourth case, not its
 trigger.** "Refuse to remove the last way in" is only half an answer without
 "and here is how you recover when it happens anyway"; building either alone

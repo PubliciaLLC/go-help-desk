@@ -208,7 +208,12 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	// for a rare one, so the requirement was removed. Password reset remains
 	// available separately when an administrator judges it warranted.
 	if body.ResetMFA {
-		if err := s.users.ResetMFA(r.Context(), id); err != nil {
+		actor := authmw.GetActor(r)
+		var actorID *uuid.UUID
+		if actor != nil {
+			actorID = &actor.UserID
+		}
+		if err := s.users.ResetMFA(r.Context(), id, actorID); err != nil {
 			handleError(w, err)
 			return
 		}
@@ -381,7 +386,12 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if err := s.users.AdminSetPassword(r.Context(), id, body.NewPassword); err != nil {
+	actor := authmw.GetActor(r)
+	var actorID *uuid.UUID
+	if actor != nil {
+		actorID = &actor.UserID
+	}
+	if err := s.users.AdminSetPassword(r.Context(), id, body.NewPassword, actorID); err != nil {
 		handleError(w, err)
 		return
 	}

@@ -3,16 +3,22 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	osuser "os/user"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
 
 // resetFactors clears every second factor from one account, so its owner can
@@ -58,6 +64,7 @@ func resetFactors(ctx context.Context, email string) error {
 	q := dbgen.New(sqlDB)
 	users := userstore.New(q)
 	passkeys := webauthnstore.New(q)
+	auStore := auditstore.New(q)
 
 	// GetByEmail and not a search: this is a destructive act on one account,
 	// and matching loosely is how the wrong person gets reset.
@@ -101,6 +108,44 @@ func resetFactors(ctx context.Context, email string) error {
 	// Found by the session-B review of #302.
 	if err := q.DeleteSessionsForUser(ctx, database.NullUUID(&u.ID)); err != nil {
 		return fmt.Errorf("revoking their sessions: %w", err)
+	}
+
+	// One audit entry for the whole recovery action. ActorID is nil — nobody
+	// signed in to do this — but nil-actor is not the same fact as "we don't
+	// know who": the OS user and host say who ran the command, and "source":
+	// "cli" says plainly that this came from the server rather than a
+	// session, which is the distinction #306 asked to preserve rather than
+	// flatten into the same shape as an admin's web-driven reset.
+	//
+	// Logged and swallowed on failure rather than returned: the recovery
+	// itself already succeeded by this point, and an audit write failing must
+	// not be reported as if the recovery had — the same trade-off
+	// Service.writeAuditEntry makes for the two web paths.
+	osUsername := "unknown"
+	if osu, err := osuser.Current(); err == nil {
+		osUsername = osu.Username
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		host = "unknown"
+	}
+	if err := auStore.Create(ctx, audit.Entry{
+		ID:         uuid.New(),
+		ActorID:    nil,
+		EntityType: "user",
+		EntityID:   u.ID,
+		Action:     "mfa_reset",
+		After: map[string]any{
+			"source":           "cli",
+			"os_user":          osUsername,
+			"host":             host,
+			"passkeys_removed": len(creds),
+			"totp_cleared":     true,
+			"sessions_revoked": true,
+		},
+		CreatedAt: time.Now(),
+	}); err != nil {
+		slog.Error("writing audit entry for reset-factors failed", "email", email, "error", err)
 	}
 
 	// Written to stdout rather than the structured log: somebody is watching

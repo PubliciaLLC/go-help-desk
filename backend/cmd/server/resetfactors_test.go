@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
@@ -158,6 +159,49 @@ func TestResetFactors_RevokesTheSessionsOpenedUnderTheOldFactor(t *testing.T) {
 	require.False(t, alive(phone), "the second device kept its session")
 	require.True(t, alive(bystander),
 		"another account's session was revoked; this resets one account, not the instance")
+}
+
+// #306: this is the whole point of the command — the account that had its
+// factors cleared, and whether that was an administrator through the web or
+// somebody with shell access, must be reconstructable afterwards. Before this,
+// resetFactors wrote nothing.
+func TestResetFactors_WritesAnAuditEntryWithNoActorButNamingTheProcess(t *testing.T) {
+	dsn := freshDatabase(t)
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("BASE_URL", "http://localhost:8080")
+	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	ctx := context.Background()
+
+	pool, err := database.New(ctx, dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+	q := dbgen.New(sqlDB)
+	users := userstore.New(q)
+	auStore := auditstore.New(q)
+
+	email := "audited-" + uuid.NewString() + "@test.local"
+	u := user.User{
+		ID: uuid.New(), Email: email, DisplayName: "Locked Out Admin",
+		Role: user.RoleAdmin, PasswordHash: "$2a$10$unchanged",
+		MFASecret: "THEIRLOSTSECRET", MFAEnabled: true,
+	}
+	require.NoError(t, users.Create(ctx, u))
+
+	require.NoError(t, resetFactors(ctx, email))
+
+	entries, err := auStore.ListByEntity(ctx, "user", u.ID, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "exactly one entry for the whole recovery action")
+	e := entries[0]
+	require.Nil(t, e.ActorID, "nobody was signed in; a made-up actor would be a claim, not a fact")
+	require.Equal(t, "mfa_reset", e.Action)
+	require.Equal(t, "cli", e.After["source"],
+		"must be distinguishable from an administrator's web-driven reset")
+	require.NotEmpty(t, e.After["host"])
+	require.NotEmpty(t, e.After["os_user"])
 }
 
 // A typo must not reset somebody. The lookup is exact.
