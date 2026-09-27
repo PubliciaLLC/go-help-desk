@@ -383,8 +383,25 @@ It follows the shape already used for webhook dispatch in
 does not belong to the request, so cancelling the response cannot cancel the
 write. Approximately right is right enough for this field.
 
-**Losing a key.** An administrator removes a credential from the user's admin
-page, the same control surface as Reset MFA, and the owner registers a new one.
+**Losing a key.** Two ways, and only one of them is built.
+
+Its owner removes it themselves, from their own account page, and registers a
+new one. That is what `DELETE /me/passkeys/{id}` is for, and it is the ordinary
+case: somebody replacing a phone still has the old one, or still has another
+factor, and needs nobody's help.
+
+An administrator doing it for somebody else is **not built yet**. Every passkey
+route lives under `/me`; `adminRouter` has none, and no admin handler reaches
+the credential store. So when the owner cannot do it themselves — the key is
+gone, and it was their only factor — the answer today is `reset-factors` on the
+server, described below, which clears every factor rather than one credential.
+
+An earlier draft of this paragraph said an administrator removes a credential
+from the user's admin page, "the same control surface as Reset MFA", in the
+present tense. That control surface does not exist. It is the right place for
+it when it is built, and saying so as though it already were is how an
+operator ends up looking for a button that was never written. Found by the
+session-B review of [#302](https://github.com/PubliciaLLC/go-help-desk/pull/302).
 
 **Self-recovery covers an account with *nothing* enrolled, and not a lost
 key.** The distinction matters and an earlier draft of this section ran the two

@@ -80,6 +80,86 @@ func TestResetFactors_ClearsEveryFactorAndNothingElse(t *testing.T) {
 	require.Equal(t, email, after.Email)
 }
 
+// Clearing the factors must also end the sessions that were opened while they
+// were in force.
+//
+// Found by the session-B review of #302. A live session carries MFAPassed=true
+// from the moment it passed the factor that is now being cleared, and
+// requireFactorOrFirstEnrolment answers that flag FIRST — before it asks
+// whether the account is protected. So a session that survives this command
+// can register its own passkey on the account.
+//
+// That is the shape this command exists to make unnecessary, arriving through
+// the command itself: an attacker holding a stolen cookie is handed a durable
+// factor by the act of recovering the real owner, and can then lock the owner
+// out of their own recovery. The web-facing reset already deletes sessions for
+// exactly this reason, four lines of reasoning away in handler_admin_users.go;
+// this had the same duty and did not do it.
+func TestResetFactors_RevokesTheSessionsOpenedUnderTheOldFactor(t *testing.T) {
+	dsn := freshDatabase(t)
+	t.Setenv("DATABASE_URL", dsn)
+	t.Setenv("BASE_URL", "http://localhost:8080")
+	t.Setenv("SESSION_SECRET", "0123456789abcdef0123456789abcdef")
+	t.Setenv("JWT_SECRET", "0123456789abcdef0123456789abcdef")
+	ctx := context.Background()
+
+	pool, err := database.New(ctx, dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	defer sqlDB.Close()
+	q := dbgen.New(sqlDB)
+	users := userstore.New(q)
+
+	email := "stolen-cookie-" + uuid.NewString() + "@test.local"
+	u := user.User{
+		ID: uuid.New(), Email: email, DisplayName: "Locked Out Admin",
+		Role: user.RoleAdmin, PasswordHash: "$2a$10$unchanged",
+		MFASecret: "THEIRLOSTSECRET", MFAEnabled: true,
+	}
+	require.NoError(t, users.Create(ctx, u))
+
+	// A second account, to prove this clears one person's sessions and not
+	// everybody's — a recovery tool that signs out the whole instance is a
+	// different kind of outage.
+	other := user.User{
+		ID: uuid.New(), Email: "bystander-" + uuid.NewString() + "@test.local",
+		DisplayName: "Bystander", Role: user.RoleStaff, PasswordHash: "$2a$10$x",
+	}
+	require.NoError(t, users.Create(ctx, other))
+
+	// Two devices for the locked-out account, one for the bystander.
+	seed := func(id uuid.UUID, sid string) {
+		require.NoError(t, q.UpsertSession(ctx, dbgen.UpsertSessionParams{
+			ID:              sid,
+			UserID:          database.NullUUID(&id),
+			Data:            []byte("{}"),
+			LifetimeSeconds: 3600,
+		}))
+	}
+	laptop := "sess-laptop-" + uuid.NewString()
+	phone := "sess-phone-" + uuid.NewString()
+	bystander := "sess-bystander-" + uuid.NewString()
+	seed(u.ID, laptop)
+	seed(u.ID, phone)
+	seed(other.ID, bystander)
+
+	alive := func(sid string) bool {
+		_, err := q.GetSession(ctx, sid)
+		return err == nil
+	}
+	require.True(t, alive(laptop), "fixture: the session should exist before the reset")
+
+	require.NoError(t, resetFactors(ctx, email))
+
+	require.False(t, alive(laptop),
+		"a session opened under the cleared factor survived, so whoever holds that cookie "+
+			"can register their own passkey on the account")
+	require.False(t, alive(phone), "the second device kept its session")
+	require.True(t, alive(bystander),
+		"another account's session was revoked; this resets one account, not the instance")
+}
+
 // A typo must not reset somebody. The lookup is exact.
 func TestResetFactors_RefusesAnAddressItCannotFind(t *testing.T) {
 	dsn := freshDatabase(t)

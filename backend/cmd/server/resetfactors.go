@@ -79,14 +79,39 @@ func resetFactors(ctx context.Context, email string) error {
 		return fmt.Errorf("clearing the authenticator: %w", err)
 	}
 
+	// And end every session the account already holds.
+	//
+	// Not tidiness. A live session carries MFAPassed=true from the moment it
+	// passed the factor just cleared, and requireFactorOrFirstEnrolment
+	// answers that flag FIRST, before it asks whether the account is
+	// protected. So a session that survives this command can register its own
+	// passkey — which is the exact thing the web path refuses to let a
+	// password alone do, granted instead by the act of recovering the owner.
+	//
+	// The consequence is worse than the gap it closes: whoever holds a stolen
+	// cookie gets a durable factor out of somebody else's recovery, and can
+	// then lock the real owner out of it. handler_admin_users.go's reset
+	// deletes sessions for this reason; this has the same duty.
+	//
+	// The generated query directly rather than sessionstore.Store: that
+	// constructor wants the cookie signing keys to build its codecs, and
+	// DeleteForUser touches none of them. Asking for keys in order not to use
+	// them invites somebody to pass blank ones.
+	//
+	// Found by the session-B review of #302.
+	if err := q.DeleteSessionsForUser(ctx, database.NullUUID(&u.ID)); err != nil {
+		return fmt.Errorf("revoking their sessions: %w", err)
+	}
+
 	// Written to stdout rather than the structured log: somebody is watching
 	// this run in a terminal, having probably just been locked out.
 	fmt.Fprintf(os.Stdout,
 		"Cleared every second factor from %s (%s).\n"+
 			"  TOTP authenticator: cleared\n"+
 			"  Passkeys removed:   %d\n\n"+
+			"  Sessions revoked:   all of them\n\n"+
 			"They can now sign in with their password and will be asked to enrol again.\n"+
-			"Their password is unchanged, and no session was revoked — sign them out separately if that matters.\n",
+			"Their password is unchanged. They are signed out everywhere and must sign in again.\n",
 		u.Email, u.DisplayName, len(creds))
 	return nil
 }
