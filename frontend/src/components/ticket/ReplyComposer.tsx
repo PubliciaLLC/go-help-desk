@@ -214,47 +214,51 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
         />
 
         {isStaffOrAdmin && (
-          <>
-            <div className="flex flex-wrap gap-4">
+          <div className="flex flex-wrap gap-4">
+            <label className="flex min-h-6 items-center gap-2 py-1 text-sm">
+              <input
+                type="checkbox"
+                checked={internal}
+                onChange={(e) => {
+                  setInternal(e.target.checked)
+                  // An internal note is for colleagues, so it never mails the
+                  // customer; unticking it restores the default.
+                  setNotify(!e.target.checked)
+                }}
+                className="h-4 w-4 rounded border-gray-300"
+                disabled={busy}
+              />
+              Internal note (not visible to customer)
+            </label>
+
+            {!internal && (
               <label className="flex min-h-6 items-center gap-2 py-1 text-sm">
                 <input
                   type="checkbox"
-                  checked={internal}
-                  onChange={(e) => {
-                    setInternal(e.target.checked)
-                    // An internal note is for colleagues, so it never mails the
-                    // customer; unticking it restores the default.
-                    setNotify(!e.target.checked)
-                  }}
+                  checked={notify}
+                  onChange={(e) => setNotify(e.target.checked)}
                   className="h-4 w-4 rounded border-gray-300"
                   disabled={busy}
                 />
-                Internal note (not visible to customer)
+                Send ticket update email to customer
               </label>
-
-              {!internal && (
-                <label className="flex min-h-6 items-center gap-2 py-1 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={notify}
-                    onChange={(e) => setNotify(e.target.checked)}
-                    className="h-4 w-4 rounded border-gray-300"
-                    disabled={busy}
-                  />
-                  Send ticket update email to customer
-                </label>
-              )}
-            </div>
-
-            <AttachmentUpload
-              files={files}
-              onChange={setFiles}
-              uploadStates={uploadStates}
-              disabled={busy}
-              maxFiles={5}
-            />
-          </>
+            )}
+          </div>
         )}
+
+        {/* The reply API has no role gate on uploads (any authenticated
+            non-guest may attach to a ticket they can see), and
+            NewTicketPage already offers the same control to every role at
+            creation time. Gating it here too, behind isStaffOrAdmin, left
+            reporters with no UI path to attach a follow-up file even though
+            the request would succeed. See #175. */}
+        <AttachmentUpload
+          files={files}
+          onChange={setFiles}
+          uploadStates={uploadStates}
+          disabled={busy}
+          maxFiles={5}
+        />
 
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
