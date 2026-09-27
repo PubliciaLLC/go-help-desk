@@ -14,7 +14,7 @@ import (
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
-// The guest surface. Four routes, each doing one thing, mounted outside the
+// The guest surface. Five routes, each doing one thing, mounted outside the
 // ticket router.
 //
 // Deliberately not achieved by relaxing RequireRole on /tickets. Doing that
@@ -243,6 +243,44 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 		"created_at": reply.CreatedAt,
 		"from_you":   true,
 	})
+}
+
+// POST /api/v1/guest/attachments
+//
+// Same multipart pipeline as handleUploadAttachment (storeUploadedAttachment
+// — size cap, filename rules, the operator's allowlist, image recompression,
+// virus scanning), reached with a token instead of a ticket id in the path.
+//
+// Deliberately not `/tickets/{id}/attachments/{token}`: the token is a bearer
+// credential for the whole ticket, and a token in the URL is a token in
+// Referer headers, browser history, proxy logs and error reports — everywhere
+// else in this codebase it travels in the Authorization header instead. A
+// path id alongside it would also give a guest something to tamper with; see
+// guestRouter's own comment for why every route here takes its ticket from
+// the token and nothing else.
+//
+// Not gated on guest_submission_enabled. That setting governs whether a NEW
+// guest ticket is accepted — handleGuestCreateTicket and handleGuestResend
+// check it, handleGuestAddReply deliberately does not, and this follows the
+// same rule for the same reason: switching submission off must not sever a
+// conversation somebody already holds a working token for.
+func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.guestTicketFromRequest(r)
+	if !ok {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+
+	// The lifecycle half of CanUserUpdate — see AddGuestReply and
+	// CanGuestUploadAttachment for why there is no ownership check here: the
+	// token already settled which ticket this is.
+	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
+	if err := s.tickets.CanGuestUploadAttachment(r.Context(), t.ID, reopenDays); err != nil {
+		handleError(w, err)
+		return
+	}
+
+	s.storeUploadedAttachment(w, r, t.ID)
 }
 
 // POST /api/v1/guest/resend

@@ -565,7 +565,9 @@ func compressImage(data []byte, ext string) ([]byte, string, error) {
 
 // POST /api/v1/tickets/{id}/attachments
 // Accepts multipart/form-data with field name "file" (one file per request).
-// Only authenticated users (not guests) can upload attachments.
+// Authenticated users only; a guest uploads through handleGuestUploadAttachment
+// instead, which resolves its own ticket from a token rather than a path
+// parameter.
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	if a == nil {
@@ -579,24 +581,31 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Verify the ticket exists and the user is allowed to see it.
-	t, err := s.tickets.GetByID(r.Context(), ticketID)
-	if err != nil {
+	// The same ownership-and-lifecycle rule a reply is authorised by (#315: a
+	// reporter could previously attach to their own Closed ticket, because
+	// this handler checked ownership and nothing else).
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	reopenDays := s.adminSvc.ReopenWindowDays(r.Context())
+	if err := s.tickets.CanUploadAttachment(r.Context(), ticketID, actor, reopenDays); err != nil {
 		handleError(w, err)
 		return
 	}
-	if a.Role == "user" && (t.ReporterUserID == nil || *t.ReporterUserID != a.UserID) {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
-		return
-	}
 
-	// This body is up to 25 MB and the server-wide read deadline assumes a
-	// body is a JSON document. See bodyTransferTimeout.
-	//
-	// Best effort: SetReadDeadline fails on a connection that does not
-	// support one, which in this codebase means a test using an unusual
-	// transport. Failing the upload over it would be worse than keeping the
-	// shorter deadline.
+	s.storeUploadedAttachment(w, r, ticketID)
+}
+
+// storeUploadedAttachment is the multipart handling, validation, scanning and
+// storage shared by an authenticated upload and a guest one — everything
+// past authorisation, which is the only place the two callers differ.
+//
+// This body is up to 25 MB and the server-wide read deadline assumes a
+// body is a JSON document. See bodyTransferTimeout.
+//
+// Best effort: SetReadDeadline fails on a connection that does not
+// support one, which in this codebase means a test using an unusual
+// transport. Failing the upload over it would be worse than keeping the
+// shorter deadline.
+func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID) {
 	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
 	}

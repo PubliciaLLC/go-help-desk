@@ -47,7 +47,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
-- Guest ticket submission — a visitor files a ticket at `/submit`, gets a tracking number, and receives a per-ticket link to read the thread and reply without an account. Off by default; enable under **Admin → Settings**.
+- Guest ticket submission — a visitor files a ticket at `/submit`, gets a tracking number, and receives a per-ticket link to read the thread, reply, and attach a file without an account. Off by default; enable under **Admin → Settings**.
 - File attachments (PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP; 25 MB max; images auto-recompressed; optional ClamAV virus scanning)
 
 ## Quick start
