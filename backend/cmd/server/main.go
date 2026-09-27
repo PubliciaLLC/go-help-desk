@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -153,6 +154,20 @@ func run() error {
 			"impact", "anyone can forge sessions or API tokens for this instance",
 			"fix", "generate real values with: openssl rand -base64 32")
 	}
+
+	// Say so when attachments are not being scanned.
+	//
+	// An unset CLAMAV_ADDR is a supported configuration and not an error, so
+	// this is a warning rather than a refusal to boot. It is here because the
+	// alternative is silence: Docker Compose used to hardcode the address, so
+	// an operator who upgrades past the change that made the scanner opt-in
+	// (#297) has scanning switched off by a file they never edited, on an
+	// instance where it had been running. Nothing else tells them — the admin
+	// panel reports it, but only to somebody who goes and looks.
+	//
+	// The same shape as the secrets warning above: what is true, what it
+	// costs, and what to do about it.
+	emitScanWarning(slog.Default(), cfg.ClamAVAddr)
 
 	// ── Database ─────────────────────────────────────────────────────────────
 	// Run migrations before opening the pool so the schema is always current.
@@ -479,4 +494,27 @@ func run() error {
 	}
 
 	return <-shutdownDone
+}
+
+// emitScanWarning says whether this instance is scanning attachments, and on
+// arm64 what turning it on costs. Separated from run() so it can be tested
+// without a config or a database.
+func emitScanWarning(log *slog.Logger, clamAVAddr string) {
+	if clamAVAddr == "" {
+		attrs := []any{
+			"impact", "uploaded files are accepted without being checked for malware",
+			"fix", "set CLAMAV_ADDR to a ClamAV daemon; docker/.env.example has the two lines for Docker Compose",
+		}
+		if runtime.GOARCH == "arm64" {
+			attrs = append(attrs,
+				"note", "clamav/clamav is published for linux/amd64 only, so on this architecture it runs under emulation")
+		}
+		log.Warn("attachment scanning is OFF: CLAMAV_ADDR is not set", attrs...)
+		return
+	}
+	if runtime.GOARCH == "arm64" {
+		log.Info("attachment scanning is on, running under emulation on this architecture",
+			"scanner", clamAVAddr,
+			"why", "clamav/clamav is published for linux/amd64 only")
+	}
 }
