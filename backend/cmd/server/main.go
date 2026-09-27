@@ -155,20 +155,6 @@ func run() error {
 			"fix", "generate real values with: openssl rand -base64 32")
 	}
 
-	// Say so when attachments are not being scanned.
-	//
-	// An unset CLAMAV_ADDR is a supported configuration and not an error, so
-	// this is a warning rather than a refusal to boot. It is here because the
-	// alternative is silence: Docker Compose used to hardcode the address, so
-	// an operator who upgrades past the change that made the scanner opt-in
-	// (#297) has scanning switched off by a file they never edited, on an
-	// instance where it had been running. Nothing else tells them — the admin
-	// panel reports it, but only to somebody who goes and looks.
-	//
-	// The same shape as the secrets warning above: what is true, what it
-	// costs, and what to do about it.
-	emitScanWarning(slog.Default(), cfg.ClamAVAddr)
-
 	// ── Database ─────────────────────────────────────────────────────────────
 	// Run migrations before opening the pool so the schema is always current.
 	if err := database.Migrate(ctx, database.MigrateURL(cfg.DatabaseURL)); err != nil {
@@ -207,6 +193,28 @@ func run() error {
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
 	adminSvc := admin.NewService(aStore)
+
+	// Say so when attachments are not being scanned.
+	//
+	// An unset address is a supported configuration and not an error, so this
+	// is a warning rather than a refusal to boot. It is here because the
+	// alternative is silence: Docker Compose used to hardcode the address, so
+	// an operator who upgrades past the change that made the scanner opt-in
+	// (#297) has scanning switched off by a file they never edited, on an
+	// instance where it had been running. Nothing else tells them — the admin
+	// panel reports it, but only to somebody who goes and looks.
+	//
+	// Emitted here rather than beside the secrets warning above, which is
+	// where it used to be, because up there the only address available is the
+	// environment's. The saved setting takes precedence over it, so a warning
+	// that only read the environment told an instance scanning through the
+	// setting that its uploads were accepted unchecked — false, at every boot.
+	// A warning that cries wolf about malware is worse than none, because the
+	// next real one gets ignored. Found by the pre-merge gate on #303.
+	//
+	// The same shape as the secrets warning: what is true, what it costs, and
+	// what to do about it.
+	emitScanWarning(slog.Default(), cfg.ClamAVAddr, adminSvc.AttachmentScanAddress(ctx))
 	customFieldSvc := customfield.NewService(cfStore)
 	cannedResponseSvc := cannedresponse.NewService(crStore)
 
@@ -499,22 +507,29 @@ func run() error {
 // emitScanWarning says whether this instance is scanning attachments, and on
 // arm64 what turning it on costs. Separated from run() so it can be tested
 // without a config or a database.
-func emitScanWarning(log *slog.Logger, clamAVAddr string) {
-	if clamAVAddr == "" {
+func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
+	// The precedence is Server.scanner()'s, and it is copied rather than
+	// re-decided: if these two ever disagree the warning is wrong again,
+	// which is the defect this replaced.
+	addr := settingAddr
+	if addr == "" {
+		addr = envAddr
+	}
+	if addr == "" {
 		attrs := []any{
 			"impact", "uploaded files are accepted without being checked for malware",
-			"fix", "set CLAMAV_ADDR to a ClamAV daemon; docker/.env.example has the two lines for Docker Compose",
+			"fix", "point CLAMAV_ADDR at a ClamAV daemon (for example tcp://clamav:3310), or set the scanner address in Admin → Settings",
 		}
 		if runtime.GOARCH == "arm64" {
 			attrs = append(attrs,
 				"note", "clamav/clamav is published for linux/amd64 only, so on this architecture it runs under emulation")
 		}
-		log.Warn("attachment scanning is OFF: CLAMAV_ADDR is not set", attrs...)
+		log.Warn("attachment scanning is OFF: no scanner address is configured", attrs...)
 		return
 	}
 	if runtime.GOARCH == "arm64" {
 		log.Info("attachment scanning is on, running under emulation on this architecture",
-			"scanner", clamAVAddr,
+			"scanner", addr,
 			"why", "clamav/clamav is published for linux/amd64 only")
 	}
 }
