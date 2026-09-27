@@ -54,6 +54,20 @@ import (
 )
 
 func main() {
+	// One subcommand, handled before run() so it never starts a server or a
+	// sweep. Everything else is the server, which keeps `docker run <image>`
+	// meaning what it has always meant.
+	if len(os.Args) > 1 && os.Args[1] == "reset-factors" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := resetFactors(context.Background(), email); err != nil {
+			slog.Error("reset-factors", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Not log.Fatalf. run() installs a slog JSON handler as the default,
 		// which also routes the stdlib log package — and Go's stdlib-log

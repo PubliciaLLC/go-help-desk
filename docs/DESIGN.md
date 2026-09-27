@@ -417,10 +417,32 @@ creating it.
 **So the last-administrator guard's fourth case is reachable now, not only
 once passwordless exists.** An earlier draft of this section said otherwise,
 on the strength of a self-recovery path that turns out not to cover the case
-that matters. Whether the answer is a recovery code, requiring a second
-credential before the first is relied on, or accepting that a sole
-administrator must keep a spare, it is a decision this document should not
-make quietly.
+that matters.
+
+**The way back in is a command run on the server**, not a recovery code and
+not a second factor required up front:
+
+```
+go-help-desk reset-factors <email>
+```
+
+It clears the account's TOTP enrolment and removes its registered passkeys, so
+the next sign-in reaches enrolment and the person starts again. It is the
+answer for every cause of lockout rather than only a lost key, and for the
+sole administrator it is the only answer there can be, since the web path must
+keep refusing — a password alone being enough to replace somebody's second
+factor is the bypass the guards exist to prevent.
+
+It grants nothing new. Anyone able to run it already has the filesystem and
+the database credentials, which is to say they already have everything. That
+is what makes it the right channel: it does not widen the web-facing surface
+at all, which a recovery code — another secret at rest, worth stealing, and
+the exact property passkeys exist to remove — would.
+
+**The guard's fourth case ships with that command and not before.** "Refuse to
+remove the last way in" is only half an answer without "and here is how you
+recover when it happens anyway"; building either alone leaves an operator
+holding the wrong half.
 
 **That test is a precondition on passwordless sign-in, not a formality.** When
 the password stops being a way in, self-recovery stops working, and removing an
