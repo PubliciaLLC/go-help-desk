@@ -1,0 +1,154 @@
+name: Release image
+
+# Publishes the container image to GitHub Container Registry.
+#
+# Separate from ci.yml, and deliberately so. ci.yml runs on `pull_request` in
+# order to test contributor code, which is why its token is read-only and it
+# holds no secrets — a workflow that executes code from a fork must not carry
+# a credential that fork could use. This workflow needs `packages: write`, so
+# it must never be reachable from a pull request. Its triggers are pushes to
+# branches we control and tags we create, and nothing else.
+#
+# What gets published for which push is decided by scripts/image-tags.sh, and
+# asserted by scripts/image-tags-test.sh, which runs below before anything is
+# pushed. The case that matters: a prerelease tag must never move :latest.
+on:
+  push:
+    branches: [main, v1.3.0-beta]
+    tags: ['v*']
+
+# Two runs publishing the same tag would race to decide which image that tag
+# ends up pointing at. Queue instead of cancelling: a cancelled release leaves
+# a tag half-updated, whereas a queued one just starts late.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before the registry login, so a wrong tag scheme fails the run without
+      # having authenticated anywhere.
+      - name: Check the tag logic
+        run: ./scripts/image-tags-test.sh
+
+      - name: Work out which tags to publish
+        id: tags
+        run: |
+          set -euo pipefail
+          # The registry rejects an uppercase path, and an organisation name is
+          # free to contain capitals — PubliciaLLC does.
+          image="ghcr.io/$(echo "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          tags="$(./scripts/image-tags.sh "$image" "${GITHUB_REF_TYPE}" "${GITHUB_REF_NAME}" | paste -sd, -)"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "publishing: ${tags}"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Built for this runner only and actually started, before anything is
+      # published. A multi-platform build cannot be loaded into the local image
+      # store, so the smoke test needs its own single-arch build — which shares
+      # every layer with the real one through the same cache, so it is close to
+      # free. Publishing an image that has never been run is how #43's class of
+      # failure reaches users instead of CI.
+      - name: Build this runner's architecture for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: false
+          load: true
+          tags: ghd:release-smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start Postgres
+        run: |
+          set -euo pipefail
+          docker network create ghd-rel
+          docker run -d --name ghd-rel-db --network ghd-rel \
+            -e POSTGRES_DB=helpdesk -e POSTGRES_USER=helpdesk -e POSTGRES_PASSWORD=helpdesk \
+            postgres:17-alpine
+
+          # A real query three times in a row, one second apart. pg_isready
+          # answers for the temporary server initdb runs, so a single success
+          # can be followed by the real server restarting and refusing
+          # connections — see the same wait in ci.yml.
+          ok=0
+          for i in $(seq 1 90); do
+            if docker exec ghd-rel-db psql -U helpdesk -d helpdesk -c 'SELECT 1' >/dev/null 2>&1; then
+              ok=$((ok + 1))
+              [ "$ok" -ge 3 ] && { echo "postgres ready after ${i}s"; break; }
+            else
+              ok=0
+            fi
+            sleep 1
+          done
+          if [ "$ok" -lt 3 ]; then
+            echo "::error::postgres never became reliably ready"
+            docker logs ghd-rel-db
+            exit 1
+          fi
+
+      - name: Smoke-test the image before publishing it
+        run: |
+          set -euo pipefail
+          docker run -d --name ghd-rel-app --network ghd-rel -p 8088:8080 \
+            -e DATABASE_URL="postgres://helpdesk:helpdesk@ghd-rel-db:5432/helpdesk?sslmode=disable" \
+            -e BASE_URL="http://localhost:8088" \
+            -e SESSION_SECRET="release-smoke-test-session-secret" \
+            -e JWT_SECRET="release-smoke-test-jwt-secret-32ch" \
+            ghd:release-smoke
+
+          ready=0
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:8088/health >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' ghd-rel-app)" != "true" ]; then
+              echo "::error::the container exited before serving"
+              docker logs ghd-rel-app
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::the image never served /health"
+            docker logs ghd-rel-app
+            exit 1
+          fi
+          echo "the image starts and serves"
+
+      # Last, so a failure anywhere above means nothing was published and no
+      # credential was used.
+      - name: Log in to the registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish every released architecture
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: backend/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Say what was published
+        run: |
+          printf 'Published:\n'
+          printf '  %s\n' $(echo '${{ steps.tags.outputs.tags }}' | tr ',' ' ')

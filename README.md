@@ -59,7 +59,42 @@ cp .env.example .env   # set SESSION_SECRET, JWT_SECRET, BASE_URL
 docker compose up -d
 ```
 
+This pulls a published image. Nothing is compiled on your machine, and one
+image name covers both Intel and ARM — including Apple Silicon — because the
+Docker client picks the right architecture for you.
+
 Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`, where you create the first admin account. The setup route is permanently disabled once any user exists.
+
+### Building from source instead
+
+Building it yourself is fully supported and is not a fallback — some people
+self-host precisely so they can run what they built rather than an image
+somebody else produced:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+This path needs Docker's [buildx](https://docs.docker.com/reference/cli/docker/buildx/)
+plugin, which Docker Desktop includes. Some installations — colima, and
+several Linux setups — do not have it, and without it the build fails in a way
+that is hard to read (see
+[#297](https://github.com/PubliciaLLC/go-help-desk/issues/297)).
+
+### Pinning a version
+
+`docker compose up -d` follows the version pinned in `docker-compose.yml`. To
+run a different one, set `GHD_VERSION` in `docker/.env`:
+
+```sh
+GHD_VERSION=1.3.0
+```
+
+Released versions are published as `1.3.0` and `1.3`, and the newest stable
+release is also `latest`. A prerelease is published under its exact name only
+— `1.4.0-beta` — and never moves `latest`, so following `latest` will not put
+you on a beta. Images live at
+[ghcr.io/publiciallc/go-help-desk](https://github.com/PubliciaLLC/go-help-desk/pkgs/container/go-help-desk).
 
 ## Configuration
 
