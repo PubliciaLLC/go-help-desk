@@ -4,6 +4,12 @@ import type { User } from './types'
 export interface LoginResponse {
   user: User
   mfa_needed: boolean
+  /**
+   * The account holds passkeys and no authenticator app, so the second factor
+   * is a key rather than a code. Never true at the same time as `mfa_needed`:
+   * the server picks one gate.
+   */
+  passkey_needed: boolean
   mfa_enrollment_needed: boolean
 }
 

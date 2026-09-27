@@ -7,7 +7,9 @@ import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
-import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, MenuIcon } from 'lucide-react'
+import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, MenuIcon,
+  UserIcon,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
 
@@ -87,6 +89,14 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
 
       <div className="border-t p-3 space-y-2">
         <div className="px-3 text-xs text-gray-500 truncate">{user?.email}</div>
+        {/* Your own account, not an admin screen: it sits with the identity
+            it belongs to rather than in the nav list above. */}
+        <NavItem
+          to="/account"
+          icon={<UserIcon className="h-4 w-4" />}
+          label="Your account"
+          onNavigate={onNavigate}
+        />
         <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={onLogout}>
           <LogOutIcon className="h-4 w-4" />
           Sign out
