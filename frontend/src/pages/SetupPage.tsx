@@ -13,6 +13,8 @@ export function SetupPage() {
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
+  // Pre-filled, not blank: the point is that nobody has to think about it.
+  const [category, setCategory] = useState('General')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -25,7 +27,7 @@ export function SetupPage() {
     }
     setLoading(true)
     try {
-      await setupAdmin(email, displayName, password)
+      await setupAdmin(email, displayName, password, category)
       navigate({ to: '/login' })
     } catch (err) {
       setError(extractError(err))
@@ -40,7 +42,7 @@ export function SetupPage() {
         <CardHeader>
           <CardTitle className="text-xl">Welcome to Go Help Desk</CardTitle>
           <p className="text-sm text-gray-500 mt-1">
-            Create your administrator account to get started.
+            Create your administrator account and name your first category.
           </p>
         </CardHeader>
         <CardContent>
@@ -88,6 +90,19 @@ export function SetupPage() {
                 required
                 autoComplete="new-password"
               />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="category">First category</Label>
+              <Input
+                id="category"
+                type="text"
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                required
+              />
+              <p className="text-xs text-gray-500">
+                Tickets are filed under a category. You can rename this one or add more later.
+              </p>
             </div>
             {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
             <Button type="submit" className="w-full" disabled={loading}>
