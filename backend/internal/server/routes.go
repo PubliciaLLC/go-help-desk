@@ -391,6 +391,7 @@ func (s *Server) guestRouter() *chi.Mux {
 		r.Use(authmw.GuestAuth(s.resolveGuestToken))
 		r.Get("/ticket", s.handleGuestGetTicket)
 		r.Post("/replies", s.handleGuestAddReply)
+		r.Post("/attachments", s.handleGuestUploadAttachment)
 	})
 	return r
 }

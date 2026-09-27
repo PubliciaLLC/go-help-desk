@@ -731,11 +731,25 @@ Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296).
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
 
-Attachment upload is available to all authenticated (non-guest) users on the
+Attachment upload is available to every authenticated non-guest user on the
 API, and the reply composer offers the same control to every role that can
 already upload at ticket creation (#175) — staff-only controls in that
 composer are the internal-note flag, the customer-notify flag and canned
-responses, not the attachment control. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+responses, not the attachment control. A guest cannot attach at ticket
+creation (there is no ticket yet to attach to), but can attach to an
+existing one afterward at `POST /api/v1/guest/attachments`, authorized the
+same way `POST /api/v1/guest/replies` is: the ticket comes from the guest
+token in the `Authorization` header, never from an id in the path, so there
+is nothing for a guest to change to reach a different ticket. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+
+Every attachment upload — authenticated or guest — is authorized the same
+way a reply is (`CanUploadAttachment` / `CanGuestUploadAttachment`, reusing
+`CanUserUpdate` / `CanGuestUpdate`): a reporting user must own the ticket,
+and neither a Closed ticket nor a Resolved one past its reopen window
+accepts a new attachment from anybody but staff or an admin (#315 — the
+upload handler used to check ownership and nothing else, so a reporter
+could attach to their own Closed ticket even though the equivalent reply
+was already refused).
 
 ### Attachment scanning
 
@@ -745,10 +759,11 @@ path skips a ~300 MB signature download it may never need. Enabling it is
 documented in `docker/.env.example`.
 
 The setting `attachment_scan_address` overrides it and takes precedence once
-saved — but **there is no field for it in the admin UI yet**, so the only way
-to set it is a PATCH to `/api/v1/admin/settings`. This document said an
-administrator could change it under Admin → Settings, which sent operators
-looking for a control that is not there. Tracked as an issue.
+saved. It has a field under Admin → Settings → Attachments, beside the scan
+policy select (#172): a plain text input showing the current value, accepting
+`tcp://host:port` or `unix:///path/to/socket`, blank to fall back to
+`CLAMAV_ADDR`. The backend validation was already there; only the control was
+missing.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -776,9 +791,13 @@ doing**, including a live reachability check rather than a restatement of the
 configuration: an instance whose scanner container has died has an address
 configured and no protection, and those two facts must not look alike.
 
-The admin UI does not render that yet — it shows only the insecure-secrets
-warning — so today this is visible to an administrator who asks the API. The UI
-is the obvious follow-up and is not in this change.
+The admin UI surfaces it (#176): `InsecureConfigBanner` renders a second
+alert, alongside the insecure-secrets warning, whenever the operator's own
+policy intends scanning (`policy !== "off"`) and the live ping just failed —
+the exact combination that used to be invisible, including the `permissive`
+case, where uploads keep being accepted without ever being scanned and
+nothing before this said so. A deliberate `policy: off` is not shown as a
+warning: that is a choice already visible in Settings, not a hidden failure.
 
 **Attachments are download-only. There is no previewer, and there will not be
 one.**
@@ -1610,8 +1629,12 @@ Three more things are off limits to a machine credential, for the same reason:
   settings keys. Reading the configuration stays available to automation, since
   the handlers already blank the secrets.
 - **Changing an auth-critical setting** — MFA enablement and enforcement, the
-  SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
-  configuration such as the site name stays automatable.
+  SAML/OIDC keys, the email-domain allowlist, the signup toggles, and guest
+  submission (#177: it decides not just whether anonymous people can file a
+  ticket, but also, since the category catalogue stopped being anonymous,
+  whether that catalogue is readable without a session at all — one flag,
+  two exposures). Ordinary configuration such as the site name stays
+  automatable.
 - **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
   credential reaching it could spend the account's durable failed-attempt budget
   and lock the owner out repeatedly.

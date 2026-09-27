@@ -635,6 +635,49 @@ func (s *Service) AddGuestReply(ctx context.Context, ticketID uuid.UUID, body st
 		})
 }
 
+// CanUploadAttachment reports whether actor may attach a file to this ticket
+// right now — the same rule addReply enforces for a written reply, reused
+// rather than duplicated: an attachment is the same kind of update, so a
+// reporting user must own the ticket, and neither a Closed ticket nor a
+// Resolved one past its reopen window accepts one from anybody but staff or
+// an admin.
+func (s *Service) CanUploadAttachment(ctx context.Context, ticketID uuid.UUID, actor Actor, reopenWindowDays int) error {
+	t, status, err := s.ticketAndStatus(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	u := user.User{Role: actor.Role}
+	if actor.UserID != nil {
+		u.ID = *actor.UserID
+	}
+	return CanUserUpdate(t, u, status, reopenWindowDays)
+}
+
+// CanGuestUploadAttachment is CanUploadAttachment for a guest. The caller has
+// already resolved a token to this one ticket — see AddGuestReply — so there
+// is no ownership left to check, only the lifecycle rule.
+func (s *Service) CanGuestUploadAttachment(ctx context.Context, ticketID uuid.UUID, reopenWindowDays int) error {
+	t, status, err := s.ticketAndStatus(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	return CanGuestUpdate(t, status, reopenWindowDays)
+}
+
+// ticketAndStatus fetches a ticket and the Status its StatusID names — the
+// pair every authorisation check here needs.
+func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Ticket, Status, error) {
+	t, err := s.store.GetByID(ctx, ticketID)
+	if err != nil {
+		return Ticket{}, Status{}, err
+	}
+	status, err := s.getStatusByID(ctx, t.StatusID)
+	if err != nil {
+		return Ticket{}, Status{}, err
+	}
+	return t, status, nil
+}
+
 // addReply is the one reply path. authorize replaces the default ownership
 // check when non-nil; everything after it — the reopen, the write, the audit,
 // the dispatch — is shared, so a guest reply cannot drift from a user's.

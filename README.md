@@ -47,7 +47,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - REST API with API key and OAuth2 client-credential auth
 - MCP server for AI assistant integration
 - WASM plugin system (sandboxed)
-- Guest ticket submission — a visitor files a ticket at `/submit`, gets a tracking number, and receives a per-ticket link to read the thread and reply without an account. Off by default; enable under **Admin → Settings**.
+- Guest ticket submission — a visitor files a ticket at `/submit`, gets a tracking number, and receives a per-ticket link to read the thread, reply, and attach a file without an account. Off by default; enable under **Admin → Settings**.
 - File attachments (PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP; 25 MB max; images auto-recompressed; optional ClamAV virus scanning)
 
 ## Quick start
@@ -170,14 +170,31 @@ startup warning surfaces it. To keep scanning on, uncomment the two lines in
 the "Virus scanning" section of `docker/.env.example` (`CLAMAV_ADDR` and
 `COMPOSE_PROFILES=antivirus`) in your own `.env` before restarting.
 
+**`guest_submission_enabled` now requires a signed-in administrator (#177).**
+It decides both whether anonymous people can file tickets and — since the
+category catalogue stopped being anonymous — whether that catalogue is
+readable without a session at all. An API key with settings-write scope
+could previously flip it either way; it is now refused the same way SAML,
+OIDC, MFA and signup settings already were as of 1.2.0. A malformed or
+`null` value is refused outright rather than silently read back as `false`.
+
+**Reporters can now attach a file to a reply, not just a new ticket (#175).**
+The upload API never had a role gate — any authenticated non-guest could
+already attach to a ticket they can see — but the reply composer only
+offered the control to staff. A reporting user replying to their own ticket
+now sees the same "Add files" control staff already had.
+
 **Building the image now requires Docker Buildx (#297, #301).** Rebuilding
 `app` from source without the `docker buildx` CLI plugin used to fail with a
 `--platform=` parse error on Apple Silicon and other non-amd64 hosts; a
 later attempt at defaulting around that turned out to produce an image that
 builds cleanly but will not run there instead, which is worse, so it was
-reverted. See the buildx note under Quick start above if
+reverted. See "Building from source instead" above if
 `docker compose build` or `docker compose up --build` fails at the first
 step.
+
+Note this only affects building. From 1.3.0 the quick start pulls a
+published image, so most people never invoke a builder at all.
 
 ## Upgrading to 1.2.0
 

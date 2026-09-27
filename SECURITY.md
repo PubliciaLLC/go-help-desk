@@ -2,14 +2,18 @@
 
 ## Supported Versions
 
-Security fixes are issued for the latest `v1.x` minor release. Older
-minor versions are not backported. Pre-1.0 development builds are not
-supported.
+Security fixes are issued for **1.2 and later**. Earlier versions are not
+backported, and pre-1.0 development builds were never supported.
+
+Below 1.2 is not merely unsupported. Every published advisory affects at
+least one version in that range, four of them rated critical — see
+[the advisories](https://github.com/PubliciaLLC/go-help-desk/security/advisories)
+for what each one allowed.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.x     | ✅        |
-| < 1.0   | ❌        |
+| 1.2+    | ✅        |
+| < 1.2   | ❌        |
 
 ## Reporting a Vulnerability
 

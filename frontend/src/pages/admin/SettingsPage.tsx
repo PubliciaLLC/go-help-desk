@@ -1566,6 +1566,7 @@ function AttachmentsPanel({
   )
 
   const scanPolicy = str('attachment_scan_policy')
+  const scanAddress = str('attachment_scan_address')
   const handling = str('attachment_infected_handling') || 'refuse'
   const mismatchHandling = str('attachment_mismatch_handling') || 'refuse'
   const refresh = str('attachment_reputation_refresh') || 'biweekly'
@@ -1641,6 +1642,19 @@ function AttachmentsPanel({
       </Section>
 
       <Section title="Malware scanning">
+        <SettingRow
+          label="Scanner address"
+          description={`Overrides CLAMAV_ADDR, the environment variable this instance starts with. Accepts "tcp://host:port" or "unix:///path/to/socket". Leave blank to use the environment variable instead.`}
+        >
+          <Input
+            value={scanAddress}
+            onChange={(e) => setStr('attachment_scan_address', e.target.value)}
+            placeholder="tcp://clamav:3310"
+            className="w-72 font-mono"
+            aria-label="Scanner address"
+          />
+        </SettingRow>
+
         <SettingRow
           label="Scan attachments for malware"
           description="Uploads are passed to the configured ClamAV daemon before they are stored."
