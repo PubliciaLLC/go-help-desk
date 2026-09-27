@@ -738,8 +738,10 @@ to it; nothing refuses them, the button is simply absent. Tracked as an issue. W
 
 ### Attachment scanning
 
-The scanner is configured with `CLAMAV_ADDR`. Docker Compose ships ClamAV by
-default.
+The scanner is configured with `CLAMAV_ADDR`. Docker Compose ships ClamAV as
+an opt-in `antivirus` profile (see #297) — unset by default, so the common
+path skips a ~300 MB signature download it may never need. Enabling it is
+documented in `docker/.env.example`.
 
 The setting `attachment_scan_address` overrides it and takes precedence once
 saved — but **there is no field for it in the admin UI yet**, so the only way

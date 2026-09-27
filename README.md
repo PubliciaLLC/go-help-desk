@@ -52,6 +52,20 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 
 ## Quick start
 
+**Requires Docker Buildx.** `docker compose up` builds `app` from
+`backend/Dockerfile`, which cross-compiles for your host's real architecture
+rather than emulating it — that needs the `docker buildx` CLI plugin, not
+the classic builder Compose otherwise falls back to. Docker Desktop has
+shipped Buildx by default since 2023; if `docker buildx version` fails,
+install it (`brew install docker-buildx && mkdir -p ~/.docker/cli-plugins &&
+ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx"
+~/.docker/cli-plugins/docker-buildx` on macOS/Homebrew, including Colima; see
+[docs.docker.com/build/architecture](https://docs.docker.com/build/architecture/#buildx)
+for other platforms). Without it, the build fails with a clear
+`--platform=` parse error at the very first step rather than producing an
+image that looks fine and does not run — see #297 and #301 for why this is
+a hard requirement rather than a fallback.
+
 ```sh
 git clone https://github.com/PubliciaLLC/go-help-desk
 cd go-help-desk/docker
@@ -60,6 +74,8 @@ docker compose up -d
 ```
 
 Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`, where you create the first admin account. The setup route is permanently disabled once any user exists.
+
+Virus scanning (ClamAV) is off by default and opt-in — see the "Virus scanning" section of `docker/.env.example`. This also keeps the quick start working on Apple Silicon: `clamav/clamav` is `linux/amd64`-only, and enabling the profile there pins it to run under emulation rather than failing to pull.
 
 ## Configuration
 
@@ -78,12 +94,17 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `SMTP_PASSWORD` | | — | |
 | `SMTP_FROM` | | — | |
 | `ATTACHMENT_DIR` | | `/data/attachments` | Attachment storage path |
-| `CLAMAV_ADDR` | | `tcp://clamav:3310`* | ClamAV daemon address. The Docker Compose setup runs ClamAV automatically and wires this up. For bare-metal / Kubernetes installs, set this to your own daemon address; leave it unset to disable scanning. |
+| `CLAMAV_ADDR` | | — | ClamAV daemon address, e.g. `tcp://clamav:3310`. Leave unset to disable scanning (the default, everywhere, including Docker Compose — see below). For bare-metal / Kubernetes installs, set this to your own daemon address. |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | | `10` | Failed password attempts per account per minute before a 429. `0` disables it, and also disables the signup limit. In-process: a restart clears the counters and N replicas multiply the budget by N. |
 | `APP_ENV` | | `production` | Set to `development` for verbose logging |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, `error` |
 
-> \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
+> In Docker Compose, the `clamav` service and `CLAMAV_ADDR` are both opt-in —
+> uncomment the two lines in `docker/.env.example`'s "Virus scanning" section
+> to enable it. See #297: the common path skips a ~300 MB signature download
+> it may never need, and enabling it works the same on Apple Silicon as
+> anywhere else (`clamav/clamav` is `linux/amd64`-only, so compose pins it to
+> run under emulation there rather than failing to pull).
 >
 > **Note:** SAML, MFA, guest submission and SLA are all toggled in the Admin
 > UI, and that setting is the switch. `SLA_ENABLED` in the environment turns
@@ -96,6 +117,29 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 > tickets got no error and no guests.
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
+
+## Upgrading to 1.3.0
+
+**ClamAV became opt-in (#297).** Docker Compose used to start it and wire
+`CLAMAV_ADDR` automatically. An existing deployment that has been relying on
+that — whose own `.env` has no `CLAMAV_ADDR` line because it never needed one
+— picks this up silently on upgrade: attachments stop being scanned. It is
+not invisible: the admin security-warnings panel reports "Attachments are
+not scanned. Uploads are accepted without being checked." But nothing
+prompts anyone to go look, so an operator who changed nothing now has a
+wrong belief about their own instance, until they check that panel or #303's
+startup warning surfaces it. To keep scanning on, uncomment the two lines in
+the "Virus scanning" section of `docker/.env.example` (`CLAMAV_ADDR` and
+`COMPOSE_PROFILES=antivirus`) in your own `.env` before restarting.
+
+**Building the image now requires Docker Buildx (#297, #301).** Rebuilding
+`app` from source without the `docker buildx` CLI plugin used to fail with a
+`--platform=` parse error on Apple Silicon and other non-amd64 hosts; a
+later attempt at defaulting around that turned out to produce an image that
+builds cleanly but will not run there instead, which is worse, so it was
+reverted. See the buildx note under Quick start above if
+`docker compose build` or `docker compose up --build` fails at the first
+step.
 
 ## Upgrading to 1.2.0
 
