@@ -516,9 +516,15 @@ func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
 		addr = envAddr
 	}
 	if addr == "" {
+		// Only the environment variable is named, though the saved
+		// attachment_scan_address would also do it: that key is reachable
+		// through the settings API and has no field on the settings screen,
+		// so telling somebody to go and set it there sends them looking for a
+		// control that is not written yet. One false instruction replaced by
+		// another is not a fix.
 		attrs := []any{
 			"impact", "uploaded files are accepted without being checked for malware",
-			"fix", "point CLAMAV_ADDR at a ClamAV daemon (for example tcp://clamav:3310), or set the scanner address in Admin → Settings",
+			"fix", "point CLAMAV_ADDR at a ClamAV daemon, for example tcp://clamav:3310",
 		}
 		if runtime.GOARCH == "arm64" {
 			attrs = append(attrs,
