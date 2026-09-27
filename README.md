@@ -61,6 +61,8 @@ docker compose up -d
 
 Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`, where you create the first admin account. The setup route is permanently disabled once any user exists.
 
+Virus scanning (ClamAV) is off by default and opt-in — see the "Virus scanning" section of `docker/.env.example`. This also keeps the quick start working on Apple Silicon: `clamav/clamav` is `linux/amd64`-only, and enabling the profile there pins it to run under emulation rather than failing to pull.
+
 ## Configuration
 
 Environment variables control infrastructure; feature flags (SAML, MFA, SLA, guest submission) and branding are managed through the **Admin → Settings** UI and stored in the database.
@@ -78,12 +80,17 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `SMTP_PASSWORD` | | — | |
 | `SMTP_FROM` | | — | |
 | `ATTACHMENT_DIR` | | `/data/attachments` | Attachment storage path |
-| `CLAMAV_ADDR` | | `tcp://clamav:3310`* | ClamAV daemon address. The Docker Compose setup runs ClamAV automatically and wires this up. For bare-metal / Kubernetes installs, set this to your own daemon address; leave it unset to disable scanning. |
+| `CLAMAV_ADDR` | | — | ClamAV daemon address, e.g. `tcp://clamav:3310`. Leave unset to disable scanning (the default, everywhere, including Docker Compose — see below). For bare-metal / Kubernetes installs, set this to your own daemon address. |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | | `10` | Failed password attempts per account per minute before a 429. `0` disables it, and also disables the signup limit. In-process: a restart clears the counters and N replicas multiply the budget by N. |
 | `APP_ENV` | | `production` | Set to `development` for verbose logging |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, `error` |
 
-> \* In Docker Compose, `CLAMAV_ADDR` is set automatically. The `clamav` service runs alongside the app on a private internal network. You do not need to set this variable yourself.
+> In Docker Compose, the `clamav` service and `CLAMAV_ADDR` are both opt-in —
+> uncomment the two lines in `docker/.env.example`'s "Virus scanning" section
+> to enable it. See #297: the common path skips a ~300 MB signature download
+> it may never need, and enabling it works the same on Apple Silicon as
+> anywhere else (`clamav/clamav` is `linux/amd64`-only, so compose pins it to
+> run under emulation there rather than failing to pull).
 >
 > **Note:** SAML, MFA, guest submission and SLA are all toggled in the Admin
 > UI, and that setting is the switch. `SLA_ENABLED` in the environment turns

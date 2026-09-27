@@ -1,3 +1,19 @@
+# BUILDPLATFORM is one of BuildKit's automatic build-time args, populated by
+# `docker buildx build` (which is how CI's multi-platform image is built — see
+# .github/workflows/ci.yml) so the two stages below run natively rather than
+# under emulation. It is NOT populated by the classic builder `docker compose
+# build` falls back to when the buildx CLI plugin is missing — see #297 — and
+# an unset $BUILDPLATFORM makes `--platform=$BUILDPLATFORM` expand to
+# `--platform=`, which fails to parse rather than being treated as "no
+# constraint". The default here only ever applies on that fallback path: a
+# real buildx invocation always supplies its own value, which wins over this
+# one. It costs an ordinary single-arch build on non-amd64 hardware without
+# buildx one emulated pair of build stages (a few extra minutes, not a
+# failure) — the one case this default cannot make native, because nothing
+# here can see the host's actual architecture. Bare `docker build`, and any
+# build under an installed buildx plugin, are unaffected either way.
+ARG BUILDPLATFORM=linux/amd64
+
 # ── Stage 1: Build frontend ───────────────────────────────────────────────────
 #
 # Pinned to BUILDPLATFORM: the output is static JS/CSS with no architecture of
