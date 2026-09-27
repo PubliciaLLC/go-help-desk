@@ -2,27 +2,37 @@
 # `docker buildx build` (which is how CI's multi-platform image is built — see
 # .github/workflows/ci.yml) so the two stages below run natively rather than
 # under emulation. It is NOT populated by the classic builder `docker compose
-# build` falls back to when the buildx CLI plugin is missing — see #297 — and
-# an unset $BUILDPLATFORM makes `--platform=$BUILDPLATFORM` expand to
-# `--platform=`, which fails to parse rather than being treated as "no
-# constraint".
+# build` falls back to when the buildx CLI plugin is missing.
 #
-# Deliberately declared bare, with NO default here — `ARG BUILDPLATFORM=...`
-# would give it one, and docker/buildx#510 documents that a default on one of
-# these automatic platform args makes buildx use the default INSTEAD OF the
-# real value it would otherwise inject, on every build, buildx included. That
-# would silently force every native cross-build back to amd64-under-emulation
-# for the one case this whole pin exists to keep fast. The fallback below
-# lives at the point BUILDPLATFORM is READ instead, in the FROM line itself:
-# `${BUILDPLATFORM:-linux/amd64}` only substitutes its default when the
-# variable is genuinely empty at that point (the classic-builder path), and
-# defers to whatever buildx already bound it to otherwise — so a real buildx
-# invocation, cross-building or not, is unaffected either way. Not verified
-# against real buildx on non-amd64 hardware in this sandbox (no Docker daemon
-# available here); CI's own build (always via buildx, on an amd64 runner for
-# every leg including the emulated arm64 one) cannot distinguish "correctly
-# read through" from "silently defaulted", since BUILDPLATFORM is amd64 in
-# both cases there.
+# Declared bare, with NO default — `ARG BUILDPLATFORM=...` would give it one,
+# and docker/buildx#510 documents that a default on one of these automatic
+# platform args makes buildx use the default INSTEAD OF the real value it
+# would otherwise inject, on every build, buildx included. That would
+# silently force every native cross-build back to amd64-under-emulation for
+# the one case this whole pin exists to keep fast.
+#
+# An earlier version of this file also gave `--platform=${BUILDPLATFORM:-...}`
+# an inline fallback at the point of use, specifically so a buildx-less host
+# would still produce SOME image rather than the parse error below. Measured
+# on the real hardware #297 was filed from (arm64, no buildx): that fallback
+# does not produce a working image, it produces a broken one that looks fine.
+# Forcing `linux/amd64` on an arm64 host under the classic builder means both
+# build stages run under real QEMU emulation rather than BuildKit's platform
+# bookkeeping — one observed failure mode was `go mod download` crashing
+# outright under emulation; the more dangerous one is that it can also
+# "succeed": TARGETARCH is never populated by the classic builder either, so
+# `GOARCH=${TARGETARCH}` falls through to the Go toolchain's own default,
+# which inside an amd64-emulated container is amd64 — and the self-check two
+# stages down asks `go env GOARCH` from that SAME emulated container, so it
+# also answers amd64 and the assertion passes. Stage 3 has no platform pin of
+# its own (by design, see its own comment) and is built for the host's REAL
+# architecture, arm64 — so the amd64 binary lands in an arm64 base image, and
+# the failure moves from a clear build-time error to `exec format error` at
+# `docker compose up`, on exactly the audience this file exists to help.
+# Buildx is now a stated prerequisite (see the README) instead: a bare
+# reference restores the original, honest `--platform=` parse error for a
+# buildx-less build, rather than trading it for one that fails later and less
+# clearly. Do not reintroduce a fallback here without re-reading this comment.
 ARG BUILDPLATFORM
 
 # ── Stage 1: Build frontend ───────────────────────────────────────────────────
@@ -31,7 +41,7 @@ ARG BUILDPLATFORM
 # its own, so running node under emulation to produce identical bytes is pure
 # cost. On an arm64 host building for amd64 this is the difference between a
 # native npm build and an emulated one.
-FROM --platform=${BUILDPLATFORM:-linux/amd64} node:24-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
 
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -46,7 +56,7 @@ RUN npm run build
 # compiler by default and the binary is CGO_ENABLED=0, so targeting another
 # architecture costs nothing — whereas emulating the whole toolchain under QEMU
 # turns a two-minute compile into fifteen or more.
-FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.26-alpine AS gobuilder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS gobuilder
 
 WORKDIR /build
 
