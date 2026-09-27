@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -52,6 +53,13 @@ func reputationDeadline(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), repDeadlineKey{},
 			time.Now().Add(reputationRequestBudget))
+		// One services cache per request too, for the same reason: a render
+		// with several quarantined attachments asks reputationServices once
+		// per attachment, and without this each of those repeats the same
+		// four toggle reads, the refresh interval and up to three keys — all
+		// primary-key hits, all reading a value that cannot change inside one
+		// request. See repServicesCache.
+		ctx = context.WithValue(ctx, repServicesCacheKey{}, &repServicesCache{})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -267,20 +275,53 @@ func (s *Server) providerLine(sha256 string, v providerVerdict, now time.Time) t
 	return line
 }
 
-// reputationServices builds one get-or-lookup service per enabled provider, in
-// canonical order.
+// repServicesCacheKey carries a per-request cache of reputationServices'
+// build, so that a render with several quarantined attachments reads the
+// enabled-provider toggles, the refresh interval and the provider keys once
+// rather than once per attachment. Installed by reputationDeadline, which
+// already runs on every route and already stamps a per-request value beside
+// it for the same reason: nothing here can change inside the life of one
+// request, so the second attachment reusing the first's answer is not stale,
+// it is correct.
+type repServicesCacheKey struct{}
+
+// repServicesCache is filled once, by whichever attachment asks first; every
+// later attachment in the same request reads the same slice without another
+// database round trip.
+type repServicesCache struct {
+	once sync.Once
+	svcs []*reputation.Service
+}
+
+// reputationServices returns one get-or-lookup service per enabled provider,
+// in canonical order, building them at most once per request.
+//
+// A context with no cache installed (the direct callers are tests, and
+// anything that looks a hash up outside an HTTP request) builds fresh every
+// time, exactly as before this cache existed — there is nothing to share it
+// through.
+func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
+	cache, ok := ctx.Value(repServicesCacheKey{}).(*repServicesCache)
+	if !ok {
+		return s.buildReputationServices(ctx)
+	}
+	cache.once.Do(func() { cache.svcs = s.buildReputationServices(ctx) })
+	return cache.svcs
+}
+
+// buildReputationServices does the actual work reputationServices caches.
 //
 // The toggles and the keys are read per call, because both are settings an
 // operator can change while the server runs and a value captured in New would
 // leave their change doing nothing until a restart — the defect this codebase
-// already documents for the ticket prefix and the scanner address. The Budget
-// is the opposite: it holds the counters, so it must be the same instance
-// every time, and it is deliberately shared across every service built here.
-// Its counters are per provider, which is what keeps an exhausted VirusTotal
-// allowance from stopping CIRCL answering.
-//
-// Constructing the rest is a handful of struct fields and no I/O, so there is
-// nothing to cache and no invalidation to get wrong.
+// already documents for the ticket prefix and the scanner address. Caching
+// that per PROCESS would reintroduce exactly that defect; caching it per
+// REQUEST, which is all reputationServices above does, does not, because a
+// new request reads it fresh regardless. The Budget is the opposite: it holds
+// the counters, so it must be the same instance every time, and it is
+// deliberately shared across every service built here. Its counters are per
+// provider, which is what keeps an exhausted VirusTotal allowance from
+// stopping CIRCL answering.
 //
 // An empty slice is returned when there is nowhere to cache verdicts, when no
 // provider is enabled, and — per provider — when an enabled one cannot run.
@@ -288,7 +329,7 @@ func (s *Server) providerLine(sha256 string, v providerVerdict, now time.Time) t
 // to enable a commercial provider without a key; it fails closed here rather
 // than sending an unauthenticated request to a service the operator has an
 // account with.
-func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
+func (s *Server) buildReputationServices(ctx context.Context) []*reputation.Service {
 	if s.repStore == nil {
 		return nil
 	}
@@ -301,9 +342,9 @@ func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
 	// server to mean it.
 	refreshAfter := s.adminSvc.ReputationRefreshInterval(ctx)
 	// One instant for every service built for this request, and
-	// reputationServices is called once per attachment with the same context,
-	// so every attachment on the ticket shares it too. That is what bounds the
-	// request rather than the lookup.
+	// reputationServices above caches its result for the life of the request,
+	// so every attachment on the ticket shares both this and the services
+	// themselves. That is what bounds the request rather than the lookup.
 	deadline := reputationDeadlineFrom(ctx)
 
 	out := make([]*reputation.Service, 0, len(enabled))
@@ -318,6 +359,12 @@ func (s *Server) reputationServices(ctx context.Context) []*reputation.Service {
 		svc := reputation.NewService(s.newReputationProvider(name, key), s.repStore, s.repBudget)
 		svc.RefreshAfter = refreshAfter
 		svc.Deadline = deadline
+		// Shared across every service this process ever builds, the same way
+		// Budget is, so that concurrent GetOrLookup calls for the same hash —
+		// two staff on the same ticket, or a page that polls — collapse into
+		// one outbound request instead of each spending the operator's
+		// allowance to learn the same answer. See Service.Group.
+		svc.Group = s.repGroup
 		out = append(out, svc)
 	}
 	return out

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // ManualRefreshFloor is the shortest interval between two staff-triggered
@@ -93,6 +95,20 @@ type Service struct {
 	// answer already on file — the whole point of the cache — and costs only
 	// the lookups that would have gone out.
 	Deadline time.Time
+
+	// Group collapses concurrent outbound lookups for the same (provider,
+	// hash) pair into one. Nil is a legitimate value — meaning simply that
+	// this Service has none, and duplicate concurrent callers each spend
+	// their own lookup, as every Service did before this field existed.
+	//
+	// The caller wires the SAME Group into every Service it builds, for the
+	// life of the process, the way Server does with Budget: a Group scoped to
+	// one Service instance could only ever see one caller, because the
+	// waste this closes is a render or a poll landing while an identical
+	// lookup for the same hash is already in flight in ANOTHER request, and
+	// only a Group that outlives any one Service can tell the two calls are
+	// the same call.
+	Group *singleflight.Group
 
 	provider Provider
 	store    Store
@@ -233,12 +249,35 @@ func (s *Service) now() time.Time {
 	return time.Now()
 }
 
-// lookup spends budget, asks the provider, and keeps what it said.
+// lookup spends budget, asks the provider, and keeps what it said —
+// collapsed through Group first, when one is set, so that two callers asking
+// about the same hash at the same time spend one lookup between them rather
+// than one each.
 //
 // Split out of GetOrLookup so that the manual re-check spends and stores by
 // exactly the same rules; a second copy of this is a second place for
 // "unavailable is never cached" to be forgotten.
 func (s *Service) lookup(ctx context.Context, sha256 string) (Reputation, error) {
+	if s.Group == nil {
+		return s.doLookup(ctx, sha256)
+	}
+	// Keyed on provider too: Group is shared across every provider's Service,
+	// not just this one, so two different providers asked about the same
+	// hash at the same time must not collapse into a single call — they are
+	// different questions with different answers.
+	key := s.provider.Name() + ":" + sha256
+	v, err, _ := s.Group.Do(key, func() (any, error) {
+		return s.doLookup(ctx, sha256)
+	})
+	// doLookup always returns a Reputation on both its success and error
+	// paths (see unavailable), never a bare nil, so this assertion cannot
+	// fail — Do's signature is the only reason it exists at all.
+	return v.(Reputation), err
+}
+
+// doLookup is the actual outbound call lookup collapses concurrent callers
+// into.
+func (s *Service) doLookup(ctx context.Context, sha256 string) (Reputation, error) {
 	provider := s.provider.Name()
 
 	// The caller's context, kept apart from the deadline-bound one below.
