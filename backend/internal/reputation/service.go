@@ -266,8 +266,21 @@ func (s *Service) lookup(ctx context.Context, sha256 string) (Reputation, error)
 	// hash at the same time must not collapse into a single call — they are
 	// different questions with different answers.
 	key := s.provider.Name() + ":" + sha256
+	// Detached from THIS caller's cancellation, deliberately. Do runs the
+	// closure at most once per key, on whichever caller registers first, and
+	// every OTHER concurrent caller for the same key shares that one call's
+	// outcome without their own context ever being consulted. Passing the
+	// leader's raw ctx through would let that caller's own disconnect — a
+	// closed tab, a client timeout — abort an answer a different, still-live
+	// caller is waiting on, and discard a verdict that had already arrived
+	// and would otherwise have been cached for both of them, so the next
+	// render pays for the lookup again. WithoutCancel keeps every value on
+	// ctx and drops only its Done channel and deadline; doLookup applies
+	// s.Deadline immediately below, so the call stays bounded — just not by
+	// any one caller's fate.
+	detached := context.WithoutCancel(ctx)
 	v, err, _ := s.Group.Do(key, func() (any, error) {
-		return s.doLookup(ctx, sha256)
+		return s.doLookup(detached, sha256)
 	})
 	// doLookup always returns a Reputation on both its success and error
 	// paths (see unavailable), never a bare nil, so this assertion cannot
