@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -126,6 +127,33 @@ func (s *Server) requireFactorOrFirstEnrolment(w http.ResponseWriter, r *http.Re
 	return true
 }
 
+// Bytes, not characters: this is a storage bound rather than a display one.
+const maxPasskeyNameBytes = 128
+
+// capPasskeyName bounds the label its owner gave a key.
+//
+// Capped rather than rejected. The name arrives on the query string of
+// register/finish, which runs after the person has already completed the
+// ceremony with their key — failing that over a label would be the wrong
+// trade. The column is TEXT, so this is about not storing unbounded input,
+// not about what will fit.
+//
+// Truncated on a rune boundary, so a name cut short is still valid UTF-8. A
+// mid-rune cut would store a replacement character where somebody's own
+// alphabet was, which is a poor way to treat a label they chose.
+//
+// Found by the pre-merge gate on #302.
+func capPasskeyName(name string) string {
+	if len(name) <= maxPasskeyNameBytes {
+		return name
+	}
+	cut := name[:maxPasskeyNameBytes]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
 // POST /api/v1/me/passkeys/register/start
 func (s *Server) handlePasskeyRegisterStart(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFactorOrFirstEnrolment(w, r) {
@@ -165,7 +193,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		handleError(w, err)
 		return
 	}
-	name := r.URL.Query().Get("name")
+	name := capPasskeyName(r.URL.Query().Get("name"))
 
 	cred, err := s.passkeys.FinishRegistration(r.Context(), acct, staged, r)
 	if err != nil {

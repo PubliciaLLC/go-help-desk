@@ -421,9 +421,15 @@ passing the gate rather than breaking it.
 
 The consequence is a genuine lockout, and it should be stated rather than
 discovered: **an administrator whose registered key is lost cannot recover
-alone.** Another administrator removes the credential from their admin page.
-For a *sole* administrator there is no other administrator, and setup does not
-reopen.
+alone.** The recovery is `reset-factors` on the server, described below — not
+an administrator clearing the credential for them, which is not built. For a
+*sole* administrator there would be no other administrator to ask in any case,
+and setup does not reopen.
+
+(This paragraph said "another administrator removes the credential from their
+admin page" until the correction in the "Losing a key" section above. Two
+paragraphs of the same section then disagreed, which is worse than either
+being wrong alone. Found by the pre-merge gate on #302.)
 
 This is not new with passkeys. `GenerateMFASecret` has refused re-enrolment
 for a TOTP-protected account since the re-enrolment fix, so a sole
@@ -470,10 +476,17 @@ is what makes it the right channel: it does not widen the web-facing surface
 at all, which a recovery code — another secret at rest, worth stealing, and
 the exact property passkeys exist to remove — would.
 
-**The guard's fourth case ships with that command and not before.** "Refuse to
-remove the last way in" is only half an answer without "and here is how you
-recover when it happens anyway"; building either alone leaves an operator
-holding the wrong half.
+**This command is a precondition for the guard's fourth case, not its
+trigger.** "Refuse to remove the last way in" is only half an answer without
+"and here is how you recover when it happens anyway"; building either alone
+leaves an operator holding the wrong half. So the command comes first, and the
+fourth case still arrives with passwordless, for the reason given further up:
+until the password stops being a way in, removing a second factor strands
+nobody, and there is no operation for the fourth case to refuse.
+
+(An earlier draft of this line said the fourth case "ships with that command
+and not before", which read as though it ships now and contradicted the
+paragraph above. Found by the pre-merge gate on #302.)
 
 **That test is a precondition on passwordless sign-in, not a formality.** When
 the password stops being a way in, self-recovery stops working, and removing an

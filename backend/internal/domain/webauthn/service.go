@@ -186,10 +186,27 @@ func (s *Service) FinishLogin(ctx context.Context, a Account, staged Staged, r *
 			continue
 		}
 		used.ID = known.ID
-		if known.SignCount > 0 && used.SignCount < known.SignCount {
-			s.log.WarnContext(ctx, "passkey signature counter went backwards; possible cloned authenticator",
-				"user_id", a.ID, "credential", known.ID,
-				"stored", known.SignCount, "asserted", used.SignCount)
+		// The library's own verdict, not a comparison of our own.
+		//
+		// An earlier version of this compared used.SignCount against the
+		// stored one and could never fire: UpdateCounter does not write a
+		// lower value. When the asserted counter fails to advance it sets
+		// CloneWarning and returns, leaving SignCount untouched — so by the
+		// time we see the credential, the two numbers are equal and the
+		// comparison is dead code that reads like a working check.
+		//
+		//	if authDataCount <= a.SignCount && (authDataCount != 0 || a.SignCount != 0) {
+		//		a.CloneWarning = true
+		//		return
+		//	}
+		//	a.SignCount = authDataCount
+		//
+		// Still only logged, never enforced: most authenticators report zero
+		// forever, so refusing on this refuses honest sign-ins. Found by the
+		// pre-merge gate on #302.
+		if c.Authenticator.CloneWarning {
+			s.log.WarnContext(ctx, "passkey signature counter did not advance; possible cloned authenticator",
+				"user_id", a.ID, "credential", known.ID, "stored", known.SignCount)
 		}
 		break
 	}
