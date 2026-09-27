@@ -115,3 +115,69 @@ func TestDeletePasskey_IsScopedToItsOwner(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"a real credential and an invented id answered differently, which confirms the real one exists")
 }
+
+// A password alone cannot add or remove a second factor on an account that
+// already has one.
+//
+// These routes sit outside RequireMFA so somebody with NO factor can recover,
+// which means a session holding only the password reaches them. Without a
+// guard that is not a weakened control, it is a bypass of the control: an
+// attacker who knows the password registers their own key and now holds a
+// second factor. GenerateMFASecret has refused exactly this for TOTP since
+// the re-enrolment fix; the passkey routes copied its placement and not its
+// guard, and an automated review caught it.
+func TestPasskeys_APasswordAloneCannotChangeAProtectedAccountsFactors(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// An account protected by a passkey, and an attacker holding only the
+	// password for it.
+	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "victims-key")))
+	stored, err := h.passkeyStore.GetByCredentialID(ctx, []byte("victims-key"))
+	require.NoError(t, err)
+
+	setup := loggedInAdmin(t, h)
+	setRes, setBody := setup.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
+		"mfa_enabled": true, "mfa_enforced_roles": []string{"user"},
+	})
+	require.Equal(t, http.StatusNoContent, setRes.StatusCode, "could not enforce MFA: %s", setBody)
+
+	s := &session{h: h}
+	res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "user@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+
+	t.Run("cannot register a second factor of their own", func(t *testing.T) {
+		res, body := s.send(t, http.MethodPost, "/api/v1/me/passkeys/register/start", nil)
+		require.Equal(t, http.StatusForbidden, res.StatusCode,
+			"a password alone registered a passkey on a protected account, which IS the second factor: %s", body)
+	})
+
+	t.Run("cannot strip the existing one", func(t *testing.T) {
+		res, body := s.send(t, http.MethodDelete, "/api/v1/me/passkeys/"+stored.ID.String(), nil)
+		require.Equal(t, http.StatusForbidden, res.StatusCode,
+			"a password alone removed the account's second factor: %s", body)
+
+		_, err := h.passkeyStore.GetByCredentialID(ctx, []byte("victims-key"))
+		require.NoError(t, err, "the credential was deleted despite the refusal")
+	})
+
+	// And the recovery path is untouched: an account with NO factor at all
+	// still reaches registration, which is why these routes are outside
+	// RequireMFA in the first place. The two pull in opposite directions and
+	// both have to hold.
+	t.Run("but an account with no factor at all still recovers", func(t *testing.T) {
+		require.NoError(t, h.passkeyStore.Delete(ctx, stored.ID, h.userID))
+		require.NoError(t, h.userSvc.ResetMFA(ctx, h.userID))
+
+		fresh := &session{h: h}
+		res, body := fresh.send(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "user@test.local", "password": "password"})
+		require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+
+		res, body = fresh.send(t, http.MethodPost, "/api/v1/me/passkeys/register/start", nil)
+		require.Equal(t, http.StatusOK, res.StatusCode,
+			"an account with nothing enrolled could not reach registration, so it cannot recover: %s", body)
+	})
+}

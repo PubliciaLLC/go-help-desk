@@ -70,8 +70,67 @@ func (s *Server) takePasskeyChallenge(w http.ResponseWriter, r *http.Request) (w
 	return staged, sd, err
 }
 
+// alreadyProtected reports whether this account already has a working second
+// factor — a TOTP enrolment or at least one passkey.
+//
+// It is the question handleMFAEnrollStart asks before letting somebody enrol,
+// and the reason is the same: these routes sit outside RequireMFA so that a
+// person with NO factor can recover, and that placement means a session
+// holding only the password reaches them. Without this check, an attacker who
+// knows the password registers their own key on a protected account and now
+// holds a second factor. That is not "removing a control", it is passing it.
+//
+// GenerateMFASecret has enforced this for TOTP since the re-enrolment fix.
+// Copying the route placement without copying the guard turned a deliberate
+// design into a bypass, which is what an automated review caught here.
+func (s *Server) alreadyProtected(r *http.Request, id uuid.UUID) (bool, error) {
+	u, err := s.users.GetByID(r.Context(), id)
+	if err != nil {
+		return false, err
+	}
+	if u.MFAEnabled {
+		return true, nil
+	}
+	n, err := s.passkeyStore.CountForUser(r.Context(), id)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// requireFactorOrFirstEnrolment refuses a request that would add or remove a
+// way of authenticating, when the caller has only proved the first factor and
+// the account already has a second.
+//
+// Reports whether the caller may go on.
+func (s *Server) requireFactorOrFirstEnrolment(w http.ResponseWriter, r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a == nil || a.UserID == uuid.Nil {
+		Error(w, http.StatusUnauthorized, "unauthorized", "sign in first")
+		return false
+	}
+	if a.MFAPassed {
+		return true
+	}
+	protected, err := s.alreadyProtected(r, a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return false
+	}
+	if protected {
+		Error(w, http.StatusForbidden, "mfa_required",
+			"this account already has a second factor. Verify with it before adding or removing one, "+
+				"or ask an administrator to reset it.")
+		return false
+	}
+	return true
+}
+
 // POST /api/v1/me/passkeys/register/start
 func (s *Server) handlePasskeyRegisterStart(w http.ResponseWriter, r *http.Request) {
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	a := authmw.GetActor(r)
 	acct, err := s.accountFor(r, a.UserID)
 	if err != nil {
@@ -92,6 +151,9 @@ func (s *Server) handlePasskeyRegisterStart(w http.ResponseWriter, r *http.Reque
 
 // POST /api/v1/me/passkeys/register/finish
 func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	a := authmw.GetActor(r)
 	staged, _, err := s.takePasskeyChallenge(w, r)
 	if err != nil {
@@ -136,6 +198,12 @@ func (s *Server) handleListPasskeys(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/me/passkeys/{id}
 func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
+	// Removing a factor is the same class of act as adding one. A session
+	// holding only the password must not be able to strip the second factor
+	// off an account and leave it protected by the password alone.
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	a := authmw.GetActor(r)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
