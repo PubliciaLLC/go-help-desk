@@ -111,3 +111,30 @@ func samlFieldsLookConfigured(enabled bool, metadataURL, certPEM, keyPEM string)
 func oidcFieldsLookConfigured(cfg auth.OIDCConfig) bool {
 	return cfg.Enabled && cfg.IssuerURL != "" && cfg.ClientID != "" && cfg.ClientSecret != ""
 }
+
+// oidcConfigComplete is oidcFieldsLookConfigured without the Enabled check —
+// used to validate an enabled config's own fields, as distinct from asking
+// whether the whole thing currently looks live.
+func oidcConfigComplete(cfg auth.OIDCConfig) bool {
+	return cfg.IssuerURL != "" && cfg.ClientID != "" && cfg.ClientSecret != ""
+}
+
+// errIncompleteOIDCConfig refuses persisting cfg.Enabled=true alongside a
+// blank issuer URL, client ID or client secret — flagged by review on #304:
+// buildOIDCProvider's own fail-safe for exactly this shape (enabled but
+// incomplete) reports reachability as "whatever the CURRENTLY LIVE provider
+// already says", mirroring InitOIDC's long-standing behavior of leaving a
+// working provider running over a bad edit. That is the right call for the
+// live process, which still has the old provider to fall back on — but the
+// row being persisted has no such fallback: at the next restart there is no
+// existing provider for InitOIDC to keep, so it comes up with no OIDC at
+// all. A save that only looked safe because the OLD, unrelated config was
+// still live at the moment of saving is exactly the gap #300 exists to
+// close, so this is refused outright rather than merely reachability-checked
+// — a config buildOIDCProvider itself will not load is not one worth
+// persisting. Checked before #300's own stranding guard runs, in both
+// handleSaveOIDCConfig and ssoSettingsWarning (the generic settings PATCH
+// reaches oidc_enabled and the other OIDC keys independently of each other,
+// so it needs the identical check).
+var errIncompleteOIDCConfig = fmt.Errorf(
+	"%w: enable OIDC only with an issuer URL, a client id and a client secret", user.ErrValidation)

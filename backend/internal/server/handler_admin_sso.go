@@ -74,6 +74,14 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		RedirectURL:  redirectURL,
 	}
 
+	// Refused outright rather than reachability-checked: see
+	// errIncompleteOIDCConfig's own comment for why "enabled but incomplete"
+	// cannot be allowed through to the guard below at all.
+	if cfg.Enabled && !oidcConfigComplete(cfg) {
+		handleError(w, errIncompleteOIDCConfig)
+		return
+	}
+
 	// Built against the CANDIDATE config, before anything is persisted — this
 	// is what #300's guard decides on, so it reflects whether OIDC will
 	// really answer rather than "the fields all look filled in". reachable is

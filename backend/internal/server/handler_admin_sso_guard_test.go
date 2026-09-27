@@ -122,6 +122,61 @@ func TestSaveOIDCConfig_NoWarningWhenNobodyIsStranded(t *testing.T) {
 	require.NotContains(t, string(body), "warning")
 }
 
+// TestSaveOIDCConfig_RefusesEnabledButIncompleteConfig pins a review finding
+// on PR #304 (github.com/PubliciaLLC/go-help-desk/pull/304): buildOIDCProvider's
+// own fail-safe for an enabled-but-incomplete config reports reachability as
+// whatever the CURRENTLY LIVE provider already says — correct for the
+// running process (InitOIDC leaves a working provider alone over a bad
+// edit), but wrong for the ROW being persisted. At the next restart there is
+// no live provider left to fall back on, so InitOIDC comes up with no OIDC
+// at all — a save that only looked safe because the OLD, still-live config
+// masked the danger. Measured before this fix: a sole passwordless
+// OIDC-only administrator could blank the issuer URL while OIDC was still
+// live and get a save that looked fine (the guard saw oidcReachableNow(),
+// which was still true), only to discover at the next restart that nothing
+// loads. Must now be refused outright.
+func TestSaveOIDCConfig_RefusesEnabledButIncompleteConfig(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	cookies := createOIDCAdmin(t, oh, "sole-oidc-admin-incomplete@test.local", "sole-oidc-admin-incomplete-sub")
+	require.NoError(t, oh.userSvc.SetRole(ctx, oh.adminID, user.RoleStaff))
+
+	sess := &session{h: oh.harness, jar: cookies}
+	res, body := sess.send(t, http.MethodPut, "/api/v1/admin/oidc", map[string]any{
+		"enabled":       true,
+		"issuer_url":    "",
+		"client_id":     "",
+		"client_secret": "",
+	})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	cfg := oh.adminSvc.GetOIDCConfig(ctx)
+	require.Equal(t, oh.idp.issuer(), cfg.IssuerURL,
+		"the refused write must not have clobbered the working configuration")
+}
+
+// TestUpdateSettings_RefusesEnabledButIncompleteOIDCConfig is
+// TestSaveOIDCConfig_RefusesEnabledButIncompleteConfig's counterpart through
+// the generic settings route, which can set oidc_enabled independently of
+// the other three OIDC keys in a way the dedicated endpoint's own body
+// cannot.
+func TestUpdateSettings_RefusesEnabledButIncompleteOIDCConfig(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	sess := signInAsAdmin(t, h)
+
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"oidc_enabled": true})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	cfg := h.adminSvc.GetOIDCConfig(ctx)
+	require.False(t, cfg.Enabled, "the refused write must not have been persisted")
+}
+
 // samlIDPMetadataXML is TestShib's real IdP metadata fixture, vendored
 // (unmodified) from github.com/crewjam/saml's own test suite
 // (samlsp/testdata/idp_metadata.xml) — genuine, parseable SAML 2.0 IdP

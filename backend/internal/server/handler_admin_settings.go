@@ -383,6 +383,15 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 		_ = json.Unmarshal(raw, &cfg.ClientSecret)
 	}
 
+	// Same refusal as handleSaveOIDCConfig, and for the same reason: this
+	// route can set oidc_enabled independently of the other three OIDC keys
+	// (a request touching only oidc_enabled still reaches here), so it needs
+	// the identical guard against persisting "enabled but incomplete" — see
+	// errIncompleteOIDCConfig's own comment.
+	if cfg.Enabled && !oidcConfigComplete(cfg) {
+		return "", errIncompleteOIDCConfig
+	}
+
 	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(samlEnabled, metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
 }
 

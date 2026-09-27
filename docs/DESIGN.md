@@ -336,6 +336,20 @@ difference is deliberate rather than an inconsistency to fix:
   none at all: it could set `oidc_enabled: false` or blank any SAML field
   with no refusal and no warning, regardless of who it stranded.
 
+An enabled-but-incomplete OIDC configuration (a blank issuer URL, client ID
+or client secret) is refused outright (400) rather than reachability-checked,
+through either write path. `buildOIDCProvider`'s own fail-safe for that shape
+reports reachability as whatever the currently-live provider already says —
+correct for the running process, which still has the old provider to fall
+back on, but wrong for the row being persisted: at the next restart there is
+no live provider left, so `InitOIDC` comes up with no OIDC at all. A save
+that only looked safe because an old, unrelated config was still live at the
+moment of saving is exactly the gap this guard exists to close, so it isn't
+allowed to reach the guard in the first place. SAML has no equivalent case —
+`buildSAMLMiddleware` treats any blank field, or `enabled = false`, as
+unreachable unconditionally, with no fail-safe carve-out, so its guard
+decision and its restart-time behavior always agree.
+
 Extending `reset-factors` to also set a password, so a locked-out federated
 administrator has a complete way back rather than merely a warning that
 would have stopped them getting here, is tracked separately (#300's option
