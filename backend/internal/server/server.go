@@ -35,6 +35,7 @@ import (
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
+	"golang.org/x/sync/singleflight"
 )
 
 // Server holds its domain services as concrete types, not interfaces, and does
@@ -224,6 +225,7 @@ type Server struct {
 	// per call like the provider beside it.
 	repStore  reputation.Store
 	repBudget *reputation.Budget
+	repGroup  *singleflight.Group
 	repOpts   []reputation.Option
 }
 
@@ -302,6 +304,10 @@ func New(
 		// Budget built per request is a fresh allowance per request, which is
 		// no cap at all.
 		repBudget: reputation.NewBudget(),
+		// Same reasoning, for the same reason, one process-lifetime group: a
+		// singleflight.Group built per request could never see two different
+		// requests as the same call, which is the entire case it exists for.
+		repGroup: new(singleflight.Group),
 	}
 	for _, opt := range opts {
 		opt(s)
