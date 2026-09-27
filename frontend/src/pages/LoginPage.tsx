@@ -9,8 +9,9 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
+import { signInWithPasskey, wasCancelled } from '@/api/passkeys'
 
-type Step = 'credentials' | 'verify' | 'enroll'
+type Step = 'credentials' | 'verify' | 'enroll' | 'passkey'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -68,11 +69,16 @@ export function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const { user, mfa_needed, mfa_enrollment_needed } = await login(email, password)
+      const { user, mfa_needed, passkey_needed, mfa_enrollment_needed } = await login(email, password)
       if (mfa_enrollment_needed) {
         setStep('enroll')
       } else if (mfa_needed) {
         setStep('verify')
+      } else if (passkey_needed) {
+        // An account holding passkeys and no authenticator app. The password
+        // has been accepted and the session already names the account; this
+        // step only has to prove the key.
+        setStep('passkey')
       } else {
         setUser(user)
         navigate({ to: '/dashboard' })
@@ -93,6 +99,21 @@ export function LoginPage() {
       await completeLogin()
     } catch (err) {
       setError(extractError(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handlePasskey() {
+    setError('')
+    setLoading(true)
+    try {
+      await signInWithPasskey()
+      await completeLogin()
+    } catch (err) {
+      // Dismissing the browser prompt is a choice, not a failure, and the
+      // person is still on this screen with the button in front of them.
+      if (!wasCancelled(err)) setError(extractError(err))
     } finally {
       setLoading(false)
     }
@@ -128,6 +149,7 @@ export function LoginPage() {
   const title =
     step === 'verify' ? 'Two-factor authentication'
     : step === 'enroll' ? 'Set up two-factor authentication'
+    : step === 'passkey' ? 'Confirm it is you'
     : `Sign in to ${siteName}`
 
   return (
@@ -221,6 +243,18 @@ export function LoginPage() {
                 {loading ? 'Verifying…' : 'Verify'}
               </Button>
             </form>
+          )}
+
+          {step === 'passkey' && (
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600">
+                Use your fingerprint, face, screen lock or security key to finish signing in.
+              </p>
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              <Button type="button" className="w-full" disabled={loading} onClick={handlePasskey}>
+                {loading ? 'Waiting for your key…' : 'Continue with a passkey'}
+              </Button>
+            </div>
           )}
 
           {step === 'enroll' && (

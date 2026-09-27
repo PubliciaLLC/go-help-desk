@@ -103,8 +103,15 @@ describe('attachments are never rendered inline', () => {
   // mobile top bar, drawer) — but it is one <img>, in one file, used three
   // times, not three renderers to keep in sync. Layout.tsx itself renders no
   // <img> of its own any more, which is the reason it is off this list.
+  //
+  // AccountPage.tsx is the same enrolment QR as LoginPage's, now that setting
+  // up an authenticator app is something you can choose to do rather than
+  // only something you are forced through at sign-in. Same source, same
+  // reason: the server generates the data: URL from the secret it just
+  // minted, and no part of it comes from an upload or from another user.
   const allowedRenderers: Record<string, number> = {
     'src/components/BrandLogo.tsx': 1,
+    'src/pages/AccountPage.tsx': 1,
     'src/pages/LoginPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
   }

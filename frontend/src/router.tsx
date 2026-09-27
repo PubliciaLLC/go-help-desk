@@ -4,6 +4,7 @@ import { getSetupStatus } from '@/api/setup'
 import { useAuthStore } from '@/store/auth'
 import { LoginPage } from '@/pages/LoginPage'
 import { SetupPage } from '@/pages/SetupPage'
+import { AccountPage } from '@/pages/AccountPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
@@ -91,6 +92,13 @@ const newTicketRoute = createRoute({
   path: '/tickets/new',
   beforeLoad: requireAuth,
   component: NewTicketPage,
+})
+
+const accountRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/account',
+  beforeLoad: requireAuth,
+  component: AccountPage,
 })
 
 const ticketDetailRoute = createRoute({
@@ -243,6 +251,7 @@ export const router = createRouter({
     ticketsRoute,
     newTicketRoute,
     ticketDetailRoute,
+  accountRoute,
     adminUsersRoute,
     adminUserDetailRoute,
     adminGroupsRoute,
