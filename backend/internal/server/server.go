@@ -644,11 +644,20 @@ func (s *Server) InitSAML(ctx context.Context) {
 
 // buildSAMLMiddleware is buildOIDCProvider's SAML counterpart: constructs a
 // middleware from CANDIDATE settings without touching the live s.samlHandler.
-// enabled gates it first, exactly like OIDC's cfg.Enabled — added by #300,
-// see admin.Service.SetSAMLEnabled's own comment for why this key existed
-// and did nothing before. Below that, an incomplete config (any of the three
-// fields blank) has never had a fail-safe here — reloadSAML always cleared
-// the handler outright for it.
+// An incomplete config (any of the three fields blank) has never had a
+// fail-safe here — reloadSAML always cleared the handler outright for it,
+// and that is unchanged.
+//
+// Deliberately takes no enabled flag. #304's first draft gave SAML one,
+// reusing the existing saml_enabled setting — which turned out to already
+// have a real, unrelated meaning (user.IsLocalAuthAllowed reads it to decide
+// whether non-admins may still use a password once SAML is configured), so
+// wiring it into whether the middleware loads at all would have made
+// flipping that switch — which many operators use purely to require SSO for
+// staff while keeping SAML itself already running — also silently take SAML
+// down until they flipped it back. Reverted before merge; see #304's PR
+// thread. Field-completeness alone is what reloadSAML has always gated on,
+// and it is enough: an incomplete config cannot be built regardless.
 //
 // commit=false on a construction/metadata-fetch failure is the same
 // fail-safe InitSAML/reloadSAML have always had: the LIVE process keeps
@@ -658,8 +667,8 @@ func (s *Server) InitSAML(ctx context.Context) {
 // functions): the row being persisted has no live process to fall back on,
 // so reachable is false whenever cfg itself fails to build, regardless of
 // what a DIFFERENT, currently-live config says.
-func (s *Server) buildSAMLMiddleware(ctx context.Context, enabled bool, metadataURL, certPEM, keyPEM string) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
-	if !enabled || metadataURL == "" || certPEM == "" || keyPEM == "" {
+func (s *Server) buildSAMLMiddleware(ctx context.Context, metadataURL, certPEM, keyPEM string) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
+	if metadataURL == "" || certPEM == "" || keyPEM == "" {
 		return false, nil, true, nil
 	}
 	mw, buildErr := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
@@ -686,9 +695,8 @@ func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware) {
 // the crewjam/saml middleware, and stores it for use by the request handlers.
 // Callers must hold no lock; this method acquires the write lock internally.
 func (s *Server) reloadSAML(ctx context.Context) error {
-	enabled := s.adminSvc.SAMLEnabled(ctx)
 	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
-	_, mw, commit, err := s.buildSAMLMiddleware(ctx, enabled, metadataURL, certPEM, keyPEM)
+	_, mw, commit, err := s.buildSAMLMiddleware(ctx, metadataURL, certPEM, keyPEM)
 	if !commit {
 		return err
 	}

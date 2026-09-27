@@ -144,7 +144,6 @@ func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
 	configured := s.adminSvc.SAMLConfigured(r.Context())
 	JSON(w, http.StatusOK, map[string]any{
-		"enabled":         s.adminSvc.SAMLEnabled(r.Context()),
 		"configured":      configured,
 		"metadata_url":    metadataURL,
 		"cert_pem":        certPEM,
@@ -205,16 +204,10 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// enabled is not part of this endpoint's own body — it is set from the
-	// settings page's separate "Enable SAML login" toggle, which writes it
-	// through PATCH /admin/settings (see handleUpdateSettings) — so the
-	// current stored value is what applies here.
-	enabled := s.adminSvc.SAMLEnabled(ctx)
-
 	// Built against the CANDIDATE fields, before anything is persisted — same
 	// reasoning as handleSaveOIDCConfig: the guard needs to know whether SAML
 	// will really answer, not just whether the fields are non-empty.
-	reachable, mw, commit, buildErr := s.buildSAMLMiddleware(ctx, enabled, metadataURL, certPEM, keyPEM)
+	reachable, mw, commit, buildErr := s.buildSAMLMiddleware(ctx, metadataURL, certPEM, keyPEM)
 
 	warning, err := s.refuseIfOrphaning(ctx, reachable, s.oidcReachableNow())
 	if err != nil {

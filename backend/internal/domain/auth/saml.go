@@ -53,7 +53,22 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	// ACS and metadata URLs match our registered routes:
 	//   {baseURL}/api/v1/auth/saml/acs
 	//   {baseURL}/api/v1/auth/saml/metadata
-	spURL, err := url.Parse(cfg.BaseURL + "/api/v1/auth")
+	//
+	// The trailing slash is load-bearing, not cosmetic: samlsp.DefaultServiceProvider
+	// builds those two URLs via url.ResolveReference(&url.URL{Path: "saml/metadata"})
+	// (and "saml/acs"), which is RFC 3986 §5.3 relative resolution — it replaces
+	// everything after the LAST slash in the base path, not everything after the
+	// base path itself. Without the trailing slash, "auth" is what gets replaced,
+	// producing {baseURL}/api/v1/saml/metadata: one path segment short of the
+	// route this server actually registers. samlsp.Middleware.ServeHTTP compares
+	// r.URL.Path against that computed value with ==, so every real request to
+	// the registered route missed it and fell through to a 404 — SAML could
+	// never complete a login or serve its own metadata to an IdP, regardless of
+	// how correctly everything else here is configured. Caught by a test for an
+	// unrelated #304 regression (there was previously no test exercising the SAML
+	// metadata route through the live server at all) rather than anything about
+	// this function's own logic, which is why it went unnoticed until now.
+	spURL, err := url.Parse(cfg.BaseURL + "/api/v1/auth/")
 	if err != nil {
 		return nil, fmt.Errorf("parsing SP base URL: %w", err)
 	}

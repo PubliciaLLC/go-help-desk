@@ -201,7 +201,6 @@ export async function deleteStatus(id: string): Promise<void> {
 // ── SAML ─────────────────────────────────────────────────────────────────────
 
 export interface SAMLConfig {
-  enabled: boolean
   configured: boolean
   metadata_url: string
   cert_pem: string

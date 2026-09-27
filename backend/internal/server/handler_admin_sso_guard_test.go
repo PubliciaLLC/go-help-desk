@@ -239,12 +239,8 @@ func TestSaveSAMLConfig_WarnsEvenWhenOldMiddlewareIsStillLive(t *testing.T) {
 
 	sess := signInAsAdmin(t, h)
 
-	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
-		map[string]any{"saml_enabled": true})
-	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
-
 	idp := newFakeSAMLIdP(t)
-	res, body = sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+	res, body := sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
 		"metadata_url": idp.URL,
 		"cert_pem":     validSAMLCert,
 		"key_pem":      validSAMLKey,
@@ -263,17 +259,17 @@ func TestSaveSAMLConfig_WarnsEvenWhenOldMiddlewareIsStillLive(t *testing.T) {
 		"a build failure must warn about who it strands even though the OLD middleware is still loaded")
 }
 
-// TestUpdateSettings_RefusesMalformedSAMLEnabledType pins a third review
+// TestUpdateSettings_RefusesMalformedSAMLMetadataURLType pins a third review
 // finding on PR #304: ssoSettingsWarning's merge of the PATCH body over the
 // stored value used to discard a json.Unmarshal error and keep reasoning
-// about the OLD value — so saml_enabled sent as the JSON STRING "false"
-// (rather than the boolean false) left the guard concluding nothing about
-// reachability had changed, while the SetRaw loop below persisted the
-// malformed value regardless, and the real reader (admin.Service.GetBool,
-// under SAMLEnabled) fails the identical unmarshal and silently returns
-// false — flipping SAML to disabled from that write onward with no warning
-// ever shown, for the one administrator who depends on it.
-func TestUpdateSettings_RefusesMalformedSAMLEnabledType(t *testing.T) {
+// about the OLD value — so saml_metadata_url sent as a JSON NUMBER (rather
+// than a string) left the guard concluding nothing about reachability had
+// changed, while the SetRaw loop below persisted the malformed value
+// regardless, and the real reader (admin.Service.GetString, under
+// GetSAMLConfig) fails the identical unmarshal and silently returns "" —
+// flipping SAML unreachable from that write onward with no warning ever
+// shown, for the one administrator who depends on it.
+func TestUpdateSettings_RefusesMalformedSAMLMetadataURLType(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
@@ -285,16 +281,16 @@ func TestUpdateSettings_RefusesMalformedSAMLEnabledType(t *testing.T) {
 		SAMLSubject: "malformed-type-saml-admin-sub",
 	})
 	require.NoError(t, err)
-	require.NoError(t, h.adminSvc.SetSAMLEnabled(ctx, true))
 	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, "https://idp.test/metadata", validSAMLCert, validSAMLKey))
 
 	sess := signInAsAdmin(t, h)
 
 	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
-		map[string]any{"saml_enabled": "false"})
+		map[string]any{"saml_metadata_url": 12345})
 	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
 
-	require.True(t, h.adminSvc.SAMLEnabled(ctx), "the malformed write must not have been persisted")
+	metadataURL, _, _ := h.adminSvc.GetSAMLConfig(ctx)
+	require.Equal(t, "https://idp.test/metadata", metadataURL, "the malformed write must not have been persisted")
 }
 
 // TestUpdateSettings_RefusesMalformedOIDCEnabledType is the OIDC side of the
@@ -315,6 +311,62 @@ func TestUpdateSettings_RefusesMalformedOIDCEnabledType(t *testing.T) {
 
 	cfg := oh.adminSvc.GetOIDCConfig(ctx)
 	require.True(t, cfg.Enabled, "the malformed write must not have been persisted")
+}
+
+// TestUpdateSettings_RefusesNullOIDCEnabled pins a fourth review finding on
+// PR #304: encoding/json's Unmarshal treats the JSON literal null into a
+// non-pointer destination (a bool, a string) as a silent no-op — no error —
+// so the type-mismatch check alone (which catches "false" the JSON string)
+// did NOT catch null: {"oidc_enabled": null} left ssoSettingsWarning's merged
+// value exactly as it was, concluding nothing changed and returning no
+// warning, while the unconditional SetRaw loop persisted the literal null
+// regardless — and admin.Service.GetBool fails that same unmarshal and
+// silently returns false, disabling OIDC from that write onward. Measured
+// against the pre-fix code as the exact scenario #300 exists to prevent: a
+// sole, OIDC-only administrator, reachable by the single request below.
+func TestUpdateSettings_RefusesNullOIDCEnabled(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	cookies := createOIDCAdmin(t, oh, "sole-oidc-admin-null@test.local", "sole-oidc-admin-null-sub")
+	require.NoError(t, oh.userSvc.SetRole(ctx, oh.adminID, user.RoleStaff))
+
+	sess := &session{h: oh.harness, jar: cookies}
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"oidc_enabled": nil})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	cfg := oh.adminSvc.GetOIDCConfig(ctx)
+	require.True(t, cfg.Enabled, "the null write must not have been persisted")
+}
+
+// TestUpdateSettings_RefusesNullSAMLField is the SAML side of the same
+// finding: {"saml_metadata_url": null} must be refused rather than silently
+// clearing the field while the guard reasons about the old, still-populated
+// value.
+func TestUpdateSettings_RefusesNullSAMLField(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "null-field-saml-admin@test.local",
+		DisplayName: "SAML Admin",
+		Role:        user.RoleAdmin,
+		SAMLSubject: "null-field-saml-admin-sub",
+	})
+	require.NoError(t, err)
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, "https://idp.test/metadata", validSAMLCert, validSAMLKey))
+
+	sess := signInAsAdmin(t, h)
+
+	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{"saml_metadata_url": nil})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+
+	metadataURL, _, _ := h.adminSvc.GetSAMLConfig(ctx)
+	require.Equal(t, "https://idp.test/metadata", metadataURL, "the null write must not have been persisted")
 }
 
 // samlIDPMetadataXML is TestShib's real IdP metadata fixture, vendored
@@ -416,6 +468,36 @@ func newFakeSAMLIdP(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// TestSaveSAMLConfig_GoesLiveImmediatelyWithNoSeparateEnableStep pins the
+// regression review found in #304's SAML-enabled-gate draft (reverted before
+// merge — see buildSAMLMiddleware's own comment): making saml_enabled a real
+// gate meant PUT /admin/saml built and committed the middleware only when
+// that flag was already true, and the generic settings PATCH never
+// live-reloads SAML at all — so the natural operator sequence the settings
+// page's own layout invites (fill in the SAML fields and save, THEN flip the
+// separate "Enable SAML login" toggle) left GET /auth/saml/metadata
+// answering 503 saml_not_configured until the next restart, where the base
+// branch brought SAML up immediately on the PUT. With no enabled gate at
+// all, a single PUT with complete, working fields is sufficient.
+func TestSaveSAMLConfig_GoesLiveImmediatelyWithNoSeparateEnableStep(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	sess := signInAsAdmin(t, h)
+
+	idp := newFakeSAMLIdP(t)
+	res, body := sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": idp.URL,
+		"cert_pem":     validSAMLCert,
+		"key_pem":      validSAMLKey,
+	})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+
+	resp := h.rawGet(t, "/api/v1/auth/saml/metadata", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"SAML must be live immediately after a single successful PUT, with no restart and no separate enable step")
+}
+
 // validSAMLCert and validSAMLKey are a throwaway self-signed pair — SAML's
 // config-save handler validates the cert/key pair with tls.X509KeyPair before
 // this guard even runs, so a SAML test needs a pair that actually parses and
@@ -466,20 +548,6 @@ func TestSaveSAMLConfig_WarnsWithoutRefusingWhenOnlySomeAdminsAreStranded(t *tes
 		map[string]any{"email": "admin@test.local", "password": "password"})
 	require.Equal(t, http.StatusOK, res.StatusCode, "admin login; body: %s", body)
 
-	// SAML has its own enabled gate, mirroring OIDC's: flip it on first, the
-	// same way the settings page's "Enable SAML login" toggle would, so the
-	// seeding save below is a genuine "turn it on" rather than a write that
-	// buildSAMLMiddleware would refuse to even attempt. This PATCH itself
-	// warns about saml-admin too — flipping the flag alone, with no
-	// metadata/cert/key seeded yet, still leaves them exactly as unable to
-	// sign in as they were before this test started (ssoSettingsWarning
-	// reports current-state stranding on any touching write, not a delta) —
-	// so 200 with the same warning is correct here, not 204.
-	res, body = sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
-		map[string]any{"saml_enabled": true})
-	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
-	require.Contains(t, string(body), "saml-admin@test.local")
-
 	idp := newFakeSAMLIdP(t)
 
 	// Establish a genuinely working SAML setup — metadata_url points at a
@@ -517,9 +585,9 @@ func TestSaveSAMLConfig_WarnsWithoutRefusingWhenOnlySomeAdminsAreStranded(t *tes
 // dedicated endpoints used before that review (samlFieldsLookConfigured is
 // what remains of it, now used only by the generic settings PATCH — see its
 // own comment) would have called this configuration "reachable" purely
-// because saml_enabled is true and metadata_url/cert_pem/key_pem are all
-// non-empty — even though nothing answers at this metadata_url in this
-// sandbox, so buildSAMLMiddleware's real construction attempt fails and no
+// because metadata_url/cert_pem/key_pem are all non-empty — even though
+// nothing answers at this metadata_url in this sandbox, so
+// buildSAMLMiddleware's real construction attempt fails and no
 // SAML middleware is ever actually reachable. The stranded administrator
 // must still be reported, not silently waved through because the request
 // merely looked complete.
@@ -540,13 +608,6 @@ func TestSaveSAMLConfig_WarnsEvenWhenFieldsLookComplete(t *testing.T) {
 	res, body := sess.send(t, http.MethodPost, "/api/v1/auth/local/login",
 		map[string]any{"email": "admin@test.local", "password": "password"})
 	require.Equal(t, http.StatusOK, res.StatusCode, "admin login; body: %s", body)
-
-	// Same as the test above: flipping the flag alone, before any metadata is
-	// seeded, already warns about this admin — expected, not a delta check.
-	res, body = sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
-		map[string]any{"saml_enabled": true})
-	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
-	require.Contains(t, string(body), "field-complete-saml-admin@test.local")
 
 	res, body = sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
 		"metadata_url": "https://idp.test/metadata",
@@ -668,7 +729,6 @@ func TestUpdateSettings_SAMLFieldBlankWarnsWithoutRefusing(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, h.adminSvc.SetSAMLEnabled(ctx, true))
 	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, "https://idp.test/metadata", validSAMLCert, validSAMLKey))
 
 	sess := &session{h: h}

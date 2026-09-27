@@ -104,8 +104,13 @@ func (s *Server) oidcReachableNow() bool {
 // improvement over no check at all for the settings-PATCH bypass #300's
 // review found (that path could set oidc_enabled=false, or blank any SAML
 // field, with zero refusal).
-func samlFieldsLookConfigured(enabled bool, metadataURL, certPEM, keyPEM string) bool {
-	return enabled && metadataURL != "" && certPEM != "" && keyPEM != ""
+//
+// samlFieldsLookConfigured takes no enabled flag, unlike its OIDC
+// counterpart — SAML reachability has never depended on one; see
+// buildSAMLMiddleware's own comment on why #304's attempt to give it one was
+// reverted before merge.
+func samlFieldsLookConfigured(metadataURL, certPEM, keyPEM string) bool {
+	return metadataURL != "" && certPEM != "" && keyPEM != ""
 }
 
 func oidcFieldsLookConfigured(cfg auth.OIDCConfig) bool {

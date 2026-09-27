@@ -262,6 +262,15 @@ separate value for each direction:
 - Google Workspace
 - (Standard SAML 2.0 — additional IdPs should work via metadata import)
 
+The SP root URL passed to the SAML library carries a trailing slash
+(`{baseURL}/api/v1/auth/`) rather than the bare prefix — see
+`auth.NewSAMLMiddleware`'s own comment. Without it, the library's relative
+URL resolution computes `saml/metadata` and `saml/acs` one path segment
+short of the routes this server actually registers, and every real request
+to them 404s: no login could complete and no IdP could fetch this
+instance's metadata, in any configuration. Found and fixed while testing
+#304; pinned by `TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`.
+
 ### Identity provider lockout guard (#300)
 
 A federated account (SAML or OIDC) can have no local password at all —
@@ -273,18 +282,21 @@ same class of mistake the last-administrator guard (see User Management,
 above) exists to prevent, reached through a door that guard does not watch,
 since it watches the administrator ROW, not their ability to authenticate.
 
-SAML has its own `enabled` flag now, mirroring OIDC's: `saml_enabled`
-existed as a setting since the first migration (the "Enable SAML login"
-toggle on the settings page has always written it) but nothing read it —
-`reloadSAML` gated purely on the three config fields being non-empty, so
-disabling the toggle without also blanking the fields did nothing. A
-migration (`000029_saml_enabled_backfill`) backfills `saml_enabled = true`
-for any instance where all three fields were already populated before this
-flag existed — the seeded default is `false` for every instance, which is
-indistinguishable from an operator's deliberate disable without it, and
-without the backfill this fix would have silently logged out every
-pre-existing SAML deployment that configured itself before the toggle had
-any effect.
+SAML reachability depends only on the three config fields being non-empty —
+`reloadSAML` and `buildSAMLMiddleware` have always gated on that alone, and
+still do. An early draft of this guard gave SAML an `enabled` flag mirroring
+OIDC's, reusing the existing `saml_enabled` setting (the settings page's
+"Enable SAML login" toggle has always written it). That setting is not
+dead: `user.IsLocalAuthAllowed` reads it to decide whether non-admins keep
+password login once SAML is configured — a stricter posture an operator
+opts into separately from whether SAML itself is running. Wiring it into
+whether the middleware loads at all would have conflated the two, and a
+migration backfilling it to `true` for every already-configured instance
+would have silently refused password login to every non-administrator on
+any instance that had been running SAML and local login side by side.
+Caught in review before merge and reverted; see PR #304's thread for the
+full trace. SAML has no `enabled` concept in this guard, and does not need
+one — see the incomplete-config paragraph below for why OIDC's is different.
 
 Saving the OIDC or SAML configuration checks what each provider's
 reachability will be immediately afterward and looks at every active
@@ -346,9 +358,9 @@ there is no live provider left, so `InitOIDC` comes up with no OIDC at all. A
 save that only looked safe because an old, unrelated config was still live at
 the moment of saving is exactly the gap this guard exists to close, so it
 isn't allowed to reach the guard in the first place. SAML has no equivalent
-case for an incomplete config specifically — `buildSAMLMiddleware` treats any
-blank field, or `enabled = false`, as unreachable unconditionally, with no
-fail-safe carve-out there.
+case for an incomplete config — `buildSAMLMiddleware` treats any blank field
+as unreachable unconditionally, with no fail-safe carve-out and no `enabled`
+flag to have one for in the first place.
 
 A second, closely related review round found the same confusion one branch
 over: a **complete** candidate configuration whose real construction attempt
@@ -368,16 +380,21 @@ and only one of them survives a restart.
 
 The generic settings PATCH has its own version of the same principle at the
 type level: `ssoSettingsWarning`'s merge of the request body over stored
-values refuses outright (400) on any JSON type mismatch (`saml_enabled` sent
+values refuses outright (400) on any JSON type mismatch (`oidc_enabled` sent
 as the string `"false"` rather than the boolean, say) rather than discarding
 the `json.Unmarshal` error and reasoning about the old value — because the
 `SetRaw` write immediately below persists the malformed value regardless, and
-every real reader (`GetBool`/`GetString`, under `SAMLEnabled`, `OIDCEnabled`,
-`GetSAMLConfig`, `GetOIDCConfig`) fails that same unmarshal and silently
-returns the Go zero value, flipping the actual setting to disabled/blank from
-that write onward. A guard reasoning about one value while the real system
-reads a different one from the identical bytes is worse than not reasoning
-at all, because it reports confidence it does not have.
+every real reader (`GetBool`/`GetString`, under `OIDCEnabled`, `GetSAMLConfig`,
+`GetOIDCConfig`) fails that same unmarshal and silently returns the Go zero
+value, flipping the actual setting to disabled/blank from that write onward.
+A guard reasoning about one value while the real system reads a different one
+from the identical bytes is worse than not reasoning at all, because it
+reports confidence it does not have. The JSON literal `null` is the same
+failure by a different mechanism, caught in a later review round:
+`encoding/json`'s `Unmarshal` treats `null` into a non-pointer destination as
+a silent no-op rather than an error, so a type-mismatch check alone still let
+`{"oidc_enabled": null}` through unchanged — `unmarshalSetting` refuses `null`
+explicitly, ahead of the type check, for every key this function reads.
 
 Extending `reset-factors` to also set a password, so a locked-out federated
 administrator has a complete way back rather than merely a warning that

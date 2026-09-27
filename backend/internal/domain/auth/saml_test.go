@@ -81,6 +81,80 @@ func TestNewSAMLMiddleware_HonoursContext(t *testing.T) {
 	}
 }
 
+// samlIDPMetadataXML is TestShib's real IdP metadata fixture, vendored
+// (unmodified) from github.com/crewjam/saml's own test suite
+// (samlsp/testdata/idp_metadata.xml) — genuine, parseable SAML 2.0 IdP
+// metadata, needed here to get past FetchMetadata and all the way to a real
+// *samlsp.Middleware whose computed routes this test can inspect.
+const samlIDPMetadataXML = `<?xml version="1.0" encoding="UTF-8"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.testshib.org/idp/shibboleth">
+	<IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+		<KeyDescriptor>
+			<ds:KeyInfo>
+				<ds:X509Data>
+					<ds:X509Certificate>MIIEDjCCAvagAwIBAgIBADANBgkqhkiG9w0BAQUFADBnMQswCQYDVQQGEwJVUzEV
+                            MBMGA1UECBMMUGVubnN5bHZhbmlhMRMwEQYDVQQHEwpQaXR0c2J1cmdoMREwDwYD
+                            VQQKEwhUZXN0U2hpYjEZMBcGA1UEAxMQaWRwLnRlc3RzaGliLm9yZzAeFw0wNjA4
+                            MzAyMTEyMjVaFw0xNjA4MjcyMTEyMjVaMGcxCzAJBgNVBAYTAlVTMRUwEwYDVQQI
+                            EwxQZW5uc3lsdmFuaWExEzARBgNVBAcTClBpdHRzYnVyZ2gxETAPBgNVBAoTCFRl
+                            c3RTaGliMRkwFwYDVQQDExBpZHAudGVzdHNoaWIub3JnMIIBIjANBgkqhkiG9w0B
+                            AQEFAAOCAQ8AMIIBCgKCAQEArYkCGuTmJp9eAOSGHwRJo1SNatB5ZOKqDM9ysg7C
+                            yVTDClcpu93gSP10nH4gkCZOlnESNgttg0r+MqL8tfJC6ybddEFB3YBo8PZajKSe
+                            3OQ01Ow3yT4I+Wdg1tsTpSge9gEz7SrC07EkYmHuPtd71CHiUaCWDv+xVfUQX0aT
+                            NPFmDixzUjoYzbGDrtAyCqA8f9CN2txIfJnpHE6q6CmKcoLADS4UrNPlhHSzd614
+                            kR/JYiks0K4kbRqCQF0Dv0P5Di+rEfefC6glV8ysC8dB5/9nb0yh/ojRuJGmgMWH
+                            gWk6h0ihjihqiu4jACovUZ7vVOCgSE5Ipn7OIwqd93zp2wIDAQABo4HEMIHBMB0G
+                            A1UdDgQWBBSsBQ869nh83KqZr5jArr4/7b+QazCBkQYDVR0jBIGJMIGGgBSsBQ86
+                            9nh83KqZr5jArr4/7b+Qa6FrpGkwZzELMAkGA1UEBhMCVVMxFTATBgNVBAgTDFBl
+                            bm5zeWx2YW5pYTETMBEGA1UEBxMKUGl0dHNidXJnaDERMA8GA1UEChMIVGVzdFNo
+                            aWIxGTAXBgNVBAMTEGlkcC50ZXN0c2hpYi5vcmeCAQAwDAYDVR0TBAUwAwEB/zAN
+                            BgkqhkiG9w0BAQUFAAOCAQEAjR29PhrCbk8qLN5MFfSVk98t3CT9jHZoYxd8QMRL
+                            I4j7iYQxXiGJTT1FXs1nd4Rha9un+LqTfeMMYqISdDDI6tv8iNpkOAvZZUosVkUo
+                            93pv1T0RPz35hcHHYq2yee59HJOco2bFlcsH8JBXRSRrJ3Q7Eut+z9uo80JdGNJ4
+                            /SJy5UorZ8KazGj16lfJhOBXldgrhppQBb0Nq6HKHguqmwRfJ+WkxemZXzhediAj
+                            Geka8nz8JjwxpUjAiSWYKLtJhGEaTqCYxCCX2Dw+dOTqUzHOZ7WKv4JXPK5G/Uhr
+                            8K/qhmFT2nIQi538n6rVYLeWj8Bbnl+ev0peYzxFyF5sQA==</ds:X509Certificate>
+				</ds:X509Data>
+			</ds:KeyInfo>
+		</KeyDescriptor>
+		<SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.testshib.org/idp/profile/SAML2/Redirect/SSO" />
+	</IDPSSODescriptor>
+</EntityDescriptor>`
+
+// TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts pins a
+// pre-existing bug found while testing #304, unrelated to anything that PR
+// itself changed: the SP root URL passed to samlsp had no trailing slash,
+// so url.URL.ResolveReference's relative-path resolution (RFC 3986 §5.3,
+// which replaces everything after the LAST slash in the base path, not
+// everything after the base path itself) dropped the "auth" segment —
+// producing {baseURL}/api/v1/saml/metadata and .../saml/acs instead of the
+// .../api/v1/auth/saml/metadata and .../auth/saml/acs routes
+// internal/server/routes.go actually registers. samlsp.Middleware.ServeHTTP
+// compares the request path against these computed URLs with ==, so every
+// real request to the registered routes missed and fell through to a 404 —
+// SAML could never complete a login or serve metadata to an IdP, in any
+// configuration. See NewSAMLMiddleware's own comment on the exact mechanism.
+func TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "/api/v1/auth/saml/metadata", mw.ServiceProvider.MetadataURL.Path,
+		"must match the GET /saml/metadata route mounted under /api/v1/auth in routes.go")
+	require.Equal(t, "/api/v1/auth/saml/acs", mw.ServiceProvider.AcsURL.Path,
+		"must match the POST /saml/acs route mounted under /api/v1/auth in routes.go")
+}
+
 // TestNewSAMLMiddleware_RejectsBadKeyPair guards the error path that runs
 // before any network call, so a misconfigured keypair fails fast and clearly.
 func TestNewSAMLMiddleware_RejectsBadKeyPair(t *testing.T) {

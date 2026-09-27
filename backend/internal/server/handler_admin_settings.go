@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -339,26 +340,38 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 // — it is what stopped this route being a complete, unconditional bypass of
 // the dedicated endpoints' own refusal.
 //
-// Every merge step below refuses on a JSON type mismatch rather than
-// discarding the error and keeping the old value — found by review on #304:
-// a malformed value (saml_enabled sent as the JSON STRING "false" rather
-// than the boolean false, say) would previously leave THIS guard reasoning
-// about the OLD value, concluding truthfully-but-uselessly that nothing
-// about reachability changed, while the SetRaw loop below persisted the
-// malformed value regardless — and the real reader every other code path
-// uses (GetBool/GetString, under SAMLEnabled/OIDCEnabled/GetSAMLConfig/
-// GetOIDCConfig) fails the identical unmarshal and silently returns the zero
-// value, flipping the persisted setting to disabled/blank from that write
-// onward. The guard would have seen "unaffected" for a write that just
-// disabled SAML. validateReputationConfig's own comment two hundred lines up
-// already refuses exactly this shape for the reputation toggles ("a setting
-// accepted and then ignored is worse than a refusal"); the SSO enable flags
-// need the same rule, especially here, since the whole point of this
-// function is to be the thing that notices.
+// saml_enabled is deliberately NOT one of the keys this watches. #304's
+// first draft treated it as SAML's counterpart to oidc_enabled; it turned
+// out to already be a real, unrelated setting (user.IsLocalAuthAllowed
+// reads it to decide whether non-admins keep password login once SAML is
+// configured), and reverting that draft took SAML reachability back to
+// depending on the three config fields alone — see samlFieldsLookConfigured
+// and buildSAMLMiddleware's own comments.
+//
+// Every merge step below refuses on a JSON type mismatch, INCLUDING the
+// literal null, rather than discarding the error and keeping the old value
+// — found by review on #304, in two rounds: a malformed value
+// (oidc_enabled sent as the JSON STRING "false" rather than the boolean
+// false, say) would previously leave THIS guard reasoning about the OLD
+// value, concluding truthfully-but-uselessly that nothing about
+// reachability changed; the JSON literal null is the same failure mode by a
+// different mechanism — encoding/json's Unmarshal treats null into a
+// non-pointer destination as a silent no-op, no error at all, so the
+// type-mismatch check alone still let {"oidc_enabled": null} straight
+// through against a sole OIDC-only administrator. Either way the SetRaw
+// loop below persists the malformed value regardless, and the real reader
+// every other code path uses (GetBool/GetString, under OIDCEnabled/
+// GetOIDCConfig/GetSAMLConfig) fails the identical unmarshal and silently
+// returns the zero value, flipping the persisted setting to disabled/blank
+// from that write onward. validateReputationConfig's own comment two
+// hundred lines up already refuses the type-mismatch shape for the
+// reputation toggles ("a setting accepted and then ignored is worse than a
+// refusal"); unmarshalSetting below is that same rule, extended to also
+// catch null, for every SSO key this function reads.
 func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
 	touchesSAML := false
 	touchesOIDC := false
-	for _, k := range []string{admin.KeySAMLEnabled, admin.KeySAMLMetadataURL, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
 		if _, ok := body[k]; ok {
 			touchesSAML = true
 		}
@@ -372,48 +385,42 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 		return "", nil
 	}
 
-	samlEnabled := s.adminSvc.SAMLEnabled(ctx)
 	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
-	if raw, ok := body[admin.KeySAMLEnabled]; ok {
-		if err := json.Unmarshal(raw, &samlEnabled); err != nil {
-			return "", fmt.Errorf("%w: saml_enabled must be a boolean", user.ErrValidation)
-		}
-	}
 	if raw, ok := body[admin.KeySAMLMetadataURL]; ok {
-		if err := json.Unmarshal(raw, &metadataURL); err != nil {
-			return "", fmt.Errorf("%w: saml_metadata_url must be a string", user.ErrValidation)
+		if err := unmarshalSetting(raw, "saml_metadata_url", &metadataURL); err != nil {
+			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeySAMLCertPEM]; ok {
-		if err := json.Unmarshal(raw, &certPEM); err != nil {
-			return "", fmt.Errorf("%w: saml_cert_pem must be a string", user.ErrValidation)
+		if err := unmarshalSetting(raw, "saml_cert_pem", &certPEM); err != nil {
+			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeySAMLKeyPEM]; ok {
-		if err := json.Unmarshal(raw, &keyPEM); err != nil {
-			return "", fmt.Errorf("%w: saml_key_pem must be a string", user.ErrValidation)
+		if err := unmarshalSetting(raw, "saml_key_pem", &keyPEM); err != nil {
+			return "", err
 		}
 	}
 
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
 	if raw, ok := body[admin.KeyOIDCEnabled]; ok {
-		if err := json.Unmarshal(raw, &cfg.Enabled); err != nil {
-			return "", fmt.Errorf("%w: oidc_enabled must be a boolean", user.ErrValidation)
+		if err := unmarshalSetting(raw, "oidc_enabled", &cfg.Enabled); err != nil {
+			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeyOIDCIssuerURL]; ok {
-		if err := json.Unmarshal(raw, &cfg.IssuerURL); err != nil {
-			return "", fmt.Errorf("%w: oidc_issuer_url must be a string", user.ErrValidation)
+		if err := unmarshalSetting(raw, "oidc_issuer_url", &cfg.IssuerURL); err != nil {
+			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeyOIDCClientID]; ok {
-		if err := json.Unmarshal(raw, &cfg.ClientID); err != nil {
-			return "", fmt.Errorf("%w: oidc_client_id must be a string", user.ErrValidation)
+		if err := unmarshalSetting(raw, "oidc_client_id", &cfg.ClientID); err != nil {
+			return "", err
 		}
 	}
 	if raw, ok := body[admin.KeyOIDCClientSecret]; ok {
-		if err := json.Unmarshal(raw, &cfg.ClientSecret); err != nil {
-			return "", fmt.Errorf("%w: oidc_client_secret must be a string", user.ErrValidation)
+		if err := unmarshalSetting(raw, "oidc_client_secret", &cfg.ClientSecret); err != nil {
+			return "", err
 		}
 	}
 
@@ -426,7 +433,22 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 		return "", errIncompleteOIDCConfig
 	}
 
-	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(samlEnabled, metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
+	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
+}
+
+// unmarshalSetting decodes a PATCH /admin/settings field into dst, refusing
+// both a JSON type mismatch and the literal null — see ssoSettingsWarning's
+// own comment for why null needs its own check: encoding/json's Unmarshal
+// treats null into a non-pointer destination as a silent no-op rather than
+// an error, so a type check alone does not catch it.
+func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return fmt.Errorf("%w: %s has the wrong type", user.ErrValidation, name)
+	}
+	return nil
 }
 
 // securityWarnings is what an administrator needs to know about how this

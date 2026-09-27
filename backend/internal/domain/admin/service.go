@@ -94,10 +94,18 @@ func (s *Service) SAMLEnabled(ctx context.Context) bool {
 	return v
 }
 
-// SetSAMLEnabled persists whether SAML authentication is enabled. Read by
-// reloadSAML (see server.go) as of #300 — before that it was stored and
-// never consulted, so the settings page's own "Enable SAML login" toggle
-// wrote a value nothing read.
+// SetSAMLEnabled persists whether SAML authentication is enabled — read by
+// user.IsLocalAuthAllowed to decide whether non-admins keep password login
+// once SAML is configured (a stricter posture an operator opts into
+// separately from whether SAML itself is configured at all). #304 first
+// treated this as also gating whether the SAML middleware loads, the way
+// oidc_enabled gates OIDC — that conflated two different questions under
+// one flag operators already use for the first one, and would have flipped
+// existing SAML deployments into refusing every non-admin's password login
+// the moment the flag's OTHER meaning was backfilled to true. Reverted
+// before merge; middleware reachability depends only on the three config
+// fields being present, as it always has. See PR #304's thread and
+// buildSAMLMiddleware's own comment.
 func (s *Service) SetSAMLEnabled(ctx context.Context, v bool) error {
 	return s.SetBool(ctx, KeySAMLEnabled, v)
 }
