@@ -1610,8 +1610,12 @@ Three more things are off limits to a machine credential, for the same reason:
   settings keys. Reading the configuration stays available to automation, since
   the handlers already blank the secrets.
 - **Changing an auth-critical setting** — MFA enablement and enforcement, the
-  SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
-  configuration such as the site name stays automatable.
+  SAML/OIDC keys, the email-domain allowlist, the signup toggles, and guest
+  submission (#177: it decides not just whether anonymous people can file a
+  ticket, but also, since the category catalogue stopped being anonymous,
+  whether that catalogue is readable without a session at all — one flag,
+  two exposures). Ordinary configuration such as the site name stays
+  automatable.
 - **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
   credential reaching it could spend the account's durable failed-attempt budget
   and lock the owner out repeatedly.
