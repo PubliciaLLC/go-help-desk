@@ -262,6 +262,20 @@ func (s *Store) CountOtherActiveAdmins(ctx context.Context, excluding uuid.UUID)
 	return s.q.CountOtherActiveAdmins(ctx, excluding)
 }
 
+// ListActiveAdmins returns every administrator who is neither disabled nor
+// soft-deleted.
+func (s *Store) ListActiveAdmins(ctx context.Context) ([]user.User, error) {
+	rows, err := s.q.ListActiveAdmins(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing active admins: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
 // EmailIsTaken reports whether any row holds this address, deleted rows
 // included — which is what the unique constraint covers.
 func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {

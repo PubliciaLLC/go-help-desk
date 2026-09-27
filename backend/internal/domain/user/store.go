@@ -79,6 +79,11 @@ type Store interface {
 	Enable(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, limit, offset int) ([]User, error)
 	ListAdmin(ctx context.Context, limit, offset int) ([]User, error)
+	// ListActiveAdmins returns every administrator who is neither disabled nor
+	// soft-deleted, in full — not a count, unlike CountOtherActiveAdmins. The
+	// SSO-settings guard (#300) has to know WHICH administrators would still
+	// have a way to authenticate after a change, not merely how many remain.
+	ListActiveAdmins(ctx context.Context) ([]User, error)
 	Count(ctx context.Context) (int64, error)
 	ClearMFA(ctx context.Context, id uuid.UUID) error
 	AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error

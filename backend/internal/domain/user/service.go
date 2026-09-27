@@ -792,6 +792,12 @@ func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, err
 	return s.store.ListAdmin(ctx, limit, offset)
 }
 
+// ListActiveAdmins returns every administrator who is neither disabled nor
+// soft-deleted. See StrandedAdmins.
+func (s *Service) ListActiveAdmins(ctx context.Context) ([]User, error) {
+	return s.store.ListActiveAdmins(ctx)
+}
+
 // Disable marks a user account as disabled without deleting it, unless it is
 // the last active administrator. See SetRole for why the guard is in the
 // statement rather than in front of it.

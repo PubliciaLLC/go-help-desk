@@ -520,6 +520,146 @@ by which a machine credential could register or use a passkey —
 - Google Workspace
 - (Standard SAML 2.0 — additional IdPs should work via metadata import)
 
+The SP root URL passed to the SAML library carries a trailing slash
+(`{baseURL}/api/v1/auth/`) rather than the bare prefix — see
+`auth.NewSAMLMiddleware`'s own comment. Without it, the library's relative
+URL resolution computes `saml/metadata` and `saml/acs` one path segment
+short of the routes this server actually registers, and every real request
+to them 404s: no login could complete and no IdP could fetch this
+instance's metadata, in any configuration. Found and fixed while testing
+#304; pinned by `TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`.
+
+### Identity provider lockout guard (#300)
+
+A federated account (SAML or OIDC) can have no local password at all —
+`password_hash` empty, local login refuses it with 401. Its only way in is
+that specific provider. Disabling or clearing that provider's configuration
+in **Admin → Settings** removes the account's only channel while leaving the
+row, the role and the active-administrator count completely untouched — the
+same class of mistake the last-administrator guard (see User Management,
+above) exists to prevent, reached through a door that guard does not watch,
+since it watches the administrator ROW, not their ability to authenticate.
+
+SAML reachability depends only on the three config fields being non-empty —
+`reloadSAML` and `buildSAMLMiddleware` have always gated on that alone, and
+still do. An early draft of this guard gave SAML an `enabled` flag mirroring
+OIDC's, reusing the existing `saml_enabled` setting (the settings page's
+"Enable SAML login" toggle has always written it). That setting is not
+dead: `user.IsLocalAuthAllowed` reads it to decide whether non-admins keep
+password login once SAML is configured — a stricter posture an operator
+opts into separately from whether SAML itself is running. Wiring it into
+whether the middleware loads at all would have conflated the two, and a
+migration backfilling it to `true` for every already-configured instance
+would have silently refused password login to every non-administrator on
+any instance that had been running SAML and local login side by side.
+Caught in review before merge and reverted; see PR #304's thread for the
+full trace. SAML has no `enabled` concept in this guard, and does not need
+one — see the incomplete-config paragraph below for why OIDC's is different.
+
+Saving the OIDC or SAML configuration checks what each provider's
+reachability will be immediately afterward and looks at every active
+administrator:
+
+- If the change would leave **every** active administrator with no way to
+  authenticate, the save is refused (400) — the same severity as
+  `ErrLastAdmin`, and for the same reason: this is the unrecoverable case.
+- If it strands **some** administrators but at least one other can still
+  sign in and fix things, the save is allowed and a warning names who is
+  affected — refusing here would just move the unrecoverable-lockout shape
+  onto somebody else's account instead of preventing it, and an operator
+  migrating providers deliberately should not be blocked by a stranding they
+  already know about.
+- A password is always a viable channel, independent of either provider's
+  state. A federated subject is only viable while its OWN provider is
+  reachable — an OIDC subject is not a channel through SAML, and vice versa.
+  MFA (TOTP, and passkeys where that lands) is deliberately not consulted: a
+  second factor is never a way IN on its own, so it cannot rescue an
+  otherwise-stranded administrator and cannot strand one either.
+
+This reads the active-administrator list, decides, and only then writes the
+setting — unlike the last-administrator guard's own statements, which decide
+and write a single row atomically in one UPDATE. A narrow race against a
+concurrent user-role change or a second settings save is accepted rather
+than closed: this is a deliberate, infrequent action from the admin settings
+page, not a path an unauthenticated attacker can drive.
+
+"Reachability" is not the same check everywhere this guard runs, and that
+difference is deliberate rather than an inconsistency to fix:
+
+- The two dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build
+  the real provider/middleware against the candidate configuration —
+  running actual OIDC discovery, or actually fetching and parsing the SAML
+  IdP's metadata — *before* persisting anything, and the guard's decision is
+  that real outcome. An earlier version of this guard asked only "are the
+  fields non-empty", which is wrong in the dangerous direction: a
+  well-formed but unreachable IdP (a typo'd issuer URL, a metadata endpoint
+  that is down) would have sailed through as "reachable" right up until the
+  moment it actually mattered. The already-built object is what gets
+  committed on success, rather than a second, possibly-different attempt —
+  the guard's decision and the live effect must agree.
+- The generic `PATCH /admin/settings` route reaches these same keys (nothing
+  stops a human session from setting `oidc_enabled` or blanking a SAML field
+  through it) but does not live-reload either provider today, so there is no
+  real construction attempt for it to observe. It falls back to the
+  field-completeness check instead — narrower than the dedicated endpoints'
+  own guard, but still real coverage for a route that, before this fix, had
+  none at all: it could set `oidc_enabled: false` or blank any SAML field
+  with no refusal and no warning, regardless of who it stranded.
+
+An enabled-but-incomplete OIDC configuration (a blank issuer URL, client ID
+or client secret) is refused outright (400) rather than reachability-checked,
+through either write path. `buildOIDCProvider`'s own fail-safe for that shape
+used to report reachability as whatever the currently-live provider already
+says — correct for the running process, which still has the old provider to
+fall back on, but wrong for the row being persisted: at the next restart
+there is no live provider left, so `InitOIDC` comes up with no OIDC at all. A
+save that only looked safe because an old, unrelated config was still live at
+the moment of saving is exactly the gap this guard exists to close, so it
+isn't allowed to reach the guard in the first place. SAML has no equivalent
+case for an incomplete config — `buildSAMLMiddleware` treats any blank field
+as unreachable unconditionally, with no fail-safe carve-out and no `enabled`
+flag to have one for in the first place.
+
+A second, closely related review round found the same confusion one branch
+over: a **complete** candidate configuration whose real construction attempt
+genuinely fails (a typo'd issuer URL, an IdP that is briefly unreachable) was
+*also* reported as reachable-or-not by asking the live process, rather than
+by asking what the persisted row itself would do on a cold load — and this
+half applies to both providers equally, not just OIDC. `buildOIDCProvider`
+and `buildSAMLMiddleware` now answer these two different questions
+separately: `commit` still drives the long-standing fail-safe for the LIVE
+process (a bad edit or a transient outage leaves whatever is currently
+running untouched, exactly as before), but the `reachable` value the guard
+reasons about is unconditionally `false` whenever the candidate itself fails
+to build — regardless of what a different, currently-live provider happens
+to still be answering with at the moment of saving. Reasoning about the live
+process and reasoning about the row being persisted are different questions,
+and only one of them survives a restart.
+
+The generic settings PATCH has its own version of the same principle at the
+type level: `ssoSettingsWarning`'s merge of the request body over stored
+values refuses outright (400) on any JSON type mismatch (`oidc_enabled` sent
+as the string `"false"` rather than the boolean, say) rather than discarding
+the `json.Unmarshal` error and reasoning about the old value — because the
+`SetRaw` write immediately below persists the malformed value regardless, and
+every real reader (`GetBool`/`GetString`, under `OIDCEnabled`, `GetSAMLConfig`,
+`GetOIDCConfig`) fails that same unmarshal and silently returns the Go zero
+value, flipping the actual setting to disabled/blank from that write onward.
+A guard reasoning about one value while the real system reads a different one
+from the identical bytes is worse than not reasoning at all, because it
+reports confidence it does not have. The JSON literal `null` is the same
+failure by a different mechanism, caught in a later review round:
+`encoding/json`'s `Unmarshal` treats `null` into a non-pointer destination as
+a silent no-op rather than an error, so a type-mismatch check alone still let
+`{"oidc_enabled": null}` through unchanged — `unmarshalSetting` refuses `null`
+explicitly, ahead of the type check, for every key this function reads.
+
+Extending `reset-factors` to also set a password, so a locked-out federated
+administrator has a complete way back rather than merely a warning that
+would have stopped them getting here, is tracked separately (#300's option
+4) and depends on `reset-factors` itself, which does not exist on this
+branch.
+
 ### Guest Submission (Optional, Off by Default)
 
 A visitor with no account files a ticket and is sent a per-ticket link. The link
