@@ -414,10 +414,24 @@ administrator who loses their authenticator is in exactly the same position
 today. Passkeys extend the same lockout to a second kind of factor rather than
 creating it.
 
-**So the last-administrator guard's fourth case is reachable now, not only
-once passwordless exists.** An earlier draft of this section said otherwise,
-on the strength of a self-recovery path that turns out not to cover the case
-that matters.
+**The guard's fourth case still belongs with passwordless, and an earlier
+draft of this section was wrong in both directions about why.**
+
+It first said the case could wait because self-recovery covers a lost key. It
+does not: an account that still has a registered factor is refused at both
+enrolment doors, deliberately. Then it said the case was therefore reachable
+today. That is also wrong, and checking what is actually a way *in* settles
+it: the entry points are local login, SAML and OIDC. A second factor gates a
+session that has already authenticated; it is not a way in by itself. So
+removing somebody's last second factor cannot strand them while a first factor
+exists, and there is no operation for a fourth case to refuse yet.
+
+What does strand somebody today is losing a registered key, which
+`reset-factors` above answers, and one thing that is not about second factors
+at all: an account provisioned by an identity provider has no password, so
+switching that provider off removes its only way in while leaving the row and
+the administrator count untouched. Every existing guard passes. Tracked as
+[#300](https://github.com/PubliciaLLC/go-help-desk/issues/300).
 
 **The way back in is a command run on the server**, not a recovery code and
 not a second factor required up front:
