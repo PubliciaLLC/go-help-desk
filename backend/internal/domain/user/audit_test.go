@@ -117,6 +117,29 @@ func TestResetMFA_AuditWriteFailureIsLoggedToTheConfiguredLogger(t *testing.T) {
 	require.Contains(t, buf.String(), "mfa_reset")
 }
 
+// WithLogger(nil) must behave exactly like omitting the option — the default
+// (slog.Default()) stays in force — not panic and not silently discard
+// failures. Swaps the process-wide default for the duration of the test so
+// there is somewhere to observe it land, and restores it afterward.
+func TestWithLogger_NilIsANoOpAndKeepsTheDefault(t *testing.T) {
+	original := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(original) })
+
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	store := newFakeUserStore()
+	au := &fakeAuditStore{err: errors.New("audit table is down")}
+	target := seedActiveUser(store)
+
+	svc := user.NewService(store, user.WithAuditStore(au), user.WithLogger(nil))
+	require.NoError(t, svc.ResetMFA(context.Background(), target.ID, nil),
+		"WithLogger(nil) must not panic or otherwise disturb the call")
+
+	require.Contains(t, buf.String(), "audit table is down",
+		"WithLogger(nil) must fall back to the default logger, not a nil one that discards the write")
+}
+
 // A store failure — including "no such row", which is what the real
 // Postgres-backed store reports for a nonexistent target — must refuse the
 // request and write nothing. The real store used to get this wrong (an

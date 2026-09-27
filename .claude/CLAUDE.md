@@ -48,6 +48,22 @@ check whether it is listed here.
   test pins this so it does not get "fixed".
 - **`ticket.Atomic` takes both a `Store` and an `audit.Store`.** An audit entry
   committed apart from the change it describes is not an audit trail.
+- **`user.Service.writeAuditEntry` (ResetMFA, AdminSetPassword) is NOT
+  transactional with the write it describes, on purpose — the one exception to
+  the `ticket.Atomic` rule above.** The mutation commits first; the audit
+  write is a separate, best-effort step, logged and swallowed on failure
+  rather than rolled back or retried (see the doc comment on
+  `writeAuditEntry`, `internal/domain/user/service.go`). This is deliberate,
+  not an oversight that inherited the wrong shape: per `audit.Store`'s own
+  documented contract ("log and continue rather than blocking the caller"),
+  and per #306's own framing, an audit entry here does not gate anything —
+  whoever can clear a factor or reset a password already holds the
+  capability, so losing one entry to a crash between the two writes is a
+  visibility gap, not a security control, and failing the actual reset over a
+  logging hiccup would be the wrong trade. `ticket.Atomic` exists because a
+  ticket's audit trail IS relied on as a record of what changed and when;
+  this path is not held to the same bar. Do not "fix" this into
+  `ticket.Atomic`'s shape without re-reading #306 first.
 - **Attachments are download-only; there is no previewer.** Not an oversight
   and not a backlog item. Rendering attachment content on the help desk origin
   makes every uploaded file a candidate for stored XSS against the staff
