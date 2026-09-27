@@ -181,3 +181,37 @@ func TestPasskeys_APasswordAloneCannotChangeAProtectedAccountsFactors(t *testing
 			"an account with nothing enrolled could not reach registration, so it cannot recover: %s", body)
 	})
 }
+
+// The other door. An account protected by a passkey and no TOTP must not let
+// a password-only session enrol TOTP instead.
+//
+// GenerateMFASecret's own guard reads u.MFAEnabled — the TOTP column — which
+// was a complete answer to "does this account have a second factor" while
+// TOTP was the only kind. Passkeys made it partial, so closing the passkey
+// route alone left the account exactly as reachable through this one.
+func TestMFAEnrol_IsRefusedToAPasswordOnlySessionOnAPasskeyProtectedAccount(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	setup := loggedInAdmin(t, h)
+	res, body := setup.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
+		"mfa_enabled": true, "mfa_enforced_roles": []string{"user"},
+	})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "%s", body)
+
+	// Protected by a passkey only: no TOTP, so MFAEnabled is false.
+	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "the-only-factor")))
+	stored, err := h.userSvc.GetByIDAdmin(ctx, h.userID)
+	require.NoError(t, err)
+	require.False(t, stored.MFAEnabled, "precondition: the TOTP column says no factor")
+
+	s := &session{h: h}
+	res, body = s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "user@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusForbidden, res.StatusCode,
+		"a password alone enrolled TOTP on a passkey-protected account, which hands it the second factor: %s", body)
+}

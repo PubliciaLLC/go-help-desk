@@ -386,13 +386,41 @@ write. Approximately right is right enough for this field.
 **Losing a key.** An administrator removes a credential from the user's admin
 page, the same control surface as Reset MFA, and the owner registers a new one.
 
-The last-administrator guard does **not** need a fourth case for this while
-passkeys are a second factor, and the reason is a mechanism rather than a
-coincidence: enrolment lives outside `RequireMFA`, so an administrator left
-with no working factor still signs in with their password, reaches enrolment,
-and recovers without anyone's help. That path is pinned by
-`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`, which fails if those
-routes are ever moved behind the gate.
+**Self-recovery covers an account with *nothing* enrolled, and not a lost
+key.** The distinction matters and an earlier draft of this section ran the two
+together.
+
+Enrolment lives outside `RequireMFA`, so somebody whose factors have been
+cleared — by an administrator, or because they never had any — signs in with
+their password, reaches enrolment and recovers alone. That is pinned by
+`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`.
+
+An account that still *has* a registered factor is a different case, and both
+enrolment doors refuse it: a session that has not passed MFA cannot add or
+remove a factor on an account that already has one. That refusal is not
+optional. Without it, somebody holding only the password registers their own
+key or enrols their own authenticator and thereby obtains the second factor —
+passing the gate rather than breaking it.
+
+The consequence is a genuine lockout, and it should be stated rather than
+discovered: **an administrator whose registered key is lost cannot recover
+alone.** Another administrator removes the credential from their admin page.
+For a *sole* administrator there is no other administrator, and setup does not
+reopen.
+
+This is not new with passkeys. `GenerateMFASecret` has refused re-enrolment
+for a TOTP-protected account since the re-enrolment fix, so a sole
+administrator who loses their authenticator is in exactly the same position
+today. Passkeys extend the same lockout to a second kind of factor rather than
+creating it.
+
+**So the last-administrator guard's fourth case is reachable now, not only
+once passwordless exists.** An earlier draft of this section said otherwise,
+on the strength of a self-recovery path that turns out not to cover the case
+that matters. Whether the answer is a recovery code, requiring a second
+credential before the first is relied on, or accepting that a sole
+administrator must keep a spare, it is a decision this document should not
+make quietly.
 
 **That test is a precondition on passwordless sign-in, not a formality.** When
 the password stops being a way in, self-recovery stops working, and removing an
