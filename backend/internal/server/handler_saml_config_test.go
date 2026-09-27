@@ -34,7 +34,12 @@ func TestSaveSAMLConfig_OmittedFieldsPreserveExisting(t *testing.T) {
 		"metadata_url": "https://idp.test/rotated-metadata",
 		// cert_pem, key_pem omitted entirely.
 	})
-	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	// 204, not 200: this harness never turns the saml_enabled flag on, so
+	// buildSAMLMiddleware's `!enabled` branch short-circuits before ever
+	// attempting to reach "https://idp.test/rotated-metadata" — there is no
+	// reload failure to warn about, and nobody is stranded either (the
+	// seeded local admin has a password).
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
 
 	url, cert, key := h.adminSvc.GetSAMLConfig(ctx)
 	require.Equal(t, "https://idp.test/rotated-metadata", url)

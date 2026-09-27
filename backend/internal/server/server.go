@@ -556,49 +556,67 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 // It is called once at startup; a non-fatal error is logged and ignored so
 // that the server starts even when SAML is not yet configured.
 
+// buildOIDCProvider constructs an OIDC provider from CANDIDATE settings
+// without touching the live s.oidcProvider — split out of InitOIDC so the
+// settings-save handler can learn what reachability will ACTUALLY be
+// (including a real discovery attempt) BEFORE persisting anything, which is
+// what #300's stranding guard needs: a guess based on "the fields look
+// complete" can be wrong in exactly the direction that matters, letting a
+// save through that silently orphans an administrator once discovery turns
+// out to fail. See #300 (the PR that added this) and #297b for background.
+//
+// Reachable is unambiguous (true or false) except for two fail-safe cases,
+// which return whatever the LIVE provider's current reachability already is:
+// disabled-vs-error aside, InitOIDC has never cleared a working provider over
+// an incomplete edit or a transient discovery failure, and this preserves
+// that rather than reporting a state that will not actually take effect.
+func (s *Server) buildOIDCProvider(ctx context.Context, cfg auth.OIDCConfig) (reachable bool, provider *auth.OIDCProvider, commit bool, err error) {
+	if !cfg.Enabled {
+		return false, nil, true, nil
+	}
+	if cfg.IssuerURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
+		// Enabled but incomplete: InitOIDC's own long-standing fail-safe
+		// leaves whatever provider is already live untouched, so reachability
+		// after this write is whatever it already is, not automatically false.
+		return s.oidcReachableNow(), nil, false, fmt.Errorf("OIDC configuration is incomplete")
+	}
+	if cfg.RedirectURL == "" {
+		cfg.RedirectURL = s.cfg.BaseURL + "/api/v1/auth/oidc/callback"
+	}
+	// Discovery runs here, against the candidate config, before anything is
+	// persisted. On failure this is the same fail-safe as above: keep
+	// whatever is already live rather than clearing it or optimistically
+	// pretending the new config already answered.
+	provider, buildErr := auth.NewOIDCProvider(ctx, cfg)
+	if buildErr != nil {
+		return s.oidcReachableNow(), nil, false, fmt.Errorf("OIDC provider initialization failed: %w", buildErr)
+	}
+	return true, provider, true, nil
+}
+
+// commitOIDCProvider installs p as the live provider. p is nil when OIDC is
+// disabled.
+func (s *Server) commitOIDCProvider(p *auth.OIDCProvider) {
+	s.oidcMu.Lock()
+	s.oidcProvider = p
+	s.oidcMu.Unlock()
+}
+
 // InitOIDC initializes the OpenID Connect provider.
 // OIDC is optional; startup continues when it is not configured.
 func (s *Server) InitOIDC(ctx context.Context) error {
 	cfg := s.adminSvc.GetOIDCConfig(ctx)
-
-	// OIDC is explicitly disabled. Clear the active provider.
-	if !cfg.Enabled {
-		s.oidcMu.Lock()
-		s.oidcProvider = nil
-		s.oidcMu.Unlock()
-		return nil
-	}
-
-	// Enabled but incomplete configuration is invalid.
-	if cfg.IssuerURL == "" ||
-		cfg.ClientID == "" ||
-		cfg.ClientSecret == "" {
-		err := fmt.Errorf("OIDC configuration is incomplete")
-		slog.Warn("OIDC provider not loaded", "error", err)
+	_, provider, commit, err := s.buildOIDCProvider(ctx, cfg)
+	if !commit {
+		if err != nil {
+			slog.Warn("OIDC provider not loaded/reloaded; keeping existing provider", "error", err)
+		}
 		return err
 	}
-
-	if cfg.RedirectURL == "" {
-		cfg.RedirectURL = s.cfg.BaseURL +
-			"/api/v1/auth/oidc/callback"
+	s.commitOIDCProvider(provider)
+	if provider != nil {
+		slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
 	}
-
-	// Discover and initialize the new provider BEFORE replacing the
-	// currently active provider. If discovery fails, leave the existing
-	// provider untouched so a bad admin change cannot take OIDC offline.
-	provider, err := auth.NewOIDCProvider(ctx, cfg)
-	if err != nil {
-		slog.Warn("OIDC provider reload failed; keeping existing provider",
-			"error", err)
-		return fmt.Errorf("OIDC provider initialization failed: %w", err)
-	}
-
-	// Swap only after successful initialization.
-	s.oidcMu.Lock()
-	s.oidcProvider = provider
-	s.oidcMu.Unlock()
-
-	slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
 	return nil
 }
 
@@ -608,33 +626,54 @@ func (s *Server) InitSAML(ctx context.Context) {
 	}
 }
 
-// reloadSAML reads the three SAML settings from the database, (re)initialises
-// the crewjam/saml middleware, and stores it for use by the request handlers.
-// Callers must hold no lock; this method acquires the write lock internally.
-func (s *Server) reloadSAML(ctx context.Context) error {
-	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
-	if metadataURL == "" || certPEM == "" || keyPEM == "" {
-		// Not yet configured — clear any previously loaded handler.
-		s.samlMu.Lock()
-		s.samlHandler = nil
-		s.samlMu.Unlock()
-		return nil
+// buildSAMLMiddleware is buildOIDCProvider's SAML counterpart: constructs a
+// middleware from CANDIDATE settings without touching the live s.samlHandler.
+// enabled gates it first, exactly like OIDC's cfg.Enabled — added by #300,
+// see admin.Service.SetSAMLEnabled's own comment for why this key existed
+// and did nothing before. Below that, an incomplete config (any of the three
+// fields blank) has never had a fail-safe here — reloadSAML always cleared
+// the handler outright for it — so only a construction/metadata-fetch
+// FAILURE on an otherwise-complete config falls back to "whatever is already
+// live", matching reloadSAML's own long-standing behavior of leaving a
+// working middleware in place over a transient IdP outage.
+func (s *Server) buildSAMLMiddleware(ctx context.Context, enabled bool, metadataURL, certPEM, keyPEM string) (reachable bool, mw *samlsp.Middleware, commit bool, err error) {
+	if !enabled || metadataURL == "" || certPEM == "" || keyPEM == "" {
+		return false, nil, true, nil
 	}
-
-	mw, err := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
+	mw, buildErr := auth.NewSAMLMiddleware(ctx, auth.SAMLConfig{
 		BaseURL:     s.cfg.BaseURL,
 		MetadataURL: metadataURL,
 		CertPEM:     []byte(certPEM),
 		KeyPEM:      []byte(keyPEM),
 	})
-	if err != nil {
-		return err
+	if buildErr != nil {
+		return s.samlReachableNow(), nil, false, buildErr
 	}
+	return true, mw, true, nil
+}
 
+// commitSAMLMiddleware installs mw as the live SAML handler. mw is nil when
+// SAML is not configured.
+func (s *Server) commitSAMLMiddleware(mw *samlsp.Middleware) {
 	s.samlMu.Lock()
 	s.samlHandler = mw
 	s.samlMu.Unlock()
-	slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
+}
+
+// reloadSAML reads the three SAML settings from the database, (re)initialises
+// the crewjam/saml middleware, and stores it for use by the request handlers.
+// Callers must hold no lock; this method acquires the write lock internally.
+func (s *Server) reloadSAML(ctx context.Context) error {
+	enabled := s.adminSvc.SAMLEnabled(ctx)
+	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
+	_, mw, commit, err := s.buildSAMLMiddleware(ctx, enabled, metadataURL, certPEM, keyPEM)
+	if !commit {
+		return err
+	}
+	s.commitSAMLMiddleware(mw)
+	if mw != nil {
+		slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
+	}
 	return nil
 }
 

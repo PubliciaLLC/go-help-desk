@@ -273,6 +273,19 @@ same class of mistake the last-administrator guard (see User Management,
 above) exists to prevent, reached through a door that guard does not watch,
 since it watches the administrator ROW, not their ability to authenticate.
 
+SAML has its own `enabled` flag now, mirroring OIDC's: `saml_enabled`
+existed as a setting since the first migration (the "Enable SAML login"
+toggle on the settings page has always written it) but nothing read it —
+`reloadSAML` gated purely on the three config fields being non-empty, so
+disabling the toggle without also blanking the fields did nothing. A
+migration (`000029_saml_enabled_backfill`) backfills `saml_enabled = true`
+for any instance where all three fields were already populated before this
+flag existed — the seeded default is `false` for every instance, which is
+indistinguishable from an operator's deliberate disable without it, and
+without the backfill this fix would have silently logged out every
+pre-existing SAML deployment that configured itself before the toggle had
+any effect.
+
 Saving the OIDC or SAML configuration checks what each provider's
 reachability will be immediately afterward and looks at every active
 administrator:
@@ -299,6 +312,29 @@ and write a single row atomically in one UPDATE. A narrow race against a
 concurrent user-role change or a second settings save is accepted rather
 than closed: this is a deliberate, infrequent action from the admin settings
 page, not a path an unauthenticated attacker can drive.
+
+"Reachability" is not the same check everywhere this guard runs, and that
+difference is deliberate rather than an inconsistency to fix:
+
+- The two dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build
+  the real provider/middleware against the candidate configuration —
+  running actual OIDC discovery, or actually fetching and parsing the SAML
+  IdP's metadata — *before* persisting anything, and the guard's decision is
+  that real outcome. An earlier version of this guard asked only "are the
+  fields non-empty", which is wrong in the dangerous direction: a
+  well-formed but unreachable IdP (a typo'd issuer URL, a metadata endpoint
+  that is down) would have sailed through as "reachable" right up until the
+  moment it actually mattered. The already-built object is what gets
+  committed on success, rather than a second, possibly-different attempt —
+  the guard's decision and the live effect must agree.
+- The generic `PATCH /admin/settings` route reaches these same keys (nothing
+  stops a human session from setting `oidc_enabled` or blanking a SAML field
+  through it) but does not live-reload either provider today, so there is no
+  real construction attempt for it to observe. It falls back to the
+  field-completeness check instead — narrower than the dedicated endpoints'
+  own guard, but still real coverage for a route that, before this fix, had
+  none at all: it could set `oidc_enabled: false` or blank any SAML field
+  with no refusal and no warning, regardless of who it stranded.
 
 Extending `reset-factors` to also set a password, so a locked-out federated
 administrator has a complete way back rather than merely a warning that

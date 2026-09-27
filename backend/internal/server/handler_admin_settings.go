@@ -296,13 +296,94 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// #300's guard, and the reason it lives here too rather than only on the
+	// two dedicated PUT endpoints: this generic PATCH can set oidc_enabled or
+	// blank a SAML field exactly as they would, since AuthCriticalKeys() only
+	// blocks MACHINE credentials from touching these — a signed-in human
+	// session reaches them the same way it reaches the dedicated endpoints,
+	// and unlike those, this one had no guard at all. See ssoSettingsWarning's
+	// own comment for why the reachability read here is the simpler
+	// field-completeness kind rather than a real construction attempt.
+	warning, err := s.ssoSettingsWarning(r.Context(), body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
+
+	if warning != "" {
+		JSON(w, http.StatusOK, map[string]any{"warning": warning})
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ssoSettingsWarning runs #300's stranding guard against a generic
+// PATCH /admin/settings body, when it touches any key that decides SAML's or
+// OIDC's reachability. Merges the body's candidate values over what is
+// currently stored — a key the caller left out keeps its stored value, same
+// as the dedicated endpoints' own "omitted preserves" contract — then reads
+// reachability with samlFieldsLookConfigured/oidcFieldsLookConfigured rather
+// than by actually building the middleware/provider: this endpoint does not
+// live-reload either one today (a pre-existing gap this fix does not widen
+// its scope to close), so there is no real construction attempt to observe
+// here the way the two dedicated endpoints now have. The field-only read is
+// still a genuine improvement over the no-check-at-all this PATCH had before
+// — it is what stopped this route being a complete, unconditional bypass of
+// the dedicated endpoints' own refusal.
+func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
+	touchesSAML := false
+	touchesOIDC := false
+	for _, k := range []string{admin.KeySAMLEnabled, admin.KeySAMLMetadataURL, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+		if _, ok := body[k]; ok {
+			touchesSAML = true
+		}
+	}
+	for _, k := range []string{admin.KeyOIDCEnabled, admin.KeyOIDCIssuerURL, admin.KeyOIDCClientID, admin.KeyOIDCClientSecret} {
+		if _, ok := body[k]; ok {
+			touchesOIDC = true
+		}
+	}
+	if !touchesSAML && !touchesOIDC {
+		return "", nil
+	}
+
+	samlEnabled := s.adminSvc.SAMLEnabled(ctx)
+	metadataURL, certPEM, keyPEM := s.adminSvc.GetSAMLConfig(ctx)
+	if raw, ok := body[admin.KeySAMLEnabled]; ok {
+		_ = json.Unmarshal(raw, &samlEnabled)
+	}
+	if raw, ok := body[admin.KeySAMLMetadataURL]; ok {
+		_ = json.Unmarshal(raw, &metadataURL)
+	}
+	if raw, ok := body[admin.KeySAMLCertPEM]; ok {
+		_ = json.Unmarshal(raw, &certPEM)
+	}
+	if raw, ok := body[admin.KeySAMLKeyPEM]; ok {
+		_ = json.Unmarshal(raw, &keyPEM)
+	}
+
+	cfg := s.adminSvc.GetOIDCConfig(ctx)
+	if raw, ok := body[admin.KeyOIDCEnabled]; ok {
+		_ = json.Unmarshal(raw, &cfg.Enabled)
+	}
+	if raw, ok := body[admin.KeyOIDCIssuerURL]; ok {
+		_ = json.Unmarshal(raw, &cfg.IssuerURL)
+	}
+	if raw, ok := body[admin.KeyOIDCClientID]; ok {
+		_ = json.Unmarshal(raw, &cfg.ClientID)
+	}
+	if raw, ok := body[admin.KeyOIDCClientSecret]; ok {
+		_ = json.Unmarshal(raw, &cfg.ClientSecret)
+	}
+
+	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(samlEnabled, metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
 }
 
 // securityWarnings is what an administrator needs to know about how this

@@ -201,6 +201,7 @@ export async function deleteStatus(id: string): Promise<void> {
 // ── SAML ─────────────────────────────────────────────────────────────────────
 
 export interface SAMLConfig {
+  enabled: boolean
   configured: boolean
   metadata_url: string
   cert_pem: string
@@ -212,10 +213,16 @@ export async function getSAMLConfig(): Promise<SAMLConfig> {
   return res.data
 }
 
+// Each field is optional on purpose, not just individually falsy-safe: the
+// backend now distinguishes "omitted" (keep the stored value) from "sent as
+// an explicit empty string" (clear it) — see #300. key_pem in particular is
+// never round-tripped by getSAMLConfig (the server never returns a private
+// key at all), so a caller must genuinely leave it out to preserve the
+// stored key rather than send back the blank the form started with.
 export async function saveSAMLConfig(input: {
-  metadata_url: string
-  cert_pem: string
-  key_pem: string
+  metadata_url?: string
+  cert_pem?: string
+  key_pem?: string
 }): Promise<{ warning?: string }> {
   const res = await api.put<{ warning?: string }>('/admin/saml', input)
   return res.data ?? {}

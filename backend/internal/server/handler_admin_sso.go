@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/tls"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -73,7 +74,14 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		RedirectURL:  redirectURL,
 	}
 
-	warning, err := s.refuseIfOrphaning(ctx, s.samlReachableNow(), s.oidcReachableAfter(cfg))
+	// Built against the CANDIDATE config, before anything is persisted — this
+	// is what #300's guard decides on, so it reflects whether OIDC will
+	// really answer rather than "the fields all look filled in". reachable is
+	// the fail-safe-aware truth for a disabled or incomplete config too; see
+	// buildOIDCProvider's own comment.
+	reachable, provider, commit, buildErr := s.buildOIDCProvider(ctx, cfg)
+
+	warning, err := s.refuseIfOrphaning(ctx, s.samlReachableNow(), reachable)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -84,12 +92,34 @@ func (s *Server) handleSaveOIDCConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reload the in-memory OIDC provider immediately after persisting.
-	// InitOIDC is fail-safe: on discovery/initialization failure it leaves
-	// the currently active provider untouched and reports the error here.
-	if err := s.InitOIDC(ctx); err != nil {
-		handleError(w, err)
+	// Commit the provider already built above rather than re-running
+	// discovery: the guard's decision and the live effect must agree, and a
+	// second attempt could answer differently than the first (the IdP
+	// recovering or failing in between).
+	if commit {
+		s.commitOIDCProvider(provider)
+	}
+	if buildErr != nil {
+		// Fail-safe: config is saved regardless (retried on next restart),
+		// the live provider is untouched, and the caller is told why. Folded
+		// together with any stranding warning, matching handleSaveSAMLConfig
+		// below — returning buildErr alone through handleError used to fall
+		// through to a bare 500 and silently drop the stranding warning
+		// computed above, the one case where the caller most needs to see
+		// it: the config LOOKS complete enough to pass validation, so
+		// whatever guard ran on field-completeness alone would have called
+		// it reachable and said nothing.
+		slog.Error("OIDC provider reload failed", "error", buildErr)
+		reloadWarning := fmt.Sprintf(
+			"OIDC config saved, but the identity provider could not be reached: %s", buildErr)
+		if warning != "" {
+			reloadWarning = warning + " " + reloadWarning
+		}
+		JSON(w, http.StatusOK, map[string]any{"warning": reloadWarning})
 		return
+	}
+	if provider != nil {
+		slog.Info("OIDC provider loaded", "issuer", cfg.IssuerURL)
 	}
 
 	resp := map[string]any{"ok": true}
@@ -106,6 +136,7 @@ func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
 	configured := s.adminSvc.SAMLConfigured(r.Context())
 	JSON(w, http.StatusOK, map[string]any{
+		"enabled":         s.adminSvc.SAMLEnabled(r.Context()),
 		"configured":      configured,
 		"metadata_url":    metadataURL,
 		"cert_pem":        certPEM,
@@ -166,7 +197,18 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	warning, err := s.refuseIfOrphaning(ctx, samlReachableAfter(metadataURL, certPEM, keyPEM), s.oidcReachableNow())
+	// enabled is not part of this endpoint's own body — it is set from the
+	// settings page's separate "Enable SAML login" toggle, which writes it
+	// through PATCH /admin/settings (see handleUpdateSettings) — so the
+	// current stored value is what applies here.
+	enabled := s.adminSvc.SAMLEnabled(ctx)
+
+	// Built against the CANDIDATE fields, before anything is persisted — same
+	// reasoning as handleSaveOIDCConfig: the guard needs to know whether SAML
+	// will really answer, not just whether the fields are non-empty.
+	reachable, mw, commit, buildErr := s.buildSAMLMiddleware(ctx, enabled, metadataURL, certPEM, keyPEM)
+
+	warning, err := s.refuseIfOrphaning(ctx, reachable, s.oidcReachableNow())
 	if err != nil {
 		handleError(w, err)
 		return
@@ -177,15 +219,21 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Hot-reload the SAML middleware. A failure here is non-fatal: the config is
-	// saved and will be retried on next restart, but we report it to the caller.
-	if err := s.reloadSAML(ctx); err != nil {
-		// The error is logged, not returned. The fetch reaches whatever URL the
-		// caller supplied, and the failure text distinguishes a closed port
-		// from a listening one, and names the root element of whatever it did
-		// reach ("expected <EntityDescriptor> but have <html>"). Echoed back,
-		// that turns this form into an internal port and protocol scanner.
-		slog.Error("SAML reload failed", "error", err)
+	// Commit the middleware already built above rather than re-fetching the
+	// IdP's metadata a second time: the guard's decision and the live effect
+	// must agree.
+	if commit {
+		s.commitSAMLMiddleware(mw)
+	}
+	if buildErr != nil {
+		// Non-fatal: the config is saved regardless (retried on next
+		// restart), the live handler is untouched, and the caller is told
+		// why. The fetch reaches whatever URL the caller supplied, and the
+		// failure text distinguishes a closed port from a listening one, and
+		// names the root element of whatever it did reach ("expected
+		// <EntityDescriptor> but have <html>"). Echoed back, that turns this
+		// form into an internal port and protocol scanner.
+		slog.Error("SAML reload failed", "error", buildErr)
 		reloadWarning := "SAML config saved, but the identity provider metadata could not be loaded. Check the metadata URL and the server log."
 		if warning != "" {
 			reloadWarning = warning + " " + reloadWarning
@@ -194,6 +242,9 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 			"warning": reloadWarning,
 		})
 		return
+	}
+	if mw != nil {
+		slog.Info("SAML middleware loaded", "metadata_url", metadataURL)
 	}
 
 	if warning != "" {

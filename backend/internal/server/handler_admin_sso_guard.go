@@ -31,6 +31,16 @@ import (
 // there would be the same unrecoverable-lockout shape this guard exists to
 // prevent, just imposed on somebody else's account instead of avoided.
 //
+// Called from every route that can change SAML/OIDC reachability: the two
+// dedicated PUT endpoints (with samlReachable/oidcReachable computed by
+// actually building the middleware/provider against the candidate config —
+// see buildSAMLMiddleware/buildOIDCProvider in server.go — so the decision
+// reflects what will really happen rather than an optimistic guess) and the
+// generic PATCH /admin/settings endpoint (see ssoSettingsWarning in
+// handler_admin_settings.go, which uses the simpler field-completeness read
+// since that path does not live-reload either provider at all — a
+// pre-existing gap, not something this guard needs to paper over).
+//
 // Not the same kind of guard as the *UnlessLastAdmin statements: those decide
 // and write a single row in one UPDATE, atomic against a concurrent guard of
 // the same kind. This reads the active-administrator list, decides, and only
@@ -64,43 +74,11 @@ func (s *Server) refuseIfOrphaning(ctx context.Context, samlReachable, oidcReach
 	), nil
 }
 
-// samlReachableAfter reports whether SAML login would work once these three
-// fields are saved — mirroring reloadSAML's own gate exactly: any field
-// blank clears the middleware unconditionally, with no fail-safe carve-out
-// for "incomplete" the way OIDC has one (see oidcReachableAfter). A
-// construction failure after fields are complete (bad metadata, a cert that
-// does not parse) is not modelled here — that leaves the previous middleware
-// in place per reloadSAML's own comment, so treating "fields complete" as
-// reachable is the same optimistic assumption oidcReachableAfter makes for a
-// discovery failure, not a new one.
-func samlReachableAfter(metadataURL, certPEM, keyPEM string) bool {
-	return metadataURL != "" && certPEM != "" && keyPEM != ""
-}
-
 // samlReachableNow reports SAML's live reachability, unaffected by whatever
 // this request is changing — used when the OIDC settings handler needs to
 // know SAML's side of the picture.
 func (s *Server) samlReachableNow() bool {
 	return s.samlHTTP() != nil
-}
-
-// oidcReachableAfter reports whether OIDC login would work once cfg is
-// saved and InitOIDC runs against it, mirroring InitOIDC's own fail-safe
-// exactly: disabling clears the provider unconditionally, but an enabled,
-// INCOMPLETE config leaves the existing provider untouched rather than
-// clearing it — so reachability in that case is whatever it already was, not
-// automatically false. A discovery failure against a complete config is not
-// modelled (same accepted optimism as samlReachableAfter): InitOIDC also
-// leaves the previous provider in place there, so "complete" is treated as
-// reachable.
-func (s *Server) oidcReachableAfter(cfg auth.OIDCConfig) bool {
-	if !cfg.Enabled {
-		return false
-	}
-	if cfg.IssuerURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
-		return s.oidcReachableNow()
-	}
-	return true
 }
 
 // oidcReachableNow reports OIDC's live reachability, unaffected by whatever
@@ -110,4 +88,26 @@ func (s *Server) oidcReachableNow() bool {
 	s.oidcMu.RLock()
 	defer s.oidcMu.RUnlock()
 	return s.oidcProvider != nil
+}
+
+// samlFieldsLookConfigured and oidcFieldsLookConfigured are the field-only
+// completeness check the dedicated PUT endpoints used to rely on exclusively,
+// before #300's own review round found that it can be wrong in the dangerous
+// direction: "the fields are all present" is not "the IdP actually answered",
+// and treating them the same let a save through that could silently orphan an
+// administrator the moment the real construction attempt failed. The two
+// dedicated endpoints no longer use these — they build the real
+// middleware/provider first and use that outcome (see server.go) — but
+// PATCH /admin/settings (handler_admin_settings.go) does not live-reload
+// either provider at all today, so there is no real construction attempt to
+// observe there; this field check is what it has, and it is still a real
+// improvement over no check at all for the settings-PATCH bypass #300's
+// review found (that path could set oidc_enabled=false, or blank any SAML
+// field, with zero refusal).
+func samlFieldsLookConfigured(enabled bool, metadataURL, certPEM, keyPEM string) bool {
+	return enabled && metadataURL != "" && certPEM != "" && keyPEM != ""
+}
+
+func oidcFieldsLookConfigured(cfg auth.OIDCConfig) bool {
+	return cfg.Enabled && cfg.IssuerURL != "" && cfg.ClientID != "" && cfg.ClientSecret != ""
 }

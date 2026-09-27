@@ -239,7 +239,7 @@ WHERE role = 'admin'
 -- name: ListActiveAdmins :many
 -- Every active administrator, in full — not a count, because #300's guard has
 -- to know WHICH of them still has a way to authenticate after an SSO
--- settings change, not just how many there are. See settings_sso_guard.go.
+-- settings change, not just how many there are. See handler_admin_sso_guard.go.
 SELECT * FROM users
 WHERE role = 'admin'
   AND deleted_at IS NULL

@@ -94,6 +94,14 @@ func (s *Service) SAMLEnabled(ctx context.Context) bool {
 	return v
 }
 
+// SetSAMLEnabled persists whether SAML authentication is enabled. Read by
+// reloadSAML (see server.go) as of #300 — before that it was stored and
+// never consulted, so the settings page's own "Enable SAML login" toggle
+// wrote a value nothing read.
+func (s *Service) SetSAMLEnabled(ctx context.Context, v bool) error {
+	return s.SetBool(ctx, KeySAMLEnabled, v)
+}
+
 // GetSAMLConfig returns the three SAML SP fields stored in settings.
 // Missing keys are returned as empty strings (treated as unconfigured).
 func (s *Service) GetSAMLConfig(ctx context.Context) (metadataURL, certPEM, keyPEM string) {

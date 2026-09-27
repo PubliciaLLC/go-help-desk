@@ -130,7 +130,19 @@ function SAMLSection() {
   }
 
   const saveMutation = useMutation({
-    mutationFn: () => saveSAMLConfig({ metadata_url: metadataURL, cert_pem: certPEM, key_pem: keyPEM }),
+    // key_pem is only included when this session actually uploaded or typed
+    // one: getSAMLConfig never returns the stored private key at all (see its
+    // own comment), so the local keyPEM state starts blank and stays that way
+    // until the admin replaces it. Sending it as "" whenever it was merely
+    // left alone used to backfill from the stored value on the server side —
+    // that backfill no longer happens (see #300), so doing so now would
+    // clear the working key on every ordinary save that isn't also a key
+    // rotation.
+    mutationFn: () => saveSAMLConfig({
+      metadata_url: metadataURL,
+      cert_pem: certPEM,
+      ...(keyPEM ? { key_pem: keyPEM } : {}),
+    }),
     onSuccess: (res) => {
       setSaved(true)
       setSaveError('')

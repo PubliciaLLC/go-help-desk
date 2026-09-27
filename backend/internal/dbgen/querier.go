@@ -363,7 +363,7 @@ type Querier interface {
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	// Every active administrator, in full — not a count, because #300's guard has
 	// to know WHICH of them still has a way to authenticate after an SSO
-	// settings change, not just how many there are. See settings_sso_guard.go.
+	// settings change, not just how many there are. See handler_admin_sso_guard.go.
 	ListActiveAdmins(ctx context.Context) ([]User, error)
 	ListActiveTags(ctx context.Context) ([]Tag, error)
 	ListAllTags(ctx context.Context) ([]Tag, error)

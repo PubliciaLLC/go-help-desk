@@ -3,7 +3,7 @@ package auth
 
 import (
 	"context"
-	"crypto/rsa"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -78,9 +78,18 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 		return nil, fmt.Errorf("fetching IdP metadata from %s: %w", cfg.MetadataURL, err)
 	}
 
+	// samlsp.Options wants a crypto.Signer, not specifically an RSA key —
+	// tls.X509KeyPair above happily parses and validates an ECDSA or Ed25519
+	// pair too, so asserting straight to *rsa.PrivateKey turned a
+	// well-formed non-RSA keypair into an unrecovered panic (a 500 with no
+	// useful message) instead of the plain configuration error this is.
+	signer, ok := keyPair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("SAML private key does not support signing (got %T)", keyPair.PrivateKey)
+	}
 	opts := samlsp.Options{
 		URL:         *spURL,
-		Key:         keyPair.PrivateKey.(*rsa.PrivateKey),
+		Key:         signer,
 		Certificate: keyPair.Leaf,
 		IDPMetadata: idpMeta,
 	}
