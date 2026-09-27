@@ -31,11 +31,17 @@ type Service struct {
 	// audit records factor- and credential-clearing actions; see WithAuditStore.
 	// Nil in most test harnesses, which is fine — writeAuditEntry no-ops without it.
 	audit audit.Store
+
+	// log records an audit write failure; see WithLogger and writeAuditEntry.
+	// Injected rather than reached for as the global log/slog functions, the
+	// same way webauthn.Service takes one, so this stays an explicit
+	// dependency rather than a hidden one.
+	log *slog.Logger
 }
 
 // NewService returns a Service backed by the given Store.
 func NewService(store Store, opts ...Option) *Service {
-	s := &Service{store: store, hashCost: bcrypt.DefaultCost}
+	s := &Service{store: store, hashCost: bcrypt.DefaultCost, log: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -97,6 +103,17 @@ func WithAuditStore(store audit.Store) Option {
 	}
 }
 
+// WithLogger overrides where writeAuditEntry reports a write failure.
+// Defaults to slog.Default(), the same fallback webauthn.NewService uses;
+// nil is treated the same as omitting the option.
+func WithLogger(log *slog.Logger) Option {
+	return func(s *Service) {
+		if log != nil {
+			s.log = log
+		}
+	}
+}
+
 // writeAuditEntry records e if an audit store was configured.
 //
 // A write failure here is logged and swallowed rather than returned: an
@@ -105,7 +122,8 @@ func WithAuditStore(store audit.Store) Option {
 // applied must not be reported as failed, or retried, because a separate
 // logging table had a bad moment. Domain code otherwise never logs — this is
 // the one exception, matching the same trade-off webauthn.Service makes for
-// its own non-fatal anomaly signal.
+// its own non-fatal anomaly signal, through the same shape: an injected
+// *slog.Logger rather than the global log/slog functions.
 func (s *Service) writeAuditEntry(ctx context.Context, e audit.Entry) {
 	if s.audit == nil {
 		return
@@ -113,7 +131,7 @@ func (s *Service) writeAuditEntry(ctx context.Context, e audit.Entry) {
 	e.ID = uuid.New()
 	e.CreatedAt = time.Now()
 	if err := s.audit.Create(ctx, e); err != nil {
-		slog.ErrorContext(ctx, "writing audit entry failed",
+		s.log.ErrorContext(ctx, "writing audit entry failed",
 			"entity_type", e.EntityType, "entity_id", e.EntityID, "action", e.Action, "error", err)
 	}
 }

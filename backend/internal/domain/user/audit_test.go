@@ -1,8 +1,10 @@
 package user_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
@@ -96,6 +98,43 @@ func TestResetMFA_AuditWriteFailureDoesNotFailTheReset(t *testing.T) {
 	require.False(t, got.MFAEnabled, "the reset itself must still have applied")
 }
 
+// The logger is an explicit dependency (WithLogger), not the global log/slog
+// package — mirroring webauthn.Service. This confirms an audit write failure
+// actually reaches the logger the caller configured, not slog.Default()'s
+// destination the test cannot see.
+func TestResetMFA_AuditWriteFailureIsLoggedToTheConfiguredLogger(t *testing.T) {
+	store := newFakeUserStore()
+	au := &fakeAuditStore{err: errors.New("audit table is down")}
+	target := seedActiveUser(store)
+
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+
+	svc := user.NewService(store, user.WithAuditStore(au), user.WithLogger(log))
+	require.NoError(t, svc.ResetMFA(context.Background(), target.ID, nil))
+
+	require.Contains(t, buf.String(), "audit table is down")
+	require.Contains(t, buf.String(), "mfa_reset")
+}
+
+// A store failure — including "no such row", which is what the real
+// Postgres-backed store reports for a nonexistent target — must refuse the
+// request and write nothing. The real store used to get this wrong (an
+// UPDATE matching zero rows reported no error), so ResetMFA wrote an audit
+// entry for an account that never existed; see userstore's ClearMFA/
+// AdminSetPassword and #306's adversarial review. This pins the contract
+// ResetMFA itself must hold regardless of what the store does.
+func TestResetMFA_StoreFailureWritesNoAuditEntry(t *testing.T) {
+	store := newFakeUserStore()
+	au := &fakeAuditStore{}
+
+	svc := user.NewService(store, user.WithAuditStore(au))
+	err := svc.ResetMFA(context.Background(), uuid.New(), nil)
+
+	require.Error(t, err, "clearing MFA on an account that does not exist must fail")
+	require.Empty(t, au.entries, "a failed clear must not be recorded as having happened")
+}
+
 func TestAdminSetPassword_RecordsWhoDidIt(t *testing.T) {
 	store := newFakeUserStore()
 	au := &fakeAuditStore{}
@@ -125,4 +164,19 @@ func TestAdminSetPassword_RefusalWritesNoAuditEntry(t *testing.T) {
 
 	require.Error(t, err, "below MinPasswordLength must still be refused")
 	require.Empty(t, au.entries, "a refused change is not a change; nothing happened to record")
+}
+
+// Same contract as TestResetMFA_StoreFailureWritesNoAuditEntry, for the
+// other store call. See that test's comment for why this matters: the real
+// store used to report success for a nonexistent target.
+func TestAdminSetPassword_StoreFailureWritesNoAuditEntry(t *testing.T) {
+	store := newFakeUserStore()
+	au := &fakeAuditStore{}
+	actorID := uuid.New()
+
+	svc := user.NewService(store, user.WithAuditStore(au))
+	err := svc.AdminSetPassword(context.Background(), uuid.New(), "a-new-passphrase", &actorID)
+
+	require.Error(t, err, "resetting the password of an account that does not exist must fail")
+	require.Empty(t, au.entries, "a failed reset must not be recorded as having happened")
 }

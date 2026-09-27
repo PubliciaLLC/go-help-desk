@@ -52,18 +52,50 @@ func TestAdminPasswordReset_WritesAnAuditEntryNamingTheAdmin(t *testing.T) {
 
 // A rejected reset attempt (bad target, wrong shape) must not still leave
 // something in the trail claiming it happened.
+//
+// Deliberately a logged-in SESSION, not h.doAsAdmin's API key: an API key
+// hits denyMachineTargetingAdmin's own GetByID 404 before ResetMFA is ever
+// called, which made an earlier version of this test pass without
+// exercising ResetMFA's nonexistent-target behavior at all. A real session
+// reaches the handler's ResetMFA call directly. Found by adversarial review
+// of #306: ClearMFA/AdminSetPassword were sqlc :exec queries, so an UPDATE
+// matching zero rows reported no error, and the audit entry was written
+// unconditionally — a permanent, falsely-attributed row for an account that
+// never existed.
 func TestAdminResetMFA_ANonexistentTargetWritesNoAuditEntry(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 	bogus := uuid.New()
+	s := loggedInAdmin(t, h)
 
-	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+bogus.String(),
+	res, body := s.send(t, http.MethodPatch, "/api/v1/admin/users/"+bogus.String(),
 		map[string]any{"reset_mfa": true})
 	res.Body.Close()
-	require.NotEqual(t, http.StatusOK, res.StatusCode)
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "body: %s", body)
 
 	entries, err := h.auditStore.ListByEntity(ctx, "user", bogus, 10, 0)
 	require.NoError(t, err)
-	require.Empty(t, entries)
+	require.Empty(t, entries, "a 404'd reset must not still be recorded as having happened")
+}
+
+// The same defect, on the password-reset path — worse there, because the
+// handler had no re-fetch afterward to catch it: a nonexistent target got a
+// full 204 success.
+func TestAdminPasswordReset_ANonexistentTargetFailsAndWritesNoAuditEntry(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	bogus := uuid.New()
+	s := loggedInAdmin(t, h)
+
+	res, body := s.send(t, http.MethodPost, "/api/v1/admin/users/"+bogus.String()+"/password",
+		map[string]any{"new_password": "a-brand-new-password"})
+	res.Body.Close()
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
+		"a reset against an account that does not exist must not answer success: body: %s", body)
+
+	entries, err := h.auditStore.ListByEntity(ctx, "user", bogus, 10, 0)
+	require.NoError(t, err)
+	require.Empty(t, entries, "a failed reset must not still be recorded as having happened")
 }

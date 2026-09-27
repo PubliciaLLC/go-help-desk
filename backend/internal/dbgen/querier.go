@@ -17,7 +17,9 @@ type Querier interface {
 	AddGroupMember(ctx context.Context, arg AddGroupMemberParams) error
 	AddGroupScope(ctx context.Context, arg AddGroupScopeParams) error
 	AddTicketTag(ctx context.Context, arg AddTicketTagParams) error
-	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error
+	// :execrows, for the same reason as ClearMFA above: a nonexistent id
+	// reported success (204, no error) and still wrote an audit entry.
+	AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) (int64, error)
 	// Binds an OIDC subject to a local account found by email address, and
 	// reports whether it applied.
 	//
@@ -79,7 +81,13 @@ type Querier interface {
 	//                             the next single attempt re-locks immediately.
 	//   not locked                count it, and lock once the budget is spent.
 	ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams) (ClaimMFAAttemptRow, error)
-	ClearMFA(ctx context.Context, id uuid.UUID) error
+	// :execrows, not :exec: an UPDATE matching zero rows still reports no error,
+	// so a nonexistent id looked like a successful clear. Service.ResetMFA writes
+	// an audit entry once this returns without error, and #306's own adversarial
+	// review caught that: a nonexistent target got a permanent, falsely-attributed
+	// audit row for an account that never existed. The caller checks rows
+	// affected and reports ErrNotFound when it is zero.
+	ClearMFA(ctx context.Context, id uuid.UUID) (int64, error)
 	// Called after a correct code. NIST SP 800-63B has the verifier disregard
 	// prior failed attempts once the user authenticates successfully.
 	ClearMFAFailures(ctx context.Context, id uuid.UUID) error

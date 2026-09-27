@@ -113,7 +113,14 @@ func (s *Store) Enable(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
-	return s.q.ClearMFA(ctx, id)
+	n, err := s.q.ClearMFA(ctx, id)
+	if err != nil {
+		return fmt.Errorf("clearing MFA for user %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return nil
 }
 
 // ClaimMFAAttempt takes one attempt off the account's TOTP budget before the
@@ -158,7 +165,14 @@ func (s *Store) GetMFALock(ctx context.Context, id uuid.UUID) (int, *time.Time, 
 }
 
 func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
-	return s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
+	n, err := s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
+	if err != nil {
+		return fmt.Errorf("setting password for user %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return nil
 }
 
 func (s *Store) List(ctx context.Context, limit, offset int) ([]user.User, error) {
