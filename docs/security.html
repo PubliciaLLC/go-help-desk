@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Security — Go Help Desk</title>
+  <meta name="description" content="Go Help Desk security: the published advisories and which releases they affect, how to report a vulnerability, and what the server does with an uploaded file." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/security.html" />
+  <meta property="og:site_name" content="Go Help Desk" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/security.html" />
+  <meta property="og:title" content="Security — Go Help Desk" />
+  <meta property="og:description" content="Go Help Desk security: the published advisories and which releases they affect, how to report a vulnerability, and what the server does with an uploaded file." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:site" content="@go_help_desk" />
+  <meta name="twitter:title" content="Security — Go Help Desk" />
+  <meta name="twitter:description" content="Go Help Desk security: the published advisories and which releases they affect, how to report a vulnerability, and what the server does with an uploaded file." />
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+  <link rel="stylesheet" href="../style.css" />
+  <style>
+    .adv { border:1px solid var(--border); border-radius:8px; padding:1.1rem 1.25rem; margin-bottom:0.9rem; background:var(--bg); }
+    .adv-head { display:flex; gap:0.6rem; align-items:baseline; flex-wrap:wrap; margin-bottom:0.4rem; }
+    .adv-head h3 { font-size:0.98rem; margin:0; }
+    .sev { font-size:0.68rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;
+           padding:0.12rem 0.45rem; border-radius:4px; white-space:nowrap; }
+    .sev-critical { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+    .sev-medium   { background:#fffbeb; color:#92400e; border:1px solid #fde68a; }
+    .adv-meta { font-size:0.78rem; color:var(--muted); font-family:var(--mono); }
+    .adv p { font-size:0.9rem; color:var(--ink-2); margin:0.35rem 0 0.6rem; line-height:1.55; }
+    .fixed-in { font-size:0.82rem; color:var(--ink-2); }
+    .fixed-in strong { color:var(--ink); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html">Docs</a></li>
+      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/security.html" style="color:var(--blue);">Security</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul>
+      <li><a href="security.html" class="active">Overview</a></li>
+      <li><a href="#advisories">Advisories</a></li>
+      <li><a href="#reporting">Reporting a vulnerability</a></li>
+      <li><a href="#supported">Supported versions</a></li>
+      <li><a href="attachment-security.html">Attachment security</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading</div>
+    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+  <h1>Security</h1>
+  <p style="font-size:1.02rem;color:var(--ink-2);">
+    Every security issue we have found or been told about is published as a GitHub advisory, with
+    the versions it affects and the release that fixes it. This page lists them, says how to report
+    one, and points at the deeper writeups.
+  </p>
+
+  <div style="border:1px solid var(--border);border-left:3px solid var(--blue);border-radius:6px;padding:0.9rem 1.1rem;margin:1.5rem 0;background:var(--bg-2);">
+    <strong>Run 1.2.0 or later.</strong>
+    Everything below is fixed in <strong>v1.2.0</strong>, including for anyone still on v1.1.1.
+    Upgrading is not a drop-in swap — credentials created in the 1.1.1 admin UI stop working, and
+    everyone is signed out once. <a href="upgrading-1.2.0.html">Read the upgrade notes first →</a>
+  </div>
+
+  <h2 id="advisories">Advisories</h2>
+  <p>Newest first. Severity is ours, assigned with GitHub's CVSS calculator.</p>
+
+  <div class="adv">
+    <div class="adv-head">
+      <span class="sev sev-critical">Critical</span>
+      <h3>Authentication and authorization bypasses</h3>
+    </div>
+    <div class="adv-meta">GHSA-p2wx-wvfr-7h3p · affects ≤ 1.1.1 · published 15 Sep 2026</div>
+    <p>
+      Eight defects in one advisory. MFA could be defeated with a password alone; signed-in users
+      could read and write tickets they had no access to; API key and OAuth scopes were never
+      enforced, so any credential acted with full authority; no credential could be revoked; and
+      any signed-in user could stop the server.
+    </p>
+    <div class="fixed-in">Fixed in <strong>v1.2.0</strong> ·
+      <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">Read the advisory →</a>
+    </div>
+  </div>
+
+  <div class="adv">
+    <div class="adv-head">
+      <span class="sev sev-medium">Medium</span>
+      <h3>A regular user could read and post any ticket's replies</h3>
+    </div>
+    <div class="adv-meta">GHSA-q9g5-2fp5-hmmx · affects ≤ 1.1.0 · published 15 Sep 2026</div>
+    <p>
+      Broken function-level authorization: <code>handleListReplies</code> and
+      <code>handleAddReply</code> omitted the ownership check their sibling handlers enforced, so
+      any signed-in user could read any ticket's replies — including internal staff-only notes —
+      and post replies to other people's tickets.
+    </p>
+    <div class="fixed-in">Fixed in <strong>v1.1.1</strong> ·
+      <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-q9g5-2fp5-hmmx">Read the advisory →</a>
+    </div>
+  </div>
+
+  <div class="adv">
+    <div class="adv-head">
+      <span class="sev sev-critical">Critical</span>
+      <h3>Unauthenticated MCP ticket access via <code>/mcp/</code></h3>
+    </div>
+    <div class="adv-meta">GHSA-5g72-m483-3v63 · affects 1.0.1 · published 15 Sep 2026</div>
+    <p>
+      The MCP endpoint served ticket reads and modifications with no authentication at all.
+    </p>
+    <div class="fixed-in">Fixed in <strong>v1.1.0</strong> ·
+      <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-5g72-m483-3v63">Read the advisory →</a>
+    </div>
+  </div>
+
+  <div class="adv">
+    <div class="adv-head">
+      <span class="sev sev-critical">Critical</span>
+      <h3>MCP server allowed impersonated replies and assignment hijack</h3>
+    </div>
+    <div class="adv-meta">GHSA-26xr-728v-639v · affects ≤ 1.1.0 · published 13 Sep 2026</div>
+    <p>
+      With no authentication on the MCP server, anyone who could reach it could read tickets, post
+      replies as somebody else, and reassign work.
+    </p>
+    <div class="fixed-in">Fixed in <strong>v1.1.1</strong> ·
+      <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-26xr-728v-639v">Read the advisory →</a>
+    </div>
+  </div>
+
+  <div class="adv">
+    <div class="adv-head">
+      <span class="sev sev-critical">Critical</span>
+      <h3>MCP server exposed unauthenticated read and write to all tickets</h3>
+    </div>
+    <div class="adv-meta">GHSA-2x4f-j4jv-m2cm · affects ≤ 1.1.1 · published 12 Sep 2026</div>
+    <p>
+      The same class of exposure as the two above, covering every ticket in the instance.
+    </p>
+    <div class="fixed-in">Fixed in <strong>v1.2.0</strong> ·
+      <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm">Read the advisory →</a>
+    </div>
+  </div>
+
+  <h2 id="reporting">Reporting a vulnerability</h2>
+  <p><strong>Please do not open a public issue.</strong> Report privately through GitHub:</p>
+  <p><a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/new" class="btn btn-primary btn-sm">Report a vulnerability privately →</a></p>
+  <p>Include as much as you can: what the vulnerability is and what it lets somebody do, how to
+     reproduce it, the affected versions, how the instance is deployed, and any fix you would
+     suggest.</p>
+
+  <h2 id="supported">Supported versions</h2>
+  <p>Security fixes are issued for the latest <code>v1.x</code> minor release. Older minor versions
+     are not backported, and pre-1.0 builds are not supported.</p>
+  <table class="param-table">
+    <thead><tr><th>Version</th><th>Supported</th></tr></thead>
+    <tbody>
+      <tr><td>1.x</td><td>Yes</td></tr>
+      <tr><td>&lt; 1.0</td><td>No</td></tr>
+    </tbody>
+  </table>
+
+  <h2 id="uploads">What happens to an uploaded file</h2>
+  <p>Attachments get their own writeup — what the server detects, the storage tiers, the quarantine
+     archive, the optional reputation lookup, and the things it deliberately does not do (there is
+     no previewer, on purpose).</p>
+  <p><a href="attachment-security.html">Attachment security →</a></p>
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex; gap:1.5rem;">
+      <a href="../docs.html">Docs</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a>
+      <a href="https://github.com/PubliciaLLC/go-help-desk/issues">Issues</a>
+      <a href="https://x.com/go_help_desk" rel="me">X</a>
+      <a href="https://ko-fi.com/erikpt">Support</a>
+    </span>
+  </div>
+</footer>
+</body>
+</html>

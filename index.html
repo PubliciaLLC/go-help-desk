@@ -65,7 +65,7 @@
       <li><a href="docs.html">Docs</a></li>
       <li><a href="/docs/api.html">API</a></li>
       <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
-      <li><a href="/docs/attachment-security.html">Security</a></li>
+      <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk" class="btn btn-outline btn-sm">Star on GitHub</a></li>
     </ul>
@@ -73,42 +73,15 @@
 </nav>
 
 <!-- ── Hero ──────────────────────────────────────────────────────────────── -->
-<!-- Security notice. Remove once v1.2.0 has been out long enough that
-     operators on affected versions have had a fair chance to upgrade. -->
-<div style="background:#7f1d1d;color:#fff;padding:.75rem 0;font-size:.9rem;">
-  <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
-    <strong>Security update:</strong>
-    <span style="flex:1;min-width:16rem;">
-      <strong>v1.2.0 is the recommended release for everyone, including anyone already on v1.1.1.</strong>
-      It closes eight authentication and authorization defects present in every version up to and
-      including v1.1.1: MFA could be defeated with a password alone, signed-in users could read and
-      write tickets they had no access to, API key and OAuth scopes were never enforced, and a
-      credential could not be revoked. Upgrade now.
-    </span>
-    <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p"
-       style="color:#fff;text-decoration:underline;white-space:nowrap;">Read the advisory →</a>
-  </div>
-</div>
+<!-- v1.3.0-beta, in a quiet colour: the beta is an invitation rather than a
+     recommendation, and 1.2.0 is still what everyone should be running.
+     Remove when 1.3.0 is tagged.
 
-<!-- Upgrading is not a drop-in swap: enforcing scopes retires every credential
-     the 1.1.1 admin UI created. Operators need that before they upgrade, not
-     after their integrations stop. -->
-<div style="background:#78350f;color:#fff;padding:.6rem 0;font-size:.85rem;">
-  <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
-    <strong>Before you upgrade:</strong>
-    <span style="flex:1;min-width:16rem;">
-      Every API key and OAuth client created through the v1.1.1 admin UI stops working: it was saved
-      with no scopes, and scopes are now enforced. Re-issue them with the scopes they need. Everyone
-      is also signed out once, because sessions moved server-side.
-    </span>
-    <a href="docs/upgrading-1.2.0.html"
-       style="color:#fff;text-decoration:underline;white-space:nowrap;">Upgrade notes →</a>
-  </div>
-</div>
-
-<!-- v1.3.0-beta. Deliberately below the two 1.2.0 notices and in a quieter
-     colour: 1.2.0 is what everyone should be running, and the beta is an
-     invitation rather than a recommendation. Remove when 1.3.0 is tagged. -->
+     This used to sit below two dark banners carrying the 1.2.0 security
+     advisory and its upgrade warning. Those are gone: the nav now has
+     Upgrading and Security as top-level links, which says the same thing on
+     every page instead of only the home page, and says "important" rather
+     than "alarming". -->
 <div style="background:#fffbeb;color:#92400e;padding:.6rem 0;font-size:.85rem;border-bottom:1px solid #f59e0b;">
   <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
     <strong>In beta:</strong>
