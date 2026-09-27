@@ -249,6 +249,264 @@ separate value for each direction:
 - Available for all roles by default
 - **MFA** (optional toggle in admin settings): TOTP-based (Google Authenticator, Authy, etc.). When enabled, users enroll via QR code on next login. Admin can enforce MFA for specific roles or all users.
 
+### Passkeys (WebAuthn)
+
+A second factor alongside TOTP, and later an alternative to the password
+itself. TOTP does not change and does not go away; an instance that upgrades
+into this notices nothing until somebody registers a key.
+
+**What this claims, and what it does not.** The property being bought here is
+**phishing-resistance**: a WebAuthn credential is bound to the origin it was
+registered against, so a convincing look-alike login page cannot use it. That
+matters on a help desk because a staff account reads every ticket, every
+attachment and every customer's details, and TOTP does not have this property
+— a fake page collects the six digits and replays them inside the window.
+
+It is deliberately **not** claiming "something you have" in the hardware sense.
+A passkey today is very often a *synced* credential — iCloud Keychain, Google
+Password Manager — which lives wherever that cloud account lives rather than on
+one device. That is a weaker possession story than a YubiKey, and pretending
+otherwise in this document would make an operator believe something untrue
+about their own instance. Phishing-resistance holds for every credential this
+accepts, synced or not; physical possession does not, so it is not claimed.
+
+**Storage.** A `webauthn_credentials` table, not more columns on `users`: one
+person registers several keys on purpose — a laptop, a phone, a spare in a
+drawer — and that is the feature rather than an edge case. Each row holds the
+credential id, the public key, the sign count, the transports, the AAGUID, the
+backup-eligible and backup-state flags, a name its owner chose, and created and
+last-used timestamps.
+
+The name is optional. An unnamed credential is shown by what can be derived
+from its transports and its age — "Security key, added 3 March", "This device,
+added 3 March" for an `internal` authenticator — which is more use than a bare
+date and leaks nothing the AAGUID would.
+
+`credential_id` carries a **unique constraint in the schema**, not a check in
+Go. The specification says credential ids are globally unique; "the
+specification says so" is exactly the kind of claim this codebase puts a
+constraint behind, and a read-then-insert has a window between the read and the
+insert whatever it reads.
+
+Three of those columns are worth explaining, because two of them are read by
+nothing today:
+
+- **`transports`** is not stored for a future screen. It goes back out on the
+  sign-in challenge as `allowCredentials[].transports`, which lets the browser
+  skip authenticators that cannot satisfy the request instead of prompting for
+  every method the account has ever registered. It has a job from the first
+  release.
+- **`aaguid`** identifies the authenticator model. Nothing reads it yet. It is
+  kept because it is free at registration and unrecoverable afterwards, the
+  same reasoning that keeps the unused CIRCL response fields in
+  `internal/reputation/circl.go`.
+- **`backup_eligible` / `backup_state`** are the WebAuthn authenticator-data
+  flags that say whether a credential is synced. They are the only way an
+  administrator auditing this instance can tell a hardware key from an iCloud
+  passkey — which is precisely the distinction the paragraph above turns on.
+  Not captured at registration, the question is unanswerable forever after.
+
+**Sign count is stored and not enforced.** The counter exists in the
+specification for clone detection, but most modern authenticators return zero
+always, and a naive "it must increase" rule locks those people out for nothing.
+One case is worth noticing: a counter that was previously non-zero and then
+goes backwards is a genuine clone signal with no false-positive cost. That is
+logged and gates nothing — the same shape as `KnownMalicious` in `circl.go`,
+where a field is decoded, recorded and deliberately never allowed to change a
+verdict.
+
+**Library.** `github.com/go-webauthn/webauthn`. The registration and assertion
+ceremonies have many ways to be subtly wrong, and being exactly right is the
+whole value of the feature. Nothing here is hand-rolled.
+
+**Enrolment** follows the shape TOTP arrived at the hard way.
+`POST /me/passkeys/register/start` mints a challenge and stages it **in the
+session**; `POST /me/passkeys/register/finish` verifies the attestation and
+writes the credential. Nothing is written to the account until the person has
+proved they hold the key — the reason `GenerateMFASecret` and
+`ConfirmMFAEnrollmentWith` replaced the older `EnrollMFA`, which wrote an
+unconfirmed secret straight over the authenticator its owner was still using.
+
+The staged challenge **expires, and the expiry is checked when the assertion
+comes back**. A challenge left sitting in a long-lived session is a replay
+window that stays open as long as the tab does. It expires on a fixed deadline
+from when it was minted and does not slide forward on use, the same rule the
+MFA lockout follows.
+
+Both routes sit inside `meRouter`'s `DenyMachineCredentials` group — an API key
+or OAuth client may not touch how its owner authenticates — and **outside**
+`RequireMFA`, for the same reason TOTP enrolment is outside it: somebody who
+has been told to enrol must be able to finish enrolling.
+
+**Signing in.** `POST /auth/local/passkey/start` and
+`POST /auth/local/passkey/finish` sit beside `/auth/local/mfa/verify` and do
+what it does: on a valid assertion, re-issue the session with `MFAPassed` true.
+The gate downstream is `Actor.MFAPassed`, which already exists and is already
+enforced by `RequireMFA` everywhere it matters, so no route learns a new idea.
+
+**`handleLocalLogin` has to grow a third answer, and this is the one place the
+existing machinery does not simply absorb passkeys.** It currently computes two
+independent booleans and returns them as `mfa_needed` and
+`mfa_enrollment_needed`:
+
+```go
+mfaNeeded := mfaEnabled && u.MFAEnabled
+mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(...)
+```
+
+Both key off `u.MFAEnabled`, which is the TOTP column and not "this account has
+a second factor". Trace an account with one registered passkey, no TOTP, and a
+role that enforces MFA, signing in for the *second* time — after it has already
+enrolled. `u.MFAEnabled` is still false, so the server answers "you still need
+to enrol" and never "assert your passkey". There is no wire outcome for *has a
+factor, must use it, and it is not TOTP*, so that account can never sign in
+again.
+
+This is a third credential state, not a flag that fails to clear, and the pair
+of booleans cannot express it. Login answers with an explicit state — no factor
+required, already satisfied, verify TOTP, verify passkey, or enrol — and the
+login page learns the new one. It is part of the first release, because
+"register a passkey" without "sign in with it" is not a feature.
+
+**Satisfying the MFA requirement.** `MFARequiredFor(role)` is satisfied by a
+TOTP enrolment **or** at least one registered passkey. Refusing the
+phishing-resistant factor because it is not the older one would be perverse.
+This means `mfa_enabled` and `mfa_enforced_roles` keep their current meanings
+and an operator has nothing to reconfigure.
+
+**`last_used_at` is written off the authentication path.** It answers "which of
+these keys is still in use", which is what somebody wants to know before
+removing one and cannot be reconstructed afterwards — but it is a timestamp
+nothing enforces, and a sign-in should not wait on it or fail because of it.
+It follows the shape already used for webhook dispatch in
+`internal/server/notify/webhook.go`: handed to a goroutine with a context that
+does not belong to the request, so cancelling the response cannot cancel the
+write. Approximately right is right enough for this field.
+
+**Losing a key.** Two ways, and only one of them is built.
+
+Its owner removes it themselves, from their own account page, and registers a
+new one. That is what `DELETE /me/passkeys/{id}` is for, and it is the ordinary
+case: somebody replacing a phone still has the old one, or still has another
+factor, and needs nobody's help.
+
+An administrator doing it for somebody else is **not built yet**. Every passkey
+route lives under `/me`; `adminRouter` has none, and no admin handler reaches
+the credential store. So when the owner cannot do it themselves — the key is
+gone, and it was their only factor — the answer today is `reset-factors` on the
+server, described below, which clears every factor rather than one credential.
+
+An earlier draft of this paragraph said an administrator removes a credential
+from the user's admin page, "the same control surface as Reset MFA", in the
+present tense. That control surface does not exist. It is the right place for
+it when it is built, and saying so as though it already were is how an
+operator ends up looking for a button that was never written. Found by the
+session-B review of [#302](https://github.com/PubliciaLLC/go-help-desk/pull/302).
+
+**Self-recovery covers an account with *nothing* enrolled, and not a lost
+key.** The distinction matters and an earlier draft of this section ran the two
+together.
+
+Enrolment lives outside `RequireMFA`, so somebody whose factors have been
+cleared — by an administrator, or because they never had any — signs in with
+their password, reaches enrolment and recovers alone. That is pinned by
+`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`.
+
+An account that still *has* a registered factor is a different case, and both
+enrolment doors refuse it: a session that has not passed MFA cannot add or
+remove a factor on an account that already has one. That refusal is not
+optional. Without it, somebody holding only the password registers their own
+key or enrols their own authenticator and thereby obtains the second factor —
+passing the gate rather than breaking it.
+
+The consequence is a genuine lockout, and it should be stated rather than
+discovered: **an administrator whose registered key is lost cannot recover
+alone.** The recovery is `reset-factors` on the server, described below — not
+an administrator clearing the credential for them, which is not built. For a
+*sole* administrator there would be no other administrator to ask in any case,
+and setup does not reopen.
+
+(This paragraph said "another administrator removes the credential from their
+admin page" until the correction in the "Losing a key" section above. Two
+paragraphs of the same section then disagreed, which is worse than either
+being wrong alone. Found by the pre-merge gate on #302.)
+
+This is not new with passkeys. `GenerateMFASecret` has refused re-enrolment
+for a TOTP-protected account since the re-enrolment fix, so a sole
+administrator who loses their authenticator is in exactly the same position
+today. Passkeys extend the same lockout to a second kind of factor rather than
+creating it.
+
+**The guard's fourth case still belongs with passwordless, and an earlier
+draft of this section was wrong in both directions about why.**
+
+It first said the case could wait because self-recovery covers a lost key. It
+does not: an account that still has a registered factor is refused at both
+enrolment doors, deliberately. Then it said the case was therefore reachable
+today. That is also wrong, and checking what is actually a way *in* settles
+it: the entry points are local login, SAML and OIDC. A second factor gates a
+session that has already authenticated; it is not a way in by itself. So
+removing somebody's last second factor cannot strand them while a first factor
+exists, and there is no operation for a fourth case to refuse yet.
+
+What does strand somebody today is losing a registered key, which
+`reset-factors` above answers, and one thing that is not about second factors
+at all: an account provisioned by an identity provider has no password, so
+switching that provider off removes its only way in while leaving the row and
+the administrator count untouched. Every existing guard passes. Tracked as
+[#300](https://github.com/PubliciaLLC/go-help-desk/issues/300).
+
+**The way back in is a command run on the server**, not a recovery code and
+not a second factor required up front:
+
+```
+go-help-desk reset-factors <email>
+```
+
+It clears the account's TOTP enrolment and removes its registered passkeys, so
+the next sign-in reaches enrolment and the person starts again. It is the
+answer for every cause of lockout rather than only a lost key, and for the
+sole administrator it is the only answer there can be, since the web path must
+keep refusing — a password alone being enough to replace somebody's second
+factor is the bypass the guards exist to prevent.
+
+It grants nothing new. Anyone able to run it already has the filesystem and
+the database credentials, which is to say they already have everything. That
+is what makes it the right channel: it does not widen the web-facing surface
+at all, which a recovery code — another secret at rest, worth stealing, and
+the exact property passkeys exist to remove — would.
+
+**This command is a precondition for the guard's fourth case, not its
+trigger.** "Refuse to remove the last way in" is only half an answer without
+"and here is how you recover when it happens anyway"; building either alone
+leaves an operator holding the wrong half. So the command comes first, and the
+fourth case still arrives with passwordless, for the reason given further up:
+until the password stops being a way in, removing a second factor strands
+nobody, and there is no operation for the fourth case to refuse.
+
+(An earlier draft of this line said the fourth case "ships with that command
+and not before", which read as though it ships now and contradicted the
+paragraph above. Found by the pre-merge gate on #302.)
+
+**That test is a precondition on passwordless sign-in, not a formality.** When
+the password stops being a way in, self-recovery stops working, and removing an
+administrator's last credential becomes the same permanent mistake as deleting
+the last administrator — setup does not reopen. The guard grows its fourth case
+in the change that introduces passwordless, and the test above has to be made
+to pass for passkeys before that change is considered done.
+
+**`BASE_URL` becomes security-relevant.** A WebAuthn credential is bound to its
+origin, so this setting stops being about building links in emails and becomes
+part of whether authentication works at all. An instance that changes domain
+invalidates every registered credential and every user re-registers. This is
+stated wherever the variable is documented, not in a footnote.
+
+**Not in the first release**, written down so it is not rediscovered as a gap:
+passwordless sign-in; attestation verification against a metadata service;
+a per-role "passkey required, TOTP no longer sufficient" policy; and any route
+by which a machine credential could register or use a passkey —
+`DenyMachineCredentials` refuses that today and will keep refusing it.
+
 ### SAML (Optional, Off by Default)
 
 - Toggle in admin settings

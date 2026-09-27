@@ -303,6 +303,21 @@ type User struct {
 	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
 }
 
+type WebauthnCredential struct {
+	ID             uuid.UUID    `json:"id"`
+	UserID         uuid.UUID    `json:"user_id"`
+	CredentialID   []byte       `json:"credential_id"`
+	PublicKey      []byte       `json:"public_key"`
+	SignCount      int64        `json:"sign_count"`
+	Transports     []string     `json:"transports"`
+	Aaguid         []byte       `json:"aaguid"`
+	BackupEligible bool         `json:"backup_eligible"`
+	BackupState    bool         `json:"backup_state"`
+	Name           string       `json:"name"`
+	CreatedAt      time.Time    `json:"created_at"`
+	LastUsedAt     sql.NullTime `json:"last_used_at"`
+}
+
 type WebhookConfig struct {
 	ID            uuid.UUID `json:"id"`
 	Url           string    `json:"url"`

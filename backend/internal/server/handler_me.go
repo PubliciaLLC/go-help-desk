@@ -129,6 +129,21 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	// them out, and an administrator reset was the only way back. It is staged
 	// in the session and becomes the user's only once they prove possession by
 	// confirming a code from it.
+	// Asked through the shared guard, not GenerateMFASecret's own check.
+	//
+	// That check reads u.MFAEnabled, which is the TOTP column. It was a
+	// complete answer to "does this account already have a second factor"
+	// while TOTP was the only kind. Passkeys made it a partial one: an
+	// account protected by a passkey and no TOTP reads MFAEnabled false, so
+	// a session holding only the password could enrol its own authenticator
+	// here and walk through the very gate the passkey was protecting.
+	//
+	// The guard asks about both kinds. Adding a second sort of factor without
+	// widening every question that means "has a factor" is how one door gets
+	// locked and the one beside it does not.
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	secret, qrURL, err := s.users.GenerateMFASecret(r.Context(), a.UserID, s.cfg.BaseURL, a.MFAPassed)
 	if err != nil {
 		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {

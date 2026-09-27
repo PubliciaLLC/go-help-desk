@@ -31,6 +31,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
@@ -44,6 +45,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
@@ -52,6 +54,20 @@ import (
 )
 
 func main() {
+	// One subcommand, handled before run() so it never starts a server or a
+	// sweep. Everything else is the server, which keeps `docker run <image>`
+	// meaning what it has always meant.
+	if len(os.Args) > 1 && os.Args[1] == "reset-factors" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := resetFactors(context.Background(), email); err != nil {
+			slog.Error("reset-factors", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Not log.Fatalf. run() installs a slog JSON handler as the default,
 		// which also routes the stdlib log package — and Go's stdlib-log
@@ -279,12 +295,25 @@ func run() error {
 	})
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
+	// Passkeys. The relying party is derived from BASE_URL: a credential is
+	// bound to its origin, so that setting decides whether passkey
+	// authentication works at all rather than only how links are built. An
+	// unusable value is refused here rather than defaulted, because a default
+	// would produce an instance whose passkeys silently never verify.
+	passkeyStore := webauthnstore.New(q)
+	passkeySvc, err := webauthn.NewService(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
+	if err != nil {
+		return fmt.Errorf("configuring passkeys: %w", err)
+	}
+
 	srv := server.New(
 		cfg,
 		sessionStore,
 		userSvc,
 		ticketSvc,
 		categorySvc,
+		passkeySvc,
+		passkeyStore,
 		groupSvc,
 		tagSvc,
 		adminSvc,

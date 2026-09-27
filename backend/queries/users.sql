@@ -155,6 +155,23 @@ ORDER BY display_name;
 -- administrators — and it did not need two people. One administrator sending
 -- "remove Bob" and "remove me" together did it every time.
 --
+-- BEFORE ADDING PASSWORDLESS SIGN-IN, READ THIS.
+--
+-- This guard covers three ways to remove an administrator — disable, delete,
+-- demote — and says nothing about removing their last way to AUTHENTICATE.
+-- That is deliberate and currently correct, because a password is always a way
+-- in: MFA enrolment sits outside RequireMFA in meRouter, so an administrator
+-- with no working factor signs in with their password, reaches enrolment and
+-- recovers without anyone's help. TestSoleAdministrator_CanSelfRecoverWith-
+-- NoSecondFactor fails if that stops being true.
+--
+-- Passkeys as a password REPLACEMENT break it. With no password there is no
+-- self-recovery, and an administrator whose last credential is removed is
+-- locked out permanently — setup does not reopen. The fourth case belongs in
+-- the change that introduces passwordless, in these statements, not in a
+-- follow-up issue. See docs/DESIGN.md → Authentication → Passkeys, and the
+-- entry in .claude/CLAUDE.md under Recorded architecture decisions.
+--
 -- The target carries `deleted_at IS NULL` of its own. The guard counted the
 -- OTHER administrators as live ones, but the row it wrote was matched on id
 -- alone — so an administrator holding a soft-deleted account's id could still

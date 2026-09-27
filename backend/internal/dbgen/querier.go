@@ -119,6 +119,12 @@ type Querier interface {
 	CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error)
 	CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
+	// Whether this account has a passkey at all.
+	//
+	// This is what makes MFARequiredFor satisfiable by a passkey rather than only
+	// by TOTP, and it is a count rather than an EXISTS because the same question
+	// is asked when deciding whether removing one leaves the account with none.
+	CountWebAuthnCredentialsForUser(ctx context.Context, userID uuid.UUID) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) error
 	CreateAttachment(ctx context.Context, arg CreateAttachmentParams) error
 	CreateAuditEntry(ctx context.Context, arg CreateAuditEntryParams) error
@@ -145,6 +151,13 @@ type Querier interface {
 	CreateTicketLink(ctx context.Context, arg CreateTicketLinkParams) error
 	CreateType(ctx context.Context, arg CreateTypeParams) error
 	CreateUser(ctx context.Context, arg CreateUserParams) error
+	// Records a credential after its registration ceremony has been verified.
+	//
+	// Nothing calls this until the attestation has been checked: the design's rule
+	// is that a staged challenge never reaches the account until the person has
+	// proved they hold the key, which is why TOTP grew GenerateMFASecret and
+	// ConfirmMFAEnrollmentWith in place of the older EnrollMFA.
+	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) error
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
@@ -171,6 +184,13 @@ type Querier interface {
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
 	DeleteType(ctx context.Context, id uuid.UUID) error
+	// Removes one credential, and reports whether it was this user's to remove.
+	//
+	// Scoped by user_id as well as id, in the statement rather than by a check in
+	// Go: an id is not an authorisation, and the caller having read the row a
+	// moment ago is the read-then-write shape the rest of this codebase has spent
+	// several rounds removing.
+	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (uuid.UUID, error)
 	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
 	DisableUser(ctx context.Context, id uuid.UUID) error
 	// Disables a user, refusing if that would leave the instance with no active
@@ -182,6 +202,23 @@ type Querier interface {
 	// wrote. Measured, twenty-eight rounds in thirty ended with zero
 	// administrators — and it did not need two people. One administrator sending
 	// "remove Bob" and "remove me" together did it every time.
+	//
+	// BEFORE ADDING PASSWORDLESS SIGN-IN, READ THIS.
+	//
+	// This guard covers three ways to remove an administrator — disable, delete,
+	// demote — and says nothing about removing their last way to AUTHENTICATE.
+	// That is deliberate and currently correct, because a password is always a way
+	// in: MFA enrolment sits outside RequireMFA in meRouter, so an administrator
+	// with no working factor signs in with their password, reaches enrolment and
+	// recovers without anyone's help. TestSoleAdministrator_CanSelfRecoverWith-
+	// NoSecondFactor fails if that stops being true.
+	//
+	// Passkeys as a password REPLACEMENT break it. With no password there is no
+	// self-recovery, and an administrator whose last credential is removed is
+	// locked out permanently — setup does not reopen. The fourth case belongs in
+	// the change that introduces passwordless, in these statements, not in a
+	// follow-up issue. See docs/DESIGN.md → Authentication → Passkeys, and the
+	// entry in .claude/CLAUDE.md under Recorded architecture decisions.
 	//
 	// The target carries `deleted_at IS NULL` of its own. The guard counted the
 	// OTHER administrators as live ones, but the row it wrote was matched on id
@@ -339,6 +376,9 @@ type Querier interface {
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
+	// The assertion arrives carrying a credential id and nothing else, so this is
+	// the lookup sign-in depends on. The unique index on credential_id serves it.
+	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.
@@ -475,6 +515,9 @@ type Querier interface {
 	ListUnassignedTickets(ctx context.Context, arg ListUnassignedTicketsParams) ([]ListUnassignedTicketsRow, error)
 	ListUsers(ctx context.Context, arg ListUsersParams) ([]User, error)
 	ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) ([]User, error)
+	// Everything this person has registered, newest last so the list reads in the
+	// order they added them.
+	ListWebAuthnCredentialsByUser(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Counts a failed TOTP attempt and locks the account once the threshold is
 	// reached. Returns the resulting lock time so the caller can refuse
@@ -605,6 +648,15 @@ type Querier interface {
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
+	// Records a successful assertion: the counter the authenticator reported, and
+	// when it was last used.
+	//
+	// Written off the authentication path, so a sign-in never waits on it and
+	// never fails because of it. The counter is stored and NOT enforced — see the
+	// column comment in 000029 for why a "must increase" rule locks people out
+	// for nothing, and why a previously-non-zero counter going backwards is worth
+	// logging and worth refusing nothing over.
+	TouchWebAuthnCredential(ctx context.Context, arg TouchWebAuthnCredentialParams) error
 	// Takes a departing user off every ticket still assigned to them, and says
 	// which ones.
 	//

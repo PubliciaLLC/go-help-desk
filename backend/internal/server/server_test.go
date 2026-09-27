@@ -28,6 +28,8 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
@@ -39,6 +41,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
@@ -75,6 +78,9 @@ type harness struct {
 	groupSvc        *group.Service
 	userSvc         *user.Service
 	categorySvc     *category.Service
+	passkeySvc      *webauthn.Service
+	userStore       *userstore.Store
+	passkeyStore    webauthn.Store
 	customFieldSvc  *customfield.Service
 	cannedResponses *cannedresponse.Service
 	ticketSvc       *ticket.Service
@@ -280,12 +286,15 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		SameSite: http.SameSiteLaxMode,
 	})
 
+	passkeySvc, passkeyStore := testPasskeys(q)
 	srv := server.New(
 		cfg,
 		sessionStore,
 		userSvc,
 		ticketSvc,
 		categorySvc,
+		passkeySvc,
+		passkeyStore,
 		groupSvc,
 		tagSvc,
 		adminSvc,
@@ -312,6 +321,9 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		groupSvc:        groupSvc,
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
+		passkeySvc:      passkeySvc,
+		userStore:       uStore,
+		passkeyStore:    passkeyStore,
 		customFieldSvc:  customFieldSvc,
 		cannedResponses: cannedResponseSvc,
 		ticketSvc:       ticketSvc,
@@ -1725,12 +1737,15 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		Path: "/", MaxAge: 86400 * 7, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 	})
 
+	passkeySvc, passkeyStore := testPasskeys(q)
 	srv := server.New(
 		cfg,
 		sessionStore,
 		userSvc,
 		ticketSvc,
 		categorySvc,
+		passkeySvc,
+		passkeyStore,
 		groupSvc,
 		tagSvc,
 		adminSvc,
@@ -2195,5 +2210,29 @@ func TestListTicketCannedResponses_TypeScopeFiltering(t *testing.T) {
 	decodeJSON(t, respB, &crsB)
 	for _, cr := range crsB {
 		require.NotEqual(t, typeAScoped.ID, cr.ID, "type-A-scoped response must not appear for a type-B ticket")
+	}
+}
+
+// testPasskeys builds the passkey service and store the server needs. A fixed
+// https base URL rather than the harness's own: a relying party is bound to an
+// origin, and the ceremonies are not exercised here — the handlers that are
+// have their own tests.
+func testPasskeys(q *dbgen.Queries) (*webauthn.Service, webauthn.Store) {
+	svc, err := webauthn.NewService("https://help.test.local", "Go Help Desk", nil)
+	if err != nil {
+		panic("configuring test passkeys: " + err.Error())
+	}
+	return svc, webauthnstore.New(q)
+}
+
+// passkeyFor is a stored credential for tests that need one to exist. The
+// ceremonies are not exercised here; the fields are what the table keeps.
+func passkeyFor(userID uuid.UUID, credID string) webauthn.Credential {
+	return webauthn.Credential{
+		UserID:       userID,
+		CredentialID: []byte(credID),
+		PublicKey:    []byte("cose-public-key"),
+		Transports:   []string{"usb"},
+		Name:         "Test key",
 	}
 }
