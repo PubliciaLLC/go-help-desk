@@ -284,6 +284,9 @@ func TestMachineCredential_CannotChangeAuthCriticalSettings(t *testing.T) {
 		{"mfa_enabled": false},
 		{"open_registration_enabled": true},
 		{"allowed_email_domains": []string{"evil.test"}},
+		// #177: opens anonymous ticket filing and, since the category
+		// catalogue stopped being anonymous, unauthenticated reads of it too.
+		{"guest_submission_enabled": true},
 	} {
 		resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings", body)
 		require.Equal(t, http.StatusForbidden, resp.StatusCode,

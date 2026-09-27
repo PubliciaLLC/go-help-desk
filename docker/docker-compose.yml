@@ -31,7 +31,20 @@ services:
       - backend
 
   clamav:
+    # Opt-in — see #297. `app` only `depends_on` `db`, and an unset
+    # CLAMAV_ADDR below means scanning is simply off, a supported
+    # configuration — so the default `docker compose up` brings up the app
+    # and nothing else, and skips a ~300 MB signature download it may never
+    # need. To turn scanning on, see docker/.env.example.
+    profiles:
+      - antivirus
     image: clamav/clamav:stable
+    # clamav/clamav publishes linux/amd64 only. Pinned rather than left to
+    # the host, so enabling this on an arm64 machine (Apple Silicon) runs it
+    # under emulation instead of failing the image pull outright — a signature
+    # scan of a 25 MB upload is not a hot path, so the emulation cost is one
+    # this profile can afford.
+    platform: linux/amd64
     restart: unless-stopped
     volumes:
       - ./data/clamav:/var/lib/clamav  # persist signature database across restarts
@@ -81,15 +94,20 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in docker/.env (min 32 chars) — copy docker/.env.example}
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in docker/.env — copy docker/.env.example}
       HTTP_PORT: 8080
-      # ClamAV — wired to the internal antivirus network.
+      # ClamAV — opt-in (see #297 and the `clamav` service's own `profiles`
+      # above): unset by default, since the `clamav` service does not start
+      # unless that profile is enabled, and pointing at it regardless would
+      # mean uploads refused with 503 forever rather than the brief window
+      # this was written for. Set CLAMAV_ADDR=tcp://clamav:3310 in .env, along
+      # with COMPOSE_PROFILES=antivirus, to turn scanning on.
       #
-      # NOT non-fatal any more: with an address configured, the scan policy
+      # NOT non-fatal once set: with an address configured, the scan policy
       # defaults to "required", so uploads are refused with 503 while the
       # scanner is unreachable rather than being accepted unscanned. That
       # covers the first few minutes here, where clamav is still downloading
       # its signature database while the app is already serving. Everything
       # other than attachment upload works throughout.
-      CLAMAV_ADDR: tcp://clamav:3310
+      CLAMAV_ADDR: ${CLAMAV_ADDR:-}
       # Optional — set in .env to enable email notifications
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}

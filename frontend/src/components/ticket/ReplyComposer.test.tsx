@@ -107,14 +107,38 @@ describe('internal notes', () => {
 })
 
 describe('reporting users', () => {
-  // A reporting user must not be offered internal notes, canned responses or
-  // attachments on a reply — those are staff tools.
-  it('sees only the reply box', () => {
+  // A reporting user must not be offered internal notes or canned responses
+  // on a reply — those are staff tools. Attachments are not: the upload API
+  // has no role gate (any authenticated non-guest may attach to a ticket
+  // they can see), and NewTicketPage already offers the same control to
+  // every role at creation time, so hiding it here left reporters with no
+  // way to send a follow-up file even though the request would succeed
+  // (#175).
+  it('sees the reply box and attachments, but not staff-only controls', () => {
     renderComposer(false)
 
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDefined()
     expect(screen.queryByRole('checkbox', { name: /internal note/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /insert canned response/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Add files' })).toBeDefined()
+  })
+
+  it('can upload an attachment on a reply', async () => {
+    const add = vi.spyOn(ticketsApi, 'addReply').mockResolvedValue({} as never)
+    const upload = vi.spyOn(ticketsApi, 'uploadAttachment').mockResolvedValue({} as never)
+    const user = userEvent.setup()
+    renderComposer(false)
+
+    await user.type(screen.getByRole('textbox'), 'here is another screenshot')
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    expect(input).not.toBeNull()
+    await user.upload(input, new File(['img'], 'screenshot.png', { type: 'image/png' }))
+    await screen.findByText('screenshot.png')
+
+    await user.click(screen.getByRole('button', { name: 'Send reply' }))
+
+    await waitFor(() => expect(add).toHaveBeenCalled())
+    await waitFor(() => expect(upload).toHaveBeenCalledWith('tkt-1', expect.any(File)))
   })
 })
 
