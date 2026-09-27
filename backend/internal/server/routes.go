@@ -23,6 +23,10 @@ func (s *Server) authRouter() *chi.Mux {
 	// so a leaked key could re-lock the account every fifteen minutes and the
 	// owner would never get in.
 	r.With(authmw.DenyMachineCredentials).Post("/local/mfa/verify", s.handleMFAVerify)
+	// The passkey half of the same gate. Both re-issue the session with
+	// MFAPassed true on success, so nothing downstream learns a new idea.
+	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/start", s.handlePasskeyLoginStart)
+	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 	r.Get("/providers", s.handleAuthProviders)
@@ -338,6 +342,18 @@ func (s *Server) meRouter() *chi.Mux {
 		// logged-in victim.
 		r.Post("/mfa/enroll", s.handleMFAEnrollStart)
 		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+
+		// Passkeys sit beside TOTP enrolment and inherit both placements
+		// deliberately: refused to machine credentials, because a key must
+		// not be able to add a way of becoming its owner; and outside
+		// RequireMFA, because somebody compelled to enrol has to be able to
+		// finish. The second is what lets a sole administrator with no
+		// working factor recover alone, pinned by
+		// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
+		r.Get("/passkeys", s.handleListPasskeys)
+		r.Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
+		r.Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
+		r.Delete("/passkeys/{id}", s.handleDeletePasskey)
 
 		r.Group(func(r chi.Router) {
 			r.Use(authmw.RequireMFA)

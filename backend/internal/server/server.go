@@ -31,6 +31,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 	"github.com/publiciallc/go-help-desk/backend/internal/version"
@@ -182,10 +183,16 @@ type Server struct {
 	router   *chi.Mux
 	sessions SessionStore
 
-	users           *user.Service
-	tickets         *ticket.Service
-	registration    *registration.Service
-	categories      *category.Service
+	users        *user.Service
+	tickets      *ticket.Service
+	registration *registration.Service
+	categories   *category.Service
+	// passkeys runs the two WebAuthn ceremonies; passkeyStore persists what
+	// they produce. Two fields because the ceremony service owns no storage —
+	// it is handed an account and returns a credential, and the caller decides
+	// what to keep.
+	passkeys        *webauthn.Service
+	passkeyStore    webauthn.Store
 	groups          *group.Service
 	tags            *tag.Service
 	adminSvc        *admin.Service
@@ -251,6 +258,8 @@ func New(
 	users *user.Service,
 	tickets *ticket.Service,
 	categories *category.Service,
+	passkeys *webauthn.Service,
+	passkeyStore webauthn.Store,
 	groups *group.Service,
 	tags *tag.Service,
 	adminSvc *admin.Service,
@@ -271,6 +280,8 @@ func New(
 		tickets:          tickets,
 		registration:     registrationSvc,
 		categories:       categories,
+		passkeys:         passkeys,
+		passkeyStore:     passkeyStore,
 		groups:           groups,
 		tags:             tags,
 		adminSvc:         adminSvc,

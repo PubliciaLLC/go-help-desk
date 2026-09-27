@@ -228,6 +228,8 @@ func newVerdictRig(t *testing.T, h *harness, respond http.HandlerFunc) *verdictR
 		h.userSvc,
 		h.ticketSvc,
 		h.categorySvc,
+		h.passkeySvc,
+		h.passkeyStore,
 		h.groupSvc,
 		nil, // tags: no route here touches them
 		h.adminSvc,

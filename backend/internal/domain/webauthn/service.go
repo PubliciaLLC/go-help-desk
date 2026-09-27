@@ -2,6 +2,7 @@ package webauthn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -92,6 +93,37 @@ type Staged struct {
 }
 
 func (s Staged) expired(now time.Time) bool { return now.After(s.ExpiresAt) }
+
+// Encode renders a staged challenge for the session, and Decode reads it back.
+//
+// The caller holds it as an opaque string so that internal/domain/auth — which
+// the session store, the middleware and every handler import — does not have
+// to know the WebAuthn library's types.
+func (s Staged) Encode() (string, error) {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return "", fmt.Errorf("staging challenge: %w", err)
+	}
+	return string(b), nil
+}
+
+// DecodeStaged reads back what Encode wrote. An empty or unreadable value is
+// "no ceremony is in progress", which is a refusal rather than an error worth
+// showing: it means the browser is answering a challenge this session never
+// issued.
+func DecodeStaged(v string) (Staged, error) {
+	if v == "" {
+		return Staged{}, ErrNoChallenge
+	}
+	var st Staged
+	if err := json.Unmarshal([]byte(v), &st); err != nil {
+		return Staged{}, ErrNoChallenge
+	}
+	return st, nil
+}
+
+// ErrNoChallenge is an answer to a challenge this session never issued.
+var ErrNoChallenge = errors.New("no passkey request is in progress; start again")
 
 // BeginRegistration mints a challenge for a new credential.
 func (s *Service) BeginRegistration(_ context.Context, a Account) (*protocolCreation, Staged, error) {

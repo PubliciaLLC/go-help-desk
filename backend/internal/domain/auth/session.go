@@ -28,6 +28,21 @@ type SessionData struct {
 	// administrator, no way back at all.
 	PendingMFASecret string
 
+	// PendingPasskey holds a staged WebAuthn challenge as opaque JSON, for the
+	// same reason PendingMFASecret is here: nothing is written to the account
+	// until the person has proved they hold the key.
+	//
+	// Opaque rather than typed, so this package does not take on the WebAuthn
+	// library as a dependency. internal/domain/auth is imported by the session
+	// store, the middleware and every handler; a credential format does not
+	// belong in that blast radius, and the only thing done with this value is
+	// handing it back to the package that minted it.
+	//
+	// It carries its own expiry, checked when the ceremony finishes. A
+	// challenge left in a long-lived session is a replay window that stays
+	// open as long as the tab does.
+	PendingPasskey string
+
 	// OIDCNonce is the nonce sent with the authorization request. The callback
 	// requires the ID token to echo it back.
 	OIDCNonce string
