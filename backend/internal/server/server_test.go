@@ -79,6 +79,7 @@ type harness struct {
 	userSvc         *user.Service
 	categorySvc     *category.Service
 	passkeySvc      *webauthn.Service
+	userStore       *userstore.Store
 	passkeyStore    webauthn.Store
 	customFieldSvc  *customfield.Service
 	cannedResponses *cannedresponse.Service
@@ -321,6 +322,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		userSvc:         userSvc,
 		categorySvc:     categorySvc,
 		passkeySvc:      passkeySvc,
+		userStore:       uStore,
 		passkeyStore:    passkeyStore,
 		customFieldSvc:  customFieldSvc,
 		cannedResponses: cannedResponseSvc,

@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
@@ -214,4 +215,65 @@ func TestMFAEnrol_IsRefusedToAPasswordOnlySessionOnAPasskeyProtectedAccount(t *t
 	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
 	require.Equal(t, http.StatusForbidden, res.StatusCode,
 		"a password alone enrolled TOTP on a passkey-protected account, which hands it the second factor: %s", body)
+}
+
+// An account whose only factor is a passkey must be asked for the passkey.
+//
+// Session B found this in review before any of it was built. The two booleans
+// that carried the gate both keyed off u.MFAEnabled — the TOTP column, not
+// "this account has a second factor". An account with a passkey and no TOTP
+// reads false, so the server answered "you still need to enrol" on every
+// sign-in and never offered the key. Combined with the guard that refuses
+// enrolment on an account that already has a factor, that account could never
+// sign in again: told to enrol, and refused when it tried.
+func TestLogin_AsksForThePasskeyWhenThatIsTheOnlyFactor(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	setup := loggedInAdmin(t, h)
+	res, body := setup.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
+		"mfa_enabled": true, "mfa_enforced_roles": []string{"user"},
+	})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "%s", body)
+
+	answer := func(t *testing.T) map[string]any {
+		t.Helper()
+		s := &session{h: h}
+		res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+			map[string]any{"email": "user@test.local", "password": "password"})
+		require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+		var out map[string]any
+		require.NoError(t, json.Unmarshal(body, &out))
+		return out
+	}
+
+	t.Run("no factor at all: asked to enrol", func(t *testing.T) {
+		got := answer(t)
+		require.Equal(t, true, got["mfa_enrollment_needed"])
+		require.Equal(t, false, got["passkey_needed"])
+		require.Equal(t, false, got["mfa_needed"])
+	})
+
+	t.Run("a passkey and no TOTP: asked for the passkey", func(t *testing.T) {
+		require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "only-factor")))
+		got := answer(t)
+		require.Equal(t, true, got["passkey_needed"],
+			"the server did not ask for the passkey")
+		require.Equal(t, false, got["mfa_enrollment_needed"],
+			"the account was told to enrol despite already having a factor — and enrolment would refuse it, "+
+				"so it could never sign in again")
+		require.Equal(t, false, got["mfa_needed"])
+	})
+
+	// Both enrolled: TOTP is asked for, because it is what the account had
+	// first and registering a key is not a request to stop using it.
+	t.Run("both: asked for TOTP", func(t *testing.T) {
+		// Enrol TOTP alongside the passkey, through the store, since the
+		// service's own path stages a secret in a session.
+		require.NoError(t, h.userStore.SetMFA(ctx, h.userID, "ATOTPSECRET", true))
+		got := answer(t)
+		require.Equal(t, true, got["mfa_needed"])
+		require.Equal(t, false, got["passkey_needed"])
+	})
 }

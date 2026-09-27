@@ -87,17 +87,41 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// MFA gate: three outcomes after a valid password.
-	//   - enrolled user & MFA enabled → must verify TOTP (mfa_needed)
-	//   - not enrolled & role is in enforced list → must enroll before access (mfa_enrollment_needed)
-	//   - otherwise → session is fully authenticated
+	// The second-factor gate, after a valid password. There are four answers,
+	// and there used to be two.
+	//
+	//   verify TOTP    — a TOTP enrolment exists
+	//   verify passkey — a passkey is registered and no TOTP is
+	//   enrol         — neither, and this role must have one
+	//   nothing owed  — anything else; the session is fully authenticated
+	//
+	// The two booleans that used to carry this both keyed off u.MFAEnabled,
+	// which is the TOTP column rather than "this account has a second
+	// factor". That was a complete answer while TOTP was the only kind.
+	// Passkeys made it a wrong one: an account with a passkey and no TOTP
+	// read MFAEnabled false, so the server answered "you still need to
+	// enrol" on every sign-in and never once offered the key. It could not
+	// sign in again. There was no third outcome on the wire to say "you have
+	// a factor, use it, and it is not TOTP".
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	// The password was right, so prior failures for this address stop counting.
 	s.loginLimiter.Reset(loginKey)
 
+	passkeys, err := s.passkeyStore.CountForUser(r.Context(), u.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	// TOTP first when both exist: it is what the account had before, and a
+	// person who enrolled a key alongside it has not asked to stop using the
+	// authenticator they already have. The passkey route is still reachable
+	// directly for anyone who prefers it.
 	mfaNeeded := mfaEnabled && u.MFAEnabled
-	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
-	mfaPassed := !mfaNeeded && !mfaEnrollmentNeeded
+	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
+	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
+		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
+	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
 	if err := s.writeSession(w, r, auth.SessionData{
 		UserID:    u.ID,
@@ -111,6 +135,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, map[string]any{
 		"user":                  u,
 		"mfa_needed":            mfaNeeded,
+		"passkey_needed":        passkeyNeeded,
 		"mfa_enrollment_needed": mfaEnrollmentNeeded,
 	})
 }
