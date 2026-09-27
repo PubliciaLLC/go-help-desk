@@ -104,6 +104,20 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
+## Upgrading to 1.3.0
+
+**ClamAV became opt-in (#297).** Docker Compose used to start it and wire
+`CLAMAV_ADDR` automatically. An existing deployment that has been relying on
+that — whose own `.env` has no `CLAMAV_ADDR` line because it never needed one
+— picks this up silently on upgrade: attachments stop being scanned, and
+nothing at startup says so. It is not invisible: the admin security-warnings
+panel reports "Attachments are not scanned. Uploads are accepted without
+being checked." But nothing prompts anyone to go look, so an operator who
+changed nothing now has a wrong belief about their own instance. To keep
+scanning on, uncomment the two lines in the "Virus scanning" section of
+`docker/.env.example` (`CLAMAV_ADDR` and `COMPOSE_PROFILES=antivirus`) in
+your own `.env` before restarting.
+
 ## Upgrading to 1.2.0
 
 **Every API key and OAuth client created through the admin UI stops working.**
