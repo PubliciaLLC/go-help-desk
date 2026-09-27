@@ -254,6 +254,13 @@ func AuthCriticalKeys() []string {
 		KeyOIDCRedirectURL,
 		KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+		// Whether anonymous people on the internet may file tickets — and,
+		// since the category catalogue stopped being anonymous, whether that
+		// catalogue is readable without a session at all (see
+		// requireSignedInOrGuestsEnabled in server.go). Every other setting
+		// of comparable weight is on this list; a leaked API key should not
+		// be able to open either exposure. See #177.
+		KeyGuestSubmissionEnabled,
 		// Where the virus scanner lives is a route to disabling scanning
 		// entirely: point it at a daemon that answers OK to everything and
 		// every upload passes. A leaked API key should not be able to do that,

@@ -147,6 +147,25 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// guest_submission_enabled decides whether anonymous people on the
+	// internet can file tickets into this instance, and — since the category
+	// catalogue stopped being anonymous (see requireSignedInOrGuestsEnabled
+	// in server.go) — also whether that catalogue is readable without a
+	// session. It had no validation case at all: a JSON string, a number, or
+	// the literal null was accepted and read back as false by GetBool's own
+	// silent fallback, the same "accepted and then ignored" shape this
+	// handler refuses everywhere else. unmarshalSetting is what the #304
+	// round found necessary for the identical shape on the SSO keys — null
+	// unmarshals into a bool as a silent no-op, not an error, so a bare type
+	// check alone would still miss it. See #177.
+	if raw, ok := body[admin.KeyGuestSubmissionEnabled]; ok {
+		var enabled bool
+		if err := unmarshalSetting(raw, "guest_submission_enabled", &enabled); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Validate before writing anything. ticket.go documents the prefix as
 	// "enforced where the setting is saved rather than where a ticket is
 	// created" — nothing enforced it, so an invalid prefix was accepted with a
