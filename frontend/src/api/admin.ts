@@ -583,6 +583,24 @@ export async function deleteSLAPolicy(id: string): Promise<void> {
 export interface SecurityWarnings {
   /** Names of env vars still set to a shipped example value. Names only. */
   insecure_secrets: string[]
+
+  /**
+   * What the malware scanner is actually doing, as opposed to what the
+   * configuration says it should — a live reachability check, not a cached
+   * belief. See handleGetSecurityWarnings / scanStatus on the backend.
+   */
+  attachment_scanning: AttachmentScanningWarning
+}
+
+export interface AttachmentScanningWarning {
+  /** off, required or permissive. */
+  policy: string
+  /** Whether a scanner address is configured at all. */
+  configured: boolean
+  /** The answer to a live ping just now. */
+  reachable: boolean
+  /** Plain-English sentence for what is happening to uploads right now. */
+  effect: string
 }
 
 /** Admin-only. Not on the public /site payload, by design. */

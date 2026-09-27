@@ -67,6 +67,7 @@ import { SettingsPage } from './SettingsPage'
 const SETTINGS: Record<string, unknown> = {
   site_name: 'Acme Support',
   attachment_allowed_types: ['.pdf', '.png'],
+  attachment_scan_address: 'tcp://clamav:3310',
   attachment_scan_policy: 'permissive',
   attachment_infected_handling: 'quarantine',
   // Deliberately the non-default value, and deliberately not the same
@@ -289,6 +290,9 @@ describe('the attachment security settings', () => {
     await renderSettings()
 
     expect(typesEntries()).toEqual(['.pdf', '.png'])
+    // #172: no field existed for this at all — the only way to set it was a
+    // raw PATCH. Shown here as an ordinary text field beside the scan policy.
+    expect((screen.getByLabelText(/scanner address/i) as HTMLInputElement).value).toBe('tcp://clamav:3310')
     expect(control(/scan attachments for malware/i).value).toBe('permissive')
     expect(control(/when a scan finds malware/i).value).toBe('quarantine')
     expect(control(/re-check stored verdicts/i).value).toBe('monthly')
@@ -349,6 +353,8 @@ describe('the attachment security settings', () => {
 
     await userEvent.clear(typesField())
     await userEvent.type(typesField(), '.pdf\n.exe')
+    await userEvent.clear(screen.getByLabelText(/scanner address/i))
+    await userEvent.type(screen.getByLabelText(/scanner address/i), 'tcp://clamav.internal:3310')
     await userEvent.selectOptions(control(/scan attachments for malware/i), 'required')
     await userEvent.selectOptions(control(/when a scan finds malware/i), 'refuse')
     await userEvent.selectOptions(control(/re-check stored verdicts/i), 'weekly')
@@ -357,10 +363,24 @@ describe('the attachment security settings', () => {
     await waitFor(() => {
       expect(lastPatch(patch)).toMatchObject({
         attachment_allowed_types: ['.pdf', '.exe'],
+        attachment_scan_address: 'tcp://clamav.internal:3310',
         attachment_scan_policy: 'required',
         attachment_infected_handling: 'refuse',
         attachment_reputation_refresh: 'weekly',
       })
+    })
+  })
+
+  // #172: the field existing is only half the fix — it must also round-trip a
+  // blank value, which is how an operator goes back to CLAMAV_ADDR.
+  it('can clear the scanner address to fall back to the environment variable', async () => {
+    const patch = await renderSettings()
+
+    await userEvent.clear(screen.getByLabelText(/scanner address/i))
+    await save()
+
+    await waitFor(() => {
+      expect(lastPatch(patch)).toMatchObject({ attachment_scan_address: '' })
     })
   })
 

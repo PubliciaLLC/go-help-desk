@@ -745,10 +745,11 @@ path skips a ~300 MB signature download it may never need. Enabling it is
 documented in `docker/.env.example`.
 
 The setting `attachment_scan_address` overrides it and takes precedence once
-saved — but **there is no field for it in the admin UI yet**, so the only way
-to set it is a PATCH to `/api/v1/admin/settings`. This document said an
-administrator could change it under Admin → Settings, which sent operators
-looking for a control that is not there. Tracked as an issue.
+saved. It has a field under Admin → Settings → Attachments, beside the scan
+policy select (#172): a plain text input showing the current value, accepting
+`tcp://host:port` or `unix:///path/to/socket`, blank to fall back to
+`CLAMAV_ADDR`. The backend validation was already there; only the control was
+missing.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -776,9 +777,13 @@ doing**, including a live reachability check rather than a restatement of the
 configuration: an instance whose scanner container has died has an address
 configured and no protection, and those two facts must not look alike.
 
-The admin UI does not render that yet — it shows only the insecure-secrets
-warning — so today this is visible to an administrator who asks the API. The UI
-is the obvious follow-up and is not in this change.
+The admin UI surfaces it (#176): `InsecureConfigBanner` renders a second
+alert, alongside the insecure-secrets warning, whenever the operator's own
+policy intends scanning (`policy !== "off"`) and the live ping just failed —
+the exact combination that used to be invisible, including the `permissive`
+case, where uploads keep being accepted without ever being scanned and
+nothing before this said so. A deliberate `policy: off` is not shown as a
+warning: that is a choice already visible in Settings, not a hidden failure.
 
 **Attachments are download-only. There is no previewer, and there will not be
 one.**
