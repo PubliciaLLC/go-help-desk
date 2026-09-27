@@ -251,7 +251,7 @@ export const router = createRouter({
     ticketsRoute,
     newTicketRoute,
     ticketDetailRoute,
-  accountRoute,
+    accountRoute,
     adminUsersRoute,
     adminUserDetailRoute,
     adminGroupsRoute,

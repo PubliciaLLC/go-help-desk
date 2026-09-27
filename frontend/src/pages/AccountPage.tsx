@@ -164,7 +164,7 @@ function PasswordSection() {
  * NFC", which is a detail about the person's hardware that the list does not
  * need to disclose.
  */
-function describe(p: Passkey): string {
+function labelFor(p: Passkey): string {
   if (p.name) return p.name
   const t = p.transports?.length ? p.transports.join(', ') : 'unknown'
   return `Unnamed key (${t})`
@@ -175,7 +175,7 @@ function PasskeyRow({ p, onRemove }: { p: Passkey; onRemove: (p: Passkey) => voi
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-gray-900">{describe(p)}</span>
+          <span className="truncate text-sm font-medium text-gray-900">{labelFor(p)}</span>
           {/* backup_eligible, not backup_state: a key that CAN sync and
               currently is not is still a synced credential, and that is the
               distinction the phishing-resistance claim turns on. */}
@@ -194,7 +194,7 @@ function PasskeyRow({ p, onRemove }: { p: Passkey; onRemove: (p: Passkey) => voi
         size="sm"
         className="text-red-600 hover:bg-red-50 hover:text-red-700"
         onClick={() => onRemove(p)}
-        aria-label={`Remove ${describe(p)}`}
+        aria-label={`Remove ${labelFor(p)}`}
       >
         <TrashIcon className="h-4 w-4" />
       </Button>
@@ -297,7 +297,7 @@ function PasskeySection() {
         title="Remove this passkey?"
         description={
           pending
-            ? `"${describe(pending)}" will stop working for signing in. This cannot be undone.`
+            ? `"${labelFor(pending)}" will stop working for signing in. This cannot be undone.`
             : undefined
         }
         confirmLabel="Remove"
