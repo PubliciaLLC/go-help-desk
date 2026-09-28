@@ -100,7 +100,10 @@ describe('AdminAuditPage', () => {
     await userEvent.type(screen.getByLabelText(/^action$/i), 'resolved')
 
     await waitFor(() => {
-      const call = get.mock.calls.find((c) => c[0] === '/admin/audit' && c[1]?.params?.action === 'resolved')
+      const call = get.mock.calls.find((c) => {
+        const params = (c[1] as { params?: Record<string, unknown> } | undefined)?.params
+        return c[0] === '/admin/audit' && params?.action === 'resolved'
+      })
       expect(call, 'expected a request with action=resolved').toBeTruthy()
     })
   })
