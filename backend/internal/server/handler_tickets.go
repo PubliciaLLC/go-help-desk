@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -943,18 +944,18 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 }
 
 // ticketAuditEntryView is what handleListTicketAudit returns: enough to
-// answer "who did what, and when" without exposing the raw before/after
-// diff. Every mutation an entry can name (status, priority, subject,
-// assignee) is already visible on the ticket itself to anyone who can view
-// it — see #129 — so this deliberately does not decode Before/After; the
-// admin-wide view (#129, not yet built) is where that belongs, once its own
-// open questions (who may read across entities, retention) are settled.
+// answer "who did what, and when" for every viewer, plus the field-level
+// before/after diff for the viewers #129's own settled-later question
+// allows it for. Before/After are omitted (not merely null) for anyone who
+// does not clear that gate — see the role switch in handleListTicketAudit.
 type ticketAuditEntryView struct {
-	ID        uuid.UUID  `json:"id"`
-	Action    string     `json:"action"`
-	ActorID   *uuid.UUID `json:"actor_id"`
-	ActorName string     `json:"actor_name,omitempty"`
-	CreatedAt time.Time  `json:"created_at"`
+	ID        uuid.UUID      `json:"id"`
+	Action    string         `json:"action"`
+	ActorID   *uuid.UUID     `json:"actor_id"`
+	ActorName string         `json:"actor_name,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	Before    map[string]any `json:"before,omitempty"`
+	After     map[string]any `json:"after,omitempty"`
 }
 
 // GET /api/v1/tickets/{id}/audit
@@ -970,6 +971,16 @@ type ticketAuditEntryView struct {
 // reporting user would otherwise learn a staff member's name from this feed
 // alone, so those two actions withhold actor identity for RoleUser viewers,
 // the same way VisibleReplies withholds internal-note authorship.
+//
+// The field-level before/after diff is a second, independent gate, settled
+// by the admin-wide view's own design round: admin always sees it; staff
+// sees it only when admin.KeyStaffCanViewTicketChangeHistory is on (off by
+// default — #325 shipped without it, and turning on a wider disclosure
+// silently during an upgrade is not this endpoint's call to make); a
+// reporting user never sees it, full stop, independent of the setting. What
+// is shown is redacted the same way the admin-wide view redacts it — see
+// audit.Redact — because a sensitive field name would be exactly as
+// sensitive here as there.
 func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -983,6 +994,9 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role := authmw.GetActor(r).Role
+	showDiff := role == user.RoleAdmin ||
+		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(r.Context()))
+
 	views := make([]ticketAuditEntryView, len(entries))
 	// Cached per request: the same actor (an assignee working a long
 	// thread, say) can appear on many entries, and a lookup miss (the
@@ -991,6 +1005,9 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	names := make(map[uuid.UUID]string)
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
+		if showDiff {
+			v.Before, v.After = audit.Redact(e.Before, e.After)
+		}
 		if role == user.RoleUser && (e.Action == "assigned" || e.Action == "unassigned") {
 			v.ActorID = nil
 			views[i] = v

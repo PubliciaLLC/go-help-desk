@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { listTicketAudit } from '@/api/tickets'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { AuditDiff } from '@/components/AuditDiff'
 
 interface AuditFeedProps {
   ticketId: string
@@ -66,6 +67,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
               <span className="block text-gray-400">
                 {new Date(e.created_at).toLocaleString()}
               </span>
+              <AuditDiff before={e.before} after={e.after} />
             </li>
           ))}
         </ul>

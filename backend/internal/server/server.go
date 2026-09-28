@@ -20,6 +20,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
@@ -227,6 +228,9 @@ type Server struct {
 	repBudget *reputation.Budget
 	repGroup  *singleflight.Group
 	repOpts   []reputation.Option
+
+	// auditStore backs the admin-wide audit view (#129). See WithAuditStore.
+	auditStore audit.Store
 }
 
 // Option adjusts a Server after its collaborators are in place.
@@ -250,6 +254,21 @@ func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Opt
 	return func(s *Server) {
 		s.repStore = store
 		s.repOpts = providerOpts
+	}
+}
+
+// WithAuditStore gives the server read access to the audit log for the
+// admin-wide audit view (#129).
+//
+// Unlike WithReputationLookup, this is not optional in the sense of a
+// feature some deployments genuinely lack — every deployment already has an
+// audit.Store, because ticket.Service and user.Service both require one to
+// write entries. It is an Option rather than New's seventeenth positional
+// parameter only because of this file's own rule above: every existing
+// caller can pass the same store it already built for those two services.
+func WithAuditStore(store audit.Store) Option {
+	return func(s *Server) {
+		s.auditStore = store
 	}
 }
 
@@ -474,6 +493,14 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
+		// The admin-wide audit view (#129). Staff and admin only, same
+		// resource scope as /staff and /tags above: the audit trail this
+		// exposes is ticket content for a staff caller (see
+		// handleListAdminAudit's own comment on the entity_type restriction),
+		// so it is gated the same way, API keys included.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).
+			Get("/admin/audit", s.handleListAdminAudit)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())
 	})

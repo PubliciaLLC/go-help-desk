@@ -7,11 +7,52 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	uuid "github.com/google/uuid"
 	"github.com/sqlc-dev/pqtype"
 )
+
+const countAuditLog = `-- name: CountAuditLog :one
+SELECT COUNT(*) FROM audit_log
+WHERE ($1::text IS NULL OR entity_type = $1::text)
+  AND ($2::text IS NULL OR action = $2::text)
+  AND ($3::uuid IS NULL OR actor_id = $3::uuid)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+  AND (
+    $6::text IS NULL
+    OR entity_type ILIKE '%' || $6::text || '%'
+    OR action ILIKE '%' || $6::text || '%'
+  )
+`
+
+type CountAuditLogParams struct {
+	EntityType sql.NullString `json:"entity_type"`
+	Action     sql.NullString `json:"action"`
+	ActorID    uuid.NullUUID  `json:"actor_id"`
+	FromTs     sql.NullTime   `json:"from_ts"`
+	ToTs       sql.NullTime   `json:"to_ts"`
+	Q          sql.NullString `json:"q"`
+}
+
+// Same filters as SearchAuditLog, without the pagination — the admin-wide
+// view's "n of m" needs the total across every page, not just the one it
+// fetched.
+func (q *Queries) CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countAuditLog,
+		arg.EntityType,
+		arg.Action,
+		arg.ActorID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
 
 const createAuditEntry = `-- name: CreateAuditEntry :exec
 INSERT INTO audit_log (id, actor_id, entity_type, entity_id, action, before, after, created_at)
@@ -43,6 +84,20 @@ func (q *Queries) CreateAuditEntry(ctx context.Context, arg CreateAuditEntryPara
 	return err
 }
 
+const deleteAuditLogBefore = `-- name: DeleteAuditLogBefore :execrows
+DELETE FROM audit_log WHERE created_at < $1
+`
+
+// The retention sweep's hard delete. No archive table — see audit.Store's
+// own comment on DeleteOlderThan for why.
+func (q *Queries) DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAuditLogBefore, createdAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const listAuditByEntity = `-- name: ListAuditByEntity :many
 SELECT id, actor_id, entity_type, entity_id, action, before, after, created_at FROM audit_log
 WHERE entity_type = $1 AND entity_id = $2
@@ -63,6 +118,77 @@ func (q *Queries) ListAuditByEntity(ctx context.Context, arg ListAuditByEntityPa
 		arg.EntityID,
 		arg.Limit,
 		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AuditLog
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.ActorID,
+			&i.EntityType,
+			&i.EntityID,
+			&i.Action,
+			&i.Before,
+			&i.After,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchAuditLog = `-- name: SearchAuditLog :many
+SELECT id, actor_id, entity_type, entity_id, action, before, after, created_at FROM audit_log
+WHERE ($1::text IS NULL OR entity_type = $1::text)
+  AND ($2::text IS NULL OR action = $2::text)
+  AND ($3::uuid IS NULL OR actor_id = $3::uuid)
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz IS NULL OR created_at <= $5::timestamptz)
+  AND (
+    $6::text IS NULL
+    OR entity_type ILIKE '%' || $6::text || '%'
+    OR action ILIKE '%' || $6::text || '%'
+  )
+ORDER BY created_at DESC
+LIMIT $8 OFFSET $7
+`
+
+type SearchAuditLogParams struct {
+	EntityType sql.NullString `json:"entity_type"`
+	Action     sql.NullString `json:"action"`
+	ActorID    uuid.NullUUID  `json:"actor_id"`
+	FromTs     sql.NullTime   `json:"from_ts"`
+	ToTs       sql.NullTime   `json:"to_ts"`
+	Q          sql.NullString `json:"q"`
+	PageOffset int32          `json:"page_offset"`
+	PageLimit  int32          `json:"page_limit"`
+}
+
+// The admin-wide audit view (#129). Every filter is optional; a caller that
+// must not see every entity (a scoped staff viewer) filters the result
+// afterwards — see audit.Filter's own comment on why that is not done here.
+func (q *Queries) SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error) {
+	rows, err := q.db.QueryContext(ctx, searchAuditLog,
+		arg.EntityType,
+		arg.Action,
+		arg.ActorID,
+		arg.FromTs,
+		arg.ToTs,
+		arg.Q,
+		arg.PageOffset,
+		arg.PageLimit,
 	)
 	if err != nil {
 		return nil, err

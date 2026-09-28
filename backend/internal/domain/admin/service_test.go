@@ -53,6 +53,43 @@ func TestAdminService_ReopenWindowDays_Stored(t *testing.T) {
 	require.Equal(t, 14, svc.ReopenWindowDays(context.Background()))
 }
 
+func TestAdminService_StaffCanViewTicketChangeHistory_Default(t *testing.T) {
+	svc := admin.NewService(newFakeAdminStore())
+	require.False(t, svc.StaffCanViewTicketChangeHistory(context.Background()))
+}
+
+func TestAdminService_StaffCanViewTicketChangeHistory_Stored(t *testing.T) {
+	svc := admin.NewService(newFakeAdminStore())
+	require.NoError(t, svc.SetBool(context.Background(), admin.KeyStaffCanViewTicketChangeHistory, true))
+	require.True(t, svc.StaffCanViewTicketChangeHistory(context.Background()))
+}
+
+func TestAdminService_AuditRetentionDays(t *testing.T) {
+	cases := []struct {
+		name  string
+		store func(t *testing.T, svc *admin.Service)
+		want  int
+	}{
+		{name: "unset defaults to 365", store: func(t *testing.T, svc *admin.Service) {}, want: 365},
+		{name: "stored positive value is used", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 90))
+		}, want: 90},
+		{name: "zero falls back to the default rather than purging everything", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 0))
+		}, want: 365},
+		{name: "negative falls back to the default too", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, -5))
+		}, want: 365},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := admin.NewService(newFakeAdminStore())
+			tc.store(t, svc)
+			require.Equal(t, tc.want, svc.AuditRetentionDays(context.Background()))
+		})
+	}
+}
+
 func TestAdminService_GetSetBool(t *testing.T) {
 	svc := admin.NewService(newFakeAdminStore())
 	require.NoError(t, svc.SetBool(context.Background(), admin.KeySAMLEnabled, true))

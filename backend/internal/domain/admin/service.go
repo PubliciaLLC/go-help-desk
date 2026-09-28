@@ -226,6 +226,25 @@ func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
 	return v
 }
 
+// StaffCanViewTicketChangeHistory returns whether staff may see the
+// field-level before/after diff on an audit entry, on top of the
+// action/actor/timestamp every staff member already sees. Off by default.
+func (s *Service) StaffCanViewTicketChangeHistory(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanViewTicketChangeHistory)
+	return v
+}
+
+// AuditRetentionDays returns the configured audit-log retention window,
+// defaulting to 365 when unset, unreadable, or set to a non-positive value —
+// the same "safe fallback, not a refusal" shape as ReopenWindowDays.
+func (s *Service) AuditRetentionDays(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAuditRetentionDays)
+	if err != nil || v <= 0 {
+		return 365
+	}
+	return v
+}
+
 // SLAEnabled returns whether SLA tracking is active, and any error reading
 // the underlying setting.
 //

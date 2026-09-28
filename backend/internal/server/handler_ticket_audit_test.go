@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -207,6 +208,117 @@ func TestListTicketAudit_WithholdsUnassignedTooButNotOtherActions(t *testing.T) 
 	}
 	require.True(t, sawResolved, "expected a resolved entry")
 	require.True(t, sawUnassigned, "expected an unassigned entry from the deleted user's ticket being returned to the queue")
+}
+
+// resolveAndFetchAudit files a ticket as creator, resolves it as staff (a
+// diff-bearing action — ticketMap changes status_id), then returns the audit
+// feed as viewer. creator and viewer are the same function for the staff/
+// admin cases; the reporter case needs its own creator so the fetch is on a
+// ticket that viewer is actually the reporter of, or requireTicketAccess
+// 403s before the diff-visibility question is ever reached.
+func resolveAndFetchAudit(t *testing.T, h *harness, creator, viewer func(*testing.T, string, string, any) *http.Response) []struct {
+	Action string         `json:"action"`
+	Before map[string]any `json:"before"`
+	After  map[string]any `json:"after"`
+} {
+	t.Helper()
+	resp := creator(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "diff visibility", "description": "x", "category_id": h.catID.String(),
+	})
+	body, _ := readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", body)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+
+	resp = h.do(t, http.MethodPost, "/api/v1/tickets/"+created.ID+"/resolve", map[string]any{})
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = viewer(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+	body, _ = readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+	var entries []struct {
+		Action string         `json:"action"`
+		Before map[string]any `json:"before"`
+		After  map[string]any `json:"after"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &entries))
+	return entries
+}
+
+func findAction(entries []struct {
+	Action string         `json:"action"`
+	Before map[string]any `json:"before"`
+	After  map[string]any `json:"after"`
+}, action string) (Before, After map[string]any, found bool) {
+	for _, e := range entries {
+		if e.Action == action {
+			return e.Before, e.After, true
+		}
+	}
+	return nil, nil, false
+}
+
+// Reporters never see the field-level diff, regardless of the setting — #129
+// carved this out as a fact about the reporter's own visibility, separate
+// from staff's.
+func TestListTicketAudit_DiffNeverShownToReporterEvenWithSettingOn(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyStaffCanViewTicketChangeHistory, true))
+
+	entries := resolveAndFetchAudit(t, h, h.doAsUser, h.doAsUser)
+	before, after, found := findAction(entries, "resolved")
+	require.True(t, found, "expected a resolved entry")
+	require.Nil(t, before, "a reporter must never see the before diff")
+	require.Nil(t, after, "a reporter must never see the after diff")
+}
+
+// Off by default (the setting's own zero value): staff see exactly what
+// shipped in #325, no diff.
+func TestListTicketAudit_DiffHiddenFromStaffWhenSettingOff(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	entries := resolveAndFetchAudit(t, h, h.do, h.do)
+	before, after, found := findAction(entries, "resolved")
+	require.True(t, found, "expected a resolved entry")
+	require.Nil(t, before, "staff must not see the diff while the setting is off")
+	require.Nil(t, after, "staff must not see the diff while the setting is off")
+}
+
+// The setting's whole point: turn it on, and staff see the diff too.
+func TestListTicketAudit_DiffShownToStaffWhenSettingOn(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyStaffCanViewTicketChangeHistory, true))
+
+	entries := resolveAndFetchAudit(t, h, h.do, h.do)
+	before, after, found := findAction(entries, "resolved")
+	require.True(t, found, "expected a resolved entry")
+	require.NotNil(t, before, "staff must see the before diff once the setting is on")
+	require.NotNil(t, after, "staff must see the after diff once the setting is on")
+	require.Contains(t, before, "status_id")
+	require.Contains(t, after, "status_id")
+	require.NotEqual(t, before["status_id"], after["status_id"], "resolving must have changed status_id")
+}
+
+// Admin sees the diff either way — this is a staff-visibility setting, not
+// an admin one, and admin was already the ceiling before it existed.
+func TestListTicketAudit_DiffAlwaysShownToAdminRegardlessOfSetting(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	entries := resolveAndFetchAudit(t, h, h.doAsAdmin, h.doAsAdmin)
+	before, after, found := findAction(entries, "resolved")
+	require.True(t, found, "expected a resolved entry")
+	require.NotNil(t, before, "admin must see the diff even though the setting is off")
+	require.NotNil(t, after, "admin must see the diff even though the setting is off")
 }
 
 // A ticket nobody has done anything to beyond filing it still answers with
