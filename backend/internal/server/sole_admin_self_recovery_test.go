@@ -65,7 +65,7 @@ func TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor(t *testing.T) {
 
 	// The sole administrator, whose authenticator is gone — lost phone, or an
 	// administrator (themselves) having cleared it.
-	require.NoError(t, h.userSvc.ResetMFA(ctx, h.adminID))
+	require.NoError(t, h.userSvc.ResetMFA(ctx, h.adminID, nil))
 	stored, err := h.userSvc.GetByIDAdmin(ctx, h.adminID)
 	require.NoError(t, err)
 	require.False(t, stored.MFAEnabled, "precondition: no working second factor")

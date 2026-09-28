@@ -48,6 +48,35 @@ check whether it is listed here.
   test pins this so it does not get "fixed".
 - **`ticket.Atomic` takes both a `Store` and an `audit.Store`.** An audit entry
   committed apart from the change it describes is not an audit trail.
+- **`user.Service.writeAuditEntry` (ResetMFA, AdminSetPassword) is NOT
+  transactional with the write it describes, on purpose — the one exception to
+  the `ticket.Atomic` rule above.** The mutation commits first; the audit
+  write is a separate, best-effort step, logged and swallowed on failure
+  rather than rolled back or retried (see the doc comment on
+  `writeAuditEntry`, `internal/domain/user/service.go`). This is deliberate,
+  not an oversight that inherited the wrong shape: per `audit.Store`'s own
+  documented contract ("log and continue rather than blocking the caller"),
+  and per #306's own framing, an audit entry here does not gate anything —
+  whoever can clear a factor or reset a password already holds the
+  capability, so losing one entry to a genuine crash or DB outage between the
+  two writes is a visibility gap, not a security control, and failing the
+  actual reset over a logging hiccup would be the wrong trade. `ticket.Atomic`
+  exists because a ticket's audit trail IS relied on as a record of what
+  changed and when; this path is not held to the same bar. Do not "fix" this
+  into `ticket.Atomic`'s shape without re-reading #306 first.
+
+  **This does not mean the caller gets to choose whether they're audited.**
+  An earlier version of `ResetMFA`/`AdminSetPassword` used the caller's
+  `context.Context` for both the mutation and the audit write — which meant
+  the actor #306 is actually worried about (someone resetting a factor who
+  wants it unrecorded) could disconnect right after the reset committed and
+  suppress the entry, or worse, get a false 500 for a reset that had already
+  landed (pgx reports `context canceled` after an autocommit write completes,
+  not before). Both functions now detach with `context.WithoutCancel` before
+  touching the store, matching `handler_passkeys.go`'s `Touch` call. The
+  "log and continue" trade above is about infrastructure failing, not about
+  the actor controlling the outcome by hanging up — keep both functions
+  detached if you touch this code again.
 - **Attachments are download-only; there is no previewer.** Not an oversight
   and not a backlog item. Rendering attachment content on the help desk origin
   makes every uploaded file a candidate for stored XSS against the staff

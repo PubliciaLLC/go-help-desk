@@ -13,7 +13,7 @@ import (
 	uuid "github.com/google/uuid"
 )
 
-const adminSetPassword = `-- name: AdminSetPassword :exec
+const adminSetPassword = `-- name: AdminSetPassword :execrows
 UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1
 `
 
@@ -22,9 +22,14 @@ type AdminSetPasswordParams struct {
 	PasswordHash string    `json:"password_hash"`
 }
 
-func (q *Queries) AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) error {
-	_, err := q.db.ExecContext(ctx, adminSetPassword, arg.ID, arg.PasswordHash)
-	return err
+// :execrows, for the same reason as ClearMFA above: a nonexistent id
+// reported success (204, no error) and still wrote an audit entry.
+func (q *Queries) AdminSetPassword(ctx context.Context, arg AdminSetPasswordParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, adminSetPassword, arg.ID, arg.PasswordHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const adoptUserByOIDCSubject = `-- name: AdoptUserByOIDCSubject :one
@@ -131,13 +136,22 @@ func (q *Queries) ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams
 	return i, err
 }
 
-const clearMFA = `-- name: ClearMFA :exec
+const clearMFA = `-- name: ClearMFA :execrows
 UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE id = $1
 `
 
-func (q *Queries) ClearMFA(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, clearMFA, id)
-	return err
+// :execrows, not :exec: an UPDATE matching zero rows still reports no error,
+// so a nonexistent id looked like a successful clear. Service.ResetMFA writes
+// an audit entry once this returns without error, and #306's own adversarial
+// review caught that: a nonexistent target got a permanent, falsely-attributed
+// audit row for an account that never existed. The caller checks rows
+// affected and reports ErrNotFound when it is zero.
+func (q *Queries) ClearMFA(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, clearMFA, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const clearMFAFailures = `-- name: ClearMFAFailures :exec

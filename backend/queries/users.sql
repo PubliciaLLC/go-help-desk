@@ -286,10 +286,18 @@ SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 O
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
 
--- name: ClearMFA :exec
+-- name: ClearMFA :execrows
+-- :execrows, not :exec: an UPDATE matching zero rows still reports no error,
+-- so a nonexistent id looked like a successful clear. Service.ResetMFA writes
+-- an audit entry once this returns without error, and #306's own adversarial
+-- review caught that: a nonexistent target got a permanent, falsely-attributed
+-- audit row for an account that never existed. The caller checks rows
+-- affected and reports ErrNotFound when it is zero.
 UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE id = $1;
 
--- name: AdminSetPassword :exec
+-- name: AdminSetPassword :execrows
+-- :execrows, for the same reason as ClearMFA above: a nonexistent id
+-- reported success (204, no error) and still wrote an audit entry.
 UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
 
 -- name: ClaimMFAAttempt :one

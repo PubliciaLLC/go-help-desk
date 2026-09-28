@@ -56,7 +56,7 @@ func TestPasskeyRoutes_SitWhereTheyMust(t *testing.T) {
 			"mfa_enabled": true, "mfa_enforced_roles": []string{"admin"},
 		})
 		require.Equal(t, http.StatusNoContent, setRes.StatusCode, "could not enforce MFA: %s", setBody)
-		require.NoError(t, h.userSvc.ResetMFA(ctx, h.adminID))
+		require.NoError(t, h.userSvc.ResetMFA(ctx, h.adminID, nil))
 		require.True(t, h.adminSvc.MFARequiredFor(ctx, "admin"))
 
 		s := &session{h: h}
@@ -170,7 +170,7 @@ func TestPasskeys_APasswordAloneCannotChangeAProtectedAccountsFactors(t *testing
 	// both have to hold.
 	t.Run("but an account with no factor at all still recovers", func(t *testing.T) {
 		require.NoError(t, h.passkeyStore.Delete(ctx, stored.ID, h.userID))
-		require.NoError(t, h.userSvc.ResetMFA(ctx, h.userID))
+		require.NoError(t, h.userSvc.ResetMFA(ctx, h.userID, nil))
 
 		fresh := &session{h: h}
 		res, body := fresh.send(t, http.MethodPost, "/api/v1/auth/local/login",

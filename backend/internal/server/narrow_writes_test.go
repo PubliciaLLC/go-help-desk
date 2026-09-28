@@ -90,7 +90,7 @@ func TestFederatedSignIn_DoesNotWriteBackAnOldRoleOrPassword(t *testing.T) {
 	// An administrator deals with the account: demote, then reset the
 	// password.
 	require.NoError(t, h.userSvc.SetRole(ctx, target.ID, user.RoleUser))
-	require.NoError(t, h.userSvc.AdminSetPassword(ctx, target.ID, "the-reset-passphrase"))
+	require.NoError(t, h.userSvc.AdminSetPassword(ctx, target.ID, "the-reset-passphrase", nil))
 
 	// And then they sign in again through the identity provider.
 	back, err := h.userSvc.UpsertOIDCUser(ctx, "sub-abc", "federated@test.local", "Federated")
