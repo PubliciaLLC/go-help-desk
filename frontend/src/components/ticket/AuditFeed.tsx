@@ -35,7 +35,7 @@ function labelFor(action: string): string {
 // actor_name/actor_id on those entries for a reporting user, so there is
 // nothing this component needs to filter itself.
 export function AuditFeed({ ticketId }: AuditFeedProps) {
-  const { data: entries = [], isLoading } = useQuery({
+  const { data: entries = [], isLoading, isError } = useQuery({
     queryKey: ['ticketAudit', ticketId],
     queryFn: () => listTicketAudit(ticketId),
   })
@@ -49,7 +49,8 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
       </CardHeader>
       <CardContent>
         {isLoading && <p className="text-xs text-gray-400">Loading…</p>}
-        {!isLoading && entries.length === 0 && (
+        {isError && <p className="text-xs text-red-600">Could not load activity</p>}
+        {!isLoading && !isError && entries.length === 0 && (
           <p className="text-xs text-gray-400">Nothing recorded yet</p>
         )}
         <ul className="space-y-2">

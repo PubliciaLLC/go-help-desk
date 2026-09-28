@@ -406,6 +406,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -415,6 +416,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -424,6 +426,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
     onError: () => {
@@ -431,6 +434,7 @@ export function TicketDetailPage() {
       // refetch so the header shows the real status and the button goes away.
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
     },
   })
 
@@ -439,6 +443,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -651,7 +656,10 @@ export function TicketDetailPage() {
                     users={allUsers}
                     haveStaffList={haveStaffList}
                     groups={groups}
-                    onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
+                    onUpdated={() => {
+                      qc.invalidateQueries({ queryKey: ['ticket', id] })
+                      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+                    }}
                   />
                 </CardContent>
               </Card>

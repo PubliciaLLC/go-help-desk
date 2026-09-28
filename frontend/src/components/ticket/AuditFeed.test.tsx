@@ -63,6 +63,15 @@ describe('AuditFeed', () => {
     await waitFor(() => expect(screen.getByText('Nothing recorded yet')).toBeTruthy())
   })
 
+  it('shows an error state rather than looking like an empty feed', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockRejectedValue(new Error('network error'))
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getByText('Could not load activity')).toBeTruthy())
+    expect(screen.queryByText('Nothing recorded yet')).toBeNull()
+  })
+
   it('requests the audit feed for the ticket it was given', () => {
     vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([])
 

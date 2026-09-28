@@ -1,11 +1,15 @@
 package server_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // #129: the per-ticket activity feed. Access control is already proven by
@@ -127,6 +131,82 @@ func TestListTicketAudit_WithholdsAssignmentActorFromReportingUser(t *testing.T)
 			require.Equal(t, "Admin", e.ActorName)
 		}
 	}
+}
+
+// The withholding added for #129's assigned/unassigned gap is a denylist
+// (role == RoleUser && action is assigned/unassigned), not an allowlist —
+// two ways that shape could quietly go wrong: it could forget the
+// "unassigned" half (only ever exercised via a deleted user's tickets
+// returning to the queue, never over a plain PATCH), or it could withhold
+// too much and start hiding actors a reporting user is meant to see (every
+// non-assignment action). This test drives a real "unassigned" entry and
+// checks both directions at once.
+func TestListTicketAudit_WithholdsUnassignedTooButNotOtherActions(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "my printer", "description": "jammed", "category_id": h.catID.String(),
+	})
+	body, _ := readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", body)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+	ticketID, err := uuid.Parse(created.ID)
+	require.NoError(t, err)
+
+	// A real "unassigned" entry: assign a soon-to-depart staff member, then
+	// delete them — TestDeleteUser_ReturnsTheirOpenTicketsToTheQueue already
+	// proves this is the one path that writes "unassigned" rather than a
+	// second "assigned". UnassignForUser only touches OPEN tickets, so this
+	// has to happen before the ticket is resolved below, not after.
+	leaver, err := h.userSvc.Create(ctx, userInput("leaver-audit@test.local", "A Leaver"))
+	require.NoError(t, err)
+	_, err = h.ticketSvc.Assign(ctx, ticketID, &leaver.ID, nil, ticket.SystemActor)
+	require.NoError(t, err)
+
+	resp = h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+leaver.ID.String(), nil)
+	resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	// Resolving is a non-assignment, staff/admin-only action with no
+	// disclosure restriction — a reporting user must still see who did it,
+	// same as /history already shows them. This is what "withhold too much"
+	// would break.
+	resp = h.do(t, http.MethodPost, "/api/v1/tickets/"+created.ID+"/resolve", map[string]any{})
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+	body, _ = readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+	var entries []struct {
+		Action    string  `json:"action"`
+		ActorID   *string `json:"actor_id"`
+		ActorName string  `json:"actor_name"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &entries))
+
+	var sawResolved, sawUnassigned bool
+	for _, e := range entries {
+		switch e.Action {
+		case "resolved":
+			sawResolved = true
+			require.NotEmpty(t, e.ActorName, "a reporting user must still see who resolved their ticket")
+		case "unassigned":
+			sawUnassigned = true
+			require.Nil(t, e.ActorID, "a reporting user must not learn who unassigned their ticket either")
+			require.Empty(t, e.ActorName, "a reporting user must not learn who unassigned their ticket either")
+		}
+	}
+	require.True(t, sawResolved, "expected a resolved entry")
+	require.True(t, sawUnassigned, "expected an unassigned entry from the deleted user's ticket being returned to the queue")
 }
 
 // A ticket nobody has done anything to beyond filing it still answers with

@@ -1004,7 +1004,9 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 				case err == nil:
 					name = u.DisplayName
 				case errors.Is(err, user.ErrNotFound):
-					// Account since deleted; leave the entry actor-less.
+					// Account since deleted; actor_id stays (it is a fact
+					// about what happened), only the name is left blank —
+					// there is nobody left to resolve it to.
 				default:
 					slog.ErrorContext(r.Context(), "resolving audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
