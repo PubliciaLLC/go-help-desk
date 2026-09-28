@@ -51,6 +51,25 @@ Three-level hierarchy: **Category → Type → Item**
 - Item dropdown is disabled until a Type is chosen
 - Types and Items are optional downward — a Category may have no Types, a Type may have no Items
 
+**Setup creates the first Category, so "required" is always satisfiable.**
+Category is required on every ticket, and statuses are seeded by migration
+while categories were not — so a freshly set-up instance had none, and the
+first ticket its new administrator tried to file answered
+`400 category_id is required`. The error named a field rather than the action
+needed, nothing on the way in said "create a category first", and setup does
+not reopen. The whole test suite was blind to it because the harness seeds a
+category of its own, so the state a real first run is in was never exercised.
+
+`POST /setup` therefore takes an optional `category` name alongside the
+administrator, and the wizard asks for it with a sensible value already
+filled in. The category is created **before** the administrator and only when
+none exists: setup answers 409 forever once a user exists, so a failure
+between the two steps must not be able to leave an instance with an
+administrator and no category. That ordering leaves two failure modes, both
+retryable — nothing happened, or a category exists and no user does — and the
+existence check is what makes the retry reuse it instead of stacking
+duplicates. See #323.
+
 ### Tickets (v1)
 
 Core fields (all editions):
