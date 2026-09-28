@@ -878,6 +878,15 @@ func (s *Service) Enable(ctx context.Context, id uuid.UUID) error {
 // of calling this, because "nobody was signed in" and "an administrator did
 // it through the web" are different facts worth telling apart; see #306.
 func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error {
+	// Detached from the caller: the caller disconnecting right after the
+	// clear commits must not decide whether it leaves a trace. #306's own
+	// framing names this exact actor — "the exact action an attacker...
+	// would want unrecorded" — and without this, they could get it by simply
+	// hanging up: pgx reports context canceled even after an autocommit
+	// UPDATE has already landed, which both skips writeAuditEntry below and,
+	// separately, answers the caller 500 for a reset that already happened.
+	// Same shape as handler_passkeys.go's detached Touch call.
+	ctx = context.WithoutCancel(ctx)
 	if err := s.store.ClearMFA(ctx, id); err != nil {
 		return err
 	}
@@ -893,6 +902,11 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 // AdminSetPassword hashes and stores a new password without requiring the
 // old one, and records who did it. See ResetMFA on actorID.
 func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string, actorID *uuid.UUID) error {
+	// See ResetMFA: detached so a disconnect after the store write commits
+	// can't suppress the audit entry or turn a completed reset into a false
+	// 500. Validation and hashing below don't touch I/O, so detaching this
+	// early costs nothing.
+	ctx = context.WithoutCancel(ctx)
 	if strings.TrimSpace(plain) == "" {
 		return fmt.Errorf("%w: password is required", ErrValidation)
 	}

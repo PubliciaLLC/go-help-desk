@@ -50,6 +50,57 @@ func TestAdminPasswordReset_WritesAnAuditEntryNamingTheAdmin(t *testing.T) {
 	require.Equal(t, h.adminID, *entries[0].ActorID)
 }
 
+// A caller that disconnects right after the mutation commits must not get
+// to decide whether it left a trace — that's the exact actor #306 is
+// worried about, and it's why user.Service detaches with
+// context.WithoutCancel before touching the store. Calling the service
+// directly with an already-canceled context is the deterministic way to
+// prove it: pgx checks ctx.Err() up front and refuses immediately if the
+// context isn't detached, so this fails hard (not just "usually passes")
+// without the fix, rather than needing a timing sweep against a real
+// disconnect.
+func TestResetMFA_SucceedsAndIsAuditedEvenIfTheCallerHasAlreadyDisconnected(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	enrollMFA(t, ctx, h.userSvc, h.staffID)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	actorID := h.adminID
+	err := h.userSvc.ResetMFA(canceled, h.staffID, &actorID)
+	require.NoError(t, err, "a caller that has already disconnected must not turn a completed reset into a reported failure")
+
+	got, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+	require.False(t, got.MFAEnabled, "the reset itself must still have applied")
+
+	entries, err := h.auditStore.ListByEntity(ctx, "user", h.staffID, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the caller disconnecting must not suppress the audit entry")
+	require.Equal(t, "mfa_reset", entries[0].Action)
+}
+
+// Same contract as the MFA reset above, for the other write path.
+func TestAdminSetPassword_SucceedsAndIsAuditedEvenIfTheCallerHasAlreadyDisconnected(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	actorID := h.adminID
+	err := h.userSvc.AdminSetPassword(canceled, h.staffID, "a-brand-new-password", &actorID)
+	require.NoError(t, err, "a caller that has already disconnected must not turn a completed reset into a reported failure")
+
+	entries, err := h.auditStore.ListByEntity(ctx, "user", h.staffID, 10, 0)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "the caller disconnecting must not suppress the audit entry")
+	require.Equal(t, "password_reset_by_admin", entries[0].Action)
+}
+
 // A rejected reset attempt (bad target, wrong shape) must not still leave
 // something in the trail claiming it happened.
 //
