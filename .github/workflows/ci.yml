@@ -25,7 +25,11 @@ name: CI
 
 on:
   push:
-    branches: [main, development]
+    # The release line is here deliberately. Until it was added, a direct push
+    # to v1.3.0-beta ran no CI at all — every check anyone read on a PR came
+    # from the `pull_request` trigger below, so merging a PR tested the merge
+    # commit and pushing straight to the branch tested nothing.
+    branches: [main, development, v1.3.0-beta]
   pull_request:
 
 # Cancel superseded runs on the same ref, so a fast follow-up push doesn't

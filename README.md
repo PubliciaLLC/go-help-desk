@@ -52,20 +52,6 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 
 ## Quick start
 
-**Requires Docker Buildx.** `docker compose up` builds `app` from
-`backend/Dockerfile`, which cross-compiles for your host's real architecture
-rather than emulating it — that needs the `docker buildx` CLI plugin, not
-the classic builder Compose otherwise falls back to. Docker Desktop has
-shipped Buildx by default since 2023; if `docker buildx version` fails,
-install it (`brew install docker-buildx && mkdir -p ~/.docker/cli-plugins &&
-ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx"
-~/.docker/cli-plugins/docker-buildx` on macOS/Homebrew, including Colima; see
-[docs.docker.com/build/architecture](https://docs.docker.com/build/architecture/#buildx)
-for other platforms). Without it, the build fails with a clear
-`--platform=` parse error at the very first step rather than producing an
-image that looks fine and does not run — see #297 and #301 for why this is
-a hard requirement rather than a fallback.
-
 ```sh
 git clone https://github.com/PubliciaLLC/go-help-desk
 cd go-help-desk/docker
@@ -73,9 +59,61 @@ cp .env.example .env   # set SESSION_SECRET, JWT_SECRET, BASE_URL
 docker compose up -d
 ```
 
+This pulls a published image. Nothing is compiled on your machine, and one
+image name covers both Intel and ARM — including Apple Silicon — because the
+Docker client picks the right architecture for you.
+
 Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`, where you create the first admin account. The setup route is permanently disabled once any user exists.
 
-Virus scanning (ClamAV) is off by default and opt-in — see the "Virus scanning" section of `docker/.env.example`. This also keeps the quick start working on Apple Silicon: `clamav/clamav` is `linux/amd64`-only, and enabling the profile there pins it to run under emulation rather than failing to pull.
+Virus scanning (ClamAV) is off by default and opt-in — see the "Virus scanning"
+section of `docker/.env.example`. `clamav/clamav` is published for
+`linux/amd64` only, so enabling the profile on Apple Silicon pins it to run
+under emulation rather than failing to pull.
+
+### Building from source instead
+
+Building it yourself is fully supported and is not a fallback — some people
+self-host precisely so they can run what they built rather than an image
+somebody else produced:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+**This path requires Docker Buildx.** It cross-compiles for your host's real
+architecture rather than emulating it, which needs the `docker buildx` CLI
+plugin, not the classic builder Compose otherwise falls back to. Docker
+Desktop has shipped Buildx by default since 2023; if `docker buildx version`
+fails, install it — on macOS with Homebrew, including Colima:
+
+```sh
+brew install docker-buildx
+mkdir -p ~/.docker/cli-plugins
+ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx
+```
+
+See [docs.docker.com/build/architecture](https://docs.docker.com/build/architecture/#buildx)
+for other platforms. Without it the build fails with a clear `--platform=`
+parse error at the first step, rather than producing an image that looks fine
+and does not run — see
+[#297](https://github.com/PubliciaLLC/go-help-desk/issues/297) and
+[#301](https://github.com/PubliciaLLC/go-help-desk/pull/301) for why that is a
+hard requirement here rather than a silent fallback.
+
+### Pinning a version
+
+`docker compose up -d` follows the version pinned in `docker-compose.yml`. To
+run a different one, set `GHD_VERSION` in `docker/.env`:
+
+```sh
+GHD_VERSION=1.3.0
+```
+
+Released versions are published as `1.3.0` and `1.3`, and the newest stable
+release is also `latest`. A prerelease is published under its exact name only
+— `1.4.0-beta` — and never moves `latest`, so following `latest` will not put
+you on a beta. Images live at
+[ghcr.io/publiciallc/go-help-desk](https://github.com/PubliciaLLC/go-help-desk/pkgs/container/go-help-desk).
 
 ## Configuration
 
@@ -151,9 +189,12 @@ now sees the same "Add files" control staff already had.
 `--platform=` parse error on Apple Silicon and other non-amd64 hosts; a
 later attempt at defaulting around that turned out to produce an image that
 builds cleanly but will not run there instead, which is worse, so it was
-reverted. See the buildx note under Quick start above if
+reverted. See "Building from source instead" above if
 `docker compose build` or `docker compose up --build` fails at the first
 step.
+
+Note this only affects building. From 1.3.0 the quick start pulls a
+published image, so most people never invoke a builder at all.
 
 ## Upgrading to 1.2.0
 

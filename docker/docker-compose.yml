@@ -58,9 +58,21 @@ services:
       - antivirus
 
   app:
-    build:
-      context: ..
-      dockerfile: backend/Dockerfile
+    # Pulled, not built. Postgres and ClamAV above arrive as finished images
+    # and nobody compiles those to try this; there is no reason our own should
+    # be different. Building here is what put a Go toolchain, Node and the
+    # buildx plugin in the path of anyone evaluating the product, and it is
+    # why the quick start failed outright on Apple Silicon (#297).
+    #
+    # One name serves both architectures — the client picks — so there is
+    # nothing here about platforms.
+    #
+    # Building from source is still fully supported and is not a legacy path:
+    #
+    #     docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+    #
+    # That needs Docker's buildx plugin. See docker-compose.build.yml.
+    image: ghcr.io/publiciallc/go-help-desk:${GHD_VERSION:-1.3.0}
     restart: unless-stopped
     depends_on:
       db:
