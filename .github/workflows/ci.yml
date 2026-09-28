@@ -7,10 +7,21 @@ name: CI
 # secrets. That is the point — this workflow executes contributor code, so it
 # must not hold credentials a malicious PR could use.
 #
-# Job order mirrors the Dockerfile: the frontend is built first, and its dist/
-# output is embedded into the Go binary by internal/ui (`//go:embed dist`).
-# Without that directory present, `go build ./...` fails outright — so the
-# backend job consumes the frontend's build artifact rather than guessing.
+# The frontend's dist/ output is embedded into the Go binary by internal/ui
+# (`//go:embed dist`). Without that directory present, `go build ./...` fails
+# outright — so the backend job consumes the frontend's build artifact rather
+# than guessing.
+#
+# frontend-lint-test and frontend-build are separate jobs, not steps in one,
+# specifically so backend's `needs:` can point at the build output alone. A
+# single combined job ran lint and test before build, so a pure lint or
+# unit-test failure — with no bearing on whether dist/ exists or is correct —
+# stopped that job before the build step ever ran, which made backend report
+# `skipped` rather than actually running. #295 was exactly that: one dangling
+# ESLint disable-comment hid whether backend CI would have passed, on a PR
+# that touched no frontend code. A frontend BUILD failure should still block
+# backend — there is nothing to embed — but a lint or test failure should not,
+# and now only frontend-build's outcome decides that.
 
 on:
   push:
@@ -27,8 +38,8 @@ permissions:
   contents: read
 
 jobs:
-  frontend:
-    name: Frontend (lint, test, build)
+  frontend-lint-test:
+    name: Frontend (lint, test, e2e)
     runs-on: ubuntu-latest
 
     defaults:
@@ -62,6 +73,26 @@ jobs:
       - name: E2E (mobile layout — #296)
         run: npm run test:e2e
 
+  frontend-build:
+    name: Frontend (build)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Build (runs tsc -b, so this is also the type-check)
         run: npm run build
 
@@ -76,7 +107,9 @@ jobs:
   backend:
     name: Backend (build, vet, test)
     runs-on: ubuntu-latest
-    needs: frontend
+    # Only the build output, deliberately not frontend-lint-test — see the
+    # note at the top of this file.
+    needs: frontend-build
 
     # No `services:` block. The test database comes from
     # docker/docker-compose.test.yml, the same file developers run locally, so
