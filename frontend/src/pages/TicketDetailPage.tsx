@@ -700,10 +700,13 @@ export function TicketDetailPage() {
 
             {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
 
-            {/* Staff-only display, not a security boundary: the API itself
-                gates on the ticket's own visibility (#129), same as
-                /history. A reporting user isn't blocked from the data; the
-                raw activity feed just isn't this page's job to show them. */}
+            {/* Staff-only display, not the only guard: the API gates on the
+                ticket's own visibility (#129), same as /history, but also
+                withholds the actor on assigned/unassigned entries from a
+                RoleUser caller specifically (assignment is staff/admin-only,
+                and nothing else discloses that identity to a reporter). This
+                hides the whole feed from that role anyway, since none of it
+                is this page's job to show them. */}
             {isStaffOrAdmin && <AuditFeed ticketId={id} />}
 
             {attachments.length > 0 && (

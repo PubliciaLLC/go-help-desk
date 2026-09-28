@@ -961,7 +961,15 @@ type ticketAuditEntryView struct {
 //
 // #129: a per-ticket activity feed next to the status timeline. Relies on
 // requireTicketAccess like every other route in this subtree — a ticket's
-// audit trail is ticket content, not a separate permission.
+// audit trail is ticket content, not a separate permission — with one
+// exception: assigned/unassigned entries name a staff or admin actor
+// (assignment is staff/admin-only, see ticket.CanAssign), and nothing else
+// on a ticket discloses that actor's identity to a reporting user — the
+// ticket's own assignee_user_id is a bare UUID, and /api/v1/staff, the only
+// place that resolves one to a name, is itself staff/admin-gated. A
+// reporting user would otherwise learn a staff member's name from this feed
+// alone, so those two actions withhold actor identity for RoleUser viewers,
+// the same way VisibleReplies withholds internal-note authorship.
 func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -974,6 +982,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	role := authmw.GetActor(r).Role
 	views := make([]ticketAuditEntryView, len(entries))
 	// Cached per request: the same actor (an assignee working a long
 	// thread, say) can appear on many entries, and a lookup miss (the
@@ -982,11 +991,22 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	names := make(map[uuid.UUID]string)
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
+		if role == user.RoleUser && (e.Action == "assigned" || e.Action == "unassigned") {
+			v.ActorID = nil
+			views[i] = v
+			continue
+		}
 		if e.ActorID != nil {
 			name, cached := names[*e.ActorID]
 			if !cached {
-				if u, err := s.users.GetByID(r.Context(), *e.ActorID); err == nil {
+				u, err := s.users.GetByID(r.Context(), *e.ActorID)
+				switch {
+				case err == nil:
 					name = u.DisplayName
+				case errors.Is(err, user.ErrNotFound):
+					// Account since deleted; leave the entry actor-less.
+				default:
+					slog.ErrorContext(r.Context(), "resolving audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
 				names[*e.ActorID] = name
 			}

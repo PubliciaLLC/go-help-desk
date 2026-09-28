@@ -65,6 +65,70 @@ func TestListTicketAudit_ShowsWhatHappenedOldestFirstWithTheActorNamed(t *testin
 	}
 }
 
+// #129 exists so a reporting user can see "who changed this and when"
+// without new access-control thinking — but assignment is staff/admin-only
+// (ticket.CanAssign), and nothing else discloses a staff member's identity
+// to a reporting user: the ticket's own assignee_user_id is a bare UUID, and
+// GET /api/v1/staff, the only place that resolves one to a name, 403s a
+// RoleUser caller. A reporting user must not be able to learn who assigned
+// their ticket from this feed when they could learn it nowhere else.
+func TestListTicketAudit_WithholdsAssignmentActorFromReportingUser(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	resp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "my printer", "description": "jammed", "category_id": h.catID.String(),
+	})
+	body, _ := readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "body: %s", body)
+	var created struct {
+		ID string `json:"id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &created))
+
+	resp = h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+created.ID, map[string]any{
+		"assignee_user_id": h.staffID.String(),
+	})
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+	body, _ = readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+
+	var entries []struct {
+		Action    string  `json:"action"`
+		ActorID   *string `json:"actor_id"`
+		ActorName string  `json:"actor_name"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &entries))
+
+	var sawAssigned bool
+	for _, e := range entries {
+		if e.Action == "assigned" {
+			sawAssigned = true
+			require.Nil(t, e.ActorID, "a reporting user must not learn who assigned their ticket")
+			require.Empty(t, e.ActorName, "a reporting user must not learn who assigned their ticket")
+		}
+	}
+	require.True(t, sawAssigned, "expected an assigned entry from the admin's PATCH")
+
+	// Staff/admin get the full picture: the same feed, unwithheld.
+	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+	body, _ = readAllBody(resp)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NoError(t, json.Unmarshal([]byte(body), &entries))
+	for _, e := range entries {
+		if e.Action == "assigned" {
+			require.NotNil(t, e.ActorID)
+			require.Equal(t, "Admin", e.ActorName)
+		}
+	}
+}
+
 // A ticket nobody has done anything to beyond filing it still answers with
 // its one entry, not an empty feed and not an error — filing IS an event.
 func TestListTicketAudit_AFreshTicketHasItsCreationEntry(t *testing.T) {

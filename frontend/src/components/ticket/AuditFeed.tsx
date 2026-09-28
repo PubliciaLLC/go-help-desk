@@ -28,10 +28,12 @@ function labelFor(action: string): string {
 }
 
 // #129: the per-ticket activity feed, next to the status timeline —
-// answers "who changed this and when" without database access. Everything
-// it shows (status, priority, subject, assignee) is already visible on the
-// ticket itself to anyone who can view it, so this needs no access-control
-// decisions of its own; it inherits the ticket's own visibility gate.
+// answers "who changed this and when" without database access. It inherits
+// the ticket's own visibility gate; the one action-specific exception
+// (assignment is staff/admin-only, and reporters can't resolve an assignee
+// to a name anywhere else) is enforced server-side — the API simply omits
+// actor_name/actor_id on those entries for a reporting user, so there is
+// nothing this component needs to filter itself.
 export function AuditFeed({ ticketId }: AuditFeedProps) {
   const { data: entries = [], isLoading } = useQuery({
     queryKey: ['ticketAudit', ticketId],
