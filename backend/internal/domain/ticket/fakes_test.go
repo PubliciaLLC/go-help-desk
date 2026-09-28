@@ -3,6 +3,7 @@ package ticket_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -414,8 +415,25 @@ func (f *fakeAuditStore) Create(_ context.Context, e audit.Entry) error {
 	return nil
 }
 
-func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, int) ([]audit.Entry, error) {
-	return nil, nil
+// ListByEntity mirrors the real store's query closely enough to be a
+// meaningful double: filtered to the (entityType, entityID) pair, newest
+// first, limit/offset applied — not a stub that always returns nothing.
+func (f *fakeAuditStore) ListByEntity(_ context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]audit.Entry, error) {
+	var matched []audit.Entry
+	for _, e := range f.entries {
+		if e.EntityType == entityType && e.EntityID == entityID {
+			matched = append(matched, e)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	if offset >= len(matched) {
+		return nil, nil
+	}
+	matched = matched[offset:]
+	if limit > 0 && limit < len(matched) {
+		matched = matched[:limit]
+	}
+	return matched, nil
 }
 
 type fakeSLA struct {

@@ -16,6 +16,7 @@ import {
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
+import { AuditFeed } from '@/components/ticket/AuditFeed'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
@@ -698,6 +699,12 @@ export function TicketDetailPage() {
             </Card>
 
             {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
+
+            {/* Staff-only display, not a security boundary: the API itself
+                gates on the ticket's own visibility (#129), same as
+                /history. A reporting user isn't blocked from the data; the
+                raw activity feed just isn't this page's job to show them. */}
+            {isStaffOrAdmin && <AuditFeed ticketId={id} />}
 
             {attachments.length > 0 && (
               <Card>

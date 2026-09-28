@@ -82,6 +82,7 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Get("/links", s.handleListLinks)
 
 		r.Get("/history", s.handleListStatusHistory)
+		r.Get("/audit", s.handleListTicketAudit)
 
 		// Tags are how staff mark a ticket for other staff — "fraud-suspect",
 		// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and

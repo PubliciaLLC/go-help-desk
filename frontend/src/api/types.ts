@@ -65,6 +65,16 @@ export interface StatusHistoryEntry {
   created_at: string
 }
 
+export interface TicketAuditEntry {
+  id: string
+  action: string
+  actor_id: string | null
+  // omitempty on the backend: absent (not just empty) for a system actor or
+  // one whose account no longer exists.
+  actor_name?: string
+  created_at: string
+}
+
 export interface Status {
   id: string
   name: string

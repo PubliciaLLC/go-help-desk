@@ -156,6 +156,12 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
   it. System statuses can never be renamed, deactivated or deleted.
 - Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
 
+### Ticket Activity Feed
+
+`GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes behind every mutation (`created`, `status_changed`, `assigned`, `unassigned`, `resolved`, `closed`, `reopened`), without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`, no separate access-control decision, because everything an entry can name (status, priority, subject, assignee) is already visible on the ticket itself to anyone who can view it.
+
+Deliberately does not decode each entry's before/after diff — that needs status/priority IDs resolved to names the way status history's own dedicated query does, and is better spent on the admin-wide audit view this issue also asks for, once its open questions (who may read across every entity, and retention) are settled. This is the small half of that issue: one ticket, no new access-control thinking.
+
 ### Tags
 
 Free-form labels that staff can attach to any ticket. Rules:

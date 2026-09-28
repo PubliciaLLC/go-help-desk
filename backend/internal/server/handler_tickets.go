@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -939,6 +940,61 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	JSON(w, http.StatusOK, history)
+}
+
+// ticketAuditEntryView is what handleListTicketAudit returns: enough to
+// answer "who did what, and when" without exposing the raw before/after
+// diff. Every mutation an entry can name (status, priority, subject,
+// assignee) is already visible on the ticket itself to anyone who can view
+// it — see #129 — so this deliberately does not decode Before/After; the
+// admin-wide view (#129, not yet built) is where that belongs, once its own
+// open questions (who may read across entities, retention) are settled.
+type ticketAuditEntryView struct {
+	ID        uuid.UUID  `json:"id"`
+	Action    string     `json:"action"`
+	ActorID   *uuid.UUID `json:"actor_id"`
+	ActorName string     `json:"actor_name,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// GET /api/v1/tickets/{id}/audit
+//
+// #129: a per-ticket activity feed next to the status timeline. Relies on
+// requireTicketAccess like every other route in this subtree — a ticket's
+// audit trail is ticket content, not a separate permission.
+func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	entries, err := s.tickets.ListAuditEntries(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	views := make([]ticketAuditEntryView, len(entries))
+	// Cached per request: the same actor (an assignee working a long
+	// thread, say) can appear on many entries, and a lookup miss (the
+	// account was later deleted) is cached too, so it costs one failed
+	// GetByID rather than one per entry.
+	names := make(map[uuid.UUID]string)
+	for i, e := range entries {
+		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
+		if e.ActorID != nil {
+			name, cached := names[*e.ActorID]
+			if !cached {
+				if u, err := s.users.GetByID(r.Context(), *e.ActorID); err == nil {
+					name = u.DisplayName
+				}
+				names[*e.ActorID] = name
+			}
+			v.ActorName = name
+		}
+		views[i] = v
+	}
+	JSON(w, http.StatusOK, views)
 }
 
 // GET /api/v1/tickets/{id}/links
