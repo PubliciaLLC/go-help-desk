@@ -8,7 +8,7 @@ import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, MenuIcon,
-  UserIcon,
+  UserIcon, HistoryIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -63,6 +63,12 @@ function SidebarContent({ user, branding, onNavigate, onLogout }: SidebarContent
       <nav className="flex-1 space-y-1 overflow-y-auto p-3">
         <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} />
         <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
+        {/* #129: staff see this too, scoped to their own tickets server-side
+            — it is not an admin-only screen, unlike everything in the
+            "Admin" section below. */}
+        {(user?.role === 'admin' || user?.role === 'staff') && (
+          <NavItem to="/admin/audit" icon={<HistoryIcon className="h-4 w-4" />} label="Audit Log" onNavigate={onNavigate} />
+        )}
         {user?.role === 'admin' && (
           <>
             <div className="px-3 pt-4 pb-1">

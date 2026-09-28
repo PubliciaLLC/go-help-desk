@@ -436,6 +436,64 @@ func (f *fakeAuditStore) ListByEntity(_ context.Context, entityType string, enti
 	return matched, nil
 }
 
+// Search mirrors the real store's filter semantics closely enough to be a
+// meaningful double: every Filter field is optional and narrows the result,
+// newest first, with the total count taken before limit/offset is applied.
+func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
+	if f.err != nil {
+		return nil, 0, f.err
+	}
+	var matched []audit.Entry
+	for _, e := range f.entries {
+		if filter.EntityType != "" && e.EntityType != filter.EntityType {
+			continue
+		}
+		if filter.Action != "" && e.Action != filter.Action {
+			continue
+		}
+		if filter.ActorID != nil && (e.ActorID == nil || *e.ActorID != *filter.ActorID) {
+			continue
+		}
+		if filter.From != nil && e.CreatedAt.Before(*filter.From) {
+			continue
+		}
+		if filter.To != nil && e.CreatedAt.After(*filter.To) {
+			continue
+		}
+		if filter.Q != "" && !strings.Contains(e.EntityType, filter.Q) && !strings.Contains(e.Action, filter.Q) {
+			continue
+		}
+		matched = append(matched, e)
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	total := len(matched)
+	if offset >= len(matched) {
+		return nil, total, nil
+	}
+	matched = matched[offset:]
+	if limit > 0 && limit < len(matched) {
+		matched = matched[:limit]
+	}
+	return matched, total, nil
+}
+
+func (f *fakeAuditStore) DeleteOlderThan(_ context.Context, cutoff time.Time) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	var kept []audit.Entry
+	var deleted int64
+	for _, e := range f.entries {
+		if e.CreatedAt.Before(cutoff) {
+			deleted++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	f.entries = kept
+	return deleted, nil
+}
+
 type fakeSLA struct {
 	firstResponses int
 	resolutions    int

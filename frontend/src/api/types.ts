@@ -65,6 +65,25 @@ export interface StatusHistoryEntry {
   created_at: string
 }
 
+// The admin-wide audit view (#129) — see handleListAdminAudit. Same shape as
+// TicketAuditEntry plus the entity a per-ticket feed doesn't need to say.
+export interface AdminAuditEntry {
+  id: string
+  entity_type: string
+  entity_id: string
+  action: string
+  actor_id: string | null
+  actor_name?: string
+  created_at: string
+  before?: Record<string, unknown> | null
+  after?: Record<string, unknown> | null
+}
+
+export interface AdminAuditListResponse {
+  entries: AdminAuditEntry[]
+  total: number
+}
+
 export interface TicketAuditEntry {
   id: string
   action: string
@@ -73,6 +92,14 @@ export interface TicketAuditEntry {
   // one whose account no longer exists.
   actor_name?: string
   created_at: string
+  // omitempty on the backend, and present or absent together: the server
+  // decides whether this viewer sees the field-level diff at all (admin
+  // always, staff only with the setting on, reporters never) — see
+  // handleListTicketAudit. Absent means "not shown to you", not "nothing
+  // changed"; a create action's genuinely-empty before is still sent as
+  // null, not omitted, when the diff is shown at all.
+  before?: Record<string, unknown> | null
+  after?: Record<string, unknown> | null
 }
 
 export interface Status {

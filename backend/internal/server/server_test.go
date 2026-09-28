@@ -307,6 +307,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		authSt,
 		nil, // registration service not needed in integration tests
 		cannedResponseSvc,
+		server.WithAuditStore(auStore),
 	)
 
 	h := &harness{
@@ -1759,6 +1760,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		authSt,
 		nil, // registration service not needed in integration tests
 		cannedResponseSvc,
+		server.WithAuditStore(auStore),
 	)
 
 	h := &harness{srv: srv}

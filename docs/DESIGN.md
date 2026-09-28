@@ -183,7 +183,15 @@ This route only *reads* the audit log — it does not change what the domain lay
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
-Deliberately does not decode each entry's before/after diff — that needs status/priority IDs resolved to names the way status history's own dedicated query does, and is better spent on the admin-wide audit view this issue also asks for, once its open questions (who may read across every entity, and retention) are settled. This is the small half of that issue: one ticket, and the one access-control decision above.
+The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is redacted by field name (`audit.Redact`) — a denylist of plausible secret-field names, not anything actually written into a ticket's before/after today (`ticketMap` only ever carries `id`, `status_id`, `priority`, `subject`), kept ready for the other entity types the admin-wide view below can show.
+
+### Admin-Wide Audit View
+
+`GET /api/v1/admin/audit` (#129's remaining half) answers the same question across every entity, not one ticket at a time. Staff and admin only, same resource gate as the ticket subtree; a reporting user has no route here.
+
+Staff are narrowed twice: `entity_type` is forced to `ticket` regardless of what the query string asks (every other entity — user, SLA policy, category — is admin-only, independent of the diff setting), and within those, only tickets in the caller's own scope survive, filtered in Go after the query runs rather than in SQL — a caller that must not see every entity filters the result itself, per `audit.Store.Search`'s own contract. That means a scoped staff page can come back shorter than the requested limit, and the reported total is Search's own count before scope narrowing, not an exact number. Filters: `entity_type`, `action`, `actor_id`, `from`/`to` (RFC3339), and `q` — metadata-only (entity type and action, never the before/after payload, so a search can't be used to confirm a redacted value's content).
+
+**Retention.** `audit_retention_days` (admin setting, defaulting to 365, non-positive falls back to the default rather than purging everything) governs a daily sweep that hard-deletes anything older — no archive table.
 
 ### Tags
 

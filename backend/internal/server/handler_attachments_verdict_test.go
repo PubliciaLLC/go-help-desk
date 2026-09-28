@@ -242,6 +242,7 @@ func newVerdictRig(t *testing.T, h *harness, respond http.HandlerFunc) *verdictR
 		nil, // registration
 		h.cannedResponses,
 		server.WithReputationLookup(newMemVerdictStore(), reputation.WithBaseURL(ts.URL)),
+		server.WithAuditStore(h.auditStore),
 	)
 
 	return &verdictRig{srv: srv, admin: h.adminSvc, hits: &hits, h: h}

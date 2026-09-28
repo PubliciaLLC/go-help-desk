@@ -189,6 +189,22 @@ const (
 	// Auto-assign settings. Group takes priority over users; if neither is set, tickets stay unassigned.
 	KeyAutoAssignGroupID = "auto_assign_group_id" // string UUID — assign new tickets to this group
 	KeyAutoAssignUserIDs = "auto_assign_user_ids" // []string UUIDs — round-robin among these users
+
+	// Whether staff may see the field-level before/after diff on an audit
+	// entry, in the per-ticket Activity feed and the admin-wide audit view
+	// alike. Off by default, same reasoning as KeyTicketScopeEnforced: every
+	// release before this showed staff only the action/actor/timestamp
+	// (#325), and turning a wider disclosure on silently during an upgrade is
+	// not this setting's call to make. Admins are unaffected — this only
+	// narrows what staff sees, never what an admin sees — and reporters never
+	// see the diff regardless of this setting; #129 carved that out
+	// separately as a fact about the reporter's own visibility, not staff's.
+	KeyStaffCanViewTicketChangeHistory = "staff_can_view_ticket_change_history" // bool
+
+	// How many days an audit entry is kept before the retention sweep hard-
+	// deletes it. See admin.Service.AuditRetentionDays for the default this
+	// falls back to when unset or non-positive.
+	KeyAuditRetentionDays = "audit_retention_days" // int
 )
 
 // The two values KeyAttachmentInfectedHandling takes.

@@ -14,6 +14,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
@@ -1721,6 +1722,174 @@ func TestAuditStore(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 }
+
+// TestAuditStore_Search covers the admin-wide view's query: every Filter
+// field narrows the result independently, and the total count reflects the
+// filter, not the page.
+//
+// Every case filters by one of the two actors created for this test, rather
+// than asserting an absolute count with no filter at all — TxQueries
+// isolates writes between tests, but not from rows this database already
+// holds outside any test's transaction, and this suite is also run against a
+// long-lived database (see scripts/test-db.sh's "test" mode), not only a
+// fresh one per run.
+func TestAuditStore_Search(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedTestUser(t, ctx, us, "audit-search-actor")
+	otherActor := seedTestUser(t, ctx, us, "audit-search-other-actor")
+	ticketID := uuid.New()
+	userID := uuid.New()
+
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: "ticket", EntityID: ticketID, Action: "resolved",
+	}))
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &otherActor, EntityType: "ticket", EntityID: ticketID, Action: "closed",
+	}))
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: "user", EntityID: userID, Action: "mfa_reset",
+	}))
+
+	cases := []struct {
+		name   string
+		filter audit.Filter
+		want   int
+	}{
+		{name: "actor narrows to everything they did", filter: audit.Filter{ActorID: &actor}, want: 2},
+		{name: "actor and entity type both apply", filter: audit.Filter{ActorID: &actor, EntityType: "ticket"}, want: 1},
+		{name: "actor and action both apply", filter: audit.Filter{ActorID: &actor, Action: "mfa_reset"}, want: 1},
+		{name: "actor and q both apply, matching entity_type", filter: audit.Filter{ActorID: &actor, Q: "tick"}, want: 1},
+		{name: "actor and q both apply, matching action", filter: audit.Filter{ActorID: &actor, Q: "reset"}, want: 1},
+		{name: "an actor with no entries matches nothing", filter: audit.Filter{ActorID: ptrUUID(uuid.New())}, want: 0},
+		{name: "the other actor's own entry", filter: audit.Filter{ActorID: &otherActor}, want: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, total, err := aus.Search(ctx, tc.filter, 10, 0)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, total)
+			require.Len(t, got, tc.want)
+		})
+	}
+
+	// The total reflects the filter, not the page: this actor has 2 entries,
+	// the page is capped to 1, and the count must still say 2.
+	got, total, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 1, 0)
+	require.NoError(t, err)
+	require.Equal(t, 2, total)
+	require.Len(t, got, 1)
+}
+
+// TestAuditStore_Search_DateRange covers From/To, which the table-driven
+// case above can't: it needs entries whose only difference is time, and the
+// harness writes CreatedAt as time.Now() on every Create. Scoped to this
+// test's own actor for the same reason as TestAuditStore_Search.
+func TestAuditStore_Search_DateRange(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedTestUser(t, ctx, us, "audit-daterange-actor")
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: "ticket", EntityID: uuid.New(), Action: "created",
+	}))
+	byThisActor := audit.Filter{ActorID: &actor}
+
+	now := time.Now()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	f := byThisActor
+	f.From, f.To = &past, &future
+	_, total, err := aus.Search(ctx, f, 10, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, total, "entry created just now must fall inside a window that spans an hour either side")
+
+	f = byThisActor
+	f.From = &future
+	_, total, err = aus.Search(ctx, f, 10, 0)
+	require.NoError(t, err)
+	require.Equal(t, 0, total, "a From set an hour in the future must exclude an entry created now")
+
+	f = byThisActor
+	f.To = &past
+	_, total, err = aus.Search(ctx, f, 10, 0)
+	require.NoError(t, err)
+	require.Equal(t, 0, total, "a To set an hour in the past must exclude an entry created now")
+}
+
+func TestAuditStore_DeleteOlderThan(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	aus := auditstore.New(q)
+	us := userstore.New(q)
+
+	actor := seedTestUser(t, ctx, us, "audit-retention-actor")
+
+	// aus.Create always stamps CreatedAt as time.Now(), so the "old" entry is
+	// written directly through the same transaction's Queries instead, with
+	// an explicit CreatedAt — the one field Create won't let a caller set.
+	oldID, newID := uuid.New(), uuid.New()
+	require.NoError(t, q.CreateAuditEntry(ctx, dbgen.CreateAuditEntryParams{
+		ID: oldID, ActorID: uuid.NullUUID{UUID: actor, Valid: true},
+		EntityType: "ticket", EntityID: uuid.New(), Action: "created",
+		CreatedAt: time.Now().AddDate(0, 0, -400),
+	}))
+	require.NoError(t, aus.Create(ctx, audit.Entry{
+		ID: newID, ActorID: &actor, EntityType: "ticket", EntityID: uuid.New(), Action: "created",
+	}))
+
+	cutoff := time.Now().AddDate(0, 0, -365)
+	n, err := aus.DeleteOlderThan(ctx, cutoff)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, n, int64(1), "must delete at least the one entry this test planted before the cutoff")
+
+	// Scoped to this actor rather than the deleted count above, since a
+	// shared long-lived test database may hold other rows past the cutoff —
+	// what must hold regardless is that THIS test's old entry is gone and
+	// its new one is not.
+	remaining, total, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 10, 0)
+	require.NoError(t, err)
+	require.Equal(t, 1, total, "only this actor's entry older than the cutoff should be gone")
+	require.Len(t, remaining, 1)
+	require.Equal(t, newID, remaining[0].ID)
+}
+
+// seedTestUser creates a minimal staff user for FK-constrained tests
+// (audit_log.actor_id references users.id) and returns its ID. The email is
+// randomised so repeated runs against a long-lived database never collide.
+func seedTestUser(t *testing.T, ctx context.Context, us *userstore.Store, label string) uuid.UUID {
+	t.Helper()
+	u := user.User{
+		ID:          uuid.New(),
+		Email:       label + "-" + uuid.New().String() + "@test.local",
+		DisplayName: label,
+		Role:        user.RoleStaff,
+		CreatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+		UpdatedAt:   time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, us.Create(ctx, u))
+	return u.ID
+}
+
+func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }
 
 func prio(p ticket.Priority) *ticket.Priority { return &p }
 
