@@ -183,7 +183,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	a := authmw.GetActor(r)
-	staged, _, err := s.takePasskeyChallenge(w, r)
+	staged, sd, err := s.takePasskeyChallenge(w, r)
 	if err != nil {
 		Error(w, http.StatusBadRequest, "no_challenge", err.Error())
 		return
@@ -210,7 +210,40 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		handleError(w, err)
 		return
 	}
+
+	// Registering a passkey just proved possession of a working second
+	// factor by completing the WebAuthn ceremony — the same fact MFAPassed
+	// records for TOTP in handleMFAEnrollConfirm. Without this, somebody
+	// compelled to enrol (requireFactorOrFirstEnrolment let them in with no
+	// factor at all, precisely so they COULD reach this route) registers a
+	// passkey and is still refused by RequireMFA until they separately run
+	// the sign-in ceremony against the key they hold, seconds after proving
+	// it. See #307 item 3.
+	//
+	// Unconditional, matching TOTP's own handling: when the caller already
+	// held the flag (re-registering a replacement key on an
+	// already-protected account — the only other way past the guard above),
+	// this is a no-op, true stays true.
+	sd = markPasskeyRegistrationSatisfiesMFA(sd)
+	if err := s.writeSession(w, r, sd); err != nil {
+		handleError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// markPasskeyRegistrationSatisfiesMFA flips MFAPassed, leaving every other
+// field untouched.
+//
+// Split out from handlePasskeyRegisterFinish so this one-line fact is
+// verifiable without a real WebAuthn ceremony, which this suite has no
+// infrastructure to perform end to end (tracked separately in #307's
+// "could not verify" list) — the bug this fixes was never about the
+// cryptography, only about the handler forgetting to touch the session
+// after the ceremony and the store write both already succeeded.
+func markPasskeyRegistrationSatisfiesMFA(sd auth.SessionData) auth.SessionData {
+	sd.MFAPassed = true
+	return sd
 }
 
 // GET /api/v1/me/passkeys

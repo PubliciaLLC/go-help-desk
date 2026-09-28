@@ -338,6 +338,17 @@ or OAuth client may not touch how its owner authenticates — and **outside**
 `RequireMFA`, for the same reason TOTP enrolment is outside it: somebody who
 has been told to enrol must be able to finish enrolling.
 
+**Finishing registration satisfies this login's MFA challenge, the same way
+finishing TOTP enrolment already does.** `POST /me/passkeys/register/finish`
+flips `MFAPassed` on success, mirroring `handleMFAEnrollConfirm`. Without
+this a session admitted through the first-enrolment branch above — no factor
+at all yet — could register a passkey and still be refused by `RequireMFA`
+until it separately ran the sign-in ceremony against the key it had just
+proved it held. Unconditional, matching TOTP: for the other way past the
+guard (an already-protected account's owner registering a replacement key,
+already holding the flag), setting it again is a no-op. Found as item 3 of
+[#307](https://github.com/PubliciaLLC/go-help-desk/issues/307).
+
 **Signing in.** `POST /auth/local/passkey/start` and
 `POST /auth/local/passkey/finish` sit beside `/auth/local/mfa/verify` and do
 what it does: on a valid assertion, re-issue the session with `MFAPassed` true.
