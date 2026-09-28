@@ -16,6 +16,7 @@ import {
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
+import { AuditFeed } from '@/components/ticket/AuditFeed'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
@@ -405,6 +406,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -414,6 +416,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -423,6 +426,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
     onError: () => {
@@ -430,6 +434,7 @@ export function TicketDetailPage() {
       // refetch so the header shows the real status and the button goes away.
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
     },
   })
 
@@ -438,6 +443,7 @@ export function TicketDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
@@ -650,7 +656,10 @@ export function TicketDetailPage() {
                     users={allUsers}
                     haveStaffList={haveStaffList}
                     groups={groups}
-                    onUpdated={() => qc.invalidateQueries({ queryKey: ['ticket', id] })}
+                    onUpdated={() => {
+                      qc.invalidateQueries({ queryKey: ['ticket', id] })
+                      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+                    }}
                   />
                 </CardContent>
               </Card>
@@ -698,6 +707,15 @@ export function TicketDetailPage() {
             </Card>
 
             {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
+
+            {/* Staff-only display, not the only guard: the API gates on the
+                ticket's own visibility (#129), same as /history, but also
+                withholds the actor on assigned/unassigned entries from a
+                RoleUser caller specifically (assignment is staff/admin-only,
+                and nothing else discloses that identity to a reporter). This
+                hides the whole feed from that role anyway, since none of it
+                is this page's job to show them. */}
+            {isStaffOrAdmin && <AuditFeed ticketId={id} />}
 
             {attachments.length > 0 && (
               <Card>

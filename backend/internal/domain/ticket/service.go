@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -1438,6 +1439,28 @@ func statusHistoryEntry(ticketID uuid.UUID, fromStatusID *uuid.UUID, toStatusID 
 // ListStatusHistory returns the status transition history for a ticket.
 func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error) {
 	return s.store.ListStatusHistory(ctx, ticketID)
+}
+
+// ticketAuditCap bounds a single ticket's feed. A ticket's lifecycle produces
+// a handful of entries; this is a safety net against an unbounded query, not
+// a limit anyone is expected to hit. The admin-wide audit view (#129) needs
+// real pagination; one ticket does not.
+const ticketAuditCap = 500
+
+// ListAuditEntries returns everything recorded against one ticket, oldest
+// first — the same ordering ListStatusHistory uses, so the two feeds a
+// ticket's detail page shows side by side read the same direction.
+//
+// ListByEntity's own query is newest-first, shared with the (not yet built)
+// admin-wide view where that ordering suits pagination; reversed here rather
+// than changing the shared query underneath it.
+func (s *Service) ListAuditEntries(ctx context.Context, ticketID uuid.UUID) ([]audit.Entry, error) {
+	entries, err := s.auditStore.ListByEntity(ctx, "ticket", ticketID, ticketAuditCap, 0)
+	if err != nil {
+		return nil, fmt.Errorf("listing audit entries: %w", err)
+	}
+	slices.Reverse(entries)
+	return entries, nil
 }
 
 // AddLink creates a directed link between two tickets.

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -939,6 +940,83 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	JSON(w, http.StatusOK, history)
+}
+
+// ticketAuditEntryView is what handleListTicketAudit returns: enough to
+// answer "who did what, and when" without exposing the raw before/after
+// diff. Every mutation an entry can name (status, priority, subject,
+// assignee) is already visible on the ticket itself to anyone who can view
+// it — see #129 — so this deliberately does not decode Before/After; the
+// admin-wide view (#129, not yet built) is where that belongs, once its own
+// open questions (who may read across entities, retention) are settled.
+type ticketAuditEntryView struct {
+	ID        uuid.UUID  `json:"id"`
+	Action    string     `json:"action"`
+	ActorID   *uuid.UUID `json:"actor_id"`
+	ActorName string     `json:"actor_name,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+// GET /api/v1/tickets/{id}/audit
+//
+// #129: a per-ticket activity feed next to the status timeline. Relies on
+// requireTicketAccess like every other route in this subtree — a ticket's
+// audit trail is ticket content, not a separate permission — with one
+// exception: assigned/unassigned entries name a staff or admin actor
+// (assignment is staff/admin-only, see ticket.CanAssign), and nothing else
+// on a ticket discloses that actor's identity to a reporting user — the
+// ticket's own assignee_user_id is a bare UUID, and /api/v1/staff, the only
+// place that resolves one to a name, is itself staff/admin-gated. A
+// reporting user would otherwise learn a staff member's name from this feed
+// alone, so those two actions withhold actor identity for RoleUser viewers,
+// the same way VisibleReplies withholds internal-note authorship.
+func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	entries, err := s.tickets.ListAuditEntries(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	role := authmw.GetActor(r).Role
+	views := make([]ticketAuditEntryView, len(entries))
+	// Cached per request: the same actor (an assignee working a long
+	// thread, say) can appear on many entries, and a lookup miss (the
+	// account was later deleted) is cached too, so it costs one failed
+	// GetByID rather than one per entry.
+	names := make(map[uuid.UUID]string)
+	for i, e := range entries {
+		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
+		if role == user.RoleUser && (e.Action == "assigned" || e.Action == "unassigned") {
+			v.ActorID = nil
+			views[i] = v
+			continue
+		}
+		if e.ActorID != nil {
+			name, cached := names[*e.ActorID]
+			if !cached {
+				u, err := s.users.GetByID(r.Context(), *e.ActorID)
+				switch {
+				case err == nil:
+					name = u.DisplayName
+				case errors.Is(err, user.ErrNotFound):
+					// Account since deleted; actor_id stays (it is a fact
+					// about what happened), only the name is left blank —
+					// there is nobody left to resolve it to.
+				default:
+					slog.ErrorContext(r.Context(), "resolving audit actor name failed", "actor_id", *e.ActorID, "error", err)
+				}
+				names[*e.ActorID] = name
+			}
+			v.ActorName = name
+		}
+		views[i] = v
+	}
+	JSON(w, http.StatusOK, views)
 }
 
 // GET /api/v1/tickets/{id}/links

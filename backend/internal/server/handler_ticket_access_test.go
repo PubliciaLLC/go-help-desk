@@ -73,6 +73,7 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 		{http.MethodPost, base + "/links", map[string]any{"target_id": uuid.New().String(), "link_type": "related"}},
 		{http.MethodDelete, base + "/links/" + uuid.New().String() + "/related", nil},
 		{http.MethodGet, base + "/history", nil},
+		{http.MethodGet, base + "/audit", nil},
 		{http.MethodGet, base + "/tags", nil},
 		{http.MethodPost, base + "/tags", map[string]any{"name": "vip"}},
 		{http.MethodDelete, base + "/tags/" + uuid.New().String(), nil},
@@ -422,7 +423,7 @@ func TestTicketSubtree_RefusesStaffOutsideTheirScope(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition: out of scope")
 
-	for _, path := range []string{"/replies", "/history", "/tags", "/links", "/custom-fields"} {
+	for _, path := range []string{"/replies", "/history", "/audit", "/tags", "/links", "/custom-fields"} {
 		t.Run(path, func(t *testing.T) {
 			res := h.do(t, http.MethodGet, base+path, nil)
 			res.Body.Close()
