@@ -245,6 +245,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	sd.UserID = u.ID
 	sd.Role = u.Role
 	sd.MFAPassed = true
+	sd.FactorVerified = claims.AssertedMFA()
 	sd.OIDCState = ""
 	sd.OIDCNonce = ""
 	sd.OIDCCodeVerifier = ""

@@ -328,8 +328,12 @@ func TestMFA_ConfirmCannotOverwriteAFactorAddedDuringEnrollment(t *testing.T) {
 	require.NoError(t, err)
 	res, body = attacker.send(t, http.MethodPost, "/api/v1/me/mfa/enroll/confirm",
 		map[string]any{"code": attackerCode})
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
-		"confirming must re-check that the account is still unprotected; got body %s", body)
+	// 401, not 403: since #333 the victim's confirm ends every other session,
+	// so the attacker's is gone before the confirm-time re-check is reached.
+	// That re-check is pinned on its own by
+	// TestMFA_ConfirmReChecksEvenWhenTheSessionSurvives.
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+		"the attacker's session should have ended when the victim enrolled; got body %s", body)
 
 	// The victim's secret must still be the one in the database, and still
 	// work for signing in.

@@ -140,6 +140,28 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// samlAuthnMethodsAttr and samlMultipleAuthn are how Entra ID says, in a
+// SAML assertion, that the user completed MFA: the attribute holds
+// multipleauthn only then. For apps other than Salesforce the Entra
+// administrator must add the `amr` optional claim with include_granular_amr,
+// or the attribute is not sent and SSO sign-ins do not count as a proved
+// factor.
+const (
+	samlAuthnMethodsAttr = "http://schemas.microsoft.com/claims/authnmethodsreferences"
+	samlMultipleAuthn    = "http://schemas.microsoft.com/claims/multipleauthn"
+)
+
+// samlAssertedMFA reports whether a SAML assertion's attributes say the user
+// completed a second factor. Anything else fails closed.
+func samlAssertedMFA(attrs map[string][]string) bool {
+	for _, v := range attrs[samlAuthnMethodsAttr] {
+		if v == samlMultipleAuthn {
+			return true
+		}
+	}
+	return false
+}
+
 // POST /api/v1/auth/local/logout
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	session, _ := s.sessions.Get(r, auth.SessionName)
@@ -193,9 +215,10 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    a.UserID,
-		Role:      a.Role,
-		MFAPassed: true,
+		UserID:         a.UserID,
+		Role:           a.Role,
+		MFAPassed:      true,
+		FactorVerified: true,
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -364,9 +387,10 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    u.ID,
-		Role:      u.Role,
-		MFAPassed: true, // SAML authentication counts as MFA
+		UserID:         u.ID,
+		Role:           u.Role,
+		MFAPassed:      true, // SAML authentication counts as MFA
+		FactorVerified: samlAssertedMFA(claims.Attributes),
 	}); err != nil {
 		handleError(w, err)
 		return

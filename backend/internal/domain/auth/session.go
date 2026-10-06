@@ -13,6 +13,17 @@ type SessionData struct {
 	Role      user.Role
 	MFAPassed bool
 
+	// FactorVerified says this session proved a second factor: a TOTP code,
+	// a passkey, a factor it just enrolled, or an identity provider that
+	// asserted MFA. MFAPassed cannot answer that — it is also true when the
+	// login owed no second factor at all (MFA off, or optional for the role),
+	// and a session like that must not be able to replace a factor the
+	// account has since gained (#333). Only adding or removing a factor reads
+	// it; every other route still gates on MFAPassed. Zero for sessions
+	// written before it existed, which fails closed: sign in again to change
+	// factors.
+	FactorVerified bool
+
 	// OIDCState stores the temporary OAuth2 state value used during login.
 	// It is cleared after callback validation.
 	OIDCState string

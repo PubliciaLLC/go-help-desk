@@ -53,6 +53,24 @@ type OIDCClaims struct {
 	FamilyName string `json:"family_name"`
 
 	PreferredUsername string `json:"preferred_username"`
+
+	// AMR lists how the provider authenticated the user (RFC 8176). Entra
+	// sends it in v2.0 ID tokens only when `amr` is added as an optional
+	// claim on the app registration.
+	AMR []string `json:"amr"`
+}
+
+// AssertedMFA reports whether the provider says the user completed a second
+// factor: "mfa" in amr, the RFC 8176 value Entra, Okta and others send. A
+// provider that sends no amr fails closed — the sign-in still succeeds, it
+// just does not count as having proved a factor.
+func (c OIDCClaims) AssertedMFA() bool {
+	for _, m := range c.AMR {
+		if m == "mfa" {
+			return true
+		}
+	}
+	return false
 }
 
 // oidcFetchTimeout bounds discovery, JWKS fetches and token exchange.
