@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
 
@@ -299,12 +300,16 @@ func TestAuditSettings_Validation(t *testing.T) {
 		// a future date, which deletes the whole log — the opposite of what
 		// somebody typing a huge number means.
 		{"retention large enough to wrap", map[string]any{"audit_retention_days": int64(9223372036854775807)}, http.StatusBadRequest},
-		{"retention just over the cap", map[string]any{"audit_retention_days": 36501}, http.StatusBadRequest},
+		{"retention just over the cap", map[string]any{"audit_retention_days": admin.AuditRetentionMaxDays + 1}, http.StatusBadRequest},
 		// Accepted: a sane window, and the two ways of saying forever.
 		{"a sane window", map[string]any{"audit_retention_days": 90}, http.StatusNoContent},
 		{"zero is forever", map[string]any{"audit_retention_days": 0}, http.StatusNoContent},
 		{"negative is forever", map[string]any{"audit_retention_days": -5}, http.StatusNoContent},
-		{"the cap itself", map[string]any{"audit_retention_days": 36500}, http.StatusNoContent},
+		// Named, not spelled: the cap moved from 36500 to 36525 once somebody
+		// noticed that 100 x 365 is two dozen days short of a Gregorian
+		// century, and a test with the old number baked in would have gone on
+		// passing while asserting the wrong boundary.
+		{"the cap itself", map[string]any{"audit_retention_days": admin.AuditRetentionMaxDays}, http.StatusNoContent},
 	}
 	// A signed-in administrator, not the admin API key: these keys are
 	// auth-critical now, so a machine credential is refused before validation

@@ -545,7 +545,7 @@ function GeneralPanel({
         >
           <div className="flex items-center gap-2">
             <Input
-              type="number" min={0} max={36500} className="w-24 text-right"
+              type="number" min={0} max={36525} className="w-24 text-right"
               aria-label="Retention, in days"
               // Shows 0 when unset, because 0 is what the server does when
               // unset: keep forever. It used to show 365 here while the server

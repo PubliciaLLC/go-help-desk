@@ -229,7 +229,14 @@ const AuditRetentionForever = 0
 // default. Checked at the handler AND re-checked in AuditRetentionDays: the
 // sweep should not trust a row it did not validate, since a value can reach
 // the table by a route the handler never saw.
-const AuditRetentionMaxDays = 36500
+//
+// 36525, not 36500. A Gregorian century averages 36524.25 days — 146097 per
+// 400 years — so 100 x 365 is roughly 24 days short of one, and this comment
+// would have claimed a century while the number bought 99.93 years. The
+// difference buys nobody anything; getting it right costs nothing and stops
+// the comment being the kind of statement that is almost true. 36525 covers
+// any hundred-year span, leap days included.
+const AuditRetentionMaxDays = 36525
 
 // The two values KeyAttachmentInfectedHandling takes.
 //
