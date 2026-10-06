@@ -72,6 +72,47 @@ describe('AuditFeed', () => {
     expect(screen.queryByText('Nothing recorded yet')).toBeNull()
   })
 
+  it('shows the field-level diff when the server sends one', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([
+      entry({
+        action: 'resolved',
+        before: { status_id: 'a', priority: 'low' },
+        after: { status_id: 'b', priority: 'low' },
+      }),
+    ])
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+    expect(screen.getByText(/status_id/)).toBeTruthy()
+    expect(screen.getByText(/a → b/)).toBeTruthy()
+    // priority did not change, so it must not appear as a diff line — only
+    // what actually changed belongs here, not every field the snapshot holds.
+    expect(screen.queryByText(/priority/)).toBeNull()
+  })
+
+  it('shows nothing extra when the server withholds the diff', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([
+      entry({ action: 'resolved', before: undefined, after: undefined }),
+    ])
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
+    expect(screen.queryByText(/→/)).toBeNull()
+  })
+
+  it('does not show a diff for a create action, whose before is null', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([
+      entry({ action: 'created', before: null, after: { status_id: 'a' } }),
+    ])
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getByText('Ticket filed')).toBeTruthy())
+    expect(screen.queryByText(/→/)).toBeNull()
+  })
+
   it('requests the audit feed for the ticket it was given', () => {
     vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([])
 

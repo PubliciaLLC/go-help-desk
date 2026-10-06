@@ -183,7 +183,50 @@ This route only *reads* the audit log — it does not change what the domain lay
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
-Deliberately does not decode each entry's before/after diff — that needs status/priority IDs resolved to names the way status history's own dedicated query does, and is better spent on the admin-wide audit view this issue also asks for, once its open questions (who may read across every entity, and retention) are settled. This is the small half of that issue: one ticket, and the one access-control decision above.
+The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is redacted by field name (`audit.Redact`) — a denylist of plausible secret-field names, not anything actually written into a ticket's before/after today (`ticketMap` only ever carries `id`, `status_id`, `priority`, `subject`), kept ready for the other entity types the admin-wide view below can show.
+
+### Admin-Wide Audit View
+
+`GET /api/v1/admin/audit` (#129's remaining half) answers the same question across every entity, not one ticket at a time. Staff and admin only, same resource gate as the ticket subtree; a reporting user has no route here.
+
+A scoped staff viewer is given **no total at all**. It used to be Search's own count taken before scope narrowing, which told a staff member how many entries existed on tickets they could not see — and with the actor, action and date filters this endpoint accepts, a count plus bisection dates activity on those tickets. The entries were correctly withheld; the number was not. `has_more` is what the pager uses instead. An admin still gets a count, because nothing is being withheld from them for it to leak.
+
+With ticket scope enforcement on, a staff page is built by reading the log in order and keeping only entries on tickets the viewer can see, so a filter that matches mostly invisible entries means a long read. That read stops at **20,000 rows or 5 seconds**, whichever comes first — under the server's 30-second write timeout, so the viewer gets an answer instead of a dropped connection. When it stops before the end of the log the response carries `truncated: true`, and the page says the search stopped and asks for narrower filters rather than reporting "nothing matches". An admin read is a single query and has no such limit. Entries with the same timestamp are ordered by id as well, so the order is exact. The walk reads each batch from the position after the last row it read, not by row number, so an entry written while it runs cannot make a page repeat a row. Between two page requests both views page by offset, so new entries arriving between clicks shift what the next page starts on — as with any offset pager.
+
+With scope enforcement off — the default — staff may see every ticket, so they get the same single query as an admin, restricted to ticket entries and still without a total.
+
+**Known, accepted leak: response time.** Under scope enforcement, the walk's cost grows with the number of hidden entries the filter matches — each distinct hidden ticket costs a lookup. Measured in #328's round-4 review: a date window holding 2,000 hidden entries answered in 359–507 ms, an empty one in 1.5 ms, and 20 hidden entries were distinguishable from none (5.0 ms vs 1.4 ms) across repeats. So a staff member can still learn, by timing, whether activity happened on tickets they cannot see within a window — the same question the removed total answered, less precisely. The `truncated` flag answers the same question coarsely: a staff member with nothing visible gets `truncated: true` when at least 20,000 rows (or 5 seconds' worth) on hidden tickets match the filter, and `false` otherwise — a threshold rather than a count. It cannot be fixed while scope is applied in Go after the query; pushing scope into the SQL (#330) removes it.
+
+**Retention is opt-in, and off by default.** `audit_retention_days` (admin
+setting) governs a daily sweep that hard-deletes anything older — no archive
+table. **Unset, zero or negative means keep forever**, which is what every
+release before this one did by having nothing prune at all.
+
+That default is deliberate and is the opposite of what a first draft of this
+feature shipped. A 365-day default would delete the first year of history on
+any instance that had been running longer, one day after upgrading, from a
+setting the operator never touched — the exact shape CLAUDE.md's "existing
+behaviour must not change" rule exists to stop. An audit log is also the worst
+thing in the system to shorten by accident: it is what you reach for after
+something has already gone wrong, and it cannot be reconstructed.
+
+A misconfigured value fails the same way. Anything unreadable or non-positive
+is treated as forever, so the failure direction loses no evidence.
+
+The upper bound is **36,525 days** (a Gregorian century, leap days included;
+`admin.AuditRetentionMaxDays`). The settings endpoint refuses anything above
+it, and a stored value above it — written before the check existed, or
+directly in the database — is read as the cap, because a cutoff date computed
+from a larger number can overflow into the future and delete everything.
+
+`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a
+machine credential cannot change it. Shortening retention is the one setting
+that destroys evidence rather than merely widening access: set it to 1 and
+tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin`
+entry, so a leaked API key that performed a credential reset could erase the
+record of having done it. That is #306's own reasoning about `ResetMFA`
+("the exact action an attacker would want unrecorded") applied to the record
+rather than the act.
 
 ### Tags
 

@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -635,5 +635,23 @@ export interface AssignableStaff {
 
 export async function listAssignableStaff(): Promise<AssignableStaff[]> {
   const res = await api.get<AssignableStaff[]>('/staff')
+  return res.data
+}
+
+// ── Admin-wide audit view (#129) ────────────────────────────────────────────
+
+export interface AdminAuditFilters {
+  entity_type?: string
+  action?: string
+  actor_id?: string
+  from?: string // RFC3339
+  to?: string // RFC3339
+  q?: string
+  limit?: number
+  offset?: number
+}
+
+export async function listAdminAudit(filters: AdminAuditFilters): Promise<AdminAuditListResponse> {
+  const res = await api.get<AdminAuditListResponse>('/admin/audit', { params: filters })
   return res.data
 }

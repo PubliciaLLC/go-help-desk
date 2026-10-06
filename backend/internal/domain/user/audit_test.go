@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
@@ -29,6 +30,22 @@ func (f *fakeAuditStore) Create(_ context.Context, e audit.Entry) error {
 
 func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, int) ([]audit.Entry, error) {
 	return nil, nil
+}
+
+func (f *fakeAuditStore) ListAfter(context.Context, audit.Filter, *audit.Cursor, int) ([]audit.Entry, error) {
+	return nil, nil
+}
+
+func (f *fakeAuditStore) List(context.Context, audit.Filter, int, int) ([]audit.Entry, error) {
+	return nil, nil
+}
+
+func (f *fakeAuditStore) Search(context.Context, audit.Filter, int, int) ([]audit.Entry, int, error) {
+	return nil, 0, nil
+}
+
+func (f *fakeAuditStore) DeleteOlderThan(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }
 
 func seedActiveUser(store *fakeUserStore) user.User {

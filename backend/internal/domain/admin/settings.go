@@ -189,7 +189,54 @@ const (
 	// Auto-assign settings. Group takes priority over users; if neither is set, tickets stay unassigned.
 	KeyAutoAssignGroupID = "auto_assign_group_id" // string UUID — assign new tickets to this group
 	KeyAutoAssignUserIDs = "auto_assign_user_ids" // []string UUIDs — round-robin among these users
+
+	// Whether staff may see the field-level before/after diff on an audit
+	// entry, in the per-ticket Activity feed and the admin-wide audit view
+	// alike. Off by default, same reasoning as KeyTicketScopeEnforced: every
+	// release before this showed staff only the action/actor/timestamp
+	// (#325), and turning a wider disclosure on silently during an upgrade is
+	// not this setting's call to make. Admins are unaffected — this only
+	// narrows what staff sees, never what an admin sees — and reporters never
+	// see the diff regardless of this setting; #129 carved that out
+	// separately as a fact about the reporter's own visibility, not staff's.
+	KeyStaffCanViewTicketChangeHistory = "staff_can_view_ticket_change_history" // bool
+
+	// How many days an audit entry is kept before the retention sweep hard-
+	// deletes it. Unset, zero or negative means forever — see
+	// admin.Service.AuditRetentionDays for why the fallback points that way.
+	KeyAuditRetentionDays = "audit_retention_days" // int
 )
+
+// AuditRetentionForever is what AuditRetentionDays returns when the audit log
+// is kept indefinitely, which is the default and what every release before
+// #129 did by having nothing prune at all. Named rather than a bare 0 so the
+// sweep's "is pruning on" test reads as a question about retention instead of
+// a comparison against a magic number.
+const AuditRetentionForever = 0
+
+// AuditRetentionMaxDays bounds audit_retention_days, because an unbounded one
+// deletes the entire log.
+//
+// The sweep computes its cutoff with time.Time.AddDate(0, 0, -days). For a
+// large enough days that wraps, and a wrapped cutoff is frequently in the
+// FUTURE — max int64 produces tomorrow — so "keep for 25 quintillion days"
+// becomes "delete everything, including today". An admin typing a very large
+// number to mean "effectively forever" gets the exact opposite, and the
+// setting still reads back as the huge number afterwards.
+//
+// A century is past any real retention policy and nowhere near the wrap, and
+// an operator who genuinely wants forever has 0, which is already the
+// default. Checked at the handler AND re-checked in AuditRetentionDays: the
+// sweep should not trust a row it did not validate, since a value can reach
+// the table by a route the handler never saw.
+//
+// 36525, not 36500. A Gregorian century averages 36524.25 days — 146097 per
+// 400 years — so 100 x 365 is roughly 24 days short of one, and this comment
+// would have claimed a century while the number bought 99.93 years. The
+// difference buys nobody anything; getting it right costs nothing and stops
+// the comment being the kind of statement that is almost true. 36525 covers
+// any hundred-year span, leap days included.
+const AuditRetentionMaxDays = 36525
 
 // The two values KeyAttachmentInfectedHandling takes.
 //
@@ -275,6 +322,22 @@ func AuthCriticalKeys() []string {
 		// Whether an infected upload is refused or stored. Same reasoning as
 		// the scan policy: it decides what this instance will hold.
 		KeyAttachmentInfectedHandling,
+		// How long the audit log is kept, and who may read the field-level
+		// diff inside it.
+		//
+		// Retention is on this list because shortening it is the one setting
+		// that destroys evidence rather than merely widening access. Set it
+		// to 1 and tomorrow's sweep removes everything older than a day,
+		// including every mfa_reset and password_reset_by_admin entry — so a
+		// leaked API key that performed a credential reset could erase the
+		// record of having done it. That is the same reasoning #306 used
+		// about ResetMFA itself ("the exact action an attacker would want
+		// unrecorded"), applied to the record instead of the act.
+		//
+		// The diff toggle is a disclosure-widening setting of the same family
+		// as the attachment type list: lower stakes, same rule.
+		KeyAuditRetentionDays,
+		KeyStaffCanViewTicketChangeHistory,
 		// And whether a file whose content contradicts its name is refused or
 		// stored wrapped. Same reasoning again: it decides what this instance
 		// will hold, and a leaked API key must not be able to switch an

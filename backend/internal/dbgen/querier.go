@@ -104,6 +104,10 @@ type Querier interface {
 	// count of live accounts cannot express "permanently"; a count of rows can,
 	// because nothing in this system hard-deletes a user.
 	CountAllUsers(ctx context.Context) (int64, error)
+	// Same filters as SearchAuditLog, without the pagination — the admin-wide
+	// view's "n of m" needs the total across every page, not just the one it
+	// fetched.
+	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.
 	//
@@ -169,6 +173,9 @@ type Querier interface {
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
 	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
+	// The retention sweep's hard delete. No archive table — see audit.Store's
+	// own comment on DeleteOlderThan for why.
+	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) error
 	DeleteCategory(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
@@ -438,6 +445,13 @@ type Querier interface {
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
+	// SearchAuditLog's filters and order, addressed by position instead of by
+	// offset: rows strictly after (after_ts, after_id) in that order, or from the
+	// start when after_ts is NULL. The staff walk reads several batches to build
+	// one page; by offset, a row committed between two batches shifts every later
+	// row down by one and the next batch re-reads the previous batch's last row.
+	// A position does not move when rows are added in front of it.
+	ListAuditLogAfter(ctx context.Context, arg ListAuditLogAfterParams) ([]AuditLog, error)
 	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)
@@ -545,6 +559,15 @@ type Querier interface {
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
 	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error)
+	// The admin-wide audit view (#129). Every filter is optional; a caller that
+	// must not see every entity (a scoped staff viewer) filters the result
+	// afterwards — see audit.Filter's own comment on why that is not done here.
+	// id breaks the tie, because created_at alone does not order entries written
+	// in the same microsecond — which happens inside a single request — and the
+	// staff path now issues several of these queries to assemble one page. Without
+	// a stable order, two of those queries can disagree about which row comes
+	// first and the same entry appears twice, or not at all.
+	SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)

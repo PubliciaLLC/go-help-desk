@@ -354,6 +354,7 @@ func run() error {
 		// built inside New and lives as long as the server, which is the half
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
+		server.WithAuditStore(auStore),
 	)
 
 	srv.InitSAML(ctx)
@@ -472,6 +473,40 @@ func run() error {
 				}
 				if n > 0 {
 					slog.InfoContext(sweepCtx, "auto-closed resolved tickets", "count", n, "reopen_window_days", days)
+				}
+			}
+		}
+	}()
+
+	// The audit-log retention sweep (#129). Once a day because the window is
+	// denominated in days, same reasoning as the auto-close ticker above —
+	// the interval is not itself a setting, only how long entries live is.
+	go func() {
+		t := time.NewTicker(24 * time.Hour)
+		defer t.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-t.C:
+				// Read per tick, never cached: the window is "as configured at
+				// the time the sweep runs".
+				days := adminSvc.AuditRetentionDays(sweepCtx)
+				// Forever is the default, so this is the branch most
+				// instances take. Checked here rather than by not starting
+				// the goroutine, because the setting is live: an operator who
+				// turns retention on gets a sweep without a restart, the same
+				// way the SLA toggle works.
+				if days == admin.AuditRetentionForever {
+					continue
+				}
+				cutoff := time.Now().AddDate(0, 0, -days)
+				n, err := auStore.DeleteOlderThan(sweepCtx, cutoff)
+				if err != nil {
+					slog.WarnContext(sweepCtx, "purging expired audit entries failed", "deleted", n, "error", err)
+				}
+				if n > 0 {
+					slog.InfoContext(sweepCtx, "purged expired audit entries", "count", n, "retention_days", days)
 				}
 			}
 		}

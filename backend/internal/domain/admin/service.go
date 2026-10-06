@@ -226,6 +226,51 @@ func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
 	return v
 }
 
+// StaffCanViewTicketChangeHistory returns whether staff may see the
+// field-level before/after diff on an audit entry, on top of the
+// action/actor/timestamp every staff member already sees. Off by default.
+func (s *Service) StaffCanViewTicketChangeHistory(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyStaffCanViewTicketChangeHistory)
+	return v
+}
+
+// AuditRetentionDays returns the audit-log retention window in days, or
+// AuditRetentionForever when entries are kept indefinitely.
+//
+// Unset means forever, and that is the important part. Every release before
+// this one kept the audit log for good, because nothing pruned it — so a
+// default that prunes would delete history on upgrade from a file the
+// operator never edited, which is exactly the shape CLAUDE.md's "existing
+// behaviour must not change" rule exists to stop. An audit log is also the
+// worst thing in the system to shorten by accident: it is the record you
+// reach for after something has already gone wrong, and it cannot be
+// reconstructed.
+//
+// So pruning is opt-in. An operator who wants a window sets one; an operator
+// who does nothing keeps what they have always had.
+//
+// A negative value, or one that cannot be read, is also forever. This is the
+// "safe fallback, not a refusal" shape used by ReopenWindowDays, pointed in
+// the direction that loses nothing: a misconfigured retention setting should
+// fail towards keeping evidence, never towards destroying it.
+func (s *Service) AuditRetentionDays(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAuditRetentionDays)
+	if err != nil || v <= 0 {
+		return AuditRetentionForever
+	}
+	// Clamped here as well as at the handler. A value large enough to wrap
+	// AddDate turns the sweep's cutoff into a future date and deletes the
+	// whole log — the opposite of what somebody typing a huge number means —
+	// and the handler is not the only way a row can get into the table. The
+	// invariant this function is documented to hold is that a misconfigured
+	// value never destroys evidence; without this clamp that was true at the
+	// bottom of the range and false at the top.
+	if v > AuditRetentionMaxDays {
+		return AuditRetentionMaxDays
+	}
+	return v
+}
+
 // SLAEnabled returns whether SLA tracking is active, and any error reading
 // the underlying setting.
 //

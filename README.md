@@ -158,6 +158,22 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 
 ## Upgrading to 1.3.0
 
+**The audit log is now readable, and is still kept forever by default
+(#129).** Entries have been written since 1.0 and nothing could read them;
+there is now a per-ticket activity feed and an admin-wide searchable view.
+Nothing is deleted unless you ask: `audit_retention_days` defaults to keeping
+everything, matching what every previous release did by having no sweep at
+all. Set it to a number of days (up to 36,525 — a century) under
+**Admin → Settings** if you want a window, and back to 0 to keep everything
+again. Only a signed-in
+administrator can change it — an API key cannot, because shortening retention
+destroys evidence rather than merely widening access.
+
+Staff see the per-ticket feed as before. The field-level before/after diff is
+gated by a second setting, `staff_can_view_ticket_change_history`, **off by
+default** so no instance starts showing staff something it did not show them
+in 1.2.0.
+
 **ClamAV became opt-in (#297).** Docker Compose used to start it and wire
 `CLAMAV_ADDR` automatically. An existing deployment that has been relying on
 that — whose own `.env` has no `CLAMAV_ADDR` line because it never needed one

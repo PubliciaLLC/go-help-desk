@@ -65,6 +65,43 @@ export interface StatusHistoryEntry {
   created_at: string
 }
 
+// The admin-wide audit view (#129) — see handleListAdminAudit. Same shape as
+// TicketAuditEntry plus the entity a per-ticket feed doesn't need to say.
+export interface AdminAuditEntry {
+  id: string
+  entity_type: string
+  entity_id: string
+  action: string
+  actor_id: string | null
+  actor_name?: string
+  created_at: string
+  before?: Record<string, unknown> | null
+  after?: Record<string, unknown> | null
+}
+
+export interface AdminAuditListResponse {
+  entries: AdminAuditEntry[]
+  /**
+   * How many entries match the filter — `null` for a scoped staff viewer,
+   * who is given no count at all.
+   *
+   * It used to be the server's pre-scope count for everybody, which told a
+   * staff member how many entries existed on tickets they could not see.
+   * With the filters this endpoint takes that is an oracle, not a rounding
+   * error. Use `has_more` to page; use this only to render a count when it
+   * is there.
+   */
+  total: number | null
+  /** Whether another page exists. The only paging signal that works for staff. */
+  has_more: boolean
+  /**
+   * Staff only, and only when true: the server stopped reading the log (row
+   * ceiling or time budget) before reaching its end. An empty or short page
+   * then means "stopped looking", not "nothing there".
+   */
+  truncated?: boolean
+}
+
 export interface TicketAuditEntry {
   id: string
   action: string
@@ -73,6 +110,14 @@ export interface TicketAuditEntry {
   // one whose account no longer exists.
   actor_name?: string
   created_at: string
+  // omitempty on the backend: the server decides whether this viewer sees
+  // the field-level diff at all (admin always, staff only with the setting
+  // on, reporters never) — see handleListTicketAudit. Each side is omitted
+  // when empty, so a create entry shown with its diff has `after` and no
+  // `before` key at all. Both absent can mean "not shown to you" or "nothing
+  // recorded"; this type cannot tell them apart.
+  before?: Record<string, unknown> | null
+  after?: Record<string, unknown> | null
 }
 
 export interface Status {

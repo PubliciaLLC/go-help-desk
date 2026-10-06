@@ -53,6 +53,69 @@ func TestAdminService_ReopenWindowDays_Stored(t *testing.T) {
 	require.Equal(t, 14, svc.ReopenWindowDays(context.Background()))
 }
 
+func TestAdminService_StaffCanViewTicketChangeHistory_Default(t *testing.T) {
+	svc := admin.NewService(newFakeAdminStore())
+	require.False(t, svc.StaffCanViewTicketChangeHistory(context.Background()))
+}
+
+func TestAdminService_StaffCanViewTicketChangeHistory_Stored(t *testing.T) {
+	svc := admin.NewService(newFakeAdminStore())
+	require.NoError(t, svc.SetBool(context.Background(), admin.KeyStaffCanViewTicketChangeHistory, true))
+	require.True(t, svc.StaffCanViewTicketChangeHistory(context.Background()))
+}
+
+func TestAdminService_AuditRetentionDays(t *testing.T) {
+	cases := []struct {
+		name  string
+		store func(t *testing.T, svc *admin.Service)
+		want  int
+	}{
+		// Unset is forever, and that is the one that matters. Every release
+		// before #129 kept the audit log for good because nothing pruned it,
+		// so a default that prunes would delete history on upgrade from a
+		// file the operator never edited. Pruning is opt-in.
+		{name: "unset keeps entries forever", store: func(t *testing.T, svc *admin.Service) {}, want: admin.AuditRetentionForever},
+		{name: "stored positive value is used", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 90))
+		}, want: 90},
+		// Zero is how an operator turns pruning back off, so it means
+		// forever rather than falling back to some window they did not ask
+		// for.
+		{name: "zero means forever", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 0))
+		}, want: admin.AuditRetentionForever},
+		// A misconfigured value fails towards keeping evidence, never towards
+		// destroying it.
+		{name: "negative means forever too", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, -5))
+		}, want: admin.AuditRetentionForever},
+		// And the top of the range, which is where that invariant used to be
+		// false. The sweep computes its cutoff with AddDate(0, 0, -days); for
+		// a large enough value that wraps and the cutoff lands in the FUTURE,
+		// so "keep for 25 quintillion days" deleted everything including
+		// today. The handler refuses these now, but the reader clamps too —
+		// it should not trust a row it did not validate, and this is the only
+		// test that can reach the clamp, since the handler stops such a value
+		// ever being stored through the API.
+		{name: "a value large enough to wrap AddDate is clamped", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 9223372036854775807))
+		}, want: admin.AuditRetentionMaxDays},
+		{name: "just over the cap is clamped", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, admin.AuditRetentionMaxDays+1))
+		}, want: admin.AuditRetentionMaxDays},
+		{name: "the cap itself is kept", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, admin.AuditRetentionMaxDays))
+		}, want: admin.AuditRetentionMaxDays},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := admin.NewService(newFakeAdminStore())
+			tc.store(t, svc)
+			require.Equal(t, tc.want, svc.AuditRetentionDays(context.Background()))
+		})
+	}
+}
+
 func TestAdminService_GetSetBool(t *testing.T) {
 	svc := admin.NewService(newFakeAdminStore())
 	require.NoError(t, svc.SetBool(context.Background(), admin.KeySAMLEnabled, true))

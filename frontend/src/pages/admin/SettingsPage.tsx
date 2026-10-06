@@ -435,13 +435,14 @@ const TABS: { id: Tab; label: string }[] = [
 // ── Tab panels ────────────────────────────────────────────────────────────────
 
 function GeneralPanel({
-  bool, num, str,
+  bool, num, str, has,
   setBool, setNum, setStr,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
   num: (k: string) => number
   str: (k: string) => string
+  has: (k: string) => boolean
   setBool: (k: string, v: boolean) => void
   setNum: (k: string, v: number) => void
   setStr: (k: string, v: string) => void
@@ -520,6 +521,51 @@ function GeneralPanel({
             checked={bool('ticket_scope_enforced')}
             onChange={(v) => setBool('ticket_scope_enforced', v)}
           />
+        </SettingRow>
+      </Section>
+
+      <Section title="Audit log">
+        <SettingRow
+          label="Staff can view ticket change history"
+          description="When on, staff also see the field-level before/after detail on a ticket's Activity feed and in the admin-wide audit view — not just what happened and who did it, which staff already see either way. Admins always see this detail; reporters never do, regardless of this setting. Off by default: earlier versions shipped without this detail visible to staff at all."
+        >
+          <Toggle
+            label="Staff can view ticket change history"
+            checked={bool('staff_can_view_ticket_change_history')}
+            onChange={(v) => setBool('staff_can_view_ticket_change_history', v)}
+          />
+        </SettingRow>
+        <SettingRow
+          label="Retention"
+          description="How many days an audit entry is kept before it is permanently deleted. Zero keeps everything forever, which is the default and what every release before 1.3.0 did. Applies to every entry system-wide — ticket changes, account changes, everything the audit log records."
+        >
+          <div className="flex items-center gap-2">
+            <Input
+              type="number" min={0} max={36525} className="w-24 text-right"
+              aria-label="Retention, in days"
+              // Shows 0 when unset, because 0 is what the server does when
+              // unset: keep forever. It used to show 365 here while the server
+              // kept everything, telling the operator they had a one-year
+              // window they did not have — the same "believes they have a
+              // window and has an unbounded table" failure the settings
+              // handler refuses a bad PATCH to avoid, delivered by the UI.
+              //
+              // The fallback applies only until the operator's first edit, not
+              // on every keystroke: a fallback baked into onChange re-injected
+              // the default between digits, so typing "30" produced 36530.
+              // has() flips true on that first edit. The server treats any
+              // non-positive value as forever and refuses anything above
+              // AuditRetentionMaxDays, so this field stays usable rather than
+              // enforcing.
+              value={has('audit_retention_days') ? num('audit_retention_days') : 0}
+              onChange={(e) => setNum('audit_retention_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
+            />
+            <span className="text-sm text-gray-500">
+              {(has('audit_retention_days') ? num('audit_retention_days') : 0) > 0
+                ? 'days'
+                : 'days — 0 keeps everything'}
+            </span>
+          </div>
         </SettingRow>
       </Section>
 

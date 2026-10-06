@@ -20,6 +20,7 @@ import { TagsPage } from '@/pages/admin/TagsPage'
 import { CannedResponsesPage } from '@/pages/admin/CannedResponsesPage'
 import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
+import { AdminAuditPage } from '@/pages/admin/AdminAuditPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
@@ -42,6 +43,12 @@ async function requireAdmin() {
   await requireAuth()
   const { user } = useAuthStore.getState()
   if (user?.role !== 'admin') throw redirect({ to: '/dashboard' })
+}
+
+async function requireStaffOrAdmin() {
+  await requireAuth()
+  const { user } = useAuthStore.getState()
+  if (user?.role !== 'admin' && user?.role !== 'staff') throw redirect({ to: '/dashboard' })
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
@@ -158,6 +165,15 @@ const adminSettingsRoute = createRoute({
   component: SettingsPage,
 })
 
+// #129: staff and admin, not admin-only — the route's own guard matches the
+// backend's RequireRole(admin, staff) on GET /admin/audit.
+const adminAuditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/audit',
+  beforeLoad: requireStaffOrAdmin,
+  component: AdminAuditPage,
+})
+
 const adminTagsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/tags',
@@ -264,6 +280,7 @@ export const router = createRouter({
     adminAPIKeysRoute,
   adminOAuthClientsRoute,
     adminSettingsRoute,
+    adminAuditRoute,
   ]),
 })
 
