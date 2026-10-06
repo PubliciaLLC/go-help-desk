@@ -488,10 +488,13 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 	// Support both UUID and tracking number lookup.
 	var t ticket.Ticket
 	var err error
+	var identifier string
 	if uid, parseErr := uuid.Parse(id); parseErr == nil {
+		identifier = uid.String()
 		t, err = s.tickets.GetByID(r.Context(), uid)
 	} else {
-		t, err = s.tickets.GetByTrackingNumber(r.Context(), ticket.TrackingNumber(strings.ToUpper(id)))
+		identifier = strings.ToUpper(id)
+		t, err = s.tickets.GetByTrackingNumber(r.Context(), ticket.TrackingNumber(identifier))
 	}
 	if err != nil {
 		handleError(w, err)
@@ -507,7 +510,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		ticketNotFound(w)
+		ticketNotFound(w, identifier)
 		return
 	}
 
@@ -823,7 +826,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		ticketNotFound(w)
+		ticketNotFound(w, body.TargetID.String())
 		return
 	}
 
@@ -883,7 +886,7 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		ticketNotFound(w)
+		ticketNotFound(w, targetID.String())
 		return
 	}
 
@@ -931,7 +934,7 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if !ok {
-			ticketNotFound(w)
+			ticketNotFound(w, id.String())
 			return
 		}
 	}

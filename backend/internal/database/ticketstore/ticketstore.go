@@ -887,6 +887,16 @@ func wrapNotFound(err error, kind, id string) error {
 	return fmt.Errorf("getting %s %s: %w", kind, id, err)
 }
 
+// TicketNotFoundError is the exact error GetByID and GetByTrackingNumber
+// already produce for a ticket that genuinely does not exist, for a caller
+// that must answer "exists, but you may not see it" with the same words —
+// see server.ticketNotFound and #174. Building it through this one place
+// rather than a second, hand-copied format string is what keeps the two
+// bodies from drifting apart if wrapNotFound's shape ever changes.
+func TicketNotFoundError(id string) error {
+	return wrapNotFound(sql.ErrNoRows, "ticket", id)
+}
+
 // ListFiltered applies a ticket.Filter in a single statement. The visibility
 // mode arrives already resolved: this translates it, it does not decide it.
 func (s *Store) ListFiltered(ctx context.Context, f ticket.Filter) ([]ticket.Ticket, error) {
