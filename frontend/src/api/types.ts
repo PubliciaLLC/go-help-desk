@@ -81,7 +81,19 @@ export interface AdminAuditEntry {
 
 export interface AdminAuditListResponse {
   entries: AdminAuditEntry[]
-  total: number
+  /**
+   * How many entries match the filter — `null` for a scoped staff viewer,
+   * who is given no count at all.
+   *
+   * It used to be the server's pre-scope count for everybody, which told a
+   * staff member how many entries existed on tickets they could not see.
+   * With the filters this endpoint takes that is an oracle, not a rounding
+   * error. Use `has_more` to page; use this only to render a count when it
+   * is there.
+   */
+  total: number | null
+  /** Whether another page exists. The only paging signal that works for staff. */
+  has_more: boolean
 }
 
 export interface TicketAuditEntry {

@@ -70,16 +70,25 @@ func TestAdminService_AuditRetentionDays(t *testing.T) {
 		store func(t *testing.T, svc *admin.Service)
 		want  int
 	}{
-		{name: "unset defaults to 365", store: func(t *testing.T, svc *admin.Service) {}, want: 365},
+		// Unset is forever, and that is the one that matters. Every release
+		// before #129 kept the audit log for good because nothing pruned it,
+		// so a default that prunes would delete history on upgrade from a
+		// file the operator never edited. Pruning is opt-in.
+		{name: "unset keeps entries forever", store: func(t *testing.T, svc *admin.Service) {}, want: admin.AuditRetentionForever},
 		{name: "stored positive value is used", store: func(t *testing.T, svc *admin.Service) {
 			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 90))
 		}, want: 90},
-		{name: "zero falls back to the default rather than purging everything", store: func(t *testing.T, svc *admin.Service) {
+		// Zero is how an operator turns pruning back off, so it means
+		// forever rather than falling back to some window they did not ask
+		// for.
+		{name: "zero means forever", store: func(t *testing.T, svc *admin.Service) {
 			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 0))
-		}, want: 365},
-		{name: "negative falls back to the default too", store: func(t *testing.T, svc *admin.Service) {
+		}, want: admin.AuditRetentionForever},
+		// A misconfigured value fails towards keeping evidence, never towards
+		// destroying it.
+		{name: "negative means forever too", store: func(t *testing.T, svc *admin.Service) {
 			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, -5))
-		}, want: 365},
+		}, want: admin.AuditRetentionForever},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

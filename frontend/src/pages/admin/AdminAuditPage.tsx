@@ -80,8 +80,12 @@ export function AdminAuditPage() {
   }
 
   const entries = data?.entries ?? []
-  const total = data?.total ?? 0
-  const hasNextPage = offset + entries.length < total
+  // null for staff, who are given no count — see AdminAuditListResponse.total.
+  const total = data?.total ?? null
+  // Never derived from total: for staff there is no total, and the count that
+  // used to be there was the server's own pre-scope figure, so paging off it
+  // promised pages that did not exist and skipped entries that did.
+  const hasNextPage = data?.has_more ?? false
 
   return (
     <Layout>
@@ -209,7 +213,11 @@ export function AdminAuditPage() {
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">
-                {total > 0 ? `${offset + 1}–${offset + entries.length} of ${total}` : ''}
+                {entries.length === 0
+                  ? ''
+                  : total !== null
+                    ? `${offset + 1}–${offset + entries.length} of ${total}`
+                    : `${offset + 1}–${offset + entries.length}`}
               </p>
               <div className="flex gap-2">
                 <Button

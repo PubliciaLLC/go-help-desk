@@ -191,7 +191,30 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 Staff are narrowed twice: `entity_type` is forced to `ticket` regardless of what the query string asks (every other entity — user, SLA policy, category — is admin-only, independent of the diff setting), and within those, only tickets in the caller's own scope survive, filtered in Go after the query runs rather than in SQL — a caller that must not see every entity filters the result itself, per `audit.Store.Search`'s own contract. That means a scoped staff page can come back shorter than the requested limit, and the reported total is Search's own count before scope narrowing, not an exact number. Filters: `entity_type`, `action`, `actor_id`, `from`/`to` (RFC3339), and `q` — metadata-only (entity type and action, never the before/after payload, so a search can't be used to confirm a redacted value's content).
 
-**Retention.** `audit_retention_days` (admin setting, defaulting to 365, non-positive falls back to the default rather than purging everything) governs a daily sweep that hard-deletes anything older — no archive table.
+**Retention is opt-in, and off by default.** `audit_retention_days` (admin
+setting) governs a daily sweep that hard-deletes anything older — no archive
+table. **Unset, zero or negative means keep forever**, which is what every
+release before this one did by having nothing prune at all.
+
+That default is deliberate and is the opposite of what a first draft of this
+feature shipped. A 365-day default would delete the first year of history on
+any instance that had been running longer, one day after upgrading, from a
+setting the operator never touched — the exact shape CLAUDE.md's "existing
+behaviour must not change" rule exists to stop. An audit log is also the worst
+thing in the system to shorten by accident: it is what you reach for after
+something has already gone wrong, and it cannot be reconstructed.
+
+A misconfigured value fails the same way. Anything unreadable or non-positive
+is treated as forever, so the failure direction loses no evidence.
+
+`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a
+machine credential cannot change it. Shortening retention is the one setting
+that destroys evidence rather than merely widening access: set it to 1 and
+tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin`
+entry, so a leaked API key that performed a credential reset could erase the
+record of having done it. That is #306's own reasoning about `ResetMFA`
+("the exact action an attacker would want unrecorded") applied to the record
+rather than the act.
 
 ### Tags
 

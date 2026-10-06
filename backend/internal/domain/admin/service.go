@@ -234,13 +234,29 @@ func (s *Service) StaffCanViewTicketChangeHistory(ctx context.Context) bool {
 	return v
 }
 
-// AuditRetentionDays returns the configured audit-log retention window,
-// defaulting to 365 when unset, unreadable, or set to a non-positive value —
-// the same "safe fallback, not a refusal" shape as ReopenWindowDays.
+// AuditRetentionDays returns the audit-log retention window in days, or
+// AuditRetentionForever when entries are kept indefinitely.
+//
+// Unset means forever, and that is the important part. Every release before
+// this one kept the audit log for good, because nothing pruned it — so a
+// default that prunes would delete history on upgrade from a file the
+// operator never edited, which is exactly the shape CLAUDE.md's "existing
+// behaviour must not change" rule exists to stop. An audit log is also the
+// worst thing in the system to shorten by accident: it is the record you
+// reach for after something has already gone wrong, and it cannot be
+// reconstructed.
+//
+// So pruning is opt-in. An operator who wants a window sets one; an operator
+// who does nothing keeps what they have always had.
+//
+// A negative value, or one that cannot be read, is also forever. This is the
+// "safe fallback, not a refusal" shape used by ReopenWindowDays, pointed in
+// the direction that loses nothing: a misconfigured retention setting should
+// fail towards keeping evidence, never towards destroying it.
 func (s *Service) AuditRetentionDays(ctx context.Context) int {
 	v, err := s.GetInt(ctx, KeyAuditRetentionDays)
 	if err != nil || v <= 0 {
-		return 365
+		return AuditRetentionForever
 	}
 	return v
 }

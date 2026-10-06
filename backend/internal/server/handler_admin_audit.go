@@ -32,20 +32,47 @@ type adminAuditEntryView struct {
 
 type adminAuditListResponse struct {
 	Entries []adminAuditEntryView `json:"entries"`
-	Total   int                   `json:"total"`
+	// Total is the number of entries matching the filter, and is null for a
+	// scoped staff viewer.
+	//
+	// It used to be Search's own count for everybody, taken before ticket
+	// scope was applied — so a staff member who could see none of the matching
+	// entries still learned how many there were. With the filters this
+	// endpoint accepts, that is an oracle rather than a cosmetic overcount:
+	// ask for action=created&actor_id=<someone>, read the count, and narrow
+	// from/to by bisection to date activity on tickets you have no scope over.
+	// Entries were correctly withheld; the number was not.
+	//
+	// There is no scope-aware count to give instead without pushing scope
+	// into the query, so staff get no count at all. HasMore is what the pager
+	// actually needs.
+	Total *int `json:"total"`
+	// HasMore reports whether another page exists. For staff this is the only
+	// honest answer, since Total is null; for admin it is redundant with
+	// Total and offset, and is sent anyway so the client has one rule.
+	HasMore bool `json:"has_more"`
 }
 
-// adminAuditFetchMultiplier over-fetches when a staff viewer's ticket-scope
-// filter will remove some rows after the query runs, so a page is less
-// likely to come back shorter than asked for. Not a guarantee — see
-// handleListAdminAudit's own comment on why an exact scoped page is future
-// work, not this version's job.
-const adminAuditFetchMultiplier = 4
+// adminAuditScanBatch is how many rows the staff path reads per round while
+// walking forward to assemble a page.
+//
+// Staff cannot be paginated by passing offset to the query: scope is applied
+// in Go afterwards, so a raw offset indexes a different sequence from the one
+// the caller is reading. Doing that produced pages that overlapped — with six
+// in-scope and six out-of-scope tickets interleaved and limit=2, consecutive
+// pages came back [A B] [B C] [C D] [D E], every page repeating the last
+// entry of the one before it.
+//
+// So the staff path walks from the beginning and counts VISIBLE entries,
+// which is the sequence the caller actually sees.
+const adminAuditScanBatch = 200
 
-// adminAuditFetchCap bounds the over-fetch above so a narrow filter on a
-// large table cannot be turned into an unbounded query by asking for a huge
-// limit.
-const adminAuditFetchCap = 1000
+// adminAuditScanCap bounds that walk. Scanning from the beginning is O(offset)
+// by construction, so without a ceiling a deep page on a large table turns a
+// list request into a table scan. A staff viewer who reaches it gets a short
+// page and HasMore=false rather than an error: the alternative is refusing to
+// show entries that exist and are theirs to see.
+const adminAuditScanCap = 5000
 
 // GET /api/v1/admin/audit
 //
@@ -84,30 +111,24 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var (
+		entries []audit.Entry
+		total   *int
+		hasMore bool
+	)
+
 	if role == user.RoleStaff {
 		f.EntityType = "ticket"
+		entries, hasMore, err = s.scopedAuditPage(r, f, limit, offset)
+	} else {
+		var n int
+		entries, n, err = s.auditStore.Search(ctx, f, limit, offset)
+		total = &n
+		hasMore = offset+len(entries) < n
 	}
-
-	fetchLimit := limit
-	if role == user.RoleStaff {
-		fetchLimit = min(limit*adminAuditFetchMultiplier, adminAuditFetchCap)
-	}
-
-	entries, total, err := s.auditStore.Search(ctx, f, fetchLimit, offset)
 	if err != nil {
 		handleError(w, err)
 		return
-	}
-
-	if role == user.RoleStaff {
-		entries, err = s.filterToVisibleTickets(r, entries)
-		if err != nil {
-			handleError(w, err)
-			return
-		}
-		if len(entries) > limit {
-			entries = entries[:limit]
-		}
 	}
 
 	showDiff := role == user.RoleAdmin ||
@@ -142,7 +163,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		views[i] = v
 	}
 
-	JSON(w, http.StatusOK, adminAuditListResponse{Entries: views, Total: total})
+	JSON(w, http.StatusOK, adminAuditListResponse{Entries: views, Total: total, HasMore: hasMore})
 }
 
 // filterToVisibleTickets keeps only the entries whose ticket the request's
@@ -232,3 +253,55 @@ var (
 	errBadFrom    = errors.New("from must be an RFC3339 timestamp")
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
 )
+
+// scopedAuditPage assembles one page of a staff viewer's audit entries by
+// walking forward over the entries they can actually see.
+//
+// The offset is counted in VISIBLE entries, not raw rows. That is the whole
+// point: scope is applied in Go after the query, so a raw offset indexes a
+// different sequence from the one the caller is reading, and paging by it
+// returns overlapping pages. Walking costs O(offset) reads, bounded by
+// adminAuditScanCap.
+//
+// Returns hasMore when at least one more visible entry exists beyond the page,
+// which it learns by looking one past the end rather than by counting the
+// remainder — a count would be the same disclosure Total was removed for.
+func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset int) ([]audit.Entry, bool, error) {
+	ctx := r.Context()
+	var (
+		page    []audit.Entry
+		skipped int
+		scanned int
+	)
+
+	for scanned < adminAuditScanCap {
+		batch, _, err := s.auditStore.Search(ctx, f, adminAuditScanBatch, scanned)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(batch) == 0 {
+			return page, false, nil // reached the end: nothing more to show
+		}
+		scanned += len(batch)
+
+		visible, err := s.filterToVisibleTickets(r, batch)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, e := range visible {
+			switch {
+			case skipped < offset:
+				skipped++
+			case len(page) < limit:
+				page = append(page, e)
+			default:
+				// One past the end. Its existence is all the pager needs,
+				// and all the caller is told.
+				return page, true, nil
+			}
+		}
+	}
+	// Hit the scan ceiling. The page is whatever was assembled; claiming more
+	// would promise a next page this function cannot serve.
+	return page, false, nil
+}

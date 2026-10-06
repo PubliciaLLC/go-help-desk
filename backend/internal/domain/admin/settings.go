@@ -202,10 +202,17 @@ const (
 	KeyStaffCanViewTicketChangeHistory = "staff_can_view_ticket_change_history" // bool
 
 	// How many days an audit entry is kept before the retention sweep hard-
-	// deletes it. See admin.Service.AuditRetentionDays for the default this
-	// falls back to when unset or non-positive.
+	// deletes it. Unset, zero or negative means forever — see
+	// admin.Service.AuditRetentionDays for why the fallback points that way.
 	KeyAuditRetentionDays = "audit_retention_days" // int
 )
+
+// AuditRetentionForever is what AuditRetentionDays returns when the audit log
+// is kept indefinitely, which is the default and what every release before
+// #129 did by having nothing prune at all. Named rather than a bare 0 so the
+// sweep's "is pruning on" test reads as a question about retention instead of
+// a comparison against a magic number.
+const AuditRetentionForever = 0
 
 // The two values KeyAttachmentInfectedHandling takes.
 //
@@ -291,6 +298,22 @@ func AuthCriticalKeys() []string {
 		// Whether an infected upload is refused or stored. Same reasoning as
 		// the scan policy: it decides what this instance will hold.
 		KeyAttachmentInfectedHandling,
+		// How long the audit log is kept, and who may read the field-level
+		// diff inside it.
+		//
+		// Retention is on this list because shortening it is the one setting
+		// that destroys evidence rather than merely widening access. Set it
+		// to 1 and tomorrow's sweep removes everything older than a day,
+		// including every mfa_reset and password_reset_by_admin entry — so a
+		// leaked API key that performed a credential reset could erase the
+		// record of having done it. That is the same reasoning #306 used
+		// about ResetMFA itself ("the exact action an attacker would want
+		// unrecorded"), applied to the record instead of the act.
+		//
+		// The diff toggle is a disclosure-widening setting of the same family
+		// as the attachment type list: lower stakes, same rule.
+		KeyAuditRetentionDays,
+		KeyStaffCanViewTicketChangeHistory,
 		// And whether a file whose content contradicts its name is refused or
 		// stored wrapped. Same reasoning again: it decides what this instance
 		// will hold, and a leaked API key must not be able to switch an

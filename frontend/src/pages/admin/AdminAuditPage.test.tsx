@@ -59,7 +59,7 @@ beforeEach(() => {
 
 describe('AdminAuditPage', () => {
   it('renders what the server sends', async () => {
-    mockList({ entries: [entry()], total: 1 })
+    mockList({ entries: [entry()], total: 1, has_more: false })
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByText('Resolved')).toBeTruthy())
@@ -69,7 +69,7 @@ describe('AdminAuditPage', () => {
   })
 
   it('shows an entity-type filter for admin', async () => {
-    mockList({ entries: [], total: 0 })
+    mockList({ entries: [], total: 0, has_more: false })
     renderWithQuery(<AdminAuditPage />)
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Audit Log' })).toBeTruthy())
 
@@ -81,7 +81,7 @@ describe('AdminAuditPage', () => {
   // and see an unexplained empty page, so it is not offered at all.
   it('does not offer an entity-type filter to staff', async () => {
     asStaff()
-    mockList({ entries: [], total: 0 })
+    mockList({ entries: [], total: 0, has_more: false })
     renderWithQuery(<AdminAuditPage />)
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Audit Log' })).toBeTruthy())
 
@@ -90,7 +90,7 @@ describe('AdminAuditPage', () => {
 
   it('sends an edited action filter to the server', async () => {
     const get = vi.spyOn(api, 'get').mockImplementation(((url: string) => {
-      if (url === '/admin/audit') return Promise.resolve({ data: { entries: [], total: 0 } })
+      if (url === '/admin/audit') return Promise.resolve({ data: { entries: [], total: 0, has_more: false } })
       return Promise.resolve({ data: [] })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any)
@@ -121,14 +121,14 @@ describe('AdminAuditPage', () => {
   })
 
   it('shows an empty state rather than a blank table', async () => {
-    mockList({ entries: [], total: 0 })
+    mockList({ entries: [], total: 0, has_more: false })
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByText(/nothing matches/i)).toBeTruthy())
   })
 
   it('disables Previous on the first page and Next when there is nothing more', async () => {
-    mockList({ entries: [entry()], total: 1 })
+    mockList({ entries: [entry()], total: 1, has_more: false })
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByRole('button', { name: /previous/i })).toBeTruthy())
@@ -136,11 +136,34 @@ describe('AdminAuditPage', () => {
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('enables Next when more entries remain than this page shows', async () => {
-    mockList({ entries: [entry()], total: 2 })
+  it('enables Next from has_more, not from the count', async () => {
+    mockList({ entries: [entry()], total: 2, has_more: true })
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  // Staff are given no count at all, because the count that used to be here
+  // was the server's own pre-scope figure — a number covering entries they
+  // may not be allowed to see. The pager has to work without one.
+  it('pages for staff, who get no total', async () => {
+    mockList({ entries: [entry()], total: null, has_more: true })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
+    expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(false)
+    // And the range renders without an "of N" it does not have.
+    expect(screen.queryByText(/ of /)).toBeNull()
+  })
+
+  // The inverse: a count must never be what enables Next, or a staff viewer
+  // whose total is null could never page at all.
+  it('does not enable Next from a count when has_more is false', async () => {
+    mockList({ entries: [entry()], total: 999, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
+    expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
