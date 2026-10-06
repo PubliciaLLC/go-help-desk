@@ -749,3 +749,43 @@ func TestAdminAudit_ScopedStaffDoNotSeeEntriesOnMissingTickets(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.Empty(t, body.Entries, "a scoped staff member saw entries on tickets that could not be loaded")
 }
+
+// The walk's position includes the id so that entries sharing one
+// microsecond are not skipped when a batch boundary falls among them. Round
+// 7 of #328's review reduced the comparison to created_at alone and every
+// test passed: the tie test above covers only the admin query.
+func TestAdminAudit_StaffWalkKeepsTiedTimestampsAcrossBatches(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	ticketID := uuid.MustParse(createAndResolveTicket(t, h)) // visible to staff
+	at := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
+	for i := 0; i < 8; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: ticketID, Action: "fixture_tie_staff", CreatedAt: at,
+		}))
+	}
+	enableScope(t, h)
+
+	ids := func(doer func(*testing.T, string, string, any) *http.Response) []string {
+		resp := doer(t, http.MethodGet, "/api/v1/admin/audit?action=fixture_tie_staff&limit=100", nil)
+		defer resp.Body.Close()
+		var body struct {
+			Entries []struct {
+				ID string `json:"id"`
+			} `json:"entries"`
+		}
+		decodeJSON(t, resp, &body)
+		var out []string
+		for _, e := range body.Entries {
+			out = append(out, e.ID)
+		}
+		return out
+	}
+	want := ids(h.doAsAdmin)
+	require.Len(t, want, 8)
+	for _, batch := range []int{1, 3, 7} {
+		h.srv.SetAuditScanLimitsForTest(0, 0, batch)
+		require.Equal(t, want, ids(h.do), "batch=%d: tied entries were lost or reordered", batch)
+	}
+}
