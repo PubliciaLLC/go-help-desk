@@ -583,7 +583,16 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("assigning ticket: %w", err)
 		}
-		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "assigned", before, ticketMap(t))); err != nil {
+		// "unassigned" when the new assignee is nobody, "assigned" otherwise
+		// — mirroring how UnassignForUser already distinguishes the two.
+		// Writing "assigned" unconditionally here made PATCH
+		// {clear_assignee: true} indistinguishable in the feed from an
+		// actual assignment. See #326.
+		action := "assigned"
+		if assigneeUserID == nil && assigneeGroupID == nil {
+			action = "unassigned"
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, action, before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing assignment: %w", err)
 		}
 		return nil
@@ -777,7 +786,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	var guestToken string
 	rotateFor := t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != ""
 
-	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		if err := st.CreateReply(ctx, reply); err != nil {
 			return fmt.Errorf("creating reply: %w", err)
 		}
@@ -814,6 +823,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			t = locked
 			return nil
 		}
+		before := ticketMap(locked)
 		locked.StatusID = t.StatusID
 		locked.UpdatedAt = t.UpdatedAt
 		// Through the shared rule, so this door agrees with the others about
@@ -827,6 +837,13 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		}
 		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, reopenTargetStatusID, actor)); err != nil {
 			return fmt.Errorf("recording reopen: %w", err)
+		}
+		// The same kind of entry the explicit POST /reopen path writes
+		// (Service.Reopen). Without it, /history recorded this transition
+		// and /audit did not, so the two could disagree about whether the
+		// ticket was actually open. See #326.
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
+			return fmt.Errorf("auditing reopen: %w", err)
 		}
 		return nil
 	}); err != nil {
