@@ -112,6 +112,7 @@ describe('AdminAuditPage', () => {
     mockList({
       entries: [entry({ before: { status_id: 'a' }, after: { status_id: 'b' } })],
       total: 1,
+      has_more: false,
     })
     renderWithQuery(<AdminAuditPage />)
 
