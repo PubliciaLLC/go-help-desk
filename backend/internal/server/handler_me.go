@@ -179,6 +179,17 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/me/mfa/enroll/confirm
 func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) {
+	// Re-checked here, not just at /mfa/enroll: that call staged a secret at
+	// a moment the account happened to be unprotected, and this one decides
+	// whether to adopt it. Without re-running the guard, an attacker who
+	// staged a secret while the account was still unprotected could confirm
+	// it later — even after the legitimate owner finished their own
+	// enrolment in the meantime — and silently overwrite it. See #327;
+	// register/finish has carried the equivalent re-check for passkeys
+	// since #307 item 3.
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	a := authmw.GetActor(r)
 	var body struct {
 		Code string `json:"code"`
