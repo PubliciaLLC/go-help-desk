@@ -2141,8 +2141,11 @@ func TestListTicketCannedResponses_ScopeFiltering(t *testing.T) {
 }
 
 // TestListTicketCannedResponses_UserForbidden confirms the reporting user
-// (RoleUser) cannot reach the staff/admin-only picker endpoint — the one
-// route within ticketRouter that narrows below its top-level role check.
+// (RoleUser) cannot reach the staff/admin-only picker endpoint for a ticket
+// that is not theirs. The ticket here is reported by staff, not by this
+// user, so requireTicketAccess's visibility gate refuses the request before
+// the route's own staff/admin role check is ever reached — 404, not 403;
+// see #174.
 func TestListTicketCannedResponses_UserForbidden(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -2157,7 +2160,30 @@ func TestListTicketCannedResponses_UserForbidden(t *testing.T) {
 	decodeJSON(t, createResp, &tk)
 
 	resp := h.doAsUser(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
-	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestListTicketCannedResponses_UserForbiddenOnOwnTicket pins the role check
+// the test above no longer reaches: the picker is staff/admin-only even for
+// a reporter who owns the ticket outright, so requireTicketAccess's
+// visibility gate passes here and the picker's own role check is what
+// refuses the request.
+func TestListTicketCannedResponses_UserForbiddenOnOwnTicket(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	createResp := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject":     "My own ticket",
+		"description": "Details",
+		"category_id": h.catID.String(),
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+	var tk ticket.Ticket
+	decodeJSON(t, createResp, &tk)
+
+	resp := h.doAsUser(t, http.MethodGet, fmt.Sprintf("/api/v1/tickets/%s/canned-responses", tk.ID), nil)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"the picker is staff/admin-only even on the reporter's own ticket")
 }
 
 // TestListTicketCannedResponses_TypeScopeFiltering covers the category+type

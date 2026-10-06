@@ -1623,14 +1623,16 @@ caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
 not see reports "not found" rather than "forbidden", so tracking numbers cannot
-be probed **over MCP**.
+be probed over MCP.
 
-The REST API answers `403` for a ticket that exists and `404` for one that does
-not, which is the opposite of that and lets a signed-in reporter walk the
-sequential numbers to learn which exist. It reveals no content. It is not
-changed here because the status code is the REST contract — a dozen tests pin
-it and a client may branch on it — so tightening it belongs to a major version
-rather than a beta's bug fixes. Tracked as an issue.
+The REST API answers the same way as of this release: `404 not found`, not
+`403 forbidden`, for a ticket that exists and the caller may not see — the same
+status, code and message `GET /tickets/{id}` already gives a tracking number
+that does not exist at all, so a signed-in reporter can no longer walk the
+sequential numbers (`GHD-2026-000001`, `...000002`) to learn which exist. This
+was a breaking change to the REST API's published contract, made deliberately
+in this beta's bug-fix branch rather than deferred to a major version — see
+`ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
 
 ### Authentication Methods
 

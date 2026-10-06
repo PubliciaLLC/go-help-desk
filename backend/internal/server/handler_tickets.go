@@ -507,7 +507,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		ticketNotFound(w)
 		return
 	}
 
@@ -823,7 +823,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		ticketNotFound(w)
 		return
 	}
 
@@ -883,7 +883,7 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		ticketNotFound(w)
 		return
 	}
 
@@ -931,7 +931,7 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if !ok {
-			Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+			ticketNotFound(w)
 			return
 		}
 	}

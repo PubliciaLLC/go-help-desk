@@ -39,16 +39,17 @@ func TestWritePathsEnforceTicketVisibility(t *testing.T) {
 	require.NoError(t, err)
 
 	// Baseline: the read is refused, so any accepted write is unambiguously a gap.
+	// 404, not 403: see #174.
 	res := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+foreign.ID.String(), nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition: the read is gated")
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "precondition: the read is gated")
 
 	t.Run("reply is refused", func(t *testing.T) {
 		res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+foreign.ID.String()+"/replies",
 			map[string]any{"body": "injected by an unrelated user"})
 		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode,
+		require.Equal(t, http.StatusNotFound, res.StatusCode,
 			"a user that cannot read a ticket must not write to it; body %s", b)
 	})
 
@@ -57,7 +58,7 @@ func TestWritePathsEnforceTicketVisibility(t *testing.T) {
 			map[string]any{"assignee_user_id": h.staffID.String()})
 		b, _ := io.ReadAll(res.Body)
 		res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode,
+		require.Equal(t, http.StatusNotFound, res.StatusCode,
 			"reassigning a foreign ticket must be refused; body %s", b)
 	})
 

@@ -51,9 +51,13 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 
 	// Baseline: the ticket itself is refused, so any route that answers 2xx
 	// below is reachable on a ticket the caller cannot read.
+	//
+	// 404, not 403: see #174. A ticket this caller cannot see must answer
+	// the same as one that does not exist, or tracking numbers (sequential:
+	// GHD-2026-000001, ...000002) become an existence oracle.
 	res := h.doAsUser(t, http.MethodGet, base, nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition")
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "precondition")
 
 	cases := []struct {
 		method, path string
@@ -89,7 +93,7 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 			res := h.doAsUser(t, tc.method, tc.path, tc.body)
 			b, _ := io.ReadAll(res.Body)
 			res.Body.Close()
-			require.Equal(t, http.StatusForbidden, res.StatusCode,
+			require.Equal(t, http.StatusNotFound, res.StatusCode,
 				"a ticket the caller cannot read must not be reachable here; body %s", b)
 		})
 	}
@@ -147,11 +151,11 @@ func TestTicketSubtree_TrackingNumberIsAlsoGated(t *testing.T) {
 
 	res := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+string(tk.TrackingNumber), nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode)
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
 
 	res = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+string(tk.TrackingNumber)+"/replies", nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"the tracking-number form must not bypass the gate")
 }
 
@@ -188,7 +192,7 @@ func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"linking TO a ticket the caller cannot read is a write onto that ticket; body %s", b)
 
 	links, err := h.ticketSvc.ListLinks(ctx, foreign.ID)
@@ -224,7 +228,7 @@ func TestRemoveLink_ChecksTheTargetTicketToo(t *testing.T) {
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"removing a link to a ticket the caller cannot read is a write onto that ticket; body %s", b)
 
 	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
@@ -421,13 +425,13 @@ func TestTicketSubtree_RefusesStaffOutsideTheirScope(t *testing.T) {
 	base := "/api/v1/tickets/" + outOfScope.ID.String()
 	res := h.do(t, http.MethodGet, base, nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition: out of scope")
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "precondition: out of scope")
 
 	for _, path := range []string{"/replies", "/history", "/audit", "/tags", "/links", "/custom-fields"} {
 		t.Run(path, func(t *testing.T) {
 			res := h.do(t, http.MethodGet, base+path, nil)
 			res.Body.Close()
-			require.Equal(t, http.StatusForbidden, res.StatusCode,
+			require.Equal(t, http.StatusNotFound, res.StatusCode,
 				"staff outside scope must be refused here too")
 		})
 	}
