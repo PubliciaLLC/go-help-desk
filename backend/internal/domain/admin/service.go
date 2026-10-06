@@ -258,6 +258,16 @@ func (s *Service) AuditRetentionDays(ctx context.Context) int {
 	if err != nil || v <= 0 {
 		return AuditRetentionForever
 	}
+	// Clamped here as well as at the handler. A value large enough to wrap
+	// AddDate turns the sweep's cutoff into a future date and deletes the
+	// whole log — the opposite of what somebody typing a huge number means —
+	// and the handler is not the only way a row can get into the table. The
+	// invariant this function is documented to hold is that a misconfigured
+	// value never destroys evidence; without this clamp that was true at the
+	// bottom of the range and false at the top.
+	if v > AuditRetentionMaxDays {
+		return AuditRetentionMaxDays
+	}
 	return v
 }
 

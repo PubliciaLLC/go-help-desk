@@ -5,7 +5,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 -- name: ListAuditByEntity :many
 SELECT * FROM audit_log
 WHERE entity_type = $1 AND entity_id = $2
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $3 OFFSET $4;
 
 -- name: SearchAuditLog :many
@@ -23,7 +23,12 @@ WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_ty
     OR entity_type ILIKE '%' || sqlc.narg(q)::text || '%'
     OR action ILIKE '%' || sqlc.narg(q)::text || '%'
   )
-ORDER BY created_at DESC
+-- id breaks the tie, because created_at alone does not order entries written
+-- in the same microsecond — which happens inside a single request — and the
+-- staff path now issues several of these queries to assemble one page. Without
+-- a stable order, two of those queries can disagree about which row comes
+-- first and the same entry appears twice, or not at all.
+ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
 -- name: CountAuditLog :one

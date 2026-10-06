@@ -214,6 +214,23 @@ const (
 // a comparison against a magic number.
 const AuditRetentionForever = 0
 
+// AuditRetentionMaxDays bounds audit_retention_days, because an unbounded one
+// deletes the entire log.
+//
+// The sweep computes its cutoff with time.Time.AddDate(0, 0, -days). For a
+// large enough days that wraps, and a wrapped cutoff is frequently in the
+// FUTURE — max int64 produces tomorrow — so "keep for 25 quintillion days"
+// becomes "delete everything, including today". An admin typing a very large
+// number to mean "effectively forever" gets the exact opposite, and the
+// setting still reads back as the huge number afterwards.
+//
+// A century is past any real retention policy and nowhere near the wrap, and
+// an operator who genuinely wants forever has 0, which is already the
+// default. Checked at the handler AND re-checked in AuditRetentionDays: the
+// sweep should not trust a row it did not validate, since a value can reach
+// the table by a route the handler never saw.
+const AuditRetentionMaxDays = 36500
+
 // The two values KeyAttachmentInfectedHandling takes.
 //
 // Spelled out as constants rather than compared against literals because the

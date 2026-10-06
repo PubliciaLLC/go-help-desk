@@ -101,7 +101,7 @@ func (q *Queries) DeleteAuditLogBefore(ctx context.Context, createdAt time.Time)
 const listAuditByEntity = `-- name: ListAuditByEntity :many
 SELECT id, actor_id, entity_type, entity_id, action, before, after, created_at FROM audit_log
 WHERE entity_type = $1 AND entity_id = $2
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $3 OFFSET $4
 `
 
@@ -161,7 +161,7 @@ WHERE ($1::text IS NULL OR entity_type = $1::text)
     OR entity_type ILIKE '%' || $6::text || '%'
     OR action ILIKE '%' || $6::text || '%'
   )
-ORDER BY created_at DESC
+ORDER BY created_at DESC, id DESC
 LIMIT $8 OFFSET $7
 `
 
@@ -179,6 +179,11 @@ type SearchAuditLogParams struct {
 // The admin-wide audit view (#129). Every filter is optional; a caller that
 // must not see every entity (a scoped staff viewer) filters the result
 // afterwards — see audit.Filter's own comment on why that is not done here.
+// id breaks the tie, because created_at alone does not order entries written
+// in the same microsecond — which happens inside a single request — and the
+// staff path now issues several of these queries to assemble one page. Without
+// a stable order, two of those queries can disagree about which row comes
+// first and the same entry appears twice, or not at all.
 func (q *Queries) SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error) {
 	rows, err := q.db.QueryContext(ctx, searchAuditLog,
 		arg.EntityType,

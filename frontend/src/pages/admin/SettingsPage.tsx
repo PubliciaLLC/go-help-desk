@@ -492,7 +492,11 @@ function GeneralPanel({
               value={num('reopen_window_days')}
               onChange={(e) => setNum('reopen_window_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
             />
-            <span className="text-sm text-gray-500">days</span>
+            <span className="text-sm text-gray-500">
+              {(has('audit_retention_days') ? num('audit_retention_days') : 0) > 0
+                ? 'days'
+                : 'days — 0 keeps everything'}
+            </span>
           </div>
         </SettingRow>
         <SettingRow
@@ -537,22 +541,27 @@ function GeneralPanel({
         </SettingRow>
         <SettingRow
           label="Retention"
-          description="How many days an audit entry is kept before it is permanently deleted. Applies to every entry system-wide — ticket changes, account changes, everything the audit log records."
+          description="How many days an audit entry is kept before it is permanently deleted. Zero keeps everything forever, which is the default and what every release before 1.3.0 did. Applies to every entry system-wide — ticket changes, account changes, everything the audit log records."
         >
           <div className="flex items-center gap-2">
             <Input
-              type="number" min={1} className="w-24 text-right"
+              type="number" min={0} max={36500} className="w-24 text-right"
               aria-label="Retention, in days"
-              // Falls back to 365 only until the operator's first edit — not
-              // on every keystroke, which is what a fallback baked into
-              // onChange did: clearing the field to retype a new value
-              // re-injected 365 before the next digit landed, so typing "30"
-              // produced 36530. has() flips true on that first edit, so from
-              // then on the field shows exactly what was typed, however
-              // briefly invalid mid-edit; the server clamps a non-positive
-              // save the same way ReopenWindowDays does, so there is nothing
-              // for this field to enforce beyond staying usable.
-              value={has('audit_retention_days') ? num('audit_retention_days') : 365}
+              // Shows 0 when unset, because 0 is what the server does when
+              // unset: keep forever. It used to show 365 here while the server
+              // kept everything, telling the operator they had a one-year
+              // window they did not have — the same "believes they have a
+              // window and has an unbounded table" failure the settings
+              // handler refuses a bad PATCH to avoid, delivered by the UI.
+              //
+              // The fallback applies only until the operator's first edit, not
+              // on every keystroke: a fallback baked into onChange re-injected
+              // the default between digits, so typing "30" produced 36530.
+              // has() flips true on that first edit. The server treats any
+              // non-positive value as forever and refuses anything above
+              // AuditRetentionMaxDays, so this field stays usable rather than
+              // enforcing.
+              value={has('audit_retention_days') ? num('audit_retention_days') : 0}
               onChange={(e) => setNum('audit_retention_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
             />
             <span className="text-sm text-gray-500">days</span>

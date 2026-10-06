@@ -89,6 +89,23 @@ func TestAdminService_AuditRetentionDays(t *testing.T) {
 		{name: "negative means forever too", store: func(t *testing.T, svc *admin.Service) {
 			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, -5))
 		}, want: admin.AuditRetentionForever},
+		// And the top of the range, which is where that invariant used to be
+		// false. The sweep computes its cutoff with AddDate(0, 0, -days); for
+		// a large enough value that wraps and the cutoff lands in the FUTURE,
+		// so "keep for 25 quintillion days" deleted everything including
+		// today. The handler refuses these now, but the reader clamps too —
+		// it should not trust a row it did not validate, and this is the only
+		// test that can reach the clamp, since the handler stops such a value
+		// ever being stored through the API.
+		{name: "a value large enough to wrap AddDate is clamped", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, 9223372036854775807))
+		}, want: admin.AuditRetentionMaxDays},
+		{name: "just over the cap is clamped", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, admin.AuditRetentionMaxDays+1))
+		}, want: admin.AuditRetentionMaxDays},
+		{name: "the cap itself is kept", store: func(t *testing.T, svc *admin.Service) {
+			require.NoError(t, svc.SetInt(context.Background(), admin.KeyAuditRetentionDays, admin.AuditRetentionMaxDays))
+		}, want: admin.AuditRetentionMaxDays},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

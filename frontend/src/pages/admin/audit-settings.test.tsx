@@ -92,20 +92,33 @@ describe('the audit log settings', () => {
     expect(retentionField().value).toBe('90')
   })
 
-  it('shows 365 when retention has never been set, without writing it unasked', async () => {
+  // The field must agree with what the server actually does when the setting
+  // has never been set, which is keep everything. It used to show 365 while
+  // the server kept everything, so an operator read a one-year window off a
+  // screen describing an unbounded table — and this test pinned the wrong
+  // number, which is why nothing caught it.
+  it('shows 0 — keep forever — when retention has never been set', async () => {
     const patch = await renderSettings({})
-    expect(retentionField().value).toBe('365')
+    expect(retentionField().value).toBe('0')
+    expect(screen.getByText(/0 keeps everything/)).toBeTruthy()
 
-    // Changing an unrelated setting must not smuggle the displayed default
-    // in as though the operator had chosen it — save must not be blocked
-    // on touching this field at all, but if the page sends it, it must send
-    // the same 365 it showed, not something else.
+    // Changing an unrelated setting must not smuggle the displayed default in
+    // as though the operator had chosen it; if the page sends it at all, it
+    // must send what it showed.
     await save()
     await waitFor(() => expect(patch.mock.calls.length).toBeGreaterThan(0))
     const sent = lastPatch(patch)
     if ('audit_retention_days' in sent) {
-      expect(sent.audit_retention_days).toBe(365)
+      expect(sent.audit_retention_days).toBe(0)
     }
+  })
+
+  // And a configured window is shown as itself, so the fallback above cannot
+  // quietly swallow a real value.
+  it('shows a configured window rather than the forever default', async () => {
+    await renderSettings({ audit_retention_days: 90 })
+    expect(retentionField().value).toBe('90')
+    expect(screen.queryByText(/0 keeps everything/)).toBeNull()
   })
 
   it('sends the toggle under its own key', async () => {

@@ -555,6 +555,11 @@ type Querier interface {
 	// The admin-wide audit view (#129). Every filter is optional; a caller that
 	// must not see every entity (a scoped staff viewer) filters the result
 	// afterwards — see audit.Filter's own comment on why that is not done here.
+	// id breaks the tie, because created_at alone does not order entries written
+	// in the same microsecond — which happens inside a single request — and the
+	// staff path now issues several of these queries to assemble one page. Without
+	// a stable order, two of those queries can disagree about which row comes
+	// first and the same entry appears twice, or not at all.
 	SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)

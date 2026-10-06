@@ -51,6 +51,11 @@ type adminAuditListResponse struct {
 	// honest answer, since Total is null; for admin it is redundant with
 	// Total and offset, and is sent anyway so the client has one rule.
 	HasMore bool `json:"has_more"`
+	// Truncated says the staff walk hit its scan ceiling before filling the
+	// page, so a short result means "stopped looking", not "nothing left".
+	// Without it the two are indistinguishable, and the one that looks like
+	// an empty audit log is the wrong one to guess.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // adminAuditScanBatch is how many rows the staff path reads per round while
@@ -69,10 +74,20 @@ const adminAuditScanBatch = 200
 
 // adminAuditScanCap bounds that walk. Scanning from the beginning is O(offset)
 // by construction, so without a ceiling a deep page on a large table turns a
-// list request into a table scan. A staff viewer who reaches it gets a short
-// page and HasMore=false rather than an error: the alternative is refusing to
-// show entries that exist and are theirs to see.
-const adminAuditScanCap = 5000
+// list request into a table scan.
+//
+// Measured before raising it: 5,000 rows took 53ms, and a staff member with
+// 5,000 out-of-scope entries newer than their own saw `entries: [], has_more:
+// false` — indistinguishable from "you have no history". On a busy scoped
+// instance that is days of activity, and the people most likely to hit it are
+// the ones who do not know to add a filter. The cap was an order of magnitude
+// tighter than its own cost justified.
+//
+// Raised, and the response now says when it was reached, so a short page
+// caused by the ceiling can be told apart from the end of the data. That
+// distinction is the part that matters: silence that looks like an empty log
+// is worse than a slow page.
+const adminAuditScanCap = 50000
 
 // GET /api/v1/admin/audit
 //
@@ -90,12 +105,13 @@ const adminAuditScanCap = 5000
 //     (the same CanViewTicket rule as everywhere else) survive — applied
 //     after Search runs, in Go, per audit.Store.Search's own documented
 //     limit: it does not know about ticket scope, so a caller that must not
-//     see every entity filters the result itself. That means Total can
-//     overcount what a scoped staff viewer actually sees (it is Search's
-//     own count, before scope narrowing) and a page can come back shorter
-//     than limit asked for even with the over-fetch cushion above. Good
-//     enough for a first version — see docs/DESIGN.md's audit section for
-//     why an exact scope-aware count is future work, not this one's.
+//     see every entity filters the result itself. Because of that a staff
+//     viewer is given NO total — the pre-narrowing count told them how many
+//     entries existed on tickets they could not see, which with this
+//     endpoint's filters is an oracle rather than a cosmetic overcount. They
+//     get HasMore instead, and their pages are assembled by walking the
+//     visible sequence (scopedAuditPage) rather than by passing an offset to
+//     a query that does not know about scope.
 //
 // The field-level diff is the same two gates as the per-ticket feed
 // (handleListTicketAudit, which this deliberately mirrors): admin always
@@ -112,14 +128,15 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		entries []audit.Entry
-		total   *int
-		hasMore bool
+		entries   []audit.Entry
+		total     *int
+		hasMore   bool
+		truncated bool
 	)
 
 	if role == user.RoleStaff {
 		f.EntityType = "ticket"
-		entries, hasMore, err = s.scopedAuditPage(r, f, limit, offset)
+		entries, hasMore, truncated, err = s.scopedAuditPage(r, f, limit, offset)
 	} else {
 		var n int
 		entries, n, err = s.auditStore.Search(ctx, f, limit, offset)
@@ -163,7 +180,9 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		views[i] = v
 	}
 
-	JSON(w, http.StatusOK, adminAuditListResponse{Entries: views, Total: total, HasMore: hasMore})
+	JSON(w, http.StatusOK, adminAuditListResponse{
+		Entries: views, Total: total, HasMore: hasMore, Truncated: truncated,
+	})
 }
 
 // filterToVisibleTickets keeps only the entries whose ticket the request's
@@ -266,10 +285,9 @@ var (
 // Returns hasMore when at least one more visible entry exists beyond the page,
 // which it learns by looking one past the end rather than by counting the
 // remainder — a count would be the same disclosure Total was removed for.
-func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset int) ([]audit.Entry, bool, error) {
+func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset int) (page []audit.Entry, hasMore, truncated bool, err error) {
 	ctx := r.Context()
 	var (
-		page    []audit.Entry
 		skipped int
 		scanned int
 	)
@@ -277,16 +295,16 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 	for scanned < adminAuditScanCap {
 		batch, _, err := s.auditStore.Search(ctx, f, adminAuditScanBatch, scanned)
 		if err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		if len(batch) == 0 {
-			return page, false, nil // reached the end: nothing more to show
+			return page, false, false, nil // reached the end: nothing more to show
 		}
 		scanned += len(batch)
 
 		visible, err := s.filterToVisibleTickets(r, batch)
 		if err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		for _, e := range visible {
 			switch {
@@ -297,11 +315,12 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 			default:
 				// One past the end. Its existence is all the pager needs,
 				// and all the caller is told.
-				return page, true, nil
+				return page, true, false, nil
 			}
 		}
 	}
-	// Hit the scan ceiling. The page is whatever was assembled; claiming more
-	// would promise a next page this function cannot serve.
-	return page, false, nil
+	// Hit the scan ceiling. The page is whatever was assembled; hasMore stays
+	// false because this function cannot serve a next page, and truncated says
+	// why — so a caller can tell "I stopped looking" from "there is nothing".
+	return page, false, true, nil
 }

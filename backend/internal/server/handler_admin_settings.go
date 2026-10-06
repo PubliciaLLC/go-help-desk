@@ -186,32 +186,38 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	// Retention decides how long evidence is kept, so a value that is
 	// accepted and then ignored is the worst case of the rule below: an
-	// operator who types "90" and gets a silent fallback to "forever"
-	// believes they have a 90-day window and has an unbounded table, and one
-	// who mistypes into something unreadable gets the same. Both should be
-	// told.
+	// operator who types "90" and gets a silent fallback believes they have a
+	// 90-day window and has an unbounded table.
 	//
-	// Zero and negative ARE valid and mean forever — see
-	// admin.AuditRetentionDays. What is refused is a value that is not a
-	// number at all.
+	// unmarshalSetting, not a bare json.Unmarshal: the bare form treats the
+	// literal null as a no-op that returns no error, so {"audit_retention_days":
+	// null} answered 204 and silently turned a configured 30-day window into
+	// "forever". That is the third time this repo has shipped that shape —
+	// #177 and #304 were the first two, and this helper exists because of
+	// them. Using it was the whole point of it existing.
+	//
+	// Zero and negative ARE valid and mean forever (admin.AuditRetentionDays).
+	// What is refused is a value that is not a number, and a value so large
+	// that it wraps.
 	if raw, ok := body[admin.KeyAuditRetentionDays]; ok {
 		var days int
-		if err := json.Unmarshal(raw, &days); err != nil {
-			Error(w, http.StatusBadRequest, "bad_request",
-				"audit retention must be a whole number of days (0 or less keeps entries forever)")
+		if err := unmarshalSetting(raw, "audit_retention_days", &days); err != nil {
+			handleError(w, err)
+			return
+		}
+		if days > admin.AuditRetentionMaxDays {
+			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
+				"audit retention must be at most %d days (about a century); 0 or less keeps entries forever",
+				admin.AuditRetentionMaxDays))
 			return
 		}
 	}
 
-	// The diff toggle is a bool and nothing else. Without this, a string
-	// "false" or a null was stored and then read back through GetBool as
-	// false — the same silent-coercion shape #304 and #177 both had to close
-	// on their own settings.
+	// The diff toggle is a bool and nothing else, null included.
 	if raw, ok := body[admin.KeyStaffCanViewTicketChangeHistory]; ok {
 		var on bool
-		if err := json.Unmarshal(raw, &on); err != nil {
-			Error(w, http.StatusBadRequest, "bad_request",
-				"staff_can_view_ticket_change_history must be true or false")
+		if err := unmarshalSetting(raw, "staff_can_view_ticket_change_history", &on); err != nil {
+			handleError(w, err)
 			return
 		}
 	}
