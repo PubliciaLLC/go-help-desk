@@ -94,6 +94,12 @@ export interface AdminAuditListResponse {
   total: number | null
   /** Whether another page exists. The only paging signal that works for staff. */
   has_more: boolean
+  /**
+   * Staff only, and only when true: the server stopped reading the log (row
+   * ceiling or time budget) before reaching its end. An empty or short page
+   * then means "stopped looking", not "nothing there".
+   */
+  truncated?: boolean
 }
 
 export interface TicketAuditEntry {

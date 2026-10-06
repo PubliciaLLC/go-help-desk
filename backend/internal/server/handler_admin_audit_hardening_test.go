@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
@@ -162,11 +164,16 @@ func TestAdminAudit_StaffPagingMatchesTheVisibleSequence(t *testing.T) {
 
 	enableScope(t, h)
 
-	// What the staff member should see, in order, taken from a single
-	// unpaginated request. This is the sequence every page size must
-	// reproduce exactly.
-	want := staffAuditIDs(t, h, 500, 0)
+	// What the staff member should see, in order — derived from the ADMIN
+	// view, which takes a different code path (a plain query, no walk), filtered
+	// to the staff member's own tickets. The first version read this from the
+	// staff endpoint itself, so a defect the endpoint made consistently — say,
+	// never emitting the oldest visible entry — appeared in both `want` and
+	// `got`, and the test agreed with itself while both were wrong.
+	want := adminAuditIDsFor(t, h, mine)
 	require.NotEmpty(t, want, "fixture produced nothing visible to staff")
+	require.Equal(t, want, staffAuditIDs(t, h, 500, 0),
+		"one unpaginated staff read already disagrees with the admin view")
 
 	for _, size := range []int{1, 2, 3, 7, 500} {
 		t.Run(fmt.Sprintf("limit=%d", size), func(t *testing.T) {
@@ -321,5 +328,167 @@ func TestAuditSettings_Validation(t *testing.T) {
 			resp.Body.Close()
 			require.Equal(t, tc.want, resp.StatusCode)
 		})
+	}
+}
+
+// The staff walk stops at its ceiling and says so, rather than running until
+// the server's WriteTimeout drops the connection.
+//
+// Round 3 of #328's review measured the previous ceiling at 30.8s for a staff
+// member in no group: past the 30s WriteTimeout, so the client got a dropped
+// connection and the truncated flag was never delivered in the one case it
+// existed for. Nothing pinned the truncated path at all — mutating the walk
+// to never set it passed the whole suite.
+func TestAdminAudit_StaffWalkReportsTruncation(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Out-of-scope entries the staff member cannot see: tickets they did not
+	// report, under scope enforcement.
+	for i := 0; i < 3; i++ {
+		resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject": "not the staff user's business", "category_id": h.catID.String(), "priority": "low",
+		})
+		resp.Body.Close()
+	}
+	enableScope(t, h)
+	// A ceiling of one row read one at a time: the walk reads a row the staff
+	// member cannot see and must stop with rows still unread. (With the
+	// default batch the first read takes all of this small fixture, the data
+	// genuinely ends, and "not truncated" would be the right answer.)
+	h.srv.SetAuditScanLimitsForTest(1, time.Minute, 1)
+
+	resp := h.do(t, http.MethodGet, "/api/v1/admin/audit?limit=5", nil)
+	defer resp.Body.Close()
+	var body struct {
+		Entries   []any `json:"entries"`
+		HasMore   bool  `json:"has_more"`
+		Truncated bool  `json:"truncated"`
+	}
+	decodeJSON(t, resp, &body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.True(t, body.Truncated, "the walk stopped early and did not say so")
+	require.False(t, body.HasMore, "claimed a next page this walk cannot serve")
+}
+
+// And the time budget, which is the limit that actually bounds the response:
+// cost per row depends on data the handler does not control, so only a clock
+// guarantees an answer before WriteTimeout.
+func TestAdminAudit_StaffWalkObeysItsTimeBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	for i := 0; i < 3; i++ {
+		resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject": "not the staff user's business", "category_id": h.catID.String(), "priority": "low",
+		})
+		resp.Body.Close()
+	}
+	enableScope(t, h)
+	h.srv.SetAuditScanLimitsForTest(0, time.Nanosecond, 0) // budget already spent
+
+	resp := h.do(t, http.MethodGet, "/api/v1/admin/audit?limit=5", nil)
+	defer resp.Body.Close()
+	var body struct {
+		Truncated bool `json:"truncated"`
+	}
+	decodeJSON(t, resp, &body)
+	require.True(t, body.Truncated, "a spent time budget did not stop the walk")
+}
+
+// Data that ends inside the walk is complete, not truncated — including when
+// it ends exactly on a batch boundary, which the first version reported as
+// truncated because it only learned the data had ended by reading one more
+// (empty) batch it never got to.
+func TestAdminAudit_StaffWalkCompleteDataIsNotTruncated(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	createAndResolveTicket(t, h)
+	enableScope(t, h)
+
+	resp := h.do(t, http.MethodGet, "/api/v1/admin/audit?limit=5", nil)
+	defer resp.Body.Close()
+	var body struct {
+		Truncated bool `json:"truncated"`
+	}
+	decodeJSON(t, resp, &body)
+	require.False(t, body.Truncated, "complete data was reported as truncated")
+}
+
+// adminAuditIDsFor is the admin view's ticket entries, in order, restricted to
+// the given ticket ids.
+func adminAuditIDsFor(t *testing.T, h *harness, tickets []string) []string {
+	t.Helper()
+	keep := map[string]bool{}
+	for _, id := range tickets {
+		keep[id] = true
+	}
+	resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket&limit=500", nil)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var body struct {
+		Entries []struct {
+			ID       string `json:"id"`
+			EntityID string `json:"entity_id"`
+		} `json:"entries"`
+	}
+	decodeJSON(t, resp, &body)
+	var ids []string
+	for _, e := range body.Entries {
+		if keep[e.EntityID] {
+			ids = append(ids, e.ID)
+		}
+	}
+	return ids
+}
+
+// Entries written in the same instant come back in one fixed order — id
+// descending — whatever the page size.
+//
+// created_at alone does not order them, and the staff walk issues several
+// queries to assemble one page; two queries that disagree about which tied row
+// comes first can show an entry twice or not at all. The tiebreaker was added
+// in round 2 with no test, and removing it passed everything because no
+// fixture ever planted two rows in the same microsecond.
+func TestAdminAudit_TiedTimestampsHaveOneOrder(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	ticketID := uuid.MustParse(createAndResolveTicket(t, h))
+	at := time.Now().Add(-time.Minute).Truncate(time.Microsecond)
+	var planted []string
+	for i := 0; i < 8; i++ {
+		id := uuid.New()
+		planted = append(planted, id.String())
+		// Not h.auditStore.Create: it stamps time.Now() and would never tie.
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: id, EntityType: "ticket", EntityID: ticketID, Action: "fixture_tie", CreatedAt: at,
+		}))
+	}
+	// Expected: id descending. Random UUIDs make the insertion order and the
+	// id order disagree with overwhelming likelihood (1 in 8! that they match),
+	// so a query that falls back to heap order fails here.
+	want := append([]string(nil), planted...)
+	sort.Sort(sort.Reverse(sort.StringSlice(want)))
+
+	for _, size := range []int{1, 3, 100} {
+		var got []string
+		for offset := 0; offset < 50; offset += size {
+			resp := h.doAsAdmin(t, http.MethodGet,
+				fmt.Sprintf("/api/v1/admin/audit?action=fixture_tie&limit=%d&offset=%d", size, offset), nil)
+			var body struct {
+				Entries []struct {
+					ID string `json:"id"`
+				} `json:"entries"`
+			}
+			decodeJSON(t, resp, &body)
+			resp.Body.Close()
+			for _, e := range body.Entries {
+				got = append(got, e.ID)
+			}
+			if len(body.Entries) < size {
+				break
+			}
+		}
+		require.Equal(t, want, got, "tied entries at limit=%d are not in id-descending order", size)
 	}
 }

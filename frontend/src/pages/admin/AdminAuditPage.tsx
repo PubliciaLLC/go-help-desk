@@ -86,6 +86,7 @@ export function AdminAuditPage() {
   // used to be there was the server's own pre-scope figure, so paging off it
   // promised pages that did not exist and skipped entries that did.
   const hasNextPage = data?.has_more ?? false
+  const truncated = data?.truncated ?? false
 
   return (
     <Layout>
@@ -203,13 +204,22 @@ export function AdminAuditPage() {
                   {entries.length === 0 && (
                     <tr>
                       <td colSpan={4} className="px-4 py-8 text-center text-gray-400">
-                        Nothing matches these filters.
+                        {truncated
+                          ? 'None found before the search stopped.'
+                          : 'Nothing matches these filters.'}
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
+
+            {truncated && (
+              <p role="status" className="text-sm text-amber-700">
+                The search stopped before reaching the end of the log, so older
+                entries may be missing. Narrow the filters to see them.
+              </p>
+            )}
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">

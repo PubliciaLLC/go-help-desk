@@ -90,7 +90,8 @@ type harness struct {
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
 	auditStore      *auditstore.Store
-	attachDir       string // where uploads land, so a test can check the disk
+	q               *dbgen.Queries // raw queries on the test transaction, for fixtures the stores won't build
+	attachDir       string         // where uploads land, so a test can check the disk
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -312,6 +313,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 
 	h := &harness{
 		srv:             srv,
+		q:               q,
 		slaSvc:          slaPolicySvc,
 		apiKey:          rawToken,
 		adminKey:        adminRawToken,

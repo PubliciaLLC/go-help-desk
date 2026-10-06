@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -72,22 +74,27 @@ type adminAuditListResponse struct {
 // which is the sequence the caller actually sees.
 const adminAuditScanBatch = 200
 
-// adminAuditScanCap bounds that walk. Scanning from the beginning is O(offset)
-// by construction, so without a ceiling a deep page on a large table turns a
-// list request into a table scan.
+// adminAuditScanCap and adminAuditScanBudget bound that walk, by rows and by
+// wall-clock time. Scanning from the beginning is O(offset) by construction,
+// so without a ceiling a deep page on a large table is a table scan.
 //
-// Measured before raising it: 5,000 rows took 53ms, and a staff member with
-// 5,000 out-of-scope entries newer than their own saw `entries: [], has_more:
-// false` — indistinguishable from "you have no history". On a busy scoped
-// instance that is days of activity, and the people most likely to hit it are
-// the ones who do not know to add a filter. The cap was an order of magnitude
-// tighter than its own cost justified.
+// The time budget is the one that matters. Round 2 of #328's review raised the
+// row cap to 50,000 on the strength of "5,000 rows in 53ms" — a figure taken
+// with few distinct tickets, so a cache absorbed the repeats. With distinct
+// out-of-scope tickets the real cost was ~0.6ms per entry, and a 50,000-row
+// walk measured 30.8s: past the server's own 30s WriteTimeout, so the client
+// got a dropped connection while the handler and database kept working, and
+// the `truncated` flag added to explain a short page was never delivered in
+// the one case it existed for. Any staff member in no group could trigger it
+// by opening the page.
 //
-// Raised, and the response now says when it was reached, so a short page
-// caused by the ceiling can be told apart from the end of the data. That
-// distinction is the part that matters: silence that looks like an empty log
-// is worse than a slow page.
-const adminAuditScanCap = 50000
+// A row cap alone cannot fix that, because cost per row depends on data the
+// handler does not control. A budget well under WriteTimeout can: whatever the
+// data, the walk stops in time to answer, and says it stopped.
+const (
+	adminAuditScanCap    = 20000
+	adminAuditScanBudget = 5 * time.Second
+)
 
 // GET /api/v1/admin/audit
 //
@@ -196,37 +203,38 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 // exist" from "database hiccup" from here, and either way this fails
 // closed: an entry this cannot verify as visible is not shown, not shown
 // anyway.
-func (s *Server) filterToVisibleTickets(r *http.Request, entries []audit.Entry) ([]audit.Entry, error) {
-	actor := authmw.GetActor(r)
-	ctx := r.Context()
-	// Cached per request: several entries commonly name the same ticket
-	// (created, then resolved, then closed), and a scope check is two more
-	// lookups (groups, scope rules) behind CanViewTicket — one GetByID plus
-	// one scope check per DISTINCT ticket, not per entry.
-	visible := make(map[uuid.UUID]bool)
-
+func (s *Server) filterToVisibleTickets(
+	ctx context.Context, canView func(ticket.Ticket) bool, visible map[uuid.UUID]bool, entries []audit.Entry,
+) []audit.Entry {
+	// visible is owned by the caller and lives for the whole request, not one
+	// batch: a walk that resets it per batch re-checks the same ticket every
+	// time it reappears. canView is the actor's rule resolved once
+	// (ticketViewer) rather than recomputed per ticket.
 	kept := make([]audit.Entry, 0, len(entries))
+	var orphans int
 	for _, e := range entries {
 		ok, cached := visible[e.EntityID]
 		if !cached {
 			t, err := s.tickets.GetByID(ctx, e.EntityID)
 			if err != nil {
-				slog.WarnContext(ctx, "admin audit: could not load a referenced ticket, dropping its entry",
-					"ticket_id", e.EntityID, "error", err)
+				// An entry whose ticket is gone is not shown. Counted rather
+				// than logged per entry: one request over 20,000 orphans used
+				// to write 20,000 warnings.
+				orphans++
 				visible[e.EntityID] = false
 				continue
 			}
-			ok, err = s.CanViewTicket(ctx, actor, t)
-			if err != nil {
-				return nil, err
-			}
+			ok = canView(t)
 			visible[e.EntityID] = ok
 		}
 		if ok {
 			kept = append(kept, e)
 		}
 	}
-	return kept, nil
+	if orphans > 0 {
+		slog.WarnContext(ctx, "admin audit: dropped entries whose ticket could not be loaded", "count", orphans)
+	}
+	return kept
 }
 
 // parseAdminAuditQuery reads the optional filters and pagination off the
@@ -287,26 +295,28 @@ var (
 // remainder — a count would be the same disclosure Total was removed for.
 func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset int) (page []audit.Entry, hasMore, truncated bool, err error) {
 	ctx := r.Context()
-	var (
-		skipped int
-		scanned int
-	)
+	canView, err := s.ticketViewer(ctx, authmw.GetActor(r))
+	if err != nil {
+		return nil, false, false, err
+	}
+	scanCap, budget, batchSize := s.auditScanLimits()
+	deadline := time.Now().Add(budget)
+	visible := make(map[uuid.UUID]bool)
 
-	for scanned < adminAuditScanCap {
-		batch, _, err := s.auditStore.Search(ctx, f, adminAuditScanBatch, scanned)
-		if err != nil {
+	var skipped, scanned int
+	for scanned < scanCap && time.Now().Before(deadline) {
+		// A client that has gone away should stop the walk, not just the
+		// response.
+		if err := ctx.Err(); err != nil {
 			return nil, false, false, err
 		}
-		if len(batch) == 0 {
-			return page, false, false, nil // reached the end: nothing more to show
+		batch, _, err := s.auditStore.Search(ctx, f, batchSize, scanned)
+		if err != nil {
+			return nil, false, false, err
 		}
 		scanned += len(batch)
 
-		visible, err := s.filterToVisibleTickets(r, batch)
-		if err != nil {
-			return nil, false, false, err
-		}
-		for _, e := range visible {
+		for _, e := range s.filterToVisibleTickets(ctx, canView, visible, batch) {
 			switch {
 			case skipped < offset:
 				skipped++
@@ -318,9 +328,41 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 				return page, true, false, nil
 			}
 		}
+		// A short batch is the end of the data. Checked here rather than by
+		// reading one more empty batch, so that data ending exactly at the
+		// ceiling is reported as complete rather than truncated.
+		if len(batch) < batchSize {
+			return page, false, false, nil
+		}
 	}
-	// Hit the scan ceiling. The page is whatever was assembled; hasMore stays
-	// false because this function cannot serve a next page, and truncated says
-	// why — so a caller can tell "I stopped looking" from "there is nothing".
+	// Stopped by the row ceiling or the time budget with data still unread.
+	// hasMore stays false because this function cannot serve a next page;
+	// truncated says why, so "stopped looking" is not mistaken for "nothing".
 	return page, false, true, nil
+}
+
+// auditScanLimits returns the staff walk's row ceiling, time budget and batch
+// size — overridable in tests, where reaching a limit honestly would need tens
+// of thousands of rows or a slow database.
+func (s *Server) auditScanLimits() (scanCap int, budget time.Duration, batch int) {
+	scanCap, budget, batch = adminAuditScanCap, adminAuditScanBudget, adminAuditScanBatch
+	if s.auditScanCapOverride > 0 {
+		scanCap = s.auditScanCapOverride
+	}
+	if s.auditScanBudgetOverride > 0 {
+		budget = s.auditScanBudgetOverride
+	}
+	if s.auditScanBatchOverride > 0 {
+		batch = s.auditScanBatchOverride
+	}
+	return scanCap, budget, batch
+}
+
+// SetAuditScanLimitsForTest overrides the staff audit walk's limits; a zero
+// leaves that limit at its default. Exported for tests only, and named so that
+// is unmistakable.
+func (s *Server) SetAuditScanLimitsForTest(scanCap int, budget time.Duration, batch int) {
+	s.auditScanCapOverride = scanCap
+	s.auditScanBudgetOverride = budget
+	s.auditScanBatchOverride = batch
 }

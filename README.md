@@ -163,8 +163,9 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 there is now a per-ticket activity feed and an admin-wide searchable view.
 Nothing is deleted unless you ask: `audit_retention_days` defaults to keeping
 everything, matching what every previous release did by having no sweep at
-all. Set it to a number of days under **Admin → Settings** if you want a
-window, and back to 0 to keep everything again. Only a signed-in
+all. Set it to a number of days (up to 36,525 — a century) under
+**Admin → Settings** if you want a window, and back to 0 to keep everything
+again. Only a signed-in
 administrator can change it — an API key cannot, because shortening retention
 destroys evidence rather than merely widening access.
 

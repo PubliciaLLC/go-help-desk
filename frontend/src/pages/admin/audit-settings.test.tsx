@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
@@ -100,7 +100,9 @@ describe('the audit log settings', () => {
   it('shows 0 — keep forever — when retention has never been set', async () => {
     const patch = await renderSettings({})
     expect(retentionField().value).toBe('0')
-    expect(screen.getByText(/0 keeps everything/)).toBeTruthy()
+    // Scoped to the retention row: the hint once rendered under Reopen window,
+    // where an unscoped query still found it.
+    expect(within(retentionField().parentElement!).getByText(/0 keeps everything/)).toBeTruthy()
 
     // Changing an unrelated setting must not smuggle the displayed default in
     // as though the operator had chosen it; if the page sends it at all, it
@@ -118,7 +120,7 @@ describe('the audit log settings', () => {
   it('shows a configured window rather than the forever default', async () => {
     await renderSettings({ audit_retention_days: 90 })
     expect(retentionField().value).toBe('90')
-    expect(screen.queryByText(/0 keeps everything/)).toBeNull()
+    expect(within(retentionField().parentElement!).queryByText(/0 keeps everything/)).toBeNull()
   })
 
   it('sends the toggle under its own key', async () => {
@@ -133,9 +135,8 @@ describe('the audit log settings', () => {
 
   // A non-positive value is not fought in the UI — it is a transient state
   // of an ordinary number field, not a way to purge everything: the server
-  // treats it as unset and falls back to 365 (admin.Service.AuditRetentionDays,
-  // covered at that layer), the same shape as ReopenWindowDays already uses
-  // for its own zero.
+  // treats it as forever (admin.Service.AuditRetentionDays, covered at that
+  // layer).
   it('clearing the field to retype a value does not corrupt what is sent', async () => {
     const patch = await renderSettings({ audit_retention_days: 365 })
     await userEvent.clear(retentionField())

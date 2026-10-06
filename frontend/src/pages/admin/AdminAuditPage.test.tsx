@@ -167,4 +167,30 @@ describe('AdminAuditPage', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  // The server stops a staff walk at a row ceiling or a time budget. An empty
+  // page then means "stopped looking", and saying "nothing matches" would tell
+  // a staff member there is no history when there may be plenty.
+  it('says the search stopped instead of "nothing matches" when truncated', async () => {
+    mockList({ entries: [], total: null, has_more: false, truncated: true })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/stopped/i))
+    expect(screen.queryByText(/nothing matches/i)).toBeNull()
+  })
+
+  it('warns that entries may be missing when a non-empty page is truncated', async () => {
+    mockList({ entries: [entry()], total: null, has_more: false, truncated: true })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/narrow the filters/i))
+  })
+
+  it('shows no truncation notice for a complete result', async () => {
+    mockList({ entries: [entry()], total: null, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText(/resolved|Sam Staff/)).toBeTruthy())
+    expect(screen.queryByRole('status')).toBeNull()
+  })
 })

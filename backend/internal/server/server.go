@@ -162,6 +162,12 @@ type Server struct {
 	// password is checked. See config.AuthThrottleDelay.
 	loginThrottleDelay time.Duration
 
+	// auditScanCapOverride and auditScanBudgetOverride replace the admin
+	// audit walk's limits when non-zero. Tests only; see auditScanLimits.
+	auditScanCapOverride    int
+	auditScanBudgetOverride time.Duration
+	auditScanBatchOverride  int
+
 	// No scanner field. It is built per use from the effective address,
 	// because the address is an operator setting and a scanner constructed
 	// once at startup would ignore it — the setting would validate, store,
