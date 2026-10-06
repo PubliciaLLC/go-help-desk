@@ -330,19 +330,26 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 	visible := make(map[uuid.UUID]bool)
 
 	var skipped, scanned int
+	var after *audit.Cursor
 	for scanned < scanCap && time.Now().Before(deadline) {
 		// A client that has gone away should stop the walk, not just the
 		// response.
 		if err := ctx.Err(); err != nil {
 			return nil, false, false, err
 		}
-		// List, not Search: a per-batch count is discarded here, and at a
-		// million rows it was ~29ms a batch — most of the time budget.
-		batch, err := s.auditStore.List(ctx, f, batchSize, scanned)
+		// By position, not offset: an entry written while the walk runs sorts
+		// to the front and would shift an offset, so the next batch re-read
+		// the previous one's last row. No count either — at a million rows a
+		// discarded per-batch count was most of the time budget.
+		batch, err := s.auditStore.ListAfter(ctx, f, after, batchSize)
 		if err != nil {
 			return nil, false, false, err
 		}
 		scanned += len(batch)
+		if len(batch) > 0 {
+			last := batch[len(batch)-1]
+			after = &audit.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+		}
 
 		for _, e := range s.filterToVisibleTickets(ctx, canView, visible, batch) {
 			switch {

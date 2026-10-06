@@ -14,6 +14,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/server"
 )
 
 // Findings from the pre-merge review of #328. Each test here exists because
@@ -630,4 +631,121 @@ func TestAdminAudit_NulInAFilterIsABadRequest(t *testing.T) {
 			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
 		})
 	}
+}
+
+// writesBetweenReads is an audit store that commits one new entry before
+// every read after the first — someone resolving a ticket while a staff
+// walk is running. The entry is newer than everything, so it sorts to the
+// front of the log.
+type writesBetweenReads struct {
+	audit.Store
+	t      *testing.T
+	hidden uuid.UUID
+	reads  int
+}
+
+func (w *writesBetweenReads) write(ctx context.Context) {
+	w.reads++
+	if w.reads > 1 {
+		require.NoError(w.t, w.Store.Create(ctx, audit.Entry{
+			ID: uuid.New(), EntityType: "ticket", EntityID: w.hidden, Action: "resolved",
+		}))
+	}
+}
+
+func (w *writesBetweenReads) List(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, error) {
+	w.write(ctx)
+	return w.Store.List(ctx, f, limit, offset)
+}
+
+func (w *writesBetweenReads) ListAfter(ctx context.Context, f audit.Filter, after *audit.Cursor, limit int) ([]audit.Entry, error) {
+	w.write(ctx)
+	return w.Store.ListAfter(ctx, f, after, limit)
+}
+
+// A write committed while the staff walk runs must not make the page repeat
+// an entry. Round 6 of #328's review: the walk addressed each batch by row
+// offset, a new row shifted every later row down by one, and the next batch
+// re-read the last row of the one before — every visible entry came back
+// twice. DESIGN.md promised paging never repeats one.
+func TestAdminAudit_StaffWalkSurvivesWritesDuringTheWalk(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	var mine []string
+	var hidden string
+	for i := 0; i < 5; i++ {
+		mine = append(mine, createAndResolveTicket(t, h))
+		resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+			"subject": "not the staff user's business", "category_id": h.catID.String(), "priority": "low",
+		})
+		var created struct {
+			ID string `json:"id"`
+		}
+		decodeJSON(t, resp, &created)
+		resp.Body.Close()
+		hidden = created.ID
+	}
+	enableScope(t, h)
+	want := adminAuditIDsFor(t, h, mine)
+	require.NotEmpty(t, want)
+
+	server.WithAuditStore(&writesBetweenReads{Store: h.auditStore, t: t, hidden: uuid.MustParse(hidden)})(h.srv)
+	h.srv.SetAuditScanLimitsForTest(0, 0, 2)
+
+	require.Equal(t, want, staffAuditIDs(t, h, 500, 0),
+		"a write during the walk changed which entries the page holds")
+}
+
+// The no-scope staff page sets has_more by reading one row past the page.
+// A page that ends exactly on the last row has no next page; round 6
+// changed `>` to `>=` there and nothing failed.
+func TestAdminAudit_StaffWithoutScopeExactlyFullLastPage(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	for i := 0; i < 4; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: uuid.New(), Action: "fixture_exact",
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Second),
+		}))
+	}
+	for _, tc := range []struct {
+		offset int
+		want   bool
+	}{{0, true}, {2, false}} {
+		resp := h.do(t, http.MethodGet,
+			fmt.Sprintf("/api/v1/admin/audit?action=fixture_exact&limit=2&offset=%d", tc.offset), nil)
+		var body struct {
+			Entries []any `json:"entries"`
+			HasMore bool  `json:"has_more"`
+		}
+		decodeJSON(t, resp, &body)
+		resp.Body.Close()
+		require.Len(t, body.Entries, 2)
+		require.Equal(t, tc.want, body.HasMore, "offset %d", tc.offset)
+	}
+}
+
+// Under scope, an entry whose ticket cannot be loaded — deleted, or the
+// lookup failed — is hidden from staff. The code said "fails closed" in a
+// comment; round 6 made it fail open and every test passed.
+func TestAdminAudit_ScopedStaffDoNotSeeEntriesOnMissingTickets(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	for i := 0; i < 3; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: uuid.New(), Action: "fixture_orphan",
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Second),
+		}))
+	}
+	enableScope(t, h)
+
+	resp := h.do(t, http.MethodGet, "/api/v1/admin/audit?action=fixture_orphan", nil)
+	defer resp.Body.Close()
+	var body struct {
+		Entries []any `json:"entries"`
+	}
+	decodeJSON(t, resp, &body)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Empty(t, body.Entries, "a scoped staff member saw entries on tickets that could not be loaded")
 }

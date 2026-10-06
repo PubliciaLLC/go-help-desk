@@ -445,6 +445,13 @@ type Querier interface {
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
+	// SearchAuditLog's filters and order, addressed by position instead of by
+	// offset: rows strictly after (after_ts, after_id) in that order, or from the
+	// start when after_ts is NULL. The staff walk reads several batches to build
+	// one page; by offset, a row committed between two batches shifts every later
+	// row down by one and the next batch re-reads the previous batch's last row.
+	// A position does not move when rows are added in front of it.
+	ListAuditLogAfter(ctx context.Context, arg ListAuditLogAfterParams) ([]AuditLog, error)
 	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)

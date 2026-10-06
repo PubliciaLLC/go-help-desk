@@ -110,12 +110,12 @@ export interface TicketAuditEntry {
   // one whose account no longer exists.
   actor_name?: string
   created_at: string
-  // omitempty on the backend, and present or absent together: the server
-  // decides whether this viewer sees the field-level diff at all (admin
-  // always, staff only with the setting on, reporters never) — see
-  // handleListTicketAudit. Absent means "not shown to you", not "nothing
-  // changed"; a create action's genuinely-empty before is still sent as
-  // null, not omitted, when the diff is shown at all.
+  // omitempty on the backend: the server decides whether this viewer sees
+  // the field-level diff at all (admin always, staff only with the setting
+  // on, reporters never) — see handleListTicketAudit. Each side is omitted
+  // when empty, so a create entry shown with its diff has `after` and no
+  // `before` key at all. Both absent can mean "not shown to you" or "nothing
+  // recorded"; this type cannot tell them apart.
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
 }

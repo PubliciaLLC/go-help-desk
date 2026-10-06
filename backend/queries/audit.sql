@@ -31,6 +31,31 @@ WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_ty
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 
+-- name: ListAuditLogAfter :many
+-- SearchAuditLog's filters and order, addressed by position instead of by
+-- offset: rows strictly after (after_ts, after_id) in that order, or from the
+-- start when after_ts is NULL. The staff walk reads several batches to build
+-- one page; by offset, a row committed between two batches shifts every later
+-- row down by one and the next batch re-reads the previous batch's last row.
+-- A position does not move when rows are added in front of it.
+SELECT * FROM audit_log
+WHERE (sqlc.narg(entity_type)::text IS NULL OR entity_type = sqlc.narg(entity_type)::text)
+  AND (sqlc.narg(action)::text IS NULL OR action = sqlc.narg(action)::text)
+  AND (sqlc.narg(actor_id)::uuid IS NULL OR actor_id = sqlc.narg(actor_id)::uuid)
+  AND (sqlc.narg(from_ts)::timestamptz IS NULL OR created_at >= sqlc.narg(from_ts)::timestamptz)
+  AND (sqlc.narg(to_ts)::timestamptz IS NULL OR created_at <= sqlc.narg(to_ts)::timestamptz)
+  AND (
+    sqlc.narg(q)::text IS NULL
+    OR entity_type ILIKE '%' || sqlc.narg(q)::text || '%'
+    OR action ILIKE '%' || sqlc.narg(q)::text || '%'
+  )
+  AND (
+    sqlc.narg(after_ts)::timestamptz IS NULL
+    OR (created_at, id) < (sqlc.narg(after_ts)::timestamptz, sqlc.narg(after_id)::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(page_limit);
+
 -- name: CountAuditLog :one
 -- Same filters as SearchAuditLog, without the pagination — the admin-wide
 -- view's "n of m" needs the total across every page, not just the one it

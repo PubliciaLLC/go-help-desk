@@ -71,6 +71,32 @@ func (s *Store) List(ctx context.Context, f audit.Filter, limit, offset int) ([]
 	if err != nil {
 		return nil, fmt.Errorf("searching audit entries: %w", err)
 	}
+	return toEntries(rows), nil
+}
+
+func (s *Store) ListAfter(ctx context.Context, f audit.Filter, after *audit.Cursor, limit int) ([]audit.Entry, error) {
+	params := searchParams(f)
+	arg := dbgen.ListAuditLogAfterParams{
+		EntityType: params.entityType,
+		Action:     params.action,
+		ActorID:    params.actorID,
+		FromTs:     params.from,
+		ToTs:       params.to,
+		Q:          params.q,
+		PageLimit:  int32(limit),
+	}
+	if after != nil {
+		arg.AfterTs = sql.NullTime{Time: after.CreatedAt, Valid: true}
+		arg.AfterID = uuid.NullUUID{UUID: after.ID, Valid: true}
+	}
+	rows, err := s.q.ListAuditLogAfter(ctx, arg)
+	if err != nil {
+		return nil, fmt.Errorf("listing audit entries: %w", err)
+	}
+	return toEntries(rows), nil
+}
+
+func toEntries(rows []dbgen.AuditLog) []audit.Entry {
 	out := make([]audit.Entry, len(rows))
 	for i, r := range rows {
 		out[i] = audit.Entry{
@@ -84,7 +110,7 @@ func (s *Store) List(ctx context.Context, f audit.Filter, limit, offset int) ([]
 			CreatedAt:  r.CreatedAt,
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (s *Store) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {

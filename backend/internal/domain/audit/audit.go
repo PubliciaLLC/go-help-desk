@@ -21,6 +21,13 @@ type Entry struct {
 
 // Store persists audit entries. Implementations must not return errors for
 // individual entry failures — log and continue rather than blocking the caller.
+// Cursor is a position in the newest-first order: an entry's created_at and
+// id, which together order every entry exactly.
+type Cursor struct {
+	CreatedAt time.Time
+	ID        uuid.UUID
+}
+
 type Store interface {
 	Create(ctx context.Context, e Entry) error
 	ListByEntity(ctx context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]Entry, error)
@@ -39,6 +46,12 @@ type Store interface {
 	// List is Search without the count, for callers that read page after
 	// page and would otherwise pay a full count per page and discard it.
 	List(ctx context.Context, f Filter, limit, offset int) ([]Entry, error)
+
+	// ListAfter is List addressed by position rather than offset: the entries
+	// that come after `after` in the newest-first order, or from the start
+	// when after is nil. For a caller reading batch after batch, where an
+	// entry written between two reads would shift an offset and repeat a row.
+	ListAfter(ctx context.Context, f Filter, after *Cursor, limit int) ([]Entry, error)
 
 	// DeleteOlderThan hard-deletes every entry created before cutoff and
 	// reports how many were removed. Used by the retention sweep

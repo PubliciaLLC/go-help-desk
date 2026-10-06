@@ -439,6 +439,10 @@ func (f *fakeAuditStore) ListByEntity(_ context.Context, entityType string, enti
 // Search mirrors the real store's filter semantics closely enough to be a
 // meaningful double: every Filter field is optional and narrows the result,
 // newest first, with the total count taken before limit/offset is applied.
+func (f *fakeAuditStore) ListAfter(context.Context, audit.Filter, *audit.Cursor, int) ([]audit.Entry, error) {
+	return nil, nil
+}
+
 func (f *fakeAuditStore) List(ctx context.Context, filter audit.Filter, limit, offset int) ([]audit.Entry, error) {
 	out, _, err := f.Search(ctx, filter, limit, offset)
 	return out, err
