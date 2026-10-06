@@ -42,8 +42,9 @@ type Store interface {
 
 	// DeleteOlderThan hard-deletes every entry created before cutoff and
 	// reports how many were removed. Used by the retention sweep
-	// (admin.Service.AuditRetentionDays); there is no soft-delete or archive
-	// table, per the "1 year, hard delete" scope this shipped with.
+	// (admin.Service.AuditRetentionDays), which runs only when an operator
+	// has set a retention window — the default keeps everything. There is
+	// no soft-delete or archive table: an expired entry is gone.
 	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -53,8 +54,9 @@ type adminAuditListResponse struct {
 	// honest answer, since Total is null; for admin it is redundant with
 	// Total and offset, and is sent anyway so the client has one rule.
 	HasMore bool `json:"has_more"`
-	// Truncated says the staff walk hit its scan ceiling before filling the
-	// page, so a short result means "stopped looking", not "nothing left".
+	// Truncated says the staff walk stopped — at its row ceiling or its time
+	// budget — before reaching the end of the log, so a short result means
+	// "stopped looking", not "nothing left".
 	// Without it the two are indistinguishable, and the one that looks like
 	// an empty audit log is the wrong one to guess.
 	Truncated bool `json:"truncated,omitempty"`
@@ -263,6 +265,13 @@ func parseAdminAuditQuery(r *http.Request) (f audit.Filter, limit, offset int, e
 	f.EntityType = strings.TrimSpace(q.Get("entity_type"))
 	f.Action = strings.TrimSpace(q.Get("action"))
 	f.Q = strings.TrimSpace(q.Get("q"))
+	// Postgres text cannot hold NUL or invalid UTF-8; letting either reach
+	// the query turns a malformed request into a 500.
+	for _, v := range []string{f.EntityType, f.Action, f.Q} {
+		if strings.ContainsRune(v, 0) || !utf8.ValidString(v) {
+			return audit.Filter{}, 0, 0, errBadText
+		}
+	}
 
 	if v := strings.TrimSpace(q.Get("actor_id")); v != "" {
 		id, parseErr := uuid.Parse(v)
@@ -295,6 +304,7 @@ var (
 	errBadActorID = errors.New("actor_id must be a UUID")
 	errBadFrom    = errors.New("from must be an RFC3339 timestamp")
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
+	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
 )
 
 // scopedAuditPage assembles one page of a staff viewer's audit entries by

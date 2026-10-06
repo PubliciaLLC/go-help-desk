@@ -172,42 +172,50 @@ func TestAdminAudit_StaffPagingMatchesTheVisibleSequence(t *testing.T) {
 	// `got`, and the test agreed with itself while both were wrong.
 	want := adminAuditIDsFor(t, h, mine)
 	require.NotEmpty(t, want, "fixture produced nothing visible to staff")
-	require.Equal(t, want, staffAuditIDs(t, h, 500, 0),
-		"one unpaginated staff read already disagrees with the admin view")
 
-	for _, size := range []int{1, 2, 3, 7, 500} {
-		t.Run(fmt.Sprintf("limit=%d", size), func(t *testing.T) {
-			var got []string
-			offset := 0
-			for guard := 0; guard < 200; guard++ {
-				url := fmt.Sprintf("/api/v1/admin/audit?limit=%d&offset=%d", size, offset)
-				resp := h.do(t, http.MethodGet, url, nil)
-				var body struct {
-					Entries []struct {
-						ID string `json:"id"`
-					} `json:"entries"`
-					Total   *int `json:"total"`
-					HasMore bool `json:"has_more"`
-				}
-				decodeJSON(t, resp, &body)
-				resp.Body.Close()
+	// Batch sizes too, not only page sizes: with the default batch of 200
+	// this fixture is read in one batch, so the walk's offset into the log
+	// was never exercised. Round 5 of #328's review made the walk re-read
+	// the first batch forever and every test stayed green. 0 is the default.
+	for _, batch := range []int{0, 1, 2, 3, 7} {
+		h.srv.SetAuditScanLimitsForTest(0, 0, batch)
+		require.Equal(t, want, staffAuditIDs(t, h, 500, 0),
+			"batch=%d: one unpaginated staff read already disagrees with the admin view", batch)
 
-				require.Nil(t, body.Total, "staff were handed a count")
-				require.LessOrEqual(t, len(body.Entries), size, "a page came back longer than limit")
+		for _, size := range []int{1, 2, 3, 7, 500} {
+			t.Run(fmt.Sprintf("batch=%d/limit=%d", batch, size), func(t *testing.T) {
+				var got []string
+				offset := 0
+				for guard := 0; guard < 200; guard++ {
+					url := fmt.Sprintf("/api/v1/admin/audit?limit=%d&offset=%d", size, offset)
+					resp := h.do(t, http.MethodGet, url, nil)
+					var body struct {
+						Entries []struct {
+							ID string `json:"id"`
+						} `json:"entries"`
+						Total   *int `json:"total"`
+						HasMore bool `json:"has_more"`
+					}
+					decodeJSON(t, resp, &body)
+					resp.Body.Close()
 
-				for _, e := range body.Entries {
-					got = append(got, e.ID)
+					require.Nil(t, body.Total, "staff were handed a count")
+					require.LessOrEqual(t, len(body.Entries), size, "a page came back longer than limit")
+
+					for _, e := range body.Entries {
+						got = append(got, e.ID)
+					}
+					if !body.HasMore {
+						break
+					}
+					offset += size
 				}
-				if !body.HasMore {
-					break
-				}
-				offset += size
-			}
-			// Equality, not "no duplicates": this catches a skipped entry as
-			// well as a repeated one, and catches reordering.
-			require.Equal(t, want, got,
-				"paging at limit=%d did not reproduce the visible sequence", size)
-		})
+				// Equality, not "no duplicates": this catches a skipped entry as
+				// well as a repeated one, and catches reordering.
+				require.Equal(t, want, got,
+					"paging at limit=%d did not reproduce the visible sequence", size)
+			})
+		}
 	}
 }
 
@@ -604,5 +612,22 @@ func TestAdminAudit_AdminHasMore(t *testing.T) {
 		decodeJSON(t, resp, &body)
 		resp.Body.Close()
 		require.Equal(t, tc.want, body.HasMore, "offset %d", tc.offset)
+	}
+}
+
+// A NUL byte cannot be stored in a Postgres text value, so passing one
+// through to the query made a 500 out of a malformed request.
+func TestAdminAudit_NulInAFilterIsABadRequest(t *testing.T) {
+	for _, q := range []string{"action=%00", "entity_type=%00", "q=a%00b"} {
+		t.Run(q, func(t *testing.T) {
+			// A harness per request: a failed statement aborts the harness
+			// transaction, and every later request would then fail for that
+			// reason instead of its own.
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			resp := h.do(t, http.MethodGet, "/api/v1/admin/audit?"+q, nil)
+			resp.Body.Close()
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+		})
 	}
 }
