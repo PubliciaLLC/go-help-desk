@@ -131,9 +131,9 @@ describe('LinkedTicketsPanel', () => {
       const link: TicketLink = { source_id: 'tkt-1', target_id: 'tkt-2', link_type: 'related_to' }
       vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([link])
       vi.spyOn(ticketsApi, 'getTicket').mockRejectedValue(
-        Object.assign(new Error('Forbidden'), {
+        Object.assign(new Error('Not found'), {
           isAxiosError: true,
-          response: { status: 403 },
+          response: { status: 404 },
         })
       )
 
@@ -145,9 +145,9 @@ describe('LinkedTicketsPanel', () => {
       const link: TicketLink = { source_id: 'tkt-1', target_id: 'tkt-2', link_type: 'related_to' }
       vi.spyOn(ticketsApi, 'listLinks').mockResolvedValue([link])
       vi.spyOn(ticketsApi, 'getTicket').mockRejectedValue(
-        Object.assign(new Error('Forbidden'), {
+        Object.assign(new Error('Not found'), {
           isAxiosError: true,
-          response: { status: 403 },
+          response: { status: 404 },
         })
       )
 
@@ -443,8 +443,8 @@ describe('LinkedTicketsPanel', () => {
         Object.assign(new Error('Request failed'), {
           isAxiosError: true,
           response: {
-            status: 403,
-            data: { error: { code: 'forbidden', message: 'not your ticket' } },
+            status: 404,
+            data: { error: { code: 'not_found', message: 'not found: ticket tkt-2' } },
           },
         })
       )
@@ -463,7 +463,7 @@ describe('LinkedTicketsPanel', () => {
       await user.click(await screen.findByRole('button', { name: 'Link' }))
 
       // Error should be shown
-      expect(await screen.findByText(/not your ticket/)).toBeDefined()
+      expect(await screen.findByText(/not found/)).toBeDefined()
 
       // Form should still be open
       expect(await screen.findByRole('button', { name: 'Link' })).toBeDefined()
@@ -516,8 +516,8 @@ describe('LinkedTicketsPanel', () => {
         Object.assign(new Error('Request failed'), {
           isAxiosError: true,
           response: {
-            status: 403,
-            data: { error: { code: 'forbidden', message: 'not your ticket' } },
+            status: 404,
+            data: { error: { code: 'not_found', message: 'not found: ticket tkt-2' } },
           },
         })
       )
@@ -529,7 +529,7 @@ describe('LinkedTicketsPanel', () => {
       const removeBtn = screen.getByRole('button', { name: /Remove link/ })
       await user.click(removeBtn)
 
-      expect(await screen.findByText(/not your ticket/)).toBeDefined()
+      expect(await screen.findByText(/not found/)).toBeDefined()
       // The link must still be there — nothing pretends the removal worked.
       expect(screen.getByText(/GHD-2026-000002/)).toBeDefined()
     })
