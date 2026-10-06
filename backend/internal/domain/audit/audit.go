@@ -36,6 +36,10 @@ type Store interface {
 	// not rely on this to have done it.
 	Search(ctx context.Context, f Filter, limit, offset int) ([]Entry, int, error)
 
+	// List is Search without the count, for callers that read page after
+	// page and would otherwise pay a full count per page and discard it.
+	List(ctx context.Context, f Filter, limit, offset int) ([]Entry, error)
+
 	// DeleteOlderThan hard-deletes every entry created before cutoff and
 	// reports how many were removed. Used by the retention sweep
 	// (admin.Service.AuditRetentionDays); there is no soft-delete or archive

@@ -492,3 +492,117 @@ func TestAdminAudit_TiedTimestampsHaveOneOrder(t *testing.T) {
 		require.Equal(t, want, got, "tied entries at limit=%d are not in id-descending order", size)
 	}
 }
+
+// The budget must stop a walk that is already running, not only one whose
+// budget was spent before it began. Round 4 of #328's review moved the clock
+// check to a single test before the loop and the 1ns test above stayed green.
+// Here the walk reads one row at a time through far more out-of-scope rows
+// than fit in the budget, so it can only report truncation if the clock is
+// checked between reads.
+func TestAdminAudit_StaffWalkBudgetStopsARunningWalk(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// An admin's ticket the staff member cannot see under scope.
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "not the staff user's business", "category_id": h.catID.String(), "priority": "low",
+	})
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeJSON(t, resp, &created)
+	resp.Body.Close()
+	hidden := uuid.MustParse(created.ID)
+	for i := 0; i < 2000; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: hidden, Action: "fixture_hidden",
+			CreatedAt: time.Now().Add(-time.Hour),
+		}))
+	}
+	enableScope(t, h)
+	// 2,000 single-row reads cannot finish in 10ms; a walk that ignores the
+	// clock once started reads them all and reports complete data.
+	h.srv.SetAuditScanLimitsForTest(1_000_000, 10*time.Millisecond, 1)
+
+	resp = h.do(t, http.MethodGet, "/api/v1/admin/audit?action=fixture_hidden&limit=5", nil)
+	defer resp.Body.Close()
+	var body struct {
+		Entries   []any `json:"entries"`
+		Truncated bool  `json:"truncated"`
+	}
+	decodeJSON(t, resp, &body)
+	require.Empty(t, body.Entries)
+	require.True(t, body.Truncated, "the time budget did not stop a walk already in progress")
+}
+
+// With scope enforcement off — the default — staff may see every ticket, so
+// their view of ticket entries must be the admin's view: same entries, same
+// paging, no row ceiling, and entries on tickets that no longer load included.
+// Round 4 measured staff on the default config getting nothing past row
+// 20,000 and nothing at all for deleted tickets, where admin got full pages.
+func TestAdminAudit_StaffWithoutScopeSeeTheAdminView(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Entries on tickets that do not exist (deleted, or never loaded): the
+	// walk's ticket lookup drops these, the plain query does not.
+	for i := 0; i < 12; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: uuid.New(), Action: "fixture_open",
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Second),
+		}))
+	}
+	// A ceiling the old walk would hit long before offset 5.
+	h.srv.SetAuditScanLimitsForTest(3, time.Minute, 1)
+
+	page := func(doer func(*testing.T, string, string, any) *http.Response) ([]string, bool, bool) {
+		resp := doer(t, http.MethodGet, "/api/v1/admin/audit?action=fixture_open&limit=5&offset=5", nil)
+		defer resp.Body.Close()
+		var body struct {
+			Entries []struct {
+				ID string `json:"id"`
+			} `json:"entries"`
+			HasMore   bool `json:"has_more"`
+			Truncated bool `json:"truncated"`
+		}
+		decodeJSON(t, resp, &body)
+		var ids []string
+		for _, e := range body.Entries {
+			ids = append(ids, e.ID)
+		}
+		return ids, body.HasMore, body.Truncated
+	}
+	adminIDs, adminMore, _ := page(h.doAsAdmin)
+	staffIDs, staffMore, staffTrunc := page(h.do)
+
+	require.Len(t, adminIDs, 5)
+	require.Equal(t, adminIDs, staffIDs, "staff without scope did not get the admin's page")
+	require.Equal(t, adminMore, staffMore)
+	require.False(t, staffTrunc, "staff without scope hit a ceiling admin does not have")
+}
+
+// The admin pager runs on has_more. Round 4 mutated it to always-true and to
+// always-false and the backend suite passed both.
+func TestAdminAudit_AdminHasMore(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	for i := 0; i < 2; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: uuid.New(), Action: "fixture_more",
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Second),
+		}))
+	}
+	for _, tc := range []struct {
+		offset int
+		want   bool
+	}{{0, true}, {1, false}} {
+		resp := h.doAsAdmin(t, http.MethodGet,
+			fmt.Sprintf("/api/v1/admin/audit?action=fixture_more&limit=1&offset=%d", tc.offset), nil)
+		var body struct {
+			HasMore bool `json:"has_more"`
+		}
+		decodeJSON(t, resp, &body)
+		resp.Body.Close()
+		require.Equal(t, tc.want, body.HasMore, "offset %d", tc.offset)
+	}
+}

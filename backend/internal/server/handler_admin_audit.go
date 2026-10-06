@@ -119,6 +119,9 @@ const (
 //     get HasMore instead, and their pages are assembled by walking the
 //     visible sequence (scopedAuditPage) rather than by passing an offset to
 //     a query that does not know about scope.
+//     With scope enforcement off every ticket is visible to staff, so this
+//     narrowing is a no-op and they get the plain query (plainAuditPage) —
+//     still with no total, so staff see one response shape.
 //
 // The field-level diff is the same two gates as the per-ticket feed
 // (handleListTicketAudit, which this deliberately mirrors): admin always
@@ -143,7 +146,20 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 
 	if role == user.RoleStaff {
 		f.EntityType = "ticket"
-		entries, hasMore, truncated, err = s.scopedAuditPage(r, f, limit, offset)
+		var vis ticket.Visibility
+		vis, err = s.TicketVisibility(ctx, authmw.GetActor(r))
+		switch {
+		case err != nil:
+		case vis == ticket.VisibilityAll:
+			// Scope enforcement off: staff may see every ticket, so every
+			// ticket entry is theirs and the plain query is exact. The walk
+			// would add a row ceiling and drop entries on tickets that no
+			// longer load — limits the admin view does not have, applied to
+			// the same entries. Still no total: one response shape for staff.
+			entries, hasMore, err = s.plainAuditPage(ctx, f, limit, offset)
+		default:
+			entries, hasMore, truncated, err = s.scopedAuditPage(r, f, limit, offset)
+		}
 	} else {
 		var n int
 		entries, n, err = s.auditStore.Search(ctx, f, limit, offset)
@@ -310,7 +326,9 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 		if err := ctx.Err(); err != nil {
 			return nil, false, false, err
 		}
-		batch, _, err := s.auditStore.Search(ctx, f, batchSize, scanned)
+		// List, not Search: a per-batch count is discarded here, and at a
+		// million rows it was ~29ms a batch — most of the time budget.
+		batch, err := s.auditStore.List(ctx, f, batchSize, scanned)
 		if err != nil {
 			return nil, false, false, err
 		}
@@ -329,8 +347,10 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 			}
 		}
 		// A short batch is the end of the data. Checked here rather than by
-		// reading one more empty batch, so that data ending exactly at the
-		// ceiling is reported as complete rather than truncated.
+		// reading one more empty batch, so that data ending on a batch
+		// boundary before the ceiling is reported as complete. Data ending
+		// exactly at the ceiling still reports truncated: the last batch is
+		// full and the walk cannot tell without reading past the ceiling.
 		if len(batch) < batchSize {
 			return page, false, false, nil
 		}
@@ -339,6 +359,19 @@ func (s *Server) scopedAuditPage(r *http.Request, f audit.Filter, limit, offset 
 	// hasMore stays false because this function cannot serve a next page;
 	// truncated says why, so "stopped looking" is not mistaken for "nothing".
 	return page, false, true, nil
+}
+
+// plainAuditPage is one page of the unscoped query for a staff viewer, with
+// has_more from a one-row peek rather than a count.
+func (s *Server) plainAuditPage(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, bool, error) {
+	entries, err := s.auditStore.List(ctx, f, limit+1, offset)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(entries) > limit {
+		return entries[:limit], true, nil
+	}
+	return entries, false, nil
 }
 
 // auditScanLimits returns the staff walk's row ceiling, time budget and batch

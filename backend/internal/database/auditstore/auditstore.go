@@ -37,22 +37,11 @@ func (s *Store) Create(ctx context.Context, e audit.Entry) error {
 }
 
 func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
-	params := searchParams(f)
-
-	rows, err := s.q.SearchAuditLog(ctx, dbgen.SearchAuditLogParams{
-		EntityType: params.entityType,
-		Action:     params.action,
-		ActorID:    params.actorID,
-		FromTs:     params.from,
-		ToTs:       params.to,
-		Q:          params.q,
-		PageLimit:  int32(limit),
-		PageOffset: int32(offset),
-	})
+	out, err := s.List(ctx, f, limit, offset)
 	if err != nil {
-		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
+		return nil, 0, err
 	}
-
+	params := searchParams(f)
 	total, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
 		EntityType: params.entityType,
 		Action:     params.action,
@@ -64,7 +53,24 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 	if err != nil {
 		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
 	}
+	return out, int(total), nil
+}
 
+func (s *Store) List(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, error) {
+	params := searchParams(f)
+	rows, err := s.q.SearchAuditLog(ctx, dbgen.SearchAuditLogParams{
+		EntityType: params.entityType,
+		Action:     params.action,
+		ActorID:    params.actorID,
+		FromTs:     params.from,
+		ToTs:       params.to,
+		Q:          params.q,
+		PageLimit:  int32(limit),
+		PageOffset: int32(offset),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("searching audit entries: %w", err)
+	}
 	out := make([]audit.Entry, len(rows))
 	for i, r := range rows {
 		out[i] = audit.Entry{
@@ -78,7 +84,7 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 			CreatedAt:  r.CreatedAt,
 		}
 	}
-	return out, int(total), nil
+	return out, nil
 }
 
 func (s *Store) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
