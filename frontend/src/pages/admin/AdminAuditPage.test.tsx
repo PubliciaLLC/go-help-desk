@@ -145,52 +145,25 @@ describe('AdminAuditPage', () => {
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(false)
   })
 
-  // Staff are given no count at all, because the count that used to be here
-  // was the server's own pre-scope figure — a number covering entries they
-  // may not be allowed to see. The pager has to work without one.
-  it('pages for staff, who get no total', async () => {
-    mockList({ entries: [entry()], total: null, has_more: true })
+  // Staff are counted by the same predicate that picks their page, so the
+  // total is what they can see and the range reads the same as it does for an
+  // admin.
+  it('shows the range and total for staff', async () => {
+    asStaff()
+    mockList({ entries: [entry()], total: 7, has_more: true })
     renderWithQuery(<AdminAuditPage />)
 
-    await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('1–1 of 7')).toBeTruthy())
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(false)
-    // And the range renders without an "of N" it does not have.
-    expect(screen.queryByText(/ of /)).toBeNull()
   })
 
-  // The inverse: a count must never be what enables Next, or a staff viewer
-  // whose total is null could never page at all.
+  // The pager runs on has_more. The count is for display, and a page that has
+  // already said it is the last must not offer a Next off the back of it.
   it('does not enable Next from a count when has_more is false', async () => {
     mockList({ entries: [entry()], total: 999, has_more: false })
     renderWithQuery(<AdminAuditPage />)
 
     await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
-  })
-
-  // The server stops a staff walk at a row ceiling or a time budget. An empty
-  // page then means "stopped looking", and saying "nothing matches" would tell
-  // a staff member there is no history when there may be plenty.
-  it('says the search stopped instead of "nothing matches" when truncated', async () => {
-    mockList({ entries: [], total: null, has_more: false, truncated: true })
-    renderWithQuery(<AdminAuditPage />)
-
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/stopped/i))
-    expect(screen.queryByText(/nothing matches/i)).toBeNull()
-  })
-
-  it('warns that entries may be missing when a non-empty page is truncated', async () => {
-    mockList({ entries: [entry()], total: null, has_more: false, truncated: true })
-    renderWithQuery(<AdminAuditPage />)
-
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/narrow the filters/i))
-  })
-
-  it('shows no truncation notice for a complete result', async () => {
-    mockList({ entries: [entry()], total: null, has_more: false })
-    renderWithQuery(<AdminAuditPage />)
-
-    await waitFor(() => expect(screen.getByText(/resolved|Sam Staff/)).toBeTruthy())
-    expect(screen.queryByRole('status')).toBeNull()
   })
 })
