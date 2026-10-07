@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -98,7 +99,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Changing your password is how you evict someone who has your old one, so
 	// the other sessions must die — but signing yourself out of the tab you
 	// just used to do it is a bug, not security.
-	if err := s.sessions.DeleteForUser(r.Context(), a.UserID); err != nil {
+	// Detached: the new password is already written, so a client that hangs
+	// up here must not leave the sessions it was evicting alive.
+	if err := s.sessions.DeleteForUser(context.WithoutCancel(r.Context()), a.UserID); err != nil {
 		handleError(w, err)
 		return
 	}
