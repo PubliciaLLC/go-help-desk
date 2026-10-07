@@ -23,6 +23,9 @@ export interface AdminUser {
   auth_type: AuthType
   has_password: boolean
   mfa_enabled: boolean
+  // Registered passkeys. Sent on the detail response only; mfa_enabled is the
+  // TOTP flag alone, so a passkey-only account is told apart by this.
+  passkey_count?: number
   created_at: string
   updated_at: string
   groups: Group[]

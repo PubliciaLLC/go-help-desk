@@ -112,6 +112,13 @@ func (s *Store) Enable(ctx context.Context, id uuid.UUID) error {
 	return s.q.EnableUser(ctx, id)
 }
 
+// ClearMFA clears the TOTP columns only.
+//
+// Deprecated: nothing in the server calls it any more. Both reset paths need
+// the passkeys gone and the sessions ended in the same breath, which is
+// ClearFactors; clearing one factor of two is how "Reset MFA" left a
+// passkey-only account locked out (#307). Kept, not deleted, so this change
+// breaks nothing; remove it in a separate commit.
 func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
 	n, err := s.q.ClearMFA(ctx, id)
 	if err != nil {
@@ -121,6 +128,20 @@ func (s *Store) ClearMFA(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return nil
+}
+
+// ClearFactors removes the account's authenticator and every passkey and ends
+// every session it holds, in one statement, and reports how many passkeys were
+// removed. See the ClearFactors query for why it is one statement.
+func (s *Store) ClearFactors(ctx context.Context, id uuid.UUID) (int, error) {
+	row, err := s.q.ClearFactors(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("clearing factors for user %s: %w", id, err)
+	}
+	if row.UsersCleared == 0 {
+		return 0, fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return int(row.PasskeysRemoved), nil
 }
 
 // ClaimMFAAttempt takes one attempt off the account's TOTP budget before the

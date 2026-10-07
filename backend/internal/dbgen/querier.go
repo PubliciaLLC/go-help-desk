@@ -81,6 +81,29 @@ type Querier interface {
 	//                             the next single attempt re-locks immediately.
 	//   not locked                count it, and lock once the budget is spent.
 	ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams) (ClaimMFAAttemptRow, error)
+	// Clears EVERY second factor an account holds and ends every session it has
+	// open, as one statement. Returns how many users matched (0 or 1) and how many
+	// passkeys went.
+	//
+	// One statement so that it is all or nothing. reset-factors used to run three
+	// (delete the passkeys, clear the TOTP columns, delete the sessions), and a
+	// failure between the second and the third left an account with no factor and
+	// its MFAPassed=true sessions alive -- the state the session revocation exists
+	// to prevent (#307 item 4). A data-modifying CTE shares the statement's
+	// snapshot and commits or rolls back with it, which a transaction would give
+	// but without the plumbing; the ...UnlessLastAdmin statements are the same
+	// shape for the same reason.
+	//
+	// Passkeys as well as TOTP, because "Reset MFA" cleared only the TOTP columns:
+	// on a passkey-only account the administrator got a success and the person
+	// stayed locked out by the key they had lost (#307 item 2).
+	//
+	// Sessions are ended here and not only by the caller for the reason the
+	// reset-factors command spells out: a surviving session carries MFAPassed=true
+	// from the factor just cleared, and could register a factor of its own.
+	//
+	// Works on a disabled or deleted account, like ClearMFA before it.
+	ClearFactors(ctx context.Context, userID uuid.UUID) (ClearFactorsRow, error)
 	// :execrows, not :exec: an UPDATE matching zero rows still reports no error,
 	// so a nonexistent id looked like a successful clear. Service.ResetMFA writes
 	// an audit entry once this returns without error, and #306's own adversarial

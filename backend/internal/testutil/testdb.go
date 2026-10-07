@@ -55,9 +55,18 @@ func NewDB(t *testing.T) (*DB, func()) {
 // giving full isolation between tests without truncating tables.
 func TxQueries(t *testing.T, db *DB) (*dbgen.Queries, func()) {
 	t.Helper()
+	q, _, rollback := TxQueriesTx(t, db)
+	return q, rollback
+}
+
+// TxQueriesTx is TxQueries that also hands back the transaction itself, for a
+// test that has to run SQL the generated queries do not offer (a trigger that
+// forces an interleaving, say). Anything run on it rolls back with the rest.
+func TxQueriesTx(t *testing.T, db *DB) (*dbgen.Queries, *sql.Tx, func()) {
+	t.Helper()
 	tx, err := db.SQL.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	return dbgen.New(tx), func() { _ = tx.Rollback() }
+	return dbgen.New(tx), tx, func() { _ = tx.Rollback() }
 }

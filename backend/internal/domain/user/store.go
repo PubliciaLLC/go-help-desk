@@ -88,6 +88,9 @@ type Store interface {
 	// have a way to authenticate after a change, not merely how many remain.
 	ListActiveAdmins(ctx context.Context) ([]User, error)
 	Count(ctx context.Context) (int64, error)
-	ClearMFA(ctx context.Context, id uuid.UUID) error
+	// ClearFactors removes the authenticator AND every passkey, and ends every
+	// session, in one statement; it reports how many passkeys went. All or
+	// nothing, and ErrNotFound for an id that matches no user.
+	ClearFactors(ctx context.Context, id uuid.UUID) (passkeysRemoved int, err error)
 	AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error
 }

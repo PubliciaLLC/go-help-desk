@@ -16,7 +16,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
-	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
@@ -63,7 +62,6 @@ func resetFactors(ctx context.Context, email string) error {
 
 	q := dbgen.New(sqlDB)
 	users := userstore.New(q)
-	passkeys := webauthnstore.New(q)
 	auStore := auditstore.New(q)
 
 	// GetByEmail and not a search: this is a destructive act on one account,
@@ -73,41 +71,29 @@ func resetFactors(ctx context.Context, email string) error {
 		return fmt.Errorf("no account with the address %q: %w", email, err)
 	}
 
-	creds, err := passkeys.ListByUser(ctx, u.ID)
-	if err != nil {
-		return fmt.Errorf("reading registered passkeys: %w", err)
-	}
-	for _, c := range creds {
-		if err := passkeys.Delete(ctx, c.ID, u.ID); err != nil {
-			return fmt.Errorf("removing passkey %s: %w", c.ID, err)
-		}
-	}
-	if err := users.ClearMFA(ctx, u.ID); err != nil {
-		return fmt.Errorf("clearing the authenticator: %w", err)
-	}
-
-	// And end every session the account already holds.
+	// Every factor gone and every session ended, in ONE statement.
 	//
-	// Not tidiness. A live session carries MFAPassed=true from the moment it
-	// passed the factor just cleared, and requireFactorOrFirstEnrolment
-	// answers that flag FIRST, before it asks whether the account is
-	// protected. So a session that survives this command can register its own
-	// passkey — which is the exact thing the web path refuses to let a
-	// password alone do, granted instead by the act of recovering the owner.
+	// This was three: delete the passkeys, clear the TOTP columns, delete the
+	// sessions. A failure between the second and the third left the account
+	// with no factor and its MFAPassed=true sessions alive, which is exactly
+	// the state ending the sessions exists to prevent (#307 item 4). One
+	// statement is all or nothing, so a failure leaves the account as it was
+	// and the same command can be run again.
 	//
-	// The consequence is worse than the gap it closes: whoever holds a stolen
-	// cookie gets a durable factor out of somebody else's recovery, and can
-	// then lock the real owner out of it. handler_admin_users.go's reset
-	// deletes sessions for this reason; this has the same duty.
-	//
-	// The generated query directly rather than sessionstore.Store: that
-	// constructor wants the cookie signing keys to build its codecs, and
-	// DeleteForUser touches none of them. Asking for keys in order not to use
-	// them invites somebody to pass blank ones.
+	// The sessions are part of it, not tidiness. A live session carries
+	// MFAPassed=true from the moment it passed the factor just cleared, and
+	// requireFactorOrFirstEnrolment answers that flag FIRST, before it asks
+	// whether the account is protected. So a session that survives this
+	// command can register its own passkey, which is the exact thing the web
+	// path refuses to let a password alone do, granted instead by the act of
+	// recovering the owner. Whoever holds a stolen cookie would get a durable
+	// factor out of somebody else's recovery, and could then lock the real
+	// owner out of it. handler_admin_users.go's reset has the same duty.
 	//
 	// Found by the session-B review of #302.
-	if err := q.DeleteSessionsForUser(ctx, database.NullUUID(&u.ID)); err != nil {
-		return fmt.Errorf("revoking their sessions: %w", err)
+	removed, err := users.ClearFactors(ctx, u.ID)
+	if err != nil {
+		return fmt.Errorf("clearing their factors and ending their sessions: %w", err)
 	}
 
 	// One audit entry for the whole recovery action. ActorID is nil — nobody
@@ -139,7 +125,7 @@ func resetFactors(ctx context.Context, email string) error {
 			"source":           "cli",
 			"os_user":          osUsername,
 			"host":             host,
-			"passkeys_removed": len(creds),
+			"passkeys_removed": removed,
 			"totp_cleared":     true,
 			"sessions_revoked": true,
 		},
@@ -157,6 +143,6 @@ func resetFactors(ctx context.Context, email string) error {
 			"  Sessions revoked:   all of them\n\n"+
 			"They can now sign in with their password and will be asked to enrol again.\n"+
 			"Their password is unchanged. They are signed out everywhere and must sign in again.\n",
-		u.Email, u.DisplayName, len(creds))
+		u.Email, u.DisplayName, removed)
 	return nil
 }

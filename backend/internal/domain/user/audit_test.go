@@ -77,6 +77,24 @@ func TestResetMFA_RecordsWhoDidIt(t *testing.T) {
 	require.Equal(t, actorID, *e.ActorID)
 }
 
+// "Reset MFA" cleared the TOTP columns and nothing else, so on a passkey-only
+// account an administrator pressed it, got a success, and the person stayed
+// locked out by the key they had lost (#307 item 2).
+func TestResetMFA_ClearsPasskeysToo(t *testing.T) {
+	store := newFakeUserStore()
+	au := &fakeAuditStore{}
+	target := seedActiveUser(store)
+	store.passkeys[target.ID] = 2
+
+	svc := user.NewService(store, user.WithAuditStore(au))
+	require.NoError(t, svc.ResetMFA(context.Background(), target.ID, nil))
+
+	require.Zero(t, store.passkeys[target.ID], "a passkey survived the reset")
+	require.Len(t, au.entries, 1)
+	require.Equal(t, 2, au.entries[0].After["passkeys_removed"],
+		"the audit entry must say the reset covered passkeys, and how many")
+}
+
 func TestResetMFA_NilActorIsRecordedAsNoActor(t *testing.T) {
 	store := newFakeUserStore()
 	au := &fakeAuditStore{}

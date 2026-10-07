@@ -171,6 +171,9 @@ export function UserDetailPage() {
     return <Layout><div className="flex justify-center py-16"><Spinner /></div></Layout>
   }
 
+  // mfa_enabled is the TOTP flag alone; a passkey is a second factor too.
+  const hasSecondFactor = user.mfa_enabled || (user.passkey_count ?? 0) > 0
+
   const memberGroupIds = new Set(user.groups.map((g) => g.id))
   const availableGroups = allGroups.filter((g) => !memberGroupIds.has(g.id))
 
@@ -263,7 +266,7 @@ export function UserDetailPage() {
               <div>
                 <p className="text-xs text-gray-400 mb-0.5">MFA</p>
                 <div className="flex items-center gap-1.5">
-                  {user.mfa_enabled ? (
+                  {hasSecondFactor ? (
                     <>
                       <ShieldCheckIcon className="h-4 w-4 text-green-600" />
                       <span className="font-medium text-green-700">Enrolled</span>
@@ -286,11 +289,11 @@ export function UserDetailPage() {
 
             <div className="border-t pt-3 space-y-3">
               {/* MFA reset */}
-              {user.mfa_enabled && (
+              {hasSecondFactor && (
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-700">Reset MFA</p>
-                    <p className="text-xs text-gray-500">Clears the TOTP secret — user re-enrolls on next login.</p>
+                    <p className="text-xs text-gray-500">Clears the authenticator and every passkey, and signs them out everywhere — user re-enrols on next login.</p>
                   </div>
                   <Button
                     variant="outline"

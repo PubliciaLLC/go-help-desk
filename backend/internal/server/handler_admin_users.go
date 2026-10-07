@@ -37,8 +37,12 @@ type adminUserSummary struct {
 // adminUserDetail extends the summary with group memberships.
 type adminUserDetail struct {
 	adminUserSummary
-	HasPassword bool          `json:"has_password"`
-	Groups      []group.Group `json:"groups"`
+	HasPassword bool `json:"has_password"`
+	// PasskeyCount lets the page tell "has a second factor" from "has TOTP":
+	// MFAEnabled is the TOTP flag only, so a passkey-only account read as
+	// having nothing to reset (#307).
+	PasskeyCount int           `json:"passkey_count"`
+	Groups       []group.Group `json:"groups"`
 }
 
 func authTypeOf(u user.User) string {
@@ -125,9 +129,15 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	passkeys, err := s.passkeyStore.CountForUser(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 	detail := adminUserDetail{
 		adminUserSummary: toAdminSummary(u),
 		HasPassword:      u.PasswordHash != "",
+		PasskeyCount:     int(passkeys),
 		Groups:           groups,
 	}
 	JSON(w, http.StatusOK, detail)
@@ -217,10 +227,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		// An existing session carries MFAPassed=true, and handleMFAEnrollStart
-		// passes that straight in as allowReenroll — so without this, whoever
-		// holds a cookie minted before the reset can enrol their own
-		// authenticator afterwards, no password needed.
+		// Belt and braces. ResetMFA's statement (ClearFactors) already ended
+		// this account's sessions in the same write, so this finds nothing to
+		// delete today. It is kept because an existing session carries
+		// MFAPassed=true and handleMFAEnrollStart passes that straight in as
+		// allowReenroll, so whoever holds a cookie minted before the reset
+		// could enrol their own authenticator afterwards, no password needed,
+		// should ResetMFA ever stop ending sessions itself.
 		if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 			handleError(w, err)
 			return

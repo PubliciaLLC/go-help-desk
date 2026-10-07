@@ -891,8 +891,10 @@ func (s *Service) Enable(ctx context.Context, id uuid.UUID) error {
 	return s.store.Enable(ctx, id)
 }
 
-// ResetMFA clears the user's TOTP secret and disables MFA, and records who
-// did it. actorID is nil for a reset with no signed-in actor — the
+// ResetMFA clears every second factor the user holds, the authenticator and
+// every passkey, ends their sessions, and records who did it. Passkeys too:
+// clearing only the TOTP columns left a passkey-only account locked out by the
+// key the administrator was asked to reset (#307). actorID is nil for a reset with no signed-in actor — the
 // reset-factors CLI, which writes its own, differently-shaped entry instead
 // of calling this, because "nobody was signed in" and "an administrator did
 // it through the web" are different facts worth telling apart; see #306.
@@ -906,7 +908,8 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	// separately, answers the caller 500 for a reset that already happened.
 	// Same shape as handler_passkeys.go's detached Touch call.
 	ctx = context.WithoutCancel(ctx)
-	if err := s.store.ClearMFA(ctx, id); err != nil {
+	passkeys, err := s.store.ClearFactors(ctx, id)
+	if err != nil {
 		return err
 	}
 	s.writeAuditEntry(ctx, audit.Entry{
@@ -914,6 +917,11 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 		EntityType: "user",
 		EntityID:   id,
 		Action:     "mfa_reset",
+		After: map[string]any{
+			"totp_cleared":     true,
+			"passkeys_removed": passkeys,
+			"sessions_revoked": true,
+		},
 	})
 	return nil
 }

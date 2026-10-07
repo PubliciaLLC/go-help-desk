@@ -3,6 +3,7 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -90,6 +91,7 @@ type harness struct {
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
 	auditStore      *auditstore.Store
+	tx              *sql.Tx        // the harness transaction, for SQL the generated queries do not offer
 	q               *dbgen.Queries // raw queries on the test transaction, for fixtures the stores won't build
 	attachDir       string         // where uploads land, so a test can check the disk
 }
@@ -124,7 +126,7 @@ func newHarnessWithThrottle(t *testing.T, authRateLimit int, delay time.Duration
 func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harness, func()) {
 	t.Helper()
 	db, closeDB := testutil.NewDB(t)
-	q, rollback := testutil.TxQueries(t, db)
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
 
 	ctx := context.Background()
 
@@ -314,6 +316,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	h := &harness{
 		srv:             srv,
 		q:               q,
+		tx:              tx,
 		slaSvc:          slaPolicySvc,
 		apiKey:          rawToken,
 		adminKey:        adminRawToken,

@@ -136,6 +136,56 @@ func (q *Queries) ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams
 	return i, err
 }
 
+const clearFactors = `-- name: ClearFactors :one
+WITH gone AS (
+    DELETE FROM webauthn_credentials WHERE webauthn_credentials.user_id = $1 RETURNING webauthn_credentials.id
+), ended AS (
+    DELETE FROM sessions WHERE sessions.user_id = $1 RETURNING sessions.id
+), cleared AS (
+    UPDATE users
+    SET mfa_secret = '', mfa_enabled = false, updated_at = now()
+    WHERE id = $1
+    RETURNING id
+)
+SELECT
+    (SELECT count(*) FROM cleared)::int AS users_cleared,
+    (SELECT count(*) FROM gone)::int    AS passkeys_removed
+`
+
+type ClearFactorsRow struct {
+	UsersCleared    int32 `json:"users_cleared"`
+	PasskeysRemoved int32 `json:"passkeys_removed"`
+}
+
+// Clears EVERY second factor an account holds and ends every session it has
+// open, as one statement. Returns how many users matched (0 or 1) and how many
+// passkeys went.
+//
+// One statement so that it is all or nothing. reset-factors used to run three
+// (delete the passkeys, clear the TOTP columns, delete the sessions), and a
+// failure between the second and the third left an account with no factor and
+// its MFAPassed=true sessions alive -- the state the session revocation exists
+// to prevent (#307 item 4). A data-modifying CTE shares the statement's
+// snapshot and commits or rolls back with it, which a transaction would give
+// but without the plumbing; the ...UnlessLastAdmin statements are the same
+// shape for the same reason.
+//
+// Passkeys as well as TOTP, because "Reset MFA" cleared only the TOTP columns:
+// on a passkey-only account the administrator got a success and the person
+// stayed locked out by the key they had lost (#307 item 2).
+//
+// Sessions are ended here and not only by the caller for the reason the
+// reset-factors command spells out: a surviving session carries MFAPassed=true
+// from the factor just cleared, and could register a factor of its own.
+//
+// Works on a disabled or deleted account, like ClearMFA before it.
+func (q *Queries) ClearFactors(ctx context.Context, userID uuid.UUID) (ClearFactorsRow, error) {
+	row := q.db.QueryRowContext(ctx, clearFactors, userID)
+	var i ClearFactorsRow
+	err := row.Scan(&i.UsersCleared, &i.PasskeysRemoved)
+	return i, err
+}
+
 const clearMFA = `-- name: ClearMFA :execrows
 UPDATE users SET mfa_secret = '', mfa_enabled = false, updated_at = now() WHERE id = $1
 `
