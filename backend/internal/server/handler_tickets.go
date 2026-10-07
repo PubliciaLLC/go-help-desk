@@ -716,12 +716,48 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, t)
 }
 
+// POST /api/v1/tickets/{id}/reopen
+//
+// Force-reopens a Closed ticket, for the roles closed_reopen_policy allows
+// (#349). Off by default, in which case every caller gets 409 ticket_closed
+// with the reason; a requester gets 403 whatever the setting. The rule is
+// ticket.Service.Reopen's, not decided here, so this route, a status change and
+// Resolve cannot disagree about it.
+func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	if a.Role == user.RoleUser {
+		Error(w, http.StatusForbidden, "forbidden", "users cannot directly reopen tickets")
+		return
+	}
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	targetID, err := s.reopenTargetStatusID(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	t, err := s.tickets.Reopen(r.Context(), id, targetID, actor)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, t)
+}
+
 // POST /api/v1/tickets/{id}/follow-up
 //
 // The way forward from a Closed ticket (#349): a NEW ticket that starts open
 // and links back to the closed one, which is left untouched. Closed is
-// terminal, so this is the only thing that replaces the reopen endpoint
-// that used to be here. Staff and admin only, and the rule lives in
+// terminal by default, so this is the way forward in every mode; the reopen
+// endpoint above is an alternative only where closed_reopen_policy allows it.
+// Staff and admin only, and the rule lives in
 // ticket.Service.CreateFollowUp (ErrForbidden for a requester, ErrNotClosed
 // for a ticket that is not closed), not here.
 func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
@@ -1078,8 +1114,8 @@ func (s *Server) autoAssign(ctx context.Context, t ticket.Ticket) {
 //
 // Shared by the authenticated reply path and the guest reply path: both reopen
 // a Resolved ticket inside the window, and need to land on the same status a
-// misconfigured or absent setting should fall back to. (Manual reopen of a
-// Closed ticket is gone, #349.)
+// misconfigured or absent setting should fall back to, and the force-reopen
+// endpoint (#349), which lands there too.
 func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {

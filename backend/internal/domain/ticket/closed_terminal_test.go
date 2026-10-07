@@ -12,13 +12,17 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
-// #349: Closed is TERMINAL for every role. These tests are the rule; each of
-// the doors out of Closed is one case.
+// #349: Closed is TERMINAL by default (closed_reopen_policy off), for every
+// role. These tests are the rule under that default — the harness's policy is
+// empty, which reads as off — and each of the doors out of Closed is one case.
+// The "on" half, and the requesters-never half, are in
+// closed_reopen_policy_test.go.
 //
 // Before #349 an administrator could Reopen a closed ticket, and staff could
 // move one out of Closed with a status change or resolve it again. All of
-// those are refused now: the way forward from a closed ticket is a new,
-// linked ticket (CreateFollowUp).
+// those are refused by default now: the way forward from a closed ticket is a
+// new, linked ticket (CreateFollowUp), unless an operator turns forced reopen
+// on (closed_reopen_policy).
 
 func terminalActors() map[string]ticket.Actor {
 	id := uuid.New()

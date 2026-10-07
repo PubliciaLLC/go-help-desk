@@ -24,6 +24,11 @@ type harness struct {
 	atomic     *fakeAtomic
 	sla        *fakeSLA
 
+	// policy is the closed_reopen_policy the service reads at request time
+	// (#349). Empty is the default, off. A test changes it between calls, or
+	// from inside a store hook, to show it is read when it is used.
+	policy string
+
 	newStatus        ticket.Status
 	resolvedStatus   ticket.Status
 	closedStatus     ticket.Status
@@ -67,6 +72,7 @@ func newHarness(t *testing.T) *harness {
 	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)
 	require.NoError(t, h.svc.LoadSystemStatuses(context.Background()))
 	h.dispatcher.sendTime = h.svc.IssueGuestLink
+	h.svc.SetClosedReopenPolicy(func(context.Context) string { return h.policy })
 	return h
 }
 

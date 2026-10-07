@@ -5,10 +5,10 @@ import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
-// #349: Closed is terminal and archived read-only. Nobody reopens a closed
-// ticket (this file used to pin the Reopen button, #277), a requester can read
-// it and change nothing, and staff and admin continue the work in a new,
-// linked follow-up ticket instead.
+// #349: Closed is archived read-only, and terminal by default. A requester can
+// read it and change nothing; staff and admin continue the work in a new,
+// linked follow-up ticket, and get a Reopen button only when the instance's
+// closed_reopen_policy lets their role (the server says so in can_reopen).
 
 const TICKET_ID = 'tkt-1'
 
@@ -31,7 +31,7 @@ const STATUSES = [
   { id: 'st-closed', name: 'Closed', kind: 'system', sort_order: 3, color: '#999', active: true, ticket_count: 1 },
 ]
 
-function ticketWithStatus(statusId: string) {
+function ticketWithStatus(statusId: string): Record<string, unknown> & { id: string; status_id: string } {
   return {
     id: TICKET_ID,
     tracking_number: 'TKT-0001',
@@ -149,6 +149,70 @@ describe('a closed ticket', () => {
     expect(screen.getByRole('note').textContent).toMatch(/closed and read-only/i)
     // They can still read it.
     expect(document.body.textContent).toContain('Literally.')
+  })
+})
+
+// closed_reopen_policy (#349): the server says, per ticket and per viewer,
+// whether the Reopen button is for them (can_reopen).
+describe('force-reopening a closed ticket', () => {
+  function closedTicket(canReopen?: boolean) {
+    return { ...ticketWithStatus('st-closed'), ...(canReopen === undefined ? {} : { can_reopen: canReopen }) }
+  }
+
+  it('shows no Reopen button when the server does not say the viewer may (the default)', async () => {
+    await renderTicket(closedTicket(false))
+    expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
+    expect(screen.getByRole('note').textContent).toMatch(/cannot be reopened/i)
+  })
+
+  it('shows it, the status picker and a different note when the viewer may', async () => {
+    await renderTicket(closedTicket(true))
+    expect(screen.queryByRole('button', { name: 'Reopen' })).not.toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create follow-up' })).not.toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Ticket status' })).not.toBeNull()
+    expect(screen.getByRole('note').textContent).toMatch(/You can reopen it/i)
+  })
+
+  it('posts to the reopen endpoint when clicked', async () => {
+    await renderTicket(closedTicket(true))
+    const post = vi.spyOn(api, 'post').mockResolvedValue({ data: closedTicket(true) } as never)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+
+    await waitFor(() => expect(post).toHaveBeenCalledWith(`/tickets/${TICKET_ID}/reopen`, {}))
+  })
+
+  it('shows the server message, and refetches, when the policy changed under the page', async () => {
+    const getSpy = await renderTicket(closedTicket(true))
+    vi.spyOn(api, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        data: { error: { code: 'ticket_closed', message: 'reopening closed tickets is disabled on this instance' } },
+      },
+    })
+    const before = getSpy.mock.calls.filter((c) => c[0] === `/tickets/${TICKET_ID}`).length
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toContain('reopening closed tickets is disabled')
+    })
+    await waitFor(() => {
+      const after = getSpy.mock.calls.filter((c) => c[0] === `/tickets/${TICKET_ID}`).length
+      expect(after).toBeGreaterThan(before)
+    })
+  })
+
+  it('never shows it to a requester, even if the field were somehow true', async () => {
+    signInAs('user')
+    await renderTicket(closedTicket(true))
+    expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create follow-up' })).toBeNull()
+  })
+
+  it('shows no Reopen button on a Resolved ticket whatever the field says', async () => {
+    await renderTicket({ ...ticketWithStatus('st-resolved'), can_reopen: true })
+    expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
   })
 })
 

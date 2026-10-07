@@ -155,8 +155,9 @@ func TestGuestToken_RotatesOnlyOnWhatTheGuestIsTold(t *testing.T) {
 // closed ticket was thought to need no reader. Erik's rule: a closed ticket is
 // an archive the requester may still READ, so the last link sent keeps working
 // until it expires (GuestTokenTTL). There is no "reopening issues afresh"
-// half any more: Closed is terminal for every role, so a closed ticket never
-// comes back and never needs a way back in.
+// half any more: Closed is terminal by default, so a closed ticket does not
+// come back on its own and needs no way back in. (If an operator enables forced
+// reopen, the reopen itself issues a link: closed_reopen_policy_test.go.)
 func TestGuestToken_ClosingKeepsTheLinkForReading(t *testing.T) {
 	h := newHarness(t)
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}

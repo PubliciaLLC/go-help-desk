@@ -131,14 +131,16 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
                                                            ↑            |
                                                            └── Reopened ┘ (within window)
 
-Closed is terminal: nothing leaves it. The way forward is a new, linked
-follow-up ticket.
+Closed is terminal by default: nothing leaves it. The way forward is a new,
+linked follow-up ticket. An instance setting (closed_reopen_policy) can allow
+admins, or staff and admins, to force-reopen; requesters never can.
 ```
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
-- **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and cannot be reopened. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
+- **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and a requester can never reopen it. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
 - **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status.
-- **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Terminal and archived read-only** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Staff and admin can no longer reopen it; they open a linked follow-up.
+- **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
+- **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
 
   **Auto-close scheduling.** This transition is driven by a periodic background
   sweep, not computed on read: a ticket sitting in Resolved past its window
@@ -170,22 +172,48 @@ follow-up ticket.
 #### Closed is terminal and read-only
 
 Decided in [#349](https://github.com/PubliciaLLC/go-help-desk/issues/349). A
-Closed ticket is an archive. The rule, for every route (REST and MCP) and every
-credential (session, API key, OAuth client acting as the same role):
+Closed ticket is an archive, **terminal by default**. An instance setting
+(`closed_reopen_policy`, above) can allow forced reopen by admins only, or by
+staff and admins; **requesters never can**, whatever it says, and the follow-up
+is available in every mode. The rule, for every route (REST and MCP) and every
+credential (session, API key, OAuth client acting as the same role). The Staff /
+Admin row is the default, `off`:
 
 | Who | On a Closed ticket |
 |-----|--------------------|
 | Guest (link holder) | **Read only.** Reply, upload and anything that could reopen are refused with the generic `404`, byte-identical to a bad link (below). |
 | Account holder (User role) | **Read only.** Reply, attachment upload, custom-field edit and linking are refused with `409 ticket_closed`; status change, assign, reclassify, resolve, close and follow-up are refused with `403`, as for any state. |
-| Staff, Admin | **Cannot reopen.** A status change out of Closed, Resolve, Resolve-as-duplicate and the former `POST /tickets/{id}/reopen` (removed) are refused with `409 ticket_closed`. They **can** open a follow-up, and keep replying, internal notes, assignment, reclassification, tags and linking (see below). |
+| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, reclassification, tags and linking (see below). |
 | Resolved (any requester) | Unchanged: a requester's reply inside the reopen window reopens the ticket; outside it, `409 reopen_window_closed`. |
 
 **One rule, in the domain.** The service decides it, not each handler: the
 reply/upload lifecycle check (`lifecycleAllowsReply`) and the requester's other
-writes (`Service.CanRequesterWrite`) both ask one function (`closedRefusal`); the
-ways out of Closed are refused in `UpdateStatus` and `resolveInTx` on the locked
-row; guest writes resolve through `TicketForGuestWrite`. The earlier incident
-(GHSA-2x4f-j4jv-m2cm) was two surfaces each deciding one rule on their own.
+writes (`Service.CanRequesterWrite`) both ask one function (`closedRefusal`);
+guest writes resolve through `TicketForGuestWrite`. Every way out of Closed —
+`Reopen`, `UpdateStatus`, `Resolve`, `ResolveAsDuplicate`, so the reopen
+endpoint, the status route, resolve, duplicate-of with auto-resolve and MCP
+`update_ticket_status` — asks one predicate, `ticket.CanForceReopen(policy,
+role)`, through `Service.forceReopenGate`, **on the locked row**: the policy is
+read there (`closed_reopen_policy`, wired by the server, no cache), after the
+ticket's row lock is taken, so a setting flipped to `off` while a request was in
+flight is the one that applies. A requester is `false` in every mode and is
+refused earlier, by role, with the refusal a requester has always had (`403`),
+never told about the setting. The earlier incident (GHSA-2x4f-j4jv-m2cm) was two
+surfaces each deciding one rule on their own.
+
+**A forced reopen** targets the existing reopen target status (**Reopen target
+status**, falling back to New), through the shared timestamp rule, so the SLA
+pause is carried and a closed/resolved timestamp is cleared, with a
+status-history row and the ordinary reopen notification (a guest is sent a link,
+issued at send time as for any reopen). The guest's links are not touched by it
+(closing never revoked them), and the ticket is writable through them again as
+soon as it is not Closed. The audit entry says it was forced and under which
+policy: `reopened` for the endpoint, with `forced_reopen: true` and
+`closed_reopen_policy` in its "after" (the same two keys ride on the
+`status_changed` or `resolved` entry of the other doors). The ticket response
+carries `can_reopen` (true only for a Closed ticket and a viewer the policy
+allows) so the ticket page shows the Reopen button only to them; it is a
+courtesy, and the service decides again when the button is used.
 
 **Races: the rule holds against a close that wins.** A requester's reply or
 attachment is checked once up front, and the row is written later (for an
@@ -265,10 +293,11 @@ neither does `create_follow_up`.
   annotate and attach to one (the decision above). Staff do that over the API or
   MCP, not from the page.
 - **Custom-field edits are not atomic with a close.** A reporter's custom-field
-  edit is checked (`CanRequesterWrite`) and then written through the custom-field
-  service, which is outside the ticket transaction; a close landing in that gap
-  leaves one field value written on a closed ticket. Replies, uploads and links,
-  which carry the thread, are atomic.
+  edit is checked once (`CanRequesterWrite`) and then written value by value
+  through the custom-field service, which is outside the ticket transaction. A
+  close landing after the check leaves **all** the values in that request
+  written on a closed ticket, and a close landing mid-loop leaves the remainder.
+  Replies, uploads and links, which carry the thread, are atomic.
 
 - Statuses are customizable — admins can add intermediate statuses, but
   New, Resolved and Closed are system statuses with special behavior. The
@@ -286,7 +315,7 @@ neither does `create_follow_up`.
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log — it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket; the explicit `POST /reopen` was removed with #349) are covered; priority, CTI and custom-field changes are not, and a cleared assignment is currently recorded as another `assigned` entry rather than `unassigned` (`unassigned` is written only when a departing user's tickets are returned to the queue). Those are pre-existing gaps in what the domain layer records, not something this route introduces — tracked separately rather than fixed here, since closing them is a write-side change to `ticket.Service`, not a read-side one.
+This route only *reads* the audit log — it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after") are covered; priority, CTI and custom-field changes are not, and a cleared assignment is currently recorded as another `assigned` entry rather than `unassigned` (`unassigned` is written only when a departing user's tickets are returned to the queue). Those are pre-existing gaps in what the domain layer records, not something this route introduces — tracked separately rather than fixed here, since closing them is a write-side change to `ticket.Service`, not a read-side one.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -1021,9 +1050,13 @@ hashed and cannot be re-sent:
   the same happens: the mail carries a new link. A closed ticket is never left
   with a mail and no way to read it; staff wrote to the guest, and the mail is
   how they learn.
-- A link issued for a closed ticket **can only read**. Closed is terminal, so
-  the ticket never leaves Closed and the link can never gain the power to write;
-  the write lookup refuses it regardless of when it was issued.
+- A link issued for a closed ticket **can only read**: the write lookup refuses
+  a Closed ticket whatever the link's age. Closed is terminal by default; if an
+  operator enables forced reopen (`closed_reopen_policy`) and a staff member
+  reopens the ticket, the guest's links write again as soon as it is not Closed
+  (they belong to the same guest), and the reopen's own mail rotates them all
+  into one fresh link, as any reopen does. If that mail cannot be sent, the
+  older links stay live until they expire.
 - On an open ticket, rotation is unchanged.
 
 **Resend for a closed ticket re-sends a read-only link** (decision, #349). A
@@ -1897,7 +1930,7 @@ over SSE at `/mcp/`.
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
 | `add_reply` | staff, admin | `internal: true` posts a staff-only note and does not notify the reporter. |
 | `assign_ticket` | staff, admin | To a user or a group. |
-| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it by anyone (#349): the result says so and points at `create_follow_up`. |
+| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
 **Authorization.** `/mcp/` runs behind the same middleware chain as `/api/`, so

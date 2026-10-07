@@ -75,6 +75,9 @@ func (s *Server) ticketRouter() *chi.Mux {
 
 		r.Post("/resolve", s.handleResolveTicket)
 		r.Post("/close", s.handleCloseTicket)
+		// Closed is terminal unless closed_reopen_policy lets the caller's
+		// role (#349); the service decides, on the locked row.
+		r.Post("/reopen", s.handleReopenTicket)
 		// The way forward from a Closed ticket, which nothing reopens (#349).
 		// Staff/admin is enforced by the service, not by a middleware here.
 		r.Post("/follow-up", s.handleCreateFollowUp)

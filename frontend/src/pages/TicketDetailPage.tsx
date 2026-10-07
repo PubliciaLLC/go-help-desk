@@ -6,6 +6,7 @@ import {
   listReplies,
   listStatusHistory,
   resolveTicket,
+  reopenTicket,
   createFollowUp,
   closeTicket,
   updateTicket,
@@ -421,8 +422,28 @@ export function TicketDetailPage() {
     },
   })
 
-  // The way forward from a Closed ticket (#349). Closed is terminal: nothing
-  // reopens it, so staff and admin open a new ticket linked to it. The new
+  // Force-reopen, for the roles closed_reopen_policy allows (#349). The
+  // button is only shown when the ticket response says can_reopen.
+  const reopenMutation = useMutation({
+    mutationFn: () => reopenTicket(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+    },
+    onError: () => {
+      // A 409 means this page is stale (the setting changed, or someone else
+      // already reopened it): refetch so the header and the button show the
+      // truth.
+      qc.invalidateQueries({ queryKey: ['ticket', id] })
+      qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+      qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+    },
+  })
+
+  // The way forward from a Closed ticket (#349). Closed is terminal by
+  // default, so staff and admin open a new ticket linked to it. The new
   // ticket is offered as a link rather than navigated to, so the closed one
   // stays on screen until they choose.
   const followUpMutation = useMutation({
@@ -447,6 +468,7 @@ export function TicketDetailPage() {
   // practice — a ticket is never resolvable and closed-and-continuable at once.
   const lifecycleError =
     (resolveMutation.isError && extractError(resolveMutation.error)) ||
+    (reopenMutation.isError && extractError(reopenMutation.error)) ||
     (followUpMutation.isError && extractError(followUpMutation.error)) ||
     (closeMutation.isError && extractError(closeMutation.error)) ||
     ''
@@ -468,12 +490,14 @@ export function TicketDetailPage() {
   }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
-  // Closed is terminal and read-only for requesters (#349). Staff and admin
-  // cannot reopen it either; the way forward is a linked follow-up ticket. A
-  // Resolved ticket is still moved with the status selector, or reopened by
-  // its requester's reply inside the window.
+  // Closed is read-only for requesters and terminal by default (#349). Staff
+  // and admin cannot reopen it unless the instance's closed_reopen_policy lets
+  // their role (the server says so in can_reopen); the way forward is a linked
+  // follow-up ticket either way. A Resolved ticket is still moved with the
+  // status selector, or reopened by its requester's reply inside the window.
   const isClosed = statusName === 'Closed'
   const canFollowUp = isStaffOrAdmin && isClosed
+  const canReopen = isStaffOrAdmin && isClosed && ticket.can_reopen === true
   const canClose = isAdmin && statusName === 'Resolved'
 
   return (
@@ -526,6 +550,16 @@ export function TicketDetailPage() {
                 Close Ticket
               </Button>
             )}
+            {canReopen && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => reopenMutation.mutate()}
+                disabled={reopenMutation.isPending}
+              >
+                Reopen
+              </Button>
+            )}
             {canFollowUp && (
               <Button
                 variant="outline"
@@ -566,7 +600,9 @@ export function TicketDetailPage() {
         {isClosed && (
           <p role="note" className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
             {isStaffOrAdmin
-              ? 'This ticket is closed and cannot be reopened. Use “Create follow-up” to continue the work in a new, linked ticket.'
+              ? canReopen
+                ? 'This ticket is closed. You can reopen it, or use “Create follow-up” to continue the work in a new, linked ticket.'
+                : 'This ticket is closed and cannot be reopened. Use “Create follow-up” to continue the work in a new, linked ticket.'
               : 'This ticket is closed and read-only. If you still need help, open a new ticket and mention this one.'}
           </p>
         )}
@@ -687,9 +723,10 @@ export function TicketDetailPage() {
               </Card>
             )}
 
-            {/* No status picker on a Closed ticket: nothing leaves Closed
-                (#349), so every other option would only be refused. */}
-            {isStaffOrAdmin && !isClosed && (
+            {/* No status picker on a Closed ticket unless this viewer may
+                reopen it (#349): otherwise every other option would only be
+                refused. */}
+            {isStaffOrAdmin && (!isClosed || canReopen) && (
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">

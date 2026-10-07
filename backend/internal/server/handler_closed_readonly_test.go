@@ -343,8 +343,9 @@ func TestReporter_ResolvedReopensInsideTheWindowAndNotOutsideIt(t *testing.T) {
 
 // ── staff and admin: terminal ───────────────────────────────────────────────
 
-// Nobody reopens a Closed ticket: not a status change, not Resolve, not the
-// old reopen endpoint, for staff and admin alike.
+// By DEFAULT (closed_reopen_policy off) nobody reopens a Closed ticket: not a
+// status change, not Resolve, not the reopen endpoint, for staff and admin
+// alike. The policy-on cases are in handler_closed_reopen_policy_test.go.
 func TestClosedIsTerminalOverREST(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -378,10 +379,15 @@ func TestClosedIsTerminalOverREST(t *testing.T) {
 			})
 		}
 
-		t.Run(who+" reopen endpoint is gone", func(t *testing.T) {
+		t.Run(who+" reopen endpoint, policy off", func(t *testing.T) {
 			res := do(t, http.MethodPost, base+"/reopen", map[string]any{})
-			res.Body.Close()
-			require.Contains(t, []int{http.StatusNotFound, http.StatusMethodNotAllowed}, res.StatusCode)
+			body := readBody(t, res)
+			if who == "reporter" {
+				require.Equal(t, http.StatusForbidden, res.StatusCode, body)
+			} else {
+				require.Equal(t, http.StatusConflict, res.StatusCode, body)
+				require.Contains(t, body, "ticket_closed")
+			}
 			require.Equal(t, ticket.StatusNameClosed, statusOf(t, h, tk.ID))
 		})
 	}

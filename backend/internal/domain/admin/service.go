@@ -330,6 +330,23 @@ func (s *Service) ReopenTargetStatusName(ctx context.Context) string {
 	return v
 }
 
+// ClosedReopenPolicy returns the closed_reopen_policy setting: "off",
+// "admin" or "staff_admin" (the values are ticket.ReopenPolicy*). Read on every
+// call, never cached, because the ticket service decides a force-reopen with it
+// on the locked row. Unset, unreadable or unrecognised is "off" — Closed stays
+// terminal — never a permissive value.
+func (s *Service) ClosedReopenPolicy(ctx context.Context) string {
+	v, err := s.GetString(ctx, KeyClosedReopenPolicy)
+	if err != nil {
+		return "off"
+	}
+	switch v {
+	case "admin", "staff_admin":
+		return v
+	}
+	return "off"
+}
+
 // SiteName returns the configured site name, defaulting to "Go Help Desk".
 func (s *Service) SiteName(ctx context.Context) string {
 	v, err := s.GetString(ctx, KeySiteName)

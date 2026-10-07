@@ -26,6 +26,13 @@ const (
 	KeySiteName               = "site_name"
 	KeySiteLogoURL            = "site_logo_url"
 
+	// Whether a Closed ticket can be force-reopened at all and, if so, by whom:
+	// off | admin | staff_admin (#349). Closed is terminal by default; this is
+	// the escape hatch an operator opts into. Requesters never can, whatever it
+	// says. The values and the rule are ticket.ReopenPolicy* and
+	// ticket.CanForceReopen; this package only stores the choice.
+	KeyClosedReopenPolicy = "closed_reopen_policy"
+
 	// What this instance accepts as an attachment: a JSON array of lowercase
 	// extensions with the leading dot, e.g. [".pdf", ".png"]. An empty array
 	// is a legitimate choice and means no attachments at all, not "unset".
@@ -301,6 +308,10 @@ func AuthCriticalKeys() []string {
 		KeyOIDCRedirectURL,
 		KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+		// Who may force-reopen a closed ticket (#349). Widening it is a
+		// permission change, not configuration: a leaked API key must not be
+		// able to switch reopening on and then use it.
+		KeyClosedReopenPolicy,
 		// Whether anonymous people on the internet may file tickets — and,
 		// since the category catalogue stopped being anonymous, whether that
 		// catalogue is readable without a session at all (see

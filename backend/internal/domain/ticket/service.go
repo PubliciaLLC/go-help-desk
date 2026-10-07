@@ -49,6 +49,45 @@ type Service struct {
 
 	// cached at startup
 	sys *systemStatuses
+
+	// closedReopenPolicy reads the closed_reopen_policy setting. A function,
+	// not a value, and never cached: it is called when a force-reopen is
+	// decided, after the ticket's row lock is taken, so a setting flipped
+	// while the request was in flight is the one that applies. Nil reads as
+	// off. The domain does not import the settings package; the server wires
+	// this (see SetClosedReopenPolicy).
+	closedReopenPolicy func(context.Context) string
+}
+
+// SetClosedReopenPolicy wires the source of the closed_reopen_policy setting
+// (#349). Called once at start-up, before the service takes requests; without
+// it Closed is terminal for every role, which is the default setting.
+func (s *Service) SetClosedReopenPolicy(read func(context.Context) string) {
+	s.closedReopenPolicy = read
+}
+
+// forceReopenGate is asked by every route that would move a ticket OUT of
+// Closed, on the row it has locked. It returns the policy in force and nil when
+// the actor may, or the refusal. Read here, never earlier: see
+// closedReopenPolicy.
+func (s *Service) forceReopenGate(ctx context.Context, actor Actor) (string, error) {
+	policy := ReopenPolicyOff
+	if s.closedReopenPolicy != nil {
+		policy = s.closedReopenPolicy(ctx)
+	}
+	if !CanForceReopen(policy, actor.Role) {
+		return policy, reopenRefusal(policy)
+	}
+	return policy, nil
+}
+
+// forcedAudit adds to an audit entry's "after" what makes a force-reopen
+// distinguishable from an ordinary change: that it left Closed, and the policy
+// that allowed it.
+func forcedAudit(after map[string]any, policy string) map[string]any {
+	after["forced_reopen"] = true
+	after["closed_reopen_policy"] = policy
+	return after
 }
 
 // SLAService is the narrow interface the ticket service needs from the SLA
@@ -151,8 +190,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 }
 
 // CreateFollowUp opens a NEW ticket from a Closed one, linked back to it
-// (#349). It is the only way forward from a closed ticket: Closed is terminal,
-// so nothing reopens it, and staff and admin start a fresh one instead.
+// (#349). It is the way forward from a closed ticket that works in every
+// mode: Closed is terminal by default, so nothing reopens it, and staff and
+// admin start a fresh one instead; and where an operator has allowed forced
+// reopen (closed_reopen_policy) the follow-up is still available beside it.
 //
 // What is copied, and what is not — recorded in DESIGN.md → Closing:
 //   - copied: subject, description, category / type / item, priority, and the
@@ -180,8 +221,10 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 	if err != nil {
 		return Ticket{}, err
 	}
-	// Closed is terminal, so this unlocked read cannot go stale in the one
-	// direction that matters: a ticket that is Closed now is Closed for good.
+	// An unlocked read. It can go stale only if forced reopen is enabled and
+	// the ticket is reopened between here and the insert, in which case the
+	// follow-up continues a ticket that is open again: harmless, and the link
+	// back is still true.
 	if orig.StatusID != s.sys.closedID {
 		return Ticket{}, fmt.Errorf("%w: a follow-up is created from a closed ticket", ErrNotClosed)
 	}
@@ -523,12 +566,18 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		if err != nil {
 			return err
 		}
-		// Closed is terminal (#349), for every role and for the scheduler:
-		// nothing leaves it by a status change. Decided on the locked row, so
-		// a close that committed first is seen. Staff and admin get a new
-		// linked ticket instead (CreateFollowUp).
+		// Closed is terminal by default (#349): nothing leaves it by a status
+		// change unless closed_reopen_policy lets this role. Decided on the
+		// locked row, so a close that committed first is seen, and the policy
+		// is read now. Staff and admin otherwise get a new linked ticket
+		// (CreateFollowUp).
+		forcedPolicy := ""
 		if t.StatusID == s.sys.closedID && newStatusID != s.sys.closedID {
-			return errClosedTerminal
+			p, err := s.forceReopenGate(ctx, actor)
+			if err != nil {
+				return err
+			}
+			forcedPolicy = p
 		}
 		before = ticketMap(t)
 		oldStatusID = t.StatusID
@@ -542,7 +591,11 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, newStatusID, actor)); err != nil {
 			return fmt.Errorf("recording status change: %w", err)
 		}
-		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "status_changed", before, ticketMap(t))); err != nil {
+		after := ticketMap(t)
+		if forcedPolicy != "" {
+			forcedAudit(after, forcedPolicy)
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "status_changed", before, after)); err != nil {
 			return fmt.Errorf("auditing status change: %w", err)
 		}
 		// A status change is something the guest is told about, so it rotates
@@ -899,7 +952,8 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		// "Closed is read-only for requesters". The lock also orders this
 		// against the close: whichever commits first, the other sees it.
 		// Staff are not asked; they may annotate a closed ticket.
-		if err := s.refuseRequesterOnClosed(ctx, st, ticketID, actor); err != nil {
+		lockedByRequester, err := s.refuseRequesterOnClosed(ctx, st, ticketID, actor)
+		if err != nil {
 			return fmt.Errorf("cannot reply to ticket: %w", err)
 		}
 		if err := st.CreateReply(ctx, reply); err != nil {
@@ -911,15 +965,13 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		if !reopened {
 			return nil
 		}
-		// Re-read under the lock before overwriting the row. The copy above
-		// decided WHETHER to reopen — a decision about the status the reporter
-		// replied to — but st.Update writes every column, so the row it writes
-		// has to be the row it just read, or a concurrent assign or edit is
-		// lost.
-		locked, err := st.GetByIDForUpdate(ctx, ticketID)
-		if err != nil {
-			return err
-		}
+		// The row to overwrite is the one locked above, for the closed check:
+		// the copy outside decided WHETHER to reopen — a decision about the
+		// status the reporter replied to — but st.Update writes every column,
+		// so the row it writes has to be the locked one, or a concurrent assign
+		// or edit is lost. Only a requester reopens, and a requester's reply
+		// always locks, so there is exactly one read.
+		locked := lockedByRequester
 		// Re-decide on the locked row, not just re-read it.
 		//
 		// The copy above decided to reopen because the ticket was Resolved when
@@ -1077,11 +1129,16 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, tic
 	if err != nil {
 		return Ticket{}, false, false, err
 	}
-	// Resolving a Closed ticket would be a door out of Closed, which is
-	// terminal (#349). Checked on the locked row, before the no-op test:
-	// Closed is never "already resolved".
+	// Resolving a Closed ticket is a door out of Closed, which is terminal
+	// unless closed_reopen_policy lets this role (#349). Checked on the locked
+	// row, before the no-op test: Closed is never "already resolved".
+	forcedPolicy := ""
 	if t.StatusID == s.sys.closedID {
-		return Ticket{}, false, false, errClosedTerminal
+		p, err := s.forceReopenGate(ctx, actor)
+		if err != nil {
+			return Ticket{}, false, false, err
+		}
+		forcedPolicy = p
 	}
 	if t.StatusID == s.sys.resolvedID && sameTarget && resolutionNotesMatch(t.ResolutionNotes, notes) {
 		return t, false, true, nil
@@ -1104,7 +1161,11 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, tic
 	if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
 		return Ticket{}, false, false, fmt.Errorf("recording resolution: %w", err)
 	}
-	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
+	after := ticketMap(t)
+	if forcedPolicy != "" {
+		forcedAudit(after, forcedPolicy)
+	}
+	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, after)); err != nil {
 		return Ticket{}, false, false, fmt.Errorf("auditing resolution: %w", err)
 	}
 	// Rotate: the guest is told, and the link they are told with is the
@@ -1472,6 +1533,100 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		Subject:        t.Subject,
 	})
 	return closed, nil
+}
+
+// Reopen force-reopens a Closed ticket into targetStatusID. Staff and admin
+// only, and only when closed_reopen_policy lets the actor's role: Closed is
+// terminal by default (#349), a requester can never (ErrForbidden), and a
+// refusal by the setting is a *ReopenRefusedError (an ErrClosed) that says why.
+//
+// Restored from before #349 with the policy in front of it and nothing else
+// changed: the same target status, history row, reopen notification and
+// guest link issued at send time, and the shared timestamp rule that carries
+// the SLA pause forward. What is new is that the audit entry says it was
+// forced and under which policy. The guest's links are not touched here —
+// closing no longer revokes them — and the ticket is writable through them again
+// as soon as it is not Closed.
+func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID uuid.UUID, actor Actor) (Ticket, error) {
+	if actor.Role == user.RoleUser {
+		return Ticket{}, ErrForbidden
+	}
+	t, err := s.store.GetByID(ctx, ticketID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	if t.StatusID != s.sys.closedID {
+		return Ticket{}, fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
+	}
+	// Same guard as AddReply's auto-reopen: an unresolvable configured status
+	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
+	// mid-transaction.
+	if targetStatusID == uuid.Nil {
+		return Ticket{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
+	}
+	target, err := s.getStatusByID(ctx, targetStatusID)
+	if err != nil {
+		return Ticket{}, err
+	}
+
+	now := time.Now()
+	var oldStatusID uuid.UUID
+	var guestLink bool
+
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// Re-read under the lock. The check above answered the precondition on
+		// an unlocked copy; this is the row actually being overwritten, and a
+		// concurrent close or resolve may have landed in between.
+		t, err = st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		if t.StatusID != s.sys.closedID {
+			return fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
+		}
+		// The policy, read now that the row is locked: a setting flipped to
+		// off since the request began is the one that applies.
+		policy, err := s.forceReopenGate(ctx, actor)
+		if err != nil {
+			return err
+		}
+		before := ticketMap(t)
+		oldStatusID = t.StatusID
+		t.StatusID = targetStatusID
+		t.UpdatedAt = now
+		// Through the shared rule: its default arm clears ClosedAt/ResolvedAt,
+		// carries the accumulated SLA pause forward and opens a fresh interval
+		// if the reopen target is Pending — a reopened ticket is not a new SLA
+		// clock.
+		applyStatusTimestamps(&t, oldStatusID, target, s.sys, now)
+
+		if err := st.Update(ctx, t); err != nil {
+			return fmt.Errorf("reopening ticket: %w", err)
+		}
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, targetStatusID, actor)); err != nil {
+			return fmt.Errorf("recording reopen: %w", err)
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, forcedAudit(ticketMap(t), policy))); err != nil {
+			return fmt.Errorf("auditing reopen: %w", err)
+		}
+		// The guest is told, with a link issued when the mail is sent.
+		guestLink = hasGuestRecipient(t)
+		return nil
+	}); err != nil {
+		return Ticket{}, err
+	}
+
+	_ = s.dispatcher.Dispatch(ctx, notification.Event{
+		Type:           notification.EventTicketReopened,
+		TicketID:       t.ID,
+		ActorID:        actor.UserID,
+		OccurredAt:     time.Now(),
+		TrackingNumber: string(t.TrackingNumber),
+		Recipient:      guestRecipient(t),
+		GuestLink:      guestLink,
+		Subject:        t.Subject,
+	})
+	return t, nil
 }
 
 // statusHistoryEntry builds the history row for a transition.
@@ -1915,7 +2070,7 @@ var ErrValidation = errors.New("validation failed")
 // ErrClosed, and the caller removes the file. Staff are not asked.
 func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Actor) error {
 	return s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
-		if err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+		if _, err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
 			return err
 		}
 		return st.CreateAttachment(ctx, a)
@@ -1924,20 +2079,21 @@ func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Acto
 
 // refuseRequesterOnClosed is closedRefusal for a write that is about to
 // happen: it takes the ticket's row lock and refuses a requester when the
-// locked row is Closed. Nil for staff and admin, who are not locked out of a
-// closed ticket and so need no lock.
-func (s *Service) refuseRequesterOnClosed(ctx context.Context, st Store, ticketID uuid.UUID, actor Actor) error {
+// locked row is Closed, returning the locked row for the caller to reuse. A
+// zero Ticket and nil for staff and admin, who are not locked out of a closed
+// ticket and so need no lock.
+func (s *Service) refuseRequesterOnClosed(ctx context.Context, st Store, ticketID uuid.UUID, actor Actor) (Ticket, error) {
 	if actor.Role != user.RoleUser {
-		return nil
+		return Ticket{}, nil
 	}
 	locked, err := st.GetByIDForUpdate(ctx, ticketID)
 	if err != nil {
-		return err
+		return Ticket{}, err
 	}
 	if locked.StatusID == s.sys.closedID {
-		return ErrClosed
+		return Ticket{}, ErrClosed
 	}
-	return nil
+	return locked, nil
 }
 
 // GetAttachment returns a single attachment by ID.

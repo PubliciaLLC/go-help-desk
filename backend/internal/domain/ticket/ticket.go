@@ -506,9 +506,10 @@ func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
 var (
 	ErrForbidden = errors.New("forbidden")
 	// ErrClosed is the refusal for anything a Closed ticket does not accept.
-	// Closed is terminal and archived read-only (#349): a requester — guest or
-	// account holder — can read it and change nothing, and nobody at all can
-	// move it out of Closed. 409, the ticket's state rather than the caller's
+	// Closed is archived read-only (#349): a requester — guest or account
+	// holder — can read it and change nothing, and nobody can move it out of
+	// Closed unless closed_reopen_policy lets their role (never a requester;
+	// off by default). 409, the ticket's state rather than the caller's
 	// permissions, and fine to say to a reporter about their own ticket (they
 	// can already see it); never used to answer for a ticket the caller may not
 	// see, which gets the not-found refusal first.
@@ -578,19 +579,72 @@ var (
 	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
 	// empty name was silently accepted before this check existed. See #278.
 	ErrInvalidStatusName = errors.New("status name must not be empty")
-	// ErrNotClosed is returned by CreateFollowUp for a ticket that is not
-	// Closed: a follow-up is the way forward from a closed ticket, and an open
-	// one needs no way forward. (It was Reopen's refusal until #349 removed
-	// reopening a closed ticket; see #277 for why it is a sentinel.) 409, like
-	// ErrClosed: the ticket's state, not the caller's permissions, is what
-	// refuses.
+	// ErrNotClosed is returned by Reopen and CreateFollowUp for a ticket that
+	// is not Closed: both are ways out of a closed ticket, and an open one
+	// needs neither. See #277 for why it is a sentinel. 409, like ErrClosed:
+	// the ticket's state, not the caller's permissions, is what refuses.
 	ErrNotClosed = errors.New("ticket is not closed")
 )
 
-// errClosedTerminal is what every door out of Closed answers (#349). It wraps
-// ErrClosed, so it is the same 409 as a reply to a closed ticket, and says
-// where to go instead.
-var errClosedTerminal = fmt.Errorf("%w: a closed ticket cannot be reopened; create a follow-up ticket instead", ErrClosed)
+// The three values of the closed_reopen_policy setting (#349): whether a Closed
+// ticket can be force-reopened at all and, if so, by whom.
+//
+//	off          (the default) Closed is terminal for every role
+//	admin        an administrator may force-reopen
+//	staff_admin  staff and administrators may
+//
+// Requesters (reporting users, guests, and API keys or OAuth clients acting as
+// one) never may, whatever the value. The follow-up is available in every mode.
+const (
+	ReopenPolicyOff        = "off"
+	ReopenPolicyAdmin      = "admin"
+	ReopenPolicyStaffAdmin = "staff_admin"
+)
+
+// ValidClosedReopenPolicy reports whether v is a value the setting accepts.
+// Used to refuse a write; the reader treats anything else as off.
+func ValidClosedReopenPolicy(v string) bool {
+	return v == ReopenPolicyOff || v == ReopenPolicyAdmin || v == ReopenPolicyStaffAdmin
+}
+
+// CanForceReopen is the one predicate for leaving Closed: every route that can
+// do it (the reopen endpoint, a status change, Resolve, Resolve-as-duplicate,
+// over REST and MCP alike) asks it, through Service.forceReopenPolicy. Two
+// surfaces deciding one rule on their own is how GHSA-2x4f-j4jv-m2cm happened.
+//
+// An unset or unrecognised policy is off, never a permissive value, and the
+// RoleUser case is false in every mode on purpose: a requester's refusal does
+// not depend on the setting.
+func CanForceReopen(policy string, role user.Role) bool {
+	switch policy {
+	case ReopenPolicyAdmin:
+		return role == user.RoleAdmin
+	case ReopenPolicyStaffAdmin:
+		return role == user.RoleAdmin || role == user.RoleStaff
+	}
+	return false
+}
+
+// ReopenRefusedError is the refusal of a force-reopen by the policy in force.
+// It is an ErrClosed (409 ticket_closed, like every refusal of a closed
+// ticket), and its text says why — disabled, or restricted to administrators —
+// and where to go instead. Only staff and admin can meet it; a requester is
+// refused earlier, by role, and is never told about the setting.
+type ReopenRefusedError struct{ msg string }
+
+func (e *ReopenRefusedError) Error() string { return e.msg }
+
+// Is makes it an ErrClosed.
+func (e *ReopenRefusedError) Is(target error) bool { return target == ErrClosed }
+
+func reopenRefusal(policy string) error {
+	if policy == ReopenPolicyAdmin {
+		return &ReopenRefusedError{"reopening closed tickets is restricted to administrators on this " +
+			"instance; ask an administrator, or create a follow-up ticket instead"}
+	}
+	return &ReopenRefusedError{"reopening closed tickets is disabled on this instance; " +
+		"create a follow-up ticket instead"}
+}
 
 // closedRefusal is the one place that says a Closed ticket accepts no write
 // from its requester. lifecycleAllowsReply (replies and uploads, guest and

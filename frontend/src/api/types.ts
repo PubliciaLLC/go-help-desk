@@ -152,6 +152,11 @@ export interface Ticket {
   // Absent on any response other than a get/list (e.g. after a PATCH), which
   // is why TicketDetailPage re-fetches rather than trusting a mutation's body.
   sla?: TicketSLA | null
+  // Whether the CURRENT viewer may force-reopen this ticket: it is Closed and
+  // the instance's closed_reopen_policy lets their role (#349). A courtesy for
+  // the Reopen button; the server decides again when it is clicked. Absent on
+  // a response that does not carry it, which reads as no.
+  can_reopen?: boolean
 }
 
 export interface Attachment {

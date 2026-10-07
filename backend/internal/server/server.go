@@ -330,6 +330,11 @@ func New(
 		// requests as the same call, which is the entire case it exists for.
 		repGroup: new(singleflight.Group),
 	}
+	// The ticket service reads closed_reopen_policy through this when it decides
+	// a force-reopen (#349), on the locked row. Here rather than in cmd/server
+	// because the server already holds both halves and every ticket route — REST
+	// and MCP, which shares this service — reaches the service through it.
+	tickets.SetClosedReopenPolicy(adminSvc.ClosedReopenPolicy)
 	for _, opt := range opts {
 		opt(s)
 	}

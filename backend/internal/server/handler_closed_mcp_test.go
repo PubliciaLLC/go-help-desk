@@ -13,6 +13,8 @@ import (
 // the service's, so the surfaces cannot disagree about it (the previous
 // incident, GHSA-2x4f-j4jv-m2cm, was two surfaces each deciding one rule).
 
+// Under the DEFAULT closed_reopen_policy (off); the policy-on MCP cases are in
+// handler_closed_reopen_policy_test.go.
 func TestMCP_ClosedIsReadOnlyForRequestersAndTerminalForEveryone(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

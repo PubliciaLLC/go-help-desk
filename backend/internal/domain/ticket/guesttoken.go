@@ -54,9 +54,12 @@ var ErrGuestTokenNotFound = errors.New("guest token not found")
 //
 // On a CLOSED ticket nothing is deleted (#349). Closing stops rotating; the
 // links already sent keep reading the archive until they expire, so the new
-// one is added beside them. Closed is terminal for every role, so a token
-// minted here can never gain the power to write — the ticket never leaves
-// Closed — and TicketForGuestWrite refuses it regardless.
+// one is added beside them. A token minted here only reads, because
+// TicketForGuestWrite refuses a Closed ticket whatever the token's age. Closed
+// is terminal unless the operator enabled forced reopen (closed_reopen_policy);
+// if a staff member then reopens the ticket, these tokens write again — they
+// belong to the same guest, and the reopen's own send-time step rotates them
+// all into one fresh link, as any reopen always did.
 func (s *Service) issueGuestToken(ctx context.Context, st Store, t Ticket) (string, error) {
 	if !hasGuestRecipient(t) {
 		return "", nil
