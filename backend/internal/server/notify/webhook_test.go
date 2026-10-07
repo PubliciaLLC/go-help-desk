@@ -74,49 +74,45 @@ func (f fakeWebhookStore) ListEnabledWebhooks(ctx context.Context) ([]authstore.
 
 func TestSend_LogsFailedDelivery(t *testing.T) {
 	cases := []struct {
-		name          string
-		status        int
-		serverFails   bool // if true, server closes before sending a response
-		wantLogLevel  slog.Level
-		wantLogKeys   []string
-		shouldNotHave []string
+		name        string
+		status      int
+		serverFails bool // if true, server closes before sending a response
+		wantWarn    bool // a failed delivery is logged at WARN; a success is not logged at all
+		wantLogKeys []string
 	}{
 		{
-			name:         "2xx success logs nothing",
-			status:       200,
-			wantLogLevel: slog.LevelWarn + 1, // higher than Warn, so no warn message
-			wantLogKeys:  []string{},
+			name:   "200 success logs nothing",
+			status: 200,
 		},
 		{
-			name:         "204 success logs nothing",
-			status:       204,
-			wantLogLevel: slog.LevelWarn + 1,
-			wantLogKeys:  []string{},
+			name:   "204 success logs nothing",
+			status: 204,
 		},
 		{
-			name:         "400 client error logs delivery rejected",
-			status:       400,
-			wantLogLevel: slog.LevelWarn,
-			wantLogKeys:  []string{"webhook delivery rejected", "status", "webhook_id", "payload_format"},
+			name:        "400 client error logs delivery rejected",
+			status:      400,
+			wantWarn:    true,
+			wantLogKeys: []string{"webhook delivery rejected", "status=400", "webhook_id", "payload_format"},
 		},
 		{
-			name:         "500 server error logs delivery rejected",
-			status:       500,
-			wantLogLevel: slog.LevelWarn,
-			wantLogKeys:  []string{"webhook delivery rejected", "status", "webhook_id", "payload_format"},
+			name:        "500 server error logs delivery rejected",
+			status:      500,
+			wantWarn:    true,
+			wantLogKeys: []string{"webhook delivery rejected", "status=500", "webhook_id", "payload_format"},
 		},
 		{
-			name:          "transport failure logs delivery failed",
-			serverFails:   true,
-			wantLogLevel:  slog.LevelWarn,
-			wantLogKeys:   []string{"webhook delivery failed", "webhook_id", "payload_format"},
-			shouldNotHave: []string{"sekrit-token"},
+			name:        "transport failure logs delivery failed",
+			serverFails: true,
+			wantWarn:    true,
+			wantLogKeys: []string{"webhook delivery failed", "webhook_id", "payload_format"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
+			// Debug, so that a success which logged anything at any level
+			// (not just WARN) would show up and fail the Empty check below.
 			logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,12 +145,20 @@ func TestSend_LogsFailedDelivery(t *testing.T) {
 			disp.send(hook, payload)
 
 			logged := buf.String()
+
+			if tc.wantWarn {
+				require.Contains(t, logged, "level=WARN", "a failed delivery must be logged at WARN")
+			} else {
+				require.Empty(t, logged, "a successful delivery must not log anything")
+			}
 			for _, key := range tc.wantLogKeys {
-				require.Contains(t, logged, key, "expected key %q in log", key)
+				require.Contains(t, logged, key, "expected %q in log", key)
 			}
-			for _, key := range tc.shouldNotHave {
-				require.NotContains(t, logged, key, "should not contain %q in log", key)
-			}
+
+			// The URL path carries the secret for Slack/Discord/JIRA-style
+			// hooks, so no row — success, rejection or transport failure —
+			// may ever put it in the log.
+			require.NotContains(t, logged, "sekrit-token", "the log must never contain the webhook URL's secret")
 		})
 	}
 }
