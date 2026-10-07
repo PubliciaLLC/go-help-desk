@@ -439,18 +439,14 @@ func (f *fakeAuditStore) ListByEntity(_ context.Context, entityType string, enti
 // Search mirrors the real store's filter semantics closely enough to be a
 // meaningful double: every Filter field is optional and narrows the result,
 // newest first, with the total count taken before limit/offset is applied.
-func (f *fakeAuditStore) ListAfter(context.Context, audit.Filter, *audit.Cursor, int) ([]audit.Entry, error) {
-	return nil, nil
-}
-
-func (f *fakeAuditStore) List(ctx context.Context, filter audit.Filter, limit, offset int) ([]audit.Entry, error) {
-	out, _, err := f.Search(ctx, filter, limit, offset)
-	return out, err
-}
-
 func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
 	if f.err != nil {
 		return nil, 0, f.err
+	}
+	// Scope is a query's job and this double has no ticket table to apply it
+	// to; ignoring it would hand back entries the caller asked to have hidden.
+	if filter.ScopedTo != nil {
+		return nil, 0, errors.New("fakeAuditStore does not implement Filter.ScopedTo")
 	}
 	var matched []audit.Entry
 	for _, e := range f.entries {

@@ -80,13 +80,9 @@ export function AdminAuditPage() {
   }
 
   const entries = data?.entries ?? []
-  // null for staff, who are given no count — see AdminAuditListResponse.total.
-  const total = data?.total ?? null
-  // Never derived from total: for staff there is no total, and the count that
-  // used to be there was the server's own pre-scope figure, so paging off it
-  // promised pages that did not exist and skipped entries that did.
+  const total = data?.total ?? 0
+  // The server says whether another page exists; the total is for display.
   const hasNextPage = data?.has_more ?? false
-  const truncated = data?.truncated ?? false
 
   return (
     <Layout>
@@ -204,9 +200,7 @@ export function AdminAuditPage() {
                   {entries.length === 0 && (
                     <tr>
                       <td colSpan={4} className="px-4 py-8 text-center text-gray-400">
-                        {truncated
-                          ? 'None found before the search stopped.'
-                          : 'Nothing matches these filters.'}
+                        Nothing matches these filters.
                       </td>
                     </tr>
                   )}
@@ -214,20 +208,11 @@ export function AdminAuditPage() {
               </table>
             </div>
 
-            {truncated && (
-              <p role="status" className="text-sm text-amber-700">
-                The search stopped before reaching the end of the log, so older
-                entries may be missing. Narrow the filters to see them.
-              </p>
-            )}
-
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-500">
                 {entries.length === 0
                   ? ''
-                  : total !== null
-                    ? `${offset + 1}–${offset + entries.length} of ${total}`
-                    : `${offset + 1}–${offset + entries.length}`}
+                  : `${offset + 1}–${offset + entries.length} of ${total}`}
               </p>
               <div className="flex gap-2">
                 <Button
