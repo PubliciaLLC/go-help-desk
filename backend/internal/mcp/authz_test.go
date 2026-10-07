@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -228,4 +230,26 @@ func TestNotFoundFor_MatchesStoreWording(t *testing.T) {
 	// produces this same string. Both must agree for the two cases to be
 	// indistinguishable; if either drifts, one of the two tests fails.
 	require.Equal(t, "not found: ticket "+id.String(), notFoundFor(id.String()))
+}
+
+// A ticket that does not exist must answer exactly as one the caller may not
+// see does. The hidden path already answered notFoundFor(id); a real miss went
+// through storeErr and said "get ticket failed", so get_ticket still told a
+// reporting user which tracking numbers are real. See #174.
+func TestTicketLookupErr_RealMissMatchesHidden(t *testing.T) {
+	id := uuid.New().String()
+	miss := fmt.Errorf("%w: ticket %s", ticket.ErrNotFound, id)
+
+	res, err := ticketLookupErr(context.Background(), "get ticket", id, miss)
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, notFoundFor(id), resultText(t, res))
+}
+
+func TestTicketLookupErr_OtherFailuresStayGeneric(t *testing.T) {
+	res, err := ticketLookupErr(context.Background(), "get ticket", "x", errors.New("connection reset by peer"))
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, "get ticket failed", resultText(t, res),
+		"an infrastructure failure must not be dressed up as a missing ticket or leak its detail")
 }

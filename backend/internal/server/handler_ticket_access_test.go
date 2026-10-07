@@ -51,9 +51,13 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 
 	// Baseline: the ticket itself is refused, so any route that answers 2xx
 	// below is reachable on a ticket the caller cannot read.
+	//
+	// 404, not 403: see #174. A ticket this caller cannot see must answer
+	// the same as one that does not exist, or tracking numbers (sequential:
+	// GHD-2026-000001, ...000002) become an existence oracle.
 	res := h.doAsUser(t, http.MethodGet, base, nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition")
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "precondition")
 
 	cases := []struct {
 		method, path string
@@ -89,7 +93,7 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 			res := h.doAsUser(t, tc.method, tc.path, tc.body)
 			b, _ := io.ReadAll(res.Body)
 			res.Body.Close()
-			require.Equal(t, http.StatusForbidden, res.StatusCode,
+			require.Equal(t, http.StatusNotFound, res.StatusCode,
 				"a ticket the caller cannot read must not be reachable here; body %s", b)
 		})
 	}
@@ -147,12 +151,62 @@ func TestTicketSubtree_TrackingNumberIsAlsoGated(t *testing.T) {
 
 	res := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+string(tk.TrackingNumber), nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode)
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
 
 	res = h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+string(tk.TrackingNumber)+"/replies", nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"the tracking-number form must not bypass the gate")
+}
+
+// TestTicketNotFound_BodyMatchesAGenuinelyMissingTicket pins the part of
+// #174's fix that the status code alone does not cover: the response BODY.
+//
+// Status and code matching but the message still embedding "not found:
+// ticket <id>" for a missing ticket and a bare "not found" for a hidden one
+// would still let a reporter tell the two apart — exactly the oracle this
+// was supposed to close, just moved one field over. So this compares full
+// response bodies, byte for byte, not just status codes.
+func TestTicketNotFound_BodyMatchesAGenuinelyMissingTicket(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	hidden := foreignTicket(t, h)
+	missingID := uuid.New()
+	missingTN := "GHD-2099-999999"
+
+	readBody := func(res *http.Response) string {
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		return string(b)
+	}
+
+	t.Run("by UUID", func(t *testing.T) {
+		gotHidden := readBody(h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+hidden.ID.String(), nil))
+		gotMissing := readBody(h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+missingID.String(), nil))
+		require.Equal(t, strings.ReplaceAll(gotMissing, missingID.String(), hidden.ID.String()), gotHidden,
+			"a hidden ticket's body must read exactly as a missing one's would, for its own id")
+	})
+
+	t.Run("by tracking number", func(t *testing.T) {
+		gotHidden := readBody(h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+string(hidden.TrackingNumber), nil))
+		gotMissing := readBody(h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+missingTN, nil))
+		require.Equal(t, strings.ReplaceAll(gotMissing, missingTN, string(hidden.TrackingNumber)), gotHidden)
+	})
+
+	t.Run("link target_id", func(t *testing.T) {
+		own, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+			Subject: "Mine", CategoryID: h.catID, Priority: ticket.PriorityLow, ReporterUserID: &h.userID,
+		})
+		require.NoError(t, err)
+		base := "/api/v1/tickets/" + own.ID.String() + "/links"
+
+		gotHidden := readBody(h.doAsUser(t, http.MethodPost, base,
+			map[string]any{"target_id": hidden.ID.String(), "link_type": "related_to"}))
+		gotMissing := readBody(h.doAsUser(t, http.MethodPost, base,
+			map[string]any{"target_id": missingID.String(), "link_type": "related_to"}))
+		require.Equal(t, strings.ReplaceAll(gotMissing, missingID.String(), hidden.ID.String()), gotHidden)
+	})
 }
 
 func statusIDNamed(t *testing.T, h *harness, name string) uuid.UUID {
@@ -188,7 +242,7 @@ func TestAddLink_ChecksTheTargetTicketToo(t *testing.T) {
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"linking TO a ticket the caller cannot read is a write onto that ticket; body %s", b)
 
 	links, err := h.ticketSvc.ListLinks(ctx, foreign.ID)
@@ -224,7 +278,7 @@ func TestRemoveLink_ChecksTheTargetTicketToo(t *testing.T) {
 	b, _ := io.ReadAll(res.Body)
 	res.Body.Close()
 
-	require.Equal(t, http.StatusForbidden, res.StatusCode,
+	require.Equal(t, http.StatusNotFound, res.StatusCode,
 		"removing a link to a ticket the caller cannot read is a write onto that ticket; body %s", b)
 
 	links, err := h.ticketSvc.ListLinks(ctx, own.ID)
@@ -421,13 +475,13 @@ func TestTicketSubtree_RefusesStaffOutsideTheirScope(t *testing.T) {
 	base := "/api/v1/tickets/" + outOfScope.ID.String()
 	res := h.do(t, http.MethodGet, base, nil)
 	res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode, "precondition: out of scope")
+	require.Equal(t, http.StatusNotFound, res.StatusCode, "precondition: out of scope")
 
 	for _, path := range []string{"/replies", "/history", "/audit", "/tags", "/links", "/custom-fields"} {
 		t.Run(path, func(t *testing.T) {
 			res := h.do(t, http.MethodGet, base+path, nil)
 			res.Body.Close()
-			require.Equal(t, http.StatusForbidden, res.StatusCode,
+			require.Equal(t, http.StatusNotFound, res.StatusCode,
 				"staff outside scope must be refused here too")
 		})
 	}
