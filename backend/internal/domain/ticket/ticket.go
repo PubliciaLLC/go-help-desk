@@ -505,7 +505,14 @@ func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
 // Errors returned by rule functions.
 var (
 	ErrForbidden = errors.New("forbidden")
-	ErrClosed    = errors.New("ticket is closed")
+	// ErrClosed is the refusal for anything a Closed ticket does not accept.
+	// Closed is terminal and archived read-only (#349): a requester — guest or
+	// account holder — can read it and change nothing, and nobody at all can
+	// move it out of Closed. 409, the ticket's state rather than the caller's
+	// permissions, and fine to say to a reporter about their own ticket (they
+	// can already see it); never used to answer for a ticket the caller may not
+	// see, which gets the not-found refusal first.
+	ErrClosed = errors.New("ticket is closed")
 	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
 	// caller owns the ticket and has the right to reopen it in general. What
 	// expired is the window, and telling them "you do not have permission"
@@ -571,16 +578,30 @@ var (
 	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
 	// empty name was silently accepted before this check existed. See #278.
 	ErrInvalidStatusName = errors.New("status name must not be empty")
-	// ErrNotClosed is returned by Reopen for a ticket that is not Closed —
-	// including one a concurrent writer reopened between the unlocked check
-	// and the row lock. Reopen is deliberately Closed-only
-	// (TestReopen_OnlyFromClosed); a Resolved ticket leaves that state
-	// through UpdateStatus or a reporter's reply. It was a bare fmt.Errorf
-	// that handleError could not recognize, so a staff click on Reopen came
-	// back as a 500. 409, like ErrClosed: the ticket's state, not the
-	// caller's permissions, is what refuses. See #277.
+	// ErrNotClosed is returned by CreateFollowUp for a ticket that is not
+	// Closed: a follow-up is the way forward from a closed ticket, and an open
+	// one needs no way forward. (It was Reopen's refusal until #349 removed
+	// reopening a closed ticket; see #277 for why it is a sentinel.) 409, like
+	// ErrClosed: the ticket's state, not the caller's permissions, is what
+	// refuses.
 	ErrNotClosed = errors.New("ticket is not closed")
 )
+
+// errClosedTerminal is what every door out of Closed answers (#349). It wraps
+// ErrClosed, so it is the same 409 as a reply to a closed ticket, and says
+// where to go instead.
+var errClosedTerminal = fmt.Errorf("%w: a closed ticket cannot be reopened; create a follow-up ticket instead", ErrClosed)
+
+// closedRefusal is the one place that says a Closed ticket accepts no write
+// from its requester. lifecycleAllowsReply (replies and uploads, guest and
+// account holder) and CanRequesterWrite (everything else a requester can do)
+// both ask it, so the rule cannot be spelled two ways.
+func closedRefusal(status Status) error {
+	if status.Name == StatusNameClosed {
+		return ErrClosed
+	}
+	return nil
+}
 
 // CanUserUpdate returns nil if the actor may modify this ticket.
 // Rules:
@@ -628,8 +649,8 @@ func CanGuestUpdate(t Ticket, status Status, reopenWindowDays int) error {
 // lifecycleAllowsReply holds the rules that do not depend on who is asking:
 // whether the ticket's own state accepts another reply at all.
 func lifecycleAllowsReply(t Ticket, status Status, reopenWindowDays int) error {
-	if status.Name == StatusNameClosed {
-		return ErrClosed
+	if err := closedRefusal(status); err != nil {
+		return err
 	}
 	if status.Name == StatusNameResolved {
 		if t.ResolvedAt == nil {

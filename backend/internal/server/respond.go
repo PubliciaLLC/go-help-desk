@@ -70,10 +70,11 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	// 409, like ErrClosed: the ticket's state refuses a reopen, not the
-	// caller's permissions. Was a bare error falling through to 500 (#277).
+	// 409, like ErrClosed: the ticket's state refuses a follow-up, not the
+	// caller's permissions. A bare error fell through to 500 here once (#277,
+	// when this refused a reopen of a ticket that was not closed).
 	if errors.Is(err, ticket.ErrNotClosed) {
-		Error(w, http.StatusConflict, "ticket_not_closed", "only a closed ticket can be reopened")
+		Error(w, http.StatusConflict, "ticket_not_closed", "only a closed ticket can have a follow-up")
 		return
 	}
 	// Not a permission problem: the caller may well own this ticket. The

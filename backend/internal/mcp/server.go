@@ -361,10 +361,20 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"update_ticket_status",
-		mcpgo.WithDescription("Move a ticket to a different status"),
+		mcpgo.WithDescription("Move a ticket to a different status. A closed ticket cannot be moved out of Closed by anyone; use create_follow_up instead"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("status_id", mcpgo.Required(), mcpgo.Description("Target status UUID (see list_statuses)")),
 	), scoped(mcpWrite, s.handleUpdateTicketStatus))
+
+	s.mcp.AddTool(mcpgo.NewTool(
+		"create_follow_up",
+		mcpgo.WithDescription("Open a NEW ticket that continues a closed one, linked back to it. "+
+			"A closed ticket cannot be reopened by anyone, so this is the way forward from one. "+
+			"Copies the subject, description, category/type/item, priority and requester; "+
+			"not the replies, attachments, history or custom fields. The new ticket starts open; "+
+			"the closed one is left as it was. Only works on a closed ticket."),
+		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("UUID of the CLOSED ticket to continue")),
+	), scoped(mcpWrite, s.handleCreateFollowUp))
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_categories",
@@ -759,6 +769,40 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	return jsonResult(t)
 }
 
+// handleCreateFollowUp is create_follow_up (#349). The rule — staff and admin
+// only, closed tickets only, what is copied, the link back — is
+// ticket.Service.CreateFollowUp's, shared with POST /tickets/{id}/follow-up;
+// this handler only identifies the caller and the ticket.
+func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+	caller := actorFrom(ctx)
+	if caller == nil {
+		return errResult(noActorMessage)
+	}
+	if !requireStaff(caller) {
+		return errResult(staffOnlyMessage)
+	}
+	if !hasUserIdentity(caller) {
+		return errResult(noUserIdentityMessage)
+	}
+	tid, err := uuid.Parse(str(req.GetArguments(), "ticket_id"))
+	if err != nil {
+		return errResult("invalid ticket_id")
+	}
+	existing, err := s.tickets.GetByID(ctx, tid)
+	if err != nil {
+		return ticketLookupErr(ctx, "create follow-up", tid.String(), err)
+	}
+	if !s.visible(ctx, existing) {
+		return errResult(notFoundFor(tid.String()))
+	}
+	actorID := caller.UserID
+	t, err := s.tickets.CreateFollowUp(ctx, tid, s.prefix(ctx), ticket.Actor{UserID: &actorID, Role: caller.Role})
+	if err != nil {
+		return storeErr(ctx, "create follow-up", err)
+	}
+	return jsonResult(t)
+}
+
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.
 // Nested rather than three separate tools because a caller opening a ticket
 // needs all three tiers, and one round trip beats N.
@@ -849,6 +893,13 @@ func errResult(msg string) (*mcpgo.CallToolResult, error) {
 // answers "something went wrong" to a bad argument is a tool nobody can use.
 func storeErr(ctx context.Context, op string, err error) (*mcpgo.CallToolResult, error) {
 	if errors.Is(err, ticket.ErrValidation) {
+		return errResult(err.Error())
+	}
+	// A closed ticket's refusals say so, and say where to go instead (#349).
+	// Like a validation refusal they are about the ticket the caller already
+	// holds and can act on, and "update ticket status failed" sends an agent
+	// retrying a move that can never succeed.
+	if errors.Is(err, ticket.ErrClosed) || errors.Is(err, ticket.ErrNotClosed) {
 		return errResult(err.Error())
 	}
 	slog.ErrorContext(ctx, "mcp tool failed", "op", op, "error", err)

@@ -31,7 +31,8 @@ var errNotFound = errors.New("not found")
 // ── ticket store ─────────────────────────────────────────────────────────────
 
 type fakeStore struct {
-	forUpdateReads int
+	forUpdateReads    int
+	attachmentCreates int
 
 	guestTokens       map[string]guestTokenRow
 	errGuestToken     error
@@ -313,7 +314,10 @@ func (f *fakeStore) ListFiltered(context.Context, ticket.Filter) ([]ticket.Ticke
 func (f *fakeStore) SearchVisibleToStaff(context.Context, uuid.UUID, string, int, int) ([]ticket.Ticket, error) {
 	return nil, nil
 }
-func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error { return nil }
+func (f *fakeStore) CreateAttachment(context.Context, ticket.Attachment) error {
+	f.attachmentCreates++
+	return nil
+}
 func (f *fakeStore) GetAttachmentByID(context.Context, uuid.UUID) (ticket.Attachment, error) {
 	return ticket.Attachment{}, errNotFound
 }
@@ -626,13 +630,15 @@ func (f *fakeStore) CreateGuestToken(_ context.Context, _, ticketID uuid.UUID, h
 
 func (f *fakeStore) TicketByGuestToken(ctx context.Context, hash string) (ticket.Ticket, error) {
 	row, ok := f.guestTokens[hash]
-	// Expiry and closure decided here, as the query decides them, so a test
-	// cannot pass against a fake that is more permissive than the database.
+	// Expiry decided here, as the query decides it, so a test cannot pass
+	// against a fake that is more permissive than the database. Closure is
+	// NOT decided here (#349): a closed ticket resolves, and the service
+	// refuses it for writes.
 	if !ok || !row.expiresAt.After(time.Now()) {
 		return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
 	}
 	t, err := f.GetByID(ctx, row.ticketID)
-	if err != nil || t.ClosedAt != nil {
+	if err != nil {
 		return ticket.Ticket{}, ticket.ErrGuestTokenNotFound
 	}
 	return t, nil
@@ -661,11 +667,33 @@ func (f *fakeStore) DeleteGuestTokensForTicket(_ context.Context, ticketID uuid.
 func (f *fakeStore) TicketIDByTrackingAndGuestEmail(_ context.Context, tn ticket.TrackingNumber, email string) (uuid.UUID, error) {
 	for _, t := range f.tickets {
 		if t.TrackingNumber == tn && t.GuestEmail != nil &&
-			strings.EqualFold(*t.GuestEmail, email) && t.ClosedAt == nil {
+			strings.EqualFold(*t.GuestEmail, email) {
 			return t.ID, nil
 		}
 	}
 	return uuid.Nil, ticket.ErrGuestTokenNotFound
+}
+
+// expireGuestTokens backdates every token a ticket holds, as thirty days
+// passing would.
+func (f *fakeStore) expireGuestTokens(ticketID uuid.UUID) {
+	for h, row := range f.guestTokens {
+		if row.ticketID == ticketID {
+			row.expiresAt = time.Now().Add(-time.Minute)
+			f.guestTokens[h] = row
+		}
+	}
+}
+
+// latestGuestTokenExpiry is the furthest expiry among a ticket's tokens.
+func (f *fakeStore) latestGuestTokenExpiry(ticketID uuid.UUID) time.Time {
+	var latest time.Time
+	for _, row := range f.guestTokens {
+		if row.ticketID == ticketID && row.expiresAt.After(latest) {
+			latest = row.expiresAt
+		}
+	}
+	return latest
 }
 
 // guestTokenCount reports how many tokens a ticket holds, so a test can assert

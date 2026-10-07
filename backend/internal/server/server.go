@@ -175,7 +175,8 @@ type Server struct {
 	// cache and no invalidation to get wrong.
 
 	// guestResendLimiter is per ticket, and much tighter than the credential
-	// budget: a resend rotates, so anyone who can guess a sequential tracking
+	// budget: a resend rotates an open ticket's link (a closed ticket's gets a
+	// read-only link added instead, #349), so anyone who can guess a sequential tracking
 	// number and knows the address could otherwise replace the link a customer
 	// is holding ten times a minute, indefinitely, from one address. One every
 	// five minutes still lets a customer who lost their link get another

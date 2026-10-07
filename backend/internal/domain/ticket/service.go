@@ -147,6 +147,65 @@ type CreateInput struct {
 // Create opens a new ticket, fires the created event, and optionally attaches
 // an SLA policy.
 func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
+	return s.create(ctx, in, Actor{UserID: in.ReporterUserID}, nil)
+}
+
+// CreateFollowUp opens a NEW ticket from a Closed one, linked back to it
+// (#349). It is the only way forward from a closed ticket: Closed is terminal,
+// so nothing reopens it, and staff and admin start a fresh one instead.
+//
+// What is copied, and what is not — recorded in DESIGN.md → Closing:
+//   - copied: subject, description, category / type / item, priority, and the
+//     requester (the reporting user, or the guest's address, name and phone);
+//   - not copied: replies and internal notes, attachments, status history,
+//     custom field values, tags, the assignee, and any SLA state. The new
+//     ticket starts New and unassigned and runs its own SLA clock; the closed
+//     one is left exactly as it was, link tokens included.
+//
+// The new ticket is made by the same path as any other (create): the same
+// validation, tracking number, status history, audit entry, SLA policy and
+// "created" notification. It is linked to the original as its CHILD
+// (parent_child, source = the closed ticket), in the same transaction, so there
+// is no follow-up without its link.
+//
+// Staff and admin only (ErrForbidden otherwise), and only from a Closed ticket
+// (ErrNotClosed otherwise): an open ticket needs no way forward, and allowing
+// it would make this a general "clone" that two tickets can then drift apart
+// from. trackingPrefix is the instance's configured prefix, as in CreateInput.
+func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trackingPrefix string, actor Actor) (Ticket, error) {
+	if actor.Role == user.RoleUser {
+		return Ticket{}, ErrForbidden
+	}
+	orig, err := s.store.GetByID(ctx, originalID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	// Closed is terminal, so this unlocked read cannot go stale in the one
+	// direction that matters: a ticket that is Closed now is Closed for good.
+	if orig.StatusID != s.sys.closedID {
+		return Ticket{}, fmt.Errorf("%w: a follow-up is created from a closed ticket", ErrNotClosed)
+	}
+	in := CreateInput{
+		Subject:        orig.Subject,
+		Description:    orig.Description,
+		CategoryID:     orig.CategoryID,
+		TypeID:         orig.TypeID,
+		ItemID:         orig.ItemID,
+		Priority:       orig.Priority,
+		ReporterUserID: orig.ReporterUserID,
+		GuestEmail:     orig.GuestEmail,
+		GuestName:      orig.GuestName,
+		GuestPhone:     orig.GuestPhone,
+		TrackingPrefix: trackingPrefix,
+	}
+	return s.create(ctx, in, actor, &orig)
+}
+
+// create is the one path that opens a ticket. actor is who did it, for the
+// status history, the audit entry and the event: the reporter for an ordinary
+// create (Create passes them), the member of staff for a follow-up. followUpOf
+// is the closed ticket a follow-up continues, or nil.
+func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, followUpOf *Ticket) (Ticket, error) {
 	if strings.TrimSpace(in.Subject) == "" {
 		return Ticket{}, fmt.Errorf("subject is required: %w", ErrValidation)
 	}
@@ -257,11 +316,24 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		if err := st.Create(ctx, t); err != nil {
 			return fmt.Errorf("creating ticket: %w", err)
 		}
-		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, nil, s.sys.newID, Actor{UserID: in.ReporterUserID})); err != nil {
+		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, nil, s.sys.newID, actor)); err != nil {
 			return fmt.Errorf("recording opening status: %w", err)
 		}
-		if err := au.Create(ctx, auditEntry(in.ReporterUserID, "ticket", t.ID, "created", nil, ticketMap(t))); err != nil {
+		after := ticketMap(t)
+		if followUpOf != nil {
+			after["follow_up_of"] = followUpOf.ID
+		}
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "created", nil, after)); err != nil {
 			return fmt.Errorf("auditing ticket creation: %w", err)
+		}
+		// The link back, in the same transaction: a follow-up that exists
+		// without its link is a ticket nobody can trace to the one it
+		// continues. The closed ticket itself is not written.
+		if followUpOf != nil {
+			link := TicketLink{SourceTicketID: followUpOf.ID, TargetTicketID: t.ID, LinkType: LinkParentChild}
+			if err := st.CreateLink(ctx, link); err != nil {
+				return fmt.Errorf("linking follow-up to the closed ticket: %w", err)
+			}
 		}
 		// A guest's first link. Created at send time, not here (#164): see
 		// hasGuestRecipient.
@@ -317,7 +389,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventTicketCreated,
 		TicketID:       t.ID,
-		ActorID:        in.ReporterUserID,
+		ActorID:        actor.UserID,
 		Payload:        createdPayload,
 		OccurredAt:     now,
 		TrackingNumber: emailTracking,
@@ -325,6 +397,19 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
 	})
+	// Announced like any other link (AddLink), for whoever follows
+	// ticket.linked: the original is the source, the follow-up its child.
+	if followUpOf != nil {
+		_ = s.dispatcher.Dispatch(ctx, notification.Event{
+			Type:           notification.EventTicketLinked,
+			TicketID:       followUpOf.ID,
+			ActorID:        actor.UserID,
+			Payload:        map[string]any{"target_id": t.ID, "link_type": LinkParentChild},
+			OccurredAt:     now,
+			TrackingNumber: string(followUpOf.TrackingNumber),
+			Subject:        followUpOf.Subject,
+		})
+	}
 
 	return t, nil
 }
@@ -419,7 +504,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	now := time.Now()
 
 	// resolved_at and closed_at are maintained here as well as in
-	// Resolve/Close/Reopen, because this is a second door into the same three
+	// Resolve/Close, because this is a second door into the same three
 	// states and it used to set StatusID alone.
 	//
 	// A ticket moved to Resolved this way had a NULL resolved_at, and
@@ -438,6 +523,13 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		if err != nil {
 			return err
 		}
+		// Closed is terminal (#349), for every role and for the scheduler:
+		// nothing leaves it by a status change. Decided on the locked row, so
+		// a close that committed first is seen. Staff and admin get a new
+		// linked ticket instead (CreateFollowUp).
+		if t.StatusID == s.sys.closedID && newStatusID != s.sys.closedID {
+			return errClosedTerminal
+		}
 		before = ticketMap(t)
 		oldStatusID = t.StatusID
 		t.StatusID = newStatusID
@@ -455,17 +547,15 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		}
 		// A status change is something the guest is told about, so it rotates
 		// the link and the notification carries the replacement. Closing is
-		// the exception: it revokes instead, since there is nothing left to
-		// come back to.
+		// the exception: it stops rotating, and leaves the links the guest
+		// holds alone (#349) — the ticket is an archive they may still read,
+		// until the link expires.
 		if newStatusID == s.sys.closedID {
-			if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
-				return fmt.Errorf("revoking guest access: %w", err)
-			}
-			// And tell nobody, which is what Close() does. Revoking left
-			// Recipient set with no token, so the mail fell back to the
-			// account URL — the guest was sent "see where it stands" pointing
-			// at /tickets/<uuid>, a page they have no account to open. The two
-			// doors into Closed now behave the same way.
+			// And tell nobody, which is what Close() does. There is no new
+			// link to send, and a mail with none fell back to the account URL
+			// — the guest was sent "see where it stands" pointing at
+			// /tickets/<uuid>, a page they have no account to open. The two
+			// doors into Closed behave the same way.
 			closing = true
 		} else {
 			guestLink = hasGuestRecipient(t)
@@ -672,6 +762,26 @@ func (s *Service) CanGuestUploadAttachment(ctx context.Context, ticketID uuid.UU
 	return CanGuestUpdate(t, status, reopenWindowDays)
 }
 
+// CanRequesterWrite is the rule for every write a requester has that is not a
+// reply or an upload: a reporting user may not change a Closed ticket (#349).
+// Staff and admin are not asked. Returns ErrClosed, or ErrNotFound for a
+// ticket that does not exist.
+//
+// A separate question from CanUploadAttachment on purpose. That one is the
+// reply rule, which also refuses a Resolved ticket past its reopen window; an
+// edit to a field or a link has never been held to that, and #349 does not
+// change it. Both ask closedRefusal, so "closed" means one thing.
+func (s *Service) CanRequesterWrite(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
+	if actor.Role != user.RoleUser {
+		return nil
+	}
+	_, status, err := s.ticketAndStatus(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	return closedRefusal(status)
+}
+
 // ticketAndStatus fetches a ticket and the Status its StatusID names — the
 // pair every authorisation check here needs.
 func (s *Service) ticketAndStatus(ctx context.Context, ticketID uuid.UUID) (Ticket, Status, error) {
@@ -782,6 +892,16 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	rotateFor := t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != ""
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// A requester's reply is decided AGAIN here, on the locked row (#349).
+		// The check above read the ticket without a lock, and the insert below
+		// takes none unless the reply reopens, so a close that committed in
+		// between used to land the reply on a Closed ticket — contradicting
+		// "Closed is read-only for requesters". The lock also orders this
+		// against the close: whichever commits first, the other sees it.
+		// Staff are not asked; they may annotate a closed ticket.
+		if err := s.refuseRequesterOnClosed(ctx, st, ticketID, actor); err != nil {
+			return fmt.Errorf("cannot reply to ticket: %w", err)
+		}
 		if err := st.CreateReply(ctx, reply); err != nil {
 			return fmt.Errorf("creating reply: %w", err)
 		}
@@ -830,10 +950,10 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, reopenTargetStatusID, actor)); err != nil {
 			return fmt.Errorf("recording reopen: %w", err)
 		}
-		// The same kind of entry the explicit POST /reopen path writes
-		// (Service.Reopen). Without it, /history recorded this transition
-		// and /audit did not, so the two could disagree about whether the
-		// ticket was actually open. See #326.
+		// An audit entry for the reopen, so /history and /audit agree about
+		// whether the ticket was open. (This was once the same kind of entry
+		// POST /reopen wrote; that route is gone, #349, and a reply is now
+		// the only reopen left, from Resolved.) See #326.
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing reopen: %w", err)
 		}
@@ -956,6 +1076,12 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, tic
 	t, err := st.GetByIDForUpdate(ctx, ticketID)
 	if err != nil {
 		return Ticket{}, false, false, err
+	}
+	// Resolving a Closed ticket would be a door out of Closed, which is
+	// terminal (#349). Checked on the locked row, before the no-op test:
+	// Closed is never "already resolved".
+	if t.StatusID == s.sys.closedID {
+		return Ticket{}, false, false, errClosedTerminal
 	}
 	if t.StatusID == s.sys.resolvedID && sameTarget && resolutionNotesMatch(t.ResolutionNotes, notes) {
 		return t, false, true, nil
@@ -1303,13 +1429,12 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "closed", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing close: %w", err)
 		}
-		// Revoke rather than rotate. A closed ticket accepts nothing, so a
-		// link to it would grant a read of a thread that can no longer move —
-		// and leaving credentials alive after the thing they reach is finished
-		// is how a link ends up working two years later.
-		if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
-			return fmt.Errorf("revoking guest access: %w", err)
-		}
+		// Neither rotate nor revoke (#349). A closed ticket accepts nothing
+		// from its requester, but they may still READ it: the link they were
+		// last sent keeps working until it expires (GuestTokenTTL), which is
+		// what bounds how long an archive stays open to a bearer credential.
+		// Revoking here is what made a guest unable to read the answer on a
+		// ticket closed straight after it.
 		closed = 1
 		return nil
 	}); err != nil {
@@ -1347,84 +1472,6 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		Subject:        t.Subject,
 	})
 	return closed, nil
-}
-
-// Reopen transitions a Closed ticket back to the target status. Staff/Admin only.
-func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID uuid.UUID, actor Actor) (Ticket, error) {
-	if actor.Role == user.RoleUser {
-		return Ticket{}, ErrForbidden
-	}
-	t, err := s.store.GetByID(ctx, ticketID)
-	if err != nil {
-		return Ticket{}, err
-	}
-	if t.StatusID != s.sys.closedID {
-		return Ticket{}, fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
-	}
-	// Same guard as AddReply's auto-reopen: an unresolvable configured status
-	// arrives as uuid.Nil and would otherwise fail the status_id foreign key
-	// mid-transaction.
-	if targetStatusID == uuid.Nil {
-		return Ticket{}, fmt.Errorf("no valid reopen target status is configured: %w", ErrValidation)
-	}
-	target, err := s.getStatusByID(ctx, targetStatusID)
-	if err != nil {
-		return Ticket{}, err
-	}
-
-	now := time.Now()
-	var oldStatusID uuid.UUID
-	var guestLink bool
-
-	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
-		// Re-read under the lock. The check above answered the precondition on
-		// an unlocked copy; this is the row actually being overwritten, and a
-		// concurrent close or resolve may have landed in between.
-		t, err = st.GetByIDForUpdate(ctx, ticketID)
-		if err != nil {
-			return err
-		}
-		if t.StatusID != s.sys.closedID {
-			return fmt.Errorf("%w: ticket is not closed", ErrNotClosed)
-		}
-		before := ticketMap(t)
-		oldStatusID = t.StatusID
-		t.StatusID = targetStatusID
-		t.UpdatedAt = now
-		// Through the shared rule: its default arm clears ClosedAt/ResolvedAt
-		// exactly as the two hand assignments did, and now also carries the
-		// accumulated SLA pause forward and opens a fresh interval if the
-		// reopen target is Pending — a reopened ticket is not a new SLA clock.
-		applyStatusTimestamps(&t, oldStatusID, target, s.sys, now)
-
-		if err := st.Update(ctx, t); err != nil {
-			return fmt.Errorf("reopening ticket: %w", err)
-		}
-		if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, targetStatusID, actor)); err != nil {
-			return fmt.Errorf("recording reopen: %w", err)
-		}
-		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
-			return fmt.Errorf("auditing reopen: %w", err)
-		}
-		// A reopen issues a fresh link: closing revoked the old one, and a
-		// customer who reopens needs a way back to the thread they reopened.
-		guestLink = hasGuestRecipient(t)
-		return nil
-	}); err != nil {
-		return Ticket{}, err
-	}
-
-	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:           notification.EventTicketReopened,
-		TicketID:       t.ID,
-		ActorID:        actor.UserID,
-		OccurredAt:     time.Now(),
-		TrackingNumber: string(t.TrackingNumber),
-		Recipient:      guestRecipient(t),
-		GuestLink:      guestLink,
-		Subject:        t.Subject,
-	})
-	return t, nil
 }
 
 // statusHistoryEntry builds the history row for a transition.
@@ -1498,9 +1545,15 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		if err != nil {
 			return err
 		}
-		source := lockedFirst
+		source, target := lockedFirst, lockedSecond
 		if source.ID != sourceID {
-			source = lockedSecond
+			source, target = lockedSecond, lockedFirst
+		}
+		// A link is written onto both tickets' threads, so a requester may
+		// not add one to or from a Closed ticket (#349). Staff may: linking a
+		// closed ticket is how a follow-up is tied to it.
+		if actor.Role == user.RoleUser && (source.StatusID == s.sys.closedID || target.StatusID == s.sys.closedID) {
+			return ErrClosed
 		}
 		subject = source.Subject
 		tracking = string(source.TrackingNumber)
@@ -1853,8 +1906,38 @@ var ErrValidation = errors.New("validation failed")
 // ── Attachments ───────────────────────────────────────────────────────────────
 
 // CreateAttachment records attachment metadata after the file has been written to disk.
-func (s *Service) CreateAttachment(ctx context.Context, a Attachment) error {
-	return s.store.CreateAttachment(ctx, a)
+//
+// actor is who uploaded it. For a requester (a reporting user, or a guest, who
+// is Actor{Role: RoleUser} with no UserID) the ticket is locked and checked
+// again here (#349): the upload was authorised before the file was read,
+// scanned and written, which is the widest gap between a check and a write in
+// the system, and a close that committed in it must refuse the row. Returns
+// ErrClosed, and the caller removes the file. Staff are not asked.
+func (s *Service) CreateAttachment(ctx context.Context, a Attachment, actor Actor) error {
+	return s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		if err := s.refuseRequesterOnClosed(ctx, st, a.TicketID, actor); err != nil {
+			return err
+		}
+		return st.CreateAttachment(ctx, a)
+	})
+}
+
+// refuseRequesterOnClosed is closedRefusal for a write that is about to
+// happen: it takes the ticket's row lock and refuses a requester when the
+// locked row is Closed. Nil for staff and admin, who are not locked out of a
+// closed ticket and so need no lock.
+func (s *Service) refuseRequesterOnClosed(ctx context.Context, st Store, ticketID uuid.UUID, actor Actor) error {
+	if actor.Role != user.RoleUser {
+		return nil
+	}
+	locked, err := st.GetByIDForUpdate(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	if locked.StatusID == s.sys.closedID {
+		return ErrClosed
+	}
+	return nil
 }
 
 // GetAttachment returns a single attachment by ID.

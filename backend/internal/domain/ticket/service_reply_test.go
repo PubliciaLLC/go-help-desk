@@ -171,9 +171,11 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 //
 // It also pins #326's second gap: a reply-triggered reopen wrote a
 // status-history entry but no audit entry, so /history and /audit could
-// disagree about whether the ticket was still open. The explicit POST
-// /reopen path (Service.Reopen) writes an audit entry in the same
-// transaction as its status-history one; this path must do the same.
+// disagree about whether the ticket was still open. Every other lifecycle
+// change writes an audit entry in the same transaction as its status-history
+// one (the explicit POST /reopen path did too, until #349 removed reopening a
+// Closed ticket, leaving this reply-reopen from Resolved as the only reopen);
+// this path must do the same.
 func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()

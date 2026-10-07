@@ -9,6 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // ── Admin: field definitions ──────────────────────────────────────────────────
@@ -246,6 +248,17 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
+	}
+	// A Closed ticket is read-only to its requester (#349). One rule, in the
+	// ticket service, asked here and nowhere re-spelled: a reporting user may
+	// edit a field on their own ticket until it closes, and never after.
+	// Staff and admin are not refused.
+	if a := authmw.GetActor(r); a != nil {
+		if err := s.tickets.CanRequesterWrite(r.Context(), ticketID,
+			ticket.Actor{UserID: &a.UserID, Role: a.Role}); err != nil {
+			handleError(w, err)
+			return
+		}
 	}
 	// Which fields this ticket actually has, resolved from its own
 	// classification.

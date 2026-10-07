@@ -190,11 +190,13 @@ func TestGuestUploadAttachment_RefusedWithoutAValidToken(t *testing.T) {
 	}
 }
 
-// Closing revokes the guest token itself (see TestGuest_ClosingTheTicketStopsTheLinkAtTheQuery),
-// so a closed ticket refuses at the token-resolution step with the same 404
-// every other dead-token case gets — never reaching CanGuestUploadAttachment,
-// exactly like a guest reply.
-func TestGuestUploadAttachment_ClosingTheTicketRevokesTheToken(t *testing.T) {
+// Closing no longer revokes the guest token (#349; this was
+// TestGuestUploadAttachment_ClosingTheTicketRevokesTheToken), but the upload
+// route resolves its token through the WRITE lookup, which refuses a closed
+// ticket at the token-resolution step with the same 404 every other dead-token
+// case gets — never reaching CanGuestUploadAttachment, exactly like a guest
+// reply. The 404 is byte-identical to a link that never existed.
+func TestGuestUploadAttachment_AClosedTicketRefusesLikeABadToken(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tk, token := seedGuestTicket(t, h)
@@ -205,11 +207,22 @@ func TestGuestUploadAttachment_ClosingTheTicketRevokesTheToken(t *testing.T) {
 	res := uploadGuestAttachment(t, h, token, "photo.txt", []byte("x"))
 	defer res.Body.Close()
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
+
+	bad := uploadGuestAttachment(t, h, nearMiss(token), "photo.txt", []byte("x"))
+	defer bad.Body.Close()
+	closedBody, _ := io.ReadAll(res.Body)
+	badBody, _ := io.ReadAll(bad.Body)
+	require.Equal(t, string(badBody), string(closedBody), "the refusal must not say the ticket exists")
+
+	atts, err := h.ticketSvc.ListAttachments(context.Background(), tk.ID)
+	require.NoError(t, err)
+	require.Empty(t, atts)
 }
 
-// A resolved ticket's token stays alive (only Close revokes it), so this is
-// the one case that actually reaches CanGuestUploadAttachment's lifecycle
-// check over HTTP rather than being caught earlier at token resolution.
+// A resolved ticket's token is accepted by the write lookup (only a Closed
+// ticket is refused there), so this is the one case that actually reaches
+// CanGuestUploadAttachment's lifecycle check over HTTP rather than being caught
+// earlier at token resolution.
 func TestGuestUploadAttachment_RefusedPastTheReopenWindow(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

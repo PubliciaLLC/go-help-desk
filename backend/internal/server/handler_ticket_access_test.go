@@ -68,7 +68,7 @@ func TestTicketSubtree_RefusesAnUnrelatedReportingUser(t *testing.T) {
 		{http.MethodGet, base + "/replies", nil},
 		{http.MethodPost, base + "/replies", map[string]any{"body": "injected"}},
 		{http.MethodPost, base + "/resolve", map[string]any{"notes": "x"}},
-		{http.MethodPost, base + "/reopen", nil},
+		{http.MethodPost, base + "/follow-up", nil},
 		{http.MethodPost, base + "/close", nil},
 		{http.MethodGet, base + "/links", nil},
 		// Real field names: target_id and notes. With the wrong ones the

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -37,5 +38,24 @@ func TestWriteTools_RefuseACredentialWithNoUserIdentity(t *testing.T) {
 	// people looking for a bug in their request.
 	if !strings.Contains(noUserIdentityMessage, "user identity") {
 		t.Errorf("the refusal does not say why: %q", noUserIdentityMessage)
+	}
+}
+
+// create_follow_up records the acting member of staff in the new ticket's
+// history and audit entry (#349), so it is held to the same rule: an OAuth
+// client with no user behind it is refused before anything is looked up. A nil
+// ticket service makes a missed check a panic rather than a passing test.
+func TestCreateFollowUp_RefusesACredentialWithNoUserIdentity(t *testing.T) {
+	s := &Server{}
+	machine := &authmw.Actor{Role: user.RoleStaff, Machine: true}
+	ctx := context.WithValue(context.Background(), actorCtxKey{}, machine)
+
+	res, err := s.handleCreateFollowUp(ctx, callToolRequest("create_follow_up",
+		map[string]any{"ticket_id": uuid.New().String()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsError || !strings.Contains(resultText(t, res), "user identity") {
+		t.Fatalf("a credential with no user identity must be refused for it; got %q", resultText(t, res))
 	}
 }

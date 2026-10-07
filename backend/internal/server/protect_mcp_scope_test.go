@@ -137,6 +137,7 @@ func mcpTools(h *harness) []struct {
 		{"add_reply", true, map[string]any{"ticket_id": tid, "body": "x"}},
 		{"assign_ticket", true, map[string]any{"ticket_id": tid, "assignee_user_id": uuid.New().String()}},
 		{"update_ticket_status", true, map[string]any{"ticket_id": tid, "status": "Resolved"}},
+		{"create_follow_up", true, map[string]any{"ticket_id": tid}},
 	}
 }
 

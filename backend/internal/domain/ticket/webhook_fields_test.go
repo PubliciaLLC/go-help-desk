@@ -102,21 +102,6 @@ func TestClose_DispatchesSubjectAndTrackingNumber(t *testing.T) {
 		"Close was one of the three sites that dispatched no tracking number at all")
 }
 
-func TestReopen_DispatchesSubject(t *testing.T) {
-	h := newHarness(t)
-	seeded := h.seedOpen()
-	agent := uuid.New()
-	require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.Actor{UserID: &agent, Role: user.RoleAdmin}))
-	h.dispatcher.events = nil
-
-	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-		ticket.Actor{UserID: &agent, Role: user.RoleAdmin})
-	require.NoError(t, err)
-
-	ev := eventOfType(t, h.dispatcher.events, notification.EventTicketReopened)
-	require.Equal(t, seeded.Subject, ev.Subject)
-}
-
 func TestAddLink_DispatchesSubjectAndTrackingNumber(t *testing.T) {
 	h := newHarness(t)
 	source := h.seedOpen()

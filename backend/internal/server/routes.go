@@ -74,8 +74,10 @@ func (s *Server) ticketRouter() *chi.Mux {
 		r.Get("/replies", s.handleListReplies)
 
 		r.Post("/resolve", s.handleResolveTicket)
-		r.Post("/reopen", s.handleReopenTicket)
 		r.Post("/close", s.handleCloseTicket)
+		// The way forward from a Closed ticket, which nothing reopens (#349).
+		// Staff/admin is enforced by the service, not by a middleware here.
+		r.Post("/follow-up", s.handleCreateFollowUp)
 
 		r.Post("/links", s.handleAddLink)
 		r.Delete("/links/{targetId}/{linkType}", s.handleRemoveLink)
@@ -388,9 +390,20 @@ func (s *Server) guestRouter() *chi.Mux {
 	r.Post("/tickets", s.handleGuestCreateTicket)
 	r.Post("/resend", s.handleGuestResend)
 
+	// Reading accepts a closed ticket: closing stops rotating the link, it
+	// does not revoke it, so the last link sent reads the archive until it
+	// expires (#349).
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.GuestAuth(s.resolveGuestToken))
 		r.Get("/ticket", s.handleGuestGetTicket)
+	})
+	// Every route that changes something resolves through the WRITE lookup,
+	// which refuses a closed ticket with the same 404 as a link that never
+	// existed. Grouped by middleware, like the tickets subtree, so a write
+	// route added here cannot forget it: the rule is "a route in this group
+	// writes", not a check each handler remembers (#349).
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.GuestAuth(s.resolveGuestTokenForWrite))
 		r.Post("/replies", s.handleGuestAddReply)
 		r.Post("/attachments", s.handleGuestUploadAttachment)
 	})
@@ -398,10 +411,21 @@ func (s *Server) guestRouter() *chi.Mux {
 }
 
 // resolveGuestToken hashes and looks up a raw token, returning the id of the
-// one ticket it names. Every failure is the same error; the middleware turns
-// all of them into the same 404.
+// one ticket it names, closed or not: for READ routes. Every failure is the
+// same error; the middleware turns all of them into the same 404.
 func (s *Server) resolveGuestToken(ctx context.Context, raw string) (string, error) {
 	t, err := s.tickets.TicketForGuestToken(ctx, raw)
+	if err != nil {
+		return "", err
+	}
+	return t.ID.String(), nil
+}
+
+// resolveGuestTokenForWrite is resolveGuestToken for the routes that change
+// something. A closed ticket fails here with the same error as a bad token, so
+// the refusal is the generic 404 and does not reveal that the ticket exists.
+func (s *Server) resolveGuestTokenForWrite(ctx context.Context, raw string) (string, error) {
+	t, err := s.tickets.TicketForGuestWrite(ctx, raw)
 	if err != nil {
 		return "", err
 	}

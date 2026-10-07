@@ -344,7 +344,7 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 	}
 	if !ok {
 		// Nobody left to send a link to: a resend that matched nothing or
-		// was over its budget, or a ticket closed, deleted or without a guest
+		// was over its budget, or a ticket deleted or without a guest
 		// address since the event. Settled, not retried. Logged without the
 		// recipient or what the visitor typed. An operator reading the log
 		// can tell a resend miss (this line) from a match (a sent mail); the

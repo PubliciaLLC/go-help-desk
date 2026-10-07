@@ -429,28 +429,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-assign: CTI-scoped group first, then global group, then round-robin users, else unassigned.
-	if matched, _ := s.groups.GetGroupsForTicket(r.Context(), t.CategoryID, t.TypeID); len(matched) > 0 {
-		gid := matched[0].ID
-		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, &gid, ticket.SystemActor)
-	} else if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
-		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, gid, ticket.SystemActor)
-	} else if uids := s.adminSvc.AutoAssignUserIDs(r.Context()); len(uids) > 0 {
-		// Round-robin, skipping anybody the assignment refuses.
-		//
-		// Nothing removes a departed colleague from this setting, so the list
-		// outlives them. Assign now refuses a deleted, disabled or
-		// non-staff account — but taking their slot and giving up would
-		// silently leave every Nth ticket unassigned, which is a queue that
-		// quietly loses a share of its work. Try the next one instead.
-		start := s.rrIdx.Add(1)
-		for i := range uids {
-			uid := uids[(start+uint64(i))%uint64(len(uids))]
-			if _, err := s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor); err == nil {
-				break
-			}
-		}
-	}
+	s.autoAssign(r.Context(), t)
 
 	// Set any custom field values supplied on creation.
 	//
@@ -737,35 +716,40 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, t)
 }
 
-// POST /api/v1/tickets/{id}/reopen
-func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
+// POST /api/v1/tickets/{id}/follow-up
+//
+// The way forward from a Closed ticket (#349): a NEW ticket that starts open
+// and links back to the closed one, which is left untouched. Closed is
+// terminal, so this is the only thing that replaces the reopen endpoint
+// that used to be here. Staff and admin only, and the rule lives in
+// ticket.Service.CreateFollowUp (ErrForbidden for a requester, ErrNotClosed
+// for a ticket that is not closed), not here.
+func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	if a.Role == user.RoleUser {
-		Error(w, http.StatusForbidden, "forbidden", "users cannot directly reopen tickets")
-		return
-	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
 		return
 	}
-
-	targetID, err := s.reopenTargetStatusID(r.Context())
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-
 	if !s.requireUserIdentity(w, r) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
-	t, err := s.tickets.Reopen(r.Context(), id, targetID, actor)
+	t, err := s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor)
 	if err != nil {
+		if errors.Is(err, ticket.ErrValidation) {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, t)
+	s.autoAssign(r.Context(), t)
+	// Read back, so the response carries whoever the routing assigned.
+	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
+		t = fresh
+	}
+	JSON(w, http.StatusCreated, t)
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -1054,6 +1038,34 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, links)
 }
 
+// autoAssign routes a newly created ticket: CTI-scoped group first, then the
+// global group, then round-robin users, else it stays unassigned. Shared by
+// handleCreateTicket and handleCreateFollowUp, because a follow-up is a new
+// ticket and goes through the same routing (#349).
+func (s *Server) autoAssign(ctx context.Context, t ticket.Ticket) {
+	if matched, _ := s.groups.GetGroupsForTicket(ctx, t.CategoryID, t.TypeID); len(matched) > 0 {
+		gid := matched[0].ID
+		_, _ = s.tickets.Assign(ctx, t.ID, nil, &gid, ticket.SystemActor)
+	} else if gid := s.adminSvc.AutoAssignGroupID(ctx); gid != nil {
+		_, _ = s.tickets.Assign(ctx, t.ID, nil, gid, ticket.SystemActor)
+	} else if uids := s.adminSvc.AutoAssignUserIDs(ctx); len(uids) > 0 {
+		// Round-robin, skipping anybody the assignment refuses.
+		//
+		// Nothing removes a departed colleague from this setting, so the list
+		// outlives them. Assign now refuses a deleted, disabled or
+		// non-staff account — but taking their slot and giving up would
+		// silently leave every Nth ticket unassigned, which is a queue that
+		// quietly loses a share of its work. Try the next one instead.
+		start := s.rrIdx.Add(1)
+		for i := range uids {
+			uid := uids[(start+uint64(i))%uint64(len(uids))]
+			if _, err := s.tickets.Assign(ctx, t.ID, &uid, nil, ticket.SystemActor); err == nil {
+				break
+			}
+		}
+	}
+}
+
 // reopenTargetStatusID resolves the configured reopen target, falling back to
 // the New system status when it does not resolve.
 //
@@ -1064,9 +1076,10 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 // administrator had mistyped a setting. The fallback keeps the customer
 // working; the misconfiguration is an admin problem and is logged.
 //
-// Shared by the authenticated reply path, the guest reply path, and manual
-// reopen (handleReopenTicket): all three need to land on the same status a
-// misconfigured or absent setting should fall back to.
+// Shared by the authenticated reply path and the guest reply path: both reopen
+// a Resolved ticket inside the window, and need to land on the same status a
+// misconfigured or absent setting should fall back to. (Manual reopen of a
+// Closed ticket is gone, #349.)
 func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {

@@ -73,25 +73,37 @@ func TestGuestResend_TheRequestDoesTheSameWorkForAMatchAndAMiss(t *testing.T) {
 	require.Equal(t, http.StatusOK, still.StatusCode, "the request rotated the link itself")
 }
 
-// A resend for a ticket closed between the request and the send gets no link
-// (the resend match itself excludes closed tickets; the reply-then-close path
-// is IssueRefusesAClosedTicket in the domain, and changes with #349): closing
-// revokes, and a send must not hand out a fresh credential to a ticket that
-// no longer accepts one.
-func TestGuestLink_AResendForATicketClosedBeforeTheSendGetsNoLink(t *testing.T) {
+// A resend for a ticket closed between the request and the send STILL gets its
+// link (#349). This was TestGuestLink_AResendForATicketClosedBeforeTheSendGetsNoLink,
+// which pinned #346's skip (and, with it, a resend match that excluded closed
+// tickets): "closing revokes, and a send must not hand out a fresh
+// credential to a ticket that no longer accepts one". Closing stops rotating
+// now, and a closed ticket's mail carries a link that reads and cannot write,
+// added beside the one the guest holds.
+func TestGuestLink_AResendForATicketClosedBeforeTheSendGetsAReadOnlyLink(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
-	tk, _ := seedGuestTicket(t, h)
+	tk, held := seedGuestTicket(t, h)
 	h.dispatcher.record = true
 	resend(t, h, string(tk.TrackingNumber), "guest@test.local")
 	require.Len(t, h.dispatcher.queued, 1)
 
 	require.NoError(t, h.ticketSvc.Close(ctx, tk.ID, ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin}))
-	_, ok, err := h.srv.PrepareGuestLink(ctx, h.dispatcher.queued[0])
+	ev, ok, err := h.srv.PrepareGuestLink(ctx, h.dispatcher.queued[0])
 	require.NoError(t, err)
-	require.False(t, ok, "a closed ticket was sent a fresh link")
+	require.True(t, ok, "a closed ticket's guest is still sent the link")
+	require.NotEmpty(t, ev.GuestToken)
+
+	for name, tok := range map[string]string{"the new link": ev.GuestToken, "the link already held": held} {
+		res := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", tok, nil)
+		res.Body.Close()
+		require.Equal(t, http.StatusOK, res.StatusCode, "%s must read the archive", name)
+		res = h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", tok, map[string]any{"body": "x"})
+		res.Body.Close()
+		require.Equal(t, http.StatusNotFound, res.StatusCode, "%s must not write", name)
+	}
 }
 
 // End to end through the real outbox and worker: the request writes a row,

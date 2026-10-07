@@ -27,8 +27,8 @@ func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name:       "wrapped ticket.ErrNotClosed maps to 409 (#277)",
-			err:        fmt.Errorf("reopening: %w", ticket.ErrNotClosed),
+			name:       "wrapped ticket.ErrNotClosed maps to 409 (#277, #349)",
+			err:        fmt.Errorf("creating follow-up: %w", ticket.ErrNotClosed),
 			wantStatus: http.StatusConflict,
 		},
 		{
