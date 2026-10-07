@@ -142,7 +142,10 @@ func sampleEvent() notification.Event {
 			"link_type":      "related",
 			"Priority":       "high",
 		},
-		OccurredAt:     time.Now().Truncate(time.Microsecond),
+		// UTC, as an event read back from the outbox is: a time.Local value
+		// compares unequal to the same instant in UTC, so with Local the test
+		// passed on a developer's machine and failed on a UTC CI runner.
+		OccurredAt:     time.Now().UTC().Truncate(time.Microsecond),
 		TrackingNumber: "TKT-00042",
 		Recipient:      "guest@example.com",
 		Subject:        "Printer on fire",
