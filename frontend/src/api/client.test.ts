@@ -126,6 +126,18 @@ describe('401 response interceptor', () => {
     expect(assigned).toBeUndefined()
   })
 
+  // A wrong second-factor code, or a key the server refused, is a 401 on a
+  // session that is still perfectly good. The account page asks for both while
+  // the person is signed in (#336); bouncing them to the login page for a
+  // mistyped digit throws away what they were doing.
+  it.each(['invalid_mfa_code', 'assertion_refused'])('does not redirect on %s', async (code) => {
+    stubLocation('/account')
+    const err = unauthorized()
+    err.response!.data = { error: { code, message: 'refused' } }
+    await expect(rejectionHandler()(err)).rejects.toBe(err)
+    expect(assigned).toBeUndefined()
+  })
+
   it('re-rejects so callers still see the failure', async () => {
     // The interceptor must not swallow the error: every caller's catch block
     // and every error toast depends on the rejection propagating.
