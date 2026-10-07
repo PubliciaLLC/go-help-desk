@@ -758,8 +758,9 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// The reply and, when it triggers one, the reopen commit together. Before
 	// this the reply could persist while the reopen failed, leaving the ticket
 	// Resolved with a user reply sitting under it.
-	// Rotate if and only if the replacement will be delivered, and do it in the
-	// same transaction as the reply.
+	// Mark the event for a guest link if and only if the reply will be mailed
+	// to the guest. The link itself is created when the mail is sent (#164),
+	// by IssueGuestLink under the ticket's row lock.
 	//
 	// reporterEmail is the address this reply will be mailed to, and it is
 	// empty in three cases that all used to rotate anyway: an internal note, a
@@ -769,18 +770,14 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// guest was holding, so replying, the single thing a guest comes back to
 	// do, locked them out of their own ticket.
 	//
-	// Inside the transaction because it was not, alone among the rotation
-	// paths: a DELETE and an INSERT on autocommit after the reply had already
-	// landed. A failure between them left a committed reply and no token, and
-	// two concurrent replies could interleave into two live tokens — the
-	// "rotation replaces rather than accumulates" invariant was only true
-	// serially.
+	// Rotation once ran here on autocommit, a DELETE and an INSERT after the
+	// reply had landed, and two concurrent replies interleaved into two live
+	// tokens. It moved into this transaction, and since #164 to the send,
+	// where it holds the ticket's row lock for the same reason.
 	//
-	// The honest limit: this rotates before a send whose failure the
-	// dispatcher discards, so an SMTP outage rotates and delivers nothing. The
-	// guest is not stranded — /resend mints another — but "rotate iff
-	// delivered" is really "iff a send is attempted", and #164 is where that
-	// stops being true.
+	// The honest limit: a send rotates before it knows whether the mail got
+	// through, so a failed send leaves the old link dead until the retry
+	// succeeds. The outbox retries, and /resend mints another.
 	var guestLink bool
 	rotateFor := t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != ""
 

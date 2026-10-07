@@ -92,9 +92,9 @@ type harness struct {
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
 	auditStore      *auditstore.Store
-	tx              *sql.Tx // the harness transaction, for SQL the generated queries do not offer
-	q               *dbgen.Queries
-	dispatcher      *sendTimeDispatcher // see newHarnessWith // raw queries on the test transaction, for fixtures the stores won't build
+	tx              *sql.Tx             // the harness transaction, for SQL the generated queries do not offer
+	q               *dbgen.Queries      // raw queries on the test transaction, for fixtures the stores won't build
+	dispatcher      *sendTimeDispatcher // see newHarnessWith
 	attachDir       string              // where uploads land, so a test can check the disk
 }
 

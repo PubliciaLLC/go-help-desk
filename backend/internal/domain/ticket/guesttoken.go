@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
@@ -80,18 +81,34 @@ func hasGuestRecipient(t Ticket) bool {
 // dies from the commit to the send — normally seconds later. A rotation does
 // not wait on the mail server succeeding: a retry rotates again.
 func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (notification.Event, bool, error) {
-	t, err := s.store.GetByID(ctx, ev.TicketID)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return ev, false, nil
+	// One transaction, the ticket row locked, so that concurrent sends for
+	// one ticket — two replicas, or a reclaimed row beside a fresh one —
+	// rotate one after another. Outside it, a DELETE and an INSERT on
+	// autocommit interleaved into two working links (#164 round 1). The lock
+	// also orders a send against a concurrent close: whichever commits first,
+	// the other sees it.
+	var (
+		t     Ticket
+		token string
+		ok    bool
+	)
+	err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		var err error
+		t, err = st.GetByIDForUpdate(ctx, ev.TicketID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
 		}
-		return ev, false, err
-	}
-	if !hasGuestRecipient(t) || t.StatusID == s.sys.closedID {
-		return ev, false, nil
-	}
-	token, err := rotateGuestToken(ctx, s.store, t)
-	if err != nil {
+		if !hasGuestRecipient(t) || t.StatusID == s.sys.closedID {
+			return nil
+		}
+		token, err = rotateGuestToken(ctx, st, t)
+		ok = err == nil
+		return err
+	})
+	if err != nil || !ok {
 		return ev, false, err
 	}
 	ev.GuestToken = token
@@ -102,9 +119,8 @@ func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (no
 
 // IssueGuestToken rotates outside a transaction.
 //
-// Nothing in production calls it: every rotation happens inside the
-// link is created at send time by IssueGuestLink, which rotates for
-// itself. It exists because a test needs a raw token to drive the HTTP surface
+// Nothing in production calls it: production rotates only at send time, in
+// IssueGuestLink, which does so under the ticket's row lock. It exists because a test needs a raw token to drive the HTTP surface
 // with, and the alternative is duplicating the hashing in the test package —
 // which is exactly where a test stops noticing that hashing happens at all.
 func (s *Service) IssueGuestToken(ctx context.Context, ticketID uuid.UUID) (string, error) {

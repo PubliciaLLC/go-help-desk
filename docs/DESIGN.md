@@ -860,6 +860,20 @@ all happen at send time. The request used to dial the mail server on a match
 and run one query on a miss, so its timing said whether a tracking number and
 an address went together, though its answer did not.
 
+**What is left of that signal.** Each server process has one worker sending
+rows in order, so a matched resend holds it for a mail-server round trip and
+a miss for one query. Someone who queues a probe and then a notification of
+their own (a resend for a ticket they hold) could time their own mail's
+arrival to learn which the probe was. It needs their own mailbox, crosses a
+queue shared with every other notification, and is far noisier than timing the
+request was. Recorded rather than claimed closed.
+
+The rotation runs in one transaction with the ticket row locked, so concurrent
+sends for one ticket (two replicas, or a reclaimed row beside a fresh one)
+leave exactly one working link. The per-ticket resend budget is charged on a
+row's first delivery attempt only, so a resend whose first send fails is
+retried rather than refused.
+
 Submission is a separate public route rather than a relaxation of the ticket
 router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
@@ -1981,11 +1995,15 @@ on the existing webhook feature instead of as plugins.
   that triggers a notification writes it to `notification_outbox`, one row per
   channel (email, webhook), and returns. A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
-  a five-minute lease that returns a row whose worker died), sends, and deletes
+  a ten-minute lease that returns a row whose worker died; a claim takes at
+  most as many rows as can each run to the one-minute send limit inside the
+  lease, so rows are not reclaimed while still waiting their turn), sends, and deletes
   on success. A failed send is retried after 30 seconds, doubling to at most an
   hour, eight attempts in all; then the row is marked failed, logged, and
   deleted after thirty days. One row per channel means a failing channel is
-  retried alone and the other is not sent twice. Delivery is at least once: a
+  retried alone and the other is not sent twice; a channel that cannot carry an
+  event type (webhooks never receive `guest.link_resent`) gets no row. A send
+  that panics fails its row. Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
   Webhooks are not retried on HTTP failure: their dispatcher already posts in
   the background and reports nothing back, unchanged by this.

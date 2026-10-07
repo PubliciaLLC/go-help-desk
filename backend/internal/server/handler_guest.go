@@ -14,6 +14,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
 // The guest surface. Five routes, each doing one thing, mounted outside the
@@ -348,8 +349,12 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 		// sustained lockout, not merely an inbox flood.
 		//
 		// Checked after the match, so a miss consumes nothing and the budget
-		// cannot be probed to learn which tickets exist.
-		if !s.guestResendLimiter.Allow(id.String()) {
+		// cannot be probed to learn which tickets exist. Charged once per
+		// request, on its first attempt: charging every attempt refused the
+		// retry of a send that had failed, and the request was dropped with
+		// the guest's old link already rotated away (#164 round 1). Outside
+		// the worker the attempt is 0, which is a first attempt too.
+		if notify.Attempt(ctx) <= 1 && !s.guestResendLimiter.Allow(id.String()) {
 			return ev, false, nil
 		}
 		ev.TicketID = id

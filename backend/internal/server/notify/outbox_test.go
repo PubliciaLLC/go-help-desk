@@ -367,3 +367,46 @@ func TestGuestLinkDispatcher(t *testing.T) {
 		require.Zero(t, next.count())
 	})
 }
+
+// A lease shorter than a batch hands rows to another replica while this
+// worker still means to send them: duplicates under a slow relay. The
+// defaults must leave room, and a configuration that does not is reduced.
+func TestWorker_ABatchFitsInsideItsLease(t *testing.T) {
+	w := NewWorker(newFakeOutbox(), nil, quietLog())
+	require.Greater(t, w.Lease, time.Duration(w.Batch)*w.SendTimeout,
+		"the default batch can outlast its lease")
+	require.Equal(t, w.Batch, w.safeBatch())
+
+	w.Batch, w.Lease, w.SendTimeout = 20, 5*time.Minute, time.Minute
+	require.LessOrEqual(t, time.Duration(w.safeBatch())*w.SendTimeout, w.Lease-w.SendTimeout)
+	w.Lease = 30 * time.Second
+	require.Equal(t, 1, w.safeBatch(), "never below one row")
+}
+
+// guest.link_resent is never delivered to webhooks, so it must not queue a
+// webhook row: every unauthenticated resend request wrote one, for nothing.
+func TestOutboxDispatcher_QueuesOnlyForChannelsThatCarryTheEvent(t *testing.T) {
+	store := newFakeOutbox()
+	d := NewOutboxDispatcher(store, []string{"email", "webhook"}, nil)
+	ev := sampleEvent()
+	ev.Type = notification.EventGuestLinkResent
+	require.NoError(t, d.Dispatch(context.Background(), ev))
+	require.Equal(t, []string{"email"}, store.channelsQueued())
+}
+
+type panics struct{}
+
+func (panics) Dispatch(context.Context, notification.Event) error { panic("formatter bug") }
+
+// A send that panics fails its row rather than crashing the worker, and with
+// it the server, every time the row is claimed again.
+func TestWorker_APanickingSendFailsItsRow(t *testing.T) {
+	store := newFakeOutbox()
+	require.NoError(t, NewOutboxDispatcher(store, []string{"email"}, nil).Dispatch(context.Background(), sampleEvent()))
+	w := newTestWorker(store, map[string]notification.Dispatcher{"email": panics{}})
+	require.NotPanics(t, func() {
+		_, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+	})
+	require.Len(t, store.failed, 1)
+}

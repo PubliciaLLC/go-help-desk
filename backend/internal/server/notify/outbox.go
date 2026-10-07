@@ -64,6 +64,16 @@ func decodeEvent(b []byte) (notification.Event, error) {
 	}, nil
 }
 
+type attemptKey struct{}
+
+// Attempt reports which delivery attempt of a queued row this is, starting at
+// 1, or 0 outside the worker. A send-time step that should happen once per
+// notification rather than once per attempt — charging a budget — checks it.
+func Attempt(ctx context.Context) int {
+	n, _ := ctx.Value(attemptKey{}).(int)
+	return n
+}
+
 // OutboxDispatcher is the Dispatcher requests call: it queues one row per
 // channel and returns without contacting any of them.
 type OutboxDispatcher struct {
@@ -79,6 +89,17 @@ func NewOutboxDispatcher(store notification.Outbox, channels []string, wake func
 	return &OutboxDispatcher{store: store, channels: channels, wake: wake}
 }
 
+// carries reports whether a channel can deliver an event type at all. A row
+// for an event its channel would discard is a write, a claim and a delete for
+// nothing — and guest resend, which queues on every unauthenticated request,
+// wrote one webhook row per request that way (#164 round 1).
+func carries(channel string, t notification.EventType) bool {
+	if channel == "webhook" {
+		return IsWebhookEvent(string(t))
+	}
+	return true
+}
+
 func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
 	body, err := encodeEvent(ev)
 	if err != nil {
@@ -89,6 +110,9 @@ func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) 
 	ctx = context.WithoutCancel(ctx)
 	var first error
 	for _, ch := range d.channels {
+		if !carries(ch, ev.Type) {
+			continue
+		}
 		if err := d.store.Enqueue(ctx, uuid.New(), ch, body); err != nil && first == nil {
 			first = err
 		}
@@ -120,9 +144,14 @@ type Worker struct {
 func NewWorker(store notification.Outbox, channels map[string]notification.Dispatcher, log *slog.Logger) *Worker {
 	return &Worker{
 		store: store, channels: channels, log: log,
-		Poll:        5 * time.Second,
-		Batch:       20,
-		Lease:       5 * time.Minute,
+		Poll: 5 * time.Second,
+		// The lease must outlast the worst a whole batch can take — every
+		// row in it running to SendTimeout — or another replica claims rows
+		// this worker has not reached yet and sends them twice (#164 round
+		// 1: a batch of 20 against a 20-second SMTP timeout was 400 seconds
+		// under a 300-second lease). 5 × 1 minute fits in 10 with room.
+		Batch:       5,
+		Lease:       10 * time.Minute,
 		SendTimeout: time.Minute,
 		MaxAttempts: 8,
 		Backoff:     defaultBackoff,
@@ -149,8 +178,24 @@ func (w *Worker) Wake() {
 	}
 }
 
+// safeBatch is the largest batch whose every row can run to SendTimeout
+// inside the lease, so a claimed row is never handed to another worker while
+// this one still means to send it.
+func (w *Worker) safeBatch() int {
+	if w.SendTimeout <= 0 {
+		return w.Batch
+	}
+	most := int(w.Lease/w.SendTimeout) - 1
+	return max(1, min(w.Batch, most))
+}
+
 // Run delivers until ctx is cancelled. Rows still queued stay queued.
 func (w *Worker) Run(ctx context.Context) {
+	if b := w.safeBatch(); b != w.Batch {
+		w.log.WarnContext(ctx, "notification outbox: batch reduced to fit the lease",
+			"configured", w.Batch, "used", b, "lease", w.Lease, "send_timeout", w.SendTimeout)
+		w.Batch = b
+	}
 	poll := time.NewTicker(w.Poll)
 	defer poll.Stop()
 	cleanup := time.NewTicker(time.Hour)
@@ -199,6 +244,14 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 	// row unsettled, which would send it again after the lease.
 	settle := context.WithoutCancel(ctx)
 
+	// A row whose send panics is failed, not left to crash the process every
+	// time its lease runs out and it is claimed again.
+	defer func() {
+		if p := recover(); p != nil {
+			w.fail(settle, row, fmt.Sprintf("panic: %v", p))
+		}
+	}()
+
 	d, ok := w.channels[row.Channel]
 	if !ok {
 		w.fail(settle, row, fmt.Sprintf("unknown channel %q", row.Channel))
@@ -210,7 +263,7 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		return
 	}
 
-	sendCtx, cancel := context.WithTimeout(settle, w.SendTimeout)
+	sendCtx, cancel := context.WithTimeout(context.WithValue(settle, attemptKey{}, row.Attempts), w.SendTimeout)
 	err = d.Dispatch(sendCtx, ev)
 	cancel()
 	if err == nil {
