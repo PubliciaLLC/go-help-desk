@@ -396,7 +396,10 @@ export async function createWebhook(input: {
 
 export async function updateWebhook(
   id: string,
-  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'secret' | 'enabled' | 'payload_format'>>
+  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format'>> & {
+    // Write-only: sent to replace the stored secret, never returned.
+    secret?: string
+  }
 ): Promise<WebhookConfig> {
   const res = await api.patch<WebhookConfig>(`/admin/webhooks/${id}`, patch)
   return res.data
