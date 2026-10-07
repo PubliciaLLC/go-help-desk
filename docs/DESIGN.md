@@ -421,6 +421,37 @@ guard (an already-protected account's owner registering a replacement key,
 already holding the flag), setting it again is a no-op. Found as item 3 of
 [#307](https://github.com/PubliciaLLC/go-help-desk/issues/307).
 
+**Changing factors needs a session that *proved* one, not one that owed
+none.** `MFAPassed` is true both when a login proved a second factor and when
+it owed none — MFA off, or optional for the account's role. The two routes
+that add or replace a factor (`requireFactorOrFirstEnrolment`, and TOTP
+enrolment's re-enrol check) read a separate session fact, `FactorVerified`,
+which is set only by:
+
+- a TOTP code (`/auth/local/mfa/verify`) or passkey sign-in;
+- this session finishing a TOTP enrolment or passkey registration;
+- an SSO sign-in whose identity provider asserted MFA — OIDC `amr` containing
+  `mfa` (RFC 8176), or SAML `authnmethodsreferences` containing
+  `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither
+  by default: add the `amr` optional claim to the app registration (for SAML,
+  with `include_granular_amr`). Without it SSO sign-in still works, but a user
+  who also has a local factor must enter it before changing factors.
+
+Without this, a password-only session on an account where MFA was optional
+could replace the owner's factor at any time after they enrolled — no race
+needed ([#333](https://github.com/PubliciaLLC/go-help-desk/issues/333)).
+
+**Adding a factor ends every other session,** the same way a password change
+does: finishing TOTP enrolment or passkey registration revokes the account's
+sessions and re-issues the current one. A session someone opened with the
+password before the owner protected the account does not outlive that
+protection. Enrolment confirm also re-runs the guard, rather than trusting the
+check made when enrolment was staged
+([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
+
+Sessions written before `FactorVerified` existed read it as false. A user with
+a factor signs in again before changing factors; nothing else changes.
+
 **Signing in.** `POST /auth/local/passkey/start` and
 `POST /auth/local/passkey/finish` sit beside `/auth/local/mfa/verify` and do
 what it does: on a valid assertion, re-issue the session with `MFAPassed` true.

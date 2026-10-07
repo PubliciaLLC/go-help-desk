@@ -30,6 +30,11 @@ func TestMarkPasskeyRegistrationSatisfiesMFA(t *testing.T) {
 		if !got.MFAPassed {
 			t.Fatal("MFAPassed is still false after registration completed")
 		}
+		// Completing the ceremony proved a factor, so this session may manage
+		// factors afterwards (#333).
+		if !got.FactorVerified {
+			t.Fatal("FactorVerified is still false after registration completed")
+		}
 		if got.UserID != uid || got.Role != user.RoleAdmin {
 			t.Errorf("identity fields were disturbed: got UserID=%s Role=%s", got.UserID, got.Role)
 		}

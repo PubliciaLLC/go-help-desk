@@ -25,8 +25,11 @@ type Actor struct {
 	UserID    uuid.UUID
 	Role      user.Role
 	MFAPassed bool
-	ClientID  string // non-empty for OAuth2 bearer token requests
-	Scopes    []string
+	// FactorVerified: see auth.SessionData. Never set for machine
+	// credentials, which are refused on the factor routes regardless.
+	FactorVerified bool
+	ClientID       string // non-empty for OAuth2 bearer token requests
+	Scopes         []string
 	// Machine marks an API key or OAuth client — a credential acting on a
 	// person's behalf rather than the person themselves.
 	//
@@ -79,9 +82,10 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				return
 			}
 			next.ServeHTTP(w, setActor(r, &Actor{
-				UserID:    sd.UserID,
-				Role:      sd.Role,
-				MFAPassed: sd.MFAPassed,
+				UserID:         sd.UserID,
+				Role:           sd.Role,
+				MFAPassed:      sd.MFAPassed,
+				FactorVerified: sd.FactorVerified,
 			}))
 		})
 	}

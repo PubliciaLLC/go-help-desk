@@ -69,7 +69,18 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	// file this server hands back under its own name and its own bytes. A
 	// text-named file is neither wrapped nor refused for its content, so
 	// everything that stops this rendering is in the response headers below.
-	const payload = `<html><script>alert(document.cookie)</script></html>`
+	//
+	// Long and repetitive on purpose: the archive check below asserts the
+	// HTML does not sit in the clear, and that only holds once the payload is
+	// big enough to compress. Go 1.27's deflate stores a block uncompressed
+	// whenever compressing it would not make it smaller, which a payload this
+	// short never does — the original 52-byte payload sat in the archive
+	// verbatim, which failed this test under 1.27 and passed under 1.26
+	// (#332). The wrap's purpose is to take away the name, not to hide the
+	// bytes; this keeps the check meaningful on every toolchain.
+	payload := "<html><body>" +
+		strings.Repeat("<p>Your invoice is attached. Please review it today.</p>", 8) +
+		"<script>alert(document.cookie)</script></body></html>"
 	asText := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", "notes.txt", []byte(payload))
 	require.Equal(t, payload, string(asText),
 		"stored as it arrived, which is safe only because it is never rendered")

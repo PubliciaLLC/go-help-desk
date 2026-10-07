@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -98,14 +99,17 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Changing your password is how you evict someone who has your old one, so
 	// the other sessions must die — but signing yourself out of the tab you
 	// just used to do it is a bug, not security.
-	if err := s.sessions.DeleteForUser(r.Context(), a.UserID); err != nil {
+	// Detached: the new password is already written, so a client that hangs
+	// up here must not leave the sessions it was evicting alive.
+	if err := s.sessions.DeleteForUser(context.WithoutCancel(r.Context()), a.UserID); err != nil {
 		handleError(w, err)
 		return
 	}
 	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    a.UserID,
-		Role:      a.Role,
-		MFAPassed: a.MFAPassed,
+		UserID:         a.UserID,
+		Role:           a.Role,
+		MFAPassed:      a.MFAPassed,
+		FactorVerified: a.FactorVerified,
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -120,8 +124,10 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	// This route sits outside RequireMFA so a user compelled to enrol can
 	// finish. That makes it reachable with a session that has NOT passed the
 	// MFA challenge, so re-enrolment of an already-protected account is only
-	// permitted once that challenge has been satisfied — otherwise a password
+	// permitted once this session has proved a factor — otherwise a password
 	// alone would be enough to replace the victim's authenticator.
+	// FactorVerified, not MFAPassed: a login that owed nothing has MFAPassed
+	// without having proved anything (#333).
 	//
 	// The secret is minted but NOT written to the user row. Writing it there
 	// overwrote the authenticator the user was still relying on, while
@@ -144,7 +150,7 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	if !s.requireFactorOrFirstEnrolment(w, r) {
 		return
 	}
-	secret, qrURL, err := s.users.GenerateMFASecret(r.Context(), a.UserID, s.cfg.BaseURL, a.MFAPassed)
+	secret, qrURL, err := s.users.GenerateMFASecret(r.Context(), a.UserID, s.cfg.BaseURL, a.FactorVerified)
 	if err != nil {
 		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {
 			Error(w, http.StatusForbidden, "mfa_already_enrolled",
@@ -179,6 +185,17 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/me/mfa/enroll/confirm
 func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) {
+	// Re-checked here, not just at /mfa/enroll: that call staged a secret at
+	// a moment the account happened to be unprotected, and this one decides
+	// whether to adopt it. Without re-running the guard, an attacker who
+	// staged a secret while the account was still unprotected could confirm
+	// it later — even after the legitimate owner finished their own
+	// enrolment in the meantime — and silently overwrite it. See #327;
+	// register/finish has carried the equivalent re-check for passkeys
+	// since #307 item 3.
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	a := authmw.GetActor(r)
 	var body struct {
 		Code string `json:"code"`
@@ -211,10 +228,12 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	}
 	// Successful enrollment satisfies this login's MFA challenge — flip the
 	// session so forced-enrollment users aren't locked out until they log out.
-	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    a.UserID,
-		Role:      a.Role,
-		MFAPassed: true,
+	// Every other session ends: see writeSessionAfterNewFactor.
+	if err := s.writeSessionAfterNewFactor(w, r, auth.SessionData{
+		UserID:         a.UserID,
+		Role:           a.Role,
+		MFAPassed:      true,
+		FactorVerified: true,
 	}); err != nil {
 		handleError(w, err)
 		return
