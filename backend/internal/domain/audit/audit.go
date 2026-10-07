@@ -2,7 +2,9 @@ package audit
 
 import (
 	"context"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 )
@@ -79,11 +81,18 @@ type Filter struct {
 	Q          string     // case-insensitive substring against entity_type and action
 }
 
-// sensitiveFields is redacted out of Before/After wherever a diff is shown to
-// anyone — including an admin. This is not "hide it from staff", the rule
-// #129 and the per-ticket feed's own staff gate already cover; it is "this
-// value must never render in a browser at all", the same class of rule as
-// the write-only settings in handler_admin_settings.go's secretSettingKeys.
+// sensitiveFragments marks a Before/After key as one whose value must never
+// render in a browser — including to an admin. This is not "hide it from
+// staff", the rule #129 and the per-ticket feed's own staff gate already
+// cover; it is "this value must never render at all", the same class of rule
+// as the write-only settings in handler_admin_settings.go's secretSettingKeys.
+//
+// A key is sensitive when its normalised form (see normaliseKey) contains any
+// of these. Substring rather than exact, so passwordHash, PASSWORD_HASH and
+// user.password land alongside password_hash, and a field nobody listed by
+// name (access_token, key_pem) still lands on its stem. The cost is
+// over-redaction — "hash" hides a hashtag too — which fails safe: a hidden
+// value is a nuisance, a rendered secret is not.
 //
 // Nothing writes any of these into a Before/After map today — ticketMap
 // (internal/domain/ticket/service.go) only ever carries id, status_id,
@@ -91,24 +100,49 @@ type Filter struct {
 // credentials (mfa_reset, password_reset_by_admin) carry no payload at all.
 // This exists for the shape of the problem #129 named — "if a mutation ever
 // touched a sensitive field, the value is in there" — not a value observed
-// in this codebase, so it is a denylist of plausible names rather than a
+// in this codebase, so it is a denylist of plausible stems rather than a
 // measured list: extend it before extending what writes into Before/After.
-var sensitiveFields = map[string]struct{}{
-	"password":      {},
-	"password_hash": {},
-	"mfa_secret":    {},
-	"totp_secret":   {},
-	"secret":        {},
-	"api_key":       {},
-	"client_secret": {},
-	"token":         {},
-	"hash":          {},
+var sensitiveFragments = []string{
+	"password",
+	"passwd",
+	"secret",
+	"token",
+	"hash",
+	"apikey",
+	"privatekey",
+	"keypem",
+	"recoverycode",
+	"backupcode",
+}
+
+// normaliseKey lower-cases k and drops everything that is not a letter or
+// digit, so "apiKey", "API_KEY" and "api-key" all become "apikey".
+func normaliseKey(k string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(k) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func isSensitive(k string) bool {
+	n := normaliseKey(k)
+	for _, f := range sensitiveFragments {
+		if strings.Contains(n, f) {
+			return true
+		}
+	}
+	return false
 }
 
 const redactedPlaceholder = "[redacted]"
 
-// Redact returns copies of before/after with every key in sensitiveFields
-// replaced by a placeholder. nil in, nil out — Entry.Before/After are nil for
+// Redact returns copies of before/after with the value of every sensitive key
+// (see sensitiveFragments) replaced by a placeholder, at any depth: nested
+// maps and slices are walked, and a sensitive key hides its whole value
+// whatever shape it has. nil in, nil out — Entry.Before/After are nil for
 // create/delete actions respectively, and that distinction (no value existed)
 // is different from "a value existed and is hidden", so Redact preserves it
 // rather than allocating an empty map.
@@ -122,11 +156,28 @@ func redactMap(m map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		if _, sensitive := sensitiveFields[k]; sensitive {
+		if isSensitive(k) {
 			out[k] = redactedPlaceholder
 			continue
 		}
-		out[k] = v
+		out[k] = redactValue(v)
 	}
 	return out
+}
+
+// redactValue handles the two container shapes encoding/json produces; every
+// other value is a leaf.
+func redactValue(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		return redactMap(t)
+	case []any:
+		out := make([]any, len(t))
+		for i, e := range t {
+			out[i] = redactValue(e)
+		}
+		return out
+	default:
+		return v
+	}
 }
