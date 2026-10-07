@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"unicode/utf8"
@@ -110,7 +111,10 @@ func (s *Server) requireFactorOrFirstEnrolment(w http.ResponseWriter, r *http.Re
 		Error(w, http.StatusUnauthorized, "unauthorized", "sign in first")
 		return false
 	}
-	if a.MFAPassed {
+	// FactorVerified, not MFAPassed: a login that owed no second factor has
+	// MFAPassed without having proved anything, and must not be able to
+	// replace a factor the account has since gained (#333).
+	if a.FactorVerified {
 		return true
 	}
 	protected, err := s.alreadyProtected(r, a.UserID)
@@ -225,7 +229,7 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 	// already-protected account — the only other way past the guard above),
 	// this is a no-op, true stays true.
 	sd = markPasskeyRegistrationSatisfiesMFA(sd)
-	if err := s.writeSession(w, r, sd); err != nil {
+	if err := s.writeSessionAfterNewFactor(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -243,7 +247,24 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 // after the ceremony and the store write both already succeeded.
 func markPasskeyRegistrationSatisfiesMFA(sd auth.SessionData) auth.SessionData {
 	sd.MFAPassed = true
+	sd.FactorVerified = true
 	return sd
+}
+
+// writeSessionAfterNewFactor ends every other session the account holds and
+// re-issues this one, after a second factor has been added.
+//
+// The same reason as a password change: a session someone opened with the
+// password alone, before the owner protected the account, must not outlive
+// that protection (#333). Without this, it kept working — and until
+// FactorVerified existed, could replace the new factor with its own.
+func (s *Server) writeSessionAfterNewFactor(w http.ResponseWriter, r *http.Request, sd auth.SessionData) error {
+	// Detached, as ResetMFA is: the factor has already been written, so a
+	// client that hangs up here must not leave the other sessions alive.
+	if err := s.sessions.DeleteForUser(context.WithoutCancel(r.Context()), sd.UserID); err != nil {
+		return fmt.Errorf("ending other sessions: %w", err)
+	}
+	return s.writeSession(w, r, sd)
 }
 
 // GET /api/v1/me/passkeys
@@ -367,6 +388,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	sd.UserID = a.UserID
 	sd.Role = a.Role
 	sd.MFAPassed = true
+	sd.FactorVerified = true
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return

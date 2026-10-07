@@ -39,6 +39,7 @@ type fakeOIDCClaims struct {
 	Expiry        time.Duration // relative to now; defaults to +1h
 	SignWithWrong bool          // sign with a key absent from the JWKS
 	Nonce         string        // echoed into the id_token; the callback requires it to match
+	AMR           []string      // RFC 8176 authentication methods; omitted when nil
 }
 
 type fakeOIDC struct {
@@ -150,6 +151,9 @@ func (i *fakeOIDC) mint(t *testing.T, c fakeOIDCClaims) string {
 	// at all and confirm the callback refuses it.
 	if c.Nonce != "" {
 		tok.Claims.(jwt.MapClaims)["nonce"] = c.Nonce
+	}
+	if c.AMR != nil {
+		tok.Claims.(jwt.MapClaims)["amr"] = c.AMR
 	}
 	tok.Header["kid"] = i.keyID
 
@@ -904,4 +908,41 @@ func TestSaveOIDCConfig_BlankSecretPreservesStored(t *testing.T) {
 	require.Equal(t, "rotated-client-id", cfg.ClientID)
 	require.Equal(t, oh.idp.clientSecret, cfg.ClientSecret,
 		"a blank client_secret must preserve the stored one")
+}
+
+// An OIDC sign-in counts as having proved a second factor only when the
+// provider says so in amr (#333). Without that, an OIDC session on an account
+// that has a local factor cannot replace it — the same rule as a password.
+func TestOIDCCallback_FactorVerifiedOnlyWhenTheProviderAssertsMFA(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, oh.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+
+	claims := fakeOIDCClaims{Subject: "amr-sub", Email: "amr@test.local", EmailVerified: true, Name: "Amr"}
+	resp := oh.login(t, claims)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+	u, ok := findUser(t, oh.harness, "amr@test.local")
+	require.True(t, ok)
+	enrollMFA(t, ctx, oh.userSvc, u.ID) // the account now has a local factor
+
+	for _, tc := range []struct {
+		name string
+		amr  []string
+		want int
+	}{
+		{"no amr", nil, http.StatusForbidden},
+		{"password only", []string{"pwd"}, http.StatusForbidden},
+		{"provider asserted MFA", []string{"pwd", "mfa"}, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := claims
+			c.AMR = tc.amr
+			resp := oh.login(t, c)
+			require.Equal(t, http.StatusSeeOther, resp.StatusCode)
+			enrol := oh.rawPostJSON(t, "/api/v1/me/mfa/enroll", map[string]any{}, resp.Cookies())
+			defer enrol.Body.Close()
+			require.Equal(t, tc.want, enrol.StatusCode)
+		})
+	}
 }
