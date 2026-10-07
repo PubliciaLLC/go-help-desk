@@ -8,6 +8,25 @@ function formatValue(v: unknown): string {
   return typeof v === 'string' ? v : JSON.stringify(v)
 }
 
+// Must match audit.redactedPlaceholder on the server.
+const REDACTED = '[redacted]'
+
+function containsRedacted(v: unknown): boolean {
+  if (v === REDACTED) return true
+  if (Array.isArray(v)) return v.some(containsRedacted)
+  if (v !== null && typeof v === 'object') return Object.values(v).some(containsRedacted)
+  return false
+}
+
+// The server swaps a secret for the same placeholder on both sides, so a
+// secret that changed compares equal to itself. The diff cannot tell a
+// rotated secret from an untouched one, and hiding both would make a rotation
+// invisible to the admin it is meant to inform; showing both is the honest
+// side to err on. (#329)
+function isChanged(b: unknown, a: unknown): boolean {
+  return JSON.stringify(b) !== JSON.stringify(a) || (containsRedacted(b) && containsRedacted(a))
+}
+
 interface AuditDiffProps {
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
@@ -21,7 +40,7 @@ export function AuditDiff({ before, after }: AuditDiffProps) {
   if (!before || !after) return null
 
   const keys = Array.from(new Set([...Object.keys(before), ...Object.keys(after)]))
-  const changed = keys.filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]))
+  const changed = keys.filter((k) => isChanged(before[k], after[k]))
   if (changed.length === 0) return null
 
   return (

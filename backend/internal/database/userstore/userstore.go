@@ -337,6 +337,14 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 	return nil
 }
 
+func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
+	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
+	if err != nil {
+		return false, fmt.Errorf("setting first MFA: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *Store) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
 	err := s.q.SyncFederatedUser(ctx, dbgen.SyncFederatedUserParams{
 		ID: id, Email: email, DisplayName: displayName,
@@ -373,17 +381,6 @@ func (s *Store) AdoptOIDCSubject(ctx context.Context, id uuid.UUID, subject, dis
 		return false, user.ErrAccountLinkRefused
 	}
 	return false, fmt.Errorf("adopting OIDC subject: %w", err)
-}
-
-// SetMFAIfNotEnabled stores the secret and turns MFA on only if it is not on
-// already, and reports whether it applied. False is not a fault: somebody else
-// enrolled first.
-func (s *Store) SetMFAIfNotEnabled(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
-	n, err := s.q.SetUserMFAIfNotEnabled(ctx, dbgen.SetUserMFAIfNotEnabledParams{ID: id, MfaSecret: secret})
-	if err != nil {
-		return false, fmt.Errorf("enrolling MFA: %w", err)
-	}
-	return n > 0, nil
 }
 
 // EnableMFAIfStillEnrolled turns the flag on without carrying a copy of the

@@ -125,7 +125,9 @@ func TestUploadAttachment_ReporterStillRefusedOnSomeoneElsesTicket(t *testing.T)
 
 	res := uploadAttachmentAs(t, h, h.userKey, tk.ID.String(), "shot.txt", []byte("log"))
 	defer res.Body.Close()
-	require.Equal(t, http.StatusForbidden, res.StatusCode)
+	// Not 403: see #174. A ticket this reporter cannot see answers the same
+	// as one that does not exist.
+	require.Equal(t, http.StatusNotFound, res.StatusCode)
 }
 
 // ── The new guest route ─────────────────────────────────────────────────────

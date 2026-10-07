@@ -167,6 +167,12 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 // healthy, the reopen path persists the status, writes exactly one history
 // entry, and dispatches the reopen event. Without this, the test above could
 // pass for the wrong reason — by the reopen never running at all.
+//
+// It also pins #326's second gap: a reply-triggered reopen wrote a
+// status-history entry but no audit entry, so /history and /audit could
+// disagree about whether the ticket was still open. The explicit POST
+// /reopen path (Service.Reopen) writes an audit entry in the same
+// transaction as its status-history one; this path must do the same.
 func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()
@@ -187,6 +193,10 @@ func TestAddReply_SucceedsAndReopens(t *testing.T) {
 
 	require.Equal(t, 1, h.store.historyCreates, "exactly one history entry")
 	require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened)
+
+	require.Len(t, h.auditStore.entries, 1,
+		"a reply-triggered reopen must write an audit entry, the same as an explicit reopen does")
+	require.Equal(t, "reopened", h.auditStore.entries[0].Action)
 }
 
 // TestAddReply_InternalNoteNeverNotifiesCustomer pins an existing rule that the

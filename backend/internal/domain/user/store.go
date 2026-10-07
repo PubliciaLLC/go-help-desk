@@ -41,16 +41,14 @@ type Store interface {
 	// bcrypt hash the account holder chose the moment of.
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
+	// SetFirstMFA adopts secret only if the account has no TOTP when the row
+	// is written, and reports whether it did (#338).
+	SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error)
 	// EnableMFAIfStillEnrolled turns the flag on using the secret already on
 	// the row, so a caller that read, validated a code, and then wrote does
 	// not carry a copy of the secret across that gap. False means there was
 	// no secret left to enable.
 	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (bool, error)
-	// SetMFAIfNotEnabled stores a secret and turns MFA on only if it is not
-	// already on, and reports whether it applied. The write behind a FIRST
-	// enrolment: the question "is this account still unprotected?" is in the
-	// statement, so two enrolments racing cannot both win (#338).
-	SetMFAIfNotEnabled(ctx context.Context, id uuid.UUID, secret string) (bool, error)
 	SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error
 	// AdoptOIDCSubject binds an OIDC subject to an account found by email
 	// address, and reports whether it applied. The adoption rules live in

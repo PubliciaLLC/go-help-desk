@@ -183,7 +183,7 @@ This route only *reads* the audit log — it does not change what the domain lay
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
-The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is redacted by field name (`audit.Redact`) — a denylist of plausible secret-field names, not anything actually written into a ticket's before/after today (`ticketMap` only ever carries `id`, `status_id`, `priority`, `subject`), kept ready for the other entity types the admin-wide view below can show.
+The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is redacted by field name (`audit.Redact`) — a denylist of plausible secret-field stems (`password`, `secret`, `token`, `hash`, …) plus any key ending in `key` or `pass` (so every write-only setting in `secretSettingKeys` is covered, and a test keeps it that way), matched with case and separators ignored (`passwordHash`, `API_KEY` and `api-key` all land) and applied at every depth of nested maps and lists, not anything actually written into a ticket's before/after today (`ticketMap` only ever carries `id`, `status_id`, `priority`, `subject`), kept ready for the other entity types the admin-wide view below can show.
 
 ### Admin-Wide Audit View
 
@@ -199,7 +199,9 @@ With scope enforcement off — the default — staff may see every ticket, so th
 
 **Retention is opt-in, and off by default.** `audit_retention_days` (admin
 setting) governs a daily sweep that hard-deletes anything older — no archive
-table. **Unset, zero or negative means keep forever**, which is what every
+table. The first sweep runs two minutes after start, not only on the
+24-hour tick, so an instance restarted more often than daily still prunes; when
+a window is set, startup logs it. **Unset, zero or negative means keep forever**, which is what every
 release before this one did by having nothing prune at all.
 
 That default is deliberate and is the opposite of what a first draft of this
@@ -1673,14 +1675,16 @@ caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
 not see reports "not found" rather than "forbidden", so tracking numbers cannot
-be probed **over MCP**.
+be probed over MCP.
 
-The REST API answers `403` for a ticket that exists and `404` for one that does
-not, which is the opposite of that and lets a signed-in reporter walk the
-sequential numbers to learn which exist. It reveals no content. It is not
-changed here because the status code is the REST contract — a dozen tests pin
-it and a client may branch on it — so tightening it belongs to a major version
-rather than a beta's bug fixes. Tracked as an issue.
+The REST API answers the same way as of this release: `404 not found`, not
+`403 forbidden`, for a ticket that exists and the caller may not see — the same
+status, code and message `GET /tickets/{id}` already gives a tracking number
+that does not exist at all, so a signed-in reporter can no longer walk the
+sequential numbers (`GHD-2026-000001`, `...000002`) to learn which exist. This
+was a breaking change to the REST API's published contract, made deliberately
+in this beta's bug-fix branch rather than deferred to a major version — see
+`ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
 
 ### Authentication Methods
 

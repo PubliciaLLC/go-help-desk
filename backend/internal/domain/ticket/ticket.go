@@ -533,6 +533,11 @@ var (
 	// for the deactivate, not the rename — see #272.) RemoveStatus's delete
 	// refusal was never duplicated at the handler either.
 	ErrSystemStatusImmutable = errors.New("system status is immutable")
+	// ErrNotFound is what a lookup of a ticket that does not exist wraps. The
+	// store's own sentinel is this same value, so callers outside the database
+	// layer (internal/mcp) can tell a real miss from a failure without
+	// importing it. See #174.
+	ErrNotFound = errors.New("not found")
 	// ErrStatusNotFound is returned by getStatusByID (and so by SaveStatus and
 	// RemoveStatus) when no status matches the given ID — a nonexistent or
 	// already-deleted id, most commonly. Wrapped for the same reason

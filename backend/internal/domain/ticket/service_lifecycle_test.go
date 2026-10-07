@@ -339,6 +339,13 @@ func TestAssign(t *testing.T) {
 
 // TestAssign_ToNobodyIsUnassignment covers clearing an assignment, which shares
 // the same path and would otherwise be untested.
+//
+// #326: Assign wrote action "assigned" unconditionally, so clearing an
+// assignment via PATCH {clear_assignee: true} -> Assign(nil, nil) produced an
+// audit entry claiming the ticket had been assigned, not unassigned. The feed
+// showed "Assigned by Admin" for what was actually the opposite.
+// UnassignForUser already distinguishes the two; this is the same rule
+// applied to Assign's own write.
 func TestAssign_ToNobodyIsUnassignment(t *testing.T) {
 	h := newHarness(t)
 	previous := uuid.New()
@@ -353,6 +360,9 @@ func TestAssign_ToNobodyIsUnassignment(t *testing.T) {
 
 	require.Nil(t, got.AssigneeUserID, "assigning to nobody clears the assignee")
 	require.Nil(t, got.AssigneeGroupID)
+	require.Len(t, h.auditStore.entries, 1)
+	require.Equal(t, "unassigned", h.auditStore.entries[0].Action,
+		"clearing an assignment must not be logged as an assignment")
 }
 
 // ── Status administration ────────────────────────────────────────────────────

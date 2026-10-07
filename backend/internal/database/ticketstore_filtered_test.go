@@ -304,6 +304,9 @@ func TestGetByID_NotFoundWording(t *testing.T) {
 	_, err := ticketstore.New(q).GetByID(context.Background(), missing)
 	require.Error(t, err)
 	require.Equal(t, "not found: ticket "+missing.String(), err.Error())
+	// internal/mcp recognises a real miss through the domain sentinel, because
+	// it may not import this package. See #174.
+	require.ErrorIs(t, err, ticket.ErrNotFound)
 }
 
 // A search term that contains no indexable tokens ("???", "!!!") tokenises to

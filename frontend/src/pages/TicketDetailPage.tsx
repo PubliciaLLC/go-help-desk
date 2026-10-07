@@ -458,10 +458,11 @@ export function TicketDetailPage() {
 
   if (isLoading) return <Layout><div className="flex justify-center py-12"><Spinner size="lg" /></div></Layout>
   if (error || !ticket) {
-    // Not every failure here is a missing ticket. A 403 means it exists and
-    // is not yours to read — which the server says in as many words — and a
-    // 500 or a proxy's 503 is not about this ticket at all. All three used
-    // to print "Ticket not found."
+    // Not every failure here is a missing ticket: a 500 or a proxy's 503 is
+    // not about this ticket at all. A 404 covers both "does not exist" and
+    // "exists, not yours to read" — the server answers the same way for
+    // both on purpose, so there is no third case to distinguish here; see
+    // #174.
     const { status, message } = apiRefusal(error)
     const text =
       status === 404 ? 'Ticket not found.'

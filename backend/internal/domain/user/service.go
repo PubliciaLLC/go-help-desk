@@ -388,13 +388,15 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // because writing an unconfirmed secret to the row destroys the authenticator
 // the user is still using.
 //
-// mayReplace is true only when the caller has proved a factor the account
-// already holds, in which case this is a rotation and overwrites. Otherwise it
-// is a FIRST enrolment, and the write itself refuses if MFA is on by then
-// (ErrMFAAlreadyEnrolled): the caller's "is this account unprotected?" check
-// is a separate statement from this write, so two first enrolments racing
-// could both pass it and the later one won (#338).
-func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, mayReplace bool) error {
+// allowReplace says whether this confirm may replace an existing TOTP — true
+// only when the caller has proved the current factor, the same fact
+// GenerateMFASecret's allowReenroll carries. Without it the write adopts the
+// secret only if the account still has no TOTP at the moment of writing, and
+// ErrMFAAlreadyEnrolled reports that someone else enrolled first (#338). It
+// is the caller's to say, not read off the row: a confirm that reads the row
+// after a concurrent one committed would otherwise see a TOTP, call itself a
+// rotation and overwrite the winner.
+func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, allowReplace bool) error {
 	if pendingSecret == "" {
 		return fmt.Errorf("MFA enrollment not started")
 	}
@@ -404,16 +406,16 @@ func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID
 	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
 	}
-	if mayReplace {
-		// Only the secret and the flag: the same reason as SetPassword. This
-		// read the row, validated a code, and wrote everything back.
+	// Only the secret and the flag: the same reason as SetPassword. This read
+	// the row, validated a code, and wrote everything back.
+	if allowReplace {
 		return s.store.SetMFA(ctx, userID, pendingSecret, true)
 	}
-	applied, err := s.store.SetMFAIfNotEnabled(ctx, userID, pendingSecret)
+	adopted, err := s.store.SetFirstMFA(ctx, userID, pendingSecret)
 	if err != nil {
 		return err
 	}
-	if !applied {
+	if !adopted {
 		return ErrMFAAlreadyEnrolled
 	}
 	return nil

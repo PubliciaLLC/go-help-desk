@@ -1021,7 +1021,7 @@ func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a != nil && a.Role == "user" && (t.ReporterUserID == nil || *t.ReporterUserID != a.UserID) {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		ticketNotFound(w, ticketID.String())
 		return
 	}
 
@@ -1283,7 +1283,7 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if a != nil && a.Role == "user" && (t.ReporterUserID == nil || *t.ReporterUserID != a.UserID) {
-		Error(w, http.StatusForbidden, "forbidden", "not your ticket")
+		ticketNotFound(w, ticketID.String())
 		return
 	}
 
