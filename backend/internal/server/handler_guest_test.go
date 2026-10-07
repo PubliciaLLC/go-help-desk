@@ -410,7 +410,8 @@ func TestGuest_FromYouDistinguishesTheTwoSides(t *testing.T) {
 // its assertions hold whether the branch revokes or rotates, because
 // closed_at gates the query either way.
 
-// The per-ticket resend budget lives in the handler, and the budget is the
+// The per-ticket resend budget lives in Server.PrepareGuestLink, charged at
+// send time, and the budget is the
 // RateLimiter's contract, so it is asserted where it can actually be observed:
 // the limiter directly, and the endpoint answering identically either way.
 //

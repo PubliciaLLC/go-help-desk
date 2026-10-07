@@ -2,6 +2,7 @@ package notification
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,4 +85,20 @@ func TestEvent_GuestTokenStaysOutOfTheWebhookPayload(t *testing.T) {
 	require.NotContains(t, string(raw), "a-secret-access-token",
 		"a subscriber must not be handed the guest's credential")
 	require.NotContains(t, string(raw), "GuestToken")
+}
+
+// GuestLink and GuestToken are for the email channel. Event's JSON is the raw
+// webhook body, and a webhook subscriber must never receive a guest's access
+// token, nor the flag that says one is coming (#164).
+func TestEvent_GuestFieldsNeverReachTheWebhookBody(t *testing.T) {
+	ev := Event{Type: EventTicketReplied, GuestToken: "raw-token", GuestLink: true}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, leaked := range []string{"raw-token", "GuestToken", "GuestLink", "guest_link"} {
+		if strings.Contains(string(b), leaked) {
+			t.Fatalf("webhook body carries %q: %s", leaked, b)
+		}
+	}
 }

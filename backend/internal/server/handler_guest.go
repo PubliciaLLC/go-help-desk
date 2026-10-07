@@ -3,15 +3,18 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
 
 // The guest surface. Five routes, each doing one thing, mounted outside the
@@ -306,52 +309,55 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Synchronous, and the response says nothing either way.
-	//
-	// There is a timing signal here and it is worth naming rather than hiding:
-	// a match rotates the token and dials a mail server, a miss runs one
-	// SELECT, and SMTP dominates. Someone who already holds a tracking number
-	// AND an address can time this to learn whether they go together.
-	//
-	// It was briefly a goroutine. That is the wrong fix twice over: it puts an
-	// unbounded number of background database users behind an unauthenticated
-	// endpoint, and it is not this endpoint's problem to solve. Every
-	// notification in this application is delivered on the request goroutine —
-	// filing a ticket and replying to one carry the same signal, which is why
-	// the SMTP dial timeout exists at all. The fix is asynchronous delivery
-	// for all of them, tracked separately, not a goroutine here.
-	s.resendGuestLink(r.Context(), strings.TrimSpace(body.TrackingNumber), strings.TrimSpace(body.Email))
+	// The same work whether or not the two halves match: one queued event,
+	// no lookup (#164). Matching, the per-ticket budget and the rotation all
+	// happen at send time, in PrepareGuestLink, off the request — so this
+	// handler's timing no longer says whether a tracking number and an
+	// address go together. The response says nothing either way.
+	tn, email := strings.TrimSpace(body.TrackingNumber), strings.TrimSpace(body.Email)
+	if tn != "" && email != "" {
+		if err := s.tickets.RequestGuestLink(ctx, tn, email); err != nil {
+			slog.ErrorContext(ctx, "guest link request could not be queued", "error", err)
+		}
+	}
 
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// resendGuestLink mails a fresh link when the two halves match a ticket that
-// still accepts access. Failures are swallowed on purpose: the caller learns
-// nothing either way.
-func (s *Server) resendGuestLink(ctx context.Context, trackingNumber, email string) {
-	if trackingNumber == "" || email == "" {
-		return
+// PrepareGuestLink is the send-time step for a guest link (#164), run by the
+// email channel just before it sends. A resend request arrives naming only
+// what the guest typed: it is matched here, against a ticket that still
+// accepts access, and charged to that ticket's budget. Every guest link then
+// gets a freshly rotated token from the ticket service. ok is false when
+// there is nobody to send to; the request that asked learns nothing either way.
+func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (notification.Event, bool, error) {
+	if ev.Type == notification.EventGuestLinkResent && ev.TicketID == uuid.Nil {
+		id, err := s.tickets.GuestTicketIDFor(ctx, ticket.TrackingNumber(ev.TrackingNumber), ev.Recipient)
+		if errors.Is(err, ticket.ErrGuestTokenNotFound) {
+			return ev, false, nil
+		}
+		if err != nil {
+			return ev, false, err
+		}
+		// A second budget, keyed on the ticket rather than the caller, and far
+		// tighter than the per-address one.
+		//
+		// The address budget bounds nothing useful here: a resend rotates, so
+		// anyone who can guess a tracking number — they are sequential — and
+		// knows the address could replace the link the customer is holding ten
+		// times a minute, from as many addresses as they like. That is a
+		// sustained lockout, not merely an inbox flood.
+		//
+		// Checked after the match, so a miss consumes nothing and the budget
+		// cannot be probed to learn which tickets exist. Charged once per
+		// request, on its first attempt: charging every attempt refused the
+		// retry of a send that had failed, and the request was dropped with
+		// the guest's old link already rotated away (#164 round 1). Outside
+		// the worker the attempt is 0, which is a first attempt too.
+		if notify.Attempt(ctx) <= 1 && !s.guestResendLimiter.Allow(id.String()) {
+			return ev, false, nil
+		}
+		ev.TicketID = id
 	}
-	ticketID, err := s.tickets.GuestTicketIDFor(ctx, ticket.TrackingNumber(trackingNumber), email)
-	if err != nil {
-		return
-	}
-	// A second budget, keyed on the ticket rather than the caller, and far
-	// tighter than the per-address one.
-	//
-	// The address budget bounds nothing useful here: a resend rotates, so
-	// anyone who can guess a tracking number — they are sequential — and knows
-	// the address could replace the link the customer is holding ten times a
-	// minute, from as many addresses as they like. That is a sustained lockout,
-	// not merely an inbox flood.
-	//
-	// Checked after the lookup, so a miss consumes nothing and the budget
-	// cannot be probed to learn which tickets exist.
-	if !s.guestResendLimiter.Allow(ticketID.String()) {
-		return
-	}
-	// Minting and mailing both happen in the service, which already holds the
-	// dispatcher. Whatever it returns is discarded: the caller answered 202
-	// before this ran and must not say anything different now.
-	_ = s.tickets.ResendGuestLink(ctx, ticketID)
+	return s.tickets.IssueGuestLink(ctx, ev)
 }

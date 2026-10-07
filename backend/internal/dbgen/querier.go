@@ -81,6 +81,12 @@ type Querier interface {
 	//                             the next single attempt re-locks immediately.
 	//   not locked                count it, and lock once the budget is spent.
 	ClaimMFAAttempt(ctx context.Context, arg ClaimMFAAttemptParams) (ClaimMFAAttemptRow, error)
+	// Takes up to page_limit due rows for this worker. SKIP LOCKED lets several
+	// replicas claim at once without two taking the same row; the lease
+	// (claimed_until) returns a row to the pool if its worker dies mid-send.
+	// attempts counts the claim, so a row that crashes its worker every time
+	// still runs out of attempts.
+	ClaimNotifications(ctx context.Context, arg ClaimNotificationsParams) ([]ClaimNotificationsRow, error)
 	// Clears EVERY second factor an account holds and ends every session it has
 	// open, as one statement. Returns how many users matched (0 or 1) and how many
 	// passkeys went.
@@ -205,12 +211,14 @@ type Querier interface {
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
+	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) error
 	// Rotation and revocation are the same operation: remove what the ticket has.
 	// Rotation then inserts a replacement in the same transaction; revocation
 	// does not.
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	DeleteItem(ctx context.Context, id uuid.UUID) error
+	DeleteNotification(ctx context.Context, id uuid.UUID) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
 	DeletePlugin(ctx context.Context, id string) error
@@ -304,6 +312,8 @@ type Querier interface {
 	// reset rather than silently turning MFA on against an empty secret.
 	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	EnableUser(ctx context.Context, id uuid.UUID) error
+	EnqueueNotification(ctx context.Context, arg EnqueueNotificationParams) error
+	FailNotification(ctx context.Context, arg FailNotificationParams) error
 	// The four tiers DESIGN.md documents, most specific first:
 	//   1. Priority + Category
 	//   2. Priority only      (category_id IS NULL = any category)
@@ -577,6 +587,7 @@ type Querier interface {
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error
+	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
 	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error)
 	// The admin-wide audit view (#129). Every filter is optional, and scoped_to

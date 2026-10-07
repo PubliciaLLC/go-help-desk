@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
@@ -32,10 +33,9 @@ var ErrGuestTokenNotFound = errors.New("guest token not found")
 // rotateGuestToken issues a replacement link for a ticket and returns the raw
 // token, which is the only moment it exists outside an email.
 //
-// Takes a Store rather than hanging off Service so a caller can pass the
-// transactional store from InTx: a rotation has to commit with the change that
-// caused it, or a status change that rolls back leaves the customer holding a
-// dead link.
+// Called at send time (IssueGuestLink), not inside the transaction of the
+// change: since #164 the outbox carries the event, and the raw token must not
+// be stored there. A change that rolls back queues nothing, so nothing rotates.
 //
 // Returns "" for a ticket with no guest address. Account holders sign in; there
 // is nobody to send a link to, and minting one would be a credential issued for
@@ -62,11 +62,65 @@ func rotateGuestToken(ctx context.Context, st Store, t Ticket) (string, error) {
 	return raw, nil
 }
 
+// hasGuestRecipient says whether an event about t should carry a guest
+// link. The link itself is created when the email is sent (IssueGuestLink),
+// not inside the transaction of the change: the outbox stores what it will
+// send, and the guest token table holds only hashes (#164).
+func hasGuestRecipient(t Ticket) bool {
+	return t.GuestEmail != nil && *t.GuestEmail != ""
+}
+
+// IssueGuestLink is the send-time half of a guest link (#164). Given an event
+// marked GuestLink, it re-reads the ticket and, if the ticket still accepts
+// guest access, rotates the token and returns the event carrying the raw
+// token, the current guest address and the tracking number. ok is false when
+// there is no longer anyone to send it to: the ticket was closed or deleted
+// after the event, or has no guest address. The caller then sends nothing.
+//
+// Rotating here rather than at the change moves the moment the previous link
+// dies from the commit to the send — normally seconds later. A rotation does
+// not wait on the mail server succeeding: a retry rotates again.
+func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (notification.Event, bool, error) {
+	// One transaction, the ticket row locked, so that concurrent sends for
+	// one ticket — two replicas, or a reclaimed row beside a fresh one —
+	// rotate one after another. Outside it, a DELETE and an INSERT on
+	// autocommit interleaved into two working links (#164 round 1). The lock
+	// also orders a send against a concurrent close: whichever commits first,
+	// the other sees it.
+	var (
+		t     Ticket
+		token string
+		ok    bool
+	)
+	err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
+		var err error
+		t, err = st.GetByIDForUpdate(ctx, ev.TicketID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil
+			}
+			return err
+		}
+		if !hasGuestRecipient(t) || t.StatusID == s.sys.closedID {
+			return nil
+		}
+		token, err = rotateGuestToken(ctx, st, t)
+		ok = err == nil
+		return err
+	})
+	if err != nil || !ok {
+		return ev, false, err
+	}
+	ev.GuestToken = token
+	ev.Recipient = *t.GuestEmail
+	ev.TrackingNumber = string(t.TrackingNumber)
+	return ev, true, nil
+}
+
 // IssueGuestToken rotates outside a transaction.
 //
-// Nothing in production calls it: every rotation happens inside the
-// transaction of the change that caused it, and ResendGuestLink rotates for
-// itself. It exists because a test needs a raw token to drive the HTTP surface
+// Nothing in production calls it: production rotates only at send time, in
+// IssueGuestLink, which does so under the ticket's row lock. It exists because a test needs a raw token to drive the HTTP surface
 // with, and the alternative is duplicating the hashing in the test package —
 // which is exactly where a test stops noticing that hashing happens at all.
 func (s *Service) IssueGuestToken(ctx context.Context, ticketID uuid.UUID) (string, error) {
@@ -129,35 +183,27 @@ func guestRecipient(t Ticket) string {
 	return *t.GuestEmail
 }
 
-// ResendGuestLink mints a fresh link for a ticket and mails it.
+// RequestGuestLink queues a guest's request for a fresh link, without
+// looking anything up.
 //
-// Rotating here as well as delivering is deliberate: a re-request is a new
-// credential, not a second copy of the old one, so a link someone else may
-// have seen stops working the moment the real customer asks for another.
+// The lookup used to happen here, on the request: a match rotated the token
+// and dialled the mail server, a miss ran one SELECT and returned, and the
+// difference in time told anyone holding a tracking number and an address
+// whether they went together (#164). Now every request, match or miss, queues
+// one identical event; whether it names a ticket is decided when the email
+// would be sent, off the request. The event carries what the guest typed, not
+// what the ticket holds, and no ticket id: matching is the send-time step's job.
 //
-// The caller reports nothing about the outcome — a response that varied would
-// turn the re-request endpoint into a way to test whether a ticket or an
-// address exists — so the error return is for the caller's logs, not its
-// answer.
-func (s *Service) ResendGuestLink(ctx context.Context, ticketID uuid.UUID) error {
-	t, err := s.store.GetByID(ctx, ticketID)
-	if err != nil {
-		return err
-	}
-	token, err := rotateGuestToken(ctx, s.store, t)
-	if err != nil {
-		return err
-	}
-	if token == "" {
-		return ErrGuestTokenNotFound
-	}
+// Rotating at send time as well as delivering is deliberate: a re-request is a
+// new credential, not a second copy of the old one, so a link someone else may
+// have seen stops working when the real customer asks for another.
+func (s *Service) RequestGuestLink(ctx context.Context, trackingNumber, email string) error {
 	return s.dispatcher.Dispatch(ctx, notification.Event{
 		Type:           notification.EventGuestLinkResent,
-		TicketID:       t.ID,
 		OccurredAt:     time.Now(),
-		TrackingNumber: string(t.TrackingNumber),
-		Recipient:      guestRecipient(t),
-		GuestToken:     token,
+		TrackingNumber: trackingNumber,
+		Recipient:      email,
+		GuestLink:      true,
 	})
 }
 

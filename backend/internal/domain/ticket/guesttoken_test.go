@@ -378,3 +378,39 @@ func TestGuestToken_OtherStatusChangesStillNotify(t *testing.T) {
 	require.NotEmpty(t, ev.GuestToken)
 	require.Equal(t, "guest@example.test", ev.Recipient)
 }
+
+// #164: a change marks its event for a guest link and creates no token. The
+// token is created when the email is sent (IssueGuestLink), so the event that
+// goes into the outbox holds no credential, and a rollback has nothing to
+// take back.
+func TestGuestLink_AChangeMarksTheEventAndCreatesNoToken(t *testing.T) {
+	h := newHarness(t)
+	h.dispatcher.sendTime = nil // the queue only, no send
+	email := "guest@example.test"
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
+		GuestEmail: &email, GuestName: "Ada",
+	})
+	require.NoError(t, err)
+	require.Len(t, h.dispatcher.events, 1)
+	ev := h.dispatcher.events[0]
+	require.True(t, ev.GuestLink)
+	require.Empty(t, ev.GuestToken, "the change created a token")
+	require.Empty(t, h.store.guestTokens, "a token row was written at the change")
+}
+
+// The send-time half refuses a ticket that closed after the event: closing
+// revokes, and a send must not issue a fresh credential to it.
+func TestGuestLink_IssueRefusesAClosedTicket(t *testing.T) {
+	h := newHarness(t)
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	tk, _ := guestTicket(t, h)
+	require.NoError(t, h.svc.Close(context.Background(), tk.ID, staff))
+	before := len(h.store.guestTokens)
+
+	_, ok, err := h.svc.IssueGuestLink(context.Background(),
+		notification.Event{Type: notification.EventTicketReplied, TicketID: tk.ID, GuestLink: true})
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Len(t, h.store.guestTokens, before, "a token was created for a closed ticket")
+}

@@ -845,6 +845,45 @@ is the whole credential, so it is treated like one: stored as a hash, replaced
 whenever the ticket changes in a way the guest is told about, revoked when the
 ticket closes, and expiring after thirty days if nothing happens at all.
 
+The replacement link is created when the email carrying it is **sent**, not
+inside the transaction of the change (#164). Notifications are queued in an
+outbox (below), and the outbox must never hold a working credential: the token
+table keeps only hashes. So the change marks its event for a guest link, and
+the send re-reads the ticket, skips a ticket that has closed since, and
+rotates. The previous link therefore dies at the send rather than the commit,
+normally seconds later.
+
+A link re-request (`POST /api/v1/guest/resend`) does no lookup on the request
+at all. Every request, matching a ticket or not, queues the same event carrying
+what the visitor typed, and matching, the per-ticket budget and the rotation
+all happen at send time. The request used to dial the mail server on a match
+and run one query on a miss, so its timing said whether a tracking number and
+an address went together, though its answer did not.
+
+**What is left of that signal.** Each server process has one worker sending
+rows in order, so a matched resend holds it for a mail-server round trip and
+a miss for one query. Someone who queues a probe and then a notification of
+their own (a resend for a ticket they hold) could time their own mail's
+arrival to learn which the probe was. It needs their own mailbox, crosses a
+queue shared with every other notification, and is far noisier than timing the
+request was. Recorded rather than claimed closed.
+
+The rotation runs in one transaction with the ticket row locked, so concurrent
+sends for one ticket (two replicas, or a reclaimed row beside a fresh one)
+leave exactly one working link. The per-ticket resend budget is charged on a
+row's first delivery attempt only, so a resend whose first send fails is
+retried rather than refused. The exception: a row whose first claim never
+reached the budget (the worker stopped mid-batch, or the lookup failed) comes
+back on a later attempt uncharged, at the cost of one extra rotation.
+
+**A guest email for a ticket that closed before it was sent is not sent.**
+Staff reply, then close, and if the reply's row has not gone out when the close
+commits, the guest gets nothing. That is not a lost answer: notification mail
+never carries the reply text, only a link to read it, and a closed ticket
+refuses every guest link. Before the outbox the same sequence sent "there is a
+new reply" with a link that was already dead. The real limit is the older one:
+a guest cannot read the last answer on a ticket closed straight after it.
+
 Submission is a separate public route rather than a relaxation of the ticket
 router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
@@ -1960,8 +1999,26 @@ on the existing webhook feature instead of as plugins.
   events, enable/disable, edit, delete). A secret is write-only: it signs
   deliveries and is never returned by the API or shown again, and leaving the
   field empty on edit keeps the stored one. There is no delivery log yet, so a
-  failing hook is visible only in the server log; that waits on a delivery
-  outbox ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)).
+  failing hook is visible only in the server log.
+- **Delivery is queued, not done on the request**
+  ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
+  that triggers a notification writes it to `notification_outbox`, one row per
+  channel (email, webhook), and returns. A worker in every server process
+  claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
+  a ten-minute lease that returns a row whose worker died; a claim takes at
+  most as many rows as can each run to their full time inside the
+  lease — a minute for the database work, plus the 40 seconds the email
+  channel's own SMTP limits allow — so rows are not reclaimed while still
+  waiting their turn), sends, and deletes
+  on success. A failed send is retried after 30 seconds, doubling to at most an
+  hour, eight attempts in all; then the row is marked failed, logged, and
+  deleted after thirty days. One row per channel means a failing channel is
+  retried alone and the other is not sent twice; a channel that cannot carry an
+  event type (webhooks never receive `guest.link_resent`) gets no row. A send
+  that panics fails its row. Delivery is at least once: a
+  worker that dies between sending and settling sends again after the lease.
+  Webhooks are not retried on HTTP failure: their dispatcher already posts in
+  the background and reports nothing back, unchanged by this.
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
   1.3. Not a plugin, and not a separate integration surface: a webhook
   subscription gains a `payload_format` setting (`raw` — today's behavior —

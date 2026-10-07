@@ -382,11 +382,24 @@ func (f *fakeStatusStore) CountByStatusForAssignee(context.Context, uuid.UUID, u
 type fakeDispatcher struct {
 	events []notification.Event
 	err    error
+	// sendTime stands in for the outbox worker's send-time step (#164): the
+	// harness sets it to Service.IssueGuestLink, so an event marked GuestLink
+	// is recorded as it would be sent — carrying the token the send created,
+	// or none if nobody is left to send it to. Rotation tests keep asserting
+	// on GuestToken, now created at send rather than at the change.
+	sendTime func(context.Context, notification.Event) (notification.Event, bool, error)
 }
 
-func (f *fakeDispatcher) Dispatch(_ context.Context, e notification.Event) error {
+func (f *fakeDispatcher) Dispatch(ctx context.Context, e notification.Event) error {
 	if f.err != nil {
 		return f.err
+	}
+	if e.GuestLink && f.sendTime != nil {
+		// A send-time failure does not undo the queueing, which succeeded;
+		// the worker retries it. Record the event as queued.
+		if sent, ok, err := f.sendTime(ctx, e); err == nil && ok {
+			e = sent
+		}
 	}
 	f.events = append(f.events, e)
 	return nil

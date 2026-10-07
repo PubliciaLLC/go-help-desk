@@ -232,7 +232,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 	}
 
 	now := time.Now()
-	var guestToken string
+	var guestLink bool
 	t := Ticket{
 		ID:             uuid.New(),
 		TrackingNumber: GenerateTrackingNumber(in.TrackingPrefix, now.Year(), seq),
@@ -263,11 +263,9 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		if err := au.Create(ctx, auditEntry(in.ReporterUserID, "ticket", t.ID, "created", nil, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing ticket creation: %w", err)
 		}
-		// A guest's first link, minted with the ticket so a rollback takes the
-		// credential with it. Returns "" for a ticket with a reporter account.
-		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
-			return err
-		}
+		// A guest's first link. Created at send time, not here (#164): see
+		// hasGuestRecipient.
+		guestLink = hasGuestRecipient(t)
 		return nil
 	}); err != nil {
 		return Ticket{}, err
@@ -324,7 +322,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 		OccurredAt:     now,
 		TrackingNumber: emailTracking,
 		Recipient:      emailRecipient,
-		GuestToken:     guestToken,
+		GuestLink:      guestLink,
 		Subject:        t.Subject,
 	})
 
@@ -416,7 +414,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	var t Ticket
 	var before map[string]any
 	var oldStatusID uuid.UUID
-	var guestToken string
+	var guestLink bool
 	var closing bool
 	now := time.Now()
 
@@ -469,8 +467,8 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 			// at /tickets/<uuid>, a page they have no account to open. The two
 			// doors into Closed now behave the same way.
 			closing = true
-		} else if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
-			return err
+		} else {
+			guestLink = hasGuestRecipient(t)
 		}
 		return nil
 	}); err != nil {
@@ -524,7 +522,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestNotifyTarget(t, closing),
-		GuestToken:     guestToken,
+		GuestLink:      guestLink,
 		Subject:        t.Subject,
 		StatusName:     newStatus.Name,
 	})
@@ -760,8 +758,9 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// The reply and, when it triggers one, the reopen commit together. Before
 	// this the reply could persist while the reopen failed, leaving the ticket
 	// Resolved with a user reply sitting under it.
-	// Rotate if and only if the replacement will be delivered, and do it in the
-	// same transaction as the reply.
+	// Mark the event for a guest link if and only if the reply will be mailed
+	// to the guest. The link itself is created when the mail is sent (#164),
+	// by IssueGuestLink under the ticket's row lock.
 	//
 	// reporterEmail is the address this reply will be mailed to, and it is
 	// empty in three cases that all used to rotate anyway: an internal note, a
@@ -771,19 +770,15 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// guest was holding, so replying, the single thing a guest comes back to
 	// do, locked them out of their own ticket.
 	//
-	// Inside the transaction because it was not, alone among the rotation
-	// paths: a DELETE and an INSERT on autocommit after the reply had already
-	// landed. A failure between them left a committed reply and no token, and
-	// two concurrent replies could interleave into two live tokens — the
-	// "rotation replaces rather than accumulates" invariant was only true
-	// serially.
+	// Rotation once ran here on autocommit, a DELETE and an INSERT after the
+	// reply had landed, and two concurrent replies interleaved into two live
+	// tokens. It moved into this transaction, and since #164 to the send,
+	// where it holds the ticket's row lock for the same reason.
 	//
-	// The honest limit: this rotates before a send whose failure the
-	// dispatcher discards, so an SMTP outage rotates and delivers nothing. The
-	// guest is not stranded — /resend mints another — but "rotate iff
-	// delivered" is really "iff a send is attempted", and #164 is where that
-	// stops being true.
-	var guestToken string
+	// The honest limit: a send rotates before it knows whether the mail got
+	// through, so a failed send leaves the old link dead until the retry
+	// succeeds. The outbox retries, and /resend mints another.
+	var guestLink bool
 	rotateFor := t.GuestEmail != nil && *t.GuestEmail != "" && reporterEmail != ""
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
@@ -791,10 +786,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			return fmt.Errorf("creating reply: %w", err)
 		}
 		if rotateFor {
-			var err error
-			if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
-				return err
-			}
+			guestLink = hasGuestRecipient(t)
 		}
 		if !reopened {
 			return nil
@@ -893,7 +885,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		ActorID:        actor.UserID,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      reporterEmail,
-		GuestToken:     guestToken,
+		GuestLink:      guestLink,
 		Subject:        t.Subject,
 		Payload: func() map[string]any {
 			p := map[string]any{
@@ -960,13 +952,13 @@ func resolutionNotesMatch(stored *string, notes string) bool {
 // where this call asked" check into the same no-op decision: Resolve has no
 // notion of a target and always passes true, so its no-op decision rests on
 // notes alone. See #225's scope note on ResolveAsDuplicate.
-func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ticketID uuid.UUID, notes string, actor Actor, now time.Time, sameTarget bool) (Ticket, string, bool, error) {
+func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, ticketID uuid.UUID, notes string, actor Actor, now time.Time, sameTarget bool) (Ticket, bool, bool, error) {
 	t, err := st.GetByIDForUpdate(ctx, ticketID)
 	if err != nil {
-		return Ticket{}, "", false, err
+		return Ticket{}, false, false, err
 	}
 	if t.StatusID == s.sys.resolvedID && sameTarget && resolutionNotesMatch(t.ResolutionNotes, notes) {
-		return t, "", true, nil
+		return t, false, true, nil
 	}
 	before := ticketMap(t)
 	oldStatusID := t.StatusID
@@ -981,21 +973,17 @@ func (s *Service) resolveInTx(ctx context.Context, st Store, au audit.Store, tic
 	applyStatusTimestamps(&t, oldStatusID, s.sys.resolved, s.sys, now)
 
 	if err := st.Update(ctx, t); err != nil {
-		return Ticket{}, "", false, fmt.Errorf("resolving ticket: %w", err)
+		return Ticket{}, false, false, fmt.Errorf("resolving ticket: %w", err)
 	}
 	if err := st.CreateStatusHistoryEntry(ctx, statusHistoryEntry(t.ID, &oldStatusID, s.sys.resolvedID, actor)); err != nil {
-		return Ticket{}, "", false, fmt.Errorf("recording resolution: %w", err)
+		return Ticket{}, false, false, fmt.Errorf("recording resolution: %w", err)
 	}
 	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "resolved", before, ticketMap(t))); err != nil {
-		return Ticket{}, "", false, fmt.Errorf("auditing resolution: %w", err)
+		return Ticket{}, false, false, fmt.Errorf("auditing resolution: %w", err)
 	}
 	// Rotate: the guest is told, and the link they are told with is the
 	// one they need to reopen inside the window.
-	guestToken, err := rotateGuestToken(ctx, st, t)
-	if err != nil {
-		return Ticket{}, "", false, err
-	}
-	return t, guestToken, false, nil
+	return t, hasGuestRecipient(t), false, nil
 }
 
 // Resolve transitions a ticket to Resolved and records resolution notes.
@@ -1004,14 +992,14 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		return Ticket{}, fmt.Errorf("cannot resolve ticket: %w", err)
 	}
 	var t Ticket
-	var guestToken string
+	var guestLink bool
 	var alreadyResolved bool
 	now := time.Now()
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		var err error
 		// Resolve has no target of its own, so its no-op decision rests on
 		// notes alone — sameTarget is unconditionally true.
-		t, guestToken, alreadyResolved, err = s.resolveInTx(ctx, st, au, ticketID, notes, actor, now, true)
+		t, guestLink, alreadyResolved, err = s.resolveInTx(ctx, st, au, ticketID, notes, actor, now, true)
 		return err
 	}); err != nil {
 		return Ticket{}, err
@@ -1047,7 +1035,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		OccurredAt:     now,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
-		GuestToken:     guestToken,
+		GuestLink:      guestLink,
 		Subject:        t.Subject,
 	})
 
@@ -1066,7 +1054,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 	}
 
 	var t Ticket
-	var guestToken string
+	var guestLink bool
 	var alreadyResolved bool
 	var alreadyLinked bool
 	now := time.Now()
@@ -1162,7 +1150,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		// created) is exactly "this call's target is the one already on
 		// record."
 		var txErr error
-		t, guestToken, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, sourceID, notes, actor, now, alreadyLinked)
+		t, guestLink, alreadyResolved, txErr = s.resolveInTx(ctx, st, au, sourceID, notes, actor, now, alreadyLinked)
 		return txErr
 	}); err != nil {
 		return Ticket{}, err
@@ -1210,7 +1198,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		OccurredAt:     now,
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
-		GuestToken:     guestToken,
+		GuestLink:      guestLink,
 		Subject:        t.Subject,
 	})
 
@@ -1386,7 +1374,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 
 	now := time.Now()
 	var oldStatusID uuid.UUID
-	var guestToken string
+	var guestLink bool
 
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
 		// Re-read under the lock. The check above answered the precondition on
@@ -1420,9 +1408,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		}
 		// A reopen issues a fresh link: closing revoked the old one, and a
 		// customer who reopens needs a way back to the thread they reopened.
-		if guestToken, err = rotateGuestToken(ctx, st, t); err != nil {
-			return err
-		}
+		guestLink = hasGuestRecipient(t)
 		return nil
 	}); err != nil {
 		return Ticket{}, err
@@ -1435,7 +1421,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Recipient:      guestRecipient(t),
-		GuestToken:     guestToken,
+		GuestLink:      guestLink,
 		Subject:        t.Subject,
 	})
 	return t, nil
