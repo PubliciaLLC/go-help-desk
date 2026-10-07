@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/pquerna/otp/totp"
 	"github.com/stretchr/testify/require"
@@ -68,15 +71,56 @@ func TestAdminResetMFA_ClearsAPasskeyOnlyAccount(t *testing.T) {
 		"the audit entry must say the reset removed a passkey")
 }
 
-// #338: the confirm route's last-mile write refuses a first enrolment once the
-// account is protected. Reaching the refusal over HTTP needs the rival to land
-// between the route's guard and its write, which this harness (one connection,
-// one request at a time) cannot interleave, so the write is exercised where
-// the window is: TestSetMFAIfNotEnabled for the SQL and
-// TestConfirmMFAEnrollmentWith_* for the service. What this test pins is the
-// route's two behaviours that ARE reachable and must not change: a first
-// enrolment still completes, and a rotation by a session that proved the
-// existing factor still overwrites.
+// #338: a first enrolment loses to one that lands between the route's guard
+// and its write.
+//
+// The race is staged inside the one connection this harness has: a trigger on
+// the user's row makes the rival enrolment land during ClaimMFAAttempt, the
+// UPDATE the route runs after its guard (requireFactorOrFirstEnrolment) and
+// before its write. That is the whole window, with the real handler on both
+// sides of it. The trigger lives in the harness transaction and rolls back
+// with it.
+//
+// It also pins that the route hands the write the caller's FactorVerified and
+// not a constant: a handler that always said "may replace" turns this 403 into
+// a 204 and the rival's secret is overwritten.
+func TestEnrollConfirm_FirstEnrolmentLosesToARivalLandingAfterTheGuard(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	s := &session{h: h}
+	res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": "user@test.local", "password": "password"})
+	require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
+
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode, "precondition: the guard admits a first enrolment: %s", body)
+	var staged struct {
+		Secret string `json:"secret"`
+	}
+	require.NoError(t, json.Unmarshal(body, &staged))
+	code, err := totp.GenerateCode(staged.Secret, time.Now())
+	require.NoError(t, err)
+
+	fn := "rival_enrol_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err = h.tx.ExecContext(ctx, `
+		CREATE FUNCTION `+fn+`() RETURNS trigger AS $$
+		BEGIN NEW.mfa_enabled := true; NEW.mfa_secret := 'RIVAL'; RETURN NEW; END $$ LANGUAGE plpgsql;
+		CREATE TRIGGER `+fn+` BEFORE UPDATE ON users FOR EACH ROW
+		WHEN (OLD.id = '`+h.userID.String()+`' AND NOT OLD.mfa_enabled AND NOT NEW.mfa_enabled)
+		EXECUTE FUNCTION `+fn+`()`)
+	require.NoError(t, err)
+
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll/confirm", map[string]any{"code": code})
+	require.Equal(t, http.StatusForbidden, res.StatusCode,
+		"the later enrolment must lose, not overwrite (#338): %s", body)
+
+	u, err := h.userSvc.GetByIDAdmin(ctx, h.userID)
+	require.NoError(t, err)
+	require.Equal(t, "RIVAL", u.MFASecret, "the first enrolment was overwritten by the later one")
+}
+
 func TestEnrollConfirm_FirstEnrolmentAndRotationStillWork(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

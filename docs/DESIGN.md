@@ -118,7 +118,7 @@ Admins manage accounts from **Admin → Users**. The user list is clickable — 
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
 - **Account info** — member since date, login type (Local / SSO / Local + SSO), MFA enrollment status.
-- **MFA reset** — clears the TOTP secret so the user re-enrolls on next login. Only shown when the user has MFA enrolled.
+- **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
 - **Groups** — view current group membership, add to groups, or remove from groups.

@@ -227,10 +227,13 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		// An existing session carries MFAPassed=true, and handleMFAEnrollStart
-		// passes that straight in as allowReenroll — so without this, whoever
-		// holds a cookie minted before the reset can enrol their own
-		// authenticator afterwards, no password needed.
+		// Belt and braces. ResetMFA's statement (ClearFactors) already ended
+		// this account's sessions in the same write, so this finds nothing to
+		// delete today. It is kept because an existing session carries
+		// MFAPassed=true and handleMFAEnrollStart passes that straight in as
+		// allowReenroll, so whoever holds a cookie minted before the reset
+		// could enrol their own authenticator afterwards, no password needed,
+		// should ResetMFA ever stop ending sessions itself.
 		if err := s.sessions.DeleteForUser(r.Context(), id); err != nil {
 			handleError(w, err)
 			return
