@@ -144,10 +144,13 @@ type Worker struct {
 	Poll        time.Duration // how often to look when nobody wakes it
 	Batch       int           // rows per claim
 	Lease       time.Duration // how long a claimed row is this worker's
-	SendTimeout time.Duration // per delivery
-	MaxAttempts int           // then the row is failed
-	Backoff     func(attempt int) time.Duration
-	KeepFailed  time.Duration // failed rows are deleted after this
+	SendTimeout time.Duration // per delivery, for work that honours a context
+	// ChannelOverrun is how long a channel can run past SendTimeout because it
+	// keeps its own time limits instead of honouring the context.
+	ChannelOverrun time.Duration
+	MaxAttempts    int // then the row is failed
+	Backoff        func(attempt int) time.Duration
+	KeepFailed     time.Duration // failed rows are deleted after this
 
 	wakeCh chan struct{}
 }
@@ -161,17 +164,19 @@ func NewWorker(store notification.Outbox, channels map[string]notification.Dispa
 		// row in it running to SendTimeout — or another replica claims rows
 		// this worker has not reached yet and sends them twice (#164 round
 		// 1: a batch of 20 against a 20-second SMTP timeout was 400 seconds
-		// under a 300-second lease). SendTimeout bounds a whole send: the
-		// guest-link step's database work, which honours it, plus the email
-		// channel's own SMTP bounds (20 s to dial, 20 s on the connection),
-		// which do not. Two minutes covers both; 4 × 2 fits in 10 with room.
-		Batch:       4,
-		Lease:       10 * time.Minute,
-		SendTimeout: 2 * time.Minute,
-		MaxAttempts: 8,
-		Backoff:     defaultBackoff,
-		KeepFailed:  30 * 24 * time.Hour,
-		wakeCh:      make(chan struct{}, 1),
+		// under a 300-second lease). A send is SendTimeout for the work that
+		// honours a context (the guest-link step's database work) plus
+		// ChannelOverrun for what does not (the email channel's own SMTP
+		// bounds: 20 s to dial, 20 s on the connection). 4 × (1 m + 40 s)
+		// fits in 10 minutes with room.
+		Batch:          4,
+		Lease:          10 * time.Minute,
+		SendTimeout:    time.Minute,
+		ChannelOverrun: 40 * time.Second,
+		MaxAttempts:    8,
+		Backoff:        defaultBackoff,
+		KeepFailed:     30 * 24 * time.Hour,
+		wakeCh:         make(chan struct{}, 1),
 	}
 }
 
@@ -197,10 +202,11 @@ func (w *Worker) Wake() {
 // inside the lease, so a claimed row is never handed to another worker while
 // this one still means to send it.
 func (w *Worker) safeBatch() int {
-	if w.SendTimeout <= 0 {
+	perSend := w.SendTimeout + w.ChannelOverrun
+	if perSend <= 0 {
 		return w.Batch
 	}
-	most := int(w.Lease/w.SendTimeout) - 1
+	most := int(w.Lease/perSend) - 1
 	return max(1, min(w.Batch, most))
 }
 
@@ -219,7 +225,10 @@ func (w *Worker) Run(ctx context.Context) {
 		for {
 			n, err := w.RunOnce(ctx)
 			if err != nil {
-				w.log.ErrorContext(ctx, "notification outbox: claim failed", "error", err)
+				// A claim cut off by shutdown is not an error worth reporting.
+				if ctx.Err() == nil {
+					w.log.ErrorContext(ctx, "notification outbox: claim failed", "error", err)
+				}
 				break
 			}
 			if n < w.Batch {
@@ -316,12 +325,13 @@ func (w *Worker) fail(ctx context.Context, row notification.OutboxRow, reason st
 type GuestLinkDispatcher struct {
 	next    notification.Dispatcher
 	prepare func(context.Context, notification.Event) (notification.Event, bool, error)
+	log     *slog.Logger
 }
 
 // NewGuestLinkDispatcher wraps next with the send-time guest link step.
 func NewGuestLinkDispatcher(next notification.Dispatcher,
 	prepare func(context.Context, notification.Event) (notification.Event, bool, error)) *GuestLinkDispatcher {
-	return &GuestLinkDispatcher{next: next, prepare: prepare}
+	return &GuestLinkDispatcher{next: next, prepare: prepare, log: slog.Default()}
 }
 
 func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
@@ -336,9 +346,14 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 		// Nobody left to send a link to: a resend that matched nothing or
 		// was over its budget, or a ticket closed, deleted or without a guest
 		// address since the event. Settled, not retried. Logged without the
-		// recipient, so a miss stays as quiet in the log as on the wire.
-		slog.InfoContext(ctx, "notification outbox: guest-link mail not sent; nobody to send it to",
-			"event", ev.Type, "ticket_id", ev.TicketID)
+		// recipient or what the visitor typed. An operator reading the log
+		// can tell a resend miss (this line) from a match (a sent mail); the
+		// log is not the channel the resend endpoint must keep quiet on.
+		attrs := []any{"event", ev.Type}
+		if ev.TicketID != uuid.Nil {
+			attrs = append(attrs, "ticket_id", ev.TicketID)
+		}
+		d.log.InfoContext(ctx, "notification outbox: guest-link mail not sent; nobody to send it to", attrs...)
 		return nil
 	}
 	return d.next.Dispatch(ctx, sent)

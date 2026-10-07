@@ -2006,8 +2006,10 @@ on the existing webhook feature instead of as plugins.
   channel (email, webhook), and returns. A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
   a ten-minute lease that returns a row whose worker died; a claim takes at
-  most as many rows as can each run to the two-minute send limit inside the
-  lease, so rows are not reclaimed while still waiting their turn), sends, and deletes
+  most as many rows as can each run to their full time inside the
+  lease — a minute for the database work, plus the 40 seconds the email
+  channel's own SMTP limits allow — so rows are not reclaimed while still
+  waiting their turn), sends, and deletes
   on success. A failed send is retried after 30 seconds, doubling to at most an
   hour, eight attempts in all; then the row is marked failed, logged, and
   deleted after thirty days. One row per channel means a failing channel is

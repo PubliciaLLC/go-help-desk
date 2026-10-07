@@ -73,10 +73,12 @@ func TestGuestResend_TheRequestDoesTheSameWorkForAMatchAndAMiss(t *testing.T) {
 	require.Equal(t, http.StatusOK, still.StatusCode, "the request rotated the link itself")
 }
 
-// A ticket closed between the request and the send gets no link: closing
+// A resend for a ticket closed between the request and the send gets no link
+// (the resend match itself excludes closed tickets; the reply-then-close path
+// is IssueRefusesAClosedTicket in the domain, and changes with #349): closing
 // revokes, and a send must not hand out a fresh credential to a ticket that
 // no longer accepts one.
-func TestGuestLink_ATicketClosedBeforeTheSendGetsNoLink(t *testing.T) {
+func TestGuestLink_AResendForATicketClosedBeforeTheSendGetsNoLink(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()

@@ -373,15 +373,15 @@ func TestGuestLinkDispatcher(t *testing.T) {
 // defaults must leave room, and a configuration that does not is reduced.
 func TestWorker_ABatchFitsInsideItsLease(t *testing.T) {
 	w := NewWorker(newFakeOutbox(), nil, quietLog())
-	require.Greater(t, w.Lease, time.Duration(w.Batch)*w.SendTimeout,
+	perSend := w.SendTimeout + w.ChannelOverrun
+	require.Greater(t, w.Lease, time.Duration(w.Batch)*perSend,
 		"the default batch can outlast its lease")
-	// SendTimeout must cover the email channel's own SMTP bounds (20 s to
-	// dial, 20 s on the connection), which do not honour it, on top of the
-	// send-time step's database work.
-	require.GreaterOrEqual(t, w.SendTimeout, time.Minute+40*time.Second)
+	// The email channel keeps its own SMTP limits (20 s to dial, 20 s on the
+	// connection) and ignores the context, so the overrun must cover them.
+	require.GreaterOrEqual(t, w.ChannelOverrun, 40*time.Second)
 	require.Equal(t, w.Batch, w.safeBatch())
 
-	w.Batch, w.Lease, w.SendTimeout = 20, 5*time.Minute, time.Minute
+	w.Batch, w.Lease, w.SendTimeout, w.ChannelOverrun = 20, 5*time.Minute, time.Minute, 0
 	require.LessOrEqual(t, time.Duration(w.safeBatch())*w.SendTimeout, w.Lease-w.SendTimeout)
 	w.Lease = 30 * time.Second
 	require.Equal(t, 1, w.safeBatch(), "never below one row")
@@ -429,6 +429,14 @@ func TestOutboxDispatcher_NoEmailRowWithNobodyToMail(t *testing.T) {
 	ev.GuestLink = true
 	require.NoError(t, d.Dispatch(context.Background(), ev))
 	require.Equal(t, []string{"email"}, store.channelsQueued())
+
+	// And the ordinary case: an account holder's reply has a recipient and no
+	// guest link. Round 3 changed the filter to GuestLink alone and every test
+	// passed, silently dropping every account holder's reply mail.
+	store2 := newFakeOutbox()
+	ev.Recipient, ev.GuestLink = "reporter@example.com", false
+	require.NoError(t, NewOutboxDispatcher(store2, []string{"email"}, nil).Dispatch(context.Background(), ev))
+	require.Equal(t, []string{"email"}, store2.channelsQueued(), "an account holder's mail was not queued")
 }
 
 // The production loop: drains more rows than one batch, wakes on demand,
@@ -442,7 +450,7 @@ func TestWorker_RunDrainsWakesAndStops(t *testing.T) {
 	}
 	w := newTestWorker(store, map[string]notification.Dispatcher{"email": email})
 	w.Poll = time.Hour // only a wake or the first pass may deliver
-	w.Batch, w.Lease, w.SendTimeout = 50, time.Minute, 10*time.Second
+	w.Batch, w.Lease, w.SendTimeout, w.ChannelOverrun = 50, time.Minute, 10*time.Second, 0
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
