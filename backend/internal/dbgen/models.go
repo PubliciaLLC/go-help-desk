@@ -132,6 +132,18 @@ type Item struct {
 	Active    bool      `json:"active"`
 }
 
+type NotificationOutbox struct {
+	ID           uuid.UUID       `json:"id"`
+	Channel      string          `json:"channel"`
+	Event        json.RawMessage `json:"event"`
+	CreatedAt    time.Time       `json:"created_at"`
+	AvailableAt  time.Time       `json:"available_at"`
+	ClaimedUntil sql.NullTime    `json:"claimed_until"`
+	Attempts     int32           `json:"attempts"`
+	LastError    sql.NullString  `json:"last_error"`
+	FailedAt     sql.NullTime    `json:"failed_at"`
+}
+
 type OauthClient struct {
 	ID           uuid.UUID `json:"id"`
 	ClientID     string    `json:"client_id"`
