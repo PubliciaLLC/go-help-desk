@@ -338,8 +338,16 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 		// before the user is looked up, so a refusal does not leave it
 		// behind either.
 		//
-		// Fails closed: with the cookie still live, answering with a session
-		// would be the exact hole this closes.
+		// "Spent" means the browser is told to delete the cookie (same name,
+		// domain and path the library set it with). It is not server-side
+		// invalidation: the JWT is stateless, so a copy captured before this
+		// hand-over stays valid until it expires (an hour by default).
+		//
+		// The error branch below is defensive. CookieSessionProvider's
+		// DeleteSession can only fail on a malformed cookie lookup, which
+		// RequireAccount has just ruled out by reading it, so it is not
+		// reachable today; if a different SessionProvider is ever configured,
+		// failing closed is the safe default.
 		if err := mw.Session.DeleteSession(w, r); err != nil {
 			handleError(w, fmt.Errorf("clearing SAML login cookie: %w", err))
 			return

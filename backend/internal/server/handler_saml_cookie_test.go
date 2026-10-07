@@ -53,7 +53,13 @@ func samlIdP(t *testing.T) *httptest.Server {
 type samlHarness struct {
 	*harness
 	codec samlsp.JWTSessionCodec
+	// issued is the (name, domain, path) the library gives its cookie when it
+	// sets it. A browser deletes a cookie only when the deletion names the same
+	// triple, so "cleared" below is judged against this, not against a name.
+	issued cookieKey
 }
+
+type cookieKey struct{ name, domain, path string }
 
 func newSAMLHarness(t *testing.T) (*samlHarness, func()) {
 	t.Helper()
@@ -72,8 +78,22 @@ func newSAMLHarness(t *testing.T) (*samlHarness, func()) {
 	// it is the cookie's issuer and audience.
 	sp, err := url.Parse(h.cfgBaseURL() + "/api/v1/auth/")
 	require.NoError(t, err)
-	codec := samlsp.DefaultSessionCodec(samlsp.Options{URL: *sp, Key: key})
-	return &samlHarness{harness: h, codec: codec}, cleanup
+	opts := samlsp.Options{URL: *sp, Key: key}
+	codec := samlsp.DefaultSessionCodec(opts)
+
+	// Ask the library itself what it emits on login, rather than restating it.
+	rec := httptest.NewRecorder()
+	provider := samlsp.DefaultSessionProvider(opts)
+	require.NoError(t, provider.CreateSession(rec, httptest.NewRequest(http.MethodPost, "/", nil),
+		&saml.Assertion{Subject: &saml.Subject{NameID: &saml.NameID{Value: "x"}}}))
+	set := rec.Result().Cookies()
+	require.Len(t, set, 1)
+	issued := cookieKey{name: set[0].Name, domain: set[0].Domain, path: set[0].Path}
+	require.Equal(t, "token", issued.name)
+	require.NotEmpty(t, issued.domain, "precondition: the library scopes its cookie to a domain")
+	require.Equal(t, "/", issued.path)
+
+	return &samlHarness{harness: h, codec: codec, issued: issued}, cleanup
 }
 
 func (h *harness) cfgBaseURL() string { return "http://localhost:8080" }
@@ -97,10 +117,16 @@ func (sh *samlHarness) libraryCookie(t *testing.T, email string) *http.Cookie {
 	return &http.Cookie{Name: "token", Value: val}
 }
 
-// cleared reports whether res tells the browser to drop the named cookie.
-func cleared(res *http.Response, name string) bool {
+// cleared reports whether res tells the browser to drop the library's cookie.
+//
+// Name, domain and path all have to match what the library set: a deletion
+// with a different path or domain is a different cookie to the browser and
+// leaves the real one in place, which looks like success in the response.
+func (sh *samlHarness) cleared(res *http.Response) bool {
 	for _, c := range res.Cookies() {
-		if c.Name == name && c.Value == "" && (c.MaxAge < 0 || c.Expires.Before(time.Now())) {
+		if c.Name == sh.issued.name && c.Value == "" &&
+			(c.MaxAge < 0 || c.Expires.Before(time.Now())) &&
+			c.Domain == sh.issued.domain && c.Path == sh.issued.path {
 			return true
 		}
 	}
@@ -116,8 +142,8 @@ func TestSAMLComplete_SpendsTheLibraryCookie(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusSeeOther, res.StatusCode, "precondition: the hand-over works")
 	require.Equal(t, "/", res.Header.Get("Location"))
-	require.True(t, cleared(res, "token"),
-		"the library cookie must be cleared once it has been exchanged; otherwise a browser holding it can mint app sessions after every revocation (#337)")
+	require.True(t, sh.cleared(res),
+		"the library cookie must be cleared (same name, domain and path it was set with) once it has been exchanged; otherwise a browser holding it can mint app sessions after every revocation (#337)")
 
 	// The app session it was exchanged for is real.
 	var appCookie *http.Cookie
@@ -152,5 +178,5 @@ func TestSAMLComplete_SpendsTheLibraryCookieEvenWhenRefused(t *testing.T) {
 	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{cookie})
 	res.Body.Close()
 	require.Equal(t, "/login?error=account_disabled", res.Header.Get("Location"))
-	require.True(t, cleared(res, "token"))
+	require.True(t, sh.cleared(res))
 }

@@ -663,6 +663,11 @@ revocation (password change, MFA reset, a new factor) and let a browser that
 held it mint a fresh session, with whatever MFA the original assertion claimed
 (#337). Pinned by `TestSAMLComplete_SpendsTheLibraryCookie`.
 
+"Spent" means the browser is told to delete the cookie, under the same name,
+domain and path the library set it with. It is not server-side invalidation:
+the JWT is stateless, so a copy captured before the hand-over stays valid
+until it expires, an hour by default.
+
 ### Identity provider lockout guard (#300)
 
 A federated account (SAML or OIDC) can have no local password at all —
