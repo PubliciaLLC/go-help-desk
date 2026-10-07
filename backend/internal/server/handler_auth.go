@@ -324,7 +324,28 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusServiceUnavailable, "saml_not_configured", "SAML is not configured")
 		return
 	}
-	mw.RequireAccount(http.HandlerFunc(s.handleSAMLSession)).ServeHTTP(w, r)
+	mw.RequireAccount(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The library's "token" cookie is a signed JWT, valid for an hour,
+		// and RequireAccount accepts it in place of a fresh assertion. It is
+		// the library's own credential: revoking an app session (password
+		// change, MFA reset, a new factor) cannot reach it, so a browser
+		// still holding it could come back here and mint a new app session,
+		// with whatever MFA the original assertion claimed (#337).
+		//
+		// So it is spent here, the moment it has been read, and whatever the
+		// sign-in's outcome: this route is the only reader, and the app
+		// session written below is the credential from now on. Cleared
+		// before the user is looked up, so a refusal does not leave it
+		// behind either.
+		//
+		// Fails closed: with the cookie still live, answering with a session
+		// would be the exact hole this closes.
+		if err := mw.Session.DeleteSession(w, r); err != nil {
+			handleError(w, fmt.Errorf("clearing SAML login cookie: %w", err))
+			return
+		}
+		s.handleSAMLSession(w, r)
+	})).ServeHTTP(w, r)
 }
 
 // handleSAMLSession is the inner handler called by RequireAccount once the
