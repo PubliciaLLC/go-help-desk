@@ -758,8 +758,9 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 // terminal by default, so this is the way forward in every mode; the reopen
 // endpoint above is an alternative only where closed_reopen_policy allows it.
 // Staff and admin only, and the rule lives in
-// ticket.Service.CreateFollowUp (ErrForbidden for a requester, ErrNotClosed
-// for a ticket that is not closed), not here.
+// ticket.Service.CreateFollowUp (staff and admin) and CreateRequesterFollowUp
+// (the ticket's own requester): ErrForbidden for anyone else, ErrNotClosed for
+// a ticket that is not closed, ErrFollowUpExists for a requester's second.
 func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -771,7 +772,17 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
-	t, err := s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor)
+	// A requester follows up their OWN closed ticket, holding to what they
+	// could set on a normal create; staff and admin copy more. Which rule is the
+	// service's (the role decides which method will accept the actor); the one
+	// thing decided here is the active-classification check it cannot make.
+	var t ticket.Ticket
+	if a.Role == user.RoleUser {
+		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
+			s.requesterClassificationOpen)
+	} else {
+		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor)
+	}
 	if err != nil {
 		if errors.Is(err, ticket.ErrValidation) {
 			Error(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -1163,6 +1174,27 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 		}
 	}
 	return errors.New("category_id is not an active category")
+}
+
+// requesterClassificationOpen is the creation rule a requester is held to for a
+// ticket's classification, as handleCreateTicket applies it: the category must
+// be active, and the type, when there is one, active too. Staff are not held to
+// it (an old ticket is filed under the classification it belongs to, and that
+// may be archived); a requester's follow-up is a new ticket and is (#349).
+func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error {
+	if err := s.categoryIsOpen(ctx, categoryID); err != nil {
+		return err
+	}
+	if typeID != nil {
+		ty, err := s.categories.GetType(ctx, *typeID)
+		if err != nil || ty.CategoryID != categoryID {
+			return errors.New("type_id does not belong to category_id")
+		}
+		if !ty.Active {
+			return errors.New("type_id is not an active type")
+		}
+	}
+	return nil
 }
 
 // requireUserIdentity refuses a credential that has nobody behind it, and

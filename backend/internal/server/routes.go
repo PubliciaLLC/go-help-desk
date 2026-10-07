@@ -400,6 +400,13 @@ func (s *Server) guestRouter() *chi.Mux {
 		r.Use(authmw.GuestAuth(s.resolveGuestToken))
 		r.Get("/ticket", s.handleGuestGetTicket)
 	})
+	// The one write that accepts a closed ticket (#349): a guest's follow-up. It
+	// resolves for a READ and requires Closed itself (handleGuestFollowUp), so
+	// it sits apart from the group below, whose rule is the opposite.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.GuestAuth(s.resolveGuestToken))
+		r.Post("/follow-up", s.handleGuestFollowUp)
+	})
 	// Every route that changes something resolves through the WRITE lookup,
 	// which refuses a closed ticket with the same 404 as a link that never
 	// existed. Grouped by middleware, like the tickets subtree, so a write

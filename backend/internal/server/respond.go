@@ -81,6 +81,12 @@ func handleError(w http.ResponseWriter, err error) {
 	// ticket is in a state that does not accept the change, which is what
 	// 409 is for. It fell through to 500 for the same reason ErrForbidden
 	// did.
+	// A requester's second follow-up of one closed ticket (#349). 409: the
+	// ticket's state, and they already know about the first.
+	if errors.Is(err, ticket.ErrFollowUpExists) {
+		Error(w, http.StatusConflict, "follow_up_exists", "this ticket already has a follow-up")
+		return
+	}
 	// A force-reopen refused by closed_reopen_policy keeps the status and code,
 	// and says why (#349): disabled, or restricted to administrators.
 	var reopenRefused *ticket.ReopenRefusedError

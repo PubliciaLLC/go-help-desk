@@ -584,6 +584,10 @@ var (
 	// needs neither. See #277 for why it is a sentinel. 409, like ErrClosed:
 	// the ticket's state, not the caller's permissions, is what refuses.
 	ErrNotClosed = errors.New("ticket is not closed")
+	// ErrFollowUpExists is a requester's second follow-up of one closed ticket
+	// (#349): they get one, so the action cannot become a stream of tickets.
+	// Staff are not limited. 409.
+	ErrFollowUpExists = errors.New("a follow-up of this ticket already exists")
 )
 
 // The three values of the closed_reopen_policy setting (#349): whether a Closed

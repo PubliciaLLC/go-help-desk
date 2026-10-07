@@ -299,6 +299,61 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 	s.storeUploadedAttachment(w, r, t.ID, ticket.Actor{Role: user.RoleUser})
 }
 
+// POST /api/v1/guest/follow-up
+//
+// A guest opens a follow-up of the CLOSED ticket their link names (#349). A
+// deliberate exception to "every guest write route refuses a closed ticket":
+// it resolves the link for a read, because only a closed ticket is wanted, and
+// every other outcome is the same generic 404 a bad link gets — an open ticket,
+// a bad link, guest submission switched off, a follow-up already opened — so
+// the route is not an oracle for which links are real or what state a ticket is
+// in. The order matters for the same reason: Closed is checked first, then the
+// instance setting, and only then the per-address budget (a 429 would say the
+// link was good and the ticket closed).
+//
+// It is a guest ticket creation, so it is held to what POST /guest/tickets is:
+// the same switch, the same per-address budget (shared, not a second one), and
+// category only; the body is ignored, so there is no field to set. The new
+// ticket is for the same guest (address, name, phone from the original). Its
+// link goes by the ordinary guest-ticket-created mail, as a normal guest
+// ticket's does, and is NOT in the response: the answer is the new tracking
+// number and nothing else, as for a normal submission.
+func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.guestTicketFromRequest(r)
+	if !ok || !s.tickets.IsClosed(t) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
+	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
+		tooManyAttempts(w, time.Minute)
+		return
+	}
+	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx),
+		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen)
+	if err != nil {
+		switch {
+		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),
+			errors.Is(err, ticket.ErrForbidden):
+			// Not a state the guest is told about.
+			Error(w, http.StatusNotFound, "not_found", "not found")
+		case errors.Is(err, ticket.ErrValidation):
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		default:
+			handleError(w, err)
+		}
+		return
+	}
+	s.autoAssign(ctx, created)
+	JSON(w, http.StatusCreated, map[string]string{
+		"tracking_number": string(created.TrackingNumber),
+	})
+}
+
 // POST /api/v1/guest/resend
 //
 // Always 202, whether or not anything matched. A response that varied would

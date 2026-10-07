@@ -244,6 +244,100 @@ func (s *Service) CreateFollowUp(ctx context.Context, originalID uuid.UUID, trac
 	return s.create(ctx, in, actor, &orig)
 }
 
+// CreateRequesterFollowUp opens a follow-up of a Closed ticket on behalf of its
+// REQUESTER (#349): the account holder who reported it (actor.UserID set), or
+// the guest whose link reached it (actor.UserID nil, Role RoleUser). Staff and
+// admin use CreateFollowUp.
+//
+// The principle: it must not produce a ticket the requester could not have
+// created directly. So it copies only what a requester may set on creation —
+// subject, description, category, the type for an account holder (never for a
+// guest), and who they are — and takes every staff-controlled field from the
+// defaults a normal create gives: medium priority, no item, unassigned, a
+// fresh SLA clock. open applies the role's own creation rules that this
+// package cannot know (the category, and the type, must still be active, as for
+// a normal create); its refusal is an ErrValidation, before a tracking number
+// is taken.
+//
+// Limits: only the requester of that ticket (ErrForbidden otherwise), only from
+// a Closed ticket (ErrNotClosed), and ONE per closed ticket (ErrFollowUpExists;
+// a follow-up staff opened counts), re-checked on the locked row in the
+// transaction that creates the ticket and its link. Per-address rate limits are
+// the caller's, as for a normal guest ticket.
+func (s *Service) CreateRequesterFollowUp(
+	ctx context.Context,
+	originalID uuid.UUID,
+	trackingPrefix string,
+	actor Actor,
+	open func(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error,
+) (Ticket, error) {
+	if actor.Role != user.RoleUser {
+		return Ticket{}, ErrForbidden
+	}
+	orig, err := s.store.GetByID(ctx, originalID)
+	if err != nil {
+		return Ticket{}, err
+	}
+	// Whose ticket it is, decided here and not by the caller: an account
+	// holder's own, or the one a guest's link names (a ticket with a guest
+	// address and no account behind it).
+	if actor.UserID != nil {
+		if orig.ReporterUserID == nil || *orig.ReporterUserID != *actor.UserID {
+			return Ticket{}, ErrForbidden
+		}
+	} else if orig.ReporterUserID != nil || orig.GuestEmail == nil || *orig.GuestEmail == "" {
+		return Ticket{}, ErrForbidden
+	}
+	if orig.StatusID != s.sys.closedID {
+		return Ticket{}, fmt.Errorf("%w: a follow-up is created from a closed ticket", ErrNotClosed)
+	}
+	// Before the tracking number is taken. The locked re-check in create is
+	// the one that holds against a concurrent request.
+	if err := s.refuseSecondFollowUp(ctx, s.store, orig.ID); err != nil {
+		return Ticket{}, err
+	}
+	in := CreateInput{
+		Subject:        orig.Subject,
+		Description:    orig.Description,
+		CategoryID:     orig.CategoryID,
+		Priority:       PriorityMedium,
+		ReporterUserID: orig.ReporterUserID,
+		GuestEmail:     orig.GuestEmail,
+		GuestName:      orig.GuestName,
+		GuestPhone:     orig.GuestPhone,
+		TrackingPrefix: trackingPrefix,
+	}
+	if actor.UserID != nil {
+		in.TypeID = orig.TypeID // an account holder picks category and type
+	}
+	if open != nil {
+		if err := open(ctx, in.CategoryID, in.TypeID); err != nil {
+			return Ticket{}, fmt.Errorf("%s: %w", err.Error(), ErrValidation)
+		}
+	}
+	return s.create(ctx, in, actor, &orig)
+}
+
+// IsClosed reports whether t is in the Closed system status. For a caller that
+// must answer differently before it has touched anything (the guest follow-up
+// route refuses an open ticket with the generic 404 ahead of every other check).
+func (s *Service) IsClosed(t Ticket) bool { return t.StatusID == s.sys.closedID }
+
+// refuseSecondFollowUp is ErrFollowUpExists when the closed ticket already has
+// a child it opened a follow-up as.
+func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID uuid.UUID) error {
+	links, err := st.ListLinks(ctx, closedID)
+	if err != nil {
+		return err
+	}
+	for _, l := range links {
+		if l.SourceTicketID == closedID && l.LinkType == LinkParentChild {
+			return ErrFollowUpExists
+		}
+	}
+	return nil
+}
+
 // create is the one path that opens a ticket. actor is who did it, for the
 // status history, the audit entry and the event: the reporter for an ordinary
 // create (Create passes them), the member of staff for a follow-up. followUpOf
@@ -356,6 +450,21 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 	// The ticket, its opening status-history row and its audit entry commit
 	// together or not at all.
 	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		// A requester's follow-up is decided again on the locked original: it
+		// is still Closed, and no follow-up appeared since the check before the
+		// tracking number was taken (two clicks, two requests).
+		if followUpOf != nil && actor.Role == user.RoleUser {
+			locked, err := st.GetByIDForUpdate(ctx, followUpOf.ID)
+			if err != nil {
+				return err
+			}
+			if locked.StatusID != s.sys.closedID {
+				return fmt.Errorf("%w: a follow-up is created from a closed ticket", ErrNotClosed)
+			}
+			if err := s.refuseSecondFollowUp(ctx, st, followUpOf.ID); err != nil {
+				return err
+			}
+		}
 		if err := st.Create(ctx, t); err != nil {
 			return fmt.Errorf("creating ticket: %w", err)
 		}

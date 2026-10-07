@@ -234,7 +234,8 @@ func TestReporter_EveryWriteIsRefusedOnTheirClosedTicket(t *testing.T) {
 		{"reclassify", http.MethodPatch, base, map[string]any{"category_id": h.catID.String()}, http.StatusForbidden},
 		{"resolve", http.MethodPost, base + "/resolve", map[string]any{}, http.StatusForbidden},
 		{"close", http.MethodPost, base + "/close", map[string]any{}, http.StatusForbidden},
-		{"follow-up", http.MethodPost, base + "/follow-up", map[string]any{}, http.StatusForbidden},
+		// A follow-up is no longer refused to a requester (#349): they may open
+		// one of their own closed ticket. See handler_follow_up_requester_test.go.
 		{"tag", http.MethodPost, base + "/tags", map[string]any{"name": "x"}, http.StatusForbidden},
 	}
 	for _, tc := range cases {
@@ -481,11 +482,9 @@ func TestFollowUp_Refusals(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	t.Run("a reporter, on their own closed ticket", func(t *testing.T) {
-		res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets/"+closed.ID.String()+"/follow-up", nil)
-		res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode)
-	})
+	// A reporter on their own closed ticket used to be refused (403) here. They
+	// may open one now (#349); handler_follow_up_requester_test.go pins that and
+	// what is still refused to them.
 	// Decision: a follow-up continues a CLOSED ticket; an open one is refused.
 	t.Run("a ticket that is not closed", func(t *testing.T) {
 		res := h.do(t, http.MethodPost, "/api/v1/tickets/"+open.ID.String()+"/follow-up", nil)
