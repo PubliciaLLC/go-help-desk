@@ -878,7 +878,8 @@ func statusFromRow(r dbgen.Status) ticket.Status {
 	}
 }
 
-var ErrNotFound = errors.New("not found")
+// The same value as the domain sentinel, so errors.Is works against either.
+var ErrNotFound = ticket.ErrNotFound
 
 func wrapNotFound(err error, kind, id string) error {
 	if errors.Is(err, sql.ErrNoRows) {

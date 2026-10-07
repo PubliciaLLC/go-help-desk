@@ -183,6 +183,21 @@ func notFoundFor(id string) string {
 	return fmt.Sprintf("not found: ticket %s", id)
 }
 
+// ticketLookupErr answers a failed ticket lookup. A ticket that does not exist
+// gets the same refusal as one the caller may not see (notFoundFor); anything
+// else is an infrastructure failure and goes through storeErr. Without this a
+// real miss said "get ticket failed" while a hidden ticket said "not found:
+// ticket <id>", so the two were told apart. See #174.
+//
+// ident is the identifier as notFoundFor echoes it, and must be the same value
+// the hidden path uses.
+func ticketLookupErr(ctx context.Context, op, ident string, err error) (*mcpgo.CallToolResult, error) {
+	if errors.Is(err, ticket.ErrNotFound) {
+		return errResult(notFoundFor(ident))
+	}
+	return storeErr(ctx, op, err)
+}
+
 // Server wraps the MCP server and wires up help desk tools.
 type Server struct {
 	mcp     *mcpserver.MCPServer
@@ -383,16 +398,18 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 	}
 	var t ticket.Ticket
 	var err error
+	ident := id
 	if uid, parseErr := uuid.Parse(id); parseErr == nil {
+		ident = uid.String()
 		t, err = s.tickets.GetByID(ctx, uid)
 	} else {
 		t, err = s.tickets.GetByTrackingNumber(ctx, ticket.TrackingNumber(id))
 	}
 	if err != nil {
-		return storeErr(ctx, "get ticket", err)
+		return ticketLookupErr(ctx, "get ticket", ident, err)
 	}
 	if !s.visible(ctx, t) {
-		return errResult(notFoundFor(id))
+		return errResult(notFoundFor(ident))
 	}
 
 	out := ticketWithReplies{Ticket: t}
@@ -516,10 +533,10 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	t, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return storeErr(ctx, "add reply", err)
+		return ticketLookupErr(ctx, "add reply", tid.String(), err)
 	}
 	if !s.visible(ctx, t) {
-		return errResult(notFoundFor(tidStr))
+		return errResult(notFoundFor(tid.String()))
 	}
 
 	// The author is the authenticated caller, at the caller's real role.
@@ -649,10 +666,10 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return storeErr(ctx, "assign ticket", err)
+		return ticketLookupErr(ctx, "assign ticket", tid.String(), err)
 	}
 	if !s.visible(ctx, existing) {
-		return errResult(notFoundFor(tidStr))
+		return errResult(notFoundFor(tid.String()))
 	}
 
 	// Assigning to nobody has to be asked for explicitly.
@@ -726,10 +743,10 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 
 	existing, err := s.tickets.GetByID(ctx, tid)
 	if err != nil {
-		return storeErr(ctx, "update ticket status", err)
+		return ticketLookupErr(ctx, "update ticket status", tid.String(), err)
 	}
 	if !s.visible(ctx, existing) {
-		return errResult(notFoundFor(str(args, "ticket_id")))
+		return errResult(notFoundFor(tid.String()))
 	}
 
 	actorID := caller.UserID
