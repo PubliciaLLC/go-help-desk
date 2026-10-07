@@ -23,37 +23,22 @@ type Entry struct {
 
 // Store persists audit entries. Implementations must not return errors for
 // individual entry failures — log and continue rather than blocking the caller.
-// Cursor is a position in the newest-first order: an entry's created_at and
-// id, which together order every entry exactly.
-type Cursor struct {
-	CreatedAt time.Time
-	ID        uuid.UUID
-}
-
 type Store interface {
 	Create(ctx context.Context, e Entry) error
 	ListByEntity(ctx context.Context, entityType string, entityID uuid.UUID, limit, offset int) ([]Entry, error)
 
 	// Search answers the admin-wide audit view (#129): every field on Filter
-	// is optional and narrows the result, newest first. Returns the matching
-	// page plus the total count across all pages, so a caller can render
-	// "n of m" without a second round trip.
+	// is optional and narrows the result, newest first, ties broken by id.
+	// Returns the matching page plus the total count across all pages, so a
+	// caller can render "n of m" without a second round trip. Both come from
+	// the same predicate, so the total is the count of what the page pages.
 	//
-	// Search does not know about staff ticket-scope or reporter visibility —
-	// that is an HTTP-layer concern (see internal/server's CanViewTicket) —
-	// so a caller that must not show every entity has to filter the result,
-	// not rely on this to have done it.
+	// Search knows about staff ticket scope only through Filter.ScopedTo. With
+	// it unset every entity is returned; a caller that must not show every
+	// entity has to say so there rather than filter the page afterwards, which
+	// leaves the count and the offset describing a different sequence from the
+	// one the caller reads.
 	Search(ctx context.Context, f Filter, limit, offset int) ([]Entry, int, error)
-
-	// List is Search without the count, for callers that read page after
-	// page and would otherwise pay a full count per page and discard it.
-	List(ctx context.Context, f Filter, limit, offset int) ([]Entry, error)
-
-	// ListAfter is List addressed by position rather than offset: the entries
-	// that come after `after` in the newest-first order, or from the start
-	// when after is nil. For a caller reading batch after batch, where an
-	// entry written between two reads would shift an offset and repeat a row.
-	ListAfter(ctx context.Context, f Filter, after *Cursor, limit int) ([]Entry, error)
 
 	// DeleteOlderThan hard-deletes every entry created before cutoff and
 	// reports how many were removed. Used by the retention sweep
@@ -79,6 +64,19 @@ type Filter struct {
 	From       *time.Time // inclusive
 	To         *time.Time // inclusive
 	Q          string     // case-insensitive substring against entity_type and action
+
+	// ScopedTo, when set, restricts the result to ticket entries on tickets
+	// that staff member may see under the DESIGN.md staff scope: tickets they
+	// reported, are assigned, their groups are assigned, or that fall in a
+	// Category/Type their groups cover. It is ticket.CanView's staff branch
+	// applied inside the query, and server's parity test keeps the two equal.
+	//
+	// Anything that is not a ticket entry matches nothing, and neither does an
+	// entry whose ticket no longer exists — to the person asking that is the
+	// same as a ticket they may not see, so the answer cannot be used to tell
+	// the two apart. Callers that apply no scope (an administrator, or staff
+	// while scope enforcement is off) leave this nil.
+	ScopedTo *uuid.UUID
 }
 
 // sensitiveFragments marks a Before/After key as one whose value must never

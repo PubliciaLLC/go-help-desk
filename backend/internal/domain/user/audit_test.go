@@ -32,14 +32,6 @@ func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, i
 	return nil, nil
 }
 
-func (f *fakeAuditStore) ListAfter(context.Context, audit.Filter, *audit.Cursor, int) ([]audit.Entry, error) {
-	return nil, nil
-}
-
-func (f *fakeAuditStore) List(context.Context, audit.Filter, int, int) ([]audit.Entry, error) {
-	return nil, nil
-}
-
 func (f *fakeAuditStore) Search(context.Context, audit.Filter, int, int) ([]audit.Entry, int, error) {
 	return nil, 0, nil
 }

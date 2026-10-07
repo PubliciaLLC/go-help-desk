@@ -37,63 +37,34 @@ func (s *Store) Create(ctx context.Context, e audit.Entry) error {
 }
 
 func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
-	out, err := s.List(ctx, f, limit, offset)
-	if err != nil {
-		return nil, 0, err
-	}
-	params := searchParams(f)
-	total, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
-		EntityType: params.entityType,
-		Action:     params.action,
-		ActorID:    params.actorID,
-		FromTs:     params.from,
-		ToTs:       params.to,
-		Q:          params.q,
-	})
-	if err != nil {
-		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
-	}
-	return out, int(total), nil
-}
-
-func (s *Store) List(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, error) {
-	params := searchParams(f)
+	p := searchParams(f)
 	rows, err := s.q.SearchAuditLog(ctx, dbgen.SearchAuditLogParams{
-		EntityType: params.entityType,
-		Action:     params.action,
-		ActorID:    params.actorID,
-		FromTs:     params.from,
-		ToTs:       params.to,
-		Q:          params.q,
+		EntityType: p.entityType,
+		Action:     p.action,
+		ActorID:    p.actorID,
+		FromTs:     p.from,
+		ToTs:       p.to,
+		Q:          p.q,
+		ScopedTo:   p.scopedTo,
 		PageLimit:  int32(limit),
 		PageOffset: int32(offset),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("searching audit entries: %w", err)
+		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
 	}
-	return toEntries(rows), nil
-}
-
-func (s *Store) ListAfter(ctx context.Context, f audit.Filter, after *audit.Cursor, limit int) ([]audit.Entry, error) {
-	params := searchParams(f)
-	arg := dbgen.ListAuditLogAfterParams{
-		EntityType: params.entityType,
-		Action:     params.action,
-		ActorID:    params.actorID,
-		FromTs:     params.from,
-		ToTs:       params.to,
-		Q:          params.q,
-		PageLimit:  int32(limit),
-	}
-	if after != nil {
-		arg.AfterTs = sql.NullTime{Time: after.CreatedAt, Valid: true}
-		arg.AfterID = uuid.NullUUID{UUID: after.ID, Valid: true}
-	}
-	rows, err := s.q.ListAuditLogAfter(ctx, arg)
+	total, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
+		EntityType: p.entityType,
+		Action:     p.action,
+		ActorID:    p.actorID,
+		FromTs:     p.from,
+		ToTs:       p.to,
+		Q:          p.q,
+		ScopedTo:   p.scopedTo,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("listing audit entries: %w", err)
+		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
 	}
-	return toEntries(rows), nil
+	return toEntries(rows), int(total), nil
 }
 
 func toEntries(rows []dbgen.AuditLog) []audit.Entry {
@@ -123,7 +94,7 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, e
 
 type searchParamValues struct {
 	entityType, action, q sql.NullString
-	actorID               uuid.NullUUID
+	actorID, scopedTo     uuid.NullUUID
 	from, to              sql.NullTime
 }
 
@@ -133,6 +104,7 @@ func searchParams(f audit.Filter) searchParamValues {
 		action:     database.NullString(nonEmpty(f.Action)),
 		q:          database.NullString(nonEmpty(f.Q)),
 		actorID:    database.NullUUID(f.ActorID),
+		scopedTo:   database.NullUUID(f.ScopedTo),
 		from:       database.NullTime(f.From),
 		to:         database.NullTime(f.To),
 	}

@@ -57,48 +57,30 @@ func (s *Server) staffScopeFor(ctx context.Context, a *authmw.Actor) (ticket.Sta
 // Exported and context-shaped rather than request-shaped so the MCP server can
 // use the same function. Two surfaces deciding ticket visibility independently
 // is what produced GHSA-2x4f-j4jv-m2cm; there is one rule and this is it.
-func (s *Server) CanViewTicket(ctx context.Context, a *authmw.Actor, t ticket.Ticket) (bool, error) {
-	canView, err := s.ticketViewer(ctx, a)
-	if err != nil {
-		return false, err
-	}
-	return canView(t), nil
-}
-
-// ticketViewer resolves everything CanViewTicket needs about the ACTOR once,
-// and returns the per-ticket check.
 //
-// CanViewTicket recomputes the actor's side on every call — the scope-enforced
-// setting, then the caller's groups and each group's scope rules. That is fine
-// for one ticket and ruinous for thousands: the admin-wide audit view checks
-// a ticket per distinct entry, and with distinct out-of-scope tickets a
-// 50,000-row walk measured ~31s, past the server's own 30s WriteTimeout.
-// Everything about the actor is constant for a request, so it is resolved
-// here once. CanViewTicket is built on this, so there is still exactly one
-// rule — two surfaces deciding visibility independently is what produced
-// GHSA-2x4f-j4jv-m2cm.
-func (s *Server) ticketViewer(ctx context.Context, a *authmw.Actor) (func(ticket.Ticket) bool, error) {
+// A query that can apply the rule itself does, and is held equal to this by a
+// test rather than by sharing code: TicketVisibility says which mode to apply,
+// and the audit view's SQL is checked against this function in
+// handler_admin_audit_scope_test.go.
+func (s *Server) CanViewTicket(ctx context.Context, a *authmw.Actor, t ticket.Ticket) (bool, error) {
 	if a == nil {
-		return func(ticket.Ticket) bool { return false }, nil
+		return false, nil
 	}
 
 	if !s.adminSvc.TicketScopeEnforced(ctx) {
 		// Legacy behaviour: admins and staff see everything, users see their own.
 		if a.Role == user.RoleUser {
-			uid := a.UserID
-			return func(t ticket.Ticket) bool {
-				return t.ReporterUserID != nil && *t.ReporterUserID == uid
-			}, nil
+			return t.ReporterUserID != nil && *t.ReporterUserID == a.UserID, nil
 		}
-		return func(ticket.Ticket) bool { return true }, nil
+		return true, nil
 	}
 
 	scope, err := s.staffScopeFor(ctx, a)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
-	return func(t ticket.Ticket) bool { return ticket.CanView(t, actor, scope) }, nil
+	return ticket.CanView(t, actor, scope), nil
 }
 
 // canViewTicket is the request-shaped wrapper used by the HTTP handlers.
