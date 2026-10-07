@@ -72,8 +72,9 @@ func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	//
 	// Long and repetitive on purpose: the archive check below asserts the
 	// HTML does not sit in the clear, and that only holds once the payload is
-	// big enough to compress. Go 1.27's deflate stores inputs this small
-	// uncompressed — the original 52-byte payload sat in the archive
+	// big enough to compress. Go 1.27's deflate stores a block uncompressed
+	// whenever compressing it would not make it smaller, which a payload this
+	// short never does — the original 52-byte payload sat in the archive
 	// verbatim, which failed this test under 1.27 and passed under 1.26
 	// (#332). The wrap's purpose is to take away the name, not to hide the
 	// bytes; this keeps the check meaningful on every toolchain.
