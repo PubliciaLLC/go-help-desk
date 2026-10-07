@@ -259,7 +259,9 @@ name, for the same reason.
 > **Guest tickets** get a per-ticket link instead, so a recipient with no
 > account can still read the thread. The link is replaced whenever the ticket
 > changes in a way the guest is told about — a reply to them, a status change,
-> a resolution, a reopen — and revoked when the ticket closes. Internal notes,
+> a resolution, or their own reply reopening a Resolved ticket — and read-only
+> once the ticket closes: the last link sent keeps reading the ticket until it
+> expires, and writes nothing. (Closed is terminal; nothing reopens it.) Internal notes,
 > assignment and reclassification leave it alone, because nothing tells the
 > guest about those and replacing a link nobody is told about locks them out.
 
