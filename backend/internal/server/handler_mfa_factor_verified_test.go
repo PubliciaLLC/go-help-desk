@@ -212,3 +212,22 @@ func TestPasskeys_ASessionThatProvedNoFactorCannotAddOne(t *testing.T) {
 	res, body := s.send(t, http.MethodPost, "/api/v1/me/passkeys/register/start", nil)
 	require.Equal(t, http.StatusForbidden, res.StatusCode, "body: %s", body)
 }
+
+// Changing the password re-issues the session. It must carry FactorVerified
+// across, or a user who just proved their factor and then changed their
+// password would be refused at the next factor change for no reason.
+func TestMFA_PasswordChangeKeepsAProvedFactor(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	mfaOptionalForStaff(t, h)
+	s := staffPasswordLogin(t, h)
+	enrolTOTP(t, s) // this session has now proved a factor
+
+	res, body := s.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
+		"current_password": "password", "new_password": "a-much-longer-new-password",
+	})
+	require.Less(t, res.StatusCode, 300, "body: %s", body)
+
+	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode, "the proved factor was lost with the password change; body: %s", body)
+}

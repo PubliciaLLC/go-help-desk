@@ -259,7 +259,9 @@ func markPasskeyRegistrationSatisfiesMFA(sd auth.SessionData) auth.SessionData {
 // that protection (#333). Without this, it kept working — and until
 // FactorVerified existed, could replace the new factor with its own.
 func (s *Server) writeSessionAfterNewFactor(w http.ResponseWriter, r *http.Request, sd auth.SessionData) error {
-	if err := s.sessions.DeleteForUser(r.Context(), sd.UserID); err != nil {
+	// Detached, as ResetMFA is: the factor has already been written, so a
+	// client that hangs up here must not leave the other sessions alive.
+	if err := s.sessions.DeleteForUser(context.WithoutCancel(r.Context()), sd.UserID); err != nil {
 		return fmt.Errorf("ending other sessions: %w", err)
 	}
 	return s.writeSession(w, r, sd)

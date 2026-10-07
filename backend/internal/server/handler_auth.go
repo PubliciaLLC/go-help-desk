@@ -153,10 +153,17 @@ const (
 
 // samlAssertedMFA reports whether a SAML assertion's attributes say the user
 // completed a second factor. Anything else fails closed.
+//
+// Looked up under both keys the SAML library can file it under: the
+// attribute's Name, or its FriendlyName when the provider sets one. Entra
+// sends no FriendlyName for this claim; a provider that did would otherwise
+// never count as MFA.
 func samlAssertedMFA(attrs map[string][]string) bool {
-	for _, v := range attrs[samlAuthnMethodsAttr] {
-		if v == samlMultipleAuthn {
-			return true
+	for _, key := range []string{samlAuthnMethodsAttr, "authnmethodsreferences"} {
+		for _, v := range attrs[key] {
+			if v == samlMultipleAuthn {
+				return true
+			}
 		}
 	}
 	return false

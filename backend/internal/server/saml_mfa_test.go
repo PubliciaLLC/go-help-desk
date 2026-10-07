@@ -27,6 +27,9 @@ func TestSAMLAssertedMFA(t *testing.T) {
 		{"no attribute (amr not configured)", map[string][]string{}, false},
 		{"value under another attribute", map[string][]string{"role": {"http://schemas.microsoft.com/claims/multipleauthn"}}, false},
 		{"bare word, not the claim URI", map[string][]string{attr: {"multipleauthn"}}, false},
+		{"filed under a FriendlyName", map[string][]string{"authnmethodsreferences": {
+			"http://schemas.microsoft.com/claims/multipleauthn",
+		}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
