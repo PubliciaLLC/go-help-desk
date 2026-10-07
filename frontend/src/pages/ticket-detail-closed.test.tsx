@@ -140,11 +140,11 @@ describe('a closed ticket', () => {
     })
   })
 
-  it('is read-only for a requester: no reply box, no follow-up, and it says why', async () => {
+  it('is read-only for a requester: no reply box, a follow-up instead, and it says why', async () => {
     signInAs('user')
     await renderTicket(ticketWithStatus('st-closed'))
 
-    expect(screen.queryByRole('button', { name: 'Create follow-up' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create follow-up' })).not.toBeNull()
     expect(screen.queryByPlaceholderText(/type your reply/i)).toBeNull()
     expect(screen.getByRole('note').textContent).toMatch(/closed and read-only/i)
     // They can still read it.
@@ -203,11 +203,38 @@ describe('force-reopening a closed ticket', () => {
     })
   })
 
-  it('never shows it to a requester, even if the field were somehow true', async () => {
+  it('never shows Reopen to a requester, even if the field were somehow true', async () => {
     signInAs('user')
     await renderTicket(closedTicket(true))
     expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Create follow-up' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Ticket status' })).toBeNull()
+  })
+
+  it('lets a requester create a follow-up and links to the new ticket', async () => {
+    signInAs('user')
+    await renderTicket(closedTicket(false))
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: { id: 'tkt-9', tracking_number: 'TKT-0009' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create follow-up' }))
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('TKT-0009'))
+    expect(post).toHaveBeenCalledWith(`/tickets/${TICKET_ID}/follow-up`, {})
+  })
+
+  it('tells a requester when a follow-up already exists', async () => {
+    signInAs('user')
+    await renderTicket(closedTicket(false))
+    vi.spyOn(api, 'post').mockRejectedValue({
+      isAxiosError: true,
+      response: { data: { error: { code: 'follow_up_exists', message: 'this ticket already has a follow-up' } } },
+    })
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create follow-up' }))
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('already has a follow-up'))
   })
 
   it('shows no Reopen button on a Resolved ticket whatever the field says', async () => {

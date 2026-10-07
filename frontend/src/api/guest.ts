@@ -69,6 +69,25 @@ export async function createGuestTicket(input: GuestTicketInput): Promise<string
   return res.data.tracking_number
 }
 
+// A follow-up of the closed ticket this link names (#349). Returns the new
+// ticket's tracking number and nothing else: its link arrives by email, like a
+// normal submission's. Every refusal — an open ticket, a bad link, a follow-up
+// already opened, submissions switched off — is the same 404 and becomes
+// GuestFollowUpRefused, because the server deliberately does not say which; a
+// 429 is the one thing it does say, and is kept apart.
+export class GuestFollowUpRefused extends Error {}
+export class GuestFollowUpRateLimited extends Error {}
+
+export async function createGuestFollowUp(token: string): Promise<string> {
+  try {
+    const res = await guestApi.post<{ tracking_number: string }>('/follow-up', {}, auth(token))
+    return res.data.tracking_number
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 429) throw new GuestFollowUpRateLimited()
+    throw new GuestFollowUpRefused()
+  }
+}
+
 // Always resolves. The server answers 202 whether or not anything matched, so
 // that this cannot be used to find out whether a ticket or an address exists —
 // and the page must say the same thing either way.

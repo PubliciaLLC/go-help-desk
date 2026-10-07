@@ -496,7 +496,9 @@ export function TicketDetailPage() {
   // follow-up ticket either way. A Resolved ticket is still moved with the
   // status selector, or reopened by its requester's reply inside the window.
   const isClosed = statusName === 'Closed'
-  const canFollowUp = isStaffOrAdmin && isClosed
+  // Staff and admin may open one from any closed ticket; a requester from their
+  // own (the server holds them to one, and to what a normal create allows).
+  const canFollowUp = isClosed
   const canReopen = isStaffOrAdmin && isClosed && ticket.can_reopen === true
   const canClose = isAdmin && statusName === 'Resolved'
 
@@ -603,7 +605,7 @@ export function TicketDetailPage() {
               ? canReopen
                 ? 'This ticket is closed. You can reopen it, or use “Create follow-up” to continue the work in a new, linked ticket.'
                 : 'This ticket is closed and cannot be reopened. Use “Create follow-up” to continue the work in a new, linked ticket.'
-              : 'This ticket is closed and read-only. If you still need help, open a new ticket and mention this one.'}
+              : 'This ticket is closed and read-only. If you still need help, use “Create follow-up” to open a new ticket based on this one.'}
           </p>
         )}
 

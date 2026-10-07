@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { addGuestReply, getGuestTicket, GuestLinkInvalid } from '@/api/guest'
+import {
+  addGuestReply,
+  createGuestFollowUp,
+  getGuestTicket,
+  GuestFollowUpRateLimited,
+  GuestLinkInvalid,
+} from '@/api/guest'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -48,6 +54,10 @@ export function GuestTicketViewPage() {
       qc.invalidateQueries({ queryKey: ['guest-ticket', token] })
     },
   })
+
+  // A follow-up of a closed ticket (#349): a new ticket, linked to this one,
+  // whose own link is emailed. The response holds only its tracking number.
+  const followUp = useMutation({ mutationFn: () => createGuestFollowUp(token) })
 
   if (isLoading) {
     return <Shell><p className="text-sm text-gray-500">Loading…</p></Shell>
@@ -147,11 +157,37 @@ export function GuestTicketViewPage() {
               nothing writes to it (#349). Said here rather than leaving a
               reply box that could only fail. */}
           {ticket.status === 'Closed' ? (
-            <p role="note" className="border-t pt-4 text-sm text-gray-600">
-              This ticket is closed, so it can no longer be replied to. If you
-              still need help, please open a new ticket and mention{' '}
-              <span className="font-mono">{ticket.tracking_number}</span>.
-            </p>
+            <div role="note" className="space-y-3 border-t pt-4 text-sm text-gray-600">
+              <p>
+                This ticket is closed, so it can no longer be replied to. If you
+                still need help, you can open a follow-up ticket based on it.
+              </p>
+              {followUp.isSuccess ? (
+                <p role="status" className="text-green-700">
+                  Your follow-up ticket is{' '}
+                  <span className="font-mono">{followUp.data}</span>. We have
+                  emailed you a link to it.
+                </p>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => followUp.mutate()}
+                    disabled={followUp.isPending}
+                  >
+                    {followUp.isPending ? 'Creating…' : 'Create follow-up'}
+                  </Button>
+                  {followUp.isError && (
+                    <p role="alert" className="text-red-600">
+                      {followUp.error instanceof GuestFollowUpRateLimited
+                        ? 'Too many attempts. Please wait a minute and try again.'
+                        : 'We could not create a follow-up. One may already exist for this ticket; look for the email we sent you.'}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
           ) : (
             <form
               className="space-y-2 border-t pt-4"
