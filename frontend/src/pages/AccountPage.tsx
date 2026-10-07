@@ -1,16 +1,17 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRoundIcon, SmartphoneIcon, LockIcon, TrashIcon } from 'lucide-react'
-import { changePassword, enrollMFAStart, enrollMFAConfirm } from '@/api/auth'
+import { changePassword, enrollMFAStart, enrollMFAConfirm, verifyMFA } from '@/api/auth'
 import {
   addPasskey,
   listPasskeys,
   removePasskey,
+  signInWithPasskey,
   browserSupportsPasskeys,
   wasCancelled,
   type Passkey,
 } from '@/api/passkeys'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -63,6 +64,143 @@ function Notice({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       {children}
     </p>
   )
+}
+
+// ── Proving the factor you already have ──────────────────────────────────────
+
+// Adding or removing a second factor needs a session that has proved one, and
+// a login that asked for nothing has not (MFA off instance-wide, an SSO
+// provider that did not assert MFA, a session older than the rule). The server
+// says so with 403 `mfa_required`. The verify routes it points to were only
+// reachable from the login screen, so these people read "verify first" with
+// nowhere to do it (#336).
+//
+// Two routes, both already there: the TOTP code and the passkey ceremony the
+// login page uses. Which are offered follows what the account holds — a code
+// field for someone with no authenticator app is a dead end.
+
+function StepUpPanel({ onCancel, onVerified }: { onCancel: () => void; onVerified: () => void }) {
+  const user = useAuthStore((s) => s.user)
+  const supported = browserSupportsPasskeys()
+  const passkeys = useQuery({ queryKey: ['passkeys'], queryFn: listPasskeys, enabled: supported })
+  const [code, setCode] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  const titleId = useId()
+  const codeId = useId()
+
+  const hasCode = !!user?.mfa_enabled
+  const hasPasskey = supported && (passkeys.data?.length ?? 0) > 0
+
+  async function prove(run: () => Promise<void>) {
+    setError('')
+    setBusy(true)
+    try {
+      await run()
+    } catch (err) {
+      // Dismissing the browser prompt is a choice, not a failure.
+      if (!wasCancelled(err)) setError(extractError(err))
+      setBusy(false)
+      return
+    }
+    setBusy(false)
+    onVerified()
+  }
+
+  return (
+    <div
+      role="group"
+      aria-labelledby={titleId}
+      className="mt-4 space-y-3 rounded-md border border-amber-300 bg-amber-50 p-3"
+    >
+      <div>
+        <h3 id={titleId} className="text-sm font-semibold text-gray-900">
+          Verify your second factor
+        </h3>
+        <p className="mt-0.5 text-xs text-gray-600">
+          This account already has a second factor. Verify with it before changing it, and what you
+          were doing will carry on.
+        </p>
+      </div>
+
+      {hasCode && (
+        <form
+          className="flex flex-wrap items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void prove(() => verifyMFA(code))
+          }}
+        >
+          <div className="min-w-[12rem] flex-1">
+            <label htmlFor={codeId} className="mb-1 block text-xs font-medium text-gray-700">
+              Code from your authenticator app
+            </label>
+            <Input
+              id={codeId}
+              inputMode="numeric"
+              maxLength={6}
+              autoComplete="one-time-code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              required
+            />
+          </div>
+          <Button type="submit" disabled={busy}>
+            {busy ? 'Verifying…' : 'Verify'}
+          </Button>
+        </form>
+      )}
+
+      {hasPasskey && (
+        <Button
+          type="button"
+          variant={hasCode ? 'outline' : 'default'}
+          disabled={busy}
+          onClick={() => void prove(signInWithPasskey)}
+        >
+          Verify with a passkey
+        </Button>
+      )}
+
+      {!hasCode && !hasPasskey && !passkeys.isLoading && (
+        <p className="text-sm text-gray-600">
+          There is nothing here to verify with. Ask an administrator to reset your second factor.
+        </p>
+      )}
+
+      <Notice kind="error">{error}</Notice>
+      <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+        Cancel
+      </Button>
+    </div>
+  )
+}
+
+/**
+ * Lets a section hand a refused factor change to the panel above.
+ *
+ * `offer` is for an onError: when the failure is `mfa_required` it opens the
+ * panel and keeps `retry` to run once the factor is proved, and says so by
+ * returning true. Any other failure is the caller's to show.
+ */
+function useStepUp() {
+  const [again, setAgain] = useState<(() => void) | null>(null)
+  return {
+    offer(err: unknown, retry: () => void): boolean {
+      if (extractErrorCode(err) !== 'mfa_required') return false
+      setAgain(() => retry)
+      return true
+    },
+    panel: again && (
+      <StepUpPanel
+        onCancel={() => setAgain(null)}
+        onVerified={() => {
+          setAgain(null)
+          again()
+        }}
+      />
+    ),
+  }
 }
 
 // ── Password ──────────────────────────────────────────────────────────────────
@@ -208,6 +346,7 @@ function PasskeySection() {
   const [error, setError] = useState('')
   const [pending, setPending] = useState<Passkey | null>(null)
   const supported = browserSupportsPasskeys()
+  const stepUp = useStepUp()
 
   const passkeys = useQuery({ queryKey: ['passkeys'], queryFn: listPasskeys, enabled: supported })
 
@@ -218,6 +357,7 @@ function PasskeySection() {
       qc.invalidateQueries({ queryKey: ['passkeys'] })
     },
     onError: (err) => {
+      if (stepUp.offer(err, () => add.mutate())) return
       // Dismissing the browser's prompt is a choice, not a failure. Showing
       // "The operation either timed out or was not allowed" for it reads as
       // something being broken.
@@ -229,7 +369,10 @@ function PasskeySection() {
   const remove = useMutation({
     mutationFn: (p: Passkey) => removePasskey(p.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['passkeys'] }),
-    onError: (err) => setError(extractError(err)),
+    onError: (err, p) => {
+      if (stepUp.offer(err, () => remove.mutate(p))) return
+      setError(extractError(err))
+    },
   })
 
   if (!supported) {
@@ -290,6 +433,7 @@ function PasskeySection() {
         </Button>
       </form>
       <Notice kind="error">{error}</Notice>
+      {stepUp.panel}
 
       <ConfirmDialog
         open={pending !== null}
@@ -321,6 +465,7 @@ function AuthenticatorSection() {
   const [qr, setQR] = useState('')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
+  const stepUp = useStepUp()
 
   const confirm = useMutation({
     mutationFn: () => enrollMFAConfirm(code),
@@ -341,7 +486,7 @@ function AuthenticatorSection() {
       setSecret(secret)
       setQR(qr_data_url)
     } catch (err) {
-      setError(extractError(err))
+      if (!stepUp.offer(err, () => void start())) setError(extractError(err))
     } finally {
       setStarting(false)
     }
@@ -401,6 +546,7 @@ function AuthenticatorSection() {
         </Button>
       )}
       <Notice kind="error">{error}</Notice>
+      {stepUp.panel}
     </Section>
   )
 }

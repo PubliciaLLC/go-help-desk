@@ -10,7 +10,7 @@ export const api = axios.create({
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    if (err.response?.status === 401 && !isRefusedProof(err)) {
       // Redirect to login unless already there.
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login'
@@ -19,6 +19,17 @@ api.interceptors.response.use(
     return Promise.reject(err)
   }
 )
+
+// 401s that answer something the person just tried to prove, on a session that
+// is still good: a wrong second-factor code, a passkey the server refused. The
+// account page asks for these mid-session (#336), and sending someone to the
+// login page for a mistyped digit loses what they were doing. The login page
+// never needed this because it is already where they would be sent.
+const REFUSED_PROOF = ['invalid_mfa_code', 'assertion_refused']
+
+function isRefusedProof(err: unknown): boolean {
+  return REFUSED_PROOF.includes(extractErrorCode(err))
+}
 
 /**
  * The API error CODE from a failed call — `token_expired`, `email_taken` and

@@ -452,6 +452,18 @@ check made when enrolment was staged
 Sessions written before `FactorVerified` existed read it as false. A user with
 a factor signs in again before changing factors; nothing else changes.
 
+**Verifying from the Account page.** A session that owed no factor at login
+(MFA off, optional for the role, an SSO provider that asserted nothing, a
+session older than `FactorVerified`) is refused on the factor routes with 403
+`mfa_required`, and the login page never asked it for anything. The Account
+page therefore answers that refusal itself: it offers a code field when the
+account has an authenticator app and a passkey button when it has passkeys,
+posts to the same `/auth/local/mfa/verify` and `/auth/local/passkey/*` routes
+the login page uses, and then retries what the person was doing. No new route
+([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A wrong code
+or a refused key answers 401 on a live session, so the client does not treat
+`invalid_mfa_code` or `assertion_refused` as a lost session.
+
 **Signing in.** `POST /auth/local/passkey/start` and
 `POST /auth/local/passkey/finish` sit beside `/auth/local/mfa/verify` and do
 what it does: on a valid assertion, re-issue the session with `MFAPassed` true.
