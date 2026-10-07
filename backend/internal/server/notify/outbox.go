@@ -93,9 +93,14 @@ func NewOutboxDispatcher(store notification.Outbox, channels []string, wake func
 // for an event its channel would discard is a write, a claim and a delete for
 // nothing — and guest resend, which queues on every unauthenticated request,
 // wrote one webhook row per request that way (#164 round 1).
-func carries(channel string, t notification.EventType) bool {
-	if channel == "webhook" {
-		return IsWebhookEvent(string(t))
+func carries(channel string, ev notification.Event) bool {
+	switch channel {
+	case "webhook":
+		return IsWebhookEvent(string(ev.Type))
+	case "email":
+		// An account holder's status change has nobody to mail. A guest-link
+		// event may have no recipient yet: the send-time step fills it in.
+		return ev.Recipient != "" || ev.GuestLink
 	}
 	return true
 }
@@ -110,11 +115,18 @@ func (d *OutboxDispatcher) Dispatch(ctx context.Context, ev notification.Event) 
 	ctx = context.WithoutCancel(ctx)
 	var first error
 	for _, ch := range d.channels {
-		if !carries(ch, ev.Type) {
+		if !carries(ch, ev) {
 			continue
 		}
-		if err := d.store.Enqueue(ctx, uuid.New(), ch, body); err != nil && first == nil {
-			first = err
+		if err := d.store.Enqueue(ctx, uuid.New(), ch, body); err != nil {
+			// Callers mostly discard this error, so it is logged here: an
+			// enqueue that fails loses the notification, and "why did the
+			// customer never get the email" should have an answer.
+			slog.ErrorContext(ctx, "notification outbox: could not queue a notification",
+				"event", ev.Type, "ticket_id", ev.TicketID, "channel", ch, "error", err)
+			if first == nil {
+				first = err
+			}
 		}
 	}
 	if d.wake != nil {
@@ -149,10 +161,13 @@ func NewWorker(store notification.Outbox, channels map[string]notification.Dispa
 		// row in it running to SendTimeout — or another replica claims rows
 		// this worker has not reached yet and sends them twice (#164 round
 		// 1: a batch of 20 against a 20-second SMTP timeout was 400 seconds
-		// under a 300-second lease). 5 × 1 minute fits in 10 with room.
-		Batch:       5,
+		// under a 300-second lease). SendTimeout bounds a whole send: the
+		// guest-link step's database work, which honours it, plus the email
+		// channel's own SMTP bounds (20 s to dial, 20 s on the connection),
+		// which do not. Two minutes covers both; 4 × 2 fits in 10 with room.
+		Batch:       4,
 		Lease:       10 * time.Minute,
-		SendTimeout: time.Minute,
+		SendTimeout: 2 * time.Minute,
 		MaxAttempts: 8,
 		Backoff:     defaultBackoff,
 		KeepFailed:  30 * 24 * time.Hour,
@@ -245,7 +260,10 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 	settle := context.WithoutCancel(ctx)
 
 	// A row whose send panics is failed, not left to crash the process every
-	// time its lease runs out and it is claimed again.
+	// time its lease runs out and it is claimed again. Not retried even when
+	// the panic came after a guest link was rotated: the old link is then
+	// dead with no mail sent, and /resend is the guest's way back. A retry
+	// would hit the same panic.
 	defer func() {
 		if p := recover(); p != nil {
 			w.fail(settle, row, fmt.Sprintf("panic: %v", p))
@@ -315,7 +333,13 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 		return err // retried by the worker
 	}
 	if !ok {
-		return nil // nobody left to send it to; settled, not retried
+		// Nobody left to send a link to: a resend that matched nothing or
+		// was over its budget, or a ticket closed, deleted or without a guest
+		// address since the event. Settled, not retried. Logged without the
+		// recipient, so a miss stays as quiet in the log as on the wire.
+		slog.InfoContext(ctx, "notification outbox: guest-link mail not sent; nobody to send it to",
+			"event", ev.Type, "ticket_id", ev.TicketID)
+		return nil
 	}
 	return d.next.Dispatch(ctx, sent)
 }

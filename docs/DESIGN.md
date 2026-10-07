@@ -872,7 +872,17 @@ The rotation runs in one transaction with the ticket row locked, so concurrent
 sends for one ticket (two replicas, or a reclaimed row beside a fresh one)
 leave exactly one working link. The per-ticket resend budget is charged on a
 row's first delivery attempt only, so a resend whose first send fails is
-retried rather than refused.
+retried rather than refused. The exception: a row whose first claim never
+reached the budget (the worker stopped mid-batch, or the lookup failed) comes
+back on a later attempt uncharged, at the cost of one extra rotation.
+
+**A guest email for a ticket that closed before it was sent is not sent.**
+Staff reply, then close, and if the reply's row has not gone out when the close
+commits, the guest gets nothing. That is not a lost answer: notification mail
+never carries the reply text, only a link to read it, and a closed ticket
+refuses every guest link. Before the outbox the same sequence sent "there is a
+new reply" with a link that was already dead. The real limit is the older one:
+a guest cannot read the last answer on a ticket closed straight after it.
 
 Submission is a separate public route rather than a relaxation of the ticket
 router. Every route under `/tickets/{id}` would otherwise have to re-derive
@@ -1996,7 +2006,7 @@ on the existing webhook feature instead of as plugins.
   channel (email, webhook), and returns. A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
   a ten-minute lease that returns a row whose worker died; a claim takes at
-  most as many rows as can each run to the one-minute send limit inside the
+  most as many rows as can each run to the two-minute send limit inside the
   lease, so rows are not reclaimed while still waiting their turn), sends, and deletes
   on success. A failed send is retried after 30 seconds, doubling to at most an
   hour, eight attempts in all; then the row is marked failed, logged, and

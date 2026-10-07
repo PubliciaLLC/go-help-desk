@@ -375,6 +375,10 @@ func TestWorker_ABatchFitsInsideItsLease(t *testing.T) {
 	w := NewWorker(newFakeOutbox(), nil, quietLog())
 	require.Greater(t, w.Lease, time.Duration(w.Batch)*w.SendTimeout,
 		"the default batch can outlast its lease")
+	// SendTimeout must cover the email channel's own SMTP bounds (20 s to
+	// dial, 20 s on the connection), which do not honour it, on top of the
+	// send-time step's database work.
+	require.GreaterOrEqual(t, w.SendTimeout, time.Minute+40*time.Second)
 	require.Equal(t, w.Batch, w.safeBatch())
 
 	w.Batch, w.Lease, w.SendTimeout = 20, 5*time.Minute, time.Minute
@@ -409,4 +413,54 @@ func TestWorker_APanickingSendFailsItsRow(t *testing.T) {
 		require.NoError(t, err)
 	})
 	require.Len(t, store.failed, 1)
+}
+
+// No email row for an event with nobody to mail (an account holder's status
+// change), but a guest-link event without a recipient yet is kept: the
+// send-time step fills the recipient in.
+func TestOutboxDispatcher_NoEmailRowWithNobodyToMail(t *testing.T) {
+	store := newFakeOutbox()
+	d := NewOutboxDispatcher(store, []string{"email"}, nil)
+	ev := sampleEvent()
+	ev.Recipient, ev.GuestLink = "", false
+	require.NoError(t, d.Dispatch(context.Background(), ev))
+	require.Empty(t, store.channelsQueued())
+
+	ev.GuestLink = true
+	require.NoError(t, d.Dispatch(context.Background(), ev))
+	require.Equal(t, []string{"email"}, store.channelsQueued())
+}
+
+// The production loop: drains more rows than one batch, wakes on demand,
+// stops when cancelled, and reduces a batch that does not fit its lease.
+func TestWorker_RunDrainsWakesAndStops(t *testing.T) {
+	store := newFakeOutbox()
+	email := &recorder{}
+	d := NewOutboxDispatcher(store, []string{"email"}, nil)
+	for range 12 {
+		require.NoError(t, d.Dispatch(context.Background(), sampleEvent()))
+	}
+	w := newTestWorker(store, map[string]notification.Dispatcher{"email": email})
+	w.Poll = time.Hour // only a wake or the first pass may deliver
+	w.Batch, w.Lease, w.SendTimeout = 50, time.Minute, 10*time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+
+	require.Eventually(t, func() bool { return email.count() == 12 }, 5*time.Second, 10*time.Millisecond,
+		"the first pass did not drain every row across batches")
+	require.Equal(t, 5, w.Batch, "the batch was not reduced to fit the lease")
+
+	require.NoError(t, d.Dispatch(context.Background(), sampleEvent()))
+	w.Wake()
+	require.Eventually(t, func() bool { return email.count() == 13 }, 5*time.Second, 10*time.Millisecond,
+		"a wake did not deliver")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop when cancelled")
+	}
 }

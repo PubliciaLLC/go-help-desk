@@ -46,6 +46,9 @@ func TestGuestResend_TheRequestDoesTheSameWorkForAMatchAndAMiss(t *testing.T) {
 	// whose result is thrown away puts the whole timing difference back while
 	// queueing exactly the same event (#164 round 1). Postgres counts this
 	// transaction's reads per table, and the harness is one transaction.
+	// Seeding the ticket already read both tables in this transaction, so a
+	// zero here means statistics are off and the check below proves nothing.
+	require.NotZero(t, ticketTableReads(t, h), "table statistics are not being counted")
 	for _, email := range []string{"guest@test.local", "someone@else.test"} { // a match, a miss
 		before := ticketTableReads(t, h)
 		resend(t, h, string(tk.TrackingNumber), email)
