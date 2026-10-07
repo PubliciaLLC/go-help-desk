@@ -36,6 +36,33 @@ describe('AuditDiff', () => {
     expect(container.textContent).toBe('')
   })
 
+  // #329: the server replaces a secret with the same placeholder on both
+  // sides, so a rotated secret looks "unchanged" to a naive comparison and
+  // used to vanish. Showing it lets an admin see the field was touched.
+  it('shows a redacted field as [redacted] → [redacted] instead of hiding it', () => {
+    render(
+      <AuditDiff
+        before={{ status_id: 'a', api_key: '[redacted]' }}
+        after={{ status_id: 'a', api_key: '[redacted]' }}
+      />,
+    )
+
+    expect(screen.getByText(/api_key/)).toBeTruthy()
+    expect(screen.getByText(/\[redacted\] → \[redacted\]/)).toBeTruthy()
+    expect(screen.queryByText(/status_id/)).toBeNull()
+  })
+
+  it('shows a field with a redacted value nested inside it', () => {
+    render(
+      <AuditDiff
+        before={{ config: { name: 'smtp', token: '[redacted]' } }}
+        after={{ config: { name: 'smtp', token: '[redacted]' } }}
+      />,
+    )
+
+    expect(screen.getByText(/config/)).toBeTruthy()
+  })
+
   it('stringifies a non-string value rather than showing "[object Object]"', () => {
     render(<AuditDiff before={{ tags: ['a'] }} after={{ tags: ['a', 'b'] }} />)
 

@@ -165,7 +165,8 @@ Nothing is deleted unless you ask: `audit_retention_days` defaults to keeping
 everything, matching what every previous release did by having no sweep at
 all. Set it to a number of days (up to 36,525 — a century) under
 **Admin → Settings** if you want a window, and back to 0 to keep everything
-again. Only a signed-in
+again. The first sweep runs two minutes after the server starts, then once a
+day, so an instance that restarts more often than daily still prunes. Only a signed-in
 administrator can change it — an API key cannot, because shortening retention
 destroys evidence rather than merely widening access.
 
