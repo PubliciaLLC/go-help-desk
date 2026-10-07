@@ -37,6 +37,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
@@ -91,9 +92,10 @@ type harness struct {
 	sessions        *sessionstore.Store
 	authStore       *authstore.Store
 	auditStore      *auditstore.Store
-	tx              *sql.Tx        // the harness transaction, for SQL the generated queries do not offer
-	q               *dbgen.Queries // raw queries on the test transaction, for fixtures the stores won't build
-	attachDir       string         // where uploads land, so a test can check the disk
+	tx              *sql.Tx // the harness transaction, for SQL the generated queries do not offer
+	q               *dbgen.Queries
+	dispatcher      *sendTimeDispatcher // see newHarnessWith // raw queries on the test transaction, for fixtures the stores won't build
+	attachDir       string              // where uploads land, so a test can check the disk
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -160,7 +162,13 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	// lets an SLA test create a policy and then see the record a real ticket
 	// creation attaches to it.
 	slaPolicySvc := sla.NewService(slStore)
-	dispatcher := notify.NewMulti() // no-op in tests
+	// No channel actually sends in tests, but the send-time guest-link step
+	// runs as soon as an event is dispatched, standing in for the outbox
+	// worker (#164): tests that check a guest link rotates, or that the
+	// resend budget is charged, see it happen the moment the request returns.
+	// Bound to the server once it exists; the ticket service needs a
+	// dispatcher before then.
+	dispatcher := &sendTimeDispatcher{next: notify.NewMulti()}
 	// Joins the harness transaction rather than beginning a second one; see
 	// testutil.JoiningTxRunner for why a real runner cannot work here.
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, testutil.NewJoiningTxRunner(q), slaPolicySvc)
@@ -313,7 +321,9 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		server.WithAuditStore(auStore),
 	)
 
+	dispatcher.prepare = srv.PrepareGuestLink
 	h := &harness{
+		dispatcher:      dispatcher,
 		srv:             srv,
 		q:               q,
 		tx:              tx,
@@ -2270,4 +2280,29 @@ func passkeyFor(userID uuid.UUID, credID string) webauthn.Credential {
 		Transports:   []string{"usb"},
 		Name:         "Test key",
 	}
+}
+
+// sendTimeDispatcher runs the send-time guest-link step synchronously, as the
+// outbox worker would, then hands the event to next. With record set, it
+// instead only records what was queued — what a request does by itself,
+// before any worker has run.
+type sendTimeDispatcher struct {
+	next    notification.Dispatcher
+	prepare func(context.Context, notification.Event) (notification.Event, bool, error)
+	record  bool
+	queued  []notification.Event
+	// outbox, when set, receives every event instead: a test that drives the
+	// real outbox and worker end to end.
+	outbox notification.Dispatcher
+}
+
+func (d *sendTimeDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if d.outbox != nil {
+		return d.outbox.Dispatch(ctx, ev)
+	}
+	if d.record {
+		d.queued = append(d.queued, ev)
+		return nil
+	}
+	return notify.NewGuestLinkDispatcher(d.next, d.prepare).Dispatch(ctx, ev)
 }

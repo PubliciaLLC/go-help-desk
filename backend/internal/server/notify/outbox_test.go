@@ -147,6 +147,7 @@ func sampleEvent() notification.Event {
 		Recipient:      "guest@example.com",
 		Subject:        "Printer on fire",
 		StatusName:     "Open",
+		GuestLink:      true,
 	}
 }
 
@@ -190,6 +191,7 @@ func TestOutboxRecord_RoundTripsWhatChannelsRead(t *testing.T) {
 	require.Equal(t, ev.Recipient, got.Recipient)
 	require.Equal(t, ev.Subject, got.Subject)
 	require.Equal(t, ev.StatusName, got.StatusName)
+	require.True(t, got.GuestLink, "the send-time step would not run")
 
 	// What the chat and ITSM formatters render, and the raw webhook body.
 	require.Equal(t, summarize(ev, "https://desk.example"), summarize(got, "https://desk.example"))
@@ -317,4 +319,51 @@ func TestDefaultBackoff(t *testing.T) {
 	require.Equal(t, time.Minute, defaultBackoff(2))
 	require.Equal(t, 4*time.Minute, defaultBackoff(4))
 	require.Equal(t, time.Hour, defaultBackoff(20))
+}
+
+// The send-time step runs only for events marked GuestLink, sends what it
+// returns, sends nothing when nobody is left to send to, and leaves a failure
+// to the worker's retry.
+func TestGuestLinkDispatcher(t *testing.T) {
+	ctx := context.Background()
+	plain := sampleEvent()
+	plain.GuestLink = false
+
+	t.Run("an event without a guest link passes straight through", func(t *testing.T) {
+		next := &recorder{}
+		called := false
+		d := NewGuestLinkDispatcher(next, func(context.Context, notification.Event) (notification.Event, bool, error) {
+			called = true
+			return notification.Event{}, false, nil
+		})
+		require.NoError(t, d.Dispatch(ctx, plain))
+		require.False(t, called)
+		require.Equal(t, 1, next.count())
+	})
+	t.Run("sends the event the step returns", func(t *testing.T) {
+		next := &recorder{}
+		d := NewGuestLinkDispatcher(next, func(_ context.Context, ev notification.Event) (notification.Event, bool, error) {
+			ev.GuestToken = "minted-at-send"
+			return ev, true, nil
+		})
+		require.NoError(t, d.Dispatch(ctx, sampleEvent()))
+		require.Equal(t, "minted-at-send", next.got[0].GuestToken)
+	})
+	t.Run("nobody to send to: nothing sent, settled", func(t *testing.T) {
+		next := &recorder{}
+		d := NewGuestLinkDispatcher(next, func(_ context.Context, ev notification.Event) (notification.Event, bool, error) {
+			return ev, false, nil
+		})
+		require.NoError(t, d.Dispatch(ctx, sampleEvent()))
+		require.Zero(t, next.count())
+	})
+	t.Run("a failure is returned for the worker to retry", func(t *testing.T) {
+		next := &recorder{}
+		boom := errors.New("db down")
+		d := NewGuestLinkDispatcher(next, func(_ context.Context, ev notification.Event) (notification.Event, bool, error) {
+			return ev, false, boom
+		})
+		require.ErrorIs(t, d.Dispatch(ctx, sampleEvent()), boom)
+		require.Zero(t, next.count())
+	})
 }

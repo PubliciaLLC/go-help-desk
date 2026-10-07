@@ -38,6 +38,7 @@ type outboxRecord struct {
 	Recipient      string                 `json:"recipient,omitempty"`
 	Subject        string                 `json:"subject,omitempty"`
 	StatusName     string                 `json:"status_name,omitempty"`
+	GuestLink      bool                   `json:"guest_link,omitempty"`
 }
 
 func encodeEvent(ev notification.Event) ([]byte, error) {
@@ -47,7 +48,7 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 	return json.Marshal(outboxRecord{
 		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
 		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
-		Subject: ev.Subject, StatusName: ev.StatusName,
+		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
 	})
 }
 
@@ -59,7 +60,7 @@ func decodeEvent(b []byte) (notification.Event, error) {
 	return notification.Event{
 		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
 		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
-		Subject: r.Subject, StatusName: r.StatusName,
+		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
 	}, nil
 }
 
@@ -234,4 +235,34 @@ func (w *Worker) fail(ctx context.Context, row notification.OutboxRow, reason st
 	if err := w.store.Fail(ctx, row.ID, reason); err != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not mark failed", "id", row.ID, "error", err)
 	}
+}
+
+// GuestLinkDispatcher runs the send-time half of a guest link before the
+// channel it wraps (#164). An event marked GuestLink is handed to prepare,
+// which decides whether anyone is still to be sent a link and, if so, returns
+// the event carrying a freshly created token. Wrap only the email channel:
+// nothing else carries a guest link.
+type GuestLinkDispatcher struct {
+	next    notification.Dispatcher
+	prepare func(context.Context, notification.Event) (notification.Event, bool, error)
+}
+
+// NewGuestLinkDispatcher wraps next with the send-time guest link step.
+func NewGuestLinkDispatcher(next notification.Dispatcher,
+	prepare func(context.Context, notification.Event) (notification.Event, bool, error)) *GuestLinkDispatcher {
+	return &GuestLinkDispatcher{next: next, prepare: prepare}
+}
+
+func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if !ev.GuestLink {
+		return d.next.Dispatch(ctx, ev)
+	}
+	sent, ok, err := d.prepare(ctx, ev)
+	if err != nil {
+		return err // retried by the worker
+	}
+	if !ok {
+		return nil // nobody left to send it to; settled, not retried
+	}
+	return d.next.Dispatch(ctx, sent)
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
@@ -40,6 +41,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -258,7 +260,17 @@ func run() error {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
 	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default())
-	dispatcher := notify.NewMulti(emailDisp, webhookDisp)
+	// Requests queue notifications in the outbox and return; outboxWorker,
+	// started once the server exists, sends them (#164). The worker needs the
+	// server for the send-time guest-link step, and the ticket service needs a
+	// dispatcher before the server can be built, hence the late assignment.
+	outboxStore := outboxstore.New(q)
+	var outboxWorker *notify.Worker
+	dispatcher := notify.NewOutboxDispatcher(outboxStore, []string{"email", "webhook"}, func() {
+		if outboxWorker != nil {
+			outboxWorker.Wake()
+		}
+	})
 
 	// ── Registration service ──────────────────────────────────────────────────
 	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, cfg.BaseURL)
@@ -383,6 +395,15 @@ func run() error {
 	// authenticated at all.
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	defer stopSweep()
+
+	// The outbox worker. Only the email channel carries guest links, so only
+	// it gets the send-time step that creates them. Rows still queued at
+	// shutdown stay queued and are sent after the next start.
+	outboxWorker = notify.NewWorker(outboxStore, map[string]notification.Dispatcher{
+		"email":   notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink),
+		"webhook": webhookDisp,
+	}, slog.Default())
+	go outboxWorker.Run(sweepCtx)
 	go func() {
 		t := time.NewTicker(time.Hour)
 		defer t.Stop()

@@ -56,6 +56,12 @@ type Event struct {
 	// one would hold the customer's access to their own ticket.
 	GuestToken string `json:"-"`
 
+	// GuestLink marks an event whose email should carry a fresh guest link.
+	// The link is created when the email is sent, by ticket.Service's
+	// IssueGuestLink, so the raw token is never stored in the outbox (#164).
+	// Excluded from JSON like GuestToken: a webhook has no use for it.
+	GuestLink bool `json:"-"`
+
 	// Subject and StatusName exist for the webhook chat/ITSM renderers
 	// (internal/server/notify), which need a human-readable line for events
 	// whose Payload carries only ids — ticket.status_changed's Payload is

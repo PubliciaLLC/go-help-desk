@@ -845,6 +845,21 @@ is the whole credential, so it is treated like one: stored as a hash, replaced
 whenever the ticket changes in a way the guest is told about, revoked when the
 ticket closes, and expiring after thirty days if nothing happens at all.
 
+The replacement link is created when the email carrying it is **sent**, not
+inside the transaction of the change (#164). Notifications are queued in an
+outbox (below), and the outbox must never hold a working credential: the token
+table keeps only hashes. So the change marks its event for a guest link, and
+the send re-reads the ticket, skips a ticket that has closed since, and
+rotates. The previous link therefore dies at the send rather than the commit,
+normally seconds later.
+
+A link re-request (`POST /api/v1/guest/resend`) does no lookup on the request
+at all. Every request, matching a ticket or not, queues the same event carrying
+what the visitor typed, and matching, the per-ticket budget and the rotation
+all happen at send time. The request used to dial the mail server on a match
+and run one query on a miss, so its timing said whether a tracking number and
+an address went together, though its answer did not.
+
 Submission is a separate public route rather than a relaxation of the ticket
 router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
@@ -1960,8 +1975,20 @@ on the existing webhook feature instead of as plugins.
   events, enable/disable, edit, delete). A secret is write-only: it signs
   deliveries and is never returned by the API or shown again, and leaving the
   field empty on edit keeps the stored one. There is no delivery log yet, so a
-  failing hook is visible only in the server log; that waits on a delivery
-  outbox ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)).
+  failing hook is visible only in the server log.
+- **Delivery is queued, not done on the request**
+  ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
+  that triggers a notification writes it to `notification_outbox`, one row per
+  channel (email, webhook), and returns. A worker in every server process
+  claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
+  a five-minute lease that returns a row whose worker died), sends, and deletes
+  on success. A failed send is retried after 30 seconds, doubling to at most an
+  hour, eight attempts in all; then the row is marked failed, logged, and
+  deleted after thirty days. One row per channel means a failing channel is
+  retried alone and the other is not sent twice. Delivery is at least once: a
+  worker that dies between sending and settling sends again after the lease.
+  Webhooks are not retried on HTTP failure: their dispatcher already posts in
+  the background and reports nothing back, unchanged by this.
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
   1.3. Not a plugin, and not a separate integration surface: a webhook
   subscription gains a `payload_format` setting (`raw` — today's behavior —
