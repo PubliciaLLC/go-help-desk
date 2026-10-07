@@ -50,7 +50,8 @@ func TestAuditStore_Search_ScopedTo(t *testing.T) {
 	byAction := audit.Filter{Action: action}
 
 	t.Run("unscoped sees every entry, as before", func(t *testing.T) {
-		got, total, err := aus.Search(ctx, byAction, 50, 0)
+		pg, err := aus.Search(ctx, byAction, 50, 0)
+		got, total := pg.Entries, pg.Total
 		require.NoError(t, err)
 		require.Equal(t, 6, total)
 		require.Len(t, got, 6)
@@ -59,7 +60,8 @@ func TestAuditStore_Search_ScopedTo(t *testing.T) {
 	t.Run("scoped returns only entries on visible tickets, newest first", func(t *testing.T) {
 		fl := byAction
 		fl.ScopedTo = &f.staff.ID
-		got, total, err := aus.Search(ctx, fl, 50, 0)
+		pg, err := aus.Search(ctx, fl, 50, 0)
+		got, total := pg.Entries, pg.Total
 		require.NoError(t, err)
 		require.Equal(t, 2, total, "the count must be of what the page pages")
 		require.Len(t, got, 2)
@@ -69,7 +71,8 @@ func TestAuditStore_Search_ScopedTo(t *testing.T) {
 	t.Run("the offset indexes the visible sequence", func(t *testing.T) {
 		fl := byAction
 		fl.ScopedTo = &f.staff.ID
-		got, total, err := aus.Search(ctx, fl, 1, 1)
+		pg, err := aus.Search(ctx, fl, 1, 1)
+		got, total := pg.Entries, pg.Total
 		require.NoError(t, err)
 		require.Equal(t, 2, total)
 		require.Len(t, got, 1)
@@ -80,7 +83,8 @@ func TestAuditStore_Search_ScopedTo(t *testing.T) {
 		nobody := uuid.New()
 		fl := byAction
 		fl.ScopedTo = &nobody
-		got, total, err := aus.Search(ctx, fl, 50, 0)
+		pg, err := aus.Search(ctx, fl, 50, 0)
+		got, total := pg.Entries, pg.Total
 		require.NoError(t, err)
 		require.Zero(t, total)
 		require.Empty(t, got)
@@ -88,14 +92,16 @@ func TestAuditStore_Search_ScopedTo(t *testing.T) {
 
 	t.Run("filters still apply alongside scope", func(t *testing.T) {
 		fl := audit.Filter{Action: "no_such_action", ScopedTo: &f.staff.ID}
-		got, total, err := aus.Search(ctx, fl, 50, 0)
+		pg, err := aus.Search(ctx, fl, 50, 0)
+		got, total := pg.Entries, pg.Total
 		require.NoError(t, err)
 		require.Zero(t, total)
 		require.Empty(t, got)
 
 		from := at.Add(2500 * time.Millisecond) // after both visible entries
 		fl = audit.Filter{Action: action, ScopedTo: &f.staff.ID, From: &from}
-		got, total, err = aus.Search(ctx, fl, 50, 0)
+		pg, err = aus.Search(ctx, fl, 50, 0)
+		got, total = pg.Entries, pg.Total
 		require.NoError(t, err)
 		require.Zero(t, total)
 		require.Empty(t, got)

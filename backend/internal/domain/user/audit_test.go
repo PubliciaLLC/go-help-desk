@@ -32,8 +32,8 @@ func (f *fakeAuditStore) ListByEntity(context.Context, string, uuid.UUID, int, i
 	return nil, nil
 }
 
-func (f *fakeAuditStore) Search(context.Context, audit.Filter, int, int) ([]audit.Entry, int, error) {
-	return nil, 0, nil
+func (f *fakeAuditStore) Search(context.Context, audit.Filter, int, int) (audit.Page, error) {
+	return audit.Page{}, nil
 }
 
 func (f *fakeAuditStore) DeleteOlderThan(context.Context, time.Time) (int64, error) {

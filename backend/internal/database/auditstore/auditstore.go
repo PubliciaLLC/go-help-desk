@@ -36,7 +36,12 @@ func (s *Store) Create(ctx context.Context, e audit.Entry) error {
 	})
 }
 
-func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
+// Search reads the page and counts the matches, both from the same predicate.
+// The page is fetched one row long: the extra row is how HasMore is known
+// without consulting the count, which stops at audit.TotalCap. The count is
+// asked for TotalCap+1 matches, so "more than the cap" is told apart from
+// "exactly the cap" without counting any further.
+func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (audit.Page, error) {
 	p := searchParams(f)
 	rows, err := s.q.SearchAuditLog(ctx, dbgen.SearchAuditLogParams{
 		EntityType: p.entityType,
@@ -46,13 +51,13 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 		ToTs:       p.to,
 		Q:          p.q,
 		ScopedTo:   p.scopedTo,
-		PageLimit:  int32(limit),
+		PageLimit:  int32(limit + 1),
 		PageOffset: int32(offset),
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
+		return audit.Page{}, fmt.Errorf("searching audit entries: %w", err)
 	}
-	total, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
+	counted, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
 		EntityType: p.entityType,
 		Action:     p.action,
 		ActorID:    p.actorID,
@@ -60,11 +65,22 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 		ToTs:       p.to,
 		Q:          p.q,
 		ScopedTo:   p.scopedTo,
+		CountCap:   audit.TotalCap + 1,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
+		return audit.Page{}, fmt.Errorf("counting audit entries: %w", err)
 	}
-	return toEntries(rows), int(total), nil
+
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	capped := counted > audit.TotalCap
+	total := int(counted)
+	if capped {
+		total = audit.TotalCap
+	}
+	return audit.Page{Entries: toEntries(rows), Total: total, TotalCapped: capped, HasMore: hasMore}, nil
 }
 
 func toEntries(rows []dbgen.AuditLog) []audit.Entry {
