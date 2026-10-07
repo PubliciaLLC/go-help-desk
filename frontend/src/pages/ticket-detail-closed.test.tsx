@@ -5,10 +5,10 @@ import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
-// #277: Reopen is Closed-only on the server. Staff must not see the button on
-// a Resolved ticket (it 500'd there until #292, and 409s now), and a click
-// that still fails (someone else already reopened it) must show a message
-// rather than a swallowed error.
+// #349: Closed is terminal and archived read-only. Nobody reopens a closed
+// ticket (this file used to pin the Reopen button, #277), a requester can read
+// it and change nothing, and staff and admin continue the work in a new,
+// linked follow-up ticket instead.
 
 const TICKET_ID = 'tkt-1'
 
@@ -60,72 +60,109 @@ function mockApiGet(ticket: ReturnType<typeof ticketWithStatus>) {
   }) as any)
 }
 
-beforeEach(() => {
+function signInAs(role: 'staff' | 'admin' | 'user') {
   useAuthStore.setState({
     user: {
       id: 'u-1',
-      email: 'staff@example.com',
-      display_name: 'Sam Staff',
-      role: 'staff',
+      email: `${role}@example.com`,
+      display_name: 'Sam',
+      role,
       mfa_enabled: false,
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
     },
   })
+}
+
+beforeEach(() => {
+  signInAs('staff')
 })
 
-describe('reopening a ticket', () => {
-  it('shows no Reopen button on a Resolved ticket', async () => {
-    mockApiGet(ticketWithStatus('st-resolved'))
-    renderWithQuery(<TicketDetailPage />)
+async function renderTicket(ticket: ReturnType<typeof ticketWithStatus>) {
+  const getSpy = mockApiGet(ticket)
+  renderWithQuery(<TicketDetailPage />)
+  await waitFor(() => {
+    expect(document.body.textContent).toContain('Printer is on fire')
+  })
+  return getSpy
+}
 
-    await waitFor(() => {
-      expect(document.body.textContent).toContain('Printer is on fire')
-    })
-
+describe('a closed ticket', () => {
+  it('has no Reopen button for staff: nothing leaves Closed', async () => {
+    await renderTicket(ticketWithStatus('st-closed'))
     expect(screen.queryByRole('button', { name: 'Reopen' })).toBeNull()
   })
 
-  it('shows the Reopen button on a Closed ticket', async () => {
-    mockApiGet(ticketWithStatus('st-closed'))
-    renderWithQuery(<TicketDetailPage />)
-
-    await waitFor(() => {
-      expect(document.body.textContent).toContain('Printer is on fire')
-    })
-
-    expect(screen.queryByRole('button', { name: 'Reopen' })).not.toBeNull()
+  it('offers staff and admin a follow-up instead, and no way to change its status or reply', async () => {
+    for (const role of ['staff', 'admin'] as const) {
+      signInAs(role)
+      mockApiGet(ticketWithStatus('st-closed'))
+      const { unmount } = renderWithQuery(<TicketDetailPage />)
+      await waitFor(() => {
+        expect(screen.queryByRole('button', { name: 'Create follow-up' })).not.toBeNull()
+      })
+      // The status picker would only offer moves the server refuses.
+      expect(screen.queryByRole('combobox', { name: 'Ticket status' })).toBeNull()
+      expect(screen.queryByPlaceholderText(/describe the work performed/i)).toBeNull()
+      expect(screen.getByRole('note').textContent).toMatch(/cannot be reopened/i)
+      unmount()
+    }
   })
 
-  it('shows the server message when reopen fails with 409 ticket_not_closed', async () => {
-    const getSpy = mockApiGet(ticketWithStatus('st-closed'))
+  it('creates the follow-up and links to it', async () => {
+    await renderTicket(ticketWithStatus('st-closed'))
+    const post = vi.spyOn(api, 'post').mockResolvedValue({
+      data: { id: 'tkt-2', tracking_number: 'TKT-0002' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create follow-up' }))
+
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('TKT-0002'))
+    expect(post).toHaveBeenCalledWith(`/tickets/${TICKET_ID}/follow-up`, {})
+    // Once is enough: a second click would open a second ticket.
+    expect((screen.getByRole('button', { name: 'Create follow-up' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows the server message when the follow-up is refused', async () => {
+    await renderTicket(ticketWithStatus('st-closed'))
     vi.spyOn(api, 'post').mockRejectedValue({
       isAxiosError: true,
       response: {
-        data: { error: { code: 'ticket_not_closed', message: 'only a closed ticket can be reopened' } },
+        data: { error: { code: 'ticket_not_closed', message: 'only a closed ticket can have a follow-up' } },
       },
     })
-    renderWithQuery(<TicketDetailPage />)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Create follow-up' }))
 
     await waitFor(() => {
-      expect(document.body.textContent).toContain('Printer is on fire')
+      expect(screen.getByRole('alert').textContent).toContain('only a closed ticket can have a follow-up')
     })
+  })
 
-    const ticketCallsBefore = getSpy.mock.calls.filter((c) => c[0] === `/tickets/${TICKET_ID}`).length
+  it('is read-only for a requester: no reply box, no follow-up, and it says why', async () => {
+    signInAs('user')
+    await renderTicket(ticketWithStatus('st-closed'))
 
-    await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+    expect(screen.queryByRole('button', { name: 'Create follow-up' })).toBeNull()
+    expect(screen.queryByPlaceholderText(/type your reply/i)).toBeNull()
+    expect(screen.getByRole('note').textContent).toMatch(/closed and read-only/i)
+    // They can still read it.
+    expect(document.body.textContent).toContain('Literally.')
+  })
+})
 
-    await waitFor(() => {
-      const alert = screen.getByRole('alert')
-      expect(alert.textContent).toContain('only a closed ticket can be reopened')
-    })
+describe('a ticket that is not closed', () => {
+  it('shows no follow-up button on a Resolved ticket, and staff keep the status picker', async () => {
+    await renderTicket(ticketWithStatus('st-resolved'))
+    expect(screen.queryByRole('button', { name: 'Create follow-up' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Ticket status' })).not.toBeNull()
+    expect(screen.queryByRole('note')).toBeNull()
+  })
 
-    // A 409 means this page is stale (someone else already reopened it):
-    // the failed mutation must refetch so the header would show the real
-    // status once it changes, not just display an error and go stale.
-    await waitFor(() => {
-      const ticketCallsAfter = getSpy.mock.calls.filter((c) => c[0] === `/tickets/${TICKET_ID}`).length
-      expect(ticketCallsAfter).toBeGreaterThan(ticketCallsBefore)
-    })
+  it('still lets a requester reply', async () => {
+    signInAs('user')
+    await renderTicket(ticketWithStatus('st-resolved'))
+    expect(screen.queryByPlaceholderText(/type your reply/i)).not.toBeNull()
   })
 })

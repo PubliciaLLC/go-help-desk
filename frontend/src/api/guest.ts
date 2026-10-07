@@ -28,8 +28,9 @@ export interface GuestTicket {
 }
 
 // The server answers 404 for every reason a token does not work — expired,
-// rotated, never issued, ticket closed — and deliberately does not say which.
-// So there is one error here too.
+// rotated, never issued — and deliberately does not say which. So there is one
+// error here too. A reply or upload to a CLOSED ticket gets the same 404
+// (#349): reading a closed ticket works, writing to it looks like a bad link.
 export class GuestLinkInvalid extends Error {}
 
 function auth(token: string) {

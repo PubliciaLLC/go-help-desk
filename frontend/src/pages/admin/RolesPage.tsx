@@ -24,7 +24,7 @@ const ROLES: { role: Role; label: string; description: string }[] = [
     role: 'user',
     label: 'User',
     description:
-      'Create tickets. View their own tickets. Update their own tickets unless the status is Resolved. Reopen a resolved ticket within the configured reopen window.',
+      'Create tickets. View their own tickets. Reply to their own tickets until they are closed; a closed ticket is read-only to them. Reopen a Resolved ticket by replying within the configured reopen window.',
   },
 ]
 

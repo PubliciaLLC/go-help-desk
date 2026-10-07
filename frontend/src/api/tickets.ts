@@ -62,8 +62,10 @@ export async function resolveTicket(id: string, notes?: string): Promise<Ticket>
   return res.data
 }
 
-export async function reopenTicket(id: string): Promise<Ticket> {
-  const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+// The way forward from a Closed ticket (#349): a new ticket, linked to it,
+// that starts open. Nothing reopens a closed ticket.
+export async function createFollowUp(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/follow-up`, {})
   return res.data
 }
 

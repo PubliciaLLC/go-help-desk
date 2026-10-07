@@ -483,8 +483,8 @@ function GeneralPanel({
 
       <Section title="Ticket lifecycle">
         <SettingRow
-          label="Reopen window"
-          description="How many days after resolution a user may reopen their ticket by adding a reply. Set to 0 to prevent reopening entirely."
+          label="Reopen window and auto-close"
+          description="How many days after resolution a requester may reopen their ticket by adding a reply. This is also when the ticket closes: once the window ends, a Resolved ticket is closed automatically, and a closed ticket is read-only for everyone who filed it and cannot be reopened by anyone (staff start a linked follow-up ticket instead). Set to 0 for no reopening at all: a Resolved ticket is closed and read-only on the next automatic sweep, about 5 minutes later."
         >
           <div className="flex items-center gap-2">
             <Input
@@ -497,7 +497,7 @@ function GeneralPanel({
         </SettingRow>
         <SettingRow
           label="Reopen target status"
-          description="The status a ticket is moved to when a user reopens it."
+          description="The status a Resolved ticket is moved to when its requester reopens it with a reply. A closed ticket is never reopened."
         >
           <Select
             className="w-44"
