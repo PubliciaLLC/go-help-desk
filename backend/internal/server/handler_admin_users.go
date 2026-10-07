@@ -37,8 +37,12 @@ type adminUserSummary struct {
 // adminUserDetail extends the summary with group memberships.
 type adminUserDetail struct {
 	adminUserSummary
-	HasPassword bool          `json:"has_password"`
-	Groups      []group.Group `json:"groups"`
+	HasPassword bool `json:"has_password"`
+	// PasskeyCount lets the page tell "has a second factor" from "has TOTP":
+	// MFAEnabled is the TOTP flag only, so a passkey-only account read as
+	// having nothing to reset (#307).
+	PasskeyCount int           `json:"passkey_count"`
+	Groups       []group.Group `json:"groups"`
 }
 
 func authTypeOf(u user.User) string {
@@ -125,9 +129,15 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	passkeys, err := s.passkeyStore.CountForUser(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 	detail := adminUserDetail{
 		adminUserSummary: toAdminSummary(u),
 		HasPassword:      u.PasswordHash != "",
+		PasskeyCount:     int(passkeys),
 		Groups:           groups,
 	}
 	JSON(w, http.StatusOK, detail)
