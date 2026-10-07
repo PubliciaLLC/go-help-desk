@@ -316,6 +316,14 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 	return nil
 }
 
+func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
+	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
+	if err != nil {
+		return false, fmt.Errorf("setting first MFA: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *Store) SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error {
 	err := s.q.SyncFederatedUser(ctx, dbgen.SyncFederatedUserParams{
 		ID: id, Email: email, DisplayName: displayName,

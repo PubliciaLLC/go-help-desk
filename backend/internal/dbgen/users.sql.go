@@ -802,6 +802,33 @@ func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const setFirstUserMFA = `-- name: SetFirstUserMFA :execrows
+UPDATE users
+SET mfa_secret = $2, mfa_enabled = true, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL AND NOT mfa_enabled
+`
+
+type SetFirstUserMFAParams struct {
+	ID        uuid.UUID `json:"id"`
+	MfaSecret string    `json:"mfa_secret"`
+}
+
+// First enrolment only: adopts the secret if, and only if, the account still
+// has no TOTP when the row is written (#338). The handler's "no factor yet"
+// check and the write used to be two statements, so concurrent first
+// confirms all passed the check, all wrote, and all answered success while
+// only the last held the account. Under READ COMMITTED a second UPDATE waits
+// on the first's row lock and re-evaluates this WHERE against the committed
+// row, so exactly one confirm matches. Zero rows means somebody else enrolled
+// first. Rotation of an existing secret uses SetUserMFA.
+func (q *Queries) SetFirstUserMFA(ctx context.Context, arg SetFirstUserMFAParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setFirstUserMFA, arg.ID, arg.MfaSecret)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const setUserMFA = `-- name: SetUserMFA :exec
 UPDATE users
 SET mfa_secret = $2, mfa_enabled = $3, updated_at = now()

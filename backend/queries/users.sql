@@ -286,6 +286,19 @@ SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 O
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;
 
+-- name: SetFirstUserMFA :execrows
+-- First enrolment only: adopts the secret if, and only if, the account still
+-- has no TOTP when the row is written (#338). The handler's "no factor yet"
+-- check and the write used to be two statements, so concurrent first
+-- confirms all passed the check, all wrote, and all answered success while
+-- only the last held the account. Under READ COMMITTED a second UPDATE waits
+-- on the first's row lock and re-evaluates this WHERE against the committed
+-- row, so exactly one confirm matches. Zero rows means somebody else enrolled
+-- first. Rotation of an existing secret uses SetUserMFA.
+UPDATE users
+SET mfa_secret = $2, mfa_enabled = true, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL AND NOT mfa_enabled;
+
 -- name: ClearMFA :execrows
 -- :execrows, not :exec: an UPDATE matching zero rows still reports no error,
 -- so a nonexistent id looked like a successful clear. Service.ResetMFA writes

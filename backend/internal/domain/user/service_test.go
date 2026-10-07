@@ -261,6 +261,20 @@ func (f *fakeUserStore) SetMFA(_ context.Context, id uuid.UUID, secret string, e
 	return nil
 }
 
+func (f *fakeUserStore) SetFirstMFA(_ context.Context, id uuid.UUID, secret string) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return false, errFakeNotFound
+	}
+	if u.MFAEnabled {
+		return false, nil
+	}
+	u.MFASecret, u.MFAEnabled = secret, true
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
 // SyncFederated counts as an update, because that is what the OIDC and SAML
 // tests are asking about: whether the sign-in wrote the profile back. It goes
 // through the narrow statement now rather than the whole-row one, which is

@@ -387,7 +387,16 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // The secret arrives from the caller's session rather than the user row,
 // because writing an unconfirmed secret to the row destroys the authenticator
 // the user is still using.
-func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string) error {
+//
+// allowReplace says whether this confirm may replace an existing TOTP — true
+// only when the caller has proved the current factor, the same fact
+// GenerateMFASecret's allowReenroll carries. Without it the write adopts the
+// secret only if the account still has no TOTP at the moment of writing, and
+// ErrMFAAlreadyEnrolled reports that someone else enrolled first (#338). It
+// is the caller's to say, not read off the row: a confirm that reads the row
+// after a concurrent one committed would otherwise see a TOTP, call itself a
+// rotation and overwrite the winner.
+func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, allowReplace bool) error {
 	if pendingSecret == "" {
 		return fmt.Errorf("MFA enrollment not started")
 	}
@@ -399,7 +408,17 @@ func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID
 	}
 	// Only the secret and the flag: the same reason as SetPassword. This read
 	// the row, validated a code, and wrote everything back.
-	return s.store.SetMFA(ctx, userID, pendingSecret, true)
+	if allowReplace {
+		return s.store.SetMFA(ctx, userID, pendingSecret, true)
+	}
+	adopted, err := s.store.SetFirstMFA(ctx, userID, pendingSecret)
+	if err != nil {
+		return err
+	}
+	if !adopted {
+		return ErrMFAAlreadyEnrolled
+	}
+	return nil
 }
 
 // GenerateMFASecret mints a secret and its otpauth URL WITHOUT persisting
