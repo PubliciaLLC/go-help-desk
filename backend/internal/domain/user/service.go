@@ -387,7 +387,14 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // The secret arrives from the caller's session rather than the user row,
 // because writing an unconfirmed secret to the row destroys the authenticator
 // the user is still using.
-func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string) error {
+//
+// mayReplace is true only when the caller has proved a factor the account
+// already holds, in which case this is a rotation and overwrites. Otherwise it
+// is a FIRST enrolment, and the write itself refuses if MFA is on by then
+// (ErrMFAAlreadyEnrolled): the caller's "is this account unprotected?" check
+// is a separate statement from this write, so two first enrolments racing
+// could both pass it and the later one won (#338).
+func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, mayReplace bool) error {
 	if pendingSecret == "" {
 		return fmt.Errorf("MFA enrollment not started")
 	}
@@ -397,9 +404,19 @@ func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID
 	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
 	}
-	// Only the secret and the flag: the same reason as SetPassword. This read
-	// the row, validated a code, and wrote everything back.
-	return s.store.SetMFA(ctx, userID, pendingSecret, true)
+	if mayReplace {
+		// Only the secret and the flag: the same reason as SetPassword. This
+		// read the row, validated a code, and wrote everything back.
+		return s.store.SetMFA(ctx, userID, pendingSecret, true)
+	}
+	applied, err := s.store.SetMFAIfNotEnabled(ctx, userID, pendingSecret)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrMFAAlreadyEnrolled
+	}
+	return nil
 }
 
 // GenerateMFASecret mints a secret and its otpauth URL WITHOUT persisting
@@ -872,8 +889,10 @@ func (s *Service) Enable(ctx context.Context, id uuid.UUID) error {
 	return s.store.Enable(ctx, id)
 }
 
-// ResetMFA clears the user's TOTP secret and disables MFA, and records who
-// did it. actorID is nil for a reset with no signed-in actor — the
+// ResetMFA clears every second factor the user holds, the authenticator and
+// every passkey, ends their sessions, and records who did it. Passkeys too:
+// clearing only the TOTP columns left a passkey-only account locked out by the
+// key the administrator was asked to reset (#307). actorID is nil for a reset with no signed-in actor — the
 // reset-factors CLI, which writes its own, differently-shaped entry instead
 // of calling this, because "nobody was signed in" and "an administrator did
 // it through the web" are different facts worth telling apart; see #306.
@@ -887,7 +906,8 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	// separately, answers the caller 500 for a reset that already happened.
 	// Same shape as handler_passkeys.go's detached Touch call.
 	ctx = context.WithoutCancel(ctx)
-	if err := s.store.ClearMFA(ctx, id); err != nil {
+	passkeys, err := s.store.ClearFactors(ctx, id)
+	if err != nil {
 		return err
 	}
 	s.writeAuditEntry(ctx, audit.Entry{
@@ -895,6 +915,11 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 		EntityType: "user",
 		EntityID:   id,
 		Action:     "mfa_reset",
+		After: map[string]any{
+			"totp_cleared":     true,
+			"passkeys_removed": passkeys,
+			"sessions_revoked": true,
+		},
 	})
 	return nil
 }

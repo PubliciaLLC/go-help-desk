@@ -26,10 +26,13 @@ var errFakeNotFound = user.ErrNotFound
 type fakeUserStore struct {
 	mfaFailures map[uuid.UUID]int
 	mfaLocks    map[uuid.UUID]*time.Time
-	byID        map[uuid.UUID]user.User
-	byEmail     map[string]user.User
-	bySAML      map[string]user.User
-	byOIDC      map[string]user.User
+	// passkeys is how many each user holds; the fake has no passkey table, and
+	// the only question asked of it is whether ClearFactors took them.
+	passkeys map[uuid.UUID]int
+	byID     map[uuid.UUID]user.User
+	byEmail  map[string]user.User
+	bySAML   map[string]user.User
+	byOIDC   map[string]user.User
 
 	// Call counters, so tests can assert that a rejected login neither
 	// created nor mutated a user record.
@@ -62,6 +65,7 @@ func newFakeUserStore() *fakeUserStore {
 		byOIDC:      make(map[string]user.User),
 		mfaFailures: make(map[uuid.UUID]int),
 		mfaLocks:    make(map[uuid.UUID]*time.Time),
+		passkeys:    make(map[uuid.UUID]int),
 	}
 }
 
@@ -380,6 +384,36 @@ func (f *fakeUserStore) CountAll(_ context.Context) (int64, error) {
 	return int64(len(f.byID)), nil
 }
 
+// ClearFactors mirrors the statement: authenticator and passkeys together.
+func (f *fakeUserStore) ClearFactors(_ context.Context, id uuid.UUID) (int, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return 0, errFakeNotFound
+	}
+	u.MFAEnabled = false
+	u.MFASecret = ""
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	n := f.passkeys[id]
+	delete(f.passkeys, id)
+	return n, nil
+}
+
+// SetMFAIfNotEnabled mirrors the statement: it refuses once MFA is on.
+func (f *fakeUserStore) SetMFAIfNotEnabled(_ context.Context, id uuid.UUID, secret string) (bool, error) {
+	u, ok := f.byID[id]
+	if !ok {
+		return false, errFakeNotFound
+	}
+	if u.MFAEnabled {
+		return false, nil
+	}
+	u.MFASecret, u.MFAEnabled = secret, true
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
+}
+
 func (f *fakeUserStore) ClearMFA(_ context.Context, id uuid.UUID) error {
 	u, ok := f.byID[id]
 	if !ok {
@@ -695,4 +729,77 @@ func (f *fakeUserStore) ClearMFAFailures(_ context.Context, id uuid.UUID) error 
 
 func (f *fakeUserStore) GetMFALock(_ context.Context, id uuid.UUID) (int, *time.Time, error) {
 	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
+// A FIRST enrolment must not overwrite one that landed between the caller's
+// "is this account unprotected?" check and this write (#338). The handler's
+// check is a separate statement from the write, so two confirmations racing
+// could both pass it; the condition is in the write now, and this is the
+// refused half of it, staged by flipping the account to enrolled before the
+// call, which is the whole window expressed as one step.
+func TestConfirmMFAEnrollmentWith_FirstEnrolmentLosesToOneThatLandedFirst(t *testing.T) {
+	store := newFakeUserStore()
+	svc := user.NewService(store)
+	u := seedActiveUser(store)
+
+	secret, _, err := svc.GenerateMFASecret(context.Background(), u.ID, "http://localhost", false)
+	require.NoError(t, err)
+	code, err := totp.GenerateCode(secret, time.Now())
+	require.NoError(t, err)
+
+	// The rival enrolment, landing after the guard passed.
+	require.NoError(t, store.SetMFA(context.Background(), u.ID, "RIVALSECRET", true))
+
+	err = svc.ConfirmMFAEnrollmentWith(context.Background(), u.ID, secret, code, false)
+	require.ErrorIs(t, err, user.ErrMFAAlreadyEnrolled)
+
+	got, err := store.GetByID(context.Background(), u.ID)
+	require.NoError(t, err)
+	require.Equal(t, "RIVALSECRET", got.MFASecret, "the later enrolment overwrote the first")
+}
+
+func TestConfirmMFAEnrollmentWith_Cases(t *testing.T) {
+	cases := []struct {
+		name       string
+		enrolled   bool // the account already has an authenticator
+		mayReplace bool // the caller proved the existing factor
+		wantErr    error
+		wantSecret string // "" means the freshly staged one
+	}{
+		{name: "first enrolment", enrolled: false, mayReplace: false},
+		{name: "first enrolment, caller entitled to replace", enrolled: false, mayReplace: true},
+		{name: "rotation by someone who proved the factor", enrolled: true, mayReplace: true},
+		{name: "enrolled meanwhile, caller not entitled", enrolled: true, mayReplace: false,
+			wantErr: user.ErrMFAAlreadyEnrolled, wantSecret: "EXISTINGSECRET"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeUserStore()
+			svc := user.NewService(store)
+			u := seedActiveUser(store)
+			if tc.enrolled {
+				require.NoError(t, store.SetMFA(context.Background(), u.ID, "EXISTINGSECRET", true))
+			}
+			// Staged with allowReenroll: the secret was staged at an earlier
+			// moment, when the account may well have been unprotected.
+			secret, _, err := svc.GenerateMFASecret(context.Background(), u.ID, "http://localhost", true)
+			require.NoError(t, err)
+			code, err := totp.GenerateCode(secret, time.Now())
+			require.NoError(t, err)
+
+			err = svc.ConfirmMFAEnrollmentWith(context.Background(), u.ID, secret, code, tc.mayReplace)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			want := tc.wantSecret
+			if want == "" {
+				want = secret
+			}
+			got, err := store.GetByID(context.Background(), u.ID)
+			require.NoError(t, err)
+			require.Equal(t, want, got.MFASecret)
+		})
+	}
 }

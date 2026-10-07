@@ -449,6 +449,16 @@ protection. Enrolment confirm also re-runs the guard, rather than trusting the
 check made when enrolment was staged
 ([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
 
+**A first TOTP enrolment is a conditional write.** The guard asks "does this
+account hold no factor yet?" and the confirm then writes, which are two
+statements; two confirmations racing on a fresh account could both pass the
+question and the later write won. A session that has not proved a factor now
+writes with `WHERE NOT mfa_enabled`, and the loser is answered 403 like any
+other attempt on a protected account. A session that has proved one (a
+rotation) still overwrites, on purpose
+([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)). Passkey
+registration has no such condition in its write.
+
 Sessions written before `FactorVerified` existed read it as false. A user with
 a factor signs in again before changing factors; nothing else changes.
 
@@ -504,11 +514,20 @@ new one. That is what `DELETE /me/passkeys/{id}` is for, and it is the ordinary
 case: somebody replacing a phone still has the old one, or still has another
 factor, and needs nobody's help.
 
-An administrator doing it for somebody else is **not built yet**. Every passkey
-route lives under `/me`; `adminRouter` has none, and no admin handler reaches
-the credential store. So when the owner cannot do it themselves — the key is
-gone, and it was their only factor — the answer today is `reset-factors` on the
-server, described below, which clears every factor rather than one credential.
+An administrator removing ONE credential for somebody else is **not built yet**.
+Every passkey route lives under `/me`; `adminRouter` has none. What an
+administrator can do is the admin page's "Reset MFA", which clears **every**
+second factor the account holds: the authenticator and all registered
+passkeys, ending the account's sessions in the same statement. It used to
+clear only the authenticator, so on a passkey-only account it reported success
+and the person was still locked out by the key they had lost
+([#307](https://github.com/PubliciaLLC/go-help-desk/issues/307), item 2).
+`reset-factors` on the server, described below, does the same from the command
+line, and is the answer for a *sole* administrator.
+
+Both are one database statement, all or nothing (`ClearFactors`): a failure
+part-way used to leave an account with no factor and its old sessions alive,
+and now leaves it exactly as it was (#307, item 4).
 
 An earlier draft of this paragraph said an administrator removes a credential
 from the user's admin page, "the same control surface as Reset MFA", in the

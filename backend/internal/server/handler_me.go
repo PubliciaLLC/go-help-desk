@@ -218,7 +218,16 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	session, _ := s.sessions.Get(r, auth.SessionName)
 	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
 
-	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code); err != nil {
+	// A caller who proved a factor this login may rotate it; anyone else is
+	// making a FIRST enrolment, which the write itself refuses if somebody got
+	// there between the guard above and this call (#338).
+	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code, a.FactorVerified); err != nil {
+		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {
+			Error(w, http.StatusForbidden, "mfa_required",
+				"this account already has a second factor. Verify with it before adding or removing one, "+
+					"or ask an administrator to reset it.")
+			return
+		}
 		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
 		return
 	}

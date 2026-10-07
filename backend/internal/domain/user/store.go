@@ -46,6 +46,11 @@ type Store interface {
 	// not carry a copy of the secret across that gap. False means there was
 	// no secret left to enable.
 	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (bool, error)
+	// SetMFAIfNotEnabled stores a secret and turns MFA on only if it is not
+	// already on, and reports whether it applied. The write behind a FIRST
+	// enrolment: the question "is this account still unprotected?" is in the
+	// statement, so two enrolments racing cannot both win (#338).
+	SetMFAIfNotEnabled(ctx context.Context, id uuid.UUID, secret string) (bool, error)
 	SyncFederated(ctx context.Context, id uuid.UUID, email, displayName string) error
 	// AdoptOIDCSubject binds an OIDC subject to an account found by email
 	// address, and reports whether it applied. The adoption rules live in
@@ -85,6 +90,9 @@ type Store interface {
 	// have a way to authenticate after a change, not merely how many remain.
 	ListActiveAdmins(ctx context.Context) ([]User, error)
 	Count(ctx context.Context) (int64, error)
-	ClearMFA(ctx context.Context, id uuid.UUID) error
+	// ClearFactors removes the authenticator AND every passkey, and ends every
+	// session, in one statement; it reports how many passkeys went. All or
+	// nothing, and ErrNotFound for an id that matches no user.
+	ClearFactors(ctx context.Context, id uuid.UUID) (passkeysRemoved int, err error)
 	AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error
 }
