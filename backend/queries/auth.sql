@@ -42,3 +42,8 @@ DELETE FROM webhook_configs WHERE id = $1;
 
 -- name: ListEnabledWebhookConfigs :many
 SELECT * FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at;
+
+-- name: ListWebhookConfigs :many
+-- The admin view: every subscription, enabled or not. The dispatcher keeps
+-- using ListEnabledWebhookConfigs.
+SELECT * FROM webhook_configs ORDER BY created_at;

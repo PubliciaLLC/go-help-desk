@@ -22,6 +22,7 @@ import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
 import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { AdminAuditPage } from '@/pages/admin/AdminAuditPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
+import { WebhooksPage } from '@/pages/admin/WebhooksPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
 import { GuestTrackPage } from '@/pages/GuestTrackPage'
@@ -209,6 +210,13 @@ const adminOAuthClientsRoute = createRoute({
   component: OAuthClientsPage,
 })
 
+const adminWebhooksRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/webhooks',
+  beforeLoad: requireAdmin,
+  component: WebhooksPage,
+})
+
 // ── Guest ─────────────────────────────────────────────────────────────────────
 const guestViewRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -279,6 +287,7 @@ export const router = createRouter({
     adminCustomFieldsRoute,
     adminAPIKeysRoute,
   adminOAuthClientsRoute,
+  adminWebhooksRoute,
     adminSettingsRoute,
     adminAuditRoute,
   ]),

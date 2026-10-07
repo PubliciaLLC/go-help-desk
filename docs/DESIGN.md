@@ -1950,6 +1950,12 @@ on the existing webhook feature instead of as plugins.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
+  Administrators manage them under **Admin → Webhooks** (URL, payload format,
+  events, enable/disable, edit, delete). A secret is write-only: it signs
+  deliveries and is never returned by the API or shown again, and leaving the
+  field empty on edit keeps the stored one. There is no delivery log yet, so a
+  failing hook is visible only in the server log; that waits on a delivery
+  outbox ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)).
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
   1.3. Not a plugin, and not a separate integration surface: a webhook
   subscription gains a `payload_format` setting (`raw` — today's behavior —

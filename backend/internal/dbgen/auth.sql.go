@@ -285,6 +285,43 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 	return items, nil
 }
 
+const listWebhookConfigs = `-- name: ListWebhookConfigs :many
+SELECT id, url, events, secret, enabled, created_at, payload_format FROM webhook_configs ORDER BY created_at
+`
+
+// The admin view: every subscription, enabled or not. The dispatcher keeps
+// using ListEnabledWebhookConfigs.
+func (q *Queries) ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error) {
+	rows, err := q.db.QueryContext(ctx, listWebhookConfigs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebhookConfig
+	for rows.Next() {
+		var i WebhookConfig
+		if err := rows.Scan(
+			&i.ID,
+			&i.Url,
+			pq.Array(&i.Events),
+			&i.Secret,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.PayloadFormat,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateAPIKeyLastUsed = `-- name: UpdateAPIKeyLastUsed :exec
 UPDATE api_keys SET last_used_at = $2 WHERE id = $1
 `

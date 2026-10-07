@@ -567,6 +567,9 @@ type Querier interface {
 	// Everything this person has registered, newest last so the list reads in the
 	// order they added them.
 	ListWebAuthnCredentialsByUser(ctx context.Context, userID uuid.UUID) ([]WebauthnCredential, error)
+	// The admin view: every subscription, enabled or not. The dispatcher keeps
+	// using ListEnabledWebhookConfigs.
+	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Counts a failed TOTP attempt and locks the account once the threshold is
 	// reached. Returns the resulting lock time so the caller can refuse

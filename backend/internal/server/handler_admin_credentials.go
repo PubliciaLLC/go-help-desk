@@ -249,7 +249,7 @@ func (s *Server) handleDeleteOAuthClient(w http.ResponseWriter, r *http.Request)
 // ── Webhooks ─────────────────────────────────────────────────────────────────
 
 func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
-	webhooks, err := s.authStore.ListEnabledWebhooks(r.Context())
+	webhooks, err := s.authStore.ListWebhooks(r.Context())
 	if err != nil {
 		handleError(w, err)
 		return

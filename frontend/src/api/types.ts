@@ -448,7 +448,8 @@ export interface WebhookConfig {
   id: string
   url: string
   events: string[]
-  secret: string
+  // No `secret`: it is write-only. The API accepts one on create and update
+  // and never returns it, so a client has nothing to show or prefill.
   enabled: boolean
   created_at: string
   payload_format: WebhookPayloadFormat

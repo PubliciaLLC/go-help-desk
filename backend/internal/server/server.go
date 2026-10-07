@@ -145,6 +145,7 @@ type AuthStoreIface interface {
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 }
 
 // Server is the top-level HTTP handler.

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -647,6 +648,12 @@ func TestTruncateUTF16(t *testing.T) {
 }
 
 func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
+	// Every fixture must be big enough that the message WOULD exceed Discord's
+	// 2000-unit limit if it were not truncated (asserted per case below, from
+	// the escaped pieces rather than from the renderer's own output). A case
+	// that already fits proves nothing about truncation: an earlier "all
+	// asterisks" row rendered to 1907 units untruncated and would have kept
+	// passing with the truncation deleted outright (#207).
 	cases := []struct {
 		name    string
 		subject string
@@ -654,13 +661,16 @@ func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
 	}{
 		{
 			name:    "long subject and escaped asterisks with newlines",
-			subject: strings.Repeat("*", 300),   // escapes to 600 UTF-16 units
-			body:    strings.Repeat("*\n", 400), // escapes to 800 per * + newlines
+			subject: strings.Repeat("*", 500),   // escapes to 1000 UTF-16 units
+			body:    strings.Repeat("*\n", 500), // 1000 runes (the cap) -> 1500 units escaped, plus a "> " per line
 		},
 		{
-			name:    "all asterisks in body",
-			subject: strings.Repeat("*", 300), // 600 UTF-16 units
-			body:    strings.Repeat("*", 600), // 1200 UTF-16 units when escaped
+			// Each "*" escapes to two units, so the 1000-rune body cap alone
+			// does not keep this under the limit: 1000 -> 2000 units of body,
+			// on top of a subject that escapes to 1000.
+			name:    "all asterisks in subject and body",
+			subject: strings.Repeat("*", 500),
+			body:    strings.Repeat("*", 1000),
 		},
 		{
 			name:    "emoji beyond rune limit",
@@ -675,7 +685,17 @@ func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
 			ev.Subject = tc.subject
 			ev.Payload["ReplyBody"] = tc.body
 
-			got, err := renderDiscord(summarize(ev, fixtureBaseURL))
+			s := summarize(ev, fixtureBaseURL)
+
+			// The fixture really does exercise truncation: even counting only
+			// the escaped subject, escaped (post-cap) body and URL, the
+			// untruncated message is over Discord's hard limit.
+			untruncated := utf16Len(escapeChatMarkdown(s.Subject)) +
+				utf16Len(escapeChatMarkdown(s.Body)) + utf16Len(s.URL)
+			require.Greater(t, untruncated, 2000,
+				"fixture must overflow Discord's 2000-unit limit untruncated, or it proves nothing")
+
+			got, err := renderDiscord(s)
 			require.NoError(t, err)
 
 			var payload discordPayload
@@ -694,21 +714,22 @@ func TestRenderDiscord_StaysUnderContentLimit(t *testing.T) {
 			require.True(t, strings.HasSuffix(content, "\n"+fixtureTicketURL),
 				"message must end with the ticket URL")
 
-			// Content must be valid UTF-8
-			require.True(t, isValidUTF8(content),
+			// The cut must not have split a rune. None of the fixtures contain
+			// U+FFFD or invalid bytes, so any U+FFFD in the output was put
+			// there by encoding/json replacing the fragment of a rune that
+			// truncation sliced in half. utf8.ValidString alone is not enough:
+			// json.Marshal and json.Unmarshal both repair invalid UTF-8, so
+			// the decoded content is valid whatever the renderer did.
+			require.True(t, utf8.ValidString(content),
 				"message content must be valid UTF-8")
+			require.NotContains(t, content, string(utf8.RuneError),
+				"truncation split a multi-byte rune")
+			require.NotContains(t, string(got), `\ufffd`,
+				"truncation split a multi-byte rune (encoded replacement char on the wire)")
 
 			// allowed_mentions must be empty
 			require.Empty(t, payload.AllowedMentions.Parse,
 				"allowed_mentions.parse must be empty to prevent pings")
 		})
 	}
-}
-
-// isValidUTF8 checks if a string is valid UTF-8. This is just a utility for tests.
-func isValidUTF8(s string) bool {
-	for range s {
-		// Simply iterating over the string validates UTF-8
-	}
-	return true
 }
