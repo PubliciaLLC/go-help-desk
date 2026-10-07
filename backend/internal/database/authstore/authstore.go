@@ -212,3 +212,18 @@ func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error
 	}
 	return out, nil
 }
+
+// ListWebhooks returns every webhook, enabled or not, for the admin view. A
+// disabled hook has to stay visible there or it can never be switched back
+// on; delivery keeps using ListEnabledWebhooks.
+func (s *Store) ListWebhooks(ctx context.Context) ([]WebhookConfig, error) {
+	rows, err := s.q.ListWebhookConfigs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing webhooks: %w", err)
+	}
+	out := make([]WebhookConfig, len(rows))
+	for i, r := range rows {
+		out[i] = WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
+	}
+	return out, nil
+}
