@@ -58,6 +58,7 @@ func TestRedact_MatchesRegardlessOfCaseAndSeparators(t *testing.T) {
 		"private_key", "privateKey", "key_pem", "keyPem",
 		"recovery_codes", "recoveryCodes", "backup_codes", "BackupCodes",
 		"clientSecret", "mfaSecret", "totp_secret",
+		"smtp_pass", "attachment_reputation_virustotal_key",
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -68,7 +69,14 @@ func TestRedact_MatchesRegardlessOfCaseAndSeparators(t *testing.T) {
 }
 
 func TestRedact_LeavesOrdinaryFieldsAlone(t *testing.T) {
-	m := map[string]any{"id": "1", "status_id": "2", "priority": "low", "subject": "x", "os_user": "bob", "host": "h", "assignee_id": "u"}
+	// Every key a real writer puts in Before/After today: ticketMap,
+	// UnassignForUser and cmd/server/resetfactors.go. Over-redacting these
+	// would blank the diff for no reason.
+	m := map[string]any{
+		"id": "1", "status_id": "2", "priority": "low", "subject": "x",
+		"assignee_user_id": "u", "os_user": "bob", "host": "h", "source": "cli",
+		"passkeys_removed": 2, "totp_cleared": true, "sessions_revoked": true,
+	}
 	got, _ := audit.Redact(m, nil)
 	require.Equal(t, m, got)
 }

@@ -88,11 +88,15 @@ type Filter struct {
 // as the write-only settings in handler_admin_settings.go's secretSettingKeys.
 //
 // A key is sensitive when its normalised form (see normaliseKey) contains any
-// of these. Substring rather than exact, so passwordHash, PASSWORD_HASH and
-// user.password land alongside password_hash, and a field nobody listed by
-// name (access_token, key_pem) still lands on its stem. The cost is
-// over-redaction — "hash" hides a hashtag too — which fails safe: a hidden
-// value is a nuisance, a rendered secret is not.
+// of these, or ends in "key" or "pass". The suffixes exist because the real
+// write-only secrets here are named attachment_reputation_virustotal_key and
+// smtp_pass, which no stem reaches; a test feeds every entry of
+// secretSettingKeys through Redact so the two lists cannot drift. Substring
+// rather than exact, so passwordHash, PASSWORD_HASH and user.password land
+// alongside password_hash, and a field nobody listed by name (access_token,
+// key_pem) still lands on its stem. The cost is over-redaction — "hash" hides
+// a hashtag, "key" hides a monkey — which fails safe: a hidden value is a
+// nuisance, a rendered secret is not.
 //
 // Nothing writes any of these into a Before/After map today — ticketMap
 // (internal/domain/ticket/service.go) only ever carries id, status_id,
@@ -108,12 +112,14 @@ var sensitiveFragments = []string{
 	"secret",
 	"token",
 	"hash",
-	"apikey",
-	"privatekey",
 	"keypem",
 	"recoverycode",
 	"backupcode",
 }
+
+// Matched against the end of the normalised key: api_key, private_key and the
+// per-provider *_key settings all end in "key".
+var sensitiveSuffixes = []string{"key", "pass"}
 
 // normaliseKey lower-cases k and drops everything that is not a letter or
 // digit, so "apiKey", "API_KEY" and "api-key" all become "apikey".
@@ -131,6 +137,11 @@ func isSensitive(k string) bool {
 	n := normaliseKey(k)
 	for _, f := range sensitiveFragments {
 		if strings.Contains(n, f) {
+			return true
+		}
+	}
+	for _, f := range sensitiveSuffixes {
+		if strings.HasSuffix(n, f) {
 			return true
 		}
 	}
