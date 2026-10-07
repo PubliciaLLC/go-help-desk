@@ -429,3 +429,35 @@ func TestGuestFollowUp_TheOtherWriteRoutesStillRefuseAClosedTicket(t *testing.T)
 	res.Body.Close()
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
 }
+
+// The one refusal on the guest route that is not the generic 404 (documented,
+// not an oversight): the category was archived after the ticket was filed, and a
+// direct submission of it is a 400 too. The holder has a good link to a closed
+// ticket and knows its category, so nothing is revealed.
+func TestGuestFollowUp_AnArchivedCategoryIsA400WithTheReason(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	enableGuests(t, h)
+	cat, err := h.categorySvc.CreateCategory(ctx, "Retired later", 97)
+	require.NoError(t, err)
+	email := "retired@test.local"
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Filed under it", Description: "x", CategoryID: cat.ID,
+		GuestEmail: &email, GuestName: "Ada",
+	})
+	require.NoError(t, err)
+	token, err := h.ticketSvc.IssueGuestToken(ctx, tk.ID)
+	require.NoError(t, err)
+	closeGuestTicket(t, h, tk)
+	cat.Active = false
+	require.NoError(t, h.categorySvc.UpdateCategory(ctx, cat))
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/follow-up", token, nil)
+	body := readBody(t, res)
+
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, body)
+	require.Contains(t, body, "not an active category")
+	links, _ := h.ticketSvc.ListLinks(ctx, tk.ID)
+	require.Empty(t, links)
+}

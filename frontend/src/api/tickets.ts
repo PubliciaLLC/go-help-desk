@@ -71,7 +71,8 @@ export async function reopenTicket(id: string): Promise<Ticket> {
 }
 
 // The way forward from a Closed ticket (#349): a new ticket, linked to it,
-// that starts open. Nothing reopens a closed ticket.
+// that starts open. Available whether or not the instance lets anyone reopen a
+// closed ticket (closed_reopen_policy, off by default).
 export async function createFollowUp(id: string): Promise<Ticket> {
   const res = await api.post<Ticket>(`/tickets/${id}/follow-up`, {})
   return res.data

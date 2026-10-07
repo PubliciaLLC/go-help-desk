@@ -361,7 +361,7 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"update_ticket_status",
-		mcpgo.WithDescription("Move a ticket to a different status. A closed ticket cannot be moved out of Closed by anyone; use create_follow_up instead"),
+		mcpgo.WithDescription("Move a ticket to a different status. Moving a ticket OUT of Closed depends on the instance setting closed_reopen_policy (off by default, so refused; it can allow admins, or staff and admins): the result says whether reopening is disabled or restricted. A requester can never. To continue the work on a closed ticket either way, use create_follow_up"),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("status_id", mcpgo.Required(), mcpgo.Description("Target status UUID (see list_statuses)")),
 	), scoped(mcpWrite, s.handleUpdateTicketStatus))
@@ -369,7 +369,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(mcpgo.NewTool(
 		"create_follow_up",
 		mcpgo.WithDescription("Open a NEW ticket that continues a closed one, linked back to it. "+
-			"A closed ticket cannot be reopened by anyone, so this is the way forward from one. "+
+			"A closed ticket is terminal by default (an instance setting can let admins, or staff and admins, reopen it), so this is the way forward from one in every mode. "+
 			"Copies the subject, description, category/type/item, priority and requester; "+
 			"not the replies, attachments, history or custom fields. The new ticket starts open; "+
 			"the closed one is left as it was. Only works on a closed ticket."),

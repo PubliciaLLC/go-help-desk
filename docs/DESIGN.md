@@ -327,6 +327,27 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   notification event, which the outbox record must round-trip (#346's code);
   email never reads `Payload`, deliberately. The mail still carries the new
   tracking number and a working link, so the guest can follow it.
+- **A lost double-submit burns one tracking number.** A requester's follow-up
+  is checked for an existing one before a tracking number is taken, and again on
+  the locked original in the transaction that writes the ticket. Two requests in
+  flight at once both pass the first check and both take a number
+  (`NextSeq`); the loser is refused at the locked check, so its number is never
+  used and the sequence has a gap. One gap per lost race, never a second ticket.
+- **"The follow-up" is any parent_child link out of the closed ticket.** The
+  one-per-closed-ticket cap cannot tell a follow-up from a link someone made by
+  hand: the link row has no marker, a marker would be a schema change, and an
+  audit entry is the wrong place (the retention sweep deletes it, and the cap
+  would quietly lapse). So a staff member who links a closed ticket as the
+  parent of another ticket uses up its requester's one follow-up. This is the
+  conservative direction (it can only refuse a requester, never admit a second
+  ticket), staff are unaffected, and a follow-up of the new child still works;
+  pinned by a test so that changing it is a decision.
+- **An archived category or type is a 400 on the guest route.** Every refusal
+  that would say something about a link or a ticket's state is the generic 404,
+  but a guest follow-up of a ticket whose category (or type) an administrator has
+  since archived answers `400` with the reason, as a direct submission does. The
+  caller already holds a good link to a closed ticket and knows the category it
+  was filed under, so nothing is revealed that they could not see.
 - **Deleted reporter.** A follow-up of a ticket whose reporting account has been
   deleted fails validation (`400`): creation requires a reporter or a guest
   address, and loosening that for follow-ups only would weaken the rule for the

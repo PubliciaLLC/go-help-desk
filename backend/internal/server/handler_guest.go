@@ -304,10 +304,16 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 // A guest opens a follow-up of the CLOSED ticket their link names (#349). A
 // deliberate exception to "every guest write route refuses a closed ticket":
 // it resolves the link for a read, because only a closed ticket is wanted, and
-// every other outcome is the same generic 404 a bad link gets — an open ticket,
-// a bad link, guest submission switched off, a follow-up already opened — so
-// the route is not an oracle for which links are real or what state a ticket is
-// in. The order matters for the same reason: Closed is checked first, then the
+// every outcome that would say something about a LINK or a TICKET'S STATE is the
+// same generic 404 a bad link gets — an open ticket, a bad link, guest
+// submission switched off, a follow-up already opened — so the route is not an
+// oracle for which links are real or what state a ticket is in. The one
+// exception is deliberate: an archived category or type is a 400 naming the
+// reason, as a direct submission of that category is. By then the caller holds a
+// good link to a closed ticket and already knows the category it was filed
+// under, so the refusal tells them nothing they could not see; a generic 404
+// there would only leave them unable to tell why they cannot continue. The order
+// matters for the same reason: Closed is checked first, then the
 // instance setting, and only then the per-address budget (a 429 would say the
 // link was good and the ticket closed).
 //

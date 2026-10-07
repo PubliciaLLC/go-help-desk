@@ -227,6 +227,33 @@ func TestRequesterFollowUp_OnePerClosedTicket(t *testing.T) {
 		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
 	})
 
+	// The conservative reading, pinned so that changing it is a decision: the
+	// cap cannot tell a follow-up from a parent_child link someone made by hand.
+	t.Run("a hand-made parent link counts", func(t *testing.T) {
+		h := newHarness(t)
+		orig := closedWithEverything(t, h)
+		other := h.seedOpen()
+		require.NoError(t, h.svc.AddLink(ctx, orig.ID, other.ID, ticket.LinkParentChild,
+			ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}))
+
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+
+		require.ErrorIs(t, err, ticket.ErrFollowUpExists)
+	})
+
+	t.Run("other links do not count", func(t *testing.T) {
+		h := newHarness(t)
+		orig := closedWithEverything(t, h)
+		other := h.seedOpen()
+		staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+		require.NoError(t, h.svc.AddLink(ctx, orig.ID, other.ID, ticket.LinkRelatedTo, staff))
+		require.NoError(t, h.svc.AddLink(ctx, other.ID, orig.ID, ticket.LinkParentChild, staff)) // orig is the child
+
+		_, err := h.svc.CreateRequesterFollowUp(ctx, orig.ID, "GHD", reporterActor(orig), openAlways)
+
+		require.NoError(t, err)
+	})
+
 	t.Run("staff are not limited", func(t *testing.T) {
 		h := newHarness(t)
 		orig := closedWithEverything(t, h)

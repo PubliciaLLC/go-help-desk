@@ -191,8 +191,8 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (Ticket, error) {
 
 // CreateFollowUp opens a NEW ticket from a Closed one, linked back to it
 // (#349). It is the way forward from a closed ticket that works in every
-// mode: Closed is terminal by default, so nothing reopens it, and staff and
-// admin start a fresh one instead; and where an operator has allowed forced
+// mode: Closed is terminal by default, so unless an operator has allowed it
+// nobody can reopen it, and staff and admin start a fresh one instead; and where an operator has allowed forced
 // reopen (closed_reopen_policy) the follow-up is still available beside it.
 //
 // What is copied, and what is not — recorded in DESIGN.md → Closing:
@@ -324,7 +324,13 @@ func (s *Service) CreateRequesterFollowUp(
 func (s *Service) IsClosed(t Ticket) bool { return t.StatusID == s.sys.closedID }
 
 // refuseSecondFollowUp is ErrFollowUpExists when the closed ticket already has
-// a child it opened a follow-up as.
+// a follow-up — conservatively: ANY parent_child link out of it counts, because
+// the link row carries no marker for "made by the follow-up action" and a marker
+// would be a schema change (an audit entry would lapse with the retention
+// sweep). A staff member who hand-links the closed ticket as a parent therefore
+// uses up its requester's one follow-up: it can only refuse a requester, never
+// admit a second ticket. Documented in DESIGN.md -> Known limits and pinned by
+// TestRequesterFollowUp_OnePerClosedTicket/a_hand-made_parent_link_counts.
 func (s *Service) refuseSecondFollowUp(ctx context.Context, st Store, closedID uuid.UUID) error {
 	links, err := st.ListLinks(ctx, closedID)
 	if err != nil {
@@ -1112,9 +1118,10 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			return fmt.Errorf("recording reopen: %w", err)
 		}
 		// An audit entry for the reopen, so /history and /audit agree about
-		// whether the ticket was open. (This was once the same kind of entry
-		// POST /reopen wrote; that route is gone, #349, and a reply is now
-		// the only reopen left, from Resolved.) See #326.
+		// whether the ticket was open. (Same kind of entry Service.Reopen
+		// writes for a force-reopen of a Closed ticket, which #349 gated behind
+		// closed_reopen_policy; this one is the requester's reply reopening a
+		// Resolved ticket, the only reopen a requester has.) See #326.
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "reopened", before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing reopen: %w", err)
 		}

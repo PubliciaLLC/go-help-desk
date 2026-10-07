@@ -261,7 +261,7 @@ name, for the same reason.
 > changes in a way the guest is told about — a reply to them, a status change,
 > a resolution, or their own reply reopening a Resolved ticket — and read-only
 > once the ticket closes: the last link sent keeps reading the ticket until it
-> expires, and writes nothing. (Closed is terminal; nothing reopens it.) Internal notes,
+> expires, and writes nothing. (Closed is terminal by default; no requester can reopen it, and an operator may allow admins, or staff and admins, to.) Internal notes,
 > assignment and reclassification leave it alone, because nothing tells the
 > guest about those and replacing a link nobody is told about locks them out.
 
