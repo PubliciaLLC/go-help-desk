@@ -9,6 +9,14 @@
 #   ./scripts/test-db.sh url          print the DSN
 #   ./scripts/test-db.sh psql         open a shell on it
 #
+# Several at once: set GHD_TEST_INSTANCE to a short name (letters, digits,
+# dashes) and each name gets its own database on its own free port, e.g.
+#   GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once
+# Without it there is one shared database, ghd-test on 5433, and two runs at
+# once tear each other's database down: `once` ends with `down -v`, which
+# removes it under whatever else is still using it. Worktrees and parallel
+# agents should always name an instance. GHD_TEST_PORT pins the port.
+#
 # Nothing is left running. If the colima VM was not up when the script started
 # it, `down` and `once` stop it again — so no VM idles on the machine between
 # test runs. A colima you started yourself is left strictly alone.
@@ -25,11 +33,36 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="$repo_root/docker/docker-compose.test.yml"
 
-# The database is published on 127.0.0.1:5433 — not 5432, which the dev stack
-# may hold. Pointing the suite at the development database would migrate it.
-export TEST_DATABASE_URL="postgres://helpdesk:helpdesk@127.0.0.1:5433/helpdesk_test?sslmode=disable"
-
 die() { printf '%s\n' "$*" >&2; exit 1; }
+
+instance="${GHD_TEST_INSTANCE:-}"
+if [ -n "$instance" ]; then
+  [[ "$instance" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die \
+    "GHD_TEST_INSTANCE must be lowercase letters, digits and dashes: got '$instance'"
+  project="ghd-test-$instance"
+  # The port is remembered per instance, so `up`, `test`, `url` and `down`
+  # run separately all find the same database.
+  port_file="${TMPDIR:-/tmp}/ghd-test-db-$instance.port"
+  if [ -z "${GHD_TEST_PORT:-}" ]; then
+    if [ -f "$port_file" ]; then
+      GHD_TEST_PORT="$(cat "$port_file")"
+    else
+      GHD_TEST_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')" \
+        || die "could not pick a free port; set GHD_TEST_PORT"
+      printf '%s\n' "$GHD_TEST_PORT" > "$port_file"
+    fi
+  fi
+else
+  project="ghd-test"
+  port_file=""
+fi
+
+# The database is published on 127.0.0.1:5433 by default — not 5432, which the
+# dev stack may hold. Pointing the suite at the development database would
+# migrate it.
+export GHD_TEST_PORT="${GHD_TEST_PORT:-5433}"
+[ "$GHD_TEST_PORT" != "5432" ] || die "GHD_TEST_PORT=5432 is the dev stack's port; pick another"
+export TEST_DATABASE_URL="postgres://helpdesk:helpdesk@127.0.0.1:$GHD_TEST_PORT/helpdesk_test?sslmode=disable"
 
 # Records that this script — not the developer — started the colima VM, so
 # teardown knows whether stopping it would interrupt someone else's work.
@@ -37,9 +70,9 @@ colima_marker="${TMPDIR:-/tmp}/ghd-test-db-started-colima"
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
-    docker compose -f "$compose_file" "$@"
+    docker compose -p "$project" -f "$compose_file" "$@"
   elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose -f "$compose_file" "$@"
+    docker-compose -p "$project" -f "$compose_file" "$@"
   else
     die "docker compose not found. Install a container runtime — see CONTRIBUTING.md."
   fi
@@ -82,6 +115,12 @@ Start your container runtime, or: brew install colima"
 # who had colima up for other work keeps it.
 stop_colima_if_ours() {
   [ -f "$colima_marker" ] || return 0
+  # Another instance still running needs the VM. Whichever run ends last
+  # stops it.
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ghd-test'; then
+    printf 'leaving colima up: another test database is still running\n'
+    return 0
+  fi
   rm -f "$colima_marker"
   if command -v colima >/dev/null 2>&1; then
     printf 'stopping colima (this script started it)\n'
@@ -121,6 +160,7 @@ cmd_down() {
   else
     printf 'no docker daemon; nothing to tear down\n'
   fi
+  [ -z "$port_file" ] || rm -f "$port_file"
   stop_colima_if_ours
 }
 

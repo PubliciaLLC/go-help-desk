@@ -54,7 +54,17 @@ Postgres:
 ```
 
 The database is ephemeral: it lives in a tmpfs, listens on **5433** so it can
-never be confused with the dev stack on 5432, and runs with `fsync=off`. Nothing
+never be confused with the dev stack on 5432, and runs with `fsync=off`.
+
+That default is **one shared database**: two runs at once (two worktrees, or
+two agents) tear each other's database down, because `once` ends by removing
+it. To run several, give each its own instance and it gets its own free port:
+
+```sh
+GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once ./...
+```
+
+Use one name per worktree. `GHD_TEST_PORT` pins the port if you need it. Nothing
 persists between runs and nothing needs seeding — `testutil.NewDB` applies the
 migrations on first connect and each test rolls back its own transaction.
 
