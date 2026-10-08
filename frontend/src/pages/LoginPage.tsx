@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, enrollMFAStart, enrollMFAConfirm, getSignupStatus, getAuthProviders } from '@/api/auth'
+import { login, verifyMFA, getMe, getSignupStatus, getAuthProviders } from '@/api/auth'
 import { getSiteConfig } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
 import { extractError } from '@/api/client'
@@ -10,6 +10,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { signInWithPasskey, wasCancelled } from '@/api/passkeys'
+import { MFAEnrollForm } from '@/components/MFAEnrollForm'
 
 type Step = 'credentials' | 'verify' | 'enroll' | 'passkey'
 
@@ -21,8 +22,6 @@ export function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
-  const [enrollSecret, setEnrollSecret] = useState('')
-  const [enrollQRDataURL, setEnrollQRDataURL] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
@@ -114,31 +113,6 @@ export function LoginPage() {
       // Dismissing the browser prompt is a choice, not a failure, and the
       // person is still on this screen with the button in front of them.
       if (!wasCancelled(err)) setError(extractError(err))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // Kick off enrollment when we reach the enroll step.
-  useEffect(() => {
-    if (step !== 'enroll' || enrollSecret) return
-    enrollMFAStart()
-      .then(({ secret, qr_data_url }) => {
-        setEnrollSecret(secret)
-        setEnrollQRDataURL(qr_data_url)
-      })
-      .catch((err) => setError(extractError(err)))
-  }, [step, enrollSecret])
-
-  async function handleEnroll(e: React.FormEvent) {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
-    try {
-      await enrollMFAConfirm(mfaCode)
-      await completeLogin()
-    } catch (err) {
-      setError(extractError(err))
     } finally {
       setLoading(false)
     }
@@ -257,46 +231,7 @@ export function LoginPage() {
             </div>
           )}
 
-          {step === 'enroll' && (
-            <form onSubmit={handleEnroll} className="space-y-4">
-              <p className="text-sm text-gray-600">
-                Your administrator requires two-factor authentication for your role. Scan the QR
-                code with an authenticator app (Google Authenticator, Authy, 1Password), or enter
-                the secret manually, then confirm with a code.
-              </p>
-              {enrollQRDataURL ? (
-                <div className="flex flex-col items-center gap-2">
-                  <img
-                    alt="TOTP QR code"
-                    className="h-44 w-44 rounded border bg-white p-2"
-                    src={enrollQRDataURL}
-                  />
-                  <code className="max-w-full truncate text-[11px] text-gray-500" title={enrollSecret}>
-                    Secret: {enrollSecret}
-                  </code>
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400">Generating setup code…</p>
-              )}
-              <div className="space-y-1">
-                <Label htmlFor="enroll">Verification code</Label>
-                <Input
-                  id="enroll"
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={mfaCode}
-                  onChange={(e) => setMfaCode(e.target.value)}
-                  required
-                  autoComplete="one-time-code"
-                />
-              </div>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-              <Button type="submit" className="w-full" disabled={loading || !enrollSecret}>
-                {loading ? 'Confirming…' : 'Confirm & sign in'}
-              </Button>
-            </form>
-          )}
+          {step === 'enroll' && <MFAEnrollForm onEnrolled={completeLogin} />}
         </CardContent>
       </Card>
     </div>

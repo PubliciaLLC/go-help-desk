@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { verifyEmail } from '@/api/auth'
+import { verifyEmail, lookupVerification, getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { MFAEnrollForm } from '@/components/MFAEnrollForm'
 
 // The password is chosen here, not on the signup form (#360): only whoever
 // reads the inbox reaches this page, so only they choose it.
@@ -21,6 +22,34 @@ export function VerifyEmailPage() {
   // because the link is still good.
   const [linkDead, setLinkDead] = useState(!token)
   const [loading, setLoading] = useState(false)
+  const [account, setAccount] = useState<{ email: string; display_name: string } | null>(null)
+  // The verified session owes MFA enrolment (#369); nothing else will answer
+  // it until that is done.
+  const [mustEnrol, setMustEnrol] = useState(false)
+
+  // Look the link up first (#370): to show which account this is, to hand a
+  // password manager the address, and to say a dead link is dead before a
+  // password is typed.
+  useEffect(() => {
+    if (!token) return
+    lookupVerification(token)
+      .then(setAccount)
+      .catch((err) => refuseLink(extractErrorCode(err)))
+  }, [token])
+
+  function refuseLink(code: string) {
+    setLinkDead(true)
+    setError(
+      code === 'token_expired'
+        ? 'This verification link has expired. Please sign up again to receive a new one.'
+        : 'This verification link is invalid or has already been used.',
+    )
+  }
+
+  async function finishSignIn() {
+    setUser(await getMe())
+    navigate({ to: '/dashboard' })
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -31,9 +60,13 @@ export function VerifyEmailPage() {
     }
     setLoading(true)
     try {
-      const { user } = await verifyEmail(token, password)
-      setUser(user)
-      navigate({ to: '/dashboard' })
+      const { user, mfa_enrollment_needed } = await verifyEmail(token, password)
+      if (mfa_enrollment_needed) {
+        setMustEnrol(true)
+      } else {
+        setUser(user)
+        navigate({ to: '/dashboard' })
+      }
     } catch (err) {
       // The code, not the message. Comparing the message to a code meant
       // the expired branch never fired: an expired link was always reported
@@ -43,12 +76,7 @@ export function VerifyEmailPage() {
       if (code === 'password_too_short') {
         setError(extractError(err))
       } else {
-        setLinkDead(true)
-        setError(
-          code === 'token_expired'
-            ? 'This verification link has expired. Please sign up again to receive a new one.'
-            : 'This verification link is invalid or has already been used.',
-        )
+        refuseLink(code)
       }
     } finally {
       setLoading(false)
@@ -59,10 +87,14 @@ export function VerifyEmailPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">Choose your password</CardTitle>
+          <CardTitle className="text-xl">
+            {mustEnrol ? 'Set up two-factor authentication' : 'Choose your password'}
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          {linkDead ? (
+          {mustEnrol ? (
+            <MFAEnrollForm onEnrolled={finishSignIn} />
+          ) : linkDead ? (
             <div className="space-y-3 text-sm text-gray-700">
               <p role="alert" className="text-red-600">{error}</p>
               <p>
@@ -73,6 +105,17 @@ export function VerifyEmailPage() {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
+              {account && (
+                <>
+                  <p className="text-sm text-gray-600">
+                    Creating the account for <strong>{account.display_name}</strong>.
+                  </p>
+                  <div className="space-y-1">
+                    <Label htmlFor="email">Email</Label>
+                    <Input id="email" type="email" value={account.email} readOnly autoComplete="username" />
+                  </div>
+                </>
+              )}
               <div className="space-y-1">
                 <Label htmlFor="password">Password</Label>
                 <Input

@@ -15,11 +15,18 @@ vi.mock('@tanstack/react-router', () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => <a href={to} {...rest}>{children}</a>,
 }))
-vi.mock('@/api/auth', () => ({ signup: vi.fn(), verifyEmail: vi.fn() }))
+vi.mock('@/api/auth', () => ({
+  signup: vi.fn(),
+  verifyEmail: vi.fn(),
+  lookupVerification: vi.fn(),
+  getMe: vi.fn(),
+  enrollMFAStart: vi.fn(),
+  enrollMFAConfirm: vi.fn(),
+}))
 
 import { SignupPage } from './SignupPage'
 import { VerifyEmailPage } from './VerifyEmailPage'
-import { signup, verifyEmail } from '@/api/auth'
+import { signup, verifyEmail, lookupVerification, getMe, enrollMFAStart, enrollMFAConfirm } from '@/api/auth'
 
 function apiError(code: string, message = code) {
   return { isAxiosError: true, response: { data: { error: { code, message } } } }
@@ -27,6 +34,7 @@ function apiError(code: string, message = code) {
 
 beforeEach(() => {
   vi.mocked(signup).mockResolvedValue(undefined)
+  vi.mocked(lookupVerification).mockResolvedValue({ email: 'alice@example.com', display_name: 'Alice' })
   window.history.replaceState({}, '', '/verify-email?token=tok-123')
 })
 afterEach(() => vi.clearAllMocks())
@@ -47,15 +55,56 @@ describe('the signup form', () => {
 
 describe('the verification page', () => {
   async function choose(user: ReturnType<typeof userEvent.setup>, password: string, confirm = password) {
-    await user.type(screen.getByLabelText('Password'), password)
+    await user.type(await screen.findByLabelText('Password'), password)
     await user.type(screen.getByLabelText('Confirm password'), confirm)
     await user.click(screen.getByRole('button', { name: /create account/i }))
   }
 
-  it('waits for a password rather than verifying on load', () => {
+  it('waits for a password rather than verifying on load', async () => {
     renderWithQuery(<VerifyEmailPage />)
-    expect(screen.getByLabelText('Password')).toBeTruthy()
+    expect(await screen.findByLabelText('Password')).toBeTruthy()
     expect(verifyEmail).not.toHaveBeenCalled()
+  })
+
+  // #370: the page says which account this is, and hands the address to a
+  // password manager, so the saved login is not missing its username. The
+  // name is shown too: a second signup by somebody else could have set it.
+  it('shows the address and name the link is for', async () => {
+    renderWithQuery(<VerifyEmailPage />)
+    const email = (await screen.findByLabelText('Email')) as HTMLInputElement
+    expect(lookupVerification).toHaveBeenCalledWith('tok-123')
+    expect(email.value).toBe('alice@example.com')
+    expect(email.readOnly).toBe(true)
+    expect(email.getAttribute('autocomplete')).toBe('username')
+    expect(screen.getByText(/Alice/)).toBeTruthy()
+  })
+
+  it('says a dead link is dead before a password is typed', async () => {
+    vi.mocked(lookupVerification).mockRejectedValue(apiError('token_expired'))
+    renderWithQuery(<VerifyEmailPage />)
+    expect((await screen.findByRole('alert')).textContent).toMatch(/expired/i)
+    expect(screen.queryByLabelText('Password')).toBeNull()
+  })
+
+  // #369: with MFA required, the verified session owes enrolment and every
+  // other call is refused until it is done. The page used to go straight to
+  // the dashboard anyway.
+  it('goes to enrolment when the account must enrol, and to the dashboard only after', async () => {
+    vi.mocked(verifyEmail).mockResolvedValue({ user: { id: 'u1' }, mfa_enrollment_needed: true } as never)
+    vi.mocked(enrollMFAStart).mockResolvedValue({ secret: 'SECRET', qr_url: '', qr_data_url: 'data:,' })
+    vi.mocked(enrollMFAConfirm).mockResolvedValue(undefined)
+    vi.mocked(getMe).mockResolvedValue({ id: 'u1' } as never)
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'correct-horse-battery')
+
+    const code = await screen.findByLabelText('Verification code')
+    expect(navigate).not.toHaveBeenCalled()
+    await user.type(code, '123456')
+    await user.click(screen.getByRole('button', { name: /confirm/i }))
+
+    await waitFor(() => expect(enrollMFAConfirm).toHaveBeenCalledWith('123456'))
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/dashboard' }))
   })
 
   it('sends the token with the chosen password, then signs in', async () => {

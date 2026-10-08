@@ -2323,6 +2323,15 @@ on the existing webhook feature instead of as plugins.
   with their password. A second signup can now change the display name and
   re-issue the link, never the password. `pending_registrations.password_hash`
   is no longer written and is dropped in a later migration.
+  The page first looks the link up (`GET /auth/verify-email?token=`, which
+  answers the address and display name and nothing else, and refuses a dead
+  link the same way the POST does), so it shows which account is being
+  created, gives a password manager the address, and says a dead link is dead
+  before a password is typed
+  ([#370](https://github.com/PubliciaLLC/go-help-desk/issues/370)). When MFA
+  is required for requesters, the verified session owes enrolment like a
+  password login does, and the page goes to the same enrolment form before
+  the dashboard ([#369](https://github.com/PubliciaLLC/go-help-desk/issues/369)).
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
   1.3. Not a plugin, and not a separate integration surface: a webhook
   subscription gains a `payload_format` setting (`raw` — today's behavior —

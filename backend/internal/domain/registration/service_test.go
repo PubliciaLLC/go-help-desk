@@ -441,8 +441,9 @@ func (c *countingStore) Upsert(ctx context.Context, pr PendingRegistration) (Pen
 }
 
 // #348: a fresh address and one that already has an account do the same work
-// on the request — one pending row written, one event queued — so the timing no longer says which it was. The event names the
-// pending row and nothing else: no token, no address.
+// on the request — one pending row written, one event queued — so the timing
+// no longer says which it was. The event names the pending row and nothing
+// else: no token, no address.
 func TestRegister_FreshAndTakenAddressesDoTheSameWork(t *testing.T) {
 	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
 	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
@@ -508,4 +509,40 @@ type sendLog struct{ sent []sentMail }
 func (m *sendLog) SendVerificationEmail(to, token, _ string) error {
 	m.sent = append(m.sent, sentMail{to, token})
 	return nil
+}
+
+// #370: the verification page looks the link up before asking for a password,
+// so it can show which address and name the account is for (and give a
+// password manager the address), and say a dead link is dead before anything
+// is typed. Lookup answers exactly as Verify would and writes nothing.
+func TestLookup(t *testing.T) {
+	live := PendingRegistration{
+		ID: uuid.New(), Email: "alice@any.com", DisplayName: "Alice", ExpiresAt: time.Now().Add(time.Hour),
+	}
+	cases := []struct {
+		name    string
+		store   *fakeStore
+		wantErr error
+	}{
+		{"a live link", &fakeStore{record: live}, nil},
+		{"an expired link", &fakeStore{record: PendingRegistration{ID: live.ID, Email: live.Email,
+			ExpiresAt: time.Now().Add(-time.Minute)}}, ErrTokenExpired},
+		{"an unknown link", &fakeStore{getErr: errors.New("no rows")}, ErrNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			users := &fakeUsers{}
+			svc := NewService(tc.store, users, &fakeMailer{}, "http://localhost")
+			pr, err := svc.Lookup(context.Background(), uuid.New())
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, "alice@any.com", pr.Email)
+				require.Equal(t, "Alice", pr.DisplayName)
+			}
+			require.False(t, tc.store.deleted, "a lookup must not use up the link")
+			require.Equal(t, uuid.Nil, users.created.ID, "a lookup must not create an account")
+		})
+	}
 }

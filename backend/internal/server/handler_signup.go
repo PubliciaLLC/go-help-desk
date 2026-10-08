@@ -92,6 +92,35 @@ func signupAccepted(w http.ResponseWriter) {
 	})
 }
 
+// GET /api/v1/auth/verify-email?token= — what a verification link is for,
+// without using it (#370): the address and display name, and nothing else.
+// The page shows both, gives a password manager the address, and says a dead
+// link is dead before a password is typed. The token is the only key, and
+// whoever holds it was mailed exactly this address.
+func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request) {
+	tokenID, err := uuid.Parse(r.URL.Query().Get("token"))
+	if err != nil {
+		Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid verification token")
+		return
+	}
+	pr, err := s.registration.Lookup(r.Context(), tokenID)
+	if err != nil {
+		verificationRefused(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, map[string]string{"email": pr.Email, "display_name": pr.DisplayName})
+}
+
+// verificationRefused answers a link that cannot be used, the same way for
+// the lookup and for the verification itself.
+func verificationRefused(w http.ResponseWriter, err error) {
+	if errors.Is(err, registration.ErrTokenExpired) {
+		Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
+		return
+	}
+	Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid or already used verification token")
+}
+
 // POST /api/v1/auth/verify-email — exchange a token and the password the
 // account will have for an active session.
 func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
@@ -116,11 +145,7 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "password_too_short", err.Error())
 			return
 		}
-		if errors.Is(err, registration.ErrTokenExpired) {
-			Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
-			return
-		}
-		Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid or already used verification token")
+		verificationRefused(w, err)
 		return
 	}
 

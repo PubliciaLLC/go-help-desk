@@ -44,6 +44,7 @@ func (s *Server) authRouter() *chi.Mux {
 	// Self-service signup (enabled/disabled via admin settings).
 	r.Get("/signup/status", s.handleSignupStatus)
 	r.Post("/signup", s.handleSignup)
+	r.Get("/verify-email", s.handleLookupVerification)
 	r.Post("/verify-email", s.handleVerifyEmail)
 
 	return r

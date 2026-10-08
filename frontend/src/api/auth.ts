@@ -61,6 +61,12 @@ export async function signup(email: string, displayName: string): Promise<void> 
   await api.post('/auth/signup', { email, display_name: displayName })
 }
 
+// What a verification link is for, without using it (#370).
+export async function lookupVerification(token: string): Promise<{ email: string; display_name: string }> {
+  const res = await api.get<{ email: string; display_name: string }>('/auth/verify-email', { params: { token } })
+  return res.data
+}
+
 export async function verifyEmail(token: string, password: string): Promise<LoginResponse> {
   const res = await api.post<LoginResponse>('/auth/verify-email', { token, password })
   return res.data
