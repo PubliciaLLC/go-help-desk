@@ -241,6 +241,11 @@ Integration tests are skipped automatically when `TEST_DATABASE_URL` is unset.
 # and leaves nothing behind. Never points at the development database.
 ./scripts/test-db.sh test
 
+# Several at once (worktrees, parallel agents): name an instance, and each
+# gets its own database on its own free port. Without a name they share one,
+# and the first run to finish tears it down under the others.
+GHD_TEST_INSTANCE=my-branch ./scripts/test-db.sh once
+
 # Or against the development stack's database, which the suite will migrate
 cd backend
 TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
