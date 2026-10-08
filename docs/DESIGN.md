@@ -499,517 +499,366 @@ separate value for each direction:
 ### Local Auth (Default)
 
 - Username/password with bcrypt hashing
-- Available for all roles by default
-- **MFA** (optional toggle in admin settings): TOTP-based (Google Authenticator, Authy, etc.). When enabled, users enroll via QR code on next login. Admin can enforce MFA for specific roles or all users.
+- Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
+- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in.
 
 ### Passkeys (WebAuthn)
 
 A second factor alongside TOTP, and later an alternative to the password
 itself. TOTP does not change and does not go away; an instance that upgrades
-into this notices nothing until somebody registers a key.
+into this notices nothing until somebody registers a key. Passwordless sign-in
+is **not built** (see the end of this section): a passkey is asserted after the
+password, never instead of it.
 
-**What this claims, and what it does not.** The property being bought here is
+**What this claims, and what it does not.** The property bought is
 **phishing-resistance**: a WebAuthn credential is bound to the origin it was
-registered against, so a convincing look-alike login page cannot use it. That
-matters on a help desk because a staff account reads every ticket, every
-attachment and every customer's details, and TOTP does not have this property
-— a fake page collects the six digits and replays them inside the window.
+registered against, so a look-alike login page cannot use it, which TOTP cannot
+claim (a fake page collects the six digits and replays them in the window). It
+deliberately does **not** claim "something you have" in the hardware sense: a
+passkey today is very often a *synced* credential (iCloud Keychain, Google
+Password Manager), a weaker possession story than a YubiKey. Phishing-resistance
+holds for every credential this accepts, synced or not; physical possession
+does not, so it is not claimed.
 
-It is deliberately **not** claiming "something you have" in the hardware sense.
-A passkey today is very often a *synced* credential — iCloud Keychain, Google
-Password Manager — which lives wherever that cloud account lives rather than on
-one device. That is a weaker possession story than a YubiKey, and pretending
-otherwise in this document would make an operator believe something untrue
-about their own instance. Phishing-resistance holds for every credential this
-accepts, synced or not; physical possession does not, so it is not claimed.
+**Storage and the library.** A `webauthn_credentials` table, not columns on
+`users`: one person registers several keys on purpose (laptop, phone, a spare
+in a drawer). Each row holds the credential id, public key, sign count,
+transports, AAGUID, the backup-eligible and backup-state flags, an optional
+owner-chosen name (an unnamed key is shown by what its transports and age give,
+e.g. "Security key, added 3 March") and created/last-used timestamps.
 
-**Storage.** A `webauthn_credentials` table, not more columns on `users`: one
-person registers several keys on purpose — a laptop, a phone, a spare in a
-drawer — and that is the feature rather than an edge case. Each row holds the
-credential id, the public key, the sign count, the transports, the AAGUID, the
-backup-eligible and backup-state flags, a name its owner chose, and created and
-last-used timestamps.
+- `credential_id` has a **unique constraint in the schema**, not a check in Go:
+  the specification says ids are globally unique, and a read-then-insert has a
+  window whatever it reads.
+- `transports` goes back out on the sign-in challenge as
+  `allowCredentials[].transports`, so the browser skips authenticators that
+  cannot satisfy the request.
+- `aaguid` is read by nothing; it is kept because it is free at registration and
+  unrecoverable afterwards (the reasoning that keeps the unused CIRCL fields).
+- `backup_eligible` / `backup_state` say whether a credential is synced: the
+  only way an administrator can tell a hardware key from an iCloud passkey.
+  Not captured at registration, the question is unanswerable forever.
+- **Sign count is stored and not enforced.** Most modern authenticators return
+  zero always and a "must increase" rule locks those people out. A counter that
+  was non-zero and goes backwards is a genuine clone signal with no
+  false-positive cost; it is logged and gates nothing (the shape of
+  `KnownMalicious` in `circl.go`).
+- The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
+- `last_used_at` is written off the authentication path, in a goroutine with a
+  context that does not belong to the request (as webhook dispatch does): it
+  answers "which key is still in use", but a sign-in must not wait on it or fail
+  because of it.
 
-The name is optional. An unnamed credential is shown by what can be derived
-from its transports and its age — "Security key, added 3 March", "This device,
-added 3 March" for an `internal` authenticator — which is more use than a bare
-date and leaks nothing the AAGUID would.
+**Enrolment.** `POST /me/passkeys/register/start` mints a challenge and stages
+it **in the session**; `POST /me/passkeys/register/finish` verifies the
+attestation and writes the credential. Nothing is written to the account until
+the person has proved they hold the key (the reason `GenerateMFASecret` and
+`ConfirmMFAEnrollmentWith` replaced `EnrollMFA`, which wrote an unconfirmed
+secret over the authenticator its owner still used). A staged challenge is
+answerable once and **expires on a fixed deadline from when it was minted**
+(five minutes), checked when the assertion comes back; it does not slide forward
+on use, the same rule the MFA lockout follows. Both routes sit inside
+`meRouter`'s `DenyMachineCredentials` group (an API key or OAuth client may not
+touch how its owner authenticates) and **outside** `RequireMFA`, like TOTP
+enrolment, so somebody told to enrol can finish enrolling.
 
-`credential_id` carries a **unique constraint in the schema**, not a check in
-Go. The specification says credential ids are globally unique; "the
-specification says so" is exactly the kind of claim this codebase puts a
-constraint behind, and a read-then-insert has a window between the read and the
-insert whatever it reads.
+**Finishing registration satisfies this login's MFA challenge, as finishing TOTP
+enrolment does:** it sets both `MFAPassed` and `FactorVerified`
+(`markPasskeyRegistrationSatisfiesMFA`). Without it a session admitted through
+the no-factor-yet branch could register a key and still be refused by
+`RequireMFA` until it ran the sign-in ceremony against the key it had just
+proved it held ([#307](https://github.com/PubliciaLLC/go-help-desk/issues/307),
+item 3). For an already-protected owner registering a replacement it is a no-op.
 
-Three of those columns are worth explaining, because two of them are read by
-nothing today:
+**Changing factors needs a session that *proved* one, not one that owed none**
+([#333](https://github.com/PubliciaLLC/go-help-desk/issues/333)). `MFAPassed` is
+true both when a login proved a second factor and when it owed none (MFA off,
+optional for the role). The routes that add or replace a factor
+(`requireFactorOrFirstEnrolment`, and TOTP enrolment's re-enrol check) read a
+separate session fact, `FactorVerified`, set only by:
 
-- **`transports`** is not stored for a future screen. It goes back out on the
-  sign-in challenge as `allowCredentials[].transports`, which lets the browser
-  skip authenticators that cannot satisfy the request instead of prompting for
-  every method the account has ever registered. It has a job from the first
-  release.
-- **`aaguid`** identifies the authenticator model. Nothing reads it yet. It is
-  kept because it is free at registration and unrecoverable afterwards, the
-  same reasoning that keeps the unused CIRCL response fields in
-  `internal/reputation/circl.go`.
-- **`backup_eligible` / `backup_state`** are the WebAuthn authenticator-data
-  flags that say whether a credential is synced. They are the only way an
-  administrator auditing this instance can tell a hardware key from an iCloud
-  passkey — which is precisely the distinction the paragraph above turns on.
-  Not captured at registration, the question is unanswerable forever after.
-
-**Sign count is stored and not enforced.** The counter exists in the
-specification for clone detection, but most modern authenticators return zero
-always, and a naive "it must increase" rule locks those people out for nothing.
-One case is worth noticing: a counter that was previously non-zero and then
-goes backwards is a genuine clone signal with no false-positive cost. That is
-logged and gates nothing — the same shape as `KnownMalicious` in `circl.go`,
-where a field is decoded, recorded and deliberately never allowed to change a
-verdict.
-
-**Library.** `github.com/go-webauthn/webauthn`. The registration and assertion
-ceremonies have many ways to be subtly wrong, and being exactly right is the
-whole value of the feature. Nothing here is hand-rolled.
-
-**Enrolment** follows the shape TOTP arrived at the hard way.
-`POST /me/passkeys/register/start` mints a challenge and stages it **in the
-session**; `POST /me/passkeys/register/finish` verifies the attestation and
-writes the credential. Nothing is written to the account until the person has
-proved they hold the key — the reason `GenerateMFASecret` and
-`ConfirmMFAEnrollmentWith` replaced the older `EnrollMFA`, which wrote an
-unconfirmed secret straight over the authenticator its owner was still using.
-
-The staged challenge **expires, and the expiry is checked when the assertion
-comes back**. A challenge left sitting in a long-lived session is a replay
-window that stays open as long as the tab does. It expires on a fixed deadline
-from when it was minted and does not slide forward on use, the same rule the
-MFA lockout follows.
-
-Both routes sit inside `meRouter`'s `DenyMachineCredentials` group — an API key
-or OAuth client may not touch how its owner authenticates — and **outside**
-`RequireMFA`, for the same reason TOTP enrolment is outside it: somebody who
-has been told to enrol must be able to finish enrolling.
-
-**Finishing registration satisfies this login's MFA challenge, the same way
-finishing TOTP enrolment already does.** `POST /me/passkeys/register/finish`
-flips `MFAPassed` on success, mirroring `handleMFAEnrollConfirm`. Without
-this a session admitted through the first-enrolment branch above — no factor
-at all yet — could register a passkey and still be refused by `RequireMFA`
-until it separately ran the sign-in ceremony against the key it had just
-proved it held. Unconditional, matching TOTP: for the other way past the
-guard (an already-protected account's owner registering a replacement key,
-already holding the flag), setting it again is a no-op. Found as item 3 of
-[#307](https://github.com/PubliciaLLC/go-help-desk/issues/307).
-
-**Changing factors needs a session that *proved* one, not one that owed
-none.** `MFAPassed` is true both when a login proved a second factor and when
-it owed none — MFA off, or optional for the account's role. The two routes
-that add or replace a factor (`requireFactorOrFirstEnrolment`, and TOTP
-enrolment's re-enrol check) read a separate session fact, `FactorVerified`,
-which is set only by:
-
-- a TOTP code (`/auth/local/mfa/verify`) or passkey sign-in;
+- a TOTP code (`/auth/local/mfa/verify`) or a passkey sign-in;
 - this session finishing a TOTP enrolment or passkey registration;
-- an SSO sign-in whose identity provider asserted MFA — OIDC `amr` containing
+- an SSO sign-in whose identity provider asserted MFA: OIDC `amr` containing
   `mfa` (RFC 8176), or SAML `authnmethodsreferences` containing
-  `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither
-  by default: add the `amr` optional claim to the app registration (for SAML,
-  with `include_granular_amr`). Without it SSO sign-in still works, but a user
-  who also has a local factor must enter it before changing factors.
+  `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither by
+  default: add the `amr` optional claim to the app registration (for SAML, with
+  `include_granular_amr`). Without it SSO sign-in still works, but a user who
+  also has a local factor must enter it before changing factors.
 
-Without this, a password-only session on an account where MFA was optional
-could replace the owner's factor at any time after they enrolled — no race
-needed ([#333](https://github.com/PubliciaLLC/go-help-desk/issues/333)).
+Without this, a password-only session on an account where MFA was optional could
+replace the owner's factor at any time after they enrolled. A session written
+before `FactorVerified` existed reads it as false: such a user signs in again
+before changing factors.
 
-**Adding a factor ends every other session,** the same way a password change
-does: finishing TOTP enrolment or passkey registration revokes the account's
-sessions and re-issues the current one. A session someone opened with the
-password before the owner protected the account does not outlive that
-protection. Enrolment confirm also re-runs the guard, rather than trusting the
-check made when enrolment was staged
+**Adding a factor ends every other session,** as a password change does:
+finishing TOTP enrolment or passkey registration revokes the account's sessions
+and re-issues the current one, so a session opened with the password before the
+owner protected the account does not outlive that protection. Enrolment confirm
+re-runs the guard rather than trusting the check made when enrolment was staged
 ([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
 
 **A first TOTP enrolment is a conditional write.** The guard asks "does this
-account hold no factor yet?" and the confirm then writes, which are two
-statements; two confirmations racing on a fresh account could both pass the
-question and the later write won. A session that has not proved a factor now
-writes with `WHERE NOT mfa_enabled`, and the loser is answered 403 like any
-other attempt on a protected account. A session that has proved one (a
-rotation) still overwrites, on purpose
-([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)). Passkey
-registration has no such condition in its write.
+account hold no factor yet?" and the confirm then writes; two confirmations
+racing on a fresh account could both pass the question. A session that has not
+proved a factor therefore writes with `WHERE NOT mfa_enabled` and the loser is
+answered 403; a session that has proved one (a rotation) still overwrites, on
+purpose ([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)).
+Passkey registration has no such condition in its write.
 
-Sessions written before `FactorVerified` existed read it as false. A user with
-a factor signs in again before changing factors; nothing else changes.
-
-**Verifying from the Account page.** A session that owed no factor at login
-(MFA off, optional for the role, an SSO provider that asserted nothing, a
-session older than `FactorVerified`) is refused on the factor routes with 403
-`mfa_required`, and the login page never asked it for anything. The Account
-page therefore answers that refusal itself: it offers a code field when the
-account has an authenticator app and a passkey button when it has passkeys,
-posts to the same `/auth/local/mfa/verify` and `/auth/local/passkey/*` routes
-the login page uses, and then retries what the person was doing. No new route
-([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A wrong code
-or a refused key answers 401 on a live session, so the client does not treat
+**Verifying from the Account page**
+([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A session that
+owed no factor at login (MFA off, optional for the role, an SSO provider that
+asserted nothing, a pre-`FactorVerified` session) is refused on the factor
+routes with `403 mfa_required`, and the login page never asked it for anything.
+The Account page answers that refusal itself: a code field when the account has
+an authenticator app, a passkey button when it has passkeys, posted to the same
+`/auth/local/mfa/verify` and `/auth/local/passkey/*` routes the login page uses,
+then it retries what the person was doing. No new route. A wrong code or refused
+key answers 401 on a live session, so the client does not treat
 `invalid_mfa_code` or `assertion_refused` as a lost session.
 
-**Signing in.** `POST /auth/local/passkey/start` and
-`POST /auth/local/passkey/finish` sit beside `/auth/local/mfa/verify` and do
-what it does: on a valid assertion, re-issue the session with `MFAPassed` true.
-The gate downstream is `Actor.MFAPassed`, which already exists and is already
-enforced by `RequireMFA` everywhere it matters, so no route learns a new idea.
+**Signing in.** `POST /auth/local/passkey/start` and `/finish` sit beside
+`/auth/local/mfa/verify`, are refused to machine credentials, and need the
+session the password step already produced (`401` otherwise). On a valid
+assertion they re-issue the session with `MFAPassed` and `FactorVerified` true.
+The gate downstream is `Actor.MFAPassed`, already enforced by `RequireMFA`, so
+no route learned a new idea.
 
-**`handleLocalLogin` has to grow a third answer, and this is the one place the
-existing machinery does not simply absorb passkeys.** It currently computes two
-independent booleans and returns them as `mfa_needed` and
-`mfa_enrollment_needed`:
+**The password step answers with three booleans:** `mfa_needed` (a TOTP
+enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
+passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
+role is enforced). All false means no factor is owed. Two booleans keyed off
+`u.MFAEnabled`, which is the TOTP column and not "this account has a second
+factor", cannot express the passkey-only account: on its second sign-in the
+server would say "you still need to enrol" and never "assert your passkey", and
+that account could never sign in again. **`MFARequiredFor(role)` is satisfied by
+a TOTP enrolment or at least one registered passkey**, so `mfa_enabled` and
+`mfa_enforced_roles` keep their meanings and an operator reconfigures nothing.
 
-```go
-mfaNeeded := mfaEnabled && u.MFAEnabled
-mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(...)
-```
+**Losing a key.** The owner removes it from their own account page
+(`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
+one; that is the ordinary case. An administrator removing ONE credential for
+somebody else is **not built**: every passkey route lives under `/me` and
+`adminRouter` has none. What an administrator can do is the user page's **Reset
+MFA**, which clears **every** second factor (the authenticator and all passkeys)
+and ends the account's sessions in one statement (`ClearFactors`, all or
+nothing; it used to clear only the authenticator, leaving a passkey-only person
+locked out by the key they had lost,
+[#307](https://github.com/PubliciaLLC/go-help-desk/issues/307) items 2 and 4).
+`reset-factors` (below) does the same from the server.
 
-Both key off `u.MFAEnabled`, which is the TOTP column and not "this account has
-a second factor". Trace an account with one registered passkey, no TOTP, and a
-role that enforces MFA, signing in for the *second* time — after it has already
-enrolled. `u.MFAEnabled` is still false, so the server answers "you still need
-to enrol" and never "assert your passkey". There is no wire outcome for *has a
-factor, must use it, and it is not TOTP*, so that account can never sign in
-again.
+**Self-recovery covers an account with *nothing* enrolled, not a lost key.**
+Enrolment lives outside `RequireMFA`, so somebody whose factors were cleared (or
+who never had any) signs in with their password, reaches enrolment and recovers
+alone; `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor` pins it. An
+account that still *has* a registered factor is different, and both enrolment
+doors refuse a session that has not passed MFA: without that refusal somebody
+holding only the password registers their own key and obtains the second factor,
+passing the gate rather than breaking it. The consequence is a real lockout:
+**an administrator whose registered key is lost cannot recover alone**, and a
+*sole* administrator has no one to ask (setup does not reopen). The recovery is
+`reset-factors` on the server, not an administrator clearing one credential,
+which is not built. This is not new: `GenerateMFASecret` has refused
+re-enrolment for a TOTP-protected account since the re-enrolment fix.
 
-This is a third credential state, not a flag that fails to clear, and the pair
-of booleans cannot express it. Login answers with an explicit state — no factor
-required, already satisfied, verify TOTP, verify passkey, or enrol — and the
-login page learns the new one. It is part of the first release, because
-"register a passkey" without "sign in with it" is not a feature.
-
-**Satisfying the MFA requirement.** `MFARequiredFor(role)` is satisfied by a
-TOTP enrolment **or** at least one registered passkey. Refusing the
-phishing-resistant factor because it is not the older one would be perverse.
-This means `mfa_enabled` and `mfa_enforced_roles` keep their current meanings
-and an operator has nothing to reconfigure.
-
-**`last_used_at` is written off the authentication path.** It answers "which of
-these keys is still in use", which is what somebody wants to know before
-removing one and cannot be reconstructed afterwards — but it is a timestamp
-nothing enforces, and a sign-in should not wait on it or fail because of it.
-It follows the shape already used for webhook dispatch in
-`internal/server/notify/webhook.go`: handed to a goroutine with a context that
-does not belong to the request, so cancelling the response cannot cancel the
-write. Approximately right is right enough for this field.
-
-**Losing a key.** Two ways, and only one of them is built.
-
-Its owner removes it themselves, from their own account page, and registers a
-new one. That is what `DELETE /me/passkeys/{id}` is for, and it is the ordinary
-case: somebody replacing a phone still has the old one, or still has another
-factor, and needs nobody's help.
-
-An administrator removing ONE credential for somebody else is **not built yet**.
-Every passkey route lives under `/me`; `adminRouter` has none. What an
-administrator can do is the admin page's "Reset MFA", which clears **every**
-second factor the account holds: the authenticator and all registered
-passkeys, ending the account's sessions in the same statement. It used to
-clear only the authenticator, so on a passkey-only account it reported success
-and the person was still locked out by the key they had lost
-([#307](https://github.com/PubliciaLLC/go-help-desk/issues/307), item 2).
-`reset-factors` on the server, described below, does the same from the command
-line, and is the answer for a *sole* administrator.
-
-Both are one database statement, all or nothing (`ClearFactors`): a failure
-part-way used to leave an account with no factor and its old sessions alive,
-and now leaves it exactly as it was (#307, item 4).
-
-An earlier draft of this paragraph said an administrator removes a credential
-from the user's admin page, "the same control surface as Reset MFA", in the
-present tense. That control surface does not exist. It is the right place for
-it when it is built, and saying so as though it already were is how an
-operator ends up looking for a button that was never written. Found by the
-session-B review of [#302](https://github.com/PubliciaLLC/go-help-desk/pull/302).
-
-**Self-recovery covers an account with *nothing* enrolled, and not a lost
-key.** The distinction matters and an earlier draft of this section ran the two
-together.
-
-Enrolment lives outside `RequireMFA`, so somebody whose factors have been
-cleared — by an administrator, or because they never had any — signs in with
-their password, reaches enrolment and recovers alone. That is pinned by
-`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`.
-
-An account that still *has* a registered factor is a different case, and both
-enrolment doors refuse it: a session that has not passed MFA cannot add or
-remove a factor on an account that already has one. That refusal is not
-optional. Without it, somebody holding only the password registers their own
-key or enrols their own authenticator and thereby obtains the second factor —
-passing the gate rather than breaking it.
-
-The consequence is a genuine lockout, and it should be stated rather than
-discovered: **an administrator whose registered key is lost cannot recover
-alone.** The recovery is `reset-factors` on the server, described below — not
-an administrator clearing the credential for them, which is not built. For a
-*sole* administrator there would be no other administrator to ask in any case,
-and setup does not reopen.
-
-(This paragraph said "another administrator removes the credential from their
-admin page" until the correction in the "Losing a key" section above. Two
-paragraphs of the same section then disagreed, which is worse than either
-being wrong alone. Found by the pre-merge gate on #302.)
-
-This is not new with passkeys. `GenerateMFASecret` has refused re-enrolment
-for a TOTP-protected account since the re-enrolment fix, so a sole
-administrator who loses their authenticator is in exactly the same position
-today. Passkeys extend the same lockout to a second kind of factor rather than
-creating it.
-
-**The guard's fourth case still belongs with passwordless, and an earlier
-draft of this section was wrong in both directions about why.**
-
-It first said the case could wait because self-recovery covers a lost key. It
-does not: an account that still has a registered factor is refused at both
-enrolment doors, deliberately. Then it said the case was therefore reachable
-today. That is also wrong, and checking what is actually a way *in* settles
-it: the entry points are local login, SAML and OIDC. A second factor gates a
-session that has already authenticated; it is not a way in by itself. So
-removing somebody's last second factor cannot strand them while a first factor
-exists, and there is no operation for a fourth case to refuse yet.
-
-What does strand somebody today is losing a registered key, which
-`reset-factors` above answers, and one thing that is not about second factors
-at all: an account provisioned by an identity provider has no password, so
-switching that provider off removes its only way in while leaving the row and
-the administrator count untouched. Every existing guard passes. Tracked as
-[#300](https://github.com/PubliciaLLC/go-help-desk/issues/300).
-
-**The way back in is a command run on the server**, not a recovery code and
-not a second factor required up front:
+**The way back in is a command run on the server**, not a recovery code and not
+a second factor required up front:
 
 ```
 go-help-desk reset-factors <email>
 ```
 
-It clears the account's TOTP enrolment and removes its registered passkeys, so
-the next sign-in reaches enrolment and the person starts again. It is the
-answer for every cause of lockout rather than only a lost key, and for the
-sole administrator it is the only answer there can be, since the web path must
-keep refusing — a password alone being enough to replace somebody's second
-factor is the bypass the guards exist to prevent.
+It clears the account's TOTP enrolment, removes its registered passkeys and ends
+its sessions (one statement), so the next sign-in reaches enrolment and the
+person starts again. It is the answer for every cause of lockout, and for the
+sole administrator the only one, since the web path must keep refusing (a
+password alone being enough to replace somebody's second factor is the bypass
+the guards exist to prevent). It takes an email address only and cannot set a
+password (see the identity provider guard below). It grants nothing new: anyone
+able to run it already has the filesystem and the database credentials, so it
+widens no web-facing surface, which a recovery code (another secret at rest,
+worth stealing, the property passkeys exist to remove) would.
 
-It grants nothing new. Anyone able to run it already has the filesystem and
-the database credentials, which is to say they already have everything. That
-is what makes it the right channel: it does not widen the web-facing surface
-at all, which a recovery code — another secret at rest, worth stealing, and
-the exact property passkeys exist to remove — would.
+**It writes an audit entry** naming the account and the operating-system user
+and host that ran it, with no actor id: nobody signed in, and inventing one
+would record a claim rather than a fact. The shape (`entity_type: "user"`,
+`action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
+administrator resetting somebody's password writes `password_reset_by_admin`
+naming themselves as actor. None of this prevents anything (whoever can run the
+command holds everything an audit entry could gate), but helping a colleague who
+lost a phone is a normal operational event that belongs in the trail with every
+other account change
+([#306](https://github.com/PubliciaLLC/go-help-desk/issues/306)).
 
-**It writes an audit entry**, naming the account and the operating system
-user and host that ran the command, with no actor ID — nobody signed in to do
-this, and inventing one would record a claim rather than a fact. The same
-entry shape (`entity_type: "user"`, `action: "mfa_reset"`) is written by the
-admin page's "Reset MFA", and by an administrator resetting somebody's
-password (`action: "password_reset_by_admin"`), naming the administrator's
-account as the actor. This does not prevent anything — whoever can run this
-command already holds everything an audit entry could gate — but the
-ordinary use of it is an administrator helping a colleague who lost a phone,
-and that is a normal operational event that belongs in the trail alongside
-every other account change. See [#306](https://github.com/PubliciaLLC/go-help-desk/issues/306).
+**The last-administrator guard's fourth case belongs with passwordless sign-in.**
+The guard (see User Management) refuses to disable, demote or delete the last
+active administrator and says nothing about removing their last way to
+*authenticate*. That is correct only while a password is always a way in. The
+entry points today are local login, SAML and OIDC; a second factor gates a
+session that has already authenticated and is not a way in by itself, so removing
+somebody's last second factor cannot strand them while a first factor exists, and
+there is no operation for a fourth case to refuse yet. What strands somebody today
+is a lost registered key (`reset-factors`), and an account provisioned by an
+identity provider that has no password when that provider is switched off
+([#300](https://github.com/PubliciaLLC/go-help-desk/issues/300); see the guard
+below). **When the password stops being a way in, self-recovery stops working**,
+and removing an administrator's last credential becomes the same permanent
+mistake as deleting the last administrator. The guard grows its fourth case **in
+the change that introduces passwordless sign-in**, not afterwards and not as a
+follow-up issue, and `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`
+must be made to pass for passkeys before that change is done. `reset-factors` is
+a precondition for that case, not its trigger: "refuse to remove the last way in"
+is half an answer without "and here is how you recover when it happens anyway".
 
-**This command is a precondition for the guard's fourth case, not its
-trigger.** "Refuse to remove the last way in" is only half an answer without
-"and here is how you recover when it happens anyway"; building either alone
-leaves an operator holding the wrong half. So the command comes first, and the
-fourth case still arrives with passwordless, for the reason given further up:
-until the password stops being a way in, removing a second factor strands
-nobody, and there is no operation for the fourth case to refuse.
+**`BASE_URL` is security-relevant.** A WebAuthn credential is bound to its
+origin and the relying party is derived from `BASE_URL`, so the setting stops
+being only about links in emails. An instance that changes domain invalidates
+every registered credential and every user re-registers. The server refuses to
+start when `BASE_URL` has no host rather than defaulting, because a default
+would produce passkeys that silently never verify. (`README.md` and
+`docker/.env.example` describe `BASE_URL` without this warning.)
 
-(An earlier draft of this line said the fourth case "ships with that command
-and not before", which read as though it ships now and contradicted the
-paragraph above. Found by the pre-merge gate on #302.)
-
-**That test is a precondition on passwordless sign-in, not a formality.** When
-the password stops being a way in, self-recovery stops working, and removing an
-administrator's last credential becomes the same permanent mistake as deleting
-the last administrator — setup does not reopen. The guard grows its fourth case
-in the change that introduces passwordless, and the test above has to be made
-to pass for passkeys before that change is considered done.
-
-**`BASE_URL` becomes security-relevant.** A WebAuthn credential is bound to its
-origin, so this setting stops being about building links in emails and becomes
-part of whether authentication works at all. An instance that changes domain
-invalidates every registered credential and every user re-registers. This is
-stated wherever the variable is documented, not in a footnote.
-
-**Not in the first release**, written down so it is not rediscovered as a gap:
-passwordless sign-in; attestation verification against a metadata service;
-a per-role "passkey required, TOTP no longer sufficient" policy; and any route
-by which a machine credential could register or use a passkey —
-`DenyMachineCredentials` refuses that today and will keep refusing it.
+**Not built**, written down so it is not rediscovered as a gap: passwordless
+sign-in; attestation verification against a metadata service; a per-role
+"passkey required, TOTP no longer sufficient" policy; and any route by which a
+machine credential could register or use a passkey (`DenyMachineCredentials`
+refuses that and will keep refusing it).
 
 ### SAML (Optional, Off by Default)
 
-- Toggle in admin settings
-- When enabled: all users (Admin, Staff, User) authenticate via SAML
-- **Admin failsafe**: admins can still log in with local username/password when SAML is enabled
-- Non-admin local auth is disabled when SAML is on
+- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`; sign-in starts at `GET /api/v1/auth/saml/login` and returns to `POST /api/v1/auth/saml/acs`, then `GET /api/v1/auth/saml/complete`. The login page currently has a button for OIDC only.
+- **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself.
+- **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` reports SAML as enabled only when it is on and SAML is configured.
+- **Admin failsafe**: administrators can still sign in with a local password.
+- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion` or `email_not_verified`. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
 
-**Supported IdPs:**
-- Okta
-- Azure AD / Entra ID
-- Google Workspace
-- (Standard SAML 2.0 — additional IdPs should work via metadata import)
+**Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (standard SAML 2.0; additional IdPs should work via metadata import).
 
 The SP root URL passed to the SAML library carries a trailing slash
-(`{baseURL}/api/v1/auth/`) rather than the bare prefix — see
-`auth.NewSAMLMiddleware`'s own comment. Without it, the library's relative
-URL resolution computes `saml/metadata` and `saml/acs` one path segment
-short of the routes this server actually registers, and every real request
-to them 404s: no login could complete and no IdP could fetch this
-instance's metadata, in any configuration. Found and fixed while testing
-#304; pinned by `TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`.
+(`{baseURL}/api/v1/auth/`), not the bare prefix (see `auth.NewSAMLMiddleware`).
+Without it the library's relative URL resolution computes `saml/metadata` and
+`saml/acs` one path segment short of the routes this server registers, every
+request to them 404s, no login completes and no IdP can fetch the metadata, in
+any configuration (found while testing #304; pinned by
+`TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`).
 
-The SAML library's own login cookie (`token`, a signed JWT valid for an hour)
-is a hand-over, not a session: `/auth/saml/complete` clears it as soon as it
-has read it, whatever the outcome, and the app session it writes is the only
+The SAML library's own login cookie (`token`, a signed JWT valid for an hour) is
+a hand-over, not a session: `/auth/saml/complete` clears it as soon as it has
+read it, whatever the outcome, and the app session it writes is the only
 credential from then on. Left in place it would outlive every session
-revocation (password change, MFA reset, a new factor) and let a browser that
-held it mint a fresh session, with whatever MFA the original assertion claimed
-(#337). Pinned by `TestSAMLComplete_SpendsTheLibraryCookie`.
+revocation (password change, MFA reset, a new factor) and let a browser holding
+it mint a fresh session with whatever MFA the original assertion claimed
+([#337](https://github.com/PubliciaLLC/go-help-desk/issues/337); pinned by
+`TestSAMLComplete_SpendsTheLibraryCookie`). "Spent" means the browser is told to
+delete the cookie under the name, domain and path the library set it with; it is
+not server-side invalidation, so a copy captured before the hand-over stays
+valid until it expires (an hour by default).
 
-"Spent" means the browser is told to delete the cookie, under the same name,
-domain and path the library set it with. It is not server-side invalidation:
-the JWT is stateless, so a copy captured before the hand-over stays valid
-until it expires, an hour by default.
+### OIDC (Optional, Off by Default)
+
+- Configured under **Admin → Settings → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`, which defaults to `{BASE_URL}/api/v1/auth/oidc/callback` and is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
+- Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A missing or mismatched `state` is `401`, and the routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled.
+- **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`403 email_not_verified`).
+- **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`403 domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
+- **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it, but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `403 account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`403 account_disabled`), an address held by another account is `409 email_taken` and a missing subject is `401 invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
+- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set only when the ID token's `amr` contains `mfa` (Passkeys above).
+
+### Self-Service Signup (Optional, Off by Default)
+
+A visitor creates a `User`-role account for themselves and proves they own the address before it exists.
+
+- Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
+- `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
+- `POST /api/v1/auth/signup` takes `{email, display_name, password}` and answers `403 signup_disabled` when off. The address must be a single valid email, the name is required and the password at least 8 characters (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (the bcrypt hash and a 24-hour token; one pending row per address, a repeat replaces it) and emails a link to `{BASE_URL}/verify-email?token=…`. Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
+- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), no mail is sent for a taken address, and the password is hashed before that is acted on so the timing does not tell the cases apart. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
+- `POST /api/v1/auth/verify-email` takes `{token}`: `422 token_invalid` for an unknown, used or malformed token and `422 token_expired` past 24 hours. On success it creates the account from the stored hash, deletes the pending row and signs the person in (`mfa_enrollment_needed` is true when MFA is enforced for the `user` role). The page is `/verify-email`.
 
 ### Identity provider lockout guard (#300)
 
-A federated account (SAML or OIDC) can have no local password at all —
-`password_hash` empty, local login refuses it with 401. Its only way in is
-that specific provider. Disabling or clearing that provider's configuration
-in **Admin → Settings** removes the account's only channel while leaving the
-row, the role and the active-administrator count completely untouched — the
-same class of mistake the last-administrator guard (see User Management,
-above) exists to prevent, reached through a door that guard does not watch,
-since it watches the administrator ROW, not their ability to authenticate.
+A federated account (SAML or OIDC) can have no local password at all
+(`password_hash` empty; local login refuses it with 401), so its only way in is
+that provider. Disabling or clearing the provider's configuration in **Admin →
+Settings** removes that channel while leaving the row, the role and the
+active-administrator count untouched: the same class of mistake as the
+last-administrator guard (see User Management), reached through a door that
+guard does not watch, since it watches the administrator *row* and not their
+ability to authenticate.
 
-SAML reachability depends only on the three config fields being non-empty —
-`reloadSAML` and `buildSAMLMiddleware` have always gated on that alone, and
-still do. An early draft of this guard gave SAML an `enabled` flag mirroring
-OIDC's, reusing the existing `saml_enabled` setting (the settings page's
-"Enable SAML login" toggle has always written it). That setting is not
-dead: `user.IsLocalAuthAllowed` reads it to decide whether non-admins keep
-password login once SAML is configured — a stricter posture an operator
-opts into separately from whether SAML itself is running. Wiring it into
-whether the middleware loads at all would have conflated the two, and a
-migration backfilling it to `true` for every already-configured instance
-would have silently refused password login to every non-administrator on
-any instance that had been running SAML and local login side by side.
-Caught in review before merge and reverted; see PR #304's thread for the
-full trace. SAML has no `enabled` concept in this guard, and does not need
-one — see the incomplete-config paragraph below for why OIDC's is different.
-
-Saving the OIDC or SAML configuration checks what each provider's
-reachability will be immediately afterward and looks at every active
+Saving the OIDC or SAML configuration therefore computes what each provider's
+reachability will be immediately afterwards and looks at every active
 administrator:
 
 - If the change would leave **every** active administrator with no way to
-  authenticate, the save is refused (400) — the same severity as
-  `ErrLastAdmin`, and for the same reason: this is the unrecoverable case.
-- If it strands **some** administrators but at least one other can still
-  sign in and fix things, the save is allowed and a warning names who is
-  affected — refusing here would just move the unrecoverable-lockout shape
-  onto somebody else's account instead of preventing it, and an operator
-  migrating providers deliberately should not be blocked by a stranding they
-  already know about.
-- A password is always a viable channel, independent of either provider's
-  state. A federated subject is only viable while its OWN provider is
-  reachable — an OIDC subject is not a channel through SAML, and vice versa.
-  MFA (TOTP, and passkeys where that lands) is deliberately not consulted: a
-  second factor is never a way IN on its own, so it cannot rescue an
-  otherwise-stranded administrator and cannot strand one either.
+  authenticate, the save is refused (`400`), the same severity as `ErrLastAdmin`
+  and for the same reason: this is the unrecoverable case.
+- If it strands **some** administrators but at least one other can still sign in
+  and fix things, the save is allowed and a warning names who is affected.
+  Refusing would only move the unrecoverable-lockout shape onto somebody else's
+  account, and an operator migrating providers deliberately should not be blocked
+  by a stranding they already know about.
+- **Viability.** A password is always a viable channel, independent of either
+  provider's state. A federated subject is viable only while its **own** provider
+  is reachable: an OIDC subject is not a channel through SAML, and vice versa.
+  MFA (TOTP or passkey) is deliberately not consulted: a second factor is never a
+  way *in* on its own, so it cannot rescue a stranded administrator and cannot
+  strand one.
+- SAML reachability depends only on the three configuration fields being
+  non-empty plus a successful metadata load. The guard gives SAML **no `enabled`
+  flag**, and `saml_enabled` must not be wired into whether the middleware loads:
+  it already means something else (it removes password login for non-admins), and
+  conflating the two would take SAML down whenever an operator flips it to require
+  SSO for staff (reverted before merge in #304).
 
-This reads the active-administrator list, decides, and only then writes the
-setting — unlike the last-administrator guard's own statements, which decide
-and write a single row atomically in one UPDATE. A narrow race against a
-concurrent user-role change or a second settings save is accepted rather
-than closed: this is a deliberate, infrequent action from the admin settings
-page, not a path an unauthenticated attacker can drive.
+**How "reachable" is decided differs by route, on purpose.**
 
-"Reachability" is not the same check everywhere this guard runs, and that
-difference is deliberate rather than an inconsistency to fix:
+- The dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build the real
+  provider or middleware against the *candidate* configuration (running OIDC
+  discovery, or fetching and parsing the SAML metadata) **before** persisting
+  anything, and the guard's decision is that real outcome. "Are the fields
+  non-empty" is wrong in the dangerous direction: a well-formed but unreachable
+  IdP (a typo'd issuer, a metadata endpoint that is down) would sail through. The
+  already-built object is what gets committed on success, so the guard's decision
+  and the live effect agree.
+- The generic `PATCH /admin/settings` reaches the same keys but does not
+  live-reload either provider, so there is no construction attempt to observe. It
+  falls back to the field-completeness check: narrower, but real coverage for a
+  route that otherwise could set `oidc_enabled: false` or blank a SAML field with
+  no refusal and no warning.
+- `reachable` is unconditionally `false` whenever the *candidate* fails to build
+  (both providers), whatever the currently live provider says. Two different
+  questions, and only one survives a restart: the live process keeps its
+  fail-safe (a bad edit or a transient IdP outage leaves what is running
+  untouched), but the guard reasons about what the persisted row would do on a
+  cold load.
+- An enabled-but-incomplete OIDC configuration (blank issuer, client id or
+  secret) is refused outright (`400`) through either path rather than
+  reachability-checked: at the next restart there would be no OIDC at all, and a
+  save that only looked safe because an old, unrelated config was still live is
+  exactly the gap this guard closes. SAML has no equivalent case; any blank field
+  is unreachable unconditionally.
+- The generic PATCH refuses outright (`400`) a JSON type mismatch (`oidc_enabled`
+  sent as the string `"false"`) **and the literal `null`** (`unmarshalSetting`),
+  for every key the guard reads. The write that follows persists the malformed
+  value regardless, and every real reader (`GetBool`/`GetString`) silently
+  returns the Go zero value, flipping the setting to disabled/blank. A guard
+  reasoning about one value while the system reads another from the same bytes is
+  worse than none, because it reports confidence it does not have. (`null` is
+  caught separately because `encoding/json` treats it as a no-op rather than an
+  error when decoding into a non-pointer.)
 
-- The two dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build
-  the real provider/middleware against the candidate configuration —
-  running actual OIDC discovery, or actually fetching and parsing the SAML
-  IdP's metadata — *before* persisting anything, and the guard's decision is
-  that real outcome. An earlier version of this guard asked only "are the
-  fields non-empty", which is wrong in the dangerous direction: a
-  well-formed but unreachable IdP (a typo'd issuer URL, a metadata endpoint
-  that is down) would have sailed through as "reachable" right up until the
-  moment it actually mattered. The already-built object is what gets
-  committed on success, rather than a second, possibly-different attempt —
-  the guard's decision and the live effect must agree.
-- The generic `PATCH /admin/settings` route reaches these same keys (nothing
-  stops a human session from setting `oidc_enabled` or blanking a SAML field
-  through it) but does not live-reload either provider today, so there is no
-  real construction attempt for it to observe. It falls back to the
-  field-completeness check instead — narrower than the dedicated endpoints'
-  own guard, but still real coverage for a route that, before this fix, had
-  none at all: it could set `oidc_enabled: false` or blank any SAML field
-  with no refusal and no warning, regardless of who it stranded.
+**A narrow race is accepted.** The guard reads the active-administrator list,
+decides, and only then writes the setting, unlike the last-administrator
+guard's statements, which decide and write in one `UPDATE`. A concurrent
+role change or second settings save can slip between; this is a deliberate,
+infrequent action from the settings page, not a path an unauthenticated attacker
+can drive, and closing it would need a transaction spanning the users and
+settings tables.
 
-An enabled-but-incomplete OIDC configuration (a blank issuer URL, client ID
-or client secret) is refused outright (400) rather than reachability-checked,
-through either write path. `buildOIDCProvider`'s own fail-safe for that shape
-used to report reachability as whatever the currently-live provider already
-says — correct for the running process, which still has the old provider to
-fall back on, but wrong for the row being persisted: at the next restart
-there is no live provider left, so `InitOIDC` comes up with no OIDC at all. A
-save that only looked safe because an old, unrelated config was still live at
-the moment of saving is exactly the gap this guard exists to close, so it
-isn't allowed to reach the guard in the first place. SAML has no equivalent
-case for an incomplete config — `buildSAMLMiddleware` treats any blank field
-as unreachable unconditionally, with no fail-safe carve-out and no `enabled`
-flag to have one for in the first place.
-
-A second, closely related review round found the same confusion one branch
-over: a **complete** candidate configuration whose real construction attempt
-genuinely fails (a typo'd issuer URL, an IdP that is briefly unreachable) was
-*also* reported as reachable-or-not by asking the live process, rather than
-by asking what the persisted row itself would do on a cold load — and this
-half applies to both providers equally, not just OIDC. `buildOIDCProvider`
-and `buildSAMLMiddleware` now answer these two different questions
-separately: `commit` still drives the long-standing fail-safe for the LIVE
-process (a bad edit or a transient outage leaves whatever is currently
-running untouched, exactly as before), but the `reachable` value the guard
-reasons about is unconditionally `false` whenever the candidate itself fails
-to build — regardless of what a different, currently-live provider happens
-to still be answering with at the moment of saving. Reasoning about the live
-process and reasoning about the row being persisted are different questions,
-and only one of them survives a restart.
-
-The generic settings PATCH has its own version of the same principle at the
-type level: `ssoSettingsWarning`'s merge of the request body over stored
-values refuses outright (400) on any JSON type mismatch (`oidc_enabled` sent
-as the string `"false"` rather than the boolean, say) rather than discarding
-the `json.Unmarshal` error and reasoning about the old value — because the
-`SetRaw` write immediately below persists the malformed value regardless, and
-every real reader (`GetBool`/`GetString`, under `OIDCEnabled`, `GetSAMLConfig`,
-`GetOIDCConfig`) fails that same unmarshal and silently returns the Go zero
-value, flipping the actual setting to disabled/blank from that write onward.
-A guard reasoning about one value while the real system reads a different one
-from the identical bytes is worse than not reasoning at all, because it
-reports confidence it does not have. The JSON literal `null` is the same
-failure by a different mechanism, caught in a later review round:
-`encoding/json`'s `Unmarshal` treats `null` into a non-pointer destination as
-a silent no-op rather than an error, so a type-mismatch check alone still let
-`{"oidc_enabled": null}` through unchanged — `unmarshalSetting` refuses `null`
-explicitly, ahead of the type check, for every key this function reads.
-
-Extending `reset-factors` to also set a password, so a locked-out federated
-administrator has a complete way back rather than merely a warning that
-would have stopped them getting here, is tracked separately (#300's option
-4) and depends on `reset-factors` itself, which does not exist on this
-branch.
+**Not built:** extending `reset-factors` to also set a password, so a locked-out
+federated administrator has a complete way back and not just a warning that
+would have stopped them getting here (#300's option 4). `reset-factors` exists
+(see Passkeys) and clears factors only.
 
 ### Guest Submission (Optional, Off by Default)
 
