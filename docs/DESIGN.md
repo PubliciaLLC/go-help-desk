@@ -529,8 +529,8 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 ### Passkeys (WebAuthn)
 
-A second factor alongside TOTP, and later an alternative to the password
-itself. TOTP does not change and does not go away; an instance that upgrades
+A second factor alongside TOTP (introduced in #302), and later an alternative
+to the password itself. TOTP does not change and does not go away; an instance that upgrades
 into this notices nothing until somebody registers a key. Passwordless sign-in
 is **not built** (see the end of this section): a passkey is asserted after the
 password, never instead of it.
@@ -851,8 +851,9 @@ administrator:
   route that otherwise could set `oidc_enabled: false` or blank a SAML field with
   no refusal and no warning.
 - `reachable` is unconditionally `false` whenever the *candidate* fails to build
-  (both providers), whatever the currently live provider says. Two different
-  questions, and only one survives a restart: the live process keeps its
+  (both providers), whatever the currently live provider says;
+  `buildOIDCProvider` and `buildSAMLMiddleware` return it separately from
+  `commit`. Two different questions, and only one survives a restart: the live process keeps its
   fail-safe (a bad edit or a transient IdP outage leaves what is running
   untouched), but the guard reasons about what the persisted row would do on a
   cold load.
@@ -862,7 +863,7 @@ administrator:
   save that only looked safe because an old, unrelated config was still live is
   exactly the gap this guard closes. SAML has no equivalent case; any blank field
   is unreachable unconditionally.
-- The generic PATCH refuses outright (`400`) a JSON type mismatch (`oidc_enabled`
+- The generic PATCH (`ssoSettingsWarning`) refuses outright (`400`) a JSON type mismatch (`oidc_enabled`
   sent as the string `"false"`) **and the literal `null`** (`unmarshalSetting`),
   for every key the guard reads. The write that follows persists the malformed
   value regardless, and every real reader (`GetBool`/`GetString`) silently
@@ -1378,8 +1379,8 @@ want.
 
 **What a default instance does with a contradicting upload.** The judgement is
 the content against the operator's allowlist, so it moves rows in both
-directions compared with 1.2.0's hard-coded signature check (release notes have
-the comparison). Measured through the upload handler on a default instance:
+directions compared with 1.2.0's hard-coded signature check. What the upload
+handler does on a default instance:
 
 | Upload | Result |
 |---|---|
