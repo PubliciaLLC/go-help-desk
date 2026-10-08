@@ -389,6 +389,7 @@ export async function createWebhook(input: {
   events?: string[]
   secret?: string
   payload_format?: WebhookPayloadFormat
+  enabled?: boolean
 }): Promise<WebhookConfig> {
   const res = await api.post<WebhookConfig>('/admin/webhooks', input)
   return res.data

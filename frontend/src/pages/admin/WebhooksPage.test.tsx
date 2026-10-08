@@ -234,6 +234,31 @@ describe('creating a webhook', () => {
     expect(alert.textContent).toContain('unknown event "ticket.creatd"')
     expect(alert.textContent).not.toMatch(/url was refused/i)
   })
+
+  it('creates enabled by default', async () => {
+    await renderPage()
+    const form = within(createForm())
+    const enabledCheckbox = form.getByRole('checkbox', { name: 'Enabled' }) as HTMLInputElement
+    expect(enabledCheckbox.checked).toBe(true)
+  })
+
+  it('creates a disabled hook when Enabled is unticked', async () => {
+    const { post } = await renderPage()
+    const form = within(createForm())
+
+    await userEvent.click(form.getByRole('checkbox', { name: 'Enabled' }))
+    await userEvent.type(form.getByLabelText('Webhook URL'), 'https://example.com/hook')
+    await userEvent.click(form.getByRole('checkbox', { name: 'All events' }))
+    await userEvent.click(form.getByRole('button', { name: /create/i }))
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post).toHaveBeenCalledWith('/admin/webhooks', {
+      url: 'https://example.com/hook',
+      payload_format: 'raw',
+      events: ['*'],
+      enabled: false,
+    })
+  })
 })
 
 describe('enabling and disabling', () => {
@@ -351,6 +376,12 @@ describe('editing a webhook', () => {
 
     expect(screen.queryByRole('form', { name: 'Edit webhook' })).toBeNull()
     expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('the edit form has no Enabled checkbox', async () => {
+    await renderPage()
+    const form = await openEditor(HOOKS[0].url)
+    expect(form.queryByRole('checkbox', { name: 'Enabled' })).toBeNull()
   })
 })
 
