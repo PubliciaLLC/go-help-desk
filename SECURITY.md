@@ -6,8 +6,10 @@ Security fixes are issued for the **1.3 release line only**: 1.3.0 and its
 patch releases. Earlier versions, 1.2 included, are not backported, and
 pre-1.0 development builds were never supported.
 
-Below 1.3 is not merely unsupported. Every published advisory affects at
-least one version in that range, four of them rated critical — see
+1.2 has no published advisory against it, but it receives no fixes once
+1.3.0 ships. Below 1.2 is not merely unsupported: every published advisory
+affects at least one of those versions, four of them rated critical, and none
+affects 1.2.0 — see
 [the advisories](https://github.com/PubliciaLLC/go-help-desk/security/advisories)
 for what each one allowed.
 
