@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -611,71 +610,44 @@ func TestRedactAddresses(t *testing.T) {
 // that never closes made matching quadratic, about a minute at 96 KB before
 // the bound (measured, #358 review).
 //
-// The check is a scaling check, not a wall-clock limit: an absolute bound
-// depends on the machine, and -race slows regexp 27 to 49 times. Each shape is
-// timed at N and at 4N bytes, interleaved, with the fastest of five runs at
-// each size. A linear matcher takes about four times as long at 4N; an
-// unbounded one about sixteen times. The ratio is asserted against nine, which
-// is between the two. A generous absolute backstop still fails a pathological
-// slowdown on its own, on any single run.
+// The bound is checked against a time limit, not a ratio. Ratios between
+// sizes were tried and are not robust: under CPU contention the larger run
+// spans more scheduler slices, so a linear matcher can measure 9 to 16 times
+// its smaller run, which is the range a quadratic one reaches. The limit is
+// far from both sides instead. At these sizes the bounded pattern takes about
+// 0.1 to 0.2 s without -race and 3 to 5 s with it, so the limit has more than
+// 6 times the race-detector cost of the good case, and more than 100 times
+// without -race. The unbounded pattern took 57 to 61 s at these sizes, so a
+// 30 s limit fails it, and fails it fast, rather than after a minute.
 func TestRedactAddresses_IsLinear(t *testing.T) {
-	const (
-		maxRatio = 9.0                  // linear is ~4 at 4x the input, unbounded ~16
-		minRatio = 5 * time.Millisecond // below this a ratio is noise, so only the backstop applies
-		backstop = 30 * time.Second     // per run, so a slow failure stops at once
-		runs     = 5
-	)
-	// Sizes are per shape, chosen so the smaller run takes a few milliseconds
-	// without -race. Under -race the whole test then stays within about 15 s.
-	// The unbounded versions are quadratic, so their 4N run is what hits the
-	// backstop when a bound is removed.
-	shapes := []struct {
-		name, prefix, unit string
-		small              int // bytes at N; the larger run is 4N
-	}{
+	const limit = 30 * time.Second
+	shapes := []struct{ name, in string }{
 		// Mutation M7 (no {0,64} on the quoted local part) is caught here.
-		{"unclosed quoted local part", `"`, `a@b \"`, 8 << 10},
+		{"unclosed quoted local part", `"` + strings.Repeat(`a@b \"`, 16<<10)},
 		// Whitespace stops the IP literal early.
-		{"unclosed IP literal", "", `a@b x@[`, 48 << 10},
+		{"unclosed IP literal", strings.Repeat(`a@b x@[`, 16<<10)},
 		// The costliest shape per byte. No whitespace, so only the {0,255}
 		// bound limits the IP literal. Measured: this stays linear with or
 		// without that bound (up to 128 KB), so it guards this input against
 		// a regression, but it does not detect removing {0,255}.
-		{"unclosed IP literal, no whitespace", "", `a@[`, 3 << 10},
+		{"unclosed IP literal, no whitespace", strings.Repeat(`a@[`, 32<<10)},
 	}
 	for _, s := range shapes {
 		t.Run(s.name, func(t *testing.T) {
-			build := func(size int) string {
-				return s.prefix + strings.Repeat(s.unit, size/len(s.unit))
+			done := make(chan struct{}, 1) // buffered: a run that finishes after the timeout must not block
+			start := time.Now()
+			go func() {
+				redactAddresses(s.in)
+				done <- struct{}{}
+			}()
+			select {
+			case <-done:
+				t.Logf("%d bytes: %v", len(s.in), time.Since(start))
+			case <-time.After(limit):
+				t.Fatalf("redaction of %d bytes did not finish within %v: the pattern is not linear", len(s.in), limit)
 			}
-			small, large := build(s.small), build(4*s.small)
-			redactAddresses(small) // warm-up: the first run pays for setup
-			tSmall, tLarge := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
-			for range runs {
-				tSmall = min(tSmall, timeOnce(t, small, backstop))
-				tLarge = min(tLarge, timeOnce(t, large, backstop))
-			}
-			t.Logf("t(%d bytes)=%v t(%d bytes)=%v", len(small), tSmall, len(large), tLarge)
-			if tSmall < minRatio {
-				t.Logf("t(N) below %v: ratio not meaningful, backstop only", minRatio)
-				return
-			}
-			ratio := float64(tLarge) / float64(tSmall)
-			t.Logf("ratio=%.2f", ratio)
-			require.Less(t, ratio, maxRatio, "redaction time grows faster than linearly")
 		})
 	}
-}
-
-// timeOnce times one run of redactAddresses on in, and fails the test at once
-// if the run exceeds the backstop.
-func timeOnce(t *testing.T, in string, backstop time.Duration) time.Duration {
-	t.Helper()
-	start := time.Now()
-	redactAddresses(in)
-	d := time.Since(start)
-	require.Less(t, int64(d), int64(backstop), "redaction of %d bytes took %v", len(in), d)
-	return d
 }
 
 // Redaction is applied once by design (TestWorker_RedactsTheRawErrorExactlyOnce).
@@ -714,6 +686,8 @@ func TestWorker_RedactsTheRawErrorExactlyOnce(t *testing.T) {
 	const raw = `550 5.7.1 "Recipient address rejected: a@\"@b`
 	const want = `550 5.7.1 "Recipient address rejected: [address]"@b`
 
+	// The retry path writes no reason to the log, so only the stored
+	// last_error is asserted here. The give-up path asserts both.
 	t.Run("retried", func(t *testing.T) {
 		store := newFakeOutbox()
 		email := &recorder{fail: errors.New(raw)}
