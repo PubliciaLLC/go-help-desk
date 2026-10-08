@@ -21,6 +21,28 @@ func (q *Queries) DeletePendingRegistration(ctx context.Context, id uuid.UUID) e
 	return err
 }
 
+const getPendingRegistrationByID = `-- name: GetPendingRegistrationByID :one
+SELECT id, email, display_name, password_hash, token, expires_at, created_at FROM pending_registrations WHERE id = $1
+`
+
+// The send-time read for a queued verification email (#348): the row is read
+// when the mail goes out, so the token and address are the current ones and
+// the token is never copied into the outbox.
+func (q *Queries) GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error) {
+	row := q.db.QueryRowContext(ctx, getPendingRegistrationByID, id)
+	var i PendingRegistration
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.PasswordHash,
+		&i.Token,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getPendingRegistrationByToken = `-- name: GetPendingRegistrationByToken :one
 SELECT id, email, display_name, password_hash, token, expires_at, created_at FROM pending_registrations WHERE token = $1
 `

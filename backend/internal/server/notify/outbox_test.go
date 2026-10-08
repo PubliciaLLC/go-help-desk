@@ -25,6 +25,8 @@ type fakeOutbox struct {
 	order   []uuid.UUID
 	retries map[uuid.UUID]time.Time
 	failed  map[uuid.UUID]string
+	// lastErrors is every error text passed to Retry, as last_error stores it.
+	lastErrors []string
 }
 
 type fakeRow struct {
@@ -69,9 +71,10 @@ func (f *fakeOutbox) Delete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (f *fakeOutbox) Retry(_ context.Context, id uuid.UUID, at time.Time, _ string) error {
+func (f *fakeOutbox) Retry(_ context.Context, id uuid.UUID, at time.Time, lastErr string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.lastErrors = append(f.lastErrors, lastErr)
 	f.rows[id].due = at
 	f.retries[id] = at
 	return nil
@@ -537,4 +540,80 @@ func TestOutboxRecord_KeepsTheInstantInAnyZone(t *testing.T) {
 	got, err := decodeEvent(b)
 	require.NoError(t, err)
 	require.True(t, ev.OccurredAt.Equal(got.OccurredAt), "stored %v, read back %v", ev.OccurredAt, got.OccurredAt)
+}
+
+// #350: a mail server's rejection usually names the recipient, and the
+// worker keeps the error text in last_error (30 days on a failed row) and in
+// the log. The address is redacted from both; the SMTP status is what an
+// operator needs, and it stays.
+func TestWorker_RedactsAddressesFromStoredAndLoggedErrors(t *testing.T) {
+	store := newFakeOutbox()
+	reject := &recorder{fail: errors.New("SMTP RCPT TO: 550 5.1.1 <guest@example.com>: Recipient address rejected; also cc Ada.Lovelace+tickets@sub.example.co.uk")}
+	require.NoError(t, NewOutboxDispatcher(store, []string{"email"}, nil).Dispatch(context.Background(), sampleEvent()))
+	var logged bytes.Buffer
+	w := NewWorker(store, map[string]notification.Dispatcher{"email": reject}, slog.New(slog.NewTextHandler(&logged, nil)))
+	w.MaxAttempts = 2
+
+	_, err := w.RunOnce(context.Background()) // attempt 1: rescheduled
+	require.NoError(t, err)
+	store.makeDue()
+	_, err = w.RunOnce(context.Background()) // attempt 2: given up on
+	require.NoError(t, err)
+
+	require.Len(t, store.failed, 1)
+	for _, reason := range store.failed {
+		require.NotContains(t, reason, "guest@example.com")
+		require.NotContains(t, reason, "Ada.Lovelace")
+		require.Contains(t, reason, "550 5.1.1", "the SMTP status was redacted too")
+	}
+	for _, lastErr := range store.lastErrors {
+		require.NotContains(t, lastErr, "@example.com")
+	}
+	require.NotContains(t, logged.String(), "guest@example.com")
+	require.NotContains(t, logged.String(), "Ada.Lovelace")
+}
+
+func TestRedactAddresses(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"550 5.1.1 <guest@example.com>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+		{"RCPT TO:<a.b+c@sub.example.co.uk> denied", "RCPT TO:<[address]> denied"},
+		{"two: x@a.test, y@b.test", "two: [address], [address]"},
+		// Ordinary errors are left exactly as they are.
+		{"dial tcp 10.0.0.25:587: i/o timeout", "dial tcp 10.0.0.25:587: i/o timeout"},
+		{"421 4.7.0 Try again later", "421 4.7.0 Try again later"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, redactAddresses(tc.in), "input %q", tc.in)
+	}
+}
+
+// A verification event queues for the verification channel and nothing else:
+// it has no recipient for email and is never a webhook event. And the
+// verification channel queues nothing else (#348).
+func TestOutboxDispatcher_VerificationEventsGoOnlyToTheirChannel(t *testing.T) {
+	store := newFakeOutbox()
+	d := NewOutboxDispatcher(store, []string{"email", "webhook", "verification"}, nil)
+	verify := notification.Event{Type: notification.EventRegistrationVerify,
+		Payload: map[string]any{"pending_id": uuid.New().String()}}
+	require.NoError(t, d.Dispatch(context.Background(), verify))
+	require.Equal(t, []string{"verification"}, store.channelsQueued())
+
+	store2 := newFakeOutbox()
+	require.NoError(t, NewOutboxDispatcher(store2, []string{"verification"}, nil).Dispatch(context.Background(), sampleEvent()))
+	require.Empty(t, store2.channelsQueued(), "a ticket event was queued for the verification channel")
+}
+
+func TestVerificationDispatcher(t *testing.T) {
+	id := uuid.New()
+	var got []uuid.UUID
+	d := NewVerificationDispatcher(func(_ context.Context, sent uuid.UUID) error { got = append(got, sent); return nil })
+
+	require.NoError(t, d.Dispatch(context.Background(), sampleEvent()), "a ticket event is ignored")
+	require.Empty(t, got)
+	require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+		Type: notification.EventRegistrationVerify, Payload: map[string]any{"pending_id": id.String()}}))
+	require.Equal(t, []uuid.UUID{id}, got)
+	require.Error(t, d.Dispatch(context.Background(), notification.Event{Type: notification.EventRegistrationVerify}),
+		"a verification event with no id must fail, not vanish")
 }

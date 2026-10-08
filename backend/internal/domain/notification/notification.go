@@ -25,6 +25,12 @@ const (
 	// one path that sends mail, rather than giving the HTTP layer a mailer of
 	// its own.
 	EventGuestLinkResent EventType = "guest.link_resent"
+
+	// EventRegistrationVerify queues a signup's verification email (#348).
+	// Its payload is only {"pending_id": "<uuid>"}; the address and token are
+	// read from the pending registration when the email is sent. Never a
+	// webhook event, and no ticket.
+	EventRegistrationVerify EventType = "registration.verify"
 )
 
 // Event carries the data for a single lifecycle event on a ticket.

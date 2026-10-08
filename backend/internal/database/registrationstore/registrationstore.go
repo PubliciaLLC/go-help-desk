@@ -3,6 +3,8 @@ package registrationstore
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -36,6 +38,17 @@ func (s *Store) GetByToken(ctx context.Context, token uuid.UUID) (registration.P
 	row, err := s.q.GetPendingRegistrationByToken(ctx, token)
 	if err != nil {
 		return registration.PendingRegistration{}, fmt.Errorf("getting pending registration by token: %w", err)
+	}
+	return fromRow(row), nil
+}
+
+func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (registration.PendingRegistration, error) {
+	row, err := s.q.GetPendingRegistrationByID(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return registration.PendingRegistration{}, registration.ErrNotFound
+	}
+	if err != nil {
+		return registration.PendingRegistration{}, fmt.Errorf("getting pending registration: %w", err)
 	}
 	return fromRow(row), nil
 }

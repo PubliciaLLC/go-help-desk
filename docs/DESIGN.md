@@ -798,8 +798,8 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 
 - Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
-- `POST /api/v1/auth/signup` takes `{email, display_name, password}` and answers `403 signup_disabled` when off. The address must be a single valid email, the name is required and the password at least 8 characters (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (the bcrypt hash and a 24-hour token; one pending row per address, a repeat replaces it) and emails a link to `{BASE_URL}/verify-email?token=…`. Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
-- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), no mail is sent for a taken address, and the password is hashed before that is acted on so the timing does not tell the cases apart. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
+- `POST /api/v1/auth/signup` takes `{email, display_name, password}` and answers `403 signup_disabled` when off. The address must be a single valid email, the name is required and the password at least 8 characters (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (the bcrypt hash and a 24-hour token; one pending row per address, a repeat replaces it) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
+- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the password hashed, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because no mail is dialled on the request for one case and not the other, the timing does not tell them apart either. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
 - `POST /api/v1/auth/verify-email` takes `{token}`: `422 token_invalid` for an unknown, used or malformed token and `422 token_expired` past 24 hours. On success it creates the account from the stored hash, deletes the pending row and signs the person in (`mfa_enrollment_needed` is true when MFA is enforced for the `user` role). The page is `/verify-email`.
 
 ### Identity provider lockout guard (#300)
@@ -2110,7 +2110,7 @@ on the existing webhook feature instead of as plugins.
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
-  channel (email, webhook), and returns. A worker in every server process
+  channel that can carry the event (email, webhook, and `verification` for signup mail, below), and returns. A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
   a ten-minute lease that returns a row whose worker died; a claim takes at
   most as many rows as can each run to their full time inside the
@@ -2122,10 +2122,24 @@ on the existing webhook feature instead of as plugins.
   deleted after thirty days. One row per channel means a failing channel is
   retried alone and the other is not sent twice; a channel that cannot carry an
   event type (webhooks never receive `guest.link_resent`) gets no row. A send
-  that panics fails its row. Delivery is at least once: a
+  that panics fails its row. A failed send's error is kept in `last_error` and
+  the log with email addresses replaced by `[address]` (#350): a mail server's
+  rejection usually names the recipient, and the SMTP status code is what an
+  operator needs. Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
   Webhooks are not retried on HTTP failure: their dispatcher already posts in
   the background and reports nothing back, unchanged by this.
+- **Signup verification email goes through the outbox too**
+  ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
+  `verification` channel. Signup answers the same 202 whether or not the
+  address already has an account, and does the same work for both: it hashes
+  the password, writes the pending registration and queues one row naming
+  only that registration's id. The send re-reads the row and mails the stored
+  address and token, or nothing if the row is gone or expired or the address
+  has an account. Before this a new address dialled the mail server on the
+  request and a taken one returned at once, so the timing said who had an
+  account. A taken address now gets a pending row that is never mailed, and
+  it expires unused.
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — shipped in v1.
   Not a plugin, and not a separate integration surface: a webhook
   subscription has a `payload_format` setting (`raw`, the default,

@@ -25,6 +25,8 @@ type PendingRegistration struct {
 type Store interface {
 	Upsert(ctx context.Context, r PendingRegistration) (PendingRegistration, error)
 	GetByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
+	// GetByID returns ErrNotFound when no row has the id.
+	GetByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 

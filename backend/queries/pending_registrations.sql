@@ -14,3 +14,9 @@ SELECT * FROM pending_registrations WHERE token = $1;
 
 -- name: DeletePendingRegistration :exec
 DELETE FROM pending_registrations WHERE id = $1;
+
+-- name: GetPendingRegistrationByID :one
+-- The send-time read for a queued verification email (#348): the row is read
+-- when the mail goes out, so the token and address are the current ones and
+-- the token is never copied into the outbox.
+SELECT * FROM pending_registrations WHERE id = $1;

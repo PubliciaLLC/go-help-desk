@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,6 +102,8 @@ func carries(channel string, ev notification.Event) bool {
 		// An account holder's status change has nobody to mail. A guest-link
 		// event may have no recipient yet: the send-time step fills it in.
 		return ev.Recipient != "" || ev.GuestLink
+	case "verification":
+		return ev.Type == notification.EventRegistrationVerify
 	}
 	return true
 }
@@ -301,16 +304,32 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		}
 		return
 	}
+	reason := redactAddresses(err.Error())
 	if row.Attempts >= w.MaxAttempts {
-		w.fail(settle, row, err.Error())
+		w.fail(settle, row, reason)
 		return
 	}
-	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), err.Error()); rerr != nil {
+	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), reason); rerr != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not reschedule", "id", row.ID, "error", rerr)
 	}
 }
 
+// emailAddress matches anything shaped like an address in an error string.
+// Deliberately loose: it only has to find what to hide, never validate it.
+var emailAddress = regexp.MustCompile(`[^\s<>()\[\]@,;:"']+@[^\s<>()\[\]@,;:"']+`)
+
+// redactAddresses hides email addresses in a delivery error before it is
+// stored in last_error or logged (#350). A mail server's rejection usually
+// names the recipient ("550 5.1.1 <guest@example.com>: Recipient address
+// rejected"), and before the outbox those errors were thrown away; keeping
+// them should not mean keeping a copy of the address for 30 days. The SMTP
+// status, which is what an operator needs, is left intact.
+func redactAddresses(s string) string {
+	return emailAddress.ReplaceAllString(s, "[address]")
+}
+
 func (w *Worker) fail(ctx context.Context, row notification.OutboxRow, reason string) {
+	reason = redactAddresses(reason)
 	w.log.ErrorContext(ctx, "notification outbox: giving up on a notification",
 		"id", row.ID, "channel", row.Channel, "attempts", row.Attempts, "reason", reason)
 	if err := w.store.Fail(ctx, row.ID, reason); err != nil {
@@ -358,4 +377,30 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 		return nil
 	}
 	return d.next.Dispatch(ctx, sent)
+}
+
+// VerificationDispatcher is the outbox channel for signup verification email
+// (#348). The event names a pending registration and nothing else; send reads
+// the row, decides whether anyone is to be mailed, and mails the address and
+// token stored on it.
+type VerificationDispatcher struct {
+	send func(context.Context, uuid.UUID) error
+}
+
+// NewVerificationDispatcher sends through send, normally
+// registration.Service.SendVerification.
+func NewVerificationDispatcher(send func(context.Context, uuid.UUID) error) *VerificationDispatcher {
+	return &VerificationDispatcher{send: send}
+}
+
+func (d *VerificationDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if ev.Type != notification.EventRegistrationVerify {
+		return nil
+	}
+	raw, _ := ev.Payload["pending_id"].(string)
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("verification event without a pending registration id: %w", err)
+	}
+	return d.send(ctx, id)
 }
