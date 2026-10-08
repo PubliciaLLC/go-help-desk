@@ -318,10 +318,11 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 // Deliberately loose: it only has to find what to hide, never validate it.
 // The local part may be quoted ("john doe"@example.com, escapes included) and
 // the domain may be an IP literal (guest@[192.168.1.10]): both pass
-// user.ValidateEmail, so a guest can have one on file (#358). Both are
-// bounded, because the input is the relay's reply and an unclosed quote or
-// bracket must not make matching quadratic. An IP literal has no whitespace,
-// so a stray "@[" cannot close on a later "]" such as the one in "[address]".
+// user.ValidateEmail, so a guest can have one on file (#358). The quoted
+// local part is bounded because an unclosed quote made matching quadratic on
+// relay text (measured; see TestRedactAddresses_IsLinear). The IP literal is
+// bounded to 255 characters, as a domain name is, and excludes whitespace, so
+// a stray "@[" cannot close on a later "]" such as the one in "[address]".
 var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.){0,64}"|[^\s<>()\[\]@,;:"']+)@(?:\[[^\]\s]{0,255}\]|[^\s<>()\[\]@,;:"']+)`)
 
 // redactAddresses hides email addresses in a delivery error before it is

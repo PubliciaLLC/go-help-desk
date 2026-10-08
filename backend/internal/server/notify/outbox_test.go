@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"sync"
@@ -606,24 +607,74 @@ func TestRedactAddresses(t *testing.T) {
 
 // redactAddresses runs on the outbox worker goroutine, and its input is the
 // SMTP relay's reply, which the relay controls. Go's regexp is linear in the
-// input only when the pattern is bounded: an unbounded quoted local part or
-// IP literal that never closes makes every later match rescan the rest of
-// the input, which took about a minute at 96 KB before the bounds (#358
-// review). The bound is the point of this test: the times are generous, and
-// the result is what matters, not the exact duration.
+// input only when the pattern is bounded: an unbounded quoted local part
+// that never closes made matching quadratic, about a minute at 96 KB before
+// the bound (measured, #358 review).
+//
+// The check is a scaling check, not a wall-clock limit: an absolute bound
+// depends on the machine and fails under -race, which slows regexp several
+// fold. Each shape is timed at N and at 2N bytes. A linear matcher takes about
+// twice as long at 2N; an unbounded one takes about four times as long. The
+// ratio is what is asserted. A generous absolute backstop still fails a
+// pathological slowdown on its own.
 func TestRedactAddresses_IsLinear(t *testing.T) {
-	const n = 16 << 10 // 16 K repeats, about 96 KB each
-	hostile := map[string]string{
-		"unclosed quoted local part": `"` + strings.Repeat(`a@b \"`, n),
-		"unclosed IP literal":        strings.Repeat(`a@b x@[`, n),
+	const (
+		maxRatio = 3.0                  // linear is ~2, unbounded ~4
+		minRatio = 5 * time.Millisecond // below this a ratio is noise, so only the backstop applies
+		backstop = 20 * time.Second
+	)
+	// Sizes are per shape: each is chosen so that the smaller run takes tens
+	// of milliseconds without -race. The unbounded versions are quadratic, so
+	// their 2N run is what hits the backstop when a bound is removed.
+	shapes := []struct {
+		name, prefix, unit string
+		small              int // bytes at N; the larger run is 2N
+	}{
+		// Mutation M7 (no {0,64} on the quoted local part) is caught here.
+		{"unclosed quoted local part", `"`, `a@b \"`, 16 << 10},
+		// Whitespace stops the IP literal early.
+		{"unclosed IP literal", "", `a@b x@[`, 128 << 10},
+		// No whitespace, so only the {0,255} bound limits the IP literal.
+		// Measured: this stays linear with or without that bound (up to
+		// 128 KB), so this shape guards against a regression on this input;
+		// it does not by itself detect removing {0,255}.
+		{"unclosed IP literal, no whitespace", "", `a@[`, 32 << 10},
 	}
-	for name, in := range hostile {
-		t.Run(name, func(t *testing.T) {
-			start := time.Now()
-			redactAddresses(in)
-			require.Less(t, time.Since(start), time.Second, "redaction of %d bytes is not linear", len(in))
+	for _, s := range shapes {
+		t.Run(s.name, func(t *testing.T) {
+			build := func(size int) string {
+				return s.prefix + strings.Repeat(s.unit, size/len(s.unit))
+			}
+			small, large := s.small, 2*s.small
+			redactAddresses(build(small)) // warm-up: the first run pays for setup
+			tSmall := timeRedaction(t, build(small), backstop)
+			tLarge := timeRedaction(t, build(large), backstop)
+			t.Logf("t(%d bytes)=%v t(%d bytes)=%v", len(build(small)), tSmall, len(build(large)), tLarge)
+			if tSmall < minRatio {
+				t.Logf("t(N) below %v: ratio not meaningful, backstop only", minRatio)
+				return
+			}
+			ratio := float64(tLarge) / float64(tSmall)
+			t.Logf("ratio=%.2f", ratio)
+			require.Less(t, ratio, maxRatio, "redaction time grows faster than linearly")
 		})
 	}
+}
+
+// timeRedaction returns the fastest of three runs of redactAddresses on in.
+// The minimum is taken to cut noise. Every run is checked against the
+// backstop, so a pathological run stops the test at once.
+func timeRedaction(t *testing.T, in string, backstop time.Duration) time.Duration {
+	t.Helper()
+	best := time.Duration(math.MaxInt64)
+	for range 3 {
+		start := time.Now()
+		redactAddresses(in)
+		d := time.Since(start)
+		require.Less(t, int64(d), int64(backstop), "redaction of %d bytes took %v", len(in), d)
+		best = min(best, d)
+	}
+	return best
 }
 
 // fail and deliver both redact the same string on a terminal failure, so
