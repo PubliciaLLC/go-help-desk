@@ -778,25 +778,40 @@ any configuration (found while testing #304; pinned by
 The SAML library's own login cookie (`token`, a signed JWT) is a hand-over,
 not a session. `/auth/saml/complete` spends it as soon as it has read it,
 whatever the outcome. The browser is told to delete it (under the name,
-domain and path the library set it with), and its SHA-256 is recorded in
-`spent_saml_handovers`. A cookie whose hash is already recorded is refused
-with `/login?error=sso_session_used`. The app session written at hand-over
-is the only credential from then on, so a copy of the cookie captured
-earlier cannot mint a new session after a revocation (password change, MFA
-reset, a new factor, disable). Without a revocation it cannot mint one
-either
+domain and path the library set it with), and the SHA-256 of its signed input
+(`header.payload`, never the signature) is recorded in `spent_saml_handovers`.
+The signature is left out on purpose: the verifier decodes it leniently, so
+one token has several spellings that all verify (unused low bits in the last
+base64 character, or the ECDSA `s` value replaced by `N-s`), and keying on the
+whole cookie would let a respelled copy through. A cookie whose signed input is
+already recorded is refused with `/login?error=sso_session_used`. The app
+session written at hand-over is the only credential from then on, so a copy of
+the cookie captured earlier cannot mint a new session after a revocation
+(password change, MFA reset, a new factor, disable). Without a revocation it
+cannot mint one either
 ([#337](https://github.com/PubliciaLLC/go-help-desk/issues/337); pinned by
-`TestSAMLComplete_RefusesASpentLibraryCookie` and
+`TestSAMLComplete_RefusesASpentLibraryCookie`,
+`TestSAMLComplete_RefusesARespelledSpentCookie` and
 `TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation`). The primary key
-decides, so two concurrent uses of one cookie cannot both succeed. Rows are
-purged after a day.
+decides, so two concurrent uses of one cookie cannot both succeed. If the
+record cannot be written, the sign-in fails with a 500 rather than going
+ahead. Rows are purged after a day.
+
+Every hand-over JWT carries a random `jti` (`auth.HandoverCodec`), so two
+sign-ins by one person in the same second never share a signed input and
+cannot collide in the record.
 
 The cookie and its JWT live five minutes (`auth.SAMLHandoverMaxAge`), not
-the library's default of one hour. That bounds the one case the record
-cannot close: a cookie copied in flight and used before the browser it was
-issued to reached `/complete`. Five minutes rather than seconds, because the
-JWT's expiry is checked against the clock of whichever instance serves
-`/complete`.
+the library's default of one hour. That bounds the case the record cannot
+close: a cookie copied in flight and used before the browser it was issued to
+reached `/complete`. Five minutes rather than seconds, because the JWT's
+expiry is checked against the clock of whichever instance serves `/complete`.
+
+What this does not cover: the assertion POST to the ACS can still be replayed
+for about 90 seconds. The SAML library keeps no record of assertion IDs and
+accepts an assertion for `MaxIssueDelay` (90 seconds) after it was issued, so a
+captured POST body can mint a fresh hand-over cookie in that window. That was
+true before #337 and is not changed by it.
 
 This is a one-time-use record, not a "sessions revoked at" timestamp checked
 against the JWT's issue time. The timestamp would have to be written by

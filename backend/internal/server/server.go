@@ -418,9 +418,11 @@ type SessionStore interface {
 	// session gains authority.
 	Delete(ctx context.Context, id string) error
 
-	// SpendSAMLHandover makes the SAML library's hand-over cookie single-use:
-	// true the first time a given cookie is presented, false every time after.
-	SpendSAMLHandover(ctx context.Context, token string) (bool, error)
+	// SpendSAMLHandover makes the SAML library's hand-over cookie single-use.
+	// signedInput is the cookie's header.payload, never the whole cookie: the
+	// signature can be respelled and still verify. It reports true the first
+	// time a given signed input is presented, false every time after.
+	SpendSAMLHandover(ctx context.Context, signedInput string) (bool, error)
 }
 
 func (s *Server) buildRouter() *chi.Mux {

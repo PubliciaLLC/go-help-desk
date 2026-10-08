@@ -4,13 +4,16 @@ package auth
 import (
 	"context"
 	"crypto"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
 )
 
@@ -28,6 +31,51 @@ const metadataFetchTimeout = 15 * time.Second
 // copy that never got there. Five minutes, not seconds, because the JWT's
 // expiry is checked against the clock of whichever replica serves /complete.
 const SAMLHandoverMaxAge = 5 * time.Minute
+
+// HandoverCodec embeds samlsp.JWTSessionCodec and overrides New to set a
+// random jti (JWT ID) on each minted token. This ensures that two tokens
+// minted for the same person in the same second have different header.payload
+// signatures, so the spend (keyed on SHA-256 of header.payload) does not
+// reject the second sign-in wrongly (#337).
+type HandoverCodec struct {
+	samlsp.JWTSessionCodec
+}
+
+// New creates a SAML session from the assertion and assigns it a random jti.
+// The result is returned as the value type (samlsp.JWTSessionClaims, not *),
+// as required by the handler and tests.
+func (c HandoverCodec) New(assertion *saml.Assertion) (samlsp.Session, error) {
+	// Delegate to the embedded codec to build the base session.
+	sess, err := c.JWTSessionCodec.New(assertion)
+	if err != nil {
+		return nil, err
+	}
+
+	// Type-assert to JWTSessionClaims to set the jti.
+	claims, ok := sess.(samlsp.JWTSessionClaims)
+	if !ok {
+		return nil, fmt.Errorf("expected samlsp.JWTSessionClaims, got %T", sess)
+	}
+
+	// Assign a random 16-byte jti, base64.RawURLEncoded.
+	jtiBytes := make([]byte, 16)
+	if _, err := rand.Read(jtiBytes); err != nil {
+		return nil, fmt.Errorf("generating jti: %w", err)
+	}
+	claims.Id = base64.RawURLEncoding.EncodeToString(jtiBytes)
+
+	// Return as value (not pointer) to match the type expected by handlers and
+	// the CookieSessionProvider contract.
+	return claims, nil
+}
+
+// NewHandoverCodec constructs a HandoverCodec from SAML options, configured
+// with the handover lifetime.
+func NewHandoverCodec(opts samlsp.Options) HandoverCodec {
+	codec := samlsp.DefaultSessionCodec(opts)
+	codec.MaxAge = SAMLHandoverMaxAge
+	return HandoverCodec{JWTSessionCodec: codec}
+}
 
 // SAMLConfig holds the parameters needed to initialise a SAML service provider.
 type SAMLConfig struct {
@@ -122,8 +170,11 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	}
 	// Both lifetimes: the cookie's Max-Age, and the JWT's exp, which is what
 	// is actually enforced (a browser can keep a cookie past its Max-Age).
-	codec := samlsp.DefaultSessionCodec(opts)
-	codec.MaxAge = SAMLHandoverMaxAge
+	// Use HandoverCodec to ensure each minted JWT gets a random jti; without
+	// it, two mints for one person in the same second share the same
+	// header.payload, and the spend (keyed on SHA-256 of header.payload)
+	// wrongly rejects the second sign-in (#337).
+	codec := NewHandoverCodec(opts)
 	session := samlsp.DefaultSessionProvider(opts)
 	session.MaxAge = SAMLHandoverMaxAge
 	session.Codec = codec

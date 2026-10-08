@@ -339,10 +339,10 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 		// session written below is the credential from now on.
 		//
 		// Spent twice: the browser is told to delete the cookie (same name,
-		// domain and path the library set it with), and its hash is recorded
-		// so a copy presented later is refused (SpendSAMLHandover). Both
-		// happen before the user is looked up, so a refused sign-in spends it
-		// too.
+		// domain and path the library set it with), and the SHA-256 of its signed
+		// input (header.payload) is recorded so a copy presented later is
+		// refused (SpendSAMLHandover). Both happen before the user is looked
+		// up, so a refused sign-in spends it too.
 		//
 		// The error branches below are defensive. CookieSessionProvider's
 		// DeleteSession can only fail on a malformed cookie lookup, which

@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,4 +218,73 @@ func TestNewSAMLMiddleware_HandoverCookieLivesFiveMinutes(t *testing.T) {
 	require.True(t, ok, "session must be decodable as JWTSessionClaims")
 	require.Equal(t, int64(300), claims.ExpiresAt-claims.IssuedAt,
 		"JWT exp and iat must differ by exactly 300 seconds")
+}
+
+// TestNewSAMLMiddleware_TwoMintsInTheSameSecondDifferByJti pins that each minted
+// handover JWT gets a random jti (#337). Two mints for one person in the same
+// second must have different header.payload, or the spend (keyed on SHA-256 of
+// header.payload) will reject the second sign-in wrongly.
+func TestNewSAMLMiddleware_TwoMintsInTheSameSecondDifferByJti(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+
+	// Same assertion, minted twice in quick succession.
+	assertion := &saml.Assertion{
+		Subject: &saml.Subject{
+			NameID: &saml.NameID{Value: "test-user"},
+		},
+	}
+
+	rec1 := httptest.NewRecorder()
+	mw.Session.CreateSession(rec1, httptest.NewRequest("POST", "/", nil), assertion)
+	cookies1 := rec1.Result().Cookies()
+	require.Len(t, cookies1, 1)
+	token1 := cookies1[0].Value
+
+	rec2 := httptest.NewRecorder()
+	mw.Session.CreateSession(rec2, httptest.NewRequest("POST", "/", nil), assertion)
+	cookies2 := rec2.Result().Cookies()
+	require.Len(t, cookies2, 1)
+	token2 := cookies2[0].Value
+
+	// Extract header.payload (first two segments) from each JWT.
+	parts1 := strings.Split(token1, ".")
+	parts2 := strings.Split(token2, ".")
+	require.Len(t, parts1, 3, "token1 must be a valid JWT")
+	require.Len(t, parts2, 3, "token2 must be a valid JWT")
+
+	headerPayload1 := parts1[0] + "." + parts1[1]
+	headerPayload2 := parts2[0] + "." + parts2[1]
+
+	require.NotEqual(t, headerPayload1, headerPayload2,
+		"two mints in the same second must differ in header.payload due to jti")
+
+	// Decode and verify both have non-empty distinct jti (Id).
+	cp, ok := mw.Session.(samlsp.CookieSessionProvider)
+	require.True(t, ok)
+
+	sess1, err := cp.Codec.Decode(token1)
+	require.NoError(t, err)
+	claims1, ok := sess1.(samlsp.JWTSessionClaims)
+	require.True(t, ok)
+	require.NotEmpty(t, claims1.Id, "first mint must have non-empty jti")
+
+	sess2, err := cp.Codec.Decode(token2)
+	require.NoError(t, err)
+	claims2, ok := sess2.(samlsp.JWTSessionClaims)
+	require.True(t, ok)
+	require.NotEmpty(t, claims2.Id, "second mint must have non-empty jti")
+
+	require.NotEqual(t, claims1.Id, claims2.Id, "two mints must have distinct jti values")
 }
