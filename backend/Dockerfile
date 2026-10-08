@@ -56,7 +56,7 @@ RUN npm run build
 # compiler by default and the binary is CGO_ENABLED=0, so targeting another
 # architecture costs nothing — whereas emulating the whole toolchain under QEMU
 # turns a two-minute compile into fifteen or more.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS gobuilder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS gobuilder
 
 WORKDIR /build
 

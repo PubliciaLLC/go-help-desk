@@ -377,7 +377,7 @@ OAuth2 client credentials (`POST /api/v1/auth/oauth/token`) produce short-lived 
 
 ## Development
 
-Requires Go 1.26+, Node 24+, PostgreSQL 17+.
+Requires Go 1.27+, Node 24+, PostgreSQL 17+.
 
 ```sh
 # backend
