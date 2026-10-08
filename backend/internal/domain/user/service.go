@@ -166,9 +166,8 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 		// first-run setup accepted one character; a one-character password on
 		// an administrator account created during setup is the worst case of
 		// the four and was the least guarded.
-		if len(in.Password) < MinPasswordLength {
-			return User{}, fmt.Errorf("%w: password must be at least %d characters",
-				ErrValidation, MinPasswordLength)
+		if err := ValidatePassword(in.Password); err != nil {
+			return User{}, fmt.Errorf("%w: %w", ErrValidation, err)
 		}
 		hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), s.hashCost)
 		if err != nil {
@@ -190,9 +189,8 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	// The fourth path, held to the same minimum as the other three. The
 	// handler checks it too; this is the check that cannot be bypassed by a
 	// future caller that forgets.
-	if len(plain) < MinPasswordLength {
-		return fmt.Errorf("%w: password must be at least %d characters",
-			ErrValidation, MinPasswordLength)
+	if err := ValidatePassword(plain); err != nil {
+		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
 	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
@@ -935,9 +933,8 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	}
 	// Reset was the loosest of the four paths: it refused only a blank
 	// password, so an administrator could reset an account to "b".
-	if len(plain) < MinPasswordLength {
-		return fmt.Errorf("%w: password must be at least %d characters",
-			ErrValidation, MinPasswordLength)
+	if err := ValidatePassword(plain); err != nil {
+		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -977,6 +974,36 @@ const (
 // have to be trying to. A minimum that applies on one of four paths is not a
 // minimum.
 const MinPasswordLength = 8
+
+// MaxPasswordLength is the longest password this application will store, in
+// BYTES, not characters: bcrypt reads at most 72 bytes and
+// bcrypt.GenerateFromPassword refuses anything longer. An accented letter is
+// two bytes and most other non-Latin characters three or four, so a
+// 25-character passphrase in Chinese is already over. Login does not apply
+// it: see VerifyPassword.
+const MaxPasswordLength = 72
+
+// ErrPasswordTooShort and ErrPasswordTooLong are ValidatePassword's refusals.
+// Bare, not wrapped in ErrValidation, so the signup verification handler can
+// show the message as is; Create, SetPassword and AdminSetPassword wrap them
+// in ErrValidation, which keeps their message ("invalid input: password must
+// be at least 8 characters") and their 400 exactly what it was.
+var (
+	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
+	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes; accented and non-Latin characters count as 2 to 4 bytes each", MaxPasswordLength)
+)
+
+// ValidatePassword is the length rule every path that sets a password applies.
+// One function, because the minimum alone was once four different rules.
+func ValidatePassword(plain string) error {
+	if len(plain) < MinPasswordLength {
+		return ErrPasswordTooShort
+	}
+	if len(plain) > MaxPasswordLength {
+		return ErrPasswordTooLong
+	}
+	return nil
+}
 
 // ErrMFALocked reports that an account has spent its TOTP attempts.
 var ErrMFALocked = errors.New("too many incorrect codes; try again later")

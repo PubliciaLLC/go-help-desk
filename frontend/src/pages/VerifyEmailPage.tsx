@@ -80,7 +80,7 @@ export function VerifyEmailPage() {
       // as invalid or already used, and the advice to sign up again — the one
       // thing that would have helped — was unreachable.
       const code = extractErrorCode(err)
-      if (code === 'password_too_short' || code === 'display_name_required') {
+      if (code === 'password_too_short' || code === 'password_too_long' || code === 'display_name_required') {
         setError(extractError(err))
       } else {
         refuseLink(code)

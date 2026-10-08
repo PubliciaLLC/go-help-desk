@@ -1688,6 +1688,39 @@ func TestLocalLogin_WrongPassword(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
 
+// An overlong password is an ordinary wrong password: the server does not
+// refuse it earlier. Bcrypt silently uses only the first 72 bytes and
+// compares. A long password that happens to match the first 72 bytes of
+// the stored password succeeds; otherwise it is an ordinary mismatch.
+func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	// Both wrong passwords — one short, one overlong — get the same response.
+	shortWrong := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": "wrongpassword",
+	})
+	defer shortWrong.Body.Close()
+
+	overlongWrong := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "staff@test.local",
+		"password": strings.Repeat("x", 200),
+	})
+	defer overlongWrong.Body.Close()
+
+	require.Equal(t, shortWrong.StatusCode, overlongWrong.StatusCode)
+
+	var shortBody, overlongBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.NewDecoder(shortWrong.Body).Decode(&shortBody)
+	_ = json.NewDecoder(overlongWrong.Body).Decode(&overlongBody)
+	require.Equal(t, shortBody.Error.Code, overlongBody.Error.Code)
+}
+
 func TestLogout(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

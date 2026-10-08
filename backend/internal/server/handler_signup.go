@@ -152,6 +152,10 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "password_too_short", err.Error())
 			return
 		}
+		if errors.Is(err, registration.ErrPasswordTooLong) {
+			Error(w, http.StatusBadRequest, "password_too_long", err.Error())
+			return
+		}
 		verificationRefused(w, err)
 		return
 	}

@@ -40,10 +40,13 @@ var ErrAlreadyRegistered = fmt.Errorf("an account already exists for that addres
 // anything is written, so the link still works (#374).
 var ErrDisplayNameRequired = fmt.Errorf("display name is required")
 
-// ErrPasswordTooShort is the refusal for a password chosen at verification
-// below user.MinPasswordLength. The link stays usable, so the person can try
-// again.
-var ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", user.MinPasswordLength)
+// ErrPasswordTooShort and ErrPasswordTooLong are user.ValidatePassword's
+// refusals for a password chosen at verification. Checked before anything
+// is written, so the link stays usable and the person can try again.
+var (
+	ErrPasswordTooShort = user.ErrPasswordTooShort
+	ErrPasswordTooLong  = user.ErrPasswordTooLong
+)
 
 // ErrDomainNotAllowed is returned when the email domain is not permitted.
 var ErrDomainNotAllowed = fmt.Errorf("email domain not allowed")
@@ -254,8 +257,8 @@ func (s *Service) Verify(ctx context.Context, token uuid.UUID, displayName, pass
 	if displayName == "" {
 		return user.User{}, ErrDisplayNameRequired
 	}
-	if len(password) < user.MinPasswordLength {
-		return user.User{}, ErrPasswordTooShort
+	if err := user.ValidatePassword(password); err != nil {
+		return user.User{}, err
 	}
 
 	u, err := s.users.Create(ctx, user.CreateUserInput{

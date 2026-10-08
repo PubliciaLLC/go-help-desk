@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestSignup_PasswordIsChosenAtVerificationNotAtSignup(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, status, "the replaced link must not work")
 	require.Equal(t, "token_invalid", code)
 
-	// No password, a short one, or no name is refused and does not use up
+	// No password, a short one, a long one, or no name is refused and does not use up
 	// the link.
 	status, code = verify(map[string]any{"token": link, "display_name": "Alice"})
 	require.Equal(t, http.StatusBadRequest, status)
@@ -86,6 +87,9 @@ func TestSignup_PasswordIsChosenAtVerificationNotAtSignup(t *testing.T) {
 	status, code = verify(map[string]any{"token": link, "display_name": "Alice", "password": "short"})
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, "password_too_short", code)
+	status, code = verify(map[string]any{"token": link, "display_name": "Alice", "password": strings.Repeat("密", 25)})
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, "password_too_long", code)
 	status, code = verify(map[string]any{"token": link, "display_name": "  ", "password": "alice-chooses-now"})
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, "display_name_required", code)

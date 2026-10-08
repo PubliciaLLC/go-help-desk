@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"net/http"
 
 	qrcode "github.com/skip2/go-qrcode"
@@ -64,9 +63,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if next == "" {
 		next = body.Password
 	}
-	if len(next) < user.MinPasswordLength {
-		Error(w, http.StatusBadRequest, "bad_request",
-			fmt.Sprintf("password must be at least %d characters", user.MinPasswordLength))
+	if err := user.ValidatePassword(next); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 

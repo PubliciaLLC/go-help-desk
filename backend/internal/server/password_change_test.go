@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -82,8 +84,111 @@ func TestPassword_TheMinimumAppliesEverywhere(t *testing.T) {
 
 	t.Run("admin reset", func(t *testing.T) {
 		res := h.doAsAdmin(t, http.MethodPost,
-			"/api/v1/admin/users/"+h.userID.String()+"/password", map[string]any{"password": "b"})
+			"/api/v1/admin/users/"+h.userID.String()+"/password", map[string]any{"new_password": "b"})
 		defer res.Body.Close()
 		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	})
+}
+
+// The same maximum on every path that sets a password.
+// 72 bytes is bcrypt's limit; anything longer is refused with a 400 that names the limit.
+func TestPassword_TheMaximumAppliesEverywhere(t *testing.T) {
+	long := strings.Repeat("密", 25) // 25 characters × 3 bytes = 75 bytes
+
+	t.Run("admin create", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+
+		res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+			"email": "longpw@test.local", "display_name": "Long", "role": "user",
+			"password": long,
+		})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+		var body struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		require.Equal(t, "bad_request", body.Error.Code)
+		require.Contains(t, body.Error.Message, "72 bytes")
+	})
+
+	t.Run("admin reset", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+
+		res := h.doAsAdmin(t, http.MethodPost,
+			"/api/v1/admin/users/"+h.userID.String()+"/password", map[string]any{"new_password": long})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+		var body struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		require.Equal(t, "bad_request", body.Error.Code)
+		require.Contains(t, body.Error.Message, "72 bytes")
+	})
+
+	t.Run("self-service change", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+
+		sess := loggedIn(t, h)
+		res, bodyStr := sess.send(t, http.MethodPatch, "/api/v1/me/password", map[string]any{
+			"current_password": "password",
+			"new_password":     long,
+		})
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+		var body struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(bodyStr), &body)
+		require.Equal(t, "bad_request", body.Error.Code)
+		require.Contains(t, body.Error.Message, "72 bytes")
+
+		// The old password still works, so the change was not applied.
+		sess2 := loggedIn(t, h)
+		require.NotNil(t, sess2, "login with the old password must still work after a refused change")
+	})
+
+	t.Run("setup", func(t *testing.T) {
+		h, cleanup := newBareHarness(t)
+		defer cleanup()
+
+		// The long password is refused.
+		res := h.doUnauth(t, http.MethodPost, "/api/v1/setup", map[string]any{
+			"email": "root@test.local", "display_name": "Root", "password": long,
+		})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+		var body struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		require.Equal(t, "bad_request", body.Error.Code)
+		require.Contains(t, body.Error.Message, "72 bytes")
+
+		// Setup is still open. A 72-byte password succeeds.
+		res = h.doUnauth(t, http.MethodPost, "/api/v1/setup", map[string]any{
+			"email": "root@test.local", "display_name": "Root", "password": strings.Repeat("a", 72),
+		})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusCreated, res.StatusCode)
 	})
 }
