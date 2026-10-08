@@ -347,6 +347,33 @@ func (s *Service) ClosedReopenPolicy(ctx context.Context) string {
 	return "off"
 }
 
+// Requester-name masking values (#362).
+const (
+	MaskRequesterNamesAdminLog   = "admin_log"
+	MaskRequesterNamesTicketLog  = "ticket_log"
+	MaskRequesterNamesEverywhere = "everywhere"
+)
+
+// ValidMaskRequesterNames reports whether v is one of the three values.
+func ValidMaskRequesterNames(v string) bool {
+	switch v {
+	case MaskRequesterNamesAdminLog, MaskRequesterNamesTicketLog, MaskRequesterNamesEverywhere:
+		return true
+	}
+	return false
+}
+
+// AuditMaskRequesterNames returns where audit views mask requester names.
+// Unset, unreadable or unrecognised is "everywhere", the most masking: a
+// typo or a damaged row must never show requester names.
+func (s *Service) AuditMaskRequesterNames(ctx context.Context) string {
+	v, err := s.GetString(ctx, KeyAuditMaskRequesterNames)
+	if err != nil || !ValidMaskRequesterNames(v) {
+		return MaskRequesterNamesEverywhere
+	}
+	return v
+}
+
 // SiteName returns the configured site name, defaulting to "Go Help Desk".
 func (s *Service) SiteName(ctx context.Context) string {
 	v, err := s.GetString(ctx, KeySiteName)

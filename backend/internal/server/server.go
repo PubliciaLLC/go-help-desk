@@ -500,13 +500,12 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).
 			Get("/staff", s.handleListAssignableStaff)
-		// The admin-wide audit view (#129). Staff and admin only, same
-		// resource scope as /staff and /tags above: the audit trail this
-		// exposes is ticket content for a staff caller (see
-		// handleListAdminAudit's own comment on the entity_type restriction),
-		// so it is gated the same way, API keys included.
+		// The admin-wide audit view (#129). Staff and admin only. A signed-in
+		// session needs no scope; a machine credential needs audit:read
+		// (#362), not tickets:read — for an admin's key the view covers every
+		// entity, MFA and password resets included.
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
-			With(authmw.RequireResource(auth.ResourceTickets)).
+			With(authmw.RequireResource(auth.ResourceAudit)).
 			Get("/admin/audit", s.handleListAdminAudit)
 		r.Mount("/admin", s.adminRouter())
 		r.Mount("/me", s.meRouter())

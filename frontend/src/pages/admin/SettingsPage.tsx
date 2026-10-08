@@ -584,6 +584,24 @@ function GeneralPanel({
         </SettingRow>
       </Section>
 
+      <Section title="Privacy">
+        <SettingRow
+          label="Mask requester names in Audit Trail"
+          description="Where an audit view shows a requester (the person who filed the ticket) as 'Requester' instead of by name. Staff and admin names are always shown: the audit trail exists to say which employee did what. A masked entry still records who acted, so it can be traced in an investigation. Everywhere (the default) masks both the admin-wide audit log and each ticket's Activity feed. The ticket page itself still shows the requester's name either way."
+        >
+          <Select
+            className="w-52"
+            aria-label="Mask requester names in Audit Trail"
+            value={str('audit_mask_requester_names') || 'everywhere'}
+            onChange={(e) => setStr('audit_mask_requester_names', e.target.value)}
+          >
+            <option value="admin_log">Admin Audit Log Only</option>
+            <option value="ticket_log">Ticket Audit Log</option>
+            <option value="everywhere">Everywhere</option>
+          </Select>
+        </SettingRow>
+      </Section>
+
       <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
     </div>
   )
