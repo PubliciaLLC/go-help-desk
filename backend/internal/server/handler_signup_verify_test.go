@@ -263,3 +263,38 @@ func TestVerifyEmail_AnAddressThatGainedAnAccountIsADeadLink(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode)
 	require.Equal(t, "token_invalid", out.Error.Code)
 }
+
+// #373: an expired link is a verdict on the POST as on the lookup. If the POST
+// stopped answering token_expired, an expired link would get a 500, the page
+// would keep the form forever, and the advice to sign up again would never show.
+func TestVerifyEmail_AnExpiredLinkIsADeadLink(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeySelfSignupEnabled, true))
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyOpenRegistrationEnabled, true))
+	const email = "erin@signup.test"
+
+	res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/signup", map[string]any{"email": email})
+	res.Body.Close()
+	require.Equal(t, http.StatusAccepted, res.StatusCode)
+	link := h.verifyMail.latest(t)
+
+	_, err := h.tx.Exec(`UPDATE pending_registrations SET expires_at = now() - interval '1 minute' WHERE token = $1`, link)
+	require.NoError(t, err)
+
+	res = h.doUnauth(t, http.MethodPost, "/api/v1/auth/verify-email",
+		map[string]any{"token": link, "display_name": "Erin", "password": "erin-chooses-this"})
+	defer res.Body.Close()
+	var out struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&out))
+	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode)
+	require.Equal(t, "token_expired", out.Error.Code)
+
+	_, err = h.userSvc.VerifyPassword(ctx, email, "erin-chooses-this")
+	require.Error(t, err, "an expired link must not create the account")
+}
