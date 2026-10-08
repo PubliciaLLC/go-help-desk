@@ -999,42 +999,37 @@ in 1.2.0.
 Two jobs are supported on a phone: **a staff member triaging away from their
 desk**, and **a reporter filing a request and following it**. Administration is
 not. An operator configuring categories, editing roles or managing API keys is
-at a desk, and the ten admin tables are built for one.
-
-That boundary is stated rather than implied, because the alternative is a
-product that appears to work on a phone until somebody reaches a page that
-does not.
+at a desk, and the admin tables are built for one. That boundary is stated
+rather than implied, because the alternative is a product that appears to work
+on a phone until somebody reaches a page that does not.
 
 **What each job covers.** The staff path is the queue, a ticket, and the
 actions taken on it: read, reply, reassign, change status, resolve. The
 reporter path is the new-ticket form, their own list, and the thread they can
 read and reply to. Both include signing in.
 
-**Where the work actually is.** The unauthenticated pages — sign-in,
-registration, first-run setup, email verification, guest submission, the guest
-ticket view, and the tracking-number form — render outside the application
-shell, as centred cards with their own maximum widths. They already work at
-phone size; measured at 390 CSS pixels, each fits with nothing wider than the
-screen. Nothing in this section changes them.
+**How it is built.** The unauthenticated pages (sign-in, registration, first-run
+setup, email verification, guest submission, the guest ticket view and the
+tracking-number form) render outside the application shell as centred cards with
+their own maximum widths, and fit at phone size. Inside the shell, the sidebar
+is permanent from the `md` breakpoint up; below it the sidebar becomes a drawer
+opened from a top bar, because a fixed 240-pixel column is more than half of a
+390-pixel viewport and left the pages beneath it too narrow to lay anything out
+in. The ticket list is a table from `md` up and one card per ticket below it.
 
-Everything inside the shell does not work, and for one reason: the sidebar is
-a fixed 240 pixels with no breakpoint, which is more than half of a 390-pixel
-viewport. The pages beneath it then inherit a column too narrow to lay
-anything out in. So the shell is the first change and the largest single
-improvement; the queue and the ticket page follow it.
-
-**The rule for the pages that are in scope.** No horizontal scrolling at 390
-pixels, controls large enough to hit with a thumb, and a layout that stacks
-rather than shrinks — a five-column table squeezed into a phone is not a
-mobile layout, it is the same table with less room. Where a table carries one
-row per thing, that becomes one card per thing.
+**The rule for the pages that are in scope** (Dashboard, ticket list, ticket
+detail, new ticket): no horizontal scrolling at 390 CSS pixels, controls large
+enough to hit with a thumb, and a layout that stacks rather than shrinks. A
+five-column table squeezed into a phone is not a mobile layout; where a table
+carries one row per thing, that becomes one card per thing. The end-to-end
+check `frontend/e2e/mobile-layout.spec.ts` pins it at 390×844.
 
 **Not a claim of feature parity.** Everything a staff member can do to a ticket
 from a desk they can do from a phone, because those actions live on the ticket
-page. Bulk selection across a queue is the exception and stays desktop-only:
-it is a multi-select over a table, which is the shape that does not translate.
+page. Bulk selection across a queue is the exception and stays desktop-only: it
+is a multi-select over a table, which is the shape that does not translate.
 
-Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296).
+Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipped in #299.
 
 ### Ticket Submission by Role
 
@@ -1691,8 +1686,10 @@ What the lookup does:
   open a ticket carrying a quarantined attachment with no current verdict —
   never at upload, never on the ordinary attachments, and never for a reporting
   customer looking at their own ticket, because that would spend an operator's
-  allowance on a page refresh. There is no queue, because this project has no
-  background job runner (#126) and a queue would be a table nothing drains.
+  allowance on a page refresh. There is no reputation queue: the project's
+  background workers (the notification outbox worker and the periodic sweeps)
+  do none of this work, so a lookup is made inside the request that needs it
+  (#126).
 - **Cached against the hash and the provider**, not against the attachment, so
   the same file on five tickets costs one lookup per provider. One row per
   provider per hash is what lets four services be asked at once without either
@@ -2003,25 +2000,17 @@ so they are not removed as dead weight:
   into each query returns limit × (1 + groups) rows.
 - **Uploaded images are capped by what decoding them will cost**, checked from
   the header before any decode. A byte-size limit is not a memory limit:
-  compressed formats expand, and a 169 KB PNG decodes to 142 MB.
-
-  Two bounds, and the second took five rounds of review to get right. Twenty-
-  five megapixels, and 100 MB of decoder allocation — which is not the same
-  number as the picture's size, because the JPEG decoder allocates far more
-  than the picture it produces. A progressive JPEG holds every DCT coefficient
-  until the image is reconstructed; a CMYK or RGB one decodes through a second
-  full-resolution image. Counting pixels and assuming four bytes each let a
-  214 KB file cost 403 MB, and each narrower rule that replaced it let a
-  differently-shaped file through: 16-bit, then progressive, then CMYK, then
-  RGB, then an Adobe marker moved after the scan data.
-
-  So the rule is no longer "know every shape". A JPEG whose header cannot be
-  read is **refused**, rather than falling back to a weaker estimate. Every
-  real JPEG parses; one that does not is one somebody built not to, and "I
-  cannot tell how much this will cost" is a reason to refuse. That converts
-  the next gap in the estimate from a way through into a refusal, which is
-  worth more than any single thing the estimate knows. A limit on how many
-  images are decoded at once bounds the process rather than the request.
+  compressed formats expand, and a 169 KB PNG decodes to 142 MB. Two bounds
+  apply: twenty-five megapixels, and 100 MB of decoder allocation, which is not
+  the picture's size (a progressive JPEG holds every DCT coefficient until the
+  image is reconstructed, and a CMYK or RGB one decodes through a second
+  full-resolution image, so "pixels times four bytes" let a 214 KB file cost
+  403 MB). Because every narrower rule of the form "know each shape" was beaten
+  by a differently-shaped file, the rule is a refusal: **a JPEG whose header
+  cannot be read is refused** rather than falling back to a weaker estimate.
+  Every real JPEG parses, and "I cannot tell how much this will cost" is a
+  reason to refuse. A limit on how many images are decoded at once bounds the
+  process rather than the request.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
   with a stricter, sandboxed policy, so a file that got past the upload check
@@ -2044,11 +2033,10 @@ so they are not removed as dead weight:
   same summary the raw format's internal-note omission already produces, so
   an internal note's body reaches none of them, not just the raw payload.
 
-**Scopes were documented here before they were enforced.** Until 1.2.0 they were
-accepted, stored and returned by the API, and no code read them — every
-credential issued as restricted was unrestricted. Enforcement in 1.2.0 is a
-breaking change: credentials created before it carry no scopes and are therefore
-denied, and must be re-issued.
+**Scopes are enforced** (since 1.2.0). Before it they were accepted, stored and
+returned by the API and no code read them, so every credential issued as
+restricted was unrestricted. Credentials created before enforcement carry no
+scopes and are therefore denied; they must be re-issued.
 
 ---
 
@@ -2060,7 +2048,7 @@ listed, enabled and disabled — but none of the capabilities below are wired up
 install and uninstall return `501 not_implemented`, no WASM runtime is linked
 in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
 so an enabled plugin still receives no events. Treat this section as the
-target design for v2, not a description of what 1.3 ships.
+target design for v2, not a description of what ships today.
 
 External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
 for this — see Notifications below, where they ship in v1 as payload formats
@@ -2136,9 +2124,9 @@ on the existing webhook feature instead of as plugins.
   worker that dies between sending and settling sends again after the lease.
   Webhooks are not retried on HTTP failure: their dispatcher already posts in
   the background and reports nothing back, unchanged by this.
-- **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
-  1.3. Not a plugin, and not a separate integration surface: a webhook
-  subscription gains a `payload_format` setting (`raw` — today's behavior —
+- **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — shipped in v1.
+  Not a plugin, and not a separate integration surface: a webhook
+  subscription has a `payload_format` setting (`raw`, the default,
   `slack`, `teams`, `discord`, `jira`) that reshapes the same lifecycle event
   into the body that service expects (Slack/Discord: a message body such as
   `text`/`content` plus blocks or an embed; Teams: an Adaptive Card; JIRA: a
