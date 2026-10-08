@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -388,6 +389,12 @@ func TestWorker_ABatchFitsInsideItsLease(t *testing.T) {
 	require.LessOrEqual(t, time.Duration(w.safeBatch())*w.SendTimeout, w.Lease-w.SendTimeout)
 	w.Lease = 30 * time.Second
 	require.Equal(t, 1, w.safeBatch(), "never below one row")
+
+	// The overrun counts: 5 minutes / (1 m + 40 s) leaves room for 2 rows,
+	// where SendTimeout alone would allow 4 (#351). With the defaults both
+	// arithmetics give 4, so only a case like this shows the difference.
+	w.Batch, w.Lease, w.SendTimeout, w.ChannelOverrun = 20, 5*time.Minute, time.Minute, 40*time.Second
+	require.Equal(t, 2, w.safeBatch(), "the channel overrun was left out of each send's time")
 }
 
 // guest.link_resent is never delivered to webhooks, so it must not queue a
@@ -474,4 +481,60 @@ func TestWorker_RunDrainsWakesAndStops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run did not stop when cancelled")
 	}
+}
+
+// cancelAwareOutbox is a fakeOutbox whose Claim fails once its context is
+// cancelled, as the real store's query does.
+type cancelAwareOutbox struct{ *fakeOutbox }
+
+func (c cancelAwareOutbox) Claim(ctx context.Context, limit int, lease time.Duration) ([]notification.OutboxRow, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.fakeOutbox.Claim(ctx, limit, lease)
+}
+
+// cancelOnSend cancels the worker's context from inside a send, so the next
+// claim in the same drain runs on a cancelled context.
+type cancelOnSend struct{ cancel context.CancelFunc }
+
+func (c cancelOnSend) Dispatch(context.Context, notification.Event) error { c.cancel(); return nil }
+
+// A claim cut off by shutdown is not an error worth reporting (#351): only
+// the log shows the difference, so the log is what this reads.
+func TestWorker_ShutdownMidDrainLogsNoClaimError(t *testing.T) {
+	store := cancelAwareOutbox{newFakeOutbox()}
+	d := NewOutboxDispatcher(store, []string{"email"}, nil)
+	for range 3 {
+		require.NoError(t, d.Dispatch(context.Background(), sampleEvent()))
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var logged bytes.Buffer
+	w := NewWorker(store, map[string]notification.Dispatcher{"email": cancelOnSend{cancel}},
+		slog.New(slog.NewTextHandler(&logged, nil)))
+	// A full batch, so Run claims again after it, on the now-cancelled context.
+	w.Batch, w.Lease, w.SendTimeout, w.ChannelOverrun = 1, time.Hour, time.Minute, 0
+
+	done := make(chan struct{})
+	go func() { w.Run(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not stop")
+	}
+	require.NotContains(t, logged.String(), "claim failed", "shutdown was logged as a claim error")
+}
+
+// The stored time keeps its instant whatever zone it was written in. The
+// round-trip test above uses UTC so it passes on every machine; this one uses
+// a fixed non-UTC zone, so an encoder that dropped the zone and read the wall
+// clock as UTC would be caught on every machine (#351).
+func TestOutboxRecord_KeepsTheInstantInAnyZone(t *testing.T) {
+	ev := sampleEvent()
+	ev.OccurredAt = time.Date(2026, 3, 8, 1, 30, 0, 0, time.FixedZone("UTC-6", -6*60*60))
+	b, err := encodeEvent(ev)
+	require.NoError(t, err)
+	got, err := decodeEvent(b)
+	require.NoError(t, err)
+	require.True(t, ev.OccurredAt.Equal(got.OccurredAt), "stored %v, read back %v", ev.OccurredAt, got.OccurredAt)
 }

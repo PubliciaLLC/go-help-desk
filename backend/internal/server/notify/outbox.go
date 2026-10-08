@@ -214,7 +214,8 @@ func (w *Worker) safeBatch() int {
 func (w *Worker) Run(ctx context.Context) {
 	if b := w.safeBatch(); b != w.Batch {
 		w.log.WarnContext(ctx, "notification outbox: batch reduced to fit the lease",
-			"configured", w.Batch, "used", b, "lease", w.Lease, "send_timeout", w.SendTimeout)
+			"configured", w.Batch, "used", b, "lease", w.Lease,
+			"send_timeout", w.SendTimeout, "channel_overrun", w.ChannelOverrun)
 		w.Batch = b
 	}
 	poll := time.NewTicker(w.Poll)
