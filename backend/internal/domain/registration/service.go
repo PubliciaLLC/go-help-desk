@@ -231,14 +231,15 @@ func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
 }
 
 // Lookup returns the pending registration a verification link names, without
-// using the link, so the verification page can show the address and name
-// before asking for a password (#370). It refuses exactly what Verify
-// refuses: ErrNotFound for a link that is unknown, replaced or used, and
-// ErrTokenExpired for one past its TTL.
+// using the link, so the verification page can show the address before asking
+// for a password (#370). ErrNotFound is a link that is unknown, replaced or
+// used, and ErrTokenExpired one past its TTL; any other error is a fault, not
+// a verdict on the link. A link that passes can still fail at Verify — if the
+// address has gained an account since, user.Create refuses it.
 func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistration, error) {
 	pr, err := s.store.GetByToken(ctx, token)
 	if err != nil {
-		return PendingRegistration{}, fmt.Errorf("%w: %w", ErrNotFound, err)
+		return PendingRegistration{}, err
 	}
 	if time.Now().After(pr.ExpiresAt) {
 		return PendingRegistration{}, ErrTokenExpired

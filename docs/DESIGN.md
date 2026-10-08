@@ -2324,10 +2324,12 @@ on the existing webhook feature instead of as plugins.
   re-issue the link, never the password. `pending_registrations.password_hash`
   is no longer written and is dropped in a later migration.
   The page first looks the link up (`GET /auth/verify-email?token=`, which
-  answers the address and display name and nothing else, and refuses a dead
-  link the same way the POST does), so it shows which account is being
-  created, gives a password manager the address, and says a dead link is dead
-  before a password is typed
+  answers the address and nothing else, and refuses a dead link the same way
+  the POST does), so it shows which address the account is for, gives a
+  password manager the address, and says a dead link is dead before a
+  password is typed. Not the display name: whoever signed the address up
+  first chose it, and that may be an attacker putting words on this site in
+  front of the inbox's owner
   ([#370](https://github.com/PubliciaLLC/go-help-desk/issues/370)). When MFA
   is required for requesters, the verified session owes enrolment like a
   password login does, and the page goes to the same enrolment form before

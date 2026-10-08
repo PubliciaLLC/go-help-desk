@@ -527,8 +527,17 @@ func TestLookup(t *testing.T) {
 		{"a live link", &fakeStore{record: live}, nil},
 		{"an expired link", &fakeStore{record: PendingRegistration{ID: live.ID, Email: live.Email,
 			ExpiresAt: time.Now().Add(-time.Minute)}}, ErrTokenExpired},
-		{"an unknown link", &fakeStore{getErr: errors.New("no rows")}, ErrNotFound},
+		{"an unknown link", &fakeStore{getErr: ErrNotFound}, ErrNotFound},
 	}
+	// A database fault is not a verdict on the link: the page must not tell
+	// somebody their link is dead because of an outage.
+	t.Run("a store fault is not a dead link", func(t *testing.T) {
+		svc := NewService(&fakeStore{getErr: errors.New("connection refused")}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrNotFound)
+		require.NotErrorIs(t, err, ErrTokenExpired)
+	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			users := &fakeUsers{}
@@ -539,7 +548,6 @@ func TestLookup(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, "alice@any.com", pr.Email)
-				require.Equal(t, "Alice", pr.DisplayName)
 			}
 			require.False(t, tc.store.deleted, "a lookup must not use up the link")
 			require.Equal(t, uuid.Nil, users.created.ID, "a lookup must not create an account")

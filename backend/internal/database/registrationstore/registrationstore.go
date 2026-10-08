@@ -35,6 +35,9 @@ func (s *Store) Upsert(ctx context.Context, r registration.PendingRegistration) 
 
 func (s *Store) GetByToken(ctx context.Context, token uuid.UUID) (registration.PendingRegistration, error) {
 	row, err := s.q.GetPendingRegistrationByToken(ctx, token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return registration.PendingRegistration{}, registration.ErrNotFound
+	}
 	if err != nil {
 		return registration.PendingRegistration{}, fmt.Errorf("getting pending registration by token: %w", err)
 	}

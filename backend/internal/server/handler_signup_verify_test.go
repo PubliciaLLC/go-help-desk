@@ -121,8 +121,9 @@ func TestVerifyEmailLookup(t *testing.T) {
 
 	status, body := lookup(link)
 	require.Equal(t, http.StatusOK, status)
-	require.Equal(t, map[string]any{"email": "bob@signup.test", "display_name": "Bob"}, body,
-		"the lookup shows the address and name, and nothing else (no token, no ids)")
+	require.Equal(t, map[string]any{"email": "bob@signup.test"}, body,
+		"the lookup shows the address and nothing else: no token, no ids, and not the "+
+			"display name, which whoever signed up first chose")
 
 	// Looking it up does not use it.
 	status, _ = lookup(link)

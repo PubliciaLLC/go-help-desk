@@ -93,10 +93,14 @@ func signupAccepted(w http.ResponseWriter) {
 }
 
 // GET /api/v1/auth/verify-email?token= — what a verification link is for,
-// without using it (#370): the address and display name, and nothing else.
-// The page shows both, gives a password manager the address, and says a dead
-// link is dead before a password is typed. The token is the only key, and
-// whoever holds it was mailed exactly this address.
+// without using it (#370): the address, and nothing else. The page shows it,
+// gives a password manager the address, and says a dead link is dead before a
+// password is typed. The token is the only key, and whoever holds it was
+// mailed exactly this address.
+//
+// Not the display name. Whoever signed the address up first chose it, and
+// that may not be the inbox's owner: shown here it would be an attacker's
+// text on this site, in front of somebody who never signed up.
 func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request) {
 	tokenID, err := uuid.Parse(r.URL.Query().Get("token"))
 	if err != nil {
@@ -104,11 +108,15 @@ func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request
 		return
 	}
 	pr, err := s.registration.Lookup(r.Context(), tokenID)
-	if err != nil {
+	if errors.Is(err, registration.ErrNotFound) || errors.Is(err, registration.ErrTokenExpired) {
 		verificationRefused(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, map[string]string{"email": pr.Email, "display_name": pr.DisplayName})
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, map[string]string{"email": pr.Email})
 }
 
 // verificationRefused answers a link that cannot be used, the same way for

@@ -34,7 +34,7 @@ vi.mock('@/api/passkeys', () => ({
 vi.mock('@/hooks/useSiteBranding', () => ({ useSiteBranding: () => ({ name: 'Help Desk', logoURL: null }) }))
 
 import { LoginPage } from './LoginPage'
-import { login, getMe, enrollMFAStart } from '@/api/auth'
+import { login, getMe, enrollMFAStart, enrollMFAConfirm } from '@/api/auth'
 import { signInWithPasskey } from '@/api/passkeys'
 
 const USER = {
@@ -138,5 +138,23 @@ describe('the other three answers are unchanged', () => {
     await signIn()
     expect(await screen.findByRole('heading', { name: 'Set up two-factor authentication' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Continue with a passkey/ })).toBeNull()
+  })
+})
+
+// #369 moved this step into MFAEnrollForm. The login page's half of the
+// contract is what happens after the code is confirmed: sign in and go on.
+describe('an account that must enrol at login', () => {
+  it('signs in and goes to the dashboard once enrolment is confirmed', async () => {
+    vi.mocked(login).mockResolvedValue(answer({ mfa_enrollment_needed: true }))
+    vi.mocked(enrollMFAConfirm).mockResolvedValue(undefined)
+    const user = await signIn()
+
+    await user.type(await screen.findByLabelText('Verification code'), '123456')
+    await waitFor(() => expect((screen.getByRole('button', { name: /confirm/i }) as HTMLButtonElement).disabled).toBe(false))
+    expect(navigate).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: /confirm/i }))
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/dashboard' }))
+    expect(getMe).toHaveBeenCalled()
   })
 })

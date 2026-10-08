@@ -22,19 +22,23 @@ export function VerifyEmailPage() {
   // because the link is still good.
   const [linkDead, setLinkDead] = useState(!token)
   const [loading, setLoading] = useState(false)
-  const [account, setAccount] = useState<{ email: string; display_name: string } | null>(null)
+  const [account, setAccount] = useState<{ email: string } | null>(null)
   // The verified session owes MFA enrolment (#369); nothing else will answer
   // it until that is done.
   const [mustEnrol, setMustEnrol] = useState(false)
 
-  // Look the link up first (#370): to show which account this is, to hand a
+  // Look the link up first (#370): to show which address this is, to hand a
   // password manager the address, and to say a dead link is dead before a
-  // password is typed.
+  // password is typed. Only a verdict on the link closes the form; a network
+  // error or a server fault leaves it, and the submit gives the real answer.
   useEffect(() => {
     if (!token) return
     lookupVerification(token)
       .then(setAccount)
-      .catch((err) => refuseLink(extractErrorCode(err)))
+      .catch((err) => {
+        const code = extractErrorCode(err)
+        if (code === 'token_expired' || code === 'token_invalid') refuseLink(code)
+      })
   }, [token])
 
   function refuseLink(code: string) {
@@ -105,16 +109,13 @@ export function VerifyEmailPage() {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
+              {/* The address only, not the display name: whoever signed up
+                  first chose the name, and that may not be this inbox's owner. */}
               {account && (
-                <>
-                  <p className="text-sm text-gray-600">
-                    Creating the account for <strong>{account.display_name}</strong>.
-                  </p>
-                  <div className="space-y-1">
-                    <Label htmlFor="email">Email</Label>
-                    <Input id="email" type="email" value={account.email} readOnly autoComplete="username" />
-                  </div>
-                </>
+                <div className="space-y-1">
+                  <Label htmlFor="email">Email</Label>
+                  <Input id="email" type="email" value={account.email} readOnly autoComplete="username" />
+                </div>
               )}
               <div className="space-y-1">
                 <Label htmlFor="password">Password</Label>

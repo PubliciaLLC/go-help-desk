@@ -196,7 +196,7 @@ that asks for the password. For API clients: `POST /api/v1/auth/verify-email`
 now requires `password` beside `token` (refused with `password_too_short`
 below the minimum, without using up the link), a `password` sent to
 `POST /api/v1/auth/signup` is ignored, and `GET /api/v1/auth/verify-email?token=`
-returns the address and display name a link is for. Signups still pending at
+returns the address a link is for. Signups still pending at
 upgrade keep working: their links now ask for a password.
 
 **`guest_submission_enabled` now requires a signed-in administrator (#177).**

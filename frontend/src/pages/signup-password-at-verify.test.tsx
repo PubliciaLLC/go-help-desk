@@ -27,6 +27,7 @@ vi.mock('@/api/auth', () => ({
 import { SignupPage } from './SignupPage'
 import { VerifyEmailPage } from './VerifyEmailPage'
 import { signup, verifyEmail, lookupVerification, getMe, enrollMFAStart, enrollMFAConfirm } from '@/api/auth'
+import { useAuthStore } from '@/store/auth'
 
 function apiError(code: string, message = code) {
   return { isAxiosError: true, response: { data: { error: { code, message } } } }
@@ -34,7 +35,7 @@ function apiError(code: string, message = code) {
 
 beforeEach(() => {
   vi.mocked(signup).mockResolvedValue(undefined)
-  vi.mocked(lookupVerification).mockResolvedValue({ email: 'alice@example.com', display_name: 'Alice' })
+  vi.mocked(lookupVerification).mockResolvedValue({ email: 'alice@example.com' })
   window.history.replaceState({}, '', '/verify-email?token=tok-123')
 })
 afterEach(() => vi.clearAllMocks())
@@ -66,17 +67,42 @@ describe('the verification page', () => {
     expect(verifyEmail).not.toHaveBeenCalled()
   })
 
-  // #370: the page says which account this is, and hands the address to a
-  // password manager, so the saved login is not missing its username. The
-  // name is shown too: a second signup by somebody else could have set it.
-  it('shows the address and name the link is for', async () => {
+  // #370: the page says which address this is, and hands it to a password
+  // manager, so the saved login is not missing its username. Not the display
+  // name: whoever signed up first chose it, and an attacker who signs up a
+  // victim's address could put any words they like on this page.
+  it('shows the address the link is for, and not the name', async () => {
     renderWithQuery(<VerifyEmailPage />)
     const email = (await screen.findByLabelText('Email')) as HTMLInputElement
     expect(lookupVerification).toHaveBeenCalledWith('tok-123')
     expect(email.value).toBe('alice@example.com')
     expect(email.readOnly).toBe(true)
     expect(email.getAttribute('autocomplete')).toBe('username')
-    expect(screen.getByText(/Alice/)).toBeTruthy()
+  })
+
+  it('does not show a dead link for a network or server fault', async () => {
+    vi.mocked(lookupVerification).mockRejectedValue(new Error('Network Error'))
+    renderWithQuery(<VerifyEmailPage />)
+    await waitFor(() => expect(lookupVerification).toHaveBeenCalled())
+    expect(await screen.findByLabelText('Password')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('finishes signing in with a fresh read of the account after enrolment', async () => {
+    vi.mocked(verifyEmail).mockResolvedValue({ user: { id: 'u1' }, mfa_enrollment_needed: true } as never)
+    vi.mocked(enrollMFAStart).mockResolvedValue({ secret: 'SECRET', qr_url: '', qr_data_url: 'data:,' })
+    vi.mocked(enrollMFAConfirm).mockResolvedValue(undefined)
+    vi.mocked(getMe).mockResolvedValue({ id: 'u1', mfa_enabled: true } as never)
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'correct-horse-battery')
+    await user.type(await screen.findByLabelText('Verification code'), '123456')
+    await waitFor(() => expect((screen.getByRole('button', { name: /confirm/i }) as HTMLButtonElement).disabled).toBe(false))
+    await user.click(screen.getByRole('button', { name: /confirm/i }))
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/dashboard' }))
+    expect(getMe).toHaveBeenCalled()
+    expect(useAuthStore.getState().user).toMatchObject({ mfa_enabled: true })
   })
 
   it('says a dead link is dead before a password is typed', async () => {
