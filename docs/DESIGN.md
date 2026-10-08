@@ -1890,12 +1890,13 @@ sessions do not: a session **is** the user, with whatever their role allows.
 Scopes exist to give a machine credential *less* than its owner, and there is
 nothing to narrow when a person is driving.
 
-A scope is `resource:action`, where action is `read` or `write`.
+A scope is `resource:action`, where action is `read` or `write`. `audit` has
+only `read`.
 
 | Resource | Covers |
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
-| `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. `audit:write` adds nothing beyond `audit:read` (the log has no write route), but like every write scope it implies read, so it reaches this view |
+| `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
 | `users` | User administration |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |

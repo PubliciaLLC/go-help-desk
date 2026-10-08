@@ -316,7 +316,10 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 
 // emailAddress matches anything shaped like an address in an error string.
 // Deliberately loose: it only has to find what to hide, never validate it.
-var emailAddress = regexp.MustCompile(`[^\s<>()\[\]@,;:"']+@[^\s<>()\[\]@,;:"']+`)
+// The local part may be quoted ("john doe"@example.com, escapes included) and
+// the domain may be an IP literal (guest@[192.168.1.10]): both pass
+// user.ValidateEmail, so a guest can have one on file (#358).
+var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.)*"|[^\s<>()\[\]@,;:"']+)@(?:\[[^\]]*\]|[^\s<>()\[\]@,;:"']+)`)
 
 // redactAddresses hides email addresses in a delivery error before it is
 // stored in last_error or logged (#350). A mail server's rejection usually

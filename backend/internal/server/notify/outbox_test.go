@@ -578,14 +578,41 @@ func TestRedactAddresses(t *testing.T) {
 		{"550 5.1.1 <guest@example.com>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
 		{"RCPT TO:<a.b+c@sub.example.co.uk> denied", "RCPT TO:<[address]> denied"},
 		{"two: x@a.test, y@b.test", "two: [address], [address]"},
+		// #358: a quoted local part and an IP-literal domain are legal
+		// addresses (user.ValidateEmail accepts both), so a guest can have one.
+		{`550 5.1.1 <"john doe"@example.com>: Recipient address rejected`, "550 5.1.1 <[address]>: Recipient address rejected"},
+		{`550 5.1.1 <"john \"jj\" doe"@example.com> rejected`, "550 5.1.1 <[address]> rejected"},
+		{"550 5.1.1 <guest@[192.168.1.10]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+		{"550 5.1.1 <guest@[IPv6:2001:db8::1]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+		// A queue id shaped like an address is hidden too; nothing is lost
+		// that an operator needs.
+		{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
 		// Ordinary errors are left exactly as they are.
 		{"dial tcp 10.0.0.25:587: i/o timeout", "dial tcp 10.0.0.25:587: i/o timeout"},
 		{"421 4.7.0 Try again later", "421 4.7.0 Try again later"},
+		{"dial tcp [2001:db8::1]:587: connect: connection refused", "dial tcp [2001:db8::1]:587: connect: connection refused"},
+		{`unknown channel "pager"`, `unknown channel "pager"`},
+		{"panic: runtime error: index out of range [3] with length 2", "panic: runtime error: index out of range [3] with length 2"},
 		{"", ""},
 	}
 	for _, tc := range cases {
 		require.Equal(t, tc.want, redactAddresses(tc.in), "input %q", tc.in)
 	}
+}
+
+// fail redacts the reason itself, not only deliver (#358). A panic's value and
+// an undecodable event reach fail without passing deliver's redaction, so
+// only a direct call shows the second one is there.
+func TestWorker_FailRedactsItsOwnReason(t *testing.T) {
+	store := newFakeOutbox()
+	var logged bytes.Buffer
+	w := NewWorker(store, nil, slog.New(slog.NewTextHandler(&logged, nil)))
+	row := notification.OutboxRow{ID: uuid.New(), Channel: "email", Attempts: 1}
+
+	w.fail(context.Background(), row, "panic: x@y.test")
+
+	require.Equal(t, "panic: [address]", store.failed[row.ID])
+	require.NotContains(t, logged.String(), "x@y.test")
 }
 
 // A verification event queues for the verification channel and nothing else:
