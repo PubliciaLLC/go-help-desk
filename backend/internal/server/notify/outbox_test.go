@@ -173,15 +173,25 @@ func TestOutboxDispatcher_QueuesOneRowPerChannelAndSendsNothing(t *testing.T) {
 // not a list kept beside it, so Channels must be what NewOutboxDispatcher was
 // given. A caller that edits the slice it gets back must not change where
 // Dispatch queues.
+// Several inputs, not only the production list: a Channels that returned a
+// constant would pass the production case alone. The dispatcher gets its own
+// copy of each input, so the expected value is not the slice a mutation can
+// reach through the dispatcher's backing array.
 func TestOutboxDispatcher_ChannelsAreWhatItWasGiven(t *testing.T) {
-	d := NewOutboxDispatcher(newFakeOutbox(), []string{"email", "webhook", "verification"}, nil)
-	require.Equal(t, []string{"email", "webhook", "verification"}, d.Channels())
+	for _, given := range [][]string{
+		{"email", "webhook", "verification"},
+		{"email"},
+		{"webhook", "verification"},
+	} {
+		d := NewOutboxDispatcher(newFakeOutbox(), append([]string(nil), given...), nil)
+		require.Equal(t, given, d.Channels())
 
-	got := d.Channels()
-	got[0] = "verification"
-	got = append(got, "extra")
-	require.Equal(t, []string{"email", "webhook", "verification"}, d.Channels(),
-		"mutating the slice Channels returned changed the dispatcher")
+		got := d.Channels()
+		got[0] = "verification"
+		got = append(got, "extra")
+		require.Equal(t, given, d.Channels(),
+			"mutating the slice Channels returned changed the dispatcher (given %v)", given)
+	}
 }
 
 // The guest token table holds only hashes. A raw token in the outbox would
