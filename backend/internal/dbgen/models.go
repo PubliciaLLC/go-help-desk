@@ -156,7 +156,7 @@ type OauthClient struct {
 type PendingRegistration struct {
 	ID           uuid.UUID      `json:"id"`
 	Email        string         `json:"email"`
-	DisplayName  string         `json:"display_name"`
+	DisplayName  sql.NullString `json:"display_name"`
 	PasswordHash sql.NullString `json:"password_hash"`
 	Token        uuid.UUID      `json:"token"`
 	ExpiresAt    time.Time      `json:"expires_at"`

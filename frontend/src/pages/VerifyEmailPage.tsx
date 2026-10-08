@@ -9,12 +9,15 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { MFAEnrollForm } from '@/components/MFAEnrollForm'
 
-// The password is chosen here, not on the signup form (#360): only whoever
-// reads the inbox reaches this page, so only they choose it.
+// The display name and password are chosen here, not on the signup form
+// (#360, #374): only whoever reads the inbox reaches this page, so only they
+// choose them. Neither is pre-filled; a pre-filled value could only have come
+// from a signup, which anyone can send.
 export function VerifyEmailPage() {
   const navigate = useNavigate()
   const { setUser } = useAuthStore()
   const token = new URLSearchParams(window.location.search).get('token') ?? ''
+  const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState(token ? '' : 'No verification token found in the URL.')
@@ -64,7 +67,7 @@ export function VerifyEmailPage() {
     }
     setLoading(true)
     try {
-      const { user, mfa_enrollment_needed } = await verifyEmail(token, password)
+      const { user, mfa_enrollment_needed } = await verifyEmail(token, displayName, password)
       if (mfa_enrollment_needed) {
         setMustEnrol(true)
       } else {
@@ -77,7 +80,7 @@ export function VerifyEmailPage() {
       // as invalid or already used, and the advice to sign up again — the one
       // thing that would have helped — was unreachable.
       const code = extractErrorCode(err)
-      if (code === 'password_too_short') {
+      if (code === 'password_too_short' || code === 'display_name_required') {
         setError(extractError(err))
       } else {
         refuseLink(code)
@@ -92,7 +95,7 @@ export function VerifyEmailPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">
-            {mustEnrol ? 'Set up two-factor authentication' : 'Choose your password'}
+            {mustEnrol ? 'Set up two-factor authentication' : 'Finish creating your account'}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -117,6 +120,17 @@ export function VerifyEmailPage() {
                   <Input id="email" type="email" value={account.email} readOnly autoComplete="username" />
                 </div>
               )}
+              <div className="space-y-1">
+                <Label htmlFor="display_name">Display name</Label>
+                <Input
+                  id="display_name"
+                  type="text"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  required
+                  autoComplete="name"
+                />
+              </div>
               <div className="space-y-1">
                 <Label htmlFor="password">Password</Label>
                 <Input

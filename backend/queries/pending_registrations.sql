@@ -1,12 +1,11 @@
 -- name: UpsertPendingRegistration :one
--- No password (#360): it is chosen at verification, so a second signup for
--- the same address can change the name and re-issue the link, never the
--- password the account will get.
-INSERT INTO pending_registrations (id, email, display_name, token, expires_at, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+-- No password (#360) and no display name (#374): both are chosen at
+-- verification, so a second signup for the same address can only re-issue
+-- the link, never choose anything the account will get.
+INSERT INTO pending_registrations (id, email, token, expires_at, created_at)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (lower(email)) DO UPDATE
-    SET display_name  = EXCLUDED.display_name,
-        token         = EXCLUDED.token,
+    SET token         = EXCLUDED.token,
         expires_at    = EXCLUDED.expires_at,
         created_at    = EXCLUDED.created_at
 RETURNING *;

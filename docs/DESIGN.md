@@ -2311,25 +2311,28 @@ on the existing webhook feature instead of as plugins.
   request and a taken one returned at once, so the timing said who had an
   account. A taken address now gets a pending row that is never mailed, and
   it expires unused.
-- **The password is chosen at verification, not at signup**
-  ([#360](https://github.com/PubliciaLLC/go-help-desk/issues/360)). The
-  signup form takes only the address and display name. The link in the
-  verification email opens a page that asks for the password, held to the
-  usual minimum, and `POST /auth/verify-email` takes the token and the
-  password together. A password that is too short is refused without using
-  up the link. When signup carried the password, a second signup for the same
-  address replaced it, so anyone who knew an address could sign up after its
-  owner and have the owner, following the newest link, create an account
-  with their password. A second signup can now change the display name and
-  re-issue the link, never the password. `pending_registrations.password_hash`
-  is no longer written and is dropped in a later migration.
+- **The display name and password are chosen at verification, not at
+  signup** ([#360](https://github.com/PubliciaLLC/go-help-desk/issues/360),
+  [#374](https://github.com/PubliciaLLC/go-help-desk/issues/374)). The
+  signup form takes only the address. The link in the verification email
+  opens a page that asks for the display name and the password, neither
+  pre-filled, and `POST /auth/verify-email` takes the token, `display_name`
+  and `password` together. A blank name or a password below the usual
+  minimum is refused without using up the link. When signup carried them, a
+  second signup for the same address replaced them, so anyone who knew an
+  address could sign up after its owner and have the owner, following the
+  newest link, create an account with the other person's password, and
+  later with their name. A second signup can now only re-issue the link.
+  This holds because only the inbox's owner reaches the page (the email is
+  never sent for an address that already has an account), and signup still
+  does the same work for a new and a taken address (#348).
+  `pending_registrations.password_hash` and `display_name` are no longer
+  written and are dropped in a later migration.
   The page first looks the link up (`GET /auth/verify-email?token=`, which
   answers the address and nothing else, and refuses a dead link the same way
   the POST does), so it shows which address the account is for, gives a
-  password manager the address, and says a dead link is dead before a
-  password is typed. Not the display name: whoever signed the address up
-  first chose it, and that may be an attacker putting words on this site in
-  front of the inbox's owner
+  password manager the address, and says a dead link is dead before
+  anything is typed
   ([#370](https://github.com/PubliciaLLC/go-help-desk/issues/370)). When MFA
   is required for requesters, the verified session owes enrolment like a
   password login does, and the page goes to the same enrolment form before
