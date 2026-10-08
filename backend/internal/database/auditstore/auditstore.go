@@ -15,11 +15,31 @@ import (
 	"github.com/sqlc-dev/pqtype"
 )
 
+// txBeginner is implemented by *sql.DB and allows tests to spy on transaction options.
+type txBeginner interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}
+
 // Store implements audit.Store.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q    *dbgen.Queries
+	snap txBeginner // optional; if set, scoped searches run in a repeatable-read snapshot transaction
+}
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+
+// SnapshotOn returns a copy of the Store with snapshot transactions enabled.
+// When set, scoped searches (Filter.ScopedTo != nil) run GetAuditTicketScope,
+// SearchAuditLogScoped, and CountAuditLogScoped within a single repeatable-read
+// transaction, preventing membership changes from mixing old scope with new
+// ticket state in one request.
+func (s *Store) SnapshotOn(db txBeginner) *Store {
+	return &Store{
+		q:    s.q,
+		snap: db,
+	}
+}
 
 func (s *Store) Create(ctx context.Context, e audit.Entry) error {
 	before, _ := marshalMap(e.Before)
@@ -41,34 +61,25 @@ func (s *Store) Create(ctx context.Context, e audit.Entry) error {
 // without consulting the count, which stops at audit.TotalCap. The count is
 // asked for TotalCap+1 matches, so "more than the cap" is told apart from
 // "exactly the cap" without counting any further.
+//
+// A scoped request (f.ScopedTo set) runs different statements, not the same
+// ones with a flag: the staff member's groups and rules are read first and
+// passed in as values, because the right plan depends on how many tickets
+// they reach (#331, and the note above CountAuditLogScoped). The page and the
+// count are given the same scope, so they describe one sequence.
 func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (audit.Page, error) {
-	p := searchParams(f)
-	rows, err := s.q.SearchAuditLog(ctx, dbgen.SearchAuditLogParams{
-		EntityType: p.entityType,
-		Action:     p.action,
-		ActorID:    p.actorID,
-		FromTs:     p.from,
-		ToTs:       p.to,
-		Q:          p.q,
-		ScopedTo:   p.scopedTo,
-		PageLimit:  int32(limit + 1),
-		PageOffset: int32(offset),
-	})
-	if err != nil {
-		return audit.Page{}, fmt.Errorf("searching audit entries: %w", err)
+	var (
+		rows    []dbgen.AuditLog
+		counted int64
+		err     error
+	)
+	if f.ScopedTo == nil {
+		rows, counted, err = s.searchUnscoped(ctx, searchParams(f), limit, offset)
+	} else {
+		rows, counted, err = s.searchScoped(ctx, searchParams(f), *f.ScopedTo, limit, offset)
 	}
-	counted, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
-		EntityType: p.entityType,
-		Action:     p.action,
-		ActorID:    p.actorID,
-		FromTs:     p.from,
-		ToTs:       p.to,
-		Q:          p.q,
-		ScopedTo:   p.scopedTo,
-		CountCap:   audit.TotalCap + 1,
-	})
 	if err != nil {
-		return audit.Page{}, fmt.Errorf("counting audit entries: %w", err)
+		return audit.Page{}, err
 	}
 
 	hasMore := len(rows) > limit
@@ -81,6 +92,98 @@ func (s *Store) Search(ctx context.Context, f audit.Filter, limit, offset int) (
 		total = audit.TotalCap
 	}
 	return audit.Page{Entries: toEntries(rows), Total: total, TotalCapped: capped, HasMore: hasMore}, nil
+}
+
+func (s *Store) searchUnscoped(ctx context.Context, p searchParamValues, limit, offset int) ([]dbgen.AuditLog, int64, error) {
+	rows, err := s.q.SearchAuditLog(ctx, dbgen.SearchAuditLogParams{
+		EntityType: p.entityType,
+		Action:     p.action,
+		ActorID:    p.actorID,
+		FromTs:     p.from,
+		ToTs:       p.to,
+		Q:          p.q,
+		PageLimit:  int32(limit + 1),
+		PageOffset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
+	}
+	counted, err := s.q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
+		EntityType: p.entityType,
+		Action:     p.action,
+		ActorID:    p.actorID,
+		FromTs:     p.from,
+		ToTs:       p.to,
+		Q:          p.q,
+		CountCap:   audit.TotalCap + 1,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
+	}
+	return rows, counted, nil
+}
+
+func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uuid.UUID, limit, offset int) ([]dbgen.AuditLog, int64, error) {
+	// If snap is set, run the three reads in a single repeatable-read transaction.
+	// This prevents membership changes between calls from mixing old scope with new
+	// ticket state in one request. If snap is nil, the reads run on the caller's
+	// Queries, as before.
+	q := s.q
+	if s.snap != nil {
+		tx, err := s.snap.BeginTx(ctx, &sql.TxOptions{
+			Isolation: sql.LevelRepeatableRead,
+			ReadOnly:  true,
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("beginning audit snapshot: %w", err)
+		}
+		defer func() {
+			// Read-only: nothing to commit, so rollback is the release.
+			_ = tx.Rollback()
+		}()
+		q = s.q.WithTx(tx)
+	}
+
+	sc, err := q.GetAuditTicketScope(ctx, userID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reading ticket scope for audit search: %w", err)
+	}
+	rows, err := q.SearchAuditLogScoped(ctx, dbgen.SearchAuditLogScopedParams{
+		EntityType:       p.entityType,
+		Action:           p.action,
+		ActorID:          p.actorID,
+		FromTs:           p.from,
+		ToTs:             p.to,
+		Q:                p.q,
+		UserID:           userID,
+		GroupIds:         sc.GroupIds,
+		CategoryIds:      sc.CategoryIds,
+		TypedCategoryIds: sc.TypedCategoryIds,
+		TypeIds:          sc.TypeIds,
+		PageLimit:        int32(limit + 1),
+		PageOffset:       int32(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
+	}
+	counted, err := q.CountAuditLogScoped(ctx, dbgen.CountAuditLogScopedParams{
+		EntityType:       p.entityType,
+		Action:           p.action,
+		ActorID:          p.actorID,
+		FromTs:           p.from,
+		ToTs:             p.to,
+		Q:                p.q,
+		UserID:           userID,
+		GroupIds:         sc.GroupIds,
+		CategoryIds:      sc.CategoryIds,
+		TypedCategoryIds: sc.TypedCategoryIds,
+		TypeIds:          sc.TypeIds,
+		CountCap:         audit.TotalCap + 1,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting audit entries: %w", err)
+	}
+	return rows, counted, nil
 }
 
 func toEntries(rows []dbgen.AuditLog) []audit.Entry {
@@ -110,7 +213,7 @@ func (s *Store) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, e
 
 type searchParamValues struct {
 	entityType, action, q sql.NullString
-	actorID, scopedTo     uuid.NullUUID
+	actorID               uuid.NullUUID
 	from, to              sql.NullTime
 }
 
@@ -120,7 +223,6 @@ func searchParams(f audit.Filter) searchParamValues {
 		action:     database.NullString(nonEmpty(f.Action)),
 		q:          database.NullString(nonEmpty(f.Q)),
 		actorID:    database.NullUUID(f.ActorID),
-		scopedTo:   database.NullUUID(f.ScopedTo),
 		from:       database.NullTime(f.From),
 		to:         database.NullTime(f.To),
 	}

@@ -23,10 +23,9 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
 
-// The staff scope's Category/Type rule is written in SQL twice (the page query
-// and the count, which states it as two hashable IN lists so it is evaluated
-// once instead of once per ticket). What the rule means is small and easy to
-// get subtly wrong:
+// The staff scope's Category/Type rule is written twice, word for word, in
+// SearchAuditLogScoped and CountAuditLogScoped, from values read by GetAuditTicketScope.
+// What the rule means is small and easy to get subtly wrong:
 //
 //   - a rule with no type covers the whole category, tickets with no type
 //     included;
@@ -271,4 +270,154 @@ func TestAuditStore_Search_ScopeRuleShapes(t *testing.T) {
 
 func sortIDs(ids []uuid.UUID) {
 	sort.Slice(ids, func(i, j int) bool { return ids[i].String() < ids[j].String() })
+}
+
+// TestAuditStore_Search_ScopedAndUnscopedAgree verifies that scoped and
+// unscoped searches are consistent: a staff member whose scope admits every
+// planted ticket gets exactly what an unscoped search returns (minus deleted
+// entries); a staff member with no route to any ticket gets empty results;
+// and scoped/unscoped searches with the same filter return the same relative
+// order for rows they both see.
+func TestAuditStore_Search_ScopedAndUnscopedAgree(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	us, cs, gs, ts := userstore.New(q), categorystore.New(q), groupstore.New(q), ticketstore.New(q)
+	aus := auditstore.New(q)
+
+	mkUser := func(name string, role user.Role) user.User {
+		u := user.User{ID: uuid.New(), Email: name + "@agree.local", DisplayName: name, Role: role,
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+		require.NoError(t, us.Create(ctx, u))
+		return u
+	}
+
+	reporter := mkUser("agree-reporter", user.RoleUser)
+
+	mkCat := func(name string, order int) category.Category {
+		c := category.Category{ID: uuid.New(), Name: name, SortOrder: order, Active: true}
+		require.NoError(t, cs.CreateCategory(ctx, c))
+		return c
+	}
+
+	mkType := func(c category.Category, name string) uuid.UUID {
+		tp := category.Type{ID: uuid.New(), CategoryID: c.ID, Name: name, SortOrder: 1, Active: true}
+		require.NoError(t, cs.CreateType(ctx, tp))
+		return tp.ID
+	}
+
+	cat := mkCat("AgreeCat", 1)
+	typ := mkType(cat, "AgreeType")
+
+	// Staff member who can see everything (one group covering all categories).
+	seeAll := mkUser("agree-see-all", user.RoleStaff)
+	gAll := group.Group{ID: uuid.New(), Name: "see-all-group"}
+	require.NoError(t, gs.Create(ctx, gAll))
+	require.NoError(t, gs.AddMember(ctx, gAll.ID, seeAll.ID))
+	require.NoError(t, gs.AddScope(ctx, group.GroupScope{GroupID: gAll.ID, CategoryID: cat.ID, TypeID: nil}))
+
+	// Staff member who can see nothing.
+	seeNothing := mkUser("agree-see-nothing", user.RoleStaff)
+
+	newSt, err := ts.GetStatusByName(ctx, ticket.StatusNameNew)
+	require.NoError(t, err)
+
+	// Plant a few tickets and audit entries.
+	const action = "scope_agree"
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	tk1 := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: "AGR-001", Subject: "agree-1",
+		CategoryID: cat.ID, Priority: ticket.PriorityLow, StatusID: newSt.ID,
+		ReporterUserID: &reporter.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, ts.Create(ctx, tk1))
+
+	tk2 := ticket.Ticket{
+		ID: uuid.New(), TrackingNumber: "AGR-002", Subject: "agree-2",
+		CategoryID: cat.ID, TypeID: &typ, Priority: ticket.PriorityLow, StatusID: newSt.ID,
+		ReporterUserID: &reporter.ID, CreatedAt: now, UpdatedAt: now,
+	}
+	require.NoError(t, ts.Create(ctx, tk2))
+
+	// Plant audit entries.
+	for i, tid := range []uuid.UUID{tk1.ID, tk2.ID} {
+		eid := uuid.New()
+		require.NoError(t, q.CreateAuditEntry(ctx, dbgen.CreateAuditEntryParams{
+			ID:         eid,
+			EntityType: "ticket",
+			EntityID:   tid,
+			Action:     action,
+			CreatedAt:  now.Add(time.Duration(i+1) * time.Second),
+		}))
+	}
+
+	// Test 1: Staff member who sees everything should get the same results as
+	// an unscoped (admin) search.
+	t.Run("scoped sees all matches unscoped", func(t *testing.T) {
+		scopedResult, err := aus.Search(ctx, audit.Filter{
+			EntityType: "ticket",
+			Action:     action,
+			ScopedTo:   &seeAll.ID,
+		}, 100, 0)
+		require.NoError(t, err)
+
+		unscopedResult, err := aus.Search(ctx, audit.Filter{
+			EntityType: "ticket",
+			Action:     action,
+			ScopedTo:   nil, // unscoped
+		}, 100, 0)
+		require.NoError(t, err)
+
+		require.Equal(t, len(unscopedResult.Entries), scopedResult.Total, "total count mismatch")
+		require.Equal(t, len(unscopedResult.Entries), len(scopedResult.Entries), "number of entries mismatch")
+		require.Equal(t, unscopedResult.Total, scopedResult.Total, "total field mismatch")
+
+		// Check that the entries match (same IDs in same order).
+		for i, e := range unscopedResult.Entries {
+			require.Equal(t, e.ID, scopedResult.Entries[i].ID, "entry at offset %d mismatch", i)
+		}
+	})
+
+	// Test 2: Staff member who sees nothing should get empty results.
+	t.Run("scoped sees nothing gets empty", func(t *testing.T) {
+		result, err := aus.Search(ctx, audit.Filter{
+			EntityType: "ticket",
+			Action:     action,
+			ScopedTo:   &seeNothing.ID,
+		}, 100, 0)
+		require.NoError(t, err)
+
+		require.Equal(t, 0, result.Total, "total should be 0")
+		require.Len(t, result.Entries, 0, "entries should be empty")
+		require.False(t, result.HasMore, "HasMore should be false")
+		require.False(t, result.TotalCapped, "TotalCapped should be false")
+	})
+
+	// Test 3: Scoped and unscoped results have the same order for shared rows.
+	t.Run("order is consistent", func(t *testing.T) {
+		scopedResult, err := aus.Search(ctx, audit.Filter{
+			EntityType: "ticket",
+			Action:     action,
+			ScopedTo:   &seeAll.ID,
+		}, 100, 0)
+		require.NoError(t, err)
+
+		unscopedResult, err := aus.Search(ctx, audit.Filter{
+			EntityType: "ticket",
+			Action:     action,
+			ScopedTo:   nil, // unscoped
+		}, 100, 0)
+		require.NoError(t, err)
+
+		// Both should have the same entries in the same order.
+		require.Len(t, scopedResult.Entries, len(unscopedResult.Entries))
+		for i, e := range unscopedResult.Entries {
+			require.Equal(t, e.ID, scopedResult.Entries[i].ID, "entry %d ID mismatch", i)
+			require.Equal(t, e.Action, scopedResult.Entries[i].Action, "entry %d Action mismatch", i)
+		}
+	})
 }

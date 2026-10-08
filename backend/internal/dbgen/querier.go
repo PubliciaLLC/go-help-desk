@@ -133,32 +133,33 @@ type Querier interface {
 	// count of live accounts cannot express "permanently"; a count of rows can,
 	// because nothing in this system hard-deletes a user.
 	CountAllUsers(ctx context.Context) (int64, error)
-	// Same filters as SearchAuditLog, scope included, but BOUNDED: it counts at most
-	// count_cap matches and stops, so the cost is that of finding count_cap rows,
-	// not of scanning a table nobody prunes (#331). The caller asks for the cap
-	// plus one and reads "more than the cap" off the result; an answer at or under
-	// the cap is exact. Scope applies here too, so a staff member is counted only
-	// what they can see.
-	//
-	// The staff scope is the same predicate as SearchAuditLog's, over the same
-	// tickets columns, but arranged the other way round: the visible tickets are
-	// found first, then the audit rows on them. As SearchAuditLog's per-row EXISTS
-	// inside a LIMIT the planner assumes matches are plentiful and walks the whole
-	// entity index looking for them; for a staff member who sees few tickets that
-	// was measured at 3x slower than the unbounded count (411 ms against 143 ms at
-	// 524k audit rows / 30k tickets), which is the opposite of a bound. The
-	// MATERIALIZED set is empty, and never read, when scoped_to is NULL.
-	//
-	// The Category/Type rule is written as two IN lists, not as the per-ticket
-	// EXISTS the page query uses, so each list is built once and the set costs one
-	// pass over tickets rather than one subplan run per ticket (measured: a staff
-	// count with a narrow filter fell from ~125-165 ms to ~5-40 ms). The meaning is
-	// the same: a rule without a type covers its whole category, tickets without a
-	// type included; a rule with a type covers that type only, and the row
-	// comparison is not true for a ticket whose type is NULL, which stays hidden.
-	// IN does not repeat a ticket reached by several groups. The tests in
-	// auditstore_scope_rules_test.go state this in Go and hold both queries to it.
+	// Same filters as SearchAuditLog, but BOUNDED: it counts at most count_cap
+	// matches and stops, so the cost is that of finding count_cap rows, not of
+	// scanning a table nobody prunes (#331). The caller asks for the cap plus one
+	// and reads "more than the cap" off the result; an answer at or under the cap
+	// is exact.
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
+	// CountAuditLog for a staff member with ticket scope enforced, bounded the
+	// same way.
+	//
+	// Why the scope arrives as arrays (#331). The best plan depends on how many
+	// tickets the staff member sees, and only the values say that. A staff member
+	// who sees five tickets is answered by collecting those five through the
+	// tickets indexes and reading their entries through audit_log_entity_idx; one
+	// who sees every ticket, with a narrow filter, by reading the filter's index
+	// and checking each row's ticket by primary key; with no filter, by walking the
+	// log and keeping what is visible. Written as subqueries on the user id, the
+	// planner cannot tell these apart and picks one shape for everyone: #353's
+	// visible-set-first count paid a full tickets pass on every narrow filter, and
+	// the per-row EXISTS before it walked the whole log for a sparse staff member.
+	// With the arrays as parameters each execution is planned from them. Measured
+	// in #331. plan_cache_mode=auto kept every case on its custom plan; the generic
+	// plan is far worse and must stay unchosen (see the benchmark notes).
+	//
+	// The predicate is not wrapped in "user_id IS NULL OR ...": that form cannot
+	// become a join, which is what lets the planner start from the tickets side.
+	// Administrators use CountAuditLog instead.
+	CountAuditLogScoped(ctx context.Context, arg CountAuditLogScopedParams) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.
 	//
@@ -359,6 +360,12 @@ type Querier interface {
 	// whichever provider happened to answer first and attribute it to the one the
 	// operator has configured.
 	GetAttachmentReputation(ctx context.Context, arg GetAttachmentReputationParams) (AttachmentReputation, error)
+	// What a staff member's group membership grants, for the scoped audit
+	// statements: their groups, the categories their groups cover whole (rules
+	// without a type), and the rules with a type, as the category and the type of
+	// each. The same facts ticket.CanView gets from server.staffScopeFor, read
+	// here independently so the parity test compares two lookups, not one.
+	GetAuditTicketScope(ctx context.Context, userID uuid.UUID) (GetAuditTicketScopeRow, error)
 	GetCannedResponse(ctx context.Context, id uuid.UUID) (CannedResponse, error)
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
@@ -628,13 +635,17 @@ type Querier interface {
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
 	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error)
-	// The admin-wide audit view (#129). Every filter is optional, and scoped_to
-	// narrows to the tickets one staff member may see; see audit.Filter.
+	// The admin-wide audit view (#129), unscoped: an administrator, or staff while
+	// ticket scope enforcement is off. Every filter is optional; see audit.Filter.
+	// Staff with scope enforced use SearchAuditLogScoped.
 	// id breaks the tie, because created_at alone does not order entries written
 	// in the same microsecond — which happens inside a single request. Without a
 	// total order, two pages of one listing can disagree about which tied row
 	// comes first and the same entry appears twice, or not at all.
 	SearchAuditLog(ctx context.Context, arg SearchAuditLogParams) ([]AuditLog, error)
+	// SearchAuditLog for a staff member with ticket scope enforced. Same filters,
+	// same order; the scope predicate is CountAuditLogScoped's, word for word.
+	SearchAuditLogScoped(ctx context.Context, arg SearchAuditLogScopedParams) ([]AuditLog, error)
 	SearchTicketsByAssigneeGroup(ctx context.Context, arg SearchTicketsByAssigneeGroupParams) ([]SearchTicketsByAssigneeGroupRow, error)
 	SearchTicketsByAssigneeUser(ctx context.Context, arg SearchTicketsByAssigneeUserParams) ([]SearchTicketsByAssigneeUserRow, error)
 	SearchTicketsByReporter(ctx context.Context, arg SearchTicketsByReporterParams) ([]SearchTicketsByReporterRow, error)
