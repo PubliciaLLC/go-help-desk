@@ -120,4 +120,16 @@ describe('AuditFeed', () => {
 
     expect(ticketsApi.listTicketAudit).toHaveBeenCalledWith('tkt-42')
   })
+
+  it('shows a masked requester distinctly from an account named "Requester"', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([
+      entry({ id: 'e1', action: 'created', actor_name: 'Requester', actor_masked: true }),
+      entry({ id: 'e2', action: 'closed', actor_name: 'Requester' }),
+    ])
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getAllByText('Requester (name hidden)')).toHaveLength(1))
+    expect(screen.getAllByText('Requester')).toHaveLength(1)
+  })
 })
