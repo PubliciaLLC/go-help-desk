@@ -35,8 +35,9 @@ type adminAuditEntryView struct {
 type adminAuditListResponse struct {
 	Entries []adminAuditEntryView `json:"entries"`
 	// Total is the number of entries matching the filter that the caller may
-	// see: for staff under scope enforcement that is the count of entries on
-	// tickets in their scope, from the same predicate that picks the page.
+	// see, up to audit.TotalCap (see TotalCapped): for staff under scope
+	// enforcement that is the count of entries on tickets in their scope, from
+	// the same predicate that picks the page.
 	//
 	// It used to be withheld from staff. It was Search's own count, taken
 	// before scope was applied in Go, so a staff member who could see none of
@@ -46,8 +47,15 @@ type adminAuditListResponse struct {
 	// clause, so there is nothing to withhold: the number says how many entries
 	// the caller can page through, and nothing about the ones they cannot.
 	Total int `json:"total"`
-	// HasMore reports whether another page exists: offset plus this page is
-	// short of Total. Sent anyway so the client has one rule.
+	// TotalCapped is true when more than audit.TotalCap entries match. Total is
+	// then audit.TotalCap and means "at least this many": counting a table
+	// nobody prunes exactly is a full scan per page view (#331), so the count
+	// stops there. Always sent, false included, so a client does not have to
+	// tell "not capped" from "an older server".
+	TotalCapped bool `json:"total_capped"`
+	// HasMore reports whether another page exists. It is read off the page
+	// itself (one row past it), not derived from Total, which stops at the cap
+	// while a pager keeps going. This is the client's only paging rule.
 	HasMore bool `json:"has_more"`
 }
 
@@ -100,12 +108,12 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	entries, total, err := s.auditStore.Search(ctx, f, limit, offset)
+	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	hasMore := offset+len(entries) < total
+	entries := page.Entries
 
 	showDiff := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(ctx))
@@ -140,7 +148,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, adminAuditListResponse{
-		Entries: views, Total: total, HasMore: hasMore,
+		Entries: views, Total: page.Total, TotalCapped: page.TotalCapped, HasMore: page.HasMore,
 	})
 }
 

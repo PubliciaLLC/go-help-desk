@@ -441,7 +441,7 @@ type countingAuditStore struct {
 	searches int
 }
 
-func (c *countingAuditStore) Search(ctx context.Context, f audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
+func (c *countingAuditStore) Search(ctx context.Context, f audit.Filter, limit, offset int) (audit.Page, error) {
 	c.searches++
 	return c.Store.Search(ctx, f, limit, offset)
 }

@@ -133,10 +133,31 @@ type Querier interface {
 	// count of live accounts cannot express "permanently"; a count of rows can,
 	// because nothing in this system hard-deletes a user.
 	CountAllUsers(ctx context.Context) (int64, error)
-	// Same filters as SearchAuditLog, scope included, without the pagination — the
-	// admin-wide view's "n of m" needs the total across every page, not just the
-	// one it fetched. Scope applies here too, so a staff member is counted only
+	// Same filters as SearchAuditLog, scope included, but BOUNDED: it counts at most
+	// count_cap matches and stops, so the cost is that of finding count_cap rows,
+	// not of scanning a table nobody prunes (#331). The caller asks for the cap
+	// plus one and reads "more than the cap" off the result; an answer at or under
+	// the cap is exact. Scope applies here too, so a staff member is counted only
 	// what they can see.
+	//
+	// The staff scope is the same predicate as SearchAuditLog's, over the same
+	// tickets columns, but arranged the other way round: the visible tickets are
+	// found first, then the audit rows on them. As SearchAuditLog's per-row EXISTS
+	// inside a LIMIT the planner assumes matches are plentiful and walks the whole
+	// entity index looking for them; for a staff member who sees few tickets that
+	// was measured at 3x slower than the unbounded count (411 ms against 143 ms at
+	// 524k audit rows / 30k tickets), which is the opposite of a bound. The
+	// MATERIALIZED set is empty, and never read, when scoped_to is NULL.
+	//
+	// The Category/Type rule is written as two IN lists, not as the per-ticket
+	// EXISTS the page query uses, so each list is built once and the set costs one
+	// pass over tickets rather than one subplan run per ticket (measured: a staff
+	// count with a narrow filter fell from ~125-165 ms to ~5-40 ms). The meaning is
+	// the same: a rule without a type covers its whole category, tickets without a
+	// type included; a rule with a type covers that type only, and the row
+	// comparison is not true for a ticket whose type is NULL, which stays hidden.
+	// IN does not repeat a ticket reached by several groups. The tests in
+	// auditstore_scope_rules_test.go state this in Go and hold both queries to it.
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.

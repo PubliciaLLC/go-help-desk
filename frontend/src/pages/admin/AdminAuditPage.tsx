@@ -81,6 +81,10 @@ export function AdminAuditPage() {
 
   const entries = data?.entries ?? []
   const total = data?.total ?? 0
+  // The server stops counting at a cap and says so; a capped total is a floor,
+  // so it reads "10,000+". An uncapped one is exact, even when it equals the cap.
+  const fmt = (n: number) => n.toLocaleString('en-US')
+  const totalLabel = `${fmt(total)}${data?.total_capped ? '+' : ''}`
   // The server says whether another page exists; the total is for display.
   const hasNextPage = data?.has_more ?? false
 
@@ -212,7 +216,7 @@ export function AdminAuditPage() {
               <p className="text-sm text-gray-500">
                 {entries.length === 0
                   ? ''
-                  : `${offset + 1}–${offset + entries.length} of ${total}`}
+                  : `${fmt(offset + 1)}–${fmt(offset + entries.length)} of ${totalLabel}`}
               </p>
               <div className="flex gap-2">
                 <Button

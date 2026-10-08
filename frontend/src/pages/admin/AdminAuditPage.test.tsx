@@ -44,7 +44,11 @@ function entry(overrides: Partial<AdminAuditEntry> = {}): AdminAuditEntry {
   }
 }
 
-function mockList(response: AdminAuditListResponse) {
+// total_capped is always sent by the server; most tests do not care about it.
+type ListFixture = Omit<AdminAuditListResponse, 'total_capped'> & { total_capped?: boolean }
+
+function mockList({ total_capped = false, ...rest }: ListFixture) {
+  const response: AdminAuditListResponse = { ...rest, total_capped }
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/audit') return Promise.resolve({ data: response })
     if (url === '/staff') return Promise.resolve({ data: [] })
@@ -90,7 +94,7 @@ describe('AdminAuditPage', () => {
 
   it('sends an edited action filter to the server', async () => {
     const get = vi.spyOn(api, 'get').mockImplementation(((url: string) => {
-      if (url === '/admin/audit') return Promise.resolve({ data: { entries: [], total: 0, has_more: false } })
+      if (url === '/admin/audit') return Promise.resolve({ data: { entries: [], total: 0, total_capped: false, has_more: false } })
       return Promise.resolve({ data: [] })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any)
@@ -165,5 +169,60 @@ describe('AdminAuditPage', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: /next/i })).toBeTruthy())
     expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  // #331: the server stops counting at 10,000 and says so. A capped total is a
+  // floor, not a count, so it reads "10,000+"; an exact one never gets the plus,
+  // including one that happens to equal the cap.
+  it('shows a capped total as n+', async () => {
+    mockList({ entries: [entry()], total: 10000, total_capped: true, has_more: true })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
+  })
+
+  it('shows an uncapped total of exactly the cap without a plus', async () => {
+    mockList({ entries: [entry()], total: 10000, total_capped: false, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('1–1 of 10,000')).toBeTruthy())
+  })
+
+  it('keeps paging on has_more when the total is capped', async () => {
+    const seen: number[] = []
+    vi.spyOn(api, 'get').mockImplementation(((url: string, config?: { params?: { offset?: number } }) => {
+      if (url !== '/admin/audit') return Promise.resolve({ data: [] })
+      const offset = config?.params?.offset ?? 0
+      seen.push(offset)
+      return Promise.resolve({
+        data: { entries: [entry({ id: `e-${offset}` })], total: 10000, total_capped: true, has_more: true },
+      })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    renderWithQuery(<AdminAuditPage />)
+
+    const next = () => screen.getByRole('button', { name: /next/i }) as HTMLButtonElement
+    await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
+    await userEvent.click(next())
+    await waitFor(() => expect(screen.getByText('51–51 of 10,000+')).toBeTruthy())
+    expect(seen).toContain(50)
+    expect(next().disabled).toBe(false)
+    expect((screen.getByRole('button', { name: /previous/i }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('does not offer Next on the last page of a capped total', async () => {
+    mockList({ entries: [entry()], total: 10000, total_capped: true, has_more: false })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
+    expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows a capped total to staff the same way', async () => {
+    asStaff()
+    mockList({ entries: [entry()], total: 10000, total_capped: true, has_more: true })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
   })
 })

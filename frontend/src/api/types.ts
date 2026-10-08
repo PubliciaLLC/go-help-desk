@@ -85,12 +85,18 @@ export interface AdminAuditEntry {
 export interface AdminAuditListResponse {
   entries: AdminAuditEntry[]
   /**
-   * How many entries match the filter and the viewer may see. For staff under
+   * How many entries match the filter and the viewer may see, counted up to a
+   * cap (see `total_capped`). For staff under
    * ticket scope that is the count of entries on tickets in their scope —
    * scope is part of the count's own query, so it says nothing about the
    * entries they cannot see.
    */
   total: number
+  /**
+   * True when more entries match than the server counts: `total` is then the
+   * server's cap and means "at least this many". Show it as "n+".
+   */
+  total_capped: boolean
   /** Whether another page exists. The pager runs on this; `total` is for display. */
   has_more: boolean
 }

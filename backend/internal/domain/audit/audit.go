@@ -29,16 +29,16 @@ type Store interface {
 
 	// Search answers the admin-wide audit view (#129): every field on Filter
 	// is optional and narrows the result, newest first, ties broken by id.
-	// Returns the matching page plus the total count across all pages, so a
-	// caller can render "n of m" without a second round trip. Both come from
-	// the same predicate, so the total is the count of what the page pages.
+	// Returns the matching page and what a pager needs, see Page. The count
+	// and the page come from the same predicate, so Total is the count of what
+	// the page pages.
 	//
 	// Search knows about staff ticket scope only through Filter.ScopedTo. With
 	// it unset every entity is returned; a caller that must not show every
 	// entity has to say so there rather than filter the page afterwards, which
 	// leaves the count and the offset describing a different sequence from the
 	// one the caller reads.
-	Search(ctx context.Context, f Filter, limit, offset int) ([]Entry, int, error)
+	Search(ctx context.Context, f Filter, limit, offset int) (Page, error)
 
 	// DeleteOlderThan hard-deletes every entry created before cutoff and
 	// reports how many were removed. Used by the retention sweep
@@ -46,6 +46,29 @@ type Store interface {
 	// has set a retention window — the default keeps everything. There is
 	// no soft-delete or archive table: an expired entry is gone.
 	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// TotalCap is the most Search will count. A table nobody prunes (retention is
+// off by default) only grows, and an exact count over it is a full scan on
+// every page view, so past this many matches Search stops counting and says
+// so. 10,000 is 200 pages of 50, more than anyone pages through.
+const TotalCap = 10000
+
+// Page is one page of a Search and what a pager needs to move on from it.
+type Page struct {
+	Entries []Entry
+
+	// Total is the number of matching entries, counted only up to TotalCap.
+	// It is exact whenever TotalCapped is false.
+	Total int
+
+	// TotalCapped is true when more than TotalCap entries match; Total is then
+	// TotalCap and means "at least this many".
+	TotalCapped bool
+
+	// HasMore reports whether an entry exists after this page. It does not
+	// depend on Total, which stops at TotalCap while a pager keeps going.
+	HasMore bool
 }
 
 // Filter narrows a Search call. The zero value matches everything.

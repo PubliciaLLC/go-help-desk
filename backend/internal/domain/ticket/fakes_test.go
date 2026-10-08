@@ -456,14 +456,14 @@ func (f *fakeAuditStore) ListByEntity(_ context.Context, entityType string, enti
 // Search mirrors the real store's filter semantics closely enough to be a
 // meaningful double: every Filter field is optional and narrows the result,
 // newest first, with the total count taken before limit/offset is applied.
-func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, offset int) ([]audit.Entry, int, error) {
+func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, offset int) (audit.Page, error) {
 	if f.err != nil {
-		return nil, 0, f.err
+		return audit.Page{}, f.err
 	}
 	// Scope is a query's job and this double has no ticket table to apply it
 	// to; ignoring it would hand back entries the caller asked to have hidden.
 	if filter.ScopedTo != nil {
-		return nil, 0, errors.New("fakeAuditStore does not implement Filter.ScopedTo")
+		return audit.Page{}, errors.New("fakeAuditStore does not implement Filter.ScopedTo")
 	}
 	var matched []audit.Entry
 	for _, e := range f.entries {
@@ -490,13 +490,14 @@ func (f *fakeAuditStore) Search(_ context.Context, filter audit.Filter, limit, o
 	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
 	total := len(matched)
 	if offset >= len(matched) {
-		return nil, total, nil
+		return audit.Page{Total: total}, nil
 	}
 	matched = matched[offset:]
+	hasMore := false
 	if limit > 0 && limit < len(matched) {
-		matched = matched[:limit]
+		matched, hasMore = matched[:limit], true
 	}
-	return matched, total, nil
+	return audit.Page{Entries: matched, Total: total, HasMore: hasMore}, nil
 }
 
 func (f *fakeAuditStore) DeleteOlderThan(_ context.Context, cutoff time.Time) (int64, error) {

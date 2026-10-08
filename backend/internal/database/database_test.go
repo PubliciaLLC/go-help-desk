@@ -1773,7 +1773,8 @@ func TestAuditStore_Search(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, total, err := aus.Search(ctx, tc.filter, 10, 0)
+			pg, err := aus.Search(ctx, tc.filter, 10, 0)
+			got, total := pg.Entries, pg.Total
 			require.NoError(t, err)
 			require.Equal(t, tc.want, total)
 			require.Len(t, got, tc.want)
@@ -1782,7 +1783,8 @@ func TestAuditStore_Search(t *testing.T) {
 
 	// The total reflects the filter, not the page: this actor has 2 entries,
 	// the page is capped to 1, and the count must still say 2.
-	got, total, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 1, 0)
+	pg, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 1, 0)
+	got, total := pg.Entries, pg.Total
 	require.NoError(t, err)
 	require.Equal(t, 2, total)
 	require.Len(t, got, 1)
@@ -1814,19 +1816,22 @@ func TestAuditStore_Search_DateRange(t *testing.T) {
 
 	f := byThisActor
 	f.From, f.To = &past, &future
-	_, total, err := aus.Search(ctx, f, 10, 0)
+	pg, err := aus.Search(ctx, f, 10, 0)
+	total := pg.Total
 	require.NoError(t, err)
 	require.Equal(t, 1, total, "entry created just now must fall inside a window that spans an hour either side")
 
 	f = byThisActor
 	f.From = &future
-	_, total, err = aus.Search(ctx, f, 10, 0)
+	pg, err = aus.Search(ctx, f, 10, 0)
+	total = pg.Total
 	require.NoError(t, err)
 	require.Equal(t, 0, total, "a From set an hour in the future must exclude an entry created now")
 
 	f = byThisActor
 	f.To = &past
-	_, total, err = aus.Search(ctx, f, 10, 0)
+	pg, err = aus.Search(ctx, f, 10, 0)
+	total = pg.Total
 	require.NoError(t, err)
 	require.Equal(t, 0, total, "a To set an hour in the past must exclude an entry created now")
 }
@@ -1865,7 +1870,8 @@ func TestAuditStore_DeleteOlderThan(t *testing.T) {
 	// shared long-lived test database may hold other rows past the cutoff —
 	// what must hold regardless is that THIS test's old entry is gone and
 	// its new one is not.
-	remaining, total, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 10, 0)
+	pg, err := aus.Search(ctx, audit.Filter{ActorID: &actor}, 10, 0)
+	remaining, total := pg.Entries, pg.Total
 	require.NoError(t, err)
 	require.Equal(t, 1, total, "only this actor's entry older than the cutoff should be gone")
 	require.Len(t, remaining, 1)
