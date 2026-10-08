@@ -2296,6 +2296,17 @@ on the existing webhook feature instead of as plugins.
   worker that dies between sending and settling sends again after the lease.
   Webhooks are not retried on HTTP failure: their dispatcher already posts in
   the background and reports nothing back, unchanged by this.
+- **Signup verification email goes through the outbox too**
+  ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
+  `verification` channel. Signup answers the same 202 whether or not the
+  address already has an account, and does the same work for both: it hashes
+  the password, writes the pending registration and queues one row naming
+  only that registration's id. The send re-reads the row and mails the stored
+  address and token, or nothing if the row is gone or expired or the address
+  has an account. Before this a new address dialled the mail server on the
+  request and a taken one returned at once, so the timing said who had an
+  account. A taken address now gets a pending row that is never mailed, and
+  it expires unused.
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
   1.3. Not a plugin, and not a separate integration surface: a webhook
   subscription gains a `payload_format` setting (`raw` — today's behavior —
