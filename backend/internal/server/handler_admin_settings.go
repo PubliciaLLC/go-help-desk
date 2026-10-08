@@ -94,6 +94,23 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		out[k] = json.RawMessage(v)
 	}
+	// audit_mask_requester_names is reported as the value in force, not the
+	// stored bytes (#366). The reader treats a row it cannot read or does not
+	// recognise as "everywhere". Echoing that row instead made the settings
+	// page show an option that is not enforced and send it back on every save,
+	// where the PATCH below refuses it, so nothing on the page could be saved
+	// until someone changed this one dropdown. Only a row that exists is
+	// rewritten: an unset setting stays absent, as before. The PATCH still
+	// accepts only the three values, and a machine credential still cannot
+	// send this key at all.
+	if _, ok := out[admin.KeyAuditMaskRequesterNames]; ok {
+		eff, err := json.Marshal(s.adminSvc.AuditMaskRequesterNames(r.Context()))
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		out[admin.KeyAuditMaskRequesterNames] = eff
+	}
 	JSON(w, http.StatusOK, out)
 }
 

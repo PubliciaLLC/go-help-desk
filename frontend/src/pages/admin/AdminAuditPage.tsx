@@ -198,7 +198,11 @@ export function AdminAuditPage() {
                         <span className="font-medium text-gray-900">{labelFor(e.action)}</span>
                         <AuditDiff before={e.before} after={e.after} />
                       </td>
-                      <td className="px-4 py-3 text-gray-600">{e.actor_name || '—'}</td>
+                      <td className="px-4 py-3 text-gray-600">
+                        {e.actor_masked
+                          ? <span className="italic text-gray-500" title="Hidden by the Privacy setting">Requester (name hidden)</span>
+                          : (e.actor_name || '—')}
+                      </td>
                     </tr>
                   ))}
                   {entries.length === 0 && (

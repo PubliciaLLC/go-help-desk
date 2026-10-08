@@ -102,7 +102,7 @@ func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request
 		return
 	}
 	pr, err := s.registration.Lookup(r.Context(), tokenID)
-	if errors.Is(err, registration.ErrNotFound) || errors.Is(err, registration.ErrTokenExpired) {
+	if isVerificationVerdict(err) {
 		verificationRefused(w, err)
 		return
 	}
@@ -113,8 +113,18 @@ func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request
 	JSON(w, http.StatusOK, map[string]string{"email": pr.Email})
 }
 
-// verificationRefused answers a link that cannot be used, the same way for
-// the lookup and for the verification itself.
+// isVerificationVerdict reports whether err is a verdict on the link: unknown,
+// used or replaced, expired, or an address that has gained an account since the
+// link was mailed. Only a verdict is a 422; anything else is a fault and a 500,
+// on the lookup and the POST alike (#373). One list for both, so they cannot
+// drift apart.
+func isVerificationVerdict(err error) bool {
+	return errors.Is(err, registration.ErrNotFound) || errors.Is(err, registration.ErrTokenExpired) ||
+		errors.Is(err, registration.ErrAlreadyRegistered)
+}
+
+// verificationRefused answers a verdict on a link (see isVerificationVerdict).
+// The lookup and the verification answer a verdict the same way.
 func verificationRefused(w http.ResponseWriter, err error) {
 	if errors.Is(err, registration.ErrTokenExpired) {
 		Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
@@ -156,7 +166,11 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "password_too_long", err.Error())
 			return
 		}
-		verificationRefused(w, err)
+		if isVerificationVerdict(err) {
+			verificationRefused(w, err)
+			return
+		}
+		handleError(w, err)
 		return
 	}
 

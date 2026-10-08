@@ -180,4 +180,12 @@ describe('the requester-name masking setting', () => {
       expect(lastPatch(patch)).toMatchObject({ audit_mask_requester_names: 'ticket_log' })
     })
   })
+
+  it('says the mask is display-only and that the role is read now', async () => {
+    await renderSettings({})
+    const help = screen.getByText(/hides names from the list only/i)
+    expect(help.textContent).toMatch(/not an access control/i)
+    expect(help.textContent).toMatch(/can still identify the requester/i)
+    expect(help.textContent).toMatch(/role now/i)
+  })
 })

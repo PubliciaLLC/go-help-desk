@@ -77,6 +77,9 @@ export interface AdminAuditEntry {
   action: string
   actor_id: string | null
   actor_name?: string
+  // #366: true when actor_name is the "Requester" mask rather than a real
+  // display name. Absent when false.
+  actor_masked?: boolean
   created_at: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
@@ -108,6 +111,9 @@ export interface TicketAuditEntry {
   // omitempty on the backend: absent (not just empty) for a system actor or
   // one whose account no longer exists.
   actor_name?: string
+  // #366: true when actor_name is the "Requester" mask rather than a real
+  // display name. Absent when false.
+  actor_masked?: boolean
   created_at: string
   // omitempty on the backend: the server decides whether this viewer sees
   // the field-level diff at all (admin always, staff only with the setting

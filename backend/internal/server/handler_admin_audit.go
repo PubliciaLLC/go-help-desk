@@ -23,15 +23,16 @@ import (
 // say (it's always the one ticket in the URL); the diff and redaction rules
 // are identical — see handleListAdminAudit's own comment.
 type adminAuditEntryView struct {
-	ID         uuid.UUID      `json:"id"`
-	EntityType string         `json:"entity_type"`
-	EntityID   uuid.UUID      `json:"entity_id"`
-	Action     string         `json:"action"`
-	ActorID    *uuid.UUID     `json:"actor_id"`
-	ActorName  string         `json:"actor_name,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
-	Before     map[string]any `json:"before,omitempty"`
-	After      map[string]any `json:"after,omitempty"`
+	ID          uuid.UUID      `json:"id"`
+	EntityType  string         `json:"entity_type"`
+	EntityID    uuid.UUID      `json:"entity_id"`
+	Action      string         `json:"action"`
+	ActorID     *uuid.UUID     `json:"actor_id"`
+	ActorName   string         `json:"actor_name,omitempty"`
+	ActorMasked bool           `json:"actor_masked,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	Before      map[string]any `json:"before,omitempty"`
+	After       map[string]any `json:"after,omitempty"`
 }
 
 type adminAuditListResponse struct {
@@ -122,7 +123,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 
 	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
-	names := make(map[uuid.UUID]string)
+	names := make(map[uuid.UUID]auditActor)
 	for i, e := range entries {
 		v := adminAuditEntryView{
 			ID: e.ID, EntityType: e.EntityType, EntityID: e.EntityID,
@@ -132,20 +133,21 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
 		}
 		if e.ActorID != nil {
-			name, cached := names[*e.ActorID]
+			a, cached := names[*e.ActorID]
 			if !cached {
 				u, err := s.users.GetByID(ctx, *e.ActorID)
 				switch {
 				case err == nil:
-					name = auditActorName(u, maskRequesters)
+					a = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
 					// Account since deleted; actor_id stays, only the name is left blank.
 				default:
 					slog.ErrorContext(ctx, "resolving admin audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
-				names[*e.ActorID] = name
+				names[*e.ActorID] = a
 			}
-			v.ActorName = name
+			v.ActorName = a.name
+			v.ActorMasked = a.masked
 		}
 		views[i] = v
 	}
@@ -207,17 +209,29 @@ var (
 	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
 )
 
+// auditActor is what an audit view shows for one actor.
+type auditActor struct {
+	name   string
+	masked bool
+}
+
 // auditActorName is the name an audit view shows for an actor (#362, Erik).
 // Staff and administrators are named: the audit trail exists to say which
-// employee did what. A requester — a student, a patient, a customer — is
-// shown as "Requester" where the view masks them (masksRequestersIn); the
-// entry keeps their actor_id, so it stays attributable for an investigation
-// without the view listing end users' names beside their activity.
-func auditActorName(u user.User, maskRequesters bool) string {
+// employee did what. A requester (a student, a patient, a customer) is
+// shown as "Requester" where the view masks them (masksRequestersIn), and
+// masked is true so a client can tell that label from an account whose
+// display name happens to be "Requester" (#366). The entry keeps its
+// actor_id, so it stays attributable for an investigation.
+//
+// The role is the actor's role now, not when the entry was written (#366):
+// a staff member later made a user is masked on their old entries, and a
+// requester promoted to staff is named on theirs. Display-only: anyone
+// who can see the entry can still follow actor_id or entity_id to the name.
+func auditActorName(u user.User, maskRequesters bool) auditActor {
 	if maskRequesters && u.Role == user.RoleUser {
-		return "Requester"
+		return auditActor{name: "Requester", masked: true}
 	}
-	return u.DisplayName
+	return auditActor{name: u.DisplayName}
 }
 
 // masksRequestersIn reports whether the given audit view masks requester
