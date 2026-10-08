@@ -258,6 +258,12 @@ func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
 // SpendSAMLHandover records that the SAML library's hand-over cookie has been
 // exchanged for an app session, and reports whether this was its first use.
 //
+// Callers must pass the signed input (header.payload), not the raw cookie
+// value with the signature. The JWT verifier decodes base64 leniently, so one
+// token has several spellings that all verify; different spellings of the
+// signature segment would hash differently and defeat the single-use record
+// (#337).
+//
 // The cookie is a stateless JWT, so nothing else can invalidate it: without
 // this record, a copy captured before the hand-over could mint a new session
 // after every revocation until it expired (#337).

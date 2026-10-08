@@ -369,7 +369,23 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 			handleError(w, fmt.Errorf("reading SAML login cookie: %w", err))
 			return
 		}
-		first, err := s.sessions.SpendSAMLHandover(context.WithoutCancel(r.Context()), c.Value)
+
+		// The spend key is the signed input (header.payload), never the
+		// signature segment. The verifier decodes the signature leniently, so
+		// one token has several spellings that all verify (the unused low bits
+		// of the last base64 character can be changed); each would hash
+		// differently, and a spent cookie could be replayed by respelling its
+		// signature (#337). header.payload is covered by the signature byte for
+		// byte and cannot be respelled without breaking verification. Not three
+		// segments cannot happen after RequireAccount; fail closed anyway.
+		parts := strings.Split(c.Value, ".")
+		if len(parts) != 3 {
+			handleError(w, errors.New("invalid SAML cookie format"))
+			return
+		}
+		spendKey := strings.Join(parts[:2], ".")
+
+		first, err := s.sessions.SpendSAMLHandover(context.WithoutCancel(r.Context()), spendKey)
 		if err != nil {
 			handleError(w, err)
 			return

@@ -5,9 +5,11 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +61,7 @@ type samlHarness struct {
 	// sets it. A browser deletes a cookie only when the deletion names the same
 	// triple, so "cleared" below is judged against this, not against a name.
 	issued cookieKey
+	minted int
 }
 
 type cookieKey struct{ name, domain, path string }
@@ -107,8 +110,13 @@ func (sh *samlHarness) libraryCookie(t *testing.T, email string) *http.Cookie {
 	attr := func(name, value string) saml.Attribute {
 		return saml.Attribute{Name: name, Values: []saml.AttributeValue{{Value: value}}}
 	}
+	// A distinct SessionIndex, as a real IdP gives each authentication: the
+	// spend is keyed on header.payload, so two cookies minted for one person in
+	// the same second would otherwise be the same cookie.
+	sh.minted++
 	sess, err := sh.codec.New(&saml.Assertion{
-		Subject: &saml.Subject{NameID: &saml.NameID{Value: "sso-" + email}},
+		Subject:         &saml.Subject{NameID: &saml.NameID{Value: "sso-" + email}},
+		AuthnStatements: []saml.AuthnStatement{{SessionIndex: fmt.Sprintf("idx-%d", sh.minted)}},
 		AttributeStatements: []saml.AttributeStatement{{
 			Attributes: []saml.Attribute{attr("email", email), attr("displayName", "SSO Person")},
 		}},
@@ -294,4 +302,57 @@ func TestSAMLComplete_RefusedSignInStillSpendsTheCookie(t *testing.T) {
 	res.Body.Close()
 	require.Equal(t, http.StatusSeeOther, res.StatusCode)
 	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+}
+
+// TestSAMLComplete_RefusesARespelledSpentCookie: the spend is keyed on the
+// signed input (header.payload), not on the cookie text. The JWT verifier
+// decodes the signature leniently, so one token has several spellings that all
+// verify; keyed on the whole value, each would hash differently and a captured
+// cookie could be replayed by respelling its signature (#337).
+//
+// Only one respelling is accepted by the library in use: the unused low bits of
+// the signature's last base64 character (an ES256 signature is 64 bytes, so the
+// 86th character carries 2 data bits and 4 unused ones). '=' padding, alone or
+// combined with that, is rejected by the verifier (golang-jwt v4 leaves
+// DecodePaddingAllowed off), so it is not a replay route and is not tested as one.
+func TestSAMLComplete_RefusesARespelledSpentCookie(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	// respell flips a bit that does not belong to the signature: same bytes,
+	// different text.
+	respell := func(v string) string {
+		last := strings.IndexByte(alphabet, v[len(v)-1])
+		require.GreaterOrEqual(t, last, 0)
+		return v[:len(v)-1] + string(alphabet[last^1])
+	}
+
+	// Precondition: the library accepts the respelling, so the replay below
+	// proves something. A fresh, unspent cookie respelled must sign in.
+	fresh := sh.libraryCookie(t, "sso-fresh@test.local")
+	require.NotEqual(t, fresh.Value, respell(fresh.Value))
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: respell(fresh.Value)}})
+	res.Body.Close()
+	require.Equal(t, "/", res.Header.Get("Location"), "precondition: the respelled signature verifies")
+
+	// Padding is not accepted by the library (documented above); assert it so
+	// this comment cannot go stale if the library changes.
+	fresh = sh.libraryCookie(t, "sso-padded@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: fresh.Value + "=="}})
+	res.Body.Close()
+	require.NotEqual(t, "/", res.Header.Get("Location"), "padded signature must not verify")
+
+	// The attack: spend the cookie, then replay it respelled.
+	c := sh.libraryCookie(t, "sso@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, "/", res.Header.Get("Location"))
+
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: respell(c.Value)}})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+	require.Nil(t, sh.appSessionCookie(res))
+	require.True(t, sh.cleared(res))
 }
