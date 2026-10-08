@@ -2303,14 +2303,26 @@ on the existing webhook feature instead of as plugins.
 - **Signup verification email goes through the outbox too**
   ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
   `verification` channel. Signup answers the same 202 whether or not the
-  address already has an account, and does the same work for both: it hashes
-  the password, writes the pending registration and queues one row naming
-  only that registration's id. The send re-reads the row and mails the stored
+  address already has an account, and does the same work for both: it
+  writes the pending registration and queues one row naming only that
+  registration's id. The send re-reads the row and mails the stored
   address and token, or nothing if the row is gone or expired or the address
   has an account. Before this a new address dialled the mail server on the
   request and a taken one returned at once, so the timing said who had an
   account. A taken address now gets a pending row that is never mailed, and
   it expires unused.
+- **The password is chosen at verification, not at signup**
+  ([#360](https://github.com/PubliciaLLC/go-help-desk/issues/360)). The
+  signup form takes only the address and display name. The link in the
+  verification email opens a page that asks for the password, held to the
+  usual minimum, and `POST /auth/verify-email` takes the token and the
+  password together. A password that is too short is refused without using
+  up the link. When signup carried the password, a second signup for the same
+  address replaced it, so anyone who knew an address could sign up after its
+  owner and have the owner, following the newest link, create an account
+  with their password. A second signup can now change the display name and
+  re-issue the link, never the password. `pending_registrations.password_hash`
+  is no longer written and is dropped in a later migration.
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
   1.3. Not a plugin, and not a separate integration surface: a webhook
   subscription gains a `payload_format` setting (`raw` — today's behavior —

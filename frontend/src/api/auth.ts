@@ -55,12 +55,14 @@ export async function getSignupStatus(): Promise<SignupStatus> {
   return res.data
 }
 
-export async function signup(email: string, displayName: string, password: string): Promise<void> {
-  await api.post('/auth/signup', { email, display_name: displayName, password })
+// No password at signup (#360): it is chosen on the verification page, so a
+// second signup for the same address cannot choose it for the owner.
+export async function signup(email: string, displayName: string): Promise<void> {
+  await api.post('/auth/signup', { email, display_name: displayName })
 }
 
-export async function verifyEmail(token: string): Promise<LoginResponse> {
-  const res = await api.post<LoginResponse>('/auth/verify-email', { token })
+export async function verifyEmail(token: string, password: string): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>('/auth/verify-email', { token, password })
   return res.data
 }
 

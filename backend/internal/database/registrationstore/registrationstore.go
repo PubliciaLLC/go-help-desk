@@ -20,13 +20,12 @@ func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 
 func (s *Store) Upsert(ctx context.Context, r registration.PendingRegistration) (registration.PendingRegistration, error) {
 	row, err := s.q.UpsertPendingRegistration(ctx, dbgen.UpsertPendingRegistrationParams{
-		ID:           r.ID,
-		Email:        r.Email,
-		DisplayName:  r.DisplayName,
-		PasswordHash: r.PasswordHash,
-		Token:        r.Token,
-		ExpiresAt:    r.ExpiresAt,
-		CreatedAt:    r.CreatedAt,
+		ID:          r.ID,
+		Email:       r.Email,
+		DisplayName: r.DisplayName,
+		Token:       r.Token,
+		ExpiresAt:   r.ExpiresAt,
+		CreatedAt:   r.CreatedAt,
 	})
 	if err != nil {
 		return registration.PendingRegistration{}, fmt.Errorf("upserting pending registration: %w", err)
@@ -59,12 +58,11 @@ func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
 
 func fromRow(r dbgen.PendingRegistration) registration.PendingRegistration {
 	return registration.PendingRegistration{
-		ID:           r.ID,
-		Email:        r.Email,
-		DisplayName:  r.DisplayName,
-		PasswordHash: r.PasswordHash,
-		Token:        r.Token,
-		ExpiresAt:    r.ExpiresAt,
-		CreatedAt:    r.CreatedAt,
+		ID:          r.ID,
+		Email:       r.Email,
+		DisplayName: r.DisplayName,
+		Token:       r.Token,
+		ExpiresAt:   r.ExpiresAt,
+		CreatedAt:   r.CreatedAt,
 	}
 }

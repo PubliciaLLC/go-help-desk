@@ -138,13 +138,12 @@ func (s *Service) writeAuditEntry(ctx context.Context, e audit.Entry) {
 
 // CreateUserInput is the data needed to create a new user.
 type CreateUserInput struct {
-	Email        string
-	DisplayName  string
-	Role         Role
-	Password     string // plain text; hashed by Create; empty if SAML-only or pre-hashed
-	PasswordHash string // pre-computed bcrypt hash; used only when Password is empty
-	SAMLSubject  string // empty if local-only
-	OIDCSubject  string // empty if not OIDC
+	Email       string
+	DisplayName string
+	Role        Role
+	Password    string // plain text; hashed by Create; empty if federated-only
+	SAMLSubject string // empty if local-only
+	OIDCSubject string // empty if not OIDC
 }
 
 // Create validates and persists a new user, hashing the password if provided.
@@ -162,8 +161,7 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 	if err := u.Validate(); err != nil {
 		return User{}, err
 	}
-	switch {
-	case in.Password != "":
+	if in.Password != "" {
 		// The same minimum every other path applies. Admin create and
 		// first-run setup accepted one character; a one-character password on
 		// an administrator account created during setup is the worst case of
@@ -177,8 +175,6 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 			return User{}, fmt.Errorf("hashing password: %w", err)
 		}
 		u.PasswordHash = string(hash)
-	case in.PasswordHash != "":
-		u.PasswordHash = in.PasswordHash
 	}
 	if err := s.store.Create(ctx, u); err != nil {
 		if isUniqueViolation(err) {
