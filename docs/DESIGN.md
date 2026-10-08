@@ -432,7 +432,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
 - Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
-- Users only see results from their own tickets. Staff and admin search within the list they are looking at (see **List filters** below): by default the tickets assigned to them or their groups, or, with `ticket_scope_enforced` on, everything their scope admits.
+- Users only see results from their own tickets. Staff and admin search within the list they are looking at (see **List filters** below): by default the tickets assigned to them or their groups. With `ticket_scope_enforced` on, staff search everything their scope admits instead; administrators stay on the default list or use the admin-only scopes.
 - Reply bodies are not indexed — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
 - Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
 
@@ -538,7 +538,7 @@ password, never instead of it.
 **What this claims, and what it does not.** The property bought is
 **phishing-resistance**: a WebAuthn credential is bound to the origin it was
 registered against, so a look-alike login page cannot use it, which TOTP cannot
-claim (a fake page collects the six digits and replays them in the window). It
+claim (a fake page collects the six digits and replays them in the window). That matters on a help desk because a staff account reads every ticket, every attachment and every customer's details. It
 deliberately does **not** claim "something you have" in the hardware sense: a
 passkey today is very often a *synced* credential (iCloud Keychain, Google
 Password Manager), a weaker possession story than a YubiKey. Phishing-resistance
@@ -581,8 +581,9 @@ the person has proved they hold the key (the reason `GenerateMFASecret` and
 `ConfirmMFAEnrollmentWith` replaced `EnrollMFA`, which wrote an unconfirmed
 secret over the authenticator its owner still used). A staged challenge is
 answerable once and **expires on a fixed deadline from when it was minted**
-(five minutes), checked when the assertion comes back; it does not slide forward
-on use, the same rule the MFA lockout follows. Both routes sit inside
+(five minutes), checked when the assertion comes back, because a challenge left
+in a long-lived session is a replay window that stays open as long as the tab
+does; it does not slide forward on use, the same rule the MFA lockout follows. Both routes sit inside
 `meRouter`'s `DenyMachineCredentials` group (an API key or OAuth client may not
 touch how its owner authenticates) and **outside** `RequireMFA`, like TOTP
 enrolment, so somebody told to enrol can finish enrolling.
@@ -653,19 +654,21 @@ no route learned a new idea.
 **The password step answers with three booleans:** `mfa_needed` (a TOTP
 enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
 passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
-role is enforced). All false means no factor is owed. Two booleans keyed off
+role is enforced). All false means no factor is owed. Each is also conditional
+on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
+passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
 `u.MFAEnabled`, which is the TOTP column and not "this account has a second
 factor", cannot express the passkey-only account: on its second sign-in the
 server would say "you still need to enrol" and never "assert your passkey", and
 that account could never sign in again. **`MFARequiredFor(role)` is satisfied by
-a TOTP enrolment or at least one registered passkey**, so `mfa_enabled` and
+a TOTP enrolment or at least one registered passkey** (refusing the phishing-resistant factor because it is not the older one would be perverse), so `mfa_enabled` and
 `mfa_enforced_roles` keep their meanings and an operator reconfigures nothing.
 
 **Losing a key.** The owner removes it from their own account page
 (`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
 one; that is the ordinary case. An administrator removing ONE credential for
 somebody else is **not built**: every passkey route lives under `/me` and
-`adminRouter` has none. What an administrator can do is the user page's **Reset
+`adminRouter` has none; the user admin page is where it belongs when it is built, and saying it already exists is how an operator ends up looking for a button that was never written. What an administrator can do is the user page's **Reset
 MFA**, which clears **every** second factor (the authenticator and all passkeys)
 and ends the account's sessions in one statement (`ClearFactors`, all or
 nothing; it used to clear only the authenticator, leaving a passkey-only person
@@ -753,7 +756,7 @@ refuses that and will keep refusing it).
 ### SAML (Optional, Off by Default)
 
 - Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`; sign-in starts at `GET /api/v1/auth/saml/login` and returns to `POST /api/v1/auth/saml/acs`, then `GET /api/v1/auth/saml/complete`. The login page currently has a button for OIDC only.
-- **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself.
+- **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page, however, only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so configuring SAML through the UI today means turning off password login for non-administrators.
 - **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` reports SAML as enabled only when it is on and SAML is configured.
 - **Admin failsafe**: administrators can still sign in with a local password.
 - **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion` or `email_not_verified`. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
@@ -782,7 +785,7 @@ valid until it expires (an hour by default).
 
 ### OIDC (Optional, Off by Default)
 
-- Configured under **Admin → Settings → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`, which defaults to `{BASE_URL}/api/v1/auth/oidc/callback` and is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
+- Configured under **Admin → Settings → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`. `PUT /admin/oidc` takes no redirect URL: the stored value is kept, or `{BASE_URL}/api/v1/auth/oidc/callback` is filled in when there is none, and that is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
 - Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A missing or mismatched `state` is `401`, and the routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled.
 - **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`403 email_not_verified`).
 - **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`403 domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
@@ -830,10 +833,12 @@ administrator:
   strand one.
 - SAML reachability depends only on the three configuration fields being
   non-empty plus a successful metadata load. The guard gives SAML **no `enabled`
-  flag**, and `saml_enabled` must not be wired into whether the middleware loads:
-  it already means something else (it removes password login for non-admins), and
-  conflating the two would take SAML down whenever an operator flips it to require
-  SSO for staff (reverted before merge in #304).
+  flag**, and `saml_enabled` is not part of the load decision: it already means
+  something else (it removes password login for non-admins). Wiring it in would
+  take SAML down on every instance that leaves it off to keep password login
+  alongside SAML, and backfilling it to true to avoid that would silently remove
+  password login from every non-administrator there (tried and reverted before
+  merge in #304).
 
 **How "reachable" is decided differs by route, on purpose.**
 
@@ -1380,7 +1385,8 @@ want.
 **What a default instance does with a contradicting upload.** The judgement is
 the content against the operator's allowlist, so it moves rows in both
 directions compared with 1.2.0's hard-coded signature check. What the upload
-handler does on a default instance:
+handler does on a default instance (these rows were measured through the
+handler when content detection was introduced, #171):
 
 | Upload | Result |
 |---|---|
@@ -1816,8 +1822,8 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
-- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission).
-- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a signed-in session. Active entries for a guest or a reporting user, all of them for staff and administrators.
+- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up` additionally answers `404` while guest submission is off.
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
@@ -2003,7 +2009,9 @@ so they are not removed as dead weight:
   by a differently-shaped file, the rule is a refusal: **a JPEG whose header
   cannot be read is refused** rather than falling back to a weaker estimate.
   Every real JPEG parses, and "I cannot tell how much this will cost" is a
-  reason to refuse. A limit on how many images are decoded at once bounds the
+  reason to refuse. That converts the next gap in the estimate from a way
+  through into a refusal, which is worth more than any single thing the
+  estimate knows. A limit on how many images are decoded at once bounds the
   process rather than the request.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
@@ -2167,7 +2175,7 @@ The fields available on a ticket are the union of all fields assigned to its sel
 
 Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page; a reporting user can edit the fields on their own ticket until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester).
 
-Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. Regular authenticated users see category + type fields. Staff/admin see all levels.
+Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. The field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 
 ---
 
