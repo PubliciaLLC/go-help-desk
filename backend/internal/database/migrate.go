@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -44,4 +45,15 @@ func Migrate(ctx context.Context, databaseURL string) error {
 		return fmt.Errorf("running migrations: %w", err)
 	}
 	return nil
+}
+
+// MigrationFiles returns the embedded migration files, rooted at the
+// migrations directory. testutil reads it to check that a shared test
+// database was migrated by these files and not by another branch's.
+func MigrationFiles() fs.FS {
+	sub, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		panic(err) // the directory is embedded; this cannot fail
+	}
+	return sub
 }

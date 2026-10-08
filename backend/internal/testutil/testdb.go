@@ -32,13 +32,13 @@ func NewDB(t *testing.T) (*DB, func()) {
 	}
 
 	ctx := context.Background()
-	if err := database.Migrate(ctx, database.MigrateURL(dsn)); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
 	pool, err := database.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open db pool: %v", err)
+	}
+	if err := migrateAndVerify(ctx, pool, dsn, database.MigrationFiles()); err != nil {
+		pool.Close()
+		t.Fatalf("%v", err)
 	}
 
 	sqlDB := stdlib.OpenDBFromPool(pool)
