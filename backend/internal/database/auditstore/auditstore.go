@@ -15,11 +15,31 @@ import (
 	"github.com/sqlc-dev/pqtype"
 )
 
+// txBeginner is implemented by *sql.DB and allows tests to spy on transaction options.
+type txBeginner interface {
+	BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+}
+
 // Store implements audit.Store.
-type Store struct{ q *dbgen.Queries }
+type Store struct {
+	q    *dbgen.Queries
+	snap txBeginner // optional; if set, scoped searches run in a repeatable-read snapshot transaction
+}
 
 // New returns a Store backed by the given Queries.
 func New(q *dbgen.Queries) *Store { return &Store{q: q} }
+
+// SnapshotOn returns a copy of the Store with snapshot transactions enabled.
+// When set, scoped searches (Filter.ScopedTo != nil) run GetAuditTicketScope,
+// SearchAuditLogScoped, and CountAuditLogScoped within a single repeatable-read
+// transaction, preventing membership changes from mixing old scope with new
+// ticket state in one request.
+func (s *Store) SnapshotOn(db txBeginner) *Store {
+	return &Store{
+		q:    s.q,
+		snap: db,
+	}
+}
 
 func (s *Store) Create(ctx context.Context, e audit.Entry) error {
 	before, _ := marshalMap(e.Before)
@@ -104,11 +124,32 @@ func (s *Store) searchUnscoped(ctx context.Context, p searchParamValues, limit, 
 }
 
 func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uuid.UUID, limit, offset int) ([]dbgen.AuditLog, int64, error) {
-	sc, err := s.q.GetAuditTicketScope(ctx, userID)
+	// If snap is set, run the three reads in a single repeatable-read transaction.
+	// This prevents membership changes between calls from mixing old scope with new
+	// ticket state in one request. If snap is nil, the caller's Queries are already
+	// bound to a transaction (e.g., in tests using testutil.TxQueries), so use them
+	// directly.
+	q := s.q
+	if s.snap != nil {
+		tx, err := s.snap.BeginTx(ctx, &sql.TxOptions{
+			Isolation: sql.LevelRepeatableRead,
+			ReadOnly:  true,
+		})
+		if err != nil {
+			return nil, 0, fmt.Errorf("beginning audit snapshot: %w", err)
+		}
+		defer func() {
+			// Read-only: nothing to commit, so rollback is the release.
+			_ = tx.Rollback()
+		}()
+		q = s.q.WithTx(tx)
+	}
+
+	sc, err := q.GetAuditTicketScope(ctx, userID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("reading ticket scope for audit search: %w", err)
 	}
-	rows, err := s.q.SearchAuditLogScoped(ctx, dbgen.SearchAuditLogScopedParams{
+	rows, err := q.SearchAuditLogScoped(ctx, dbgen.SearchAuditLogScopedParams{
 		EntityType:       p.entityType,
 		Action:           p.action,
 		ActorID:          p.actorID,
@@ -126,7 +167,7 @@ func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uu
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching audit entries: %w", err)
 	}
-	counted, err := s.q.CountAuditLogScoped(ctx, dbgen.CountAuditLogScopedParams{
+	counted, err := q.CountAuditLogScoped(ctx, dbgen.CountAuditLogScopedParams{
 		EntityType:       p.entityType,
 		Action:           p.action,
 		ActorID:          p.actorID,

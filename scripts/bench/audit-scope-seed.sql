@@ -24,6 +24,12 @@
 --   # Measure: EXPLAIN (ANALYZE, BUFFERS) EXECUTE on the audit statements for the
 --   # five bench-* users, comparing buffers, not times under load. See #331.
 --
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM tickets) THEN
+    RAISE EXCEPTION 'audit-scope-seed.sql must only run against a throwaway, empty benchmark database: tickets already has rows';
+  END IF;
+END $$;
+
 BEGIN;
 SELECT setseed(0.331);
 
