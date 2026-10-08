@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { changePassword, signup, login, verifyEmail } from './auth'
+import { changePassword, signup, login, verifyEmail, lookupVerification } from './auth'
 
 // auth.ts is mostly thin wrappers, and those are deliberately left alone —
 // asserting that api.post was called proves nothing. What is covered here is
@@ -77,5 +77,14 @@ describe('responses that decide what the UI does next', () => {
 
     const res = await verifyEmail('token-123', 'a-long-passphrase')
     expect(res.mfa_enrollment_needed).toBe(true)
+  })
+})
+
+// The token goes as a query parameter, the one place the GET route reads it.
+describe('lookupVerification', () => {
+  it('sends the token as ?token= and returns the address', async () => {
+    const get = vi.spyOn(api, 'get').mockResolvedValue({ data: { email: 'a@example.com' } })
+    await expect(lookupVerification('tok-1')).resolves.toEqual({ email: 'a@example.com' })
+    expect(get).toHaveBeenCalledWith('/auth/verify-email', { params: { token: 'tok-1' } })
   })
 })

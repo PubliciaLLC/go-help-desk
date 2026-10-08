@@ -95,24 +95,26 @@ describe('attachments are never rendered inline', () => {
   //
   // BrandLogo.tsx and SettingsPage.tsx are the instance logo: an
   // admin-uploaded image served from its own route under a policy that blocks
-  // scripts (see logoCSP in security_headers.go). LoginPage.tsx is the TOTP
-  // enrolment QR code, a data: URL the server generates during MFA setup —
-  // not an upload at all.
+  // scripts (see logoCSP in security_headers.go). MFAEnrollForm.tsx is the
+  // TOTP enrolment QR code, a data: URL the server generates during MFA
+  // setup — not an upload at all. It was LoginPage.tsx's until #369 moved the
+  // compelled-enrolment form into a component, so the signup verification
+  // page could use it too; LoginPage renders no <img> of its own now.
   //
   // Since #296, BrandLogo is mounted three times at once (permanent sidebar,
   // mobile top bar, drawer) — but it is one <img>, in one file, used three
   // times, not three renderers to keep in sync. Layout.tsx itself renders no
   // <img> of its own any more, which is the reason it is off this list.
   //
-  // AccountPage.tsx is the same enrolment QR as LoginPage's, now that setting
+  // AccountPage.tsx is the same enrolment QR as MFAEnrollForm's, now that setting
   // up an authenticator app is something you can choose to do rather than
   // only something you are forced through at sign-in. Same source, same
   // reason: the server generates the data: URL from the secret it just
   // minted, and no part of it comes from an upload or from another user.
   const allowedRenderers: Record<string, number> = {
     'src/components/BrandLogo.tsx': 1,
+    'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
-    'src/pages/LoginPage.tsx': 1,
     'src/pages/admin/SettingsPage.tsx': 1,
   }
 
