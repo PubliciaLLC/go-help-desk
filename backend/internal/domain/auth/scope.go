@@ -51,8 +51,10 @@ const (
 	// session needs no scope; a machine credential needs audit:read, which
 	// an administrator grants on purpose. tickets:read used to reach it, so
 	// an integration key could read every entity's audit entries without
-	// anything about the key saying so. audit:write grants nothing: the
-	// audit log has no write route.
+	// anything about the key saying so. There is no audit:write: only the
+	// running server writes audit entries, so ParseScope refuses it when a
+	// credential is created, and one already stored grants nothing — not
+	// even audit:read through write-implies-read (#371).
 	ResourceAudit = "audit"
 )
 
@@ -70,11 +72,18 @@ var resources = []string{
 	ResourcePlugins, ResourceWebhooks, ResourceCredentials, ResourceAudit,
 }
 
+// writable reports whether a resource has a write scope. The audit log has
+// none: no credential may write it (#371).
+func writable(resource string) bool { return resource != ResourceAudit }
+
 // All returns every valid scope, for validation and for the admin UI's picker.
 func All() []Scope {
 	out := make([]Scope, 0, len(resources)*2)
 	for _, r := range resources {
-		out = append(out, Scope{r, ActionRead}, Scope{r, ActionWrite})
+		out = append(out, Scope{r, ActionRead})
+		if writable(r) {
+			out = append(out, Scope{r, ActionWrite})
+		}
 	}
 	return out
 }
@@ -93,6 +102,9 @@ func ParseScope(s string) (Scope, error) {
 	}
 	for _, r := range resources {
 		if r == resource {
+			if Action(action) == ActionWrite && !writable(resource) {
+				return Scope{}, fmt.Errorf("scope %q: %s is read-only; only the server writes it", s, resource)
+			}
 			return Scope{resource, Action(action)}, nil
 		}
 	}
@@ -117,7 +129,8 @@ func ValidateScopes(scopes []string) error {
 //
 // Malformed granted scopes are ignored rather than trusted. They cannot be
 // created through the API — ValidateScopes rejects them — but a row edited by
-// hand must not become a wildcard.
+// hand must not become a wildcard. audit:write stored before #371 refused it
+// is ignored the same way, so it does not imply audit:read.
 // There is no wildcard. A credential that should reach everything lists every
 // scope it needs, so what it can do is legible from the credential itself, and
 // a resource added later does not silently widen credentials that already

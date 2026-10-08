@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -573,19 +574,163 @@ func TestWorker_RedactsAddressesFromStoredAndLoggedErrors(t *testing.T) {
 	require.NotContains(t, logged.String(), "Ada.Lovelace")
 }
 
+var redactAddressCases = []struct{ in, want string }{
+	{"550 5.1.1 <guest@example.com>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	{"RCPT TO:<a.b+c@sub.example.co.uk> denied", "RCPT TO:<[address]> denied"},
+	{"two: x@a.test, y@b.test", "two: [address], [address]"},
+	// #358: a quoted local part and an IP-literal domain are legal
+	// addresses (user.ValidateEmail accepts both), so a guest can have one.
+	{`550 5.1.1 <"john doe"@example.com>: Recipient address rejected`, "550 5.1.1 <[address]>: Recipient address rejected"},
+	{`550 5.1.1 <"john \"jj\" doe"@example.com> rejected`, "550 5.1.1 <[address]> rejected"},
+	{"550 5.1.1 <guest@[192.168.1.10]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	{"550 5.1.1 <guest@[IPv6:2001:db8::1]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	// A queue id shaped like an address is hidden too; nothing is lost
+	// that an operator needs.
+	{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
+	// Ordinary errors are left exactly as they are.
+	{"dial tcp 10.0.0.25:587: i/o timeout", "dial tcp 10.0.0.25:587: i/o timeout"},
+	{"421 4.7.0 Try again later", "421 4.7.0 Try again later"},
+	{"dial tcp [2001:db8::1]:587: connect: connection refused", "dial tcp [2001:db8::1]:587: connect: connection refused"},
+	{`unknown channel "pager"`, `unknown channel "pager"`},
+	{"panic: runtime error: index out of range [3] with length 2", "panic: runtime error: index out of range [3] with length 2"},
+	{"", ""},
+}
+
 func TestRedactAddresses(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"550 5.1.1 <guest@example.com>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
-		{"RCPT TO:<a.b+c@sub.example.co.uk> denied", "RCPT TO:<[address]> denied"},
-		{"two: x@a.test, y@b.test", "two: [address], [address]"},
-		// Ordinary errors are left exactly as they are.
-		{"dial tcp 10.0.0.25:587: i/o timeout", "dial tcp 10.0.0.25:587: i/o timeout"},
-		{"421 4.7.0 Try again later", "421 4.7.0 Try again later"},
-		{"", ""},
+	for _, tc := range redactAddressCases {
+		t.Run(tc.in, func(t *testing.T) {
+			require.Equal(t, tc.want, redactAddresses(tc.in))
+		})
 	}
-	for _, tc := range cases {
-		require.Equal(t, tc.want, redactAddresses(tc.in), "input %q", tc.in)
+}
+
+// redactAddresses runs on the outbox worker goroutine, and its input is the
+// SMTP relay's reply, which the relay controls. Go's regexp is linear in the
+// input only when the pattern is bounded: an unbounded quoted local part
+// that never closes made matching quadratic, about a minute at 96 KB before
+// the bound (measured, #358 review).
+//
+// The bound is checked against a time limit, not a ratio. Ratios between
+// sizes were tried and are not robust: under CPU contention the larger run
+// spans more scheduler slices, so a linear matcher can measure 9 to 16 times
+// its smaller run, which is the range a quadratic one reaches. The limit is
+// far from both sides instead. At these sizes the bounded pattern takes about
+// 0.1 to 0.2 s without -race and 3 to 5 s with it, so the limit has more than
+// 6 times the race-detector cost of the good case, and more than 100 times
+// without -race. The unbounded pattern took 57 to 61 s at these sizes, so a
+// 30 s limit fails it, and fails it fast, rather than after a minute.
+func TestRedactAddresses_IsLinear(t *testing.T) {
+	const limit = 30 * time.Second
+	shapes := []struct{ name, in string }{
+		// Mutation M7 (no {0,64} on the quoted local part) is caught here.
+		{"unclosed quoted local part", `"` + strings.Repeat(`a@b \"`, 16<<10)},
+		// Whitespace stops the IP literal early.
+		{"unclosed IP literal", strings.Repeat(`a@b x@[`, 16<<10)},
+		// The costliest shape per byte. No whitespace, so only the {0,255}
+		// bound limits the IP literal. Measured: this stays linear with or
+		// without that bound (up to 128 KB), so it guards this input against
+		// a regression, but it does not detect removing {0,255}.
+		{"unclosed IP literal, no whitespace", strings.Repeat(`a@[`, 32<<10)},
 	}
+	for _, s := range shapes {
+		t.Run(s.name, func(t *testing.T) {
+			done := make(chan struct{}, 1) // buffered: a run that finishes after the timeout must not block
+			start := time.Now()
+			go func() {
+				redactAddresses(s.in)
+				done <- struct{}{}
+			}()
+			select {
+			case <-done:
+				t.Logf("%d bytes: %v", len(s.in), time.Since(start))
+			case <-time.After(limit):
+				t.Fatalf("redaction of %d bytes did not finish within %v: the pattern is not linear", len(s.in), limit)
+			}
+		})
+	}
+}
+
+// Redaction is applied once by design (TestWorker_RedactsTheRawErrorExactlyOnce).
+// It is not idempotent in general: a second pass can see the [address] the
+// first pass inserted and hide text after it. This pins only the documented
+// rows, which a second pass leaves unchanged.
+func TestRedactAddresses_TableRowsAreStableUnderASecondPass(t *testing.T) {
+	for _, tc := range redactAddressCases {
+		once := redactAddresses(tc.in)
+		require.Equal(t, once, redactAddresses(once), "input %q", tc.in)
+	}
+}
+
+// fail redacts the reason itself, not only deliver (#358). A panic's value and
+// an undecodable event reach fail without passing deliver's redaction, so
+// only a direct call shows the second one is there.
+func TestWorker_FailRedactsItsOwnReason(t *testing.T) {
+	store := newFakeOutbox()
+	var logged bytes.Buffer
+	w := NewWorker(store, nil, slog.New(slog.NewTextHandler(&logged, nil)))
+	row := notification.OutboxRow{ID: uuid.New(), Channel: "email", Attempts: 1}
+
+	w.fail(context.Background(), row, "panic: x@y.test")
+
+	require.Equal(t, "panic: [address]", store.failed[row.ID])
+	require.NotContains(t, logged.String(), "x@y.test")
+}
+
+// A delivery error is redacted exactly once, on its way to last_error and to
+// the log. Redaction is not idempotent in general: the [address] it inserts
+// can close an unclosed "@[" or quote in a second pass and hide the text after
+// it. So neither path may redact a string that was already redacted (#358
+// review). The raw error here has an address-shaped run that the first pass
+// hides and a second pass would widen.
+func TestWorker_RedactsTheRawErrorExactlyOnce(t *testing.T) {
+	const raw = `550 5.7.1 "Recipient address rejected: a@\"@b`
+	const want = `550 5.7.1 "Recipient address rejected: [address]"@b`
+
+	// The retry path writes no reason to the log, so only the stored
+	// last_error is asserted here. The give-up path asserts both.
+	t.Run("retried", func(t *testing.T) {
+		store := newFakeOutbox()
+		email := &recorder{fail: errors.New(raw)}
+		require.NoError(t, NewOutboxDispatcher(store, []string{"email"}, nil).Dispatch(context.Background(), sampleEvent()))
+		w := newTestWorker(store, map[string]notification.Dispatcher{"email": email})
+
+		_, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []string{want}, store.lastErrors)
+	})
+
+	t.Run("given up", func(t *testing.T) {
+		store := newFakeOutbox()
+		email := &recorder{fail: errors.New(raw)}
+		require.NoError(t, NewOutboxDispatcher(store, []string{"email"}, nil).Dispatch(context.Background(), sampleEvent()))
+		var logged bytes.Buffer
+		w := NewWorker(store, map[string]notification.Dispatcher{"email": email}, slog.New(slog.NewJSONHandler(&logged, nil)))
+		w.MaxAttempts = 1 // the first claim is the last attempt
+
+		_, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		require.Len(t, store.failed, 1)
+		for _, reason := range store.failed {
+			require.Equal(t, want, reason, "last_error")
+		}
+		require.Equal(t, want, loggedGiveUpReason(t, logged.Bytes()), "log line")
+	})
+}
+
+// loggedGiveUpReason returns the reason field of the give-up log line.
+func loggedGiveUpReason(t *testing.T, logged []byte) string {
+	t.Helper()
+	for _, line := range bytes.Split(bytes.TrimSpace(logged), []byte("\n")) {
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal(line, &rec))
+		if rec["msg"] == "notification outbox: giving up on a notification" {
+			reason, ok := rec["reason"].(string)
+			require.True(t, ok, "no reason field on the give-up line")
+			return reason
+		}
+	}
+	require.FailNow(t, "no give-up log line was written")
+	return ""
 }
 
 // A verification event queues for the verification channel and nothing else:

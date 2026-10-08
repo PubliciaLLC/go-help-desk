@@ -50,6 +50,18 @@ func TestAllows(t *testing.T) {
 			required: read, want: false,
 		},
 		{
+			// #371: a key stored with audit:write before it was refused does
+			// not reach the audit view through write-implies-read.
+			name:     "audit:write grants nothing, not even audit:read",
+			granted:  []string{"audit:write"},
+			required: auth.Scope{Resource: auth.ResourceAudit, Action: auth.ActionRead}, want: false,
+		},
+		{
+			name:     "audit:read reaches the audit view",
+			granted:  []string{"audit:read"},
+			required: auth.Scope{Resource: auth.ResourceAudit, Action: auth.ActionRead}, want: true,
+		},
+		{
 			name:    "a malformed entry does not poison a valid one",
 			granted: []string{"nonsense", "tickets:read"}, required: read, want: true,
 		},
@@ -70,6 +82,9 @@ func TestParseScope(t *testing.T) {
 		{name: "valid read", in: "tickets:read"},
 		{name: "valid write", in: "credentials:write"},
 		{name: "underscored resource", in: "canned_responses:read"},
+		{name: "audit read", in: "audit:read"},
+		// #371: only the running server writes the audit log.
+		{name: "audit has no write scope", in: "audit:write", wantErr: true},
 		{name: "no colon", in: "tickets", wantErr: true},
 		{name: "unknown action", in: "tickets:delete", wantErr: true},
 		{name: "unknown resource", in: "sprockets:read", wantErr: true},
@@ -178,4 +193,21 @@ func TestFullAccessRequiresEveryScopeListed(t *testing.T) {
 	require.True(t, auth.Allows(withoutTicketsWrite,
 		auth.Scope{Resource: auth.ResourceUsers, Action: auth.ActionWrite}),
 		"and must leave the rest alone")
+}
+
+// #371: the audit log is written only by the running server, so no machine
+// credential may hold audit:write. It is refused at creation, offered by no
+// picker, cannot be passed on by a credential that holds it, and grants
+// nothing if a row already carries it.
+func TestAuditHasNoWriteScope(t *testing.T) {
+	all := scopeStrings(auth.All())
+	require.Contains(t, all, "audit:read")
+	require.NotContains(t, all, "audit:write", "the picker must not offer audit:write")
+
+	err := auth.ValidateScopes([]string{"tickets:read", "audit:write"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "audit:write", "the error must name the offending scope")
+
+	_, ok := auth.Subset([]string{"audit:write"}, []string{"audit:write"})
+	require.False(t, ok, "a credential holding audit:write must not pass it on")
 }
