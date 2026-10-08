@@ -21,6 +21,15 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 )
 
+// testCtx bounds a test so that a regression in the advisory lock fails the
+// test instead of hanging the package; CI runs without -timeout.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 // freshDSN creates an empty database of the test's own, so the checksum table
 // it writes cannot disturb, or be disturbed by, any other package's run.
 func freshDSN(t *testing.T) string {
@@ -90,7 +99,7 @@ func TestMigrateAndVerify(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dsn := freshDSN(t)
-			ctx := context.Background()
+			ctx := testCtx(t)
 			pool, err := database.New(ctx, dsn)
 			require.NoError(t, err)
 			defer pool.Close()
@@ -116,7 +125,7 @@ func TestMigrateAndVerify(t *testing.T) {
 // the everyday case and must keep passing.
 func TestMigrateAndVerify_AddingAMigrationPasses(t *testing.T) {
 	dsn := freshDSN(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	pool, err := database.New(ctx, dsn)
 	require.NoError(t, err)
 	defer pool.Close()
@@ -128,7 +137,7 @@ func TestMigrateAndVerify_AddingAMigrationPasses(t *testing.T) {
 // Without the advisory lock the concurrent CREATE TABLE IF NOT EXISTS races.
 func TestMigrateAndVerify_ConcurrentFirstUse(t *testing.T) {
 	dsn := freshDSN(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	var wg sync.WaitGroup
 	errs := make(chan error, 32)
 	for i := 0; i < 32; i++ {
@@ -155,7 +164,7 @@ func TestMigrateAndVerify_ConcurrentFirstUse(t *testing.T) {
 // both see "version 29 not recorded" would otherwise race to record it.
 func TestMigrateAndVerify_WaitsForTheLock(t *testing.T) {
 	dsn := freshDSN(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	pool, err := database.New(ctx, dsn)
 	require.NoError(t, err)
 	defer pool.Close()
@@ -183,7 +192,7 @@ func TestMigrateAndVerify_WaitsForTheLock(t *testing.T) {
 // difference is whether it ran.
 func TestMigrateAndVerify_MismatchLeavesDatabaseUntouched(t *testing.T) {
 	dsn := freshDSN(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	pool, err := database.New(ctx, dsn)
 	require.NoError(t, err)
 	defer pool.Close()
@@ -238,7 +247,7 @@ func TestMigrateAndVerify_MismatchLeavesDatabaseUntouched(t *testing.T) {
 // After migrateAndVerify completes, the advisory lock must be released.
 func TestMigrateAndVerify_ReleasesTheLock(t *testing.T) {
 	dsn := freshDSN(t)
-	ctx := context.Background()
+	ctx := testCtx(t)
 	pool, err := database.New(ctx, dsn)
 	require.NoError(t, err)
 	defer pool.Close()
