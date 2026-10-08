@@ -108,7 +108,7 @@ Three roles: **Admin**, **Staff**, **User**
 Admins manage accounts from **Admin → Users**. The user list is clickable — clicking a user opens a detail page with:
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
-- **Account info** — member since date, login type (Local / SSO / Local + SSO), MFA enrollment status.
+- **Account info** — member since date, login type (Local / SSO (SAML) / Local + SSO), MFA enrollment status. The login type looks at the SAML subject only: an account bound to an OIDC identity is reported as Local.
 - **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
@@ -884,6 +884,10 @@ settings tables.
 federated administrator has a complete way back and not just a warning that
 would have stopped them getting here (#300's option 4). `reset-factors` exists
 (see Passkeys) and clears factors only.
+
+---
+
+## Submission, Attachments and Small Screens
 
 ### Guest Submission (Optional, Off by Default)
 
@@ -1879,7 +1883,7 @@ A scope is `resource:action`, where action is `read` or `write`.
 
 | Resource | Covers |
 |----------|--------|
-| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions |
+| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) and the admin-wide audit view (`/admin/audit`) |
 | `users` | User administration |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |
