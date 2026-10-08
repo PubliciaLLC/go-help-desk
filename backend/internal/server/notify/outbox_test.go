@@ -169,6 +169,21 @@ func TestOutboxDispatcher_QueuesOneRowPerChannelAndSendsNothing(t *testing.T) {
 	require.Equal(t, 1, woken)
 }
 
+// #361: the startup check reads the channels the dispatcher was built with,
+// not a list kept beside it, so Channels must be what NewOutboxDispatcher was
+// given. A caller that edits the slice it gets back must not change where
+// Dispatch queues.
+func TestOutboxDispatcher_ChannelsAreWhatItWasGiven(t *testing.T) {
+	d := NewOutboxDispatcher(newFakeOutbox(), []string{"email", "webhook", "verification"}, nil)
+	require.Equal(t, []string{"email", "webhook", "verification"}, d.Channels())
+
+	got := d.Channels()
+	got[0] = "verification"
+	got = append(got, "extra")
+	require.Equal(t, []string{"email", "webhook", "verification"}, d.Channels(),
+		"mutating the slice Channels returned changed the dispatcher")
+}
+
 // The guest token table holds only hashes. A raw token in the outbox would
 // be a working credential at rest.
 func TestOutboxDispatcher_RefusesARawGuestToken(t *testing.T) {

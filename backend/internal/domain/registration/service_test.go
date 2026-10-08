@@ -112,7 +112,8 @@ func (f *fakeMailer) SendVerificationEmail(_, _, _ string) error {
 type sendNow struct{ s *Service }
 
 func (n *sendNow) Dispatch(ctx context.Context, ev notification.Event) error {
-	id, err := PendingIDOf(ev)
+	raw, _ := ev.Payload["pending_id"].(string)
+	id, err := uuid.Parse(raw)
 	if err != nil {
 		return err
 	}

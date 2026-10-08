@@ -407,7 +407,7 @@ func run() error {
 		"webhook":      webhookDisp,
 		"verification": notify.NewVerificationDispatcher(registrationSvc.SendVerification),
 	}
-	if err := checkOutboxWiring(outboxChannels(), outboxSenders); err != nil {
+	if err := checkOutboxWiring(dispatcher.Channels(), outboxSenders); err != nil {
 		return fmt.Errorf("wiring the notification outbox: %w", err)
 	}
 	outboxWorker = notify.NewWorker(outboxStore, outboxSenders, slog.Default())

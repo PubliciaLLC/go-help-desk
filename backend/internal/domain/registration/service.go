@@ -80,17 +80,6 @@ func NewService(store Store, users userCreator, mailer Mailer, queue notificatio
 	return &Service{store: store, users: users, mailer: mailer, queue: queue, baseURL: baseURL}
 }
 
-// PendingIDOf reads the pending registration an EventRegistrationVerify
-// names. Its payload holds only that id: never the token or the address.
-func PendingIDOf(ev notification.Event) (uuid.UUID, error) {
-	raw, _ := ev.Payload["pending_id"].(string)
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("verification event without a pending registration id: %w", err)
-	}
-	return id, nil
-}
-
 // Register validates the request, stores a pending registration, and queues
 // the verification email. allowedDomains and openReg come from admin settings.
 //
