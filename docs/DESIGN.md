@@ -2,29 +2,26 @@
 
 ## Overview
 
-Open-source, self-hosted help desk system inspired by HESK, with SAML authentication, a plugin infrastructure, and a REST API. Built with a long-term roadmap toward SaaS (v4).
+Open-source, self-hosted help desk system inspired by HESK, with local, SAML and OIDC sign-in, TOTP and passkey MFA, guest and self-service submission, a REST API and an MCP interface. A plugin infrastructure is specified (v2) but does not work yet. Built with a long-term roadmap toward SaaS (v4).
 
 ## Versioning Roadmap
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), REST API, MCP interface, email + webhook notifications (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
+| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
-**1.3 note:** Custom fields, CTI-linked group management, and canned responses were
-built ahead of the original v2 schedule and are already in production — this
-table reflects that rather than the sequence they were originally planned in.
-Full-text search was likewise already implemented as core v1 functionality;
-see Ticket Search below. Plugins move the other direction: the admin UI lists
-and toggles a plugin record, but install/uninstall return `501` and no event
-ever reaches a plugin (`plugin.Registry.Dispatch` is built but never wired into
-the notification chain) — there is no working plugin system today, so it is
-rescheduled to v2 rather than left claiming v1 status it doesn't have. The one
-piece of the original plugin pitch worth keeping on the v1 timeline — chat/ITSM
-notifications — ships as formats on the existing webhook feature instead of
-through the plugin system; see Notifications below.
+Custom fields, CTI-linked group management, canned responses and full-text
+search were built ahead of the original v2 schedule and are shipped; this table
+reflects that, not the order they were planned in. Plugins went the other way:
+the admin UI lists and toggles a plugin record, but install/uninstall return
+`501` and no event ever reaches a plugin (`plugin.Registry.Dispatch` is built
+and never called from the notification chain). There is no working plugin
+system, so it sits at v2 rather than claiming v1. The part of the plugin pitch
+worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
+webhook feature; see Notifications.
 
 ---
 
@@ -52,23 +49,15 @@ Three-level hierarchy: **Category → Type → Item**
 - Types and Items are optional downward — a Category may have no Types, a Type may have no Items
 
 **Setup creates the first Category, so "required" is always satisfiable.**
-Category is required on every ticket, and statuses are seeded by migration
-while categories were not — so a freshly set-up instance had none, and the
-first ticket its new administrator tried to file answered
-`400 category_id is required`. The error named a field rather than the action
-needed, nothing on the way in said "create a category first", and setup does
-not reopen. The whole test suite was blind to it because the harness seeds a
-category of its own, so the state a real first run is in was never exercised.
-
-`POST /setup` therefore takes an optional `category` name alongside the
-administrator, and the wizard asks for it with a sensible value already
-filled in. The category is created **before** the administrator and only when
-none exists: setup answers 409 forever once a user exists, so a failure
-between the two steps must not be able to leave an instance with an
-administrator and no category. That ordering leaves two failure modes, both
-retryable — nothing happened, or a category exists and no user does — and the
-existence check is what makes the retry reuse it instead of stacking
-duplicates. See #323.
+Category is required on every ticket and categories, unlike statuses, are not
+seeded. `POST /setup` therefore takes an optional `category` name (the wizard
+pre-fills one; blank falls back to "General") alongside the administrator. The
+category is created **before** the administrator and only when none exists:
+setup answers 409 forever once a user exists, so a failure between the two
+steps must not leave an instance with an administrator and no category. That
+order leaves two failure modes, both retryable (nothing happened, or a category
+exists and no user does), and the existence check makes a retry reuse the
+category instead of stacking duplicates. See #323.
 
 ### Tickets (v1)
 
@@ -79,13 +68,13 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (configurable levels, e.g. Critical / High / Medium / Low)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable)
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
 - **Assignee** (staff member or group)
 - **Attachments** (file uploads)
 - **Replies/thread** (staff and user messages)
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
-- **Tracking number** (quoted in notification email, and one half of a guest link re-request)
+- **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → Settings → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
 
 SLA fields (optional feature toggle, all editions):
@@ -107,8 +96,10 @@ Three roles: **Admin**, **Staff**, **User**
 | Role | Capabilities |
 |------|-------------|
 | **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
-| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
+| **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+
+**Admin → Roles** is a read-mostly page: it shows the three roles with a one-line description each and, under each, the users who hold it, with a dropdown that changes a user's role (`PATCH /admin/users/{id}`, the same call the user page makes). It does not define permissions; the roles are fixed. The dropdown is disabled on administrator rows (demote an administrator from their user page) and, like the user list, it shows the first 200 accounts only: `GET /admin/users` returns at most 200 and takes no paging parameters.
 
 **Custom admin-defined roles (v3):** admins will be able to define additional roles and grant a curated set of permissions (e.g., "Tier 1 Agent" with ticket read/reply but no assignment rights). The three built-in roles remain as defaults and cannot be removed. Permissions are stored as discrete capability flags rather than hardcoded in code, with the built-in roles expressed as preset bundles so existing behavior is preserved.
 
@@ -117,11 +108,12 @@ Three roles: **Admin**, **Staff**, **User**
 Admins manage accounts from **Admin → Users**. The user list is clickable — clicking a user opens a detail page with:
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
-- **Account info** — member since date, login type (Local / SSO / Local + SSO), MFA enrollment status.
+- **Account info** — member since date, login type (Local / SSO (SAML) / Local + SSO), MFA enrollment status. The login type looks at the SAML subject only: an account bound to an OIDC identity is reported as Local.
 - **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
 - **Groups** — view current group membership, add to groups, or remove from groups.
+- **Last administrator.** Disabling, deleting or demoting the last active administrator is refused (`400`): setup does not reopen, so an instance with none is orphaned for good. The count and the write are one statement that locks every active administrator row, so two parallel requests (even one administrator removing both another and themselves) cannot both pass. Removing an administrator's *ability to authenticate* is a different door the guard does not watch; see the identity provider guard and the end of Passkeys.
 - **Delete** — marks the account deleted. It stops authenticating immediately, every session is revoked, and it drops out of the admin list; the row itself stays, because the tickets and replies that reference it do. Those keep the person's display name on them: a thread that renamed its participants after the fact would not be an accurate record of what happened. There is no hard delete and no anonymisation, so this is not the tool for a request to erase somebody's data. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
 
 ### Ticket Lifecycle
@@ -387,74 +379,40 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log — it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after") are covered; priority, CTI and custom-field changes are not, and a cleared assignment is currently recorded as another `assigned` entry rather than `unassigned` (`unassigned` is written only when a departing user's tickets are returned to the queue). Those are pre-existing gaps in what the domain layer records, not something this route introduces — tracked separately rather than fixed here, since closing them is a write-side change to `ticket.Service`, not a read-side one.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"). CTI reclassification and custom-field edits are not recorded, and priority is set at creation and not changed afterwards. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
-That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
+That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
 The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is filtered by `audit.Redact`, an allow-list described under Admin-Wide Audit View below: the same rule applies to this feed. The feed itself is reached with `tickets:read` by a machine credential (it holds ticket entries only, never MFA or password resets); the admin-wide view needs `audit:read`.
 
 ### Admin-Wide Audit View
 
-`GET /api/v1/admin/audit` (#129's remaining half) answers the same question across every entity, not one ticket at a time. Staff and admin only; a reporting user has no route here. A signed-in session needs no scope. An API key or OAuth client needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
+`GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. Staff and admin only; a reporting user has no route here. A signed-in session needs no scope. An API key or OAuth client needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
 
-**Protected or sensitive data is never visible in the audit view, to anyone**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts, and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
+**Protected or sensitive data is never visible in the audit view, to anyone**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts (and, on a factor reset run from the command line, the operating-system user, host and `source: cli` it records), and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
 
-**Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`. A masked entry keeps its `actor_id`, so it stays attributable for an investigation. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
+**Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → General → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`. A masked entry keeps its `actor_id`, so it stays attributable for an investigation. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
 
 Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned.
 
-That second narrowing is part of the query, not something applied to its result. One statement carries the filters (`entity_type`, `action`, `actor_id`, `from`/`to`, `q`) and the scope together, joined against `tickets`, and the count behind `total` applies the same filters and the same scope predicate, without the page (and bounded; see below). So the page, the offset and the total all describe one sequence: `total` is the number of entries the viewer can page through, and says nothing about the ones they cannot see. An earlier version took Search's own count before scope was applied in Go, which told a staff member how many entries existed on tickets they could not see — and with the actor, action and date filters this endpoint accepts, a count plus bisection dates activity on those tickets. Putting scope into the count's own `WHERE` closes that, and is also why staff now get a `total` like an admin does.
+**Scope is part of the query, not applied to its result.** One statement carries the filters (`entity_type`, `action`, `actor_id`, `from`/`to`, `q`) and the scope together, joined against `tickets`, and the count behind `total` applies the same filters and the same scope predicate. The page, the offset and the total therefore describe one sequence: `total` is the number of entries the viewer can page through and says nothing about the ones they cannot see. Counting before scope was applied in Go told a staff member how many entries existed on tickets they could not see, and with the actor, action and date filters a count plus bisection dates activity on those tickets.
 
-The scope predicate is the one the scoped ticket listing uses (`ListTicketsFiltered`): a ticket is visible to a staff member if they reported it, are assigned it, their group is assigned it, or it falls in a Category/Type a group of theirs covers. It is evaluated by the database from the caller's user id, so nothing is looked up per entry or per ticket and the request does not grow with the size of the log. There are still two rules — `ticket.CanView` and the SQL — and the SQL states its half twice, in the page query and in the count (the count finds the visible tickets first and then the entries on them, for the cost reason below; the conditions are the same ones). A test (`TestAdminAudit_ScopeParity`) holds all of them equal, page and `total` alike, across staff in and out of groups, category-level, type-level and combined rules, unscoped tickets, tickets the viewer reported or is assigned, administrators, enforcement on and off, and every filter, so a change to one that is not made to the other fails it.
+The scope predicate is the one the scoped ticket listing uses (`ListTicketsFiltered`): a ticket is visible to a staff member if they reported it, are assigned it, their group is assigned it, or it falls in a Category/Type a group of theirs covers. The database evaluates it from the caller's user id, so nothing is looked up per entry. There are still two statements of the rule, `ticket.CanView` and the SQL (stated twice in the SQL, in the page query and in the count), and `TestAdminAudit_ScopeParity` holds all of them equal, page and `total` alike, so a change to one that is not made to the other fails it.
 
-Non-ticket entries and entries whose ticket no longer exists are never returned to a scoped staff member. To the person asking, an entry on a ticket they may not see and an entry on a ticket that does not exist are the same thing: both answer with nothing, so the view cannot be used to learn which ticket ids exist — the same policy as `404` for a ticket the caller may not see (see the **Authorization** paragraph under "MCP Interface", which also records the REST `404` change, #174). Entries with the same timestamp are ordered by id as well, so the order is exact. Both views page by offset, so new entries arriving between two page requests shift what the next page starts on — as with any offset pager.
+Non-ticket entries and entries whose ticket no longer exists are never returned to a scoped staff member. To the person asking, an entry on a ticket they may not see and an entry on a ticket that does not exist are the same thing: both answer with nothing, so the view cannot be used to learn which ticket ids exist (the same policy as `404` for a ticket the caller may not see; see **Authorization** under "MCP Interface", which also records the REST `404` change, #174). Entries with the same timestamp are ordered by id, so the order is exact. Paging is by offset, so entries arriving between two page requests shift the next page, as with any offset pager. With scope enforcement off (the default) staff may see every ticket, so no scope is applied: they get the admin's query restricted to ticket entries, with entries on tickets that no longer exist included.
 
-**What bounds the cost.** The page is one statement that reads `limit + 1` rows; the extra row is how `has_more` is known, so paging never depends on the count. The count is bounded: it stops after 10,001 matches (`audit.TotalCap`, 10,000). `total` is exact up to and including 10,000 entries; beyond that it is 10,000, `total_capped` is `true`, and the page shows "10,000+". `total_capped` is always sent, `false` included, and a total that merely equals the cap is `false`. Nothing else changes for an instance under the cap: the same exact number, the same order, the same pages. Admin and staff go through the same statements, so the cap applies to both and staff are no more or less capped than an admin who sees the same entries. #331 is why: retention is off by default, so the table only grows, and an exact `COUNT(*)` over it is a full scan on every page view.
+**What bounds the cost** (#331, where the measurements are). The page reads `limit + 1` rows; the extra row is how `has_more` is known, so paging never depends on the count. The count is bounded: it stops after 10,001 matches (`audit.TotalCap`, 10,000). `total` is exact up to and including 10,000; beyond that it is 10,000, `total_capped` is `true` and the page shows "10,000+". `total_capped` is always sent, `false` included, and a total that merely equals the cap is `false`. Admin and staff run the same statements, so the cap applies to both alike. The reason is that retention is off by default, the table only grows, and an exact `COUNT(*)` over it is a full scan on every page view. Limits to know about:
 
-Measured with `EXPLAIN ANALYZE` on a rolled-back seed of 524,000 entries and 30,000 tickets (local PostgreSQL 16, one or two runs each, the statements as the server prepares them): the unfiltered admin count went from about 45 ms to about 2 ms, an `action` filter matching 60% of rows from about 45 ms to 3 ms, and a `q` filter matching a third of them from about 150 ms to 23 ms. The staff count, which before had to walk the whole log joined to `tickets`, took 330–1,400 ms (it varied between runs and machines) for a staff member who sees a tenth of the tickets, a handful, or all of them, and takes 30–190 ms now, the high end being the staff member who sees only a handful, whose matches are rare enough that the count reads most of the log. Those are the cases where matches are plentiful and the cap lets the count stop early. Limits to know about, rather than discover:
+- A filter that matches few rows still reads the table to find that out. `q` is a substring match no b-tree serves, so no index was added for it; `action`, `actor_id` and `created_at` already have one.
+- The staff count builds the set of visible tickets before it touches the log, so it pays for that set even when its filter is narrow. The Category/Type rule is two `IN` lists so the set costs one pass over `tickets`, not a subplan per ticket. That is a known, accepted cost: it grows with the number of tickets, not the size of the log, and the cap does not shorten it. The admin count never builds the set.
+- The page query is unchanged by the cap. For a staff member who sees few tickets its cost depends on how far back it must look for a page of visible entries.
+- Under a generic plan PostgreSQL's JIT can add hundreds of milliseconds to the first runs of a large scan. That is the server's `jit` setting, not a property of the statements.
 
-- A filter that matches few rows still has to read the table to find that out. A `q` that matches nothing took about 137 ms before and after, because `q` is a substring match no existing index serves. A rare `action` (about 500 entries) took 0.8 ms on the existing index. No index was added: the filters that matter (`action`, `actor_id`, `created_at`) already have one, `q` is a substring match a b-tree cannot serve, and the staff count's remaining cost is on the `tickets` side.
-- The staff count builds the set of visible tickets before it touches the log, so it pays for that set even when its filter is narrow. The Category/Type rule is written as two `IN` lists so the set costs one pass over `tickets` (about 8 ms at 30,000 tickets when the viewer sees a tenth of them), not a subplan per ticket. With a narrow indexed filter (an `action` with about 500 entries, a ten-minute window of about 600) a staff count takes 5–12 ms for a staff member who sees a handful or a tenth of the tickets and 25–40 ms for one who sees all 30,000, where it took 3–4 ms before the count was bounded, because the old statement probed `tickets` only for the rows the filter let through. That is a known regression for that case, accepted because the alternative shape (probe per entry) made the staff member with few visible tickets three times slower (411 ms against 143 ms). It grows with the number of tickets, not the size of the log, and the cap does not shorten it. The admin count has no such cost: the set is never built.
-- Under a generic (parameter-independent) plan PostgreSQL's JIT compiler can add several hundred milliseconds to the first runs of a large scan; that was seen on the pre-#331 count and noted in review of the new one. It is a server setting (`jit`, `jit_above_cost`), not a property of the statements, and the figures above leave it out.
+**Known, accepted side channel: response time.** Bulk hidden activity inside a date window is detectable by timing (measured before the count was bounded: about 5,000 hidden rows in a window took roughly 12–13 ms for the page plus about 12 ms for the count, against about 1 ms for an empty window; 20 hidden rows were indistinguishable from none). That is roughly two orders of magnitude smaller than the signal of the walk it replaced and the same class as the scoped ticket listing's. It does not reveal which tickets exist or anything about their content, and the response itself (entries, `total`, `total_capped`, `has_more`) is identical for hidden and missing tickets. Recorded in #331, not re-measured since.
 
-The page query is unchanged. Its cost for a staff member who sees few tickets depends on how far back it has to look for a page of visible entries (about 240–290 ms for a staff member with five visible tickets on that seed, a few milliseconds for one who sees a tenth of them), and the cap does not bound it.
+**Retention is opt-in and off by default.** `audit_retention_days` (admin setting) governs a daily sweep that hard-deletes anything older, with no archive table. The first sweep runs two minutes after start rather than only on the 24-hour tick, so an instance restarted more often than daily still prunes, and startup logs the window when one is set. **Unset, zero, negative or unreadable means keep forever**, which is what every release before retention did by having nothing prune at all. The default is deliberate: a 365-day default would delete the first year of history on any instance older than that, a day after upgrading, from a setting the operator never touched (the "existing behaviour must not change" rule), and an audit log is the worst thing in the system to shorten by accident because it cannot be reconstructed. The upper bound is **36,525 days** (`admin.AuditRetentionMaxDays`, a Gregorian century): the settings endpoint refuses anything above it, and a stored value above it (written before the check existed, or directly in the database) is read as the cap, because a cutoff computed from a larger number can overflow into the future and delete everything.
 
-**Known, accepted side channel: response time.** Bulk hidden activity inside a date window is still detectable by timing: about 5,000 hidden rows in a window measured at roughly 12–13 ms for the page plus about 12 ms for the count, against about 1 ms for an empty window, while 20 hidden rows were indistinguishable from none. That is roughly two orders of magnitude smaller than the removed walk's signal and the same class as the scoped ticket listing's. It does not reveal which tickets exist or anything about their content, and the response itself (entries, `total`, `total_capped`, `has_more`) is identical for hidden and missing tickets. These timings were taken before the count was bounded and have not been re-measured; the note is unchanged.
-
-With scope enforcement off — the default — staff may see every ticket, so no scope is applied: they get the admin's query, restricted to ticket entries, with entries on tickets that no longer exist included, since there is nothing to hide them from.
-
-**Retention is opt-in, and off by default.** `audit_retention_days` (admin
-setting) governs a daily sweep that hard-deletes anything older — no archive
-table. The first sweep runs two minutes after start, not only on the
-24-hour tick, so an instance restarted more often than daily still prunes; when
-a window is set, startup logs it. **Unset, zero or negative means keep forever**, which is what every
-release before this one did by having nothing prune at all.
-
-That default is deliberate and is the opposite of what a first draft of this
-feature shipped. A 365-day default would delete the first year of history on
-any instance that had been running longer, one day after upgrading, from a
-setting the operator never touched — the exact shape CLAUDE.md's "existing
-behaviour must not change" rule exists to stop. An audit log is also the worst
-thing in the system to shorten by accident: it is what you reach for after
-something has already gone wrong, and it cannot be reconstructed.
-
-A misconfigured value fails the same way. Anything unreadable or non-positive
-is treated as forever, so the failure direction loses no evidence.
-
-The upper bound is **36,525 days** (a Gregorian century, leap days included;
-`admin.AuditRetentionMaxDays`). The settings endpoint refuses anything above
-it, and a stored value above it — written before the check existed, or
-directly in the database — is read as the cap, because a cutoff date computed
-from a larger number can overflow into the future and delete everything.
-
-`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a
-machine credential cannot change it. Shortening retention is the one setting
-that destroys evidence rather than merely widening access: set it to 1 and
-tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin`
-entry, so a leaked API key that performed a credential reset could erase the
-record of having done it. That is #306's own reasoning about `ResetMFA`
-("the exact action an attacker would want unrecorded") applied to the record
-rather than the act.
+`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a machine credential cannot change it. Shortening retention is the one setting that destroys evidence rather than merely widening access: set it to 1 and tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin` entry, so a leaked API key that performed a credential reset could erase the record of having done it. That is #306's reasoning about `ResetMFA` ("the exact action an attacker would want unrecorded") applied to the record rather than the act.
 
 ### Tags
 
@@ -478,9 +436,19 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
 - Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
-- Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
-- Reply bodies are not indexed in v2 — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
+- Users only see results from their own tickets. Staff and admin search within the list they are looking at (see **List filters** below): by default the tickets assigned to them or their groups. With `ticket_scope_enforced` on, staff search everything their scope admits instead; administrators stay on the default list or use the admin-only scopes.
+- Reply bodies are not indexed — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
 - Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
+
+**List filters.** `GET /api/v1/tickets` takes `q` (above) plus `limit` (default 100, maximum 200) and `offset` (see Other protections), and these filters, checked in this order:
+
+- `reporter_id=<uuid>`: the tickets one account reported. **Admin only** (`403` otherwise); the ticket list's "Filtering by client" chip, linked from the user page, uses it.
+- `assignee_group_id=<uuid>`: the tickets assigned to one group. Staff and admin (`403` for a reporting user). With `ticket_scope_enforced` on, a staff member may only name a group they belong to (`403` otherwise): group ids are listed to every staff member, so without that the filter would hand over tickets the scope refuses everywhere else.
+- `scope=mine|unassigned|all`: `unassigned` (no assignee user or group) and `all` are **admin only** (`403`). `mine`, the default, is the tickets assigned to the caller or to any of their groups; with scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
+
+The ticket list page offers the scope as Mine / Unassigned / All buttons to administrators, an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
+
+**Bulk status change.** On a desktop-width screen staff and admin can tick tickets in the list and apply one status to all of them. There is no bulk endpoint: the page sends one `PATCH /tickets/{id}` per ticket, so each goes through the same transition rules and authorisation as a single change and some can be refused (a move out of a Closed ticket, for one). The page then reports "n of m updated, k refused: reason" and leaves the refused tickets selected. Bulk selection does not exist on a phone (see Small screens).
 
 ### Linked Tickets
 
@@ -531,14 +499,26 @@ separate value for each direction:
 - **Items do not factor into scope** — staff in-scope for a Type see all Items under it
 - Scope is derived **exclusively from group membership** (no direct Category assignment to individual staff)
 - Solo admin scenario: assign all categories to a single group
-- Staff members can see all tickets assigned to any group they belong to, and can take any action on those tickets
+
+Scope does two separate jobs: it can restrict what staff see, and it routes new tickets.
+
+**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → Settings → General → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's default ticket list still shows the tickets assigned to them or their groups.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and the audit views (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`, and the SQL held equal to them by tests). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
+
+**Routing: auto-assignment.** A newly created ticket is routed once, at creation, by the first rule that matches (the assignment is made by the system, so its audit entry has no actor):
+
+1. A group whose scope covers the ticket's Category (or Category + Type). The ticket is assigned to that group; if several match, the first by name.
+2. `auto_assign_group_id`: one catch-all group for everything the rule above did not match.
+3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
+4. Otherwise the ticket stays unassigned.
+
+Routing is best-effort: a failure to assign leaves the ticket unassigned and does not fail the creation. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) have no admin page; they are set through `PATCH /admin/settings`, and an id that does not parse is ignored.
 
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
 - **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
 - Both settings are stored in the database and managed via **Admin → Settings → Branding**.
-- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
+- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled}` — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404).
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
 
 ---
@@ -548,517 +528,376 @@ separate value for each direction:
 ### Local Auth (Default)
 
 - Username/password with bcrypt hashing
-- Available for all roles by default
-- **MFA** (optional toggle in admin settings): TOTP-based (Google Authenticator, Authy, etc.). When enabled, users enroll via QR code on next login. Admin can enforce MFA for specific roles or all users.
+- Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
+- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 
 ### Passkeys (WebAuthn)
 
-A second factor alongside TOTP, and later an alternative to the password
-itself. TOTP does not change and does not go away; an instance that upgrades
-into this notices nothing until somebody registers a key.
+A second factor alongside TOTP (introduced in #302), and later an alternative
+to the password itself. TOTP does not change and does not go away; an instance that upgrades
+into this notices nothing until somebody registers a key. Passwordless sign-in
+is **not built** (see the end of this section): a passkey is asserted after the
+password, never instead of it.
 
-**What this claims, and what it does not.** The property being bought here is
+**What this claims, and what it does not.** The property bought is
 **phishing-resistance**: a WebAuthn credential is bound to the origin it was
-registered against, so a convincing look-alike login page cannot use it. That
-matters on a help desk because a staff account reads every ticket, every
-attachment and every customer's details, and TOTP does not have this property
-— a fake page collects the six digits and replays them inside the window.
+registered against, so a look-alike login page cannot use it, which TOTP cannot
+claim (a fake page collects the six digits and replays them in the window). That matters on a help desk because a staff account reads every ticket, every attachment and every customer's details. It
+deliberately does **not** claim "something you have" in the hardware sense: a
+passkey today is very often a *synced* credential (iCloud Keychain, Google
+Password Manager), a weaker possession story than a YubiKey. Phishing-resistance
+holds for every credential this accepts, synced or not; physical possession
+does not, so it is not claimed.
 
-It is deliberately **not** claiming "something you have" in the hardware sense.
-A passkey today is very often a *synced* credential — iCloud Keychain, Google
-Password Manager — which lives wherever that cloud account lives rather than on
-one device. That is a weaker possession story than a YubiKey, and pretending
-otherwise in this document would make an operator believe something untrue
-about their own instance. Phishing-resistance holds for every credential this
-accepts, synced or not; physical possession does not, so it is not claimed.
+**Storage and the library.** A `webauthn_credentials` table, not columns on
+`users`: one person registers several keys on purpose (laptop, phone, a spare
+in a drawer). Each row holds the credential id, public key, sign count,
+transports, AAGUID, the backup-eligible and backup-state flags, an optional
+owner-chosen name (an unnamed key is shown by what its transports and age give,
+e.g. "Security key, added 3 March") and created/last-used timestamps.
 
-**Storage.** A `webauthn_credentials` table, not more columns on `users`: one
-person registers several keys on purpose — a laptop, a phone, a spare in a
-drawer — and that is the feature rather than an edge case. Each row holds the
-credential id, the public key, the sign count, the transports, the AAGUID, the
-backup-eligible and backup-state flags, a name its owner chose, and created and
-last-used timestamps.
+- `credential_id` has a **unique constraint in the schema**, not a check in Go:
+  the specification says ids are globally unique, and a read-then-insert has a
+  window whatever it reads.
+- `transports` goes back out on the sign-in challenge as
+  `allowCredentials[].transports`, so the browser skips authenticators that
+  cannot satisfy the request.
+- `aaguid` is read by nothing; it is kept because it is free at registration and
+  unrecoverable afterwards (the reasoning that keeps the unused CIRCL fields).
+- `backup_eligible` / `backup_state` say whether a credential is synced: the
+  only way an administrator can tell a hardware key from an iCloud passkey.
+  Not captured at registration, the question is unanswerable forever.
+- **Sign count is stored and not enforced.** Most modern authenticators return
+  zero always and a "must increase" rule locks those people out. A counter that
+  was non-zero and goes backwards is a genuine clone signal with no
+  false-positive cost; it is logged and gates nothing (the shape of
+  `KnownMalicious` in `circl.go`).
+- The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
+- `last_used_at` is written off the authentication path, in a goroutine with a
+  context that does not belong to the request (as webhook dispatch does): it
+  answers "which key is still in use", but a sign-in must not wait on it or fail
+  because of it.
 
-The name is optional. An unnamed credential is shown by what can be derived
-from its transports and its age — "Security key, added 3 March", "This device,
-added 3 March" for an `internal` authenticator — which is more use than a bare
-date and leaks nothing the AAGUID would.
+**Enrolment.** `POST /me/passkeys/register/start` mints a challenge and stages
+it **in the session**; `POST /me/passkeys/register/finish` verifies the
+attestation and writes the credential. Nothing is written to the account until
+the person has proved they hold the key (the reason `GenerateMFASecret` and
+`ConfirmMFAEnrollmentWith` replaced `EnrollMFA`, which wrote an unconfirmed
+secret over the authenticator its owner still used). A staged challenge is
+answerable once and **expires on a fixed deadline from when it was minted**
+(five minutes), checked when the assertion comes back, because a challenge left
+in a long-lived session is a replay window that stays open as long as the tab
+does; it does not slide forward on use, the same rule the MFA lockout follows. Both routes sit inside
+`meRouter`'s `DenyMachineCredentials` group (an API key or OAuth client may not
+touch how its owner authenticates) and **outside** `RequireMFA`, like TOTP
+enrolment, so somebody told to enrol can finish enrolling.
 
-`credential_id` carries a **unique constraint in the schema**, not a check in
-Go. The specification says credential ids are globally unique; "the
-specification says so" is exactly the kind of claim this codebase puts a
-constraint behind, and a read-then-insert has a window between the read and the
-insert whatever it reads.
+**Finishing registration satisfies this login's MFA challenge, as finishing TOTP
+enrolment does:** it sets both `MFAPassed` and `FactorVerified`
+(`markPasskeyRegistrationSatisfiesMFA`). Without it a session admitted through
+the no-factor-yet branch could register a key and still be refused by
+`RequireMFA` until it ran the sign-in ceremony against the key it had just
+proved it held ([#307](https://github.com/PubliciaLLC/go-help-desk/issues/307),
+item 3). For an already-protected owner registering a replacement it is a no-op.
 
-Three of those columns are worth explaining, because two of them are read by
-nothing today:
+**Changing factors needs a session that *proved* one, not one that owed none**
+([#333](https://github.com/PubliciaLLC/go-help-desk/issues/333)). `MFAPassed` is
+true both when a login proved a second factor and when it owed none (MFA off,
+optional for the role). The routes that add or replace a factor
+(`requireFactorOrFirstEnrolment`, and TOTP enrolment's re-enrol check) read a
+separate session fact, `FactorVerified`, set only by:
 
-- **`transports`** is not stored for a future screen. It goes back out on the
-  sign-in challenge as `allowCredentials[].transports`, which lets the browser
-  skip authenticators that cannot satisfy the request instead of prompting for
-  every method the account has ever registered. It has a job from the first
-  release.
-- **`aaguid`** identifies the authenticator model. Nothing reads it yet. It is
-  kept because it is free at registration and unrecoverable afterwards, the
-  same reasoning that keeps the unused CIRCL response fields in
-  `internal/reputation/circl.go`.
-- **`backup_eligible` / `backup_state`** are the WebAuthn authenticator-data
-  flags that say whether a credential is synced. They are the only way an
-  administrator auditing this instance can tell a hardware key from an iCloud
-  passkey — which is precisely the distinction the paragraph above turns on.
-  Not captured at registration, the question is unanswerable forever after.
-
-**Sign count is stored and not enforced.** The counter exists in the
-specification for clone detection, but most modern authenticators return zero
-always, and a naive "it must increase" rule locks those people out for nothing.
-One case is worth noticing: a counter that was previously non-zero and then
-goes backwards is a genuine clone signal with no false-positive cost. That is
-logged and gates nothing — the same shape as `KnownMalicious` in `circl.go`,
-where a field is decoded, recorded and deliberately never allowed to change a
-verdict.
-
-**Library.** `github.com/go-webauthn/webauthn`. The registration and assertion
-ceremonies have many ways to be subtly wrong, and being exactly right is the
-whole value of the feature. Nothing here is hand-rolled.
-
-**Enrolment** follows the shape TOTP arrived at the hard way.
-`POST /me/passkeys/register/start` mints a challenge and stages it **in the
-session**; `POST /me/passkeys/register/finish` verifies the attestation and
-writes the credential. Nothing is written to the account until the person has
-proved they hold the key — the reason `GenerateMFASecret` and
-`ConfirmMFAEnrollmentWith` replaced the older `EnrollMFA`, which wrote an
-unconfirmed secret straight over the authenticator its owner was still using.
-
-The staged challenge **expires, and the expiry is checked when the assertion
-comes back**. A challenge left sitting in a long-lived session is a replay
-window that stays open as long as the tab does. It expires on a fixed deadline
-from when it was minted and does not slide forward on use, the same rule the
-MFA lockout follows.
-
-Both routes sit inside `meRouter`'s `DenyMachineCredentials` group — an API key
-or OAuth client may not touch how its owner authenticates — and **outside**
-`RequireMFA`, for the same reason TOTP enrolment is outside it: somebody who
-has been told to enrol must be able to finish enrolling.
-
-**Finishing registration satisfies this login's MFA challenge, the same way
-finishing TOTP enrolment already does.** `POST /me/passkeys/register/finish`
-flips `MFAPassed` on success, mirroring `handleMFAEnrollConfirm`. Without
-this a session admitted through the first-enrolment branch above — no factor
-at all yet — could register a passkey and still be refused by `RequireMFA`
-until it separately ran the sign-in ceremony against the key it had just
-proved it held. Unconditional, matching TOTP: for the other way past the
-guard (an already-protected account's owner registering a replacement key,
-already holding the flag), setting it again is a no-op. Found as item 3 of
-[#307](https://github.com/PubliciaLLC/go-help-desk/issues/307).
-
-**Changing factors needs a session that *proved* one, not one that owed
-none.** `MFAPassed` is true both when a login proved a second factor and when
-it owed none — MFA off, or optional for the account's role. The two routes
-that add or replace a factor (`requireFactorOrFirstEnrolment`, and TOTP
-enrolment's re-enrol check) read a separate session fact, `FactorVerified`,
-which is set only by:
-
-- a TOTP code (`/auth/local/mfa/verify`) or passkey sign-in;
+- a TOTP code (`/auth/local/mfa/verify`) or a passkey sign-in;
 - this session finishing a TOTP enrolment or passkey registration;
-- an SSO sign-in whose identity provider asserted MFA — OIDC `amr` containing
+- an SSO sign-in whose identity provider asserted MFA: OIDC `amr` containing
   `mfa` (RFC 8176), or SAML `authnmethodsreferences` containing
-  `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither
-  by default: add the `amr` optional claim to the app registration (for SAML,
-  with `include_granular_amr`). Without it SSO sign-in still works, but a user
-  who also has a local factor must enter it before changing factors.
+  `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither by
+  default: add the `amr` optional claim to the app registration (for SAML, with
+  `include_granular_amr`). Without it SSO sign-in still works, but a user who
+  also has a local factor must enter it before changing factors.
 
-Without this, a password-only session on an account where MFA was optional
-could replace the owner's factor at any time after they enrolled — no race
-needed ([#333](https://github.com/PubliciaLLC/go-help-desk/issues/333)).
+Without this, a password-only session on an account where MFA was optional could
+replace the owner's factor at any time after they enrolled. A session written
+before `FactorVerified` existed reads it as false: such a user signs in again
+before changing factors.
 
-**Adding a factor ends every other session,** the same way a password change
-does: finishing TOTP enrolment or passkey registration revokes the account's
-sessions and re-issues the current one. A session someone opened with the
-password before the owner protected the account does not outlive that
-protection. Enrolment confirm also re-runs the guard, rather than trusting the
-check made when enrolment was staged
+**Adding a factor ends every other session,** as a password change does:
+finishing TOTP enrolment or passkey registration revokes the account's sessions
+and re-issues the current one, so a session opened with the password before the
+owner protected the account does not outlive that protection. Enrolment confirm
+re-runs the guard rather than trusting the check made when enrolment was staged
 ([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
 
 **A first TOTP enrolment is a conditional write.** The guard asks "does this
-account hold no factor yet?" and the confirm then writes, which are two
-statements; two confirmations racing on a fresh account could both pass the
-question and the later write won. A session that has not proved a factor now
-writes with `WHERE NOT mfa_enabled`, and the loser is answered 403 like any
-other attempt on a protected account. A session that has proved one (a
-rotation) still overwrites, on purpose
-([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)). Passkey
-registration has no such condition in its write.
+account hold no factor yet?" and the confirm then writes; two confirmations
+racing on a fresh account could both pass the question. A session that has not
+proved a factor therefore writes with `WHERE NOT mfa_enabled` and the loser is
+answered 403; a session that has proved one (a rotation) still overwrites, on
+purpose ([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)).
+Passkey registration has no such condition in its write.
 
-Sessions written before `FactorVerified` existed read it as false. A user with
-a factor signs in again before changing factors; nothing else changes.
-
-**Verifying from the Account page.** A session that owed no factor at login
-(MFA off, optional for the role, an SSO provider that asserted nothing, a
-session older than `FactorVerified`) is refused on the factor routes with 403
-`mfa_required`, and the login page never asked it for anything. The Account
-page therefore answers that refusal itself: it offers a code field when the
-account has an authenticator app and a passkey button when it has passkeys,
-posts to the same `/auth/local/mfa/verify` and `/auth/local/passkey/*` routes
-the login page uses, and then retries what the person was doing. No new route
-([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A wrong code
-or a refused key answers 401 on a live session, so the client does not treat
+**Verifying from the Account page**
+([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A session that
+owed no factor at login (MFA off, optional for the role, an SSO provider that
+asserted nothing, a pre-`FactorVerified` session) is refused on the factor
+routes with `403 mfa_required`, and the login page never asked it for anything.
+The Account page answers that refusal itself: a code field when the account has
+an authenticator app, a passkey button when it has passkeys, posted to the same
+`/auth/local/mfa/verify` and `/auth/local/passkey/*` routes the login page uses,
+then it retries what the person was doing. No new route. A wrong code or refused
+key answers 401 on a live session, so the client does not treat
 `invalid_mfa_code` or `assertion_refused` as a lost session.
 
-**Signing in.** `POST /auth/local/passkey/start` and
-`POST /auth/local/passkey/finish` sit beside `/auth/local/mfa/verify` and do
-what it does: on a valid assertion, re-issue the session with `MFAPassed` true.
-The gate downstream is `Actor.MFAPassed`, which already exists and is already
-enforced by `RequireMFA` everywhere it matters, so no route learns a new idea.
+**Signing in.** `POST /auth/local/passkey/start` and `/finish` sit beside
+`/auth/local/mfa/verify`, are refused to machine credentials, and need the
+session the password step already produced (`401` otherwise). On a valid
+assertion they re-issue the session with `MFAPassed` and `FactorVerified` true.
+The gate downstream is `Actor.MFAPassed`, already enforced by `RequireMFA`, so
+no route learned a new idea.
 
-**`handleLocalLogin` has to grow a third answer, and this is the one place the
-existing machinery does not simply absorb passkeys.** It currently computes two
-independent booleans and returns them as `mfa_needed` and
-`mfa_enrollment_needed`:
+**The password step answers with three booleans:** `mfa_needed` (a TOTP
+enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
+passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
+role is enforced). All false means no factor is owed. Each is also conditional
+on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
+passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
+`u.MFAEnabled`, which is the TOTP column and not "this account has a second
+factor", cannot express the passkey-only account: on its second sign-in the
+server would say "you still need to enrol" and never "assert your passkey", and
+that account could never sign in again. **`MFARequiredFor(role)` is satisfied by
+a TOTP enrolment or at least one registered passkey** (refusing the phishing-resistant factor because it is not the older one would be perverse), so `mfa_enabled` and
+`mfa_enforced_roles` keep their meanings and an operator reconfigures nothing.
 
-```go
-mfaNeeded := mfaEnabled && u.MFAEnabled
-mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && s.adminSvc.MFARequiredFor(...)
-```
+**Losing a key.** The owner removes it from their own account page
+(`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
+one; that is the ordinary case. An administrator removing ONE credential for
+somebody else is **not built**: every passkey route lives under `/me` and
+`adminRouter` has none; the user admin page is where it belongs when it is built, and saying it already exists is how an operator ends up looking for a button that was never written. What an administrator can do is the user page's **Reset
+MFA**, which clears **every** second factor (the authenticator and all passkeys)
+and ends the account's sessions in one statement (`ClearFactors`, all or
+nothing; it used to clear only the authenticator, leaving a passkey-only person
+locked out by the key they had lost,
+[#307](https://github.com/PubliciaLLC/go-help-desk/issues/307) items 2 and 4).
+`reset-factors` (below) does the same from the server.
 
-Both key off `u.MFAEnabled`, which is the TOTP column and not "this account has
-a second factor". Trace an account with one registered passkey, no TOTP, and a
-role that enforces MFA, signing in for the *second* time — after it has already
-enrolled. `u.MFAEnabled` is still false, so the server answers "you still need
-to enrol" and never "assert your passkey". There is no wire outcome for *has a
-factor, must use it, and it is not TOTP*, so that account can never sign in
-again.
+**Self-recovery covers an account with *nothing* enrolled, not a lost key.**
+Enrolment lives outside `RequireMFA`, so somebody whose factors were cleared (or
+who never had any) signs in with their password, reaches enrolment and recovers
+alone; `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor` pins it. An
+account that still *has* a registered factor is different, and both enrolment
+doors refuse a session that has not passed MFA: without that refusal somebody
+holding only the password registers their own key and obtains the second factor,
+passing the gate rather than breaking it. The consequence is a real lockout:
+**an administrator whose registered key is lost cannot recover alone**, and a
+*sole* administrator has no one to ask (setup does not reopen). The recovery is
+`reset-factors` on the server, not an administrator clearing one credential,
+which is not built. This is not new: `GenerateMFASecret` has refused
+re-enrolment for a TOTP-protected account since the re-enrolment fix.
 
-This is a third credential state, not a flag that fails to clear, and the pair
-of booleans cannot express it. Login answers with an explicit state — no factor
-required, already satisfied, verify TOTP, verify passkey, or enrol — and the
-login page learns the new one. It is part of the first release, because
-"register a passkey" without "sign in with it" is not a feature.
-
-**Satisfying the MFA requirement.** `MFARequiredFor(role)` is satisfied by a
-TOTP enrolment **or** at least one registered passkey. Refusing the
-phishing-resistant factor because it is not the older one would be perverse.
-This means `mfa_enabled` and `mfa_enforced_roles` keep their current meanings
-and an operator has nothing to reconfigure.
-
-**`last_used_at` is written off the authentication path.** It answers "which of
-these keys is still in use", which is what somebody wants to know before
-removing one and cannot be reconstructed afterwards — but it is a timestamp
-nothing enforces, and a sign-in should not wait on it or fail because of it.
-It follows the shape already used for webhook dispatch in
-`internal/server/notify/webhook.go`: handed to a goroutine with a context that
-does not belong to the request, so cancelling the response cannot cancel the
-write. Approximately right is right enough for this field.
-
-**Losing a key.** Two ways, and only one of them is built.
-
-Its owner removes it themselves, from their own account page, and registers a
-new one. That is what `DELETE /me/passkeys/{id}` is for, and it is the ordinary
-case: somebody replacing a phone still has the old one, or still has another
-factor, and needs nobody's help.
-
-An administrator removing ONE credential for somebody else is **not built yet**.
-Every passkey route lives under `/me`; `adminRouter` has none. What an
-administrator can do is the admin page's "Reset MFA", which clears **every**
-second factor the account holds: the authenticator and all registered
-passkeys, ending the account's sessions in the same statement. It used to
-clear only the authenticator, so on a passkey-only account it reported success
-and the person was still locked out by the key they had lost
-([#307](https://github.com/PubliciaLLC/go-help-desk/issues/307), item 2).
-`reset-factors` on the server, described below, does the same from the command
-line, and is the answer for a *sole* administrator.
-
-Both are one database statement, all or nothing (`ClearFactors`): a failure
-part-way used to leave an account with no factor and its old sessions alive,
-and now leaves it exactly as it was (#307, item 4).
-
-An earlier draft of this paragraph said an administrator removes a credential
-from the user's admin page, "the same control surface as Reset MFA", in the
-present tense. That control surface does not exist. It is the right place for
-it when it is built, and saying so as though it already were is how an
-operator ends up looking for a button that was never written. Found by the
-session-B review of [#302](https://github.com/PubliciaLLC/go-help-desk/pull/302).
-
-**Self-recovery covers an account with *nothing* enrolled, and not a lost
-key.** The distinction matters and an earlier draft of this section ran the two
-together.
-
-Enrolment lives outside `RequireMFA`, so somebody whose factors have been
-cleared — by an administrator, or because they never had any — signs in with
-their password, reaches enrolment and recovers alone. That is pinned by
-`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`.
-
-An account that still *has* a registered factor is a different case, and both
-enrolment doors refuse it: a session that has not passed MFA cannot add or
-remove a factor on an account that already has one. That refusal is not
-optional. Without it, somebody holding only the password registers their own
-key or enrols their own authenticator and thereby obtains the second factor —
-passing the gate rather than breaking it.
-
-The consequence is a genuine lockout, and it should be stated rather than
-discovered: **an administrator whose registered key is lost cannot recover
-alone.** The recovery is `reset-factors` on the server, described below — not
-an administrator clearing the credential for them, which is not built. For a
-*sole* administrator there would be no other administrator to ask in any case,
-and setup does not reopen.
-
-(This paragraph said "another administrator removes the credential from their
-admin page" until the correction in the "Losing a key" section above. Two
-paragraphs of the same section then disagreed, which is worse than either
-being wrong alone. Found by the pre-merge gate on #302.)
-
-This is not new with passkeys. `GenerateMFASecret` has refused re-enrolment
-for a TOTP-protected account since the re-enrolment fix, so a sole
-administrator who loses their authenticator is in exactly the same position
-today. Passkeys extend the same lockout to a second kind of factor rather than
-creating it.
-
-**The guard's fourth case still belongs with passwordless, and an earlier
-draft of this section was wrong in both directions about why.**
-
-It first said the case could wait because self-recovery covers a lost key. It
-does not: an account that still has a registered factor is refused at both
-enrolment doors, deliberately. Then it said the case was therefore reachable
-today. That is also wrong, and checking what is actually a way *in* settles
-it: the entry points are local login, SAML and OIDC. A second factor gates a
-session that has already authenticated; it is not a way in by itself. So
-removing somebody's last second factor cannot strand them while a first factor
-exists, and there is no operation for a fourth case to refuse yet.
-
-What does strand somebody today is losing a registered key, which
-`reset-factors` above answers, and one thing that is not about second factors
-at all: an account provisioned by an identity provider has no password, so
-switching that provider off removes its only way in while leaving the row and
-the administrator count untouched. Every existing guard passes. Tracked as
-[#300](https://github.com/PubliciaLLC/go-help-desk/issues/300).
-
-**The way back in is a command run on the server**, not a recovery code and
-not a second factor required up front:
+**The way back in is a command run on the server**, not a recovery code and not
+a second factor required up front:
 
 ```
 go-help-desk reset-factors <email>
 ```
 
-It clears the account's TOTP enrolment and removes its registered passkeys, so
-the next sign-in reaches enrolment and the person starts again. It is the
-answer for every cause of lockout rather than only a lost key, and for the
-sole administrator it is the only answer there can be, since the web path must
-keep refusing — a password alone being enough to replace somebody's second
-factor is the bypass the guards exist to prevent.
+It clears the account's TOTP enrolment, removes its registered passkeys and ends
+its sessions (one statement), so the next sign-in reaches enrolment and the
+person starts again. It is the answer for every cause of lockout, and for the
+sole administrator the only one, since the web path must keep refusing (a
+password alone being enough to replace somebody's second factor is the bypass
+the guards exist to prevent). It takes an email address only and cannot set a
+password (see the identity provider guard below). It grants nothing new: anyone
+able to run it already has the filesystem and the database credentials, so it
+widens no web-facing surface, which a recovery code (another secret at rest,
+worth stealing, the property passkeys exist to remove) would.
 
-It grants nothing new. Anyone able to run it already has the filesystem and
-the database credentials, which is to say they already have everything. That
-is what makes it the right channel: it does not widen the web-facing surface
-at all, which a recovery code — another secret at rest, worth stealing, and
-the exact property passkeys exist to remove — would.
+**It writes an audit entry** naming the account and the operating-system user
+and host that ran it, with no actor id: nobody signed in, and inventing one
+would record a claim rather than a fact. The shape (`entity_type: "user"`,
+`action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
+administrator resetting somebody's password writes `password_reset_by_admin`
+naming themselves as actor. None of this prevents anything (whoever can run the
+command holds everything an audit entry could gate), but helping a colleague who
+lost a phone is a normal operational event that belongs in the trail with every
+other account change
+([#306](https://github.com/PubliciaLLC/go-help-desk/issues/306)).
 
-**It writes an audit entry**, naming the account and the operating system
-user and host that ran the command, with no actor ID — nobody signed in to do
-this, and inventing one would record a claim rather than a fact. The same
-entry shape (`entity_type: "user"`, `action: "mfa_reset"`) is written by the
-admin page's "Reset MFA", and by an administrator resetting somebody's
-password (`action: "password_reset_by_admin"`), naming the administrator's
-account as the actor. This does not prevent anything — whoever can run this
-command already holds everything an audit entry could gate — but the
-ordinary use of it is an administrator helping a colleague who lost a phone,
-and that is a normal operational event that belongs in the trail alongside
-every other account change. See [#306](https://github.com/PubliciaLLC/go-help-desk/issues/306).
+**The last-administrator guard's fourth case belongs with passwordless sign-in.**
+The guard (see User Management) refuses to disable, demote or delete the last
+active administrator and says nothing about removing their last way to
+*authenticate*. That is correct only while a password is always a way in. The
+entry points today are local login, SAML and OIDC; a second factor gates a
+session that has already authenticated and is not a way in by itself, so removing
+somebody's last second factor cannot strand them while a first factor exists, and
+there is no operation for a fourth case to refuse yet. What strands somebody today
+is a lost registered key (`reset-factors`), and an account provisioned by an
+identity provider that has no password when that provider is switched off
+([#300](https://github.com/PubliciaLLC/go-help-desk/issues/300); see the guard
+below). **When the password stops being a way in, self-recovery stops working**,
+and removing an administrator's last credential becomes the same permanent
+mistake as deleting the last administrator. The guard grows its fourth case **in
+the change that introduces passwordless sign-in**, not afterwards and not as a
+follow-up issue, and `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`
+must be made to pass for passkeys before that change is done. `reset-factors` is
+a precondition for that case, not its trigger: "refuse to remove the last way in"
+is half an answer without "and here is how you recover when it happens anyway".
 
-**This command is a precondition for the guard's fourth case, not its
-trigger.** "Refuse to remove the last way in" is only half an answer without
-"and here is how you recover when it happens anyway"; building either alone
-leaves an operator holding the wrong half. So the command comes first, and the
-fourth case still arrives with passwordless, for the reason given further up:
-until the password stops being a way in, removing a second factor strands
-nobody, and there is no operation for the fourth case to refuse.
+**`BASE_URL` is security-relevant.** A WebAuthn credential is bound to its
+origin and the relying party is derived from `BASE_URL`, so the setting stops
+being only about links in emails. An instance that changes domain invalidates
+every registered credential and every user re-registers. The server refuses to
+start when `BASE_URL` has no host rather than defaulting, because a default
+would produce passkeys that silently never verify. (`README.md` and
+`docker/.env.example` describe `BASE_URL` without this warning.)
 
-(An earlier draft of this line said the fourth case "ships with that command
-and not before", which read as though it ships now and contradicted the
-paragraph above. Found by the pre-merge gate on #302.)
-
-**That test is a precondition on passwordless sign-in, not a formality.** When
-the password stops being a way in, self-recovery stops working, and removing an
-administrator's last credential becomes the same permanent mistake as deleting
-the last administrator — setup does not reopen. The guard grows its fourth case
-in the change that introduces passwordless, and the test above has to be made
-to pass for passkeys before that change is considered done.
-
-**`BASE_URL` becomes security-relevant.** A WebAuthn credential is bound to its
-origin, so this setting stops being about building links in emails and becomes
-part of whether authentication works at all. An instance that changes domain
-invalidates every registered credential and every user re-registers. This is
-stated wherever the variable is documented, not in a footnote.
-
-**Not in the first release**, written down so it is not rediscovered as a gap:
-passwordless sign-in; attestation verification against a metadata service;
-a per-role "passkey required, TOTP no longer sufficient" policy; and any route
-by which a machine credential could register or use a passkey —
-`DenyMachineCredentials` refuses that today and will keep refusing it.
+**Not built**, written down so it is not rediscovered as a gap: passwordless
+sign-in; attestation verification against a metadata service; a per-role
+"passkey required, TOTP no longer sufficient" policy; and any route by which a
+machine credential could register or use a passkey (`DenyMachineCredentials`
+refuses that and will keep refusing it).
 
 ### SAML (Optional, Off by Default)
 
-- Toggle in admin settings
-- When enabled: all users (Admin, Staff, User) authenticate via SAML
-- **Admin failsafe**: admins can still log in with local username/password when SAML is enabled
-- Non-admin local auth is disabled when SAML is on
+- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`; sign-in starts at `GET /api/v1/auth/saml/login` and returns to `POST /api/v1/auth/saml/acs`, then `GET /api/v1/auth/saml/complete`. The login page currently has a button for OIDC only.
+- **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
+- **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` reports SAML as enabled only when it is on and SAML is configured.
+- **Admin failsafe**: administrators can still sign in with a local password.
+- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion` or `email_not_verified`. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
 
-**Supported IdPs:**
-- Okta
-- Azure AD / Entra ID
-- Google Workspace
-- (Standard SAML 2.0 — additional IdPs should work via metadata import)
+**Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (standard SAML 2.0; additional IdPs should work via metadata import).
 
 The SP root URL passed to the SAML library carries a trailing slash
-(`{baseURL}/api/v1/auth/`) rather than the bare prefix — see
-`auth.NewSAMLMiddleware`'s own comment. Without it, the library's relative
-URL resolution computes `saml/metadata` and `saml/acs` one path segment
-short of the routes this server actually registers, and every real request
-to them 404s: no login could complete and no IdP could fetch this
-instance's metadata, in any configuration. Found and fixed while testing
-#304; pinned by `TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`.
+(`{baseURL}/api/v1/auth/`), not the bare prefix (see `auth.NewSAMLMiddleware`).
+Without it the library's relative URL resolution computes `saml/metadata` and
+`saml/acs` one path segment short of the routes this server registers, every
+request to them 404s, no login completes and no IdP can fetch the metadata, in
+any configuration (found while testing #304; pinned by
+`TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`).
 
-The SAML library's own login cookie (`token`, a signed JWT valid for an hour)
-is a hand-over, not a session: `/auth/saml/complete` clears it as soon as it
-has read it, whatever the outcome, and the app session it writes is the only
+The SAML library's own login cookie (`token`, a signed JWT valid for an hour) is
+a hand-over, not a session: `/auth/saml/complete` clears it as soon as it has
+read it, whatever the outcome, and the app session it writes is the only
 credential from then on. Left in place it would outlive every session
-revocation (password change, MFA reset, a new factor) and let a browser that
-held it mint a fresh session, with whatever MFA the original assertion claimed
-(#337). Pinned by `TestSAMLComplete_SpendsTheLibraryCookie`.
+revocation (password change, MFA reset, a new factor) and let a browser holding
+it mint a fresh session with whatever MFA the original assertion claimed
+([#337](https://github.com/PubliciaLLC/go-help-desk/issues/337); pinned by
+`TestSAMLComplete_SpendsTheLibraryCookie`). "Spent" means the browser is told to
+delete the cookie under the name, domain and path the library set it with; it is
+not server-side invalidation, so a copy captured before the hand-over stays
+valid until it expires (an hour by default).
 
-"Spent" means the browser is told to delete the cookie, under the same name,
-domain and path the library set it with. It is not server-side invalidation:
-the JWT is stateless, so a copy captured before the hand-over stays valid
-until it expires, an hour by default.
+### OIDC (Optional, Off by Default)
+
+- Configured under **Admin → Settings → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`. `PUT /admin/oidc` takes no redirect URL: the stored value is kept, or `{BASE_URL}/api/v1/auth/oidc/callback` is filled in when there is none, and that is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
+- Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A missing or mismatched `state` is `401`, and the routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled.
+- **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`403 email_not_verified`).
+- **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`403 domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
+- **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it, but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `403 account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`403 account_disabled`), an address held by another account is `409 email_taken` and a missing subject is `401 invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
+- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set only when the ID token's `amr` contains `mfa` (Passkeys above).
+
+### Self-Service Signup (Optional, Off by Default)
+
+A visitor creates a `User`-role account for themselves and proves they own the address before it exists.
+
+- Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
+- `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
+- `POST /api/v1/auth/signup` takes `{email, display_name}` and answers `403 signup_disabled` when off. The signup form takes no password (#360; one sent by an older client is ignored). The address must be a single valid email and the name is required (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address, display name and a 24-hour token; one pending row per address, and a repeat replaces the name and re-issues the token, never touching a password, since none is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
+- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
+- **The password is chosen at verification** (#360). The link opens the `/verify-email` page, which asks for a password. `POST /api/v1/auth/verify-email` takes `{token, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, and `400 password_too_short` for a password under 8 characters, which is refused without using up the link. On success it creates the account with that password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`); a link that passes the lookup can still fail at the POST, for instance when the address has since gained an account. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before a password is typed. It never returns the display name: whoever signed the address up first chose it, and that may be an attacker putting words on this site in front of the inbox's owner. Choosing the password there means only whoever holds the link, that is the owner of the mailbox, sets the password: when signup carried it, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with their password.
 
 ### Identity provider lockout guard (#300)
 
-A federated account (SAML or OIDC) can have no local password at all —
-`password_hash` empty, local login refuses it with 401. Its only way in is
-that specific provider. Disabling or clearing that provider's configuration
-in **Admin → Settings** removes the account's only channel while leaving the
-row, the role and the active-administrator count completely untouched — the
-same class of mistake the last-administrator guard (see User Management,
-above) exists to prevent, reached through a door that guard does not watch,
-since it watches the administrator ROW, not their ability to authenticate.
+A federated account (SAML or OIDC) can have no local password at all
+(`password_hash` empty; local login refuses it with 401), so its only way in is
+that provider. Disabling or clearing the provider's configuration in **Admin →
+Settings** removes that channel while leaving the row, the role and the
+active-administrator count untouched: the same class of mistake as the
+last-administrator guard (see User Management), reached through a door that
+guard does not watch, since it watches the administrator *row* and not their
+ability to authenticate.
 
-SAML reachability depends only on the three config fields being non-empty —
-`reloadSAML` and `buildSAMLMiddleware` have always gated on that alone, and
-still do. An early draft of this guard gave SAML an `enabled` flag mirroring
-OIDC's, reusing the existing `saml_enabled` setting (the settings page's
-"Enable SAML login" toggle has always written it). That setting is not
-dead: `user.IsLocalAuthAllowed` reads it to decide whether non-admins keep
-password login once SAML is configured — a stricter posture an operator
-opts into separately from whether SAML itself is running. Wiring it into
-whether the middleware loads at all would have conflated the two, and a
-migration backfilling it to `true` for every already-configured instance
-would have silently refused password login to every non-administrator on
-any instance that had been running SAML and local login side by side.
-Caught in review before merge and reverted; see PR #304's thread for the
-full trace. SAML has no `enabled` concept in this guard, and does not need
-one — see the incomplete-config paragraph below for why OIDC's is different.
-
-Saving the OIDC or SAML configuration checks what each provider's
-reachability will be immediately afterward and looks at every active
+Saving the OIDC or SAML configuration therefore computes what each provider's
+reachability will be immediately afterwards and looks at every active
 administrator:
 
 - If the change would leave **every** active administrator with no way to
-  authenticate, the save is refused (400) — the same severity as
-  `ErrLastAdmin`, and for the same reason: this is the unrecoverable case.
-- If it strands **some** administrators but at least one other can still
-  sign in and fix things, the save is allowed and a warning names who is
-  affected — refusing here would just move the unrecoverable-lockout shape
-  onto somebody else's account instead of preventing it, and an operator
-  migrating providers deliberately should not be blocked by a stranding they
-  already know about.
-- A password is always a viable channel, independent of either provider's
-  state. A federated subject is only viable while its OWN provider is
-  reachable — an OIDC subject is not a channel through SAML, and vice versa.
-  MFA (TOTP, and passkeys where that lands) is deliberately not consulted: a
-  second factor is never a way IN on its own, so it cannot rescue an
-  otherwise-stranded administrator and cannot strand one either.
+  authenticate, the save is refused (`400`), the same severity as `ErrLastAdmin`
+  and for the same reason: this is the unrecoverable case.
+- If it strands **some** administrators but at least one other can still sign in
+  and fix things, the save is allowed and a warning names who is affected.
+  Refusing would only move the unrecoverable-lockout shape onto somebody else's
+  account, and an operator migrating providers deliberately should not be blocked
+  by a stranding they already know about.
+- **Viability.** A password is always a viable channel, independent of either
+  provider's state. A federated subject is viable only while its **own** provider
+  is reachable: an OIDC subject is not a channel through SAML, and vice versa.
+  MFA (TOTP or passkey) is deliberately not consulted: a second factor is never a
+  way *in* on its own, so it cannot rescue a stranded administrator and cannot
+  strand one.
+- SAML reachability depends only on the three configuration fields being
+  non-empty plus a successful metadata load. The guard gives SAML **no `enabled`
+  flag**, and `saml_enabled` is not part of the load decision: it already means
+  something else (it removes password login for non-admins). Wiring it in would
+  take SAML down on every instance that leaves it off to keep password login
+  alongside SAML, and backfilling it to true to avoid that would silently remove
+  password login from every non-administrator there (tried and reverted before
+  merge in #304).
 
-This reads the active-administrator list, decides, and only then writes the
-setting — unlike the last-administrator guard's own statements, which decide
-and write a single row atomically in one UPDATE. A narrow race against a
-concurrent user-role change or a second settings save is accepted rather
-than closed: this is a deliberate, infrequent action from the admin settings
-page, not a path an unauthenticated attacker can drive.
+**How "reachable" is decided differs by route, on purpose.**
 
-"Reachability" is not the same check everywhere this guard runs, and that
-difference is deliberate rather than an inconsistency to fix:
+- The dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build the real
+  provider or middleware against the *candidate* configuration (running OIDC
+  discovery, or fetching and parsing the SAML metadata) **before** persisting
+  anything, and the guard's decision is that real outcome. "Are the fields
+  non-empty" is wrong in the dangerous direction: a well-formed but unreachable
+  IdP (a typo'd issuer, a metadata endpoint that is down) would sail through. The
+  already-built object is what gets committed on success, so the guard's decision
+  and the live effect agree.
+- The generic `PATCH /admin/settings` reaches the same keys but does not
+  live-reload either provider, so there is no construction attempt to observe. It
+  falls back to the field-completeness check: narrower, but real coverage for a
+  route that otherwise could set `oidc_enabled: false` or blank a SAML field with
+  no refusal and no warning.
+- `reachable` is unconditionally `false` whenever the *candidate* fails to build
+  (both providers), whatever the currently live provider says;
+  `buildOIDCProvider` and `buildSAMLMiddleware` return it separately from
+  `commit`. Two different questions, and only one survives a restart: the live process keeps its
+  fail-safe (a bad edit or a transient IdP outage leaves what is running
+  untouched), but the guard reasons about what the persisted row would do on a
+  cold load.
+- An enabled-but-incomplete OIDC configuration (blank issuer, client id or
+  secret) is refused outright (`400`) through either path rather than
+  reachability-checked: at the next restart there would be no OIDC at all, and a
+  save that only looked safe because an old, unrelated config was still live is
+  exactly the gap this guard closes. SAML has no equivalent case; any blank field
+  is unreachable unconditionally.
+- The generic PATCH (`ssoSettingsWarning`) refuses outright (`400`) a JSON type mismatch (`oidc_enabled`
+  sent as the string `"false"`) **and the literal `null`** (`unmarshalSetting`),
+  for every key the guard reads. The write that follows persists the malformed
+  value regardless, and every real reader (`GetBool`/`GetString`) silently
+  returns the Go zero value, flipping the setting to disabled/blank. A guard
+  reasoning about one value while the system reads another from the same bytes is
+  worse than none, because it reports confidence it does not have. (`null` is
+  caught separately because `encoding/json` treats it as a no-op rather than an
+  error when decoding into a non-pointer.)
 
-- The two dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build
-  the real provider/middleware against the candidate configuration —
-  running actual OIDC discovery, or actually fetching and parsing the SAML
-  IdP's metadata — *before* persisting anything, and the guard's decision is
-  that real outcome. An earlier version of this guard asked only "are the
-  fields non-empty", which is wrong in the dangerous direction: a
-  well-formed but unreachable IdP (a typo'd issuer URL, a metadata endpoint
-  that is down) would have sailed through as "reachable" right up until the
-  moment it actually mattered. The already-built object is what gets
-  committed on success, rather than a second, possibly-different attempt —
-  the guard's decision and the live effect must agree.
-- The generic `PATCH /admin/settings` route reaches these same keys (nothing
-  stops a human session from setting `oidc_enabled` or blanking a SAML field
-  through it) but does not live-reload either provider today, so there is no
-  real construction attempt for it to observe. It falls back to the
-  field-completeness check instead — narrower than the dedicated endpoints'
-  own guard, but still real coverage for a route that, before this fix, had
-  none at all: it could set `oidc_enabled: false` or blank any SAML field
-  with no refusal and no warning, regardless of who it stranded.
+**A narrow race is accepted.** The guard reads the active-administrator list,
+decides, and only then writes the setting, unlike the last-administrator
+guard's statements, which decide and write in one `UPDATE`. A concurrent
+role change or second settings save can slip between; this is a deliberate,
+infrequent action from the settings page, not a path an unauthenticated attacker
+can drive, and closing it would need a transaction spanning the users and
+settings tables.
 
-An enabled-but-incomplete OIDC configuration (a blank issuer URL, client ID
-or client secret) is refused outright (400) rather than reachability-checked,
-through either write path. `buildOIDCProvider`'s own fail-safe for that shape
-used to report reachability as whatever the currently-live provider already
-says — correct for the running process, which still has the old provider to
-fall back on, but wrong for the row being persisted: at the next restart
-there is no live provider left, so `InitOIDC` comes up with no OIDC at all. A
-save that only looked safe because an old, unrelated config was still live at
-the moment of saving is exactly the gap this guard exists to close, so it
-isn't allowed to reach the guard in the first place. SAML has no equivalent
-case for an incomplete config — `buildSAMLMiddleware` treats any blank field
-as unreachable unconditionally, with no fail-safe carve-out and no `enabled`
-flag to have one for in the first place.
+**Not built:** extending `reset-factors` to also set a password, so a locked-out
+federated administrator has a complete way back and not just a warning that
+would have stopped them getting here (#300's option 4). `reset-factors` exists
+(see Passkeys) and clears factors only.
 
-A second, closely related review round found the same confusion one branch
-over: a **complete** candidate configuration whose real construction attempt
-genuinely fails (a typo'd issuer URL, an IdP that is briefly unreachable) was
-*also* reported as reachable-or-not by asking the live process, rather than
-by asking what the persisted row itself would do on a cold load — and this
-half applies to both providers equally, not just OIDC. `buildOIDCProvider`
-and `buildSAMLMiddleware` now answer these two different questions
-separately: `commit` still drives the long-standing fail-safe for the LIVE
-process (a bad edit or a transient outage leaves whatever is currently
-running untouched, exactly as before), but the `reachable` value the guard
-reasons about is unconditionally `false` whenever the candidate itself fails
-to build — regardless of what a different, currently-live provider happens
-to still be answering with at the moment of saving. Reasoning about the live
-process and reasoning about the row being persisted are different questions,
-and only one of them survives a restart.
+---
 
-The generic settings PATCH has its own version of the same principle at the
-type level: `ssoSettingsWarning`'s merge of the request body over stored
-values refuses outright (400) on any JSON type mismatch (`oidc_enabled` sent
-as the string `"false"` rather than the boolean, say) rather than discarding
-the `json.Unmarshal` error and reasoning about the old value — because the
-`SetRaw` write immediately below persists the malformed value regardless, and
-every real reader (`GetBool`/`GetString`, under `OIDCEnabled`, `GetSAMLConfig`,
-`GetOIDCConfig`) fails that same unmarshal and silently returns the Go zero
-value, flipping the actual setting to disabled/blank from that write onward.
-A guard reasoning about one value while the real system reads a different one
-from the identical bytes is worse than not reasoning at all, because it
-reports confidence it does not have. The JSON literal `null` is the same
-failure by a different mechanism, caught in a later review round:
-`encoding/json`'s `Unmarshal` treats `null` into a non-pointer destination as
-a silent no-op rather than an error, so a type-mismatch check alone still let
-`{"oidc_enabled": null}` through unchanged — `unmarshalSetting` refuses `null`
-explicitly, ahead of the type check, for every key this function reads.
-
-Extending `reset-factors` to also set a password, so a locked-out federated
-administrator has a complete way back rather than merely a warning that
-would have stopped them getting here, is tracked separately (#300's option
-4) and depends on `reset-factors` itself, which does not exist on this
-branch.
+## Submission, Attachments and Small Screens
 
 ### Guest Submission (Optional, Off by Default)
 
@@ -1174,42 +1013,37 @@ in 1.2.0.
 Two jobs are supported on a phone: **a staff member triaging away from their
 desk**, and **a reporter filing a request and following it**. Administration is
 not. An operator configuring categories, editing roles or managing API keys is
-at a desk, and the ten admin tables are built for one.
-
-That boundary is stated rather than implied, because the alternative is a
-product that appears to work on a phone until somebody reaches a page that
-does not.
+at a desk, and the admin tables are built for one. That boundary is stated
+rather than implied, because the alternative is a product that appears to work
+on a phone until somebody reaches a page that does not.
 
 **What each job covers.** The staff path is the queue, a ticket, and the
 actions taken on it: read, reply, reassign, change status, resolve. The
 reporter path is the new-ticket form, their own list, and the thread they can
 read and reply to. Both include signing in.
 
-**Where the work actually is.** The unauthenticated pages — sign-in,
-registration, first-run setup, email verification, guest submission, the guest
-ticket view, and the tracking-number form — render outside the application
-shell, as centred cards with their own maximum widths. They already work at
-phone size; measured at 390 CSS pixels, each fits with nothing wider than the
-screen. Nothing in this section changes them.
+**How it is built.** The unauthenticated pages (sign-in, registration, first-run
+setup, email verification, guest submission, the guest ticket view and the
+tracking-number form) render outside the application shell as centred cards with
+their own maximum widths, and fit at phone size. Inside the shell, the sidebar
+is permanent from the `md` breakpoint up; below it the sidebar becomes a drawer
+opened from a top bar, because a fixed 240-pixel column is more than half of a
+390-pixel viewport and left the pages beneath it too narrow to lay anything out
+in. The ticket list is a table from `md` up and one card per ticket below it.
 
-Everything inside the shell does not work, and for one reason: the sidebar is
-a fixed 240 pixels with no breakpoint, which is more than half of a 390-pixel
-viewport. The pages beneath it then inherit a column too narrow to lay
-anything out in. So the shell is the first change and the largest single
-improvement; the queue and the ticket page follow it.
-
-**The rule for the pages that are in scope.** No horizontal scrolling at 390
-pixels, controls large enough to hit with a thumb, and a layout that stacks
-rather than shrinks — a five-column table squeezed into a phone is not a
-mobile layout, it is the same table with less room. Where a table carries one
-row per thing, that becomes one card per thing.
+**The rule for the pages that are in scope** (Dashboard, ticket list, ticket
+detail, new ticket): no horizontal scrolling at 390 CSS pixels, controls large
+enough to hit with a thumb, and a layout that stacks rather than shrinks. A
+five-column table squeezed into a phone is not a mobile layout; where a table
+carries one row per thing, that becomes one card per thing. The end-to-end
+check `frontend/e2e/mobile-layout.spec.ts` pins it at 390×844.
 
 **Not a claim of feature parity.** Everything a staff member can do to a ticket
 from a desk they can do from a phone, because those actions live on the ticket
-page. Bulk selection across a queue is the exception and stays desktop-only:
-it is a multi-select over a table, which is the shape that does not translate.
+page. Bulk selection across a queue is the exception and stays desktop-only: it
+is a multi-select over a table, which is the shape that does not translate.
 
-Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296).
+Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipped in #299.
 
 ### Ticket Submission by Role
 
@@ -1256,8 +1090,7 @@ The setting `attachment_scan_address` overrides it and takes precedence once
 saved. It has a field under Admin → Settings → Attachments, beside the scan
 policy select (#172): a plain text input showing the current value, accepting
 `tcp://host:port` or `unix:///path/to/socket`, blank to fall back to
-`CLAMAV_ADDR`. The backend validation was already there; only the control was
-missing.
+`CLAMAV_ADDR`.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -1453,22 +1286,18 @@ still named `.log` is detected as `application/gzip`, which is not inert text,
 so it is flagged — and, being text-named, it is stored under its own name
 rather than wrapped or refused.
 
-The second rule is decided by asking the detector, not by a list of our own,
-and the difference is not cosmetic. Three earlier versions were each right for
-the cases in front of them and wrong for the family they were generalised to.
-A list of acceptable detected *extensions* called a container log
-(`application/x-ndjson`), a config file (`text/xml`) and an exported contact
-(`text/vcard`) files lying about themselves — a Kubernetes log arriving on a
-ticket renamed and wrapped is exactly the failure this control exists to
-avoid. A list of media types — `text/*` plus JSON and NDJSON — flagged a
-GeoJSON document, which the registry files under its own name. Accepting
-anything whose name ends `+json` or `+xml` admitted the Visio drawing above,
-which is an archive. The tree has no such gap, because it is the same source
-that produced the media type being judged: a rule written from the detector's
-own answers cannot disagree with the detector.
-A warning that fires on ordinary files is one staff learn to click past, which
-is worse than no warning at all — so where a legitimate case fires, the fix is
-to widen one of these two rules and never to soften the flag.
+The text relaxation (the second) is decided by asking the detector, not by a
+list of our own, and the difference is not cosmetic. A list of acceptable
+detected *extensions* called a container log (`application/x-ndjson`), a config
+file (`text/xml`) and an exported contact (`text/vcard`) files lying about
+themselves; a list of media types (`text/*` plus JSON and NDJSON) flagged a
+GeoJSON document; accepting any name ending `+json` or `+xml` admitted the
+Visio drawing above, which is an archive. The tree has no such gap, because it
+is the same source that produced the media type being judged: a rule written
+from the detector's own answers cannot disagree with the detector. A warning
+that fires on ordinary files is one staff learn to click past, which is worse
+than no warning, so where a legitimate case fires, the fix is to widen one of
+these two rules and never to soften the flag.
 
 The answer is recorded at upload rather than recomputed on read, because a file
 this application renamed has lost the name the uploader claimed: recomputing
@@ -1557,25 +1386,35 @@ with `invalid_mismatch_handling`, following `invalid_scan_policy`.
 nobody opted into is the wrong default for a behaviour only some deployments
 want.
 
-**What an upgrade actually changes.** It is not parity with 1.2.0, and this
-document used to claim it was. 1.2.0 checked a hard-coded signature against the
-claimed extension and had no entry for `.txt` or `.log`, so it was strict about
-a handful of names and blind to the rest; this release detects the content and
-judges it against the operator's allowlist. That moves rows in both directions.
-Measured through the upload handler on a default instance:
+**What a default instance does with a contradicting upload.** The judgement is
+the content against the operator's allowlist, so it moves rows in both
+directions compared with 1.2.0's hard-coded signature check. What the upload
+handler does on a default instance (these rows were measured through the
+handler when content detection was introduced, #171):
 
-| Upload | 1.2.0 | Now |
-|---|---|---|
-| plain text named `.pdf`, `.docx` or `.xlsx` | `415` | `201`, stored under its own name, flagged |
-| a real PNG named `.jpg`, or a real PNG named `.pdf` | `415` | `201` |
-| a plain ZIP named `.docx` | `201` | `415` |
-| under four bytes, text-looking, under a text or document name | `415` | `201` |
-| under four bytes, unplaceable, under a binary name | `415` | `415` |
-| under four bytes, text-looking, under an image name | `415` | `422` |
-| under four bytes, unplaceable, under an image name | `415` | `415` |
-| text named `.png` or `.jpg` | `415` | `422` `invalid_image` |
-| a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` | `201` |
-| HTML named `.pdf` | `415` | `415` |
+| Upload | Result |
+|---|---|
+| plain text named `.pdf`, `.docx` or `.xlsx` | `201`, stored under its own name, flagged |
+| a real PNG named `.jpg`, or a real PNG named `.pdf` | `201` |
+| a plain ZIP named `.docx` | `415` |
+| under four bytes, text-looking, under a text or document name | `201` |
+| under four bytes, unplaceable, under a binary name | `415` |
+| under four bytes, text-looking, under an image name | `422` |
+| under four bytes, unplaceable, under an image name | `415` |
+| text named `.png` or `.jpg` | `422` `invalid_image` |
+| a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` |
+| HTML named `.pdf` | `415` |
+
+The first row is the one to understand rather than to fix. A `.pdf` holding
+plain text is a contradiction and is flagged, and it is neither wrapped nor
+refused, because the judgement for tier 2 is the operator's own allowlist and
+`.txt` is on it: the content is something this instance would have accepted
+under its own name, so there is nothing to contain, only something to say.
+Refusing it would need a second list of "types that may not hide inside other
+types", which is the second list this design exists to avoid keeping correct.
+The third row is the stricter direction and is deliberate: any ZIP used to pass
+as a `.docx` because both start `PK\x03\x04`, and an Office document is now
+identified as an Office document.
 
 **Containment only applies to the nine extensions this project ships.** Each
 was checked against the detector, so a contradiction under one of those names
@@ -1614,21 +1453,6 @@ Neither the containment nor the flag applies to an extension we did not ship.
 spelling we cannot check: the row carries the detected type and no verdict,
 which reads as "we looked and could not judge" and is distinguishable from a
 row that predates detection and has neither.
-
-The first row is the one to understand rather than to fix. A `.pdf` holding
-plain text is a contradiction and is flagged, and it is neither wrapped nor
-refused, because the judgement for tier 2 is the operator's own allowlist and
-`.txt` is on it: the content is something this instance would have accepted
-under its own name, so there is nothing to contain — only something to say.
-Refusing it would need a second list of "types that may not hide inside other
-types", which is the second list this design exists to avoid keeping correct.
-1.2.0 caught that one case by looking for `%PDF`, and the same rule let HTML
-into a `.txt` completely unexamined — the two rows are the same trade seen from
-either end.
-
-The third row is the stricter direction and is deliberate: 1.2.0 accepted any
-ZIP under a `.docx` name because both start `PK\x03\x04`, and an Office
-document is now identified as an Office document.
 
 **Why `wrap` exists at all.** Refusing closes off the case this product is
 otherwise good at — the suspicious file a user reported is exactly the file a
@@ -1866,8 +1690,10 @@ What the lookup does:
   open a ticket carrying a quarantined attachment with no current verdict —
   never at upload, never on the ordinary attachments, and never for a reporting
   customer looking at their own ticket, because that would spend an operator's
-  allowance on a page refresh. There is no queue, because this project has no
-  background job runner (#126) and a queue would be a table nothing drains.
+  allowance on a page refresh. There is no reputation queue: the project's
+  background workers (the notification outbox worker and the periodic sweeps)
+  do none of this work, so a lookup is made inside the request that needs it
+  (#126).
 - **Cached against the hash and the provider**, not against the attachment, so
   the same file on five tickets costs one lookup per provider. One row per
   provider per hash is what lets four services be asked at once without either
@@ -1994,9 +1820,16 @@ knowledge to drift from the first.
 
 Serves both the frontend SPA and external integrations.
 
-**Notable public endpoints (no auth):**
-- `GET /api/v1/site` — branding info and app version; used by the SPA shell before authentication
-- `GET /api/v1/setup/status` — whether first-run setup is needed
+**Public endpoints (no session or credential):**
+- `GET /health` — liveness, `{"status":"ok"}`. Outside `/api/v1`.
+- `GET /api/v1/site` — branding info, app version and `guest_submission_enabled`; used by the SPA shell and login page before authentication
+- `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
+- `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
+- `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
+- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up` additionally answers `404` while guest submission is off.
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
+
+Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
 ### MCP Interface
 
@@ -2007,13 +1840,13 @@ over SSE at `/mcp/`.
 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
-| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. |
+| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. |
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
-| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
 | `add_reply` | staff, admin | `internal: true` posts a staff-only note and does not notify the reporter. |
-| `assign_ticket` | staff, admin | To a user or a group. |
+| `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
@@ -2041,7 +1874,7 @@ in this beta's bug-fix branch rather than deferred to a major version — see
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Sits on top of the REST API. Same authentication, and scopes are enforced per tool. |
+| MCP | Inherits from above | Served at `/mcp/` behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
@@ -2061,7 +1894,8 @@ A scope is `resource:action`, where action is `read` or `write`.
 
 | Resource | Covers |
 |----------|--------|
-| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions |
+| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
+| `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. `audit:write` adds nothing beyond `audit:read` (the log has no write route), but like every write scope it implies read, so it reaches this view |
 | `users` | User administration |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |
@@ -2102,7 +1936,7 @@ category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates: its own (`/me/password`, `/me/mfa/enroll*`), and — through the
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`), and — through the
 admin surface — **any administrator's**. It may not create an administrator,
 promote a user to administrator, or reset an administrator's password or MFA.
 
@@ -2115,7 +1949,7 @@ administrator, reset the now-staff account's password, sign in — so the rule
 covers the whole account in either direction. Managing non-administrator users
 stays available.
 
-Three more things are off limits to a machine credential, for the same reason:
+Four more things are off limits to a machine credential, for the same reason:
 
 - **Changing the SAML or OIDC configuration.** Login providers are settable from
   the admin UI and nowhere else. Repointing the identity provider at one the
@@ -2125,16 +1959,24 @@ Three more things are off limits to a machine credential, for the same reason:
   Blocked on both doors: the dedicated config routes and the `saml_*` / `oidc_*`
   settings keys. Reading the configuration stays available to automation, since
   the handlers already blank the secrets.
-- **Changing an auth-critical setting** — MFA enablement and enforcement, the
-  SAML/OIDC keys, the email-domain allowlist, the signup toggles, and guest
+- **Changing an auth-critical setting** (`admin.AuthCriticalKeys()`; refused
+  with `403 session_required`). These decide who may authenticate and how, or
+  what the instance will accept and keep: MFA enablement and enforcement; the
+  SAML and OIDC keys; the email-domain allowlist and the signup toggles; guest
   submission (#177: it decides not just whether anonymous people can file a
-  ticket, but also, since the category catalogue stopped being anonymous,
-  whether that catalogue is readable without a session at all — one flag,
-  two exposures). Ordinary configuration such as the site name stays
-  automatable.
-- **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
-  credential reaching it could spend the account's durable failed-attempt budget
-  and lock the owner out repeatedly.
+  ticket but also, since the category catalogue stopped being anonymous,
+  whether that catalogue is readable without a session at all, one flag and two
+  exposures); `closed_reopen_policy` (#349); the attachment policy (scanner
+  address and policy, allowed types, infected and mismatch handling, the
+  reputation toggles, keys and refresh interval); and audit retention, staff
+  visibility of change history and whether requester names are masked in audit
+  views. Ordinary configuration such as the site name
+  stays automatable.
+- **Verifying a second factor** (`POST /auth/local/mfa/verify` and
+  `POST /auth/local/passkey/start|finish`). A machine credential reaching the
+  code check could spend the account's durable failed-attempt budget and lock
+  the owner out repeatedly; the passkey routes sit beside it and answer to the
+  same rule.
 - **Issuing a credential broader than itself.** Otherwise `credentials:write` is
   every scope: hold only that, mint a key with `users:write`, use it. A
   signed-in administrator is exempt — they already hold everything a credential
@@ -2164,25 +2006,19 @@ so they are not removed as dead weight:
   into each query returns limit × (1 + groups) rows.
 - **Uploaded images are capped by what decoding them will cost**, checked from
   the header before any decode. A byte-size limit is not a memory limit:
-  compressed formats expand, and a 169 KB PNG decodes to 142 MB.
-
-  Two bounds, and the second took five rounds of review to get right. Twenty-
-  five megapixels, and 100 MB of decoder allocation — which is not the same
-  number as the picture's size, because the JPEG decoder allocates far more
-  than the picture it produces. A progressive JPEG holds every DCT coefficient
-  until the image is reconstructed; a CMYK or RGB one decodes through a second
-  full-resolution image. Counting pixels and assuming four bytes each let a
-  214 KB file cost 403 MB, and each narrower rule that replaced it let a
-  differently-shaped file through: 16-bit, then progressive, then CMYK, then
-  RGB, then an Adobe marker moved after the scan data.
-
-  So the rule is no longer "know every shape". A JPEG whose header cannot be
-  read is **refused**, rather than falling back to a weaker estimate. Every
-  real JPEG parses; one that does not is one somebody built not to, and "I
-  cannot tell how much this will cost" is a reason to refuse. That converts
-  the next gap in the estimate from a way through into a refusal, which is
-  worth more than any single thing the estimate knows. A limit on how many
-  images are decoded at once bounds the process rather than the request.
+  compressed formats expand, and a 169 KB PNG decodes to 142 MB. Two bounds
+  apply: twenty-five megapixels, and 100 MB of decoder allocation, which is not
+  the picture's size (a progressive JPEG holds every DCT coefficient until the
+  image is reconstructed, and a CMYK or RGB one decodes through a second
+  full-resolution image, so "pixels times four bytes" let a 214 KB file cost
+  403 MB). Because every narrower rule of the form "know each shape" was beaten
+  by a differently-shaped file, the rule is a refusal: **a JPEG whose header
+  cannot be read is refused** rather than falling back to a weaker estimate.
+  Every real JPEG parses, and "I cannot tell how much this will cost" is a
+  reason to refuse. That converts the next gap in the estimate from a way
+  through into a refusal, which is worth more than any single thing the
+  estimate knows. A limit on how many images are decoded at once bounds the
+  process rather than the request.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
   with a stricter, sandboxed policy, so a file that got past the upload check
@@ -2205,11 +2041,10 @@ so they are not removed as dead weight:
   same summary the raw format's internal-note omission already produces, so
   an internal note's body reaches none of them, not just the raw payload.
 
-**Scopes were documented here before they were enforced.** Until 1.2.0 they were
-accepted, stored and returned by the API, and no code read them — every
-credential issued as restricted was unrestricted. Enforcement in 1.2.0 is a
-breaking change: credentials created before it carry no scopes and are therefore
-denied, and must be re-issued.
+**Scopes are enforced** (since 1.2.0). Before it they were accepted, stored and
+returned by the API and no code read them, so every credential issued as
+restricted was unrestricted. Credentials created before enforcement carry no
+scopes and are therefore denied; they must be re-issued.
 
 ---
 
@@ -2221,7 +2056,7 @@ listed, enabled and disabled — but none of the capabilities below are wired up
 install and uninstall return `501 not_implemented`, no WASM runtime is linked
 in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
 so an enabled plugin still receives no events. Treat this section as the
-target design for v2, not a description of what 1.3 ships.
+target design for v2, not a description of what ships today.
 
 External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
 for this — see Notifications below, where they ship in v1 as payload formats
@@ -2281,7 +2116,8 @@ on the existing webhook feature instead of as plugins.
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
-  channel (email, webhook), and returns. A worker in every server process
+  channel that can carry the event (`email`, `webhook`, and `verification`
+  for signup mail, below), and returns. A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
   a ten-minute lease that returns a row whose worker died; a claim takes at
   most as many rows as can each run to their full time inside the
@@ -2291,7 +2127,7 @@ on the existing webhook feature instead of as plugins.
   on success. A failed send is retried after 30 seconds, doubling to at most an
   hour, eight attempts in all; then the row is marked failed, logged, and
   deleted after thirty days. One row per channel means a failing channel is
-  retried alone and the other is not sent twice; a channel that cannot carry an
+  retried alone and the others are not sent twice; a channel that cannot carry an
   event type (webhooks never receive `guest.link_resent`) gets no row. A send
   that panics fails its row. A failed send's error is kept in `last_error` and
   the log with email addresses replaced by `[address]` (#350): a mail server's
@@ -2337,9 +2173,9 @@ on the existing webhook feature instead of as plugins.
   is required for requesters, the verified session owes enrolment like a
   password login does, and the page goes to the same enrolment form before
   the dashboard ([#369](https://github.com/PubliciaLLC/go-help-desk/issues/369)).
-- **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — v1, targeted for
-  1.3. Not a plugin, and not a separate integration surface: a webhook
-  subscription gains a `payload_format` setting (`raw` — today's behavior —
+- **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — shipped in v1.
+  Not a plugin, and not a separate integration surface: a webhook
+  subscription has a `payload_format` setting (`raw`, the default,
   `slack`, `teams`, `discord`, `jira`) that reshapes the same lifecycle event
   into the body that service expects (Slack/Discord: a message body such as
   `text`/`content` plus blocks or an embed; Teams: an Adaptive Card; JIRA: a
@@ -2384,9 +2220,9 @@ The fields available on a ticket are the union of all fields assigned to its sel
 
 ### Values
 
-Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
+Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page; a reporting user can edit the fields on their own ticket until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester).
 
-Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. Regular authenticated users see category + type fields. Staff/admin see all levels.
+Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. The field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 
 ---
 
