@@ -2289,7 +2289,10 @@ on the existing webhook feature instead of as plugins.
   deleted after thirty days. One row per channel means a failing channel is
   retried alone and the other is not sent twice; a channel that cannot carry an
   event type (webhooks never receive `guest.link_resent`) gets no row. A send
-  that panics fails its row. Delivery is at least once: a
+  that panics fails its row. A failed send's error is kept in `last_error` and
+  the log with email addresses replaced by `[address]` (#350): a mail server's
+  rejection usually names the recipient, and the SMTP status code is what an
+  operator needs. Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
   Webhooks are not retried on HTTP failure: their dispatcher already posts in
   the background and reports nothing back, unchanged by this.
