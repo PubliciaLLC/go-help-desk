@@ -227,96 +227,12 @@ func TestResolve_UserMayNotResolve(t *testing.T) {
 	require.Equal(t, 0, h.store.updates)
 }
 
-func TestReopen(t *testing.T) {
-	h := newHarness(t)
-	seeded := h.seedClosed()
-	agent := uuid.New()
-
-	got, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
-	require.NoError(t, err)
-
-	require.Equal(t, h.newStatus.ID, got.StatusID)
-	require.Nil(t, got.ClosedAt, "reopening clears the closed timestamp")
-	require.Nil(t, got.ResolvedAt, "reopening clears the resolved timestamp")
-	require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened)
-}
-
-func TestReopen_UserMayNot(t *testing.T) {
-	h := newHarness(t)
-	seeded := h.seedClosed()
-	reporter := uuid.New()
-
-	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-		ticket.Actor{UserID: &reporter, Role: user.RoleUser})
-
-	require.ErrorIs(t, err, ticket.ErrForbidden)
-	require.Equal(t, 0, h.store.updates)
-}
-
-// TestReopen_OnlyFromClosed keeps Reopen from being a general-purpose status
-// setter that sidesteps the transition rules in UpdateStatus.
-func TestReopen_OnlyFromClosed(t *testing.T) {
-	h := newHarness(t)
-	seeded := h.seedOpen() // New, not Closed
-	agent := uuid.New()
-
-	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
-
-	require.Error(t, err)
-	require.ErrorIs(t, err, ticket.ErrNotClosed)
-	require.Equal(t, 0, h.store.updates)
-}
-
-// TestReopen_RejectsResolved pins #277: Reopen is deliberately Closed-only. A
-// Resolved ticket leaves that state through UpdateStatus (the status
-// selector, which allows staff any status but Closed) or a reporter's reply
-// within the reopen window — never through this endpoint, which used to
-// return a bare, unrecognized error that handleError sent back as a 500.
-func TestReopen_RejectsResolved(t *testing.T) {
-	h := newHarness(t)
-	reporter := uuid.New()
-	seeded := h.seedResolved(reporter)
-	agent := uuid.New()
-
-	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
-
-	require.Error(t, err)
-	require.ErrorIs(t, err, ticket.ErrNotClosed)
-	require.Equal(t, 0, h.store.updates)
-}
-
-// TestReopen_ConcurrentReopenDetectedUnderLock covers ErrNotClosed's other
-// doc-commented case: a ticket that was Closed when Reopen's unlocked
-// precondition check ran, but that a concurrent writer already reopened by
-// the time the row lock inside the transaction is taken. The re-read under
-// GetByIDForUpdate must catch this rather than trusting the stale unlocked
-// read, so this simulates the interleaving by making the two reads disagree.
-func TestReopen_ConcurrentReopenDetectedUnderLock(t *testing.T) {
-	h := newHarness(t)
-	seeded := h.seedClosed()
-	agent := uuid.New()
-
-	// h.store.forUpdateReads is only incremented by GetByIDForUpdate, so the
-	// unlocked outer GetByID (forUpdateReads == 0) still sees Closed, and the
-	// locked re-read inside the transaction (forUpdateReads > 0) sees that
-	// someone else already reopened it.
-	h.store.onRead = func(tk ticket.Ticket) ticket.Ticket {
-		if tk.ID == seeded.ID && h.store.forUpdateReads > 0 {
-			tk.StatusID = h.newStatus.ID
-		}
-		return tk
-	}
-
-	_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-		ticket.Actor{UserID: &agent, Role: user.RoleStaff})
-
-	require.Error(t, err)
-	require.ErrorIs(t, err, ticket.ErrNotClosed)
-	require.Equal(t, 0, h.store.updates)
-}
+// Reopening a Closed ticket is gone (#349): Closed is terminal for every role.
+// The tests that used to live here (TestReopen, TestReopen_UserMayNot,
+// TestReopen_OnlyFromClosed, TestReopen_RejectsResolved and
+// TestReopen_ConcurrentReopenDetectedUnderLock) pinned Service.Reopen, which no
+// longer exists; closed_terminal_test.go pins that nothing leaves Closed, and
+// followup_test.go the way forward.
 
 // ── Assignment ───────────────────────────────────────────────────────────────
 
@@ -626,16 +542,6 @@ func TestReopenPaths_RejectAnUnusableTargetBeforeWriting(t *testing.T) {
 		require.ErrorIs(t, err, ticket.ErrValidation)
 		require.Empty(t, h.store.replies[seeded.ID], "the reply must not be written either")
 	})
-
-	t.Run("manual Reopen", func(t *testing.T) {
-		h := newHarness(t)
-		seeded := h.seedOpen()
-		require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
-
-		_, err := h.svc.Reopen(context.Background(), seeded.ID, uuid.Nil,
-			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
-		require.ErrorIs(t, err, ticket.ErrValidation)
-	})
 }
 
 // A custom status with zero CURRENT tickets can still be referenced by past
@@ -693,72 +599,11 @@ func TestResolve_UsesTheSameTimestampRuleAsUpdateStatus(t *testing.T) {
 			"resolving an already-resolved ticket must not extend the reopen window")
 	})
 
-	// Resolving a CLOSED ticket left closed_at set on a now-open ticket, which
-	// hides it from the auto-close query permanently.
-	t.Run("resolving a closed ticket clears closed_at", func(t *testing.T) {
-		h := newHarness(t)
-		seeded := h.seedOpen()
-		require.NoError(t, h.svc.Close(context.Background(), seeded.ID, ticket.SystemActor))
-
-		closed, err := h.store.GetByID(context.Background(), seeded.ID)
-		require.NoError(t, err)
-		require.NotNil(t, closed.ClosedAt, "precondition")
-
-		_, err = h.svc.Resolve(context.Background(), seeded.ID, "reopened and resolved",
-			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
-		require.NoError(t, err)
-
-		stored, err := h.store.GetByID(context.Background(), seeded.ID)
-		require.NoError(t, err)
-		require.Nil(t, stored.ClosedAt, "a resolved ticket is not closed")
-		require.NotNil(t, stored.ResolvedAt)
-	})
-
-	// A ticket arriving from Closed is being resolved afresh, so it gets a
-	// fresh stamp. Preserving the old one would judge the reporter against a
-	// window that expired before this resolution happened.
-	//
-	// seedClosed carries a ResolvedAt from before the close, which is what
-	// makes this meaningful: the preserve branch has to be rejected on the
-	// strength of the OLD STATUS, not because the field happened to be nil.
-	//
-	// An earlier version of this subtest drove UpdateStatus despite its name,
-	// so the Resolve call site was never exercised and passing it the wrong
-	// old status left the suite green. Its fixture was fine — the ticket did
-	// carry a stale ResolvedAt, because Close sets ClosedAt without clearing
-	// it. Only the door was wrong.
-	t.Run("Resolve on a closed ticket gets a fresh timestamp", func(t *testing.T) {
-		h := newHarness(t)
-		seeded := h.seedClosed()
-		stale := *seeded.ResolvedAt
-
-		_, err := h.svc.Resolve(context.Background(), seeded.ID, "resolved again",
-			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
-		require.NoError(t, err)
-
-		stored, err := h.store.GetByID(context.Background(), seeded.ID)
-		require.NoError(t, err)
-		require.True(t, stored.ResolvedAt.After(stale),
-			"a fresh resolution must not inherit the timestamp from before it was closed")
-		require.Nil(t, stored.ClosedAt)
-	})
-
-	// The same rule through the other door, so neither call site can be given
-	// the wrong old status without a test noticing.
-	t.Run("UpdateStatus on a closed ticket gets a fresh timestamp", func(t *testing.T) {
-		h := newHarness(t)
-		seeded := h.seedClosed()
-		stale := *seeded.ResolvedAt
-
-		_, err := h.svc.UpdateStatus(context.Background(), seeded.ID, h.resolvedStatus.ID,
-			ticket.Actor{UserID: &staffID, Role: user.RoleStaff})
-		require.NoError(t, err)
-
-		stored, err := h.store.GetByID(context.Background(), seeded.ID)
-		require.NoError(t, err)
-		require.True(t, stored.ResolvedAt.After(stale))
-		require.Nil(t, stored.ClosedAt)
-	})
+	// Three subtests used to live here that resolved a CLOSED ticket through
+	// Resolve and UpdateStatus and checked closed_at was cleared and resolved_at
+	// restamped. Closed is terminal now (#349), so neither door leaves it: the
+	// rule they pinned has nothing to apply to, and closed_terminal_test.go
+	// pins that both doors refuse instead.
 }
 
 // SLA resolution was recorded in Resolve and not in UpdateStatus — the other
@@ -1096,34 +941,6 @@ func TestStatusTransitions_MaintainSLAPause(t *testing.T) {
 			"Close must route through the shared rule so a Pending ticket's interval closes")
 		require.GreaterOrEqual(t, stored.SLAPausedSeconds, int64(60))
 		require.NotNil(t, stored.ClosedAt)
-	})
-
-	t.Run("Closed to Pending via Reopen carries the accumulated pause forward", func(t *testing.T) {
-		h := newHarness(t)
-		closedAt := time.Now().Add(-time.Hour)
-		reporter := uuid.New()
-		seeded := ticket.Ticket{
-			ID:               uuid.New(),
-			TrackingNumber:   "HD-SLA-REOPEN",
-			Subject:          "Reopen carries pause",
-			ReporterUserID:   &reporter,
-			StatusID:         h.closedStatus.ID,
-			ResolvedAt:       &closedAt,
-			ClosedAt:         &closedAt,
-			CreatedAt:        time.Now().Add(-4 * time.Hour),
-			UpdatedAt:        closedAt,
-			SLAPausedSeconds: 300,
-		}
-		h.store.seed(seeded)
-		agent := uuid.New()
-
-		got, err := h.svc.Reopen(context.Background(), seeded.ID, h.pendingStatus.ID,
-			ticket.Actor{UserID: &agent, Role: user.RoleStaff})
-		require.NoError(t, err)
-
-		require.NotNil(t, got.PendingSince, "reopening into Pending opens a fresh interval")
-		require.Equal(t, int64(300), got.SLAPausedSeconds,
-			"a reopen is not a new SLA clock: the accumulated pause must carry over unchanged")
 	})
 
 	t.Run("Resolved to Pending via a user reply auto-reopen opens an interval", func(t *testing.T) {

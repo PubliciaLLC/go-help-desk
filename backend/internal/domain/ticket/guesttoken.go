@@ -16,45 +16,62 @@ import (
 // GuestTokenTTL is the outer bound on a guest link, not its usual life.
 //
 // On an active ticket the token is replaced every time something happens that
-// the guest is told about — a public reply, a status change, a resolution, a
-// reopen — so thirty days is what a link gets when a ticket goes quiet, not
-// what a leaked one gets to enjoy.
+// the guest is told about — a public reply, a status change, a resolution —
+// so thirty days is what a link gets when a ticket goes quiet, not what a
+// leaked one gets to enjoy.
+//
+// It is also how long a CLOSED ticket stays readable (#349): closing stops
+// rotating the link instead of revoking it, so the last link sent keeps
+// reading the archive until it expires.
 const GuestTokenTTL = 30 * 24 * time.Hour
 
 // ErrGuestTokenNotFound is the single answer for every reason a token does not
 // resolve: never issued, rotated away, expired, or naming a ticket that has
-// been closed or deleted.
+// been deleted — and, for a write (TicketForGuestWrite), naming a ticket that
+// is closed.
 //
 // One error because the caller must answer 404 for all of them. Distinguishing
 // "expired" from "never existed" would confirm to anyone holding a guessed
-// token that it had once been real.
+// token that it had once been real, and a write refused on a closed ticket
+// must not say the ticket exists.
 var ErrGuestTokenNotFound = errors.New("guest token not found")
 
-// rotateGuestToken issues a replacement link for a ticket and returns the raw
-// token, which is the only moment it exists outside an email.
+// issueGuestToken creates a link for a ticket and returns the raw token, which
+// is the only moment it exists outside an email.
 //
 // Called at send time (IssueGuestLink), not inside the transaction of the
 // change: since #164 the outbox carries the event, and the raw token must not
-// be stored there. A change that rolls back queues nothing, so nothing rotates.
+// be stored there. A change that rolls back queues nothing, so nothing issues.
 //
 // Returns "" for a ticket with no guest address. Account holders sign in; there
 // is nobody to send a link to, and minting one would be a credential issued for
 // no reason.
 //
-// Any token the ticket already held is deleted first, so issuing is rotating.
-// There is deliberately no grace period: overlapping tokens would leave a
-// leaked link working past the rotation meant to kill it, which is most of the
-// reason to rotate.
-func rotateGuestToken(ctx context.Context, st Store, t Ticket) (string, error) {
-	if t.GuestEmail == nil || *t.GuestEmail == "" {
+// On an open ticket, any token the ticket already held is deleted first, so
+// issuing is rotating. There is deliberately no grace period: overlapping
+// tokens would leave a leaked link working past the rotation meant to kill it,
+// which is most of the reason to rotate.
+//
+// On a CLOSED ticket nothing is deleted (#349). Closing stops rotating; the
+// links already sent keep reading the archive until they expire, so the new
+// one is added beside them. A token minted here only reads, because
+// TicketForGuestWrite refuses a Closed ticket whatever the token's age. Closed
+// is terminal unless the operator enabled forced reopen (closed_reopen_policy);
+// if a staff member then reopens the ticket, these tokens write again — they
+// belong to the same guest, and the reopen's own send-time step rotates them
+// all into one fresh link, as any reopen always did.
+func (s *Service) issueGuestToken(ctx context.Context, st Store, t Ticket) (string, error) {
+	if !hasGuestRecipient(t) {
 		return "", nil
 	}
 	raw, hashed, err := auth.GenerateToken()
 	if err != nil {
 		return "", fmt.Errorf("generating guest token: %w", err)
 	}
-	if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
-		return "", fmt.Errorf("clearing previous guest tokens: %w", err)
+	if t.StatusID != s.sys.closedID {
+		if err := st.DeleteGuestTokensForTicket(ctx, t.ID); err != nil {
+			return "", fmt.Errorf("clearing previous guest tokens: %w", err)
+		}
 	}
 	if err := st.CreateGuestToken(ctx, uuid.New(), t.ID, hashed, time.Now().Add(GuestTokenTTL)); err != nil {
 		return "", fmt.Errorf("storing guest token: %w", err)
@@ -71,15 +88,24 @@ func hasGuestRecipient(t Ticket) bool {
 }
 
 // IssueGuestLink is the send-time half of a guest link (#164). Given an event
-// marked GuestLink, it re-reads the ticket and, if the ticket still accepts
-// guest access, rotates the token and returns the event carrying the raw
-// token, the current guest address and the tracking number. ok is false when
-// there is no longer anyone to send it to: the ticket was closed or deleted
-// after the event, or has no guest address. The caller then sends nothing.
+// marked GuestLink, it re-reads the ticket, issues a token and returns the
+// event carrying the raw token, the current guest address and the tracking
+// number. ok is false when there is no longer anyone to send it to: the ticket
+// was deleted after the event, or has no guest address. The caller then sends
+// nothing.
 //
-// Rotating here rather than at the change moves the moment the previous link
-// dies from the commit to the send — normally seconds later. A rotation does
-// not wait on the mail server succeeding: a retry rotates again.
+// On an open ticket the token rotates. Rotating here rather than at the change
+// moves the moment the previous link dies from the commit to the send —
+// normally seconds later. A rotation does not wait on the mail server
+// succeeding: a retry rotates again.
+//
+// A ticket closed after the event STILL GETS ITS MAIL (#349; #346 skipped it,
+// which is why a guest could not read an answer sent just before the close).
+// It gets a link added beside the existing ones rather than a rotation, and
+// that link can only read: see issueGuestToken. Raw tokens are stored hashed,
+// so the link the guest already holds cannot be re-sent verbatim; when none
+// is live — all expired, or the ticket never had one — this is the guest's
+// only way to the thread, which is why it is issued rather than skipped.
 func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (notification.Event, bool, error) {
 	// One transaction, the ticket row locked, so that concurrent sends for
 	// one ticket — two replicas, or a reclaimed row beside a fresh one —
@@ -101,10 +127,10 @@ func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (no
 			}
 			return err
 		}
-		if !hasGuestRecipient(t) || t.StatusID == s.sys.closedID {
+		if !hasGuestRecipient(t) {
 			return nil
 		}
-		token, err = rotateGuestToken(ctx, st, t)
+		token, err = s.issueGuestToken(ctx, st, t)
 		ok = err == nil
 		return err
 	})
@@ -117,30 +143,25 @@ func (s *Service) IssueGuestLink(ctx context.Context, ev notification.Event) (no
 	return ev, true, nil
 }
 
-// IssueGuestToken rotates outside a transaction.
+// IssueGuestToken issues outside a transaction.
 //
-// Nothing in production calls it: production rotates only at send time, in
-// IssueGuestLink, which does so under the ticket's row lock. It exists because a test needs a raw token to drive the HTTP surface
-// with, and the alternative is duplicating the hashing in the test package —
-// which is exactly where a test stops noticing that hashing happens at all.
+// Nothing in production calls it: production issues only at send time, in
+// IssueGuestLink, which does so under the ticket's row lock. It exists because
+// a test needs a raw token to drive the HTTP surface with, and the alternative
+// is duplicating the hashing in the test package — which is exactly where a
+// test stops noticing that hashing happens at all.
 func (s *Service) IssueGuestToken(ctx context.Context, ticketID uuid.UUID) (string, error) {
 	t, err := s.store.GetByID(ctx, ticketID)
 	if err != nil {
 		return "", err
 	}
-	return rotateGuestToken(ctx, s.store, t)
+	return s.issueGuestToken(ctx, s.store, t)
 }
 
-// RevokeGuestTokens removes a ticket's access without issuing a replacement.
-// Closing a ticket does this.
-func (s *Service) RevokeGuestTokens(ctx context.Context, ticketID uuid.UUID) error {
-	if err := s.store.DeleteGuestTokensForTicket(ctx, ticketID); err != nil {
-		return fmt.Errorf("revoking guest tokens: %w", err)
-	}
-	return nil
-}
-
-// TicketForGuestToken resolves a raw token to the one ticket it names.
+// TicketForGuestToken resolves a raw token to the one ticket it names, for
+// READING. A closed ticket resolves (#349): closing stops rotating the link, so
+// the last link sent reads the archive until it expires. Anything that would
+// write must resolve through TicketForGuestWrite instead.
 //
 // The raw value is hashed here and the hash alone reaches the store, so a
 // token never appears in a query log. First use is stamped on the row; a
@@ -159,9 +180,29 @@ func (s *Service) TicketForGuestToken(ctx context.Context, raw string) (Ticket, 
 	return t, nil
 }
 
+// TicketForGuestWrite is TicketForGuestToken for a route that changes
+// something — a reply, an upload, anything that could reopen. It refuses a
+// closed ticket with ErrGuestTokenNotFound, the same error as a token that
+// never existed, so the caller's refusal is the generic 404 and does not
+// reveal that the ticket exists (#349).
+//
+// Here, in the service, so that the one rule — "a link writes only while the
+// ticket is not Closed" — has one home that every guest write route reaches
+// through its middleware, rather than one check per handler.
+func (s *Service) TicketForGuestWrite(ctx context.Context, raw string) (Ticket, error) {
+	t, err := s.TicketForGuestToken(ctx, raw)
+	if err != nil {
+		return Ticket{}, err
+	}
+	if t.StatusID == s.sys.closedID {
+		return Ticket{}, ErrGuestTokenNotFound
+	}
+	return t, nil
+}
+
 // GuestTicketIDFor resolves a tracking number and address to a ticket id for
-// the re-request flow, or ErrGuestTokenNotFound when they do not match a ticket
-// that still accepts access.
+// the re-request flow, or ErrGuestTokenNotFound when they do not match a ticket.
+// A closed ticket matches (#349): its guest may still ask for a link to read it.
 //
 // The caller answers 202 either way, so this never becomes a way to test
 // whether a tracking number or an address exists.
@@ -210,8 +251,8 @@ func (s *Service) RequestGuestLink(ctx context.Context, trackingNumber, email st
 // guestNotifyTarget is guestRecipient, except that a ticket being closed tells
 // nobody.
 //
-// Closing revokes rather than rotating, so there is no link to send. Sending
-// anyway fell back to the account URL — the guest received "see where it
+// Closing neither rotates nor issues a link, so there is nothing new to send.
+// Sending anyway fell back to the account URL — the guest received "see where it
 // stands" pointing at a page they have no account to open — and Close() sends
 // nothing at all, so the two doors into Closed disagreed.
 func guestNotifyTarget(t Ticket, closing bool) string {

@@ -70,16 +70,30 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	// 409, like ErrClosed: the ticket's state refuses a reopen, not the
-	// caller's permissions. Was a bare error falling through to 500 (#277).
+	// 409, like ErrClosed: the ticket's state refuses a follow-up, not the
+	// caller's permissions. A bare error fell through to 500 here once (#277,
+	// when this refused a reopen of a ticket that was not closed).
 	if errors.Is(err, ticket.ErrNotClosed) {
-		Error(w, http.StatusConflict, "ticket_not_closed", "only a closed ticket can be reopened")
+		Error(w, http.StatusConflict, "ticket_not_closed", "this applies only to a closed ticket")
 		return
 	}
 	// Not a permission problem: the caller may well own this ticket. The
 	// ticket is in a state that does not accept the change, which is what
 	// 409 is for. It fell through to 500 for the same reason ErrForbidden
 	// did.
+	// A requester's second follow-up of one closed ticket (#349). 409: the
+	// ticket's state, and they already know about the first.
+	if errors.Is(err, ticket.ErrFollowUpExists) {
+		Error(w, http.StatusConflict, "follow_up_exists", "this ticket already has a follow-up")
+		return
+	}
+	// A force-reopen refused by closed_reopen_policy keeps the status and code,
+	// and says why (#349): disabled, or restricted to administrators.
+	var reopenRefused *ticket.ReopenRefusedError
+	if errors.As(err, &reopenRefused) {
+		Error(w, http.StatusConflict, "ticket_closed", reopenRefused.Error())
+		return
+	}
 	if errors.Is(err, ticket.ErrClosed) {
 		Error(w, http.StatusConflict, "ticket_closed", "this ticket is closed")
 		return

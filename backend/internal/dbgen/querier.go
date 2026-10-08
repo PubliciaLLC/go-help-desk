@@ -213,9 +213,9 @@ type Querier interface {
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
 	DeleteGroup(ctx context.Context, id uuid.UUID) error
-	// Rotation and revocation are the same operation: remove what the ticket has.
-	// Rotation then inserts a replacement in the same transaction; revocation
-	// does not.
+	// Rotation: remove what the ticket has, then insert a replacement in the same
+	// transaction. Used only for a ticket that is not Closed — closing no longer
+	// revokes (#349), and a Closed ticket's links are added to, never replaced.
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	DeleteItem(ctx context.Context, id uuid.UUID) error
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
@@ -388,9 +388,11 @@ type Querier interface {
 	// clock_timestamp() rather than now() for the same reason as sessions: now()
 	// is the transaction's start time, so two clocks were deciding one lifetime.
 	//
-	// Closed tickets are excluded: closing revokes access, and doing it in the
-	// query means a token that outlived its DELETE by a moment still reaches
-	// nothing.
+	// Closed tickets are NOT excluded (#349): closing stops rotating the link
+	// instead of revoking it, so the last link sent keeps reading the archive until
+	// it expires. Whether a link may WRITE is decided by the caller from the
+	// ticket's status (ticket.Service.TicketForGuestWrite), so the one query serves
+	// both and the write refusal is the same "not found" as any bad link.
 	// The explicit column list, not sqlc.embed: tickets carries a search_vector
 	// that no caller wants and that has no Go type worth naming. This is the same
 	// list GetTicketByID selects, so both map through one row shape.
@@ -416,8 +418,9 @@ type Querier interface {
 	// answers 202 either way so this cannot be used to test whether either
 	// exists.
 	//
-	// Closed tickets are excluded so a re-request cannot resurrect access that
-	// closing revoked.
+	// Closed tickets match (#349): closing no longer revokes access, so a guest may
+	// still ask for a link to read their archived ticket. The send-time step adds
+	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)

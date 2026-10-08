@@ -174,15 +174,6 @@ func TestOperations_CommitOnce(t *testing.T) {
 			},
 		},
 		{
-			name: "Reopen",
-			run: func(h *harness) error {
-				seeded := h.seedClosed()
-				_, err := h.svc.Reopen(context.Background(), seeded.ID, h.newStatus.ID,
-					ticket.Actor{UserID: &agent, Role: user.RoleStaff})
-				return err
-			},
-		},
-		{
 			name: "AddReply",
 			run: func(h *harness) error {
 				seeded := h.seedOpen()

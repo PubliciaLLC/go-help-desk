@@ -102,6 +102,14 @@ func TestTools_RefuseWithoutAuthenticatedActor(t *testing.T) {
 			},
 		},
 		{
+			name: "create_follow_up",
+			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+				return s.handleCreateFollowUp(ctx, callToolRequest("create_follow_up", map[string]any{
+					"ticket_id": ticketID,
+				}))
+			},
+		},
+		{
 			name: "list_categories",
 			call: func(ctx context.Context) (*mcpgo.CallToolResult, error) {
 				return s.handleListCategories(ctx, callToolRequest("list_categories", map[string]any{}))

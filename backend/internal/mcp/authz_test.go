@@ -57,6 +57,13 @@ func TestWriteTools_RefuseReportingUsers(t *testing.T) {
 				"ticket_id": ticketID, "status_id": uuid.New().String(),
 			}))
 		}},
+		// #349: the way forward from a closed ticket is staff's, like the
+		// other writes.
+		{"create_follow_up", func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+			return s.handleCreateFollowUp(ctx, callToolRequest("create_follow_up", map[string]any{
+				"ticket_id": ticketID,
+			}))
+		}},
 	}
 
 	for _, tc := range cases {

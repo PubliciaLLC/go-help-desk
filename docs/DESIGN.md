@@ -108,7 +108,7 @@ Three roles: **Admin**, **Staff**, **User**
 |------|-------------|
 | **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
 | **Staff** | Create tickets. View/edit/assign tickets within their scope. Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
-| **User** | Create tickets. View their own tickets. Update their own tickets unless status is Resolved. Reopen a Resolved ticket within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+| **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
 
 **Custom admin-defined roles (v3):** admins will be able to define additional roles and grant a curated set of permissions (e.g., "Tier 1 Agent" with ticket read/reply but no assignment rights). The three built-in roles remain as defaults and cannot be removed. Permissions are stored as discrete capability flags rather than hardcoded in code, with the built-in roles expressed as preset bundles so existing behavior is preserved.
 
@@ -130,12 +130,17 @@ Admins manage accounts from **Admin → Users**. The user list is clickable — 
 New → In Progress → Pending (waiting on user/vendor) → Resolved → [reopen window] → Closed
                                                            ↑            |
                                                            └── Reopened ┘ (within window)
+
+Closed is terminal by default: nothing leaves it. The way forward is a new,
+linked follow-up ticket. An instance setting (closed_reopen_policy) can allow
+admins, or staff and admins, to force-reopen; requesters never can.
 ```
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
-- **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window. Set to 0 to disable user-initiated reopening entirely.
+- **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and a requester can never reopen it. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
 - **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status.
-- **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
+- **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
+- **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
 
   **Auto-close scheduling.** This transition is driven by a periodic background
   sweep, not computed on read: a ticket sitting in Resolved past its window
@@ -162,7 +167,210 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
   lock is left untouched: no write, no history row, no notification. Eligible
   tickets beyond the 500 are picked up on the next tick, and a failure closing
   one ticket is logged without stopping the rest. (Originally tracked as
-  [#184](https://github.com/PubliciaLLC/go-help-desk/issues/184).)
+  [#184](https://github.com/PubliciaLLC/go-help-desk/issues/184).) Auto-close
+  **does not revoke the guest's link**: see below.
+#### Closed is terminal and read-only
+
+Decided in [#349](https://github.com/PubliciaLLC/go-help-desk/issues/349). A
+Closed ticket is an archive, **terminal by default**. An instance setting
+(`closed_reopen_policy`, above) can allow forced reopen by admins only, or by
+staff and admins; **requesters never can**, whatever it says, and the follow-up
+is available in every mode. The rule, for every route (REST and MCP) and every
+credential (session, API key, OAuth client acting as the same role). The Staff /
+Admin row is the default, `off`:
+
+| Who | On a Closed ticket |
+|-----|--------------------|
+| Guest (link holder) | **Read only.** Reply, upload and anything that could reopen are refused with the generic `404`, byte-identical to a bad link (below). The one write that accepts a closed ticket is `POST /guest/follow-up`: a new, linked ticket (below). |
+| Account holder (User role) | **Read only.** Reply, attachment upload, custom-field edit and linking are refused with `409 ticket_closed`; status change, assign, reclassify, resolve and close are refused with `403`, as for any state. They **can** open a follow-up of their own closed ticket (below). |
+| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, reclassification, tags and linking (see below). |
+| Resolved (any requester) | Unchanged: a requester's reply inside the reopen window reopens the ticket; outside it, `409 reopen_window_closed`. |
+
+**One rule, in the domain.** The service decides it, not each handler: the
+reply/upload lifecycle check (`lifecycleAllowsReply`) and the requester's other
+writes (`Service.CanRequesterWrite`) both ask one function (`closedRefusal`);
+guest writes resolve through `TicketForGuestWrite`. Every way out of Closed —
+`Reopen`, `UpdateStatus`, `Resolve`, `ResolveAsDuplicate`, so the reopen
+endpoint, the status route, resolve, duplicate-of with auto-resolve and MCP
+`update_ticket_status` — asks one predicate, `ticket.CanForceReopen(policy,
+role)`, through `Service.forceReopenGate`, **on the locked row**: the policy is
+read there (`closed_reopen_policy`, wired by the server, no cache), after the
+ticket's row lock is taken, so a setting flipped to `off` while a request was in
+flight is the one that applies. A requester is `false` in every mode and is
+refused earlier, by role, with the refusal a requester has always had (`403`),
+never told about the setting. The earlier incident (GHSA-2x4f-j4jv-m2cm) was two
+surfaces each deciding one rule on their own.
+
+**A forced reopen** targets the existing reopen target status (**Reopen target
+status**, falling back to New), through the shared timestamp rule, so the SLA
+pause is carried and a closed/resolved timestamp is cleared, with a
+status-history row and the ordinary reopen notification (a guest is sent a link,
+issued at send time as for any reopen). The guest's links are not touched by it
+(closing never revoked them), and the ticket is writable through them again as
+soon as it is not Closed. The audit entry says it was forced and under which
+policy: `reopened` for the endpoint, with `forced_reopen: true` and
+`closed_reopen_policy` in its "after" (the same two keys ride on the
+`status_changed` or `resolved` entry of the other doors). The ticket response
+carries `can_reopen` (true only for a Closed ticket and a viewer the policy
+allows) so the ticket page shows the Reopen button only to them; it is a
+courtesy, and the service decides again when the button is used.
+
+**Races: the rule holds against a close that wins.** A requester's reply or
+attachment is checked once up front, and the row is written later (for an
+upload, after the file has been read, scanned and stored). So the write
+re-decides on the **locked** ticket row, in the same transaction as the insert
+(`refuseRequesterOnClosed`, in `addReply` and `CreateAttachment`): a close that
+committed in between refuses the write (guest: the generic `404`; reporter:
+`409 ticket_closed`; for an upload the stored file is removed), and one that has
+not yet committed waits for the write. Staff are not locked or refused. Link
+adds already lock both rows. A reply that would have reopened a Resolved ticket
+and lost the race to a close is refused too, so a closed ticket never gains a
+reply from a requester. Pinned by deterministic interleaving tests in the domain
+suite.
+
+**What is refused with which status, and why.** A reporting user sees their own
+closed ticket, so a clear `409 ticket_closed` for *their own* ticket tells them
+nothing they cannot already read. It never becomes an existence oracle: a ticket
+the caller may not see answers the not-found refusal first (see Authorization),
+for replies, field edits and links alike. Writes that were already refused by
+role (status, assignment, reclassification, resolve, close, tags) keep their
+`403`; the closed state does not change which refusal a role gets.
+
+**Staff and admin: the minimal reading.** Only *leaving* Closed is removed.
+Replying (including internal notes), assignment, reclassification, tags,
+linking and attachments are unchanged on a closed ticket, because they do not
+change what state the ticket is in, and removing them is not what was decided.
+(A staff reply on a closed ticket still mails the guest a read-only link, below.)
+Over MCP `update_ticket_status` answers a move out of Closed with the closed
+refusal and names the follow-up instead.
+
+**Follow-up.** The way forward from a Closed ticket, in every `closed_reopen_policy`
+mode. It creates a **new** ticket from the closed one, through the same creation
+path as any ticket (`Service.create`): the same validation, tracking number,
+opening status history, audit entry (carrying `follow_up_of`), "created"
+notification and routing. REST applies the auto-assignment rules like a new
+ticket; MCP's `create_ticket` does not, so neither does `create_follow_up`.
+Three doors, one creation path:
+
+| Who | Route | Notes |
+|-----|-------|-------|
+| Staff, admin | `POST /api/v1/tickets/{id}/follow-up`; MCP `create_follow_up` | Any closed ticket they can see. Not limited. |
+| Account holder (and an API key or OAuth client acting as one) | `POST /api/v1/tickets/{id}/follow-up` | **Their own** closed ticket (a ticket they cannot see is not found; one they can see but did not report is `403`). |
+| Guest | `POST /api/v1/guest/follow-up` | The ticket their link names, only while it is Closed. |
+
+- **Copied for staff and admin:** subject, description, category / type / item,
+  priority, and the requester: the reporting user, or the guest's address, name
+  and phone. A guest is told, as for any new guest ticket, with a link to the new
+  ticket.
+- **Copied for a requester — only what a requester may set on a normal create.**
+  The principle: a requester's follow-up must not be a ticket they could not have
+  created directly. So: subject, description, category, the type for an account
+  holder (never for a guest), and who they are. **Not** the item (requesters
+  cannot pick one), and **not the priority** — it is medium, as for any requester's
+  new ticket; a priority staff raised stays with the closed ticket. No assignee,
+  tags or SLA state either. The category (and the type) must still be active, as
+  for a normal create (`400` if an administrator has since archived it). The
+  request body is ignored: there is no field to set.
+- **Not copied, for anyone:** replies and internal notes, attachments, status
+  history, custom-field values, tags, the assignee, any SLA state. The new ticket
+  starts in New and runs its own SLA clock. Custom-field values are not copied
+  because they live outside the ticket service, and copying them on one surface
+  and not the other would be two rules; a later change can add them to the
+  service for both.
+- **Linked:** the closed ticket is the **parent** of the follow-up
+  (`parent_child`, source = closed ticket), written in the same transaction as
+  the ticket, so a follow-up never exists without its link. The existing link
+  types are reused; no new relation or table. A requester seeing the link on
+  either ticket sees only their own tickets.
+- **The original is not written:** still Closed, same replies and history, and a
+  guest's links untouched.
+- **Only from a Closed ticket** (`409 ticket_not_closed` otherwise): an open
+  ticket needs no way forward, and allowing it would make this a general clone
+  that two live tickets can drift apart from.
+- A follow-up can itself be closed and followed up.
+
+**A requester's follow-up and abuse limits.** It must not be a way around the
+limits a normal ticket has, and the action must not become a stream of tickets:
+
+- **One per closed ticket for a requester** (`409 follow_up_exists`; for a guest
+  the generic `404`). A follow-up staff opened counts; staff are not limited. The
+  check is made before a tracking number is taken, and again on the locked
+  original in the transaction that writes the ticket and its link, so two clicks
+  make one ticket. To go on, follow up the follow-up once it is closed.
+- **Account holders** are held to what a direct create is: there is no rate
+  limit on an account holder creating a ticket, so none is added; the cap above
+  is what bounds this door.
+- **Guests** are held to what `POST /guest/tickets` is: guest submission must be
+  on (otherwise the generic `404`) and the same per-address budget applies,
+  **shared with direct submissions**, not a second bucket (`429`).
+
+**The guest route and its refusals.** `POST /guest/follow-up` is a deliberate
+exception to "every guest write route refuses a closed ticket": it resolves the
+link through the **read** lookup (a closed ticket resolves) and then requires
+Closed itself. Every other outcome is the same generic `404`, byte-identical to a
+bad link's refusal on the other guest write routes: an open ticket, a bad or
+expired link, guest submission off, a follow-up already opened. The order is
+fixed so nothing is told in between: Closed first, then the submission switch,
+and only then the per-address budget, so a `429` is only ever seen by a holder of
+a good link to a closed ticket. The new ticket is a guest ticket for the same
+guest (address, name and phone from the original), and **its own link goes by the
+ordinary guest-ticket-created mail** — not in the response, which is the new
+tracking number and nothing else, as for a normal submission. The audit entry has
+no actor for a guest, as a normal guest ticket's has none; the identity is the new
+ticket's own guest columns, and `follow_up_of` says what it continues.
+
+**Known limits** (recorded, not fixed, in #349):
+
+- **Follow-up mail wording.** A guest's follow-up sends the ordinary
+  `ticket_created` mail ("We have received [TICKET]") for a ticket the guest did
+  not file themselves. A follow-up-specific line needs a new typed field on the
+  notification event, which the outbox record must round-trip (#346's code);
+  email never reads `Payload`, deliberately. The mail still carries the new
+  tracking number and a working link, so the guest can follow it.
+- **A lost double-submit burns one tracking number.** A requester's follow-up
+  is checked for an existing one before a tracking number is taken, and again on
+  the locked original in the transaction that writes the ticket. Two requests in
+  flight at once both pass the first check and both take a number
+  (`NextSeq`); the loser is refused at the locked check, so its number is never
+  used and the sequence has a gap. One gap per lost race, never a second ticket.
+- **"The follow-up" is any parent_child link out of the closed ticket.** The
+  one-per-closed-ticket cap cannot tell a follow-up from a link someone made by
+  hand: the link row has no marker, a marker would be a schema change, and an
+  audit entry is the wrong place (the retention sweep deletes it, and the cap
+  would quietly lapse). So a staff member who links a closed ticket as the
+  parent of another ticket uses up its requester's one follow-up. This is the
+  conservative direction (it can only refuse a requester, never admit a second
+  ticket), staff are unaffected, and a follow-up of the new child still works;
+  pinned by a test so that changing it is a decision.
+- **An archived category or type is a 400 on the guest route.** Every refusal
+  that would say something about a link or a ticket's state is the generic 404,
+  but a guest follow-up of a ticket whose category (or type) an administrator has
+  since archived answers `400` with the reason, as a direct submission does. The
+  caller already holds a good link to a closed ticket and knows the category it
+  was filed under, so nothing is revealed that they could not see.
+- **Deleted reporter.** A follow-up of a ticket whose reporting account has been
+  deleted fails validation (`400`): creation requires a reporter or a guest
+  address, and loosening that for follow-ups only would weaken the rule for the
+  path every ticket takes.
+- **Tokens accumulate on a closed ticket.** One per mail sent on it (each reply
+  staff add, each resend), each expiring thirty days after it is issued. Expired
+  token rows are not swept anywhere today, closed or not.
+- **Requester follow-up on the ticket page.** The button stays after a reload
+  and a second click is refused with a message (`follow_up_exists`); the page
+  does not look the existing follow-up up for a requester, who is not shown the
+  linked-tickets panel. After creating one the page offers a link to the new
+  ticket rather than navigating to it.
+- **Staff composer.** The ticket page hides the reply composer on a closed
+  ticket for every role, though the API still lets staff and admin reply to,
+  annotate and attach to one (the decision above). Staff do that over the API or
+  MCP, not from the page.
+- **Custom-field edits are not atomic with a close.** A reporter's custom-field
+  edit is checked once (`CanRequesterWrite`) and then written value by value
+  through the custom-field service, which is outside the ticket transaction. A
+  close landing after the check leaves **all** the values in that request
+  written on a closed ticket, and a close landing mid-loop leaves the remainder.
+  Replies, uploads and links, which carry the thread, are atomic.
+
 - Statuses are customizable — admins can add intermediate statuses, but
   New, Resolved and Closed are system statuses with special behavior. The
   server finds them by name at startup and compares lifecycle rules by
@@ -179,7 +387,7 @@ New → In Progress → Pending (waiting on user/vendor) → Resolved → [reope
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log — it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `resolved`, `closed` and `reopened` (the explicit `POST /reopen`, not a reply that reopens a ticket — that path updates status history but not this log) are covered; priority, CTI and custom-field changes are not, and a cleared assignment is currently recorded as another `assigned` entry rather than `unassigned` (`unassigned` is written only when a departing user's tickets are returned to the queue). Those are pre-existing gaps in what the domain layer records, not something this route introduces — tracked separately rather than fixed here, since closing them is a write-side change to `ticket.Service`, not a read-side one.
+This route only *reads* the audit log — it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after") are covered; priority, CTI and custom-field changes are not, and a cleared assignment is currently recorded as another `assigned` entry rather than `unassigned` (`unassigned` is written only when a departing user's tickets are returned to the queue). Those are pre-existing gaps in what the domain layer records, not something this route introduces — tracked separately rather than fixed here, since closing them is a write-side change to `ticket.Service`, not a read-side one.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -265,7 +473,9 @@ The ticket list includes a live search bar with a 300 ms debounce:
 ### Linked Tickets
 
 Tickets can be linked to any other ticket regardless of status (including
-Closed). The backend (`ticket.LinkType`; `GET`/`POST /tickets/{id}/links`
+Closed) — by staff and admin. A requester cannot add a link to or from a Closed
+ticket (#349). A follow-up opened from a Closed ticket is linked to it as its
+child (`parent_child`, see Ticket Lifecycle). The backend (`ticket.LinkType`; `GET`/`POST /tickets/{id}/links`
 and `DELETE /tickets/{id}/links/{targetId}/{linkType}` in
 `handler_tickets.go`) is the canonical spelling, and the frontend's
 `LinkType` in `frontend/src/api/types.ts` uses the same four values. Links
@@ -842,16 +1052,34 @@ branch.
 
 A visitor with no account files a ticket and is sent a per-ticket link. The link
 is the whole credential, so it is treated like one: stored as a hash, replaced
-whenever the ticket changes in a way the guest is told about, revoked when the
-ticket closes, and expiring after thirty days if nothing happens at all.
+whenever the ticket changes in a way the guest is told about, **read-only once
+the ticket closes**, and expiring after thirty days if nothing happens at all.
+
+**Closed means read-only, not revoked** (#349). Closing, a status change to
+Closed and the auto-close sweep **stop rotating** the guest's link; they do not
+delete it. The last link sent keeps reading the ticket until it expires
+(`GuestTokenTTL`, thirty days). Before this, closing revoked every link, so a
+guest could never read the answer on a ticket that staff replied to and closed
+straight away. Reading and writing are different lookups:
+
+- `GET /api/v1/guest/ticket` resolves the token for a **read**, closed or not.
+- `POST /guest/replies` and `POST /guest/attachments` (every route that changes
+  something, grouped behind one middleware so a new one cannot forget it) resolve
+  through the **write** lookup, which refuses a Closed ticket with the same
+  error as a link that never existed. The response is the generic `404`,
+  byte-identical to the one a bad link gets (status, content type and body), so
+  the refusal does not reveal that the ticket exists. A request that races the
+  close past the middleware is mapped to the same `404`, not the `409` a
+  signed-in reporter gets: see "Races" below.
 
 The replacement link is created when the email carrying it is **sent**, not
 inside the transaction of the change (#164). Notifications are queued in an
 outbox (below), and the outbox must never hold a working credential: the token
 table keeps only hashes. So the change marks its event for a guest link, and
-the send re-reads the ticket, skips a ticket that has closed since, and
-rotates. The previous link therefore dies at the send rather than the commit,
-normally seconds later.
+the send re-reads the ticket and rotates. The previous link therefore dies at
+the send rather than the commit, normally seconds later. A ticket that has
+**closed since** is still sent its mail (#349 replaced #346's skip), with a link
+**added** beside the existing ones rather than a rotation; see below.
 
 A link re-request (`POST /api/v1/guest/resend`) does no lookup on the request
 at all. Every request, matching a ticket or not, queues the same event carrying
@@ -876,13 +1104,47 @@ retried rather than refused. The exception: a row whose first claim never
 reached the budget (the worker stopped mid-batch, or the lookup failed) comes
 back on a later attempt uncharged, at the cost of one extra rotation.
 
-**A guest email for a ticket that closed before it was sent is not sent.**
-Staff reply, then close, and if the reply's row has not gone out when the close
-commits, the guest gets nothing. That is not a lost answer: notification mail
-never carries the reply text, only a link to read it, and a closed ticket
-refuses every guest link. Before the outbox the same sequence sent "there is a
-new reply" with a link that was already dead. The real limit is the older one:
-a guest cannot read the last answer on a ticket closed straight after it.
+**A guest email for a ticket that closed before it was sent is still sent**
+(#349). Staff reply, then close straight away (common, and what an MCP agent
+does): the reply's mail goes out after the close and carries a link that opens
+the thread. #346 skipped it and, before the outbox, the same sequence sent
+"there is a new reply" with a link that was already dead, so the guest could
+never read the last answer.
+
+What "the existing link" means is decided here, because raw tokens are stored
+hashed and cannot be re-sent:
+
+- On a **Closed** ticket the send issues a **new** token and **deletes
+  nothing**: the links the guest already holds keep working until they expire.
+  This is not a rotation. It is added at most once per mail sent on that ticket,
+  each expiring thirty days after it is issued.
+- If **no** link is live — the thirty days passed, or the ticket never had one —
+  the same happens: the mail carries a new link. A closed ticket is never left
+  with a mail and no way to read it; staff wrote to the guest, and the mail is
+  how they learn.
+- A link issued for a closed ticket **can only read**: the write lookup refuses
+  a Closed ticket whatever the link's age. Closed is terminal by default; if an
+  operator enables forced reopen (`closed_reopen_policy`) and a staff member
+  reopens the ticket, the guest's links write again as soon as it is not Closed
+  (they belong to the same guest), and the reopen's own mail rotates them all
+  into one fresh link, as any reopen does. If that mail cannot be sent, the
+  older links stay live until they expire.
+- On an open ticket, rotation is unchanged.
+
+**Resend for a closed ticket re-sends a read-only link** (decision, #349). A
+guest who has lost their link may ask for another with the tracking number and
+address, for a closed ticket as for an open one: both halves must match, the
+per-ticket budget applies, and the link is added beside the existing ones, not
+rotated, so a resend cannot lock them out. It stays indistinguishable between a
+match and a miss: the request still does no lookup and queues one identical
+event, so its timing and its `202` say nothing, and only the send-time step
+decides. The reason: closing no longer revokes anything, so there is no access
+for a resend to "resurrect", and refusing it would leave a guest with a deleted
+mail unable to read their own archive for up to thirty days. The cost: each
+resend extends that guest's read access by thirty days from the send, bounded by
+possession of the mailbox, which is the credential already. (Anyone who knows a
+tracking number and an address can still only cause mail to that address; they
+never receive the token.)
 
 Submission is a separate public route rather than a relaxation of the ticket
 router. Every route under `/tickets/{id}` would otherwise have to re-derive
@@ -963,7 +1225,10 @@ Every attachment upload — authenticated or guest — is authorized the same
 way a reply is (`CanUploadAttachment` / `CanGuestUploadAttachment`, reusing
 `CanUserUpdate` / `CanGuestUpdate`): a reporting user must own the ticket,
 and neither a Closed ticket nor a Resolved one past its reopen window
-accepts a new attachment from anybody but staff or an admin (#315 — the
+accepts a new attachment from anybody but staff or an admin. A Closed ticket is
+read-only to **every requester** (#349): a guest's upload is refused with the
+generic `404` (a link to a closed ticket reads and cannot write), and a
+reporting user's with `409 ticket_closed`. Staff and admin are unchanged (#315 — the
 upload handler used to check ownership and nothing else, so a reporter
 could attach to their own Closed ticket even though the equivalent reply
 was already refused).
@@ -1737,7 +2002,8 @@ over SSE at `/mcp/`.
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
 | `add_reply` | staff, admin | `internal: true` posts a staff-only note and does not notify the reporter. |
 | `assign_ticket` | staff, admin | To a user or a group. |
-| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. |
+| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
+| `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
 **Authorization.** `/mcp/` runs behind the same middleware chain as `/api/`, so
 every call is authenticated. Beyond that, the transport does not decide what a
@@ -1817,7 +2083,7 @@ handler, so a route added later cannot forget it.
 from the method; each tool declares what it needs at registration. The read
 tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`) need
 `tickets:read` and the write tools (`create_ticket`, `add_reply`,
-`assign_ticket`, `update_ticket_status`) need `tickets:write`. The two reference
+`assign_ticket`, `update_ticket_status`, `create_follow_up`) need `tickets:write`. The two reference
 tools sit under `tickets` rather than `categories`/`settings` because they exist
 to compose a ticket and are available to every role, unlike the administrative
 category and status endpoints. The top-level `/tags` and `/statuses` reference

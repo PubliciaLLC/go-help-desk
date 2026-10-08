@@ -483,8 +483,8 @@ function GeneralPanel({
 
       <Section title="Ticket lifecycle">
         <SettingRow
-          label="Reopen window"
-          description="How many days after resolution a user may reopen their ticket by adding a reply. Set to 0 to prevent reopening entirely."
+          label="Reopen window and auto-close"
+          description="How many days after resolution a requester may reopen their ticket by adding a reply. This is also when the ticket closes: once the window ends, a Resolved ticket is closed automatically, and a closed ticket is read-only for everyone who filed it and cannot be reopened by a requester (staff and admins open a linked follow-up ticket instead, or reopen it if you allow that below). Set to 0 for no reopening at all: a Resolved ticket is closed and read-only on the next automatic sweep, about 5 minutes later."
         >
           <div className="flex items-center gap-2">
             <Input
@@ -496,8 +496,23 @@ function GeneralPanel({
           </div>
         </SettingRow>
         <SettingRow
+          label="Reopening closed tickets"
+          description="Whether a Closed ticket can be reopened at all, and by whom. Off (the default): a closed ticket is archived read-only and nobody can reopen it; staff and admins open a linked follow-up ticket instead. Admins only: an administrator may force-reopen a closed ticket. Staff and admins: either may. Requesters (users and guests) can never reopen a closed ticket, whatever this is set to, and a follow-up is always available. Takes effect on the next request."
+        >
+          <Select
+            className="w-44"
+            aria-label="Reopening closed tickets"
+            value={str('closed_reopen_policy') || 'off'}
+            onChange={(e) => setStr('closed_reopen_policy', e.target.value)}
+          >
+            <option value="off">Off (terminal)</option>
+            <option value="admin">Admins only</option>
+            <option value="staff_admin">Staff and admins</option>
+          </Select>
+        </SettingRow>
+        <SettingRow
           label="Reopen target status"
-          description="The status a ticket is moved to when a user reopens it."
+          description="The status a ticket is moved to when it is reopened: a Resolved ticket by its requester's reply, or a Closed one by a force-reopen (when allowed above)."
         >
           <Select
             className="w-44"

@@ -82,7 +82,11 @@ func TestOAuthClient_CannotBeTheReporterOrAuthor(t *testing.T) {
 			{"changing the status", http.MethodPatch, "/api/v1/tickets/" + tk.ID.String(),
 				map[string]any{"status_id": h.resolvedStatusID(t).String()}},
 			{"resolving", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/resolve", map[string]any{}},
+			// Reopening a closed ticket (behind closed_reopen_policy, #349) and
+			// the follow-up both record the actor in a history row and an audit
+			// entry, so both are held to the same rule.
 			{"reopening", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/reopen", map[string]any{}},
+			{"opening a follow-up", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/follow-up", map[string]any{}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {

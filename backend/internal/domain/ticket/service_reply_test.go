@@ -24,6 +24,11 @@ type harness struct {
 	atomic     *fakeAtomic
 	sla        *fakeSLA
 
+	// policy is the closed_reopen_policy the service reads at request time
+	// (#349). Empty is the default, off. A test changes it between calls, or
+	// from inside a store hook, to show it is read when it is used.
+	policy string
+
 	newStatus        ticket.Status
 	resolvedStatus   ticket.Status
 	closedStatus     ticket.Status
@@ -67,6 +72,7 @@ func newHarness(t *testing.T) *harness {
 	h.svc = ticket.NewService(h.store, statuses, h.dispatcher, h.auditStore, h.atomic, h.sla)
 	require.NoError(t, h.svc.LoadSystemStatuses(context.Background()))
 	h.dispatcher.sendTime = h.svc.IssueGuestLink
+	h.svc.SetClosedReopenPolicy(func(context.Context) string { return h.policy })
 	return h
 }
 
@@ -171,9 +177,11 @@ func TestAddReply_SLAFailureDoesNotLoseTheReply(t *testing.T) {
 //
 // It also pins #326's second gap: a reply-triggered reopen wrote a
 // status-history entry but no audit entry, so /history and /audit could
-// disagree about whether the ticket was still open. The explicit POST
-// /reopen path (Service.Reopen) writes an audit entry in the same
-// transaction as its status-history one; this path must do the same.
+// disagree about whether the ticket was still open. Every other lifecycle
+// change writes an audit entry in the same transaction as its status-history
+// one (the explicit POST /reopen path did too, until #349 removed reopening a
+// Closed ticket, leaving this reply-reopen from Resolved as the only reopen);
+// this path must do the same.
 func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	h := newHarness(t)
 	reporter := uuid.New()

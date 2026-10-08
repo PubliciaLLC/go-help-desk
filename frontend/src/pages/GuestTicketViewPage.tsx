@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { addGuestReply, getGuestTicket, GuestLinkInvalid } from '@/api/guest'
+import {
+  addGuestReply,
+  createGuestFollowUp,
+  getGuestTicket,
+  GuestFollowUpRateLimited,
+  GuestLinkInvalid,
+} from '@/api/guest'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -49,6 +55,10 @@ export function GuestTicketViewPage() {
     },
   })
 
+  // A follow-up of a closed ticket (#349): a new ticket, linked to this one,
+  // whose own link is emailed. The response holds only its tracking number.
+  const followUp = useMutation({ mutationFn: () => createGuestFollowUp(token) })
+
   if (isLoading) {
     return <Shell><p className="text-sm text-gray-500">Loading…</p></Shell>
   }
@@ -92,11 +102,11 @@ export function GuestTicketViewPage() {
           <CardContent className="space-y-3 text-sm text-gray-700">
             <p>
               {error instanceof GuestLinkInvalid
-                ? 'Links are replaced each time we update your ticket, and stop working once a ticket is closed.'
+                ? 'Links are replaced each time we update your ticket, and stop working 30 days after they are sent.'
                 : 'We could not open that ticket.'}
             </p>
             <p>
-              If your ticket is still open, you can{' '}
+              You can{' '}
               <a href="/track" className="text-blue-600 underline">request a new link</a>{' '}
               with your tracking number and email address.
             </p>
@@ -143,29 +153,66 @@ export function GuestTicketViewPage() {
             ))}
           </div>
 
-          <form
-            className="space-y-2 border-t pt-4"
-            onSubmit={(e) => {
-              e.preventDefault()
-              if (reply.trim()) send.mutate()
-            }}
-          >
-            <Textarea
-              value={reply}
-              onChange={(e) => setReply(e.target.value)}
-              rows={4}
-              placeholder="Add a reply…"
-              aria-label="Add a reply"
-            />
-            {send.isError && (
-              <p role="alert" className="text-sm text-red-600">
-                We could not add your reply. The ticket may have been closed.
+          {/* A closed ticket is an archive: this link still reads it, and
+              nothing writes to it (#349). Said here rather than leaving a
+              reply box that could only fail. */}
+          {ticket.status === 'Closed' ? (
+            <div role="note" className="space-y-3 border-t pt-4 text-sm text-gray-600">
+              <p>
+                This ticket is closed, so it can no longer be replied to. If you
+                still need help, you can open a follow-up ticket based on it.
               </p>
-            )}
-            <Button type="submit" disabled={!reply.trim() || send.isPending}>
-              {send.isPending ? 'Sending…' : 'Send reply'}
-            </Button>
-          </form>
+              {followUp.isSuccess ? (
+                <p role="status" className="text-green-700">
+                  Your follow-up ticket is{' '}
+                  <span className="font-mono">{followUp.data}</span>. We have
+                  emailed you a link to it.
+                </p>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => followUp.mutate()}
+                    disabled={followUp.isPending}
+                  >
+                    {followUp.isPending ? 'Creating…' : 'Create follow-up'}
+                  </Button>
+                  {followUp.isError && (
+                    <p role="alert" className="text-red-600">
+                      {followUp.error instanceof GuestFollowUpRateLimited
+                        ? 'Too many attempts. Please wait a minute and try again.'
+                        : 'We could not create a follow-up. One may already exist for this ticket; look for the email we sent you.'}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          ) : (
+            <form
+              className="space-y-2 border-t pt-4"
+              onSubmit={(e) => {
+                e.preventDefault()
+                if (reply.trim()) send.mutate()
+              }}
+            >
+              <Textarea
+                value={reply}
+                onChange={(e) => setReply(e.target.value)}
+                rows={4}
+                placeholder="Add a reply…"
+                aria-label="Add a reply"
+              />
+              {send.isError && (
+                <p role="alert" className="text-sm text-red-600">
+                  We could not add your reply. The ticket may have been closed.
+                </p>
+              )}
+              <Button type="submit" disabled={!reply.trim() || send.isPending}>
+                {send.isPending ? 'Sending…' : 'Send reply'}
+              </Button>
+            </form>
+          )}
         </CardContent>
       </Card>
     </Shell>

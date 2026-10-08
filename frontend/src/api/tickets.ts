@@ -62,8 +62,19 @@ export async function resolveTicket(id: string, notes?: string): Promise<Ticket>
   return res.data
 }
 
+// Force-reopens a Closed ticket. Refused (409) unless the instance's
+// closed_reopen_policy lets the caller's role; the ticket response's
+// can_reopen says whether to offer it.
 export async function reopenTicket(id: string): Promise<Ticket> {
   const res = await api.post<Ticket>(`/tickets/${id}/reopen`, {})
+  return res.data
+}
+
+// The way forward from a Closed ticket (#349): a new ticket, linked to it,
+// that starts open. Available whether or not the instance lets anyone reopen a
+// closed ticket (closed_reopen_policy, off by default).
+export async function createFollowUp(id: string): Promise<Ticket> {
+  const res = await api.post<Ticket>(`/tickets/${id}/follow-up`, {})
   return res.data
 }
 

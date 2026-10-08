@@ -591,7 +591,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, ticketID)
+	s.storeUploadedAttachment(w, r, ticketID, actor)
 }
 
 // storeUploadedAttachment is the multipart handling, validation, scanning and
@@ -605,7 +605,12 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 // support one, which in this codebase means a test using an unusual
 // transport. Failing the upload over it would be worse than keeping the
 // shorter deadline.
-func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID) {
+//
+// actor is who is uploading, for the last check before the row is written: a
+// guest is Actor{Role: RoleUser} with a nil UserID, which is also how a close
+// that wins the race is answered (the generic 404 for a guest, 409 for a
+// signed-in reporter).
+func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor) {
 	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
 	}
@@ -996,8 +1001,17 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 	if virusName != "" {
 		att.VirusName = &virusName
 	}
-	if err := s.tickets.CreateAttachment(r.Context(), att); err != nil {
+	if err := s.tickets.CreateAttachment(r.Context(), att, actor); err != nil {
 		_ = os.Remove(diskPath)
+		if errors.Is(err, ticket.ErrClosed) {
+			// The ticket closed while the file was being read and scanned.
+			if actor.UserID == nil {
+				guestWriteError(w, err)
+			} else {
+				handleError(w, err)
+			}
+			return
+		}
 		Error(w, http.StatusInternalServerError, "db_error", "could not record attachment")
 		return
 	}

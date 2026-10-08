@@ -505,7 +505,15 @@ func GenerateTrackingNumber(prefix string, year int, seq int64) TrackingNumber {
 // Errors returned by rule functions.
 var (
 	ErrForbidden = errors.New("forbidden")
-	ErrClosed    = errors.New("ticket is closed")
+	// ErrClosed is the refusal for anything a Closed ticket does not accept.
+	// Closed is archived read-only (#349): a requester — guest or account
+	// holder — can read it and change nothing, and nobody can move it out of
+	// Closed unless closed_reopen_policy lets their role (never a requester;
+	// off by default). 409, the ticket's state rather than the caller's
+	// permissions, and fine to say to a reporter about their own ticket (they
+	// can already see it); never used to answer for a ticket the caller may not
+	// see, which gets the not-found refusal first.
+	ErrClosed = errors.New("ticket is closed")
 	// ErrReopenWindowClosed is separate from ErrForbidden on purpose: the
 	// caller owns the ticket and has the right to reopen it in general. What
 	// expired is the window, and telling them "you do not have permission"
@@ -571,16 +579,87 @@ var (
 	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
 	// empty name was silently accepted before this check existed. See #278.
 	ErrInvalidStatusName = errors.New("status name must not be empty")
-	// ErrNotClosed is returned by Reopen for a ticket that is not Closed —
-	// including one a concurrent writer reopened between the unlocked check
-	// and the row lock. Reopen is deliberately Closed-only
-	// (TestReopen_OnlyFromClosed); a Resolved ticket leaves that state
-	// through UpdateStatus or a reporter's reply. It was a bare fmt.Errorf
-	// that handleError could not recognize, so a staff click on Reopen came
-	// back as a 500. 409, like ErrClosed: the ticket's state, not the
-	// caller's permissions, is what refuses. See #277.
+	// ErrNotClosed is returned by Reopen and CreateFollowUp for a ticket that
+	// is not Closed: both are ways out of a closed ticket, and an open one
+	// needs neither. See #277 for why it is a sentinel. 409, like ErrClosed:
+	// the ticket's state, not the caller's permissions, is what refuses.
 	ErrNotClosed = errors.New("ticket is not closed")
+	// ErrFollowUpExists is a requester's second follow-up of one closed ticket
+	// (#349): they get one, so the action cannot become a stream of tickets.
+	// Staff are not limited. 409.
+	ErrFollowUpExists = errors.New("a follow-up of this ticket already exists")
 )
+
+// The three values of the closed_reopen_policy setting (#349): whether a Closed
+// ticket can be force-reopened at all and, if so, by whom.
+//
+//	off          (the default) Closed is terminal for every role
+//	admin        an administrator may force-reopen
+//	staff_admin  staff and administrators may
+//
+// Requesters (reporting users, guests, and API keys or OAuth clients acting as
+// one) never may, whatever the value. The follow-up is available in every mode.
+const (
+	ReopenPolicyOff        = "off"
+	ReopenPolicyAdmin      = "admin"
+	ReopenPolicyStaffAdmin = "staff_admin"
+)
+
+// ValidClosedReopenPolicy reports whether v is a value the setting accepts.
+// Used to refuse a write; the reader treats anything else as off.
+func ValidClosedReopenPolicy(v string) bool {
+	return v == ReopenPolicyOff || v == ReopenPolicyAdmin || v == ReopenPolicyStaffAdmin
+}
+
+// CanForceReopen is the one predicate for leaving Closed: every route that can
+// do it (the reopen endpoint, a status change, Resolve, Resolve-as-duplicate,
+// over REST and MCP alike) asks it, through Service.forceReopenPolicy. Two
+// surfaces deciding one rule on their own is how GHSA-2x4f-j4jv-m2cm happened.
+//
+// An unset or unrecognised policy is off, never a permissive value, and the
+// RoleUser case is false in every mode on purpose: a requester's refusal does
+// not depend on the setting.
+func CanForceReopen(policy string, role user.Role) bool {
+	switch policy {
+	case ReopenPolicyAdmin:
+		return role == user.RoleAdmin
+	case ReopenPolicyStaffAdmin:
+		return role == user.RoleAdmin || role == user.RoleStaff
+	}
+	return false
+}
+
+// ReopenRefusedError is the refusal of a force-reopen by the policy in force.
+// It is an ErrClosed (409 ticket_closed, like every refusal of a closed
+// ticket), and its text says why — disabled, or restricted to administrators —
+// and where to go instead. Only staff and admin can meet it; a requester is
+// refused earlier, by role, and is never told about the setting.
+type ReopenRefusedError struct{ msg string }
+
+func (e *ReopenRefusedError) Error() string { return e.msg }
+
+// Is makes it an ErrClosed.
+func (e *ReopenRefusedError) Is(target error) bool { return target == ErrClosed }
+
+func reopenRefusal(policy string) error {
+	if policy == ReopenPolicyAdmin {
+		return &ReopenRefusedError{"reopening closed tickets is restricted to administrators on this " +
+			"instance; ask an administrator, or create a follow-up ticket instead"}
+	}
+	return &ReopenRefusedError{"reopening closed tickets is disabled on this instance; " +
+		"create a follow-up ticket instead"}
+}
+
+// closedRefusal is the one place that says a Closed ticket accepts no write
+// from its requester. lifecycleAllowsReply (replies and uploads, guest and
+// account holder) and CanRequesterWrite (everything else a requester can do)
+// both ask it, so the rule cannot be spelled two ways.
+func closedRefusal(status Status) error {
+	if status.Name == StatusNameClosed {
+		return ErrClosed
+	}
+	return nil
+}
 
 // CanUserUpdate returns nil if the actor may modify this ticket.
 // Rules:
@@ -628,8 +707,8 @@ func CanGuestUpdate(t Ticket, status Status, reopenWindowDays int) error {
 // lifecycleAllowsReply holds the rules that do not depend on who is asking:
 // whether the ticket's own state accepts another reply at all.
 func lifecycleAllowsReply(t Ticket, status Status, reopenWindowDays int) error {
-	if status.Name == StatusNameClosed {
-		return ErrClosed
+	if err := closedRefusal(status); err != nil {
+		return err
 	}
 	if status.Name == StatusNameResolved {
 		if t.ResolvedAt == nil {

@@ -429,28 +429,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-assign: CTI-scoped group first, then global group, then round-robin users, else unassigned.
-	if matched, _ := s.groups.GetGroupsForTicket(r.Context(), t.CategoryID, t.TypeID); len(matched) > 0 {
-		gid := matched[0].ID
-		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, &gid, ticket.SystemActor)
-	} else if gid := s.adminSvc.AutoAssignGroupID(r.Context()); gid != nil {
-		_, _ = s.tickets.Assign(r.Context(), t.ID, nil, gid, ticket.SystemActor)
-	} else if uids := s.adminSvc.AutoAssignUserIDs(r.Context()); len(uids) > 0 {
-		// Round-robin, skipping anybody the assignment refuses.
-		//
-		// Nothing removes a departed colleague from this setting, so the list
-		// outlives them. Assign now refuses a deleted, disabled or
-		// non-staff account — but taking their slot and giving up would
-		// silently leave every Nth ticket unassigned, which is a queue that
-		// quietly loses a share of its work. Try the next one instead.
-		start := s.rrIdx.Add(1)
-		for i := range uids {
-			uid := uids[(start+uint64(i))%uint64(len(uids))]
-			if _, err := s.tickets.Assign(r.Context(), t.ID, &uid, nil, ticket.SystemActor); err == nil {
-				break
-			}
-		}
-	}
+	s.autoAssign(r.Context(), t)
 
 	// Set any custom field values supplied on creation.
 	//
@@ -738,6 +717,12 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 // POST /api/v1/tickets/{id}/reopen
+//
+// Force-reopens a Closed ticket, for the roles closed_reopen_policy allows
+// (#349). Off by default, in which case every caller gets 409 ticket_closed
+// with the reason; a requester gets 403 whatever the setting. The rule is
+// ticket.Service.Reopen's, not decided here, so this route, a status change and
+// Resolve cannot disagree about it.
 func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	if a.Role == user.RoleUser {
@@ -749,13 +734,11 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
 		return
 	}
-
 	targetID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-
 	if !s.requireUserIdentity(w, r) {
 		return
 	}
@@ -766,6 +749,54 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	JSON(w, http.StatusOK, t)
+}
+
+// POST /api/v1/tickets/{id}/follow-up
+//
+// The way forward from a Closed ticket (#349): a NEW ticket that starts open
+// and links back to the closed one, which is left untouched. Closed is
+// terminal by default, so this is the way forward in every mode; the reopen
+// endpoint above is an alternative only where closed_reopen_policy allows it.
+// Staff and admin only, and the rule lives in
+// ticket.Service.CreateFollowUp (staff and admin) and CreateRequesterFollowUp
+// (the ticket's own requester): ErrForbidden for anyone else, ErrNotClosed for
+// a ticket that is not closed, ErrFollowUpExists for a requester's second.
+func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
+		return
+	}
+	if !s.requireUserIdentity(w, r) {
+		return
+	}
+	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+	// A requester follows up their OWN closed ticket, holding to what they
+	// could set on a normal create; staff and admin copy more. Which rule is the
+	// service's (the role decides which method will accept the actor); the one
+	// thing decided here is the active-classification check it cannot make.
+	var t ticket.Ticket
+	if a.Role == user.RoleUser {
+		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
+			s.requesterClassificationOpen)
+	} else {
+		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor)
+	}
+	if err != nil {
+		if errors.Is(err, ticket.ErrValidation) {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		handleError(w, err)
+		return
+	}
+	s.autoAssign(r.Context(), t)
+	// Read back, so the response carries whoever the routing assigned.
+	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
+		t = fresh
+	}
+	JSON(w, http.StatusCreated, t)
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -1054,6 +1085,34 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, links)
 }
 
+// autoAssign routes a newly created ticket: CTI-scoped group first, then the
+// global group, then round-robin users, else it stays unassigned. Shared by
+// handleCreateTicket and handleCreateFollowUp, because a follow-up is a new
+// ticket and goes through the same routing (#349).
+func (s *Server) autoAssign(ctx context.Context, t ticket.Ticket) {
+	if matched, _ := s.groups.GetGroupsForTicket(ctx, t.CategoryID, t.TypeID); len(matched) > 0 {
+		gid := matched[0].ID
+		_, _ = s.tickets.Assign(ctx, t.ID, nil, &gid, ticket.SystemActor)
+	} else if gid := s.adminSvc.AutoAssignGroupID(ctx); gid != nil {
+		_, _ = s.tickets.Assign(ctx, t.ID, nil, gid, ticket.SystemActor)
+	} else if uids := s.adminSvc.AutoAssignUserIDs(ctx); len(uids) > 0 {
+		// Round-robin, skipping anybody the assignment refuses.
+		//
+		// Nothing removes a departed colleague from this setting, so the list
+		// outlives them. Assign now refuses a deleted, disabled or
+		// non-staff account — but taking their slot and giving up would
+		// silently leave every Nth ticket unassigned, which is a queue that
+		// quietly loses a share of its work. Try the next one instead.
+		start := s.rrIdx.Add(1)
+		for i := range uids {
+			uid := uids[(start+uint64(i))%uint64(len(uids))]
+			if _, err := s.tickets.Assign(ctx, t.ID, &uid, nil, ticket.SystemActor); err == nil {
+				break
+			}
+		}
+	}
+}
+
 // reopenTargetStatusID resolves the configured reopen target, falling back to
 // the New system status when it does not resolve.
 //
@@ -1064,9 +1123,10 @@ func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 // administrator had mistyped a setting. The fallback keeps the customer
 // working; the misconfiguration is an admin problem and is logged.
 //
-// Shared by the authenticated reply path, the guest reply path, and manual
-// reopen (handleReopenTicket): all three need to land on the same status a
-// misconfigured or absent setting should fall back to.
+// Shared by the authenticated reply path and the guest reply path: both reopen
+// a Resolved ticket inside the window, and need to land on the same status a
+// misconfigured or absent setting should fall back to, and the force-reopen
+// endpoint (#349), which lands there too.
 func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
@@ -1114,6 +1174,27 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 		}
 	}
 	return errors.New("category_id is not an active category")
+}
+
+// requesterClassificationOpen is the creation rule a requester is held to for a
+// ticket's classification, as handleCreateTicket applies it: the category must
+// be active, and the type, when there is one, active too. Staff are not held to
+// it (an old ticket is filed under the classification it belongs to, and that
+// may be archived); a requester's follow-up is a new ticket and is (#349).
+func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error {
+	if err := s.categoryIsOpen(ctx, categoryID); err != nil {
+		return err
+	}
+	if typeID != nil {
+		ty, err := s.categories.GetType(ctx, *typeID)
+		if err != nil || ty.CategoryID != categoryID {
+			return errors.New("type_id does not belong to category_id")
+		}
+		if !ty.Active {
+			return errors.New("type_id is not an active type")
+		}
+	}
+	return nil
 }
 
 // requireUserIdentity refuses a credential that has nobody behind it, and

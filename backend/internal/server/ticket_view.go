@@ -20,6 +20,14 @@ import (
 type ticketView struct {
 	ticket.Ticket
 	SLA *sla.Status `json:"sla"` // nil: no matching policy, SLA tracking is off, or the viewer is a reporting user
+
+	// CanReopen is whether THIS viewer may force-reopen THIS ticket: it is
+	// Closed and closed_reopen_policy lets the viewer's role (#349). It is how
+	// the ticket page knows whether to show the Reopen button, and a courtesy
+	// only — the service decides again, on the locked row, when it is used.
+	// False for a reporting user whatever the setting, and false for any
+	// ticket that is not Closed.
+	CanReopen bool `json:"can_reopen"`
 }
 
 // ticketViews attaches each ticket's live SLA status via one batch call
@@ -47,6 +55,17 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 	}
 	if actor == nil || actor.Role == user.RoleUser {
 		return views, nil
+	}
+	// Read once per response, and only when a closed ticket is in it.
+	policy := ""
+	for i, t := range ts {
+		if t.ClosedAt == nil {
+			continue
+		}
+		if policy == "" {
+			policy = s.adminSvc.ClosedReopenPolicy(ctx)
+		}
+		views[i].CanReopen = ticket.CanForceReopen(policy, actor.Role)
 	}
 	enabled, err := s.adminSvc.SLAEnabled(ctx)
 	if err != nil {

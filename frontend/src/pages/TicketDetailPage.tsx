@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useParams } from '@tanstack/react-router'
+import { useParams, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   getTicket,
@@ -7,6 +7,7 @@ import {
   listStatusHistory,
   resolveTicket,
   reopenTicket,
+  createFollowUp,
   closeTicket,
   updateTicket,
   listAttachments,
@@ -421,6 +422,8 @@ export function TicketDetailPage() {
     },
   })
 
+  // Force-reopen, for the roles closed_reopen_policy allows (#349). The
+  // button is only shown when the ticket response says can_reopen.
   const reopenMutation = useMutation({
     mutationFn: () => reopenTicket(id),
     onSuccess: () => {
@@ -430,11 +433,24 @@ export function TicketDetailPage() {
       qc.invalidateQueries({ queryKey: ['tickets'] })
     },
     onError: () => {
-      // A 409 means this page is stale (someone else already reopened it):
-      // refetch so the header shows the real status and the button goes away.
+      // A 409 means this page is stale (the setting changed, or someone else
+      // already reopened it): refetch so the header and the button show the
+      // truth.
       qc.invalidateQueries({ queryKey: ['ticket', id] })
       qc.invalidateQueries({ queryKey: ['statusHistory', id] })
       qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+    },
+  })
+
+  // The way forward from a Closed ticket (#349). Closed is terminal by
+  // default, so staff and admin open a new ticket linked to it. The new
+  // ticket is offered as a link rather than navigated to, so the closed one
+  // stays on screen until they choose.
+  const followUpMutation = useMutation({
+    mutationFn: () => createFollowUp(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['links', id] })
+      qc.invalidateQueries({ queryKey: ['tickets'] })
     },
   })
 
@@ -449,10 +465,11 @@ export function TicketDetailPage() {
   })
 
   // Whichever of the three last failed. They are mutually exclusive in
-  // practice — a ticket is never resolvable and reopenable at once.
+  // practice — a ticket is never resolvable and closed-and-continuable at once.
   const lifecycleError =
     (resolveMutation.isError && extractError(resolveMutation.error)) ||
     (reopenMutation.isError && extractError(reopenMutation.error)) ||
+    (followUpMutation.isError && extractError(followUpMutation.error)) ||
     (closeMutation.isError && extractError(closeMutation.error)) ||
     ''
 
@@ -473,9 +490,16 @@ export function TicketDetailPage() {
   }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
-  // Reopen is Closed-only on the server (ticket.Service.Reopen). A Resolved
-  // ticket is moved with the status selector, or reopened by the reporter's reply.
-  const canReopen = isStaffOrAdmin && statusName === 'Closed'
+  // Closed is read-only for requesters and terminal by default (#349). Staff
+  // and admin cannot reopen it unless the instance's closed_reopen_policy lets
+  // their role (the server says so in can_reopen); the way forward is a linked
+  // follow-up ticket either way. A Resolved ticket is still moved with the
+  // status selector, or reopened by its requester's reply inside the window.
+  const isClosed = statusName === 'Closed'
+  // Staff and admin may open one from any closed ticket; a requester from their
+  // own (the server holds them to one, and to what a normal create allows).
+  const canFollowUp = isClosed
+  const canReopen = isStaffOrAdmin && isClosed && ticket.can_reopen === true
   const canClose = isAdmin && statusName === 'Resolved'
 
   return (
@@ -538,6 +562,16 @@ export function TicketDetailPage() {
                 Reopen
               </Button>
             )}
+            {canFollowUp && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => followUpMutation.mutate()}
+                disabled={followUpMutation.isPending || followUpMutation.isSuccess}
+              >
+                Create follow-up
+              </Button>
+            )}
           </div>
         </div>
 
@@ -548,6 +582,31 @@ export function TicketDetailPage() {
             The status picker below already did this; these three did not. */}
         {lifecycleError && (
           <p role="alert" className="text-sm text-red-600">{lifecycleError}</p>
+        )}
+
+        {followUpMutation.isSuccess && (
+          <p role="status" className="text-sm text-green-700">
+            Follow-up created:{' '}
+            <Link
+              to="/tickets/$id"
+              params={{ id: followUpMutation.data.id }}
+              className="font-medium underline"
+            >
+              {followUpMutation.data.tracking_number}
+            </Link>
+          </p>
+        )}
+
+        {/* A closed ticket is an archive. Said once, near the top, so a
+            requester who cannot find the reply box knows it is not a bug. */}
+        {isClosed && (
+          <p role="note" className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+            {isStaffOrAdmin
+              ? canReopen
+                ? 'This ticket is closed. You can reopen it, or use “Create follow-up” to continue the work in a new, linked ticket.'
+                : 'This ticket is closed and cannot be reopened. Use “Create follow-up” to continue the work in a new, linked ticket.'
+              : 'This ticket is closed and read-only. If you still need help, use “Create follow-up” to open a new ticket based on this one.'}
+          </p>
         )}
 
         {/* Below md this stacks: main column first, then what is the sidebar
@@ -635,7 +694,7 @@ export function TicketDetailPage() {
             </div>
 
             {/* Reply / work log form */}
-            {statusName !== 'Closed' && (
+            {!isClosed && (
               <ReplyComposer ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
             )}
           </div>
@@ -666,7 +725,10 @@ export function TicketDetailPage() {
               </Card>
             )}
 
-            {isStaffOrAdmin && (
+            {/* No status picker on a Closed ticket unless this viewer may
+                reopen it (#349): otherwise every other option would only be
+                refused. */}
+            {isStaffOrAdmin && (!isClosed || canReopen) && (
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
@@ -675,6 +737,7 @@ export function TicketDetailPage() {
                 </CardHeader>
                 <CardContent>
                   <Select
+                    aria-label="Ticket status"
                     className="h-8 text-xs w-full"
                     value={ticket.status_id}
                     onChange={(e) => statusMutation.mutate(e.target.value)}

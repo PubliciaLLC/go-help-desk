@@ -213,6 +213,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Who may force-reopen a Closed ticket (#349). The reader falls back to
+	// "off", so a typo would leave an operator who just opened this up
+	// believing Closed tickets can be reopened — safe, and baffling. Refused by
+	// name instead, and null with it.
+	if raw, ok := body[admin.KeyClosedReopenPolicy]; ok {
+		var policy string
+		if err := unmarshalSetting(raw, "closed_reopen_policy", &policy); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !ticket.ValidClosedReopenPolicy(policy) {
+			Error(w, http.StatusBadRequest, "invalid_closed_reopen_policy",
+				"closed reopen policy must be one of: off, admin, staff_admin")
+			return
+		}
+	}
+
 	// The diff toggle is a bool and nothing else, null included.
 	if raw, ok := body[admin.KeyStaffCanViewTicketChangeHistory]; ok {
 		var on bool
