@@ -445,6 +445,16 @@ export interface OAuthClient {
 // Automation shapes. See docs/DESIGN.md "Notifications" and #187.
 export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
 
+// A class, never a message: the server stores no error text (#157).
+export type WebhookDeliveryError =
+  | '' | 'http_status' | 'timeout' | 'dns' | 'tls' | 'blocked_address' | 'connection' | 'other'
+
+export interface WebhookDelivery {
+  at: string
+  status: number // 0 when no response came back
+  error: WebhookDeliveryError
+}
+
 export interface WebhookConfig {
   id: string
   url: string
@@ -454,6 +464,7 @@ export interface WebhookConfig {
   enabled: boolean
   created_at: string
   payload_format: WebhookPayloadFormat
+  last_delivery?: WebhookDelivery | null
 }
 
 export interface Settings {

@@ -5,15 +5,19 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
@@ -46,9 +50,25 @@ func IsWebhookEvent(e string) bool {
 	return false
 }
 
-// WebhookStore is the interface needed to load enabled webhook configs.
+// Delivery error classes stored on the hook. A class, never a message: see
+// migration 000034, whose CHECK lists exactly these.
+const (
+	DeliveryHTTPStatus     = "http_status" // a response came back, not 2xx
+	DeliveryTimeout        = "timeout"
+	DeliveryDNS            = "dns"
+	DeliveryTLS            = "tls"
+	DeliveryBlockedAddress = "blocked_address" // safehttp refused an internal address
+	DeliveryConnection     = "connection"      // refused, reset, closed without a response
+	DeliveryOther          = "other"
+)
+
+// DeliveryErrors lists every class, for the test that pins it to the CHECK.
+var DeliveryErrors = []string{DeliveryHTTPStatus, DeliveryTimeout, DeliveryDNS, DeliveryTLS, DeliveryBlockedAddress, DeliveryConnection, DeliveryOther}
+
+// WebhookStore is the interface needed to load enabled webhook configs and record delivery results.
 type WebhookStore interface {
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	RecordWebhookDelivery(ctx context.Context, id uuid.UUID, url string, d authstore.WebhookDelivery) error
 }
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
@@ -132,8 +152,11 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 				"event", event.Type, "error", err)
 			continue
 		}
-		// Fire-and-forget per webhook; don't block on failures.
-		go d.send(hook, body)
+		// Fire-and-forget per webhook, as before; the result is recorded on the
+		// hook so a failing one shows on the admin page (#157), not only in the log.
+		go func(hook authstore.WebhookConfig, body []byte) {
+			d.record(hook, d.send(hook, body))
+		}(hook, body)
 	}
 	return nil
 }
@@ -150,11 +173,12 @@ const (
 	LegacySignatureHeader = "X-OHD-Signature"
 )
 
-func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
+func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) authstore.WebhookDelivery {
+	at := time.Now().UTC()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, hook.URL, bytes.NewReader(payload))
 	if err != nil {
 		d.log.Warn("webhook request could not be built", "webhook_id", hook.ID)
-		return
+		return authstore.WebhookDelivery{At: at, Error: DeliveryOther}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if hook.Secret != "" {
@@ -177,14 +201,15 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) {
 	resp, err := d.client.Do(req)
 	if err != nil {
 		d.log.Warn("webhook delivery failed", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "error", withoutURL(err))
-		return
+		return authstore.WebhookDelivery{At: at, Error: classifyDeliveryError(err)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		d.log.Warn("webhook delivery rejected", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "status", resp.StatusCode)
-		return
+		return authstore.WebhookDelivery{At: at, Status: resp.StatusCode, Error: DeliveryHTTPStatus}
 	}
 	// Retry logic for v2: for now, accept any 2xx.
+	return authstore.WebhookDelivery{At: at, Status: resp.StatusCode}
 }
 
 func hookSubscribes(hook authstore.WebhookConfig, eventType notification.EventType) bool {
@@ -197,6 +222,42 @@ func hookSubscribes(hook authstore.WebhookConfig, eventType notification.EventTy
 		}
 	}
 	return false
+}
+
+// classifyDeliveryError categorizes a delivery error into one of the delivery
+// error classes. The order matters: a blocked address and a DNS failure both
+// arrive inside a *net.OpError, and a timeout can arrive as anything that
+// implements net.Error.
+func classifyDeliveryError(err error) string {
+	var ne net.Error
+	var dns *net.DNSError
+	var cv *tls.CertificateVerificationError
+	var rh tls.RecordHeaderError
+	var op *net.OpError
+	switch {
+	case errors.Is(err, safehttp.ErrBlockedAddress):
+		return DeliveryBlockedAddress
+	case errors.As(err, &ne) && ne.Timeout():
+		return DeliveryTimeout
+	case errors.As(err, &dns):
+		return DeliveryDNS
+	case errors.As(err, &cv), errors.As(err, &rh):
+		return DeliveryTLS
+	case errors.As(err, &op), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return DeliveryConnection
+	}
+	return DeliveryOther
+}
+
+// record stores a delivery's result. Its own short timeout and a background
+// context: the outbox row that started this delivery is already settled.
+// A failure to record is logged and dropped; it must not affect delivery.
+func (d *WebhookDispatcher) record(hook authstore.WebhookConfig, r authstore.WebhookDelivery) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.store.RecordWebhookDelivery(ctx, hook.ID, hook.URL, r); err != nil {
+		d.log.Warn("webhook delivery result not recorded", "webhook_id", hook.ID, "error", err)
+	}
 }
 
 func hmacSHA256(secret string, payload []byte) string {

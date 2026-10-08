@@ -123,6 +123,96 @@ describe('the webhook list', () => {
     await renderPage([])
     expect(await screen.findByText(/no webhooks yet/i)).toBeTruthy()
   })
+
+  it('shows "No deliveries yet" for a hook never delivered to', async () => {
+    await renderPage([HOOKS[0], { ...HOOKS[1], last_delivery: null as never }])
+
+    const on = await row(HOOKS[0].url)
+    expect(within(on).getByText('No deliveries yet')).toBeTruthy()
+
+    const off = await row(HOOKS[1].url)
+    expect(within(off).getByText('No deliveries yet')).toBeTruthy()
+  })
+
+  it('shows a working hook as Delivered with its status and time', async () => {
+    await renderPage([
+      {
+        ...HOOKS[0],
+        last_delivery: {
+          at: '2026-10-08T14:02:00Z',
+          status: 204,
+          error: '' as never,
+        },
+      },
+    ])
+
+    const r = await row(HOOKS[0].url)
+    const cell = within(r).getByText(/Delivered · 204/).closest('div')
+    expect(cell).toBeTruthy()
+    const timeEl = cell!.querySelector('time')
+    expect(timeEl).toBeTruthy()
+    expect(timeEl?.getAttribute('dateTime')).toBe('2026-10-08T14:02:00Z')
+  })
+
+  it('shows an HTTP rejection as Failing with its status', async () => {
+    await renderPage([
+      {
+        ...HOOKS[0],
+        last_delivery: {
+          at: '2026-10-08T14:00:00Z',
+          status: 500,
+          error: 'http_status' as never,
+        },
+      },
+    ])
+
+    const r = await row(HOOKS[0].url)
+    expect(within(r).getByText(/Failing · 500/)).toBeTruthy()
+  })
+
+  it('names each transport failure', async () => {
+    const failures: { error: string; label: string; url: string }[] = [
+      { error: 'timeout', label: 'timed out', url: 'https://example.com/timeout' },
+      { error: 'dns', label: 'host not found', url: 'https://example.com/dns' },
+      { error: 'tls', label: 'TLS error', url: 'https://example.com/tls' },
+      { error: 'blocked_address', label: 'blocked address', url: 'https://example.com/blocked' },
+      { error: 'connection', label: 'connection failed', url: 'https://example.com/conn' },
+      { error: 'other', label: 'error', url: 'https://example.com/other' },
+    ]
+
+    const hooks = failures.map(({ error: errClass, url }) => ({
+      ...HOOKS[0],
+      url,
+      id: `wh-${errClass}`,
+      last_delivery: {
+        at: '2026-10-08T14:00:00Z',
+        status: 0,
+        error: errClass as never,
+      },
+    }))
+
+    // Test unknown class falls back to 'error'
+    hooks.push({
+      ...HOOKS[0],
+      url: 'https://example.com/weird',
+      id: 'wh-weird',
+      last_delivery: {
+        at: '2026-10-08T14:00:00Z',
+        status: 0,
+        error: 'weird' as never,
+      },
+    })
+
+    await renderPage(hooks)
+
+    for (const { label, url } of failures) {
+      const r = await row(url)
+      expect(within(r).getByText(new RegExp(`Failing · ${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))).toBeTruthy()
+    }
+
+    const r = await row('https://example.com/weird')
+    expect(within(r).getByText(/Failing · error/)).toBeTruthy()
+  })
 })
 
 describe('creating a webhook', () => {

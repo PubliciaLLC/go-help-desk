@@ -610,6 +610,11 @@ type Querier interface {
 	// The count and the lock are set in one statement so concurrent attempts
 	// cannot both read "4 failures" and both decide they are allowed.
 	RecordMFAFailure(ctx context.Context, arg RecordMFAFailureParams) (RecordMFAFailureRow, error)
+	// Deliveries to one hook run concurrently, across goroutines and replicas.
+	// The attempt that STARTED latest wins, so a slow timeout cannot overwrite a
+	// newer success. Matching on url drops a result for a URL the hook no longer
+	// has. A deleted hook matches nothing, which is fine.
+	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) error
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
@@ -799,6 +804,8 @@ type Querier interface {
 	// A rename should rename. Everything else has its own path, and the role has
 	// a guarded one.
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	// A new URL clears the last delivery result: it described a different target.
+	// (On the right-hand side of SET, "url" is the OLD value.)
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error
 	// Records a completed lookup.
 	//

@@ -162,7 +162,7 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 }
 
 const getWebhookConfig = `-- name: GetWebhookConfig :one
-SELECT id, url, events, secret, enabled, created_at, payload_format FROM webhook_configs WHERE id = $1
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error FROM webhook_configs WHERE id = $1
 `
 
 func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
@@ -176,6 +176,9 @@ func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookCo
 		&i.Enabled,
 		&i.CreatedAt,
 		&i.PayloadFormat,
+		&i.LastDeliveryAt,
+		&i.LastDeliveryStatus,
+		&i.LastDeliveryError,
 	)
 	return i, err
 }
@@ -217,7 +220,7 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 }
 
 const listEnabledWebhookConfigs = `-- name: ListEnabledWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at, payload_format FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
 `
 
 func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error) {
@@ -237,6 +240,9 @@ func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfi
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.PayloadFormat,
+			&i.LastDeliveryAt,
+			&i.LastDeliveryStatus,
+			&i.LastDeliveryError,
 		); err != nil {
 			return nil, err
 		}
@@ -286,7 +292,7 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 }
 
 const listWebhookConfigs = `-- name: ListWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at, payload_format FROM webhook_configs ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error FROM webhook_configs ORDER BY created_at
 `
 
 // The admin view: every subscription, enabled or not. The dispatcher keeps
@@ -308,6 +314,9 @@ func (q *Queries) ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, erro
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.PayloadFormat,
+			&i.LastDeliveryAt,
+			&i.LastDeliveryStatus,
+			&i.LastDeliveryError,
 		); err != nil {
 			return nil, err
 		}
@@ -320,6 +329,39 @@ func (q *Queries) ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, erro
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordWebhookDelivery = `-- name: RecordWebhookDelivery :exec
+UPDATE webhook_configs
+SET last_delivery_at     = $1::timestamptz,
+    last_delivery_status = $2,
+    last_delivery_error  = $3
+WHERE id = $4
+  AND url = $5
+  AND (last_delivery_at IS NULL OR last_delivery_at <= $1::timestamptz)
+`
+
+type RecordWebhookDeliveryParams struct {
+	At         time.Time `json:"at"`
+	Status     int32     `json:"status"`
+	ErrorClass string    `json:"error_class"`
+	ID         uuid.UUID `json:"id"`
+	Url        string    `json:"url"`
+}
+
+// Deliveries to one hook run concurrently, across goroutines and replicas.
+// The attempt that STARTED latest wins, so a slow timeout cannot overwrite a
+// newer success. Matching on url drops a result for a URL the hook no longer
+// has. A deleted hook matches nothing, which is fine.
+func (q *Queries) RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) error {
+	_, err := q.db.ExecContext(ctx, recordWebhookDelivery,
+		arg.At,
+		arg.Status,
+		arg.ErrorClass,
+		arg.ID,
+		arg.Url,
+	)
+	return err
 }
 
 const updateAPIKeyLastUsed = `-- name: UpdateAPIKeyLastUsed :exec
@@ -337,7 +379,12 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 }
 
 const updateWebhookConfig = `-- name: UpdateWebhookConfig :exec
-UPDATE webhook_configs SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6 WHERE id = $1
+UPDATE webhook_configs
+SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6,
+    last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
+    last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
+    last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END
+WHERE id = $1
 `
 
 type UpdateWebhookConfigParams struct {
@@ -349,6 +396,8 @@ type UpdateWebhookConfigParams struct {
 	PayloadFormat string    `json:"payload_format"`
 }
 
+// A new URL clears the last delivery result: it described a different target.
+// (On the right-hand side of SET, "url" is the OLD value.)
 func (q *Queries) UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error {
 	_, err := q.db.ExecContext(ctx, updateWebhookConfig,
 		arg.ID,

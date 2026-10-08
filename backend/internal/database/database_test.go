@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -1647,6 +1648,299 @@ func TestAuthStore_Webhooks(t *testing.T) {
 	require.NoError(t, as.DeleteWebhook(ctx, wh.ID))
 	_, err = as.GetWebhook(ctx, wh.ID)
 	require.Error(t, err)
+}
+
+func TestAuthStore_WebhookDelivery_NoneUntilRecorded(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.LastDelivery, "before any record, LastDelivery must be nil")
+
+	list, err := as.ListWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range list {
+		if w.ID == wh.ID {
+			require.Nil(t, w.LastDelivery, "ListWebhooks: LastDelivery must be nil before recorded")
+		}
+	}
+
+	enabled, err := as.ListEnabledWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range enabled {
+		if w.ID == wh.ID {
+			require.Nil(t, w.LastDelivery, "ListEnabledWebhooks: LastDelivery must be nil before recorded")
+		}
+	}
+}
+
+func TestAuthStore_WebhookDelivery_RecordedAndReadBackEverywhere(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	d1 := authstore.WebhookDelivery{At: t1, Status: 503, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d1))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, t1, got.LastDelivery.At)
+	require.Equal(t, 503, got.LastDelivery.Status)
+	require.Equal(t, "http_status", got.LastDelivery.Error)
+
+	list, err := as.ListWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range list {
+		if w.ID == wh.ID {
+			require.NotNil(t, w.LastDelivery)
+			require.Equal(t, t1, w.LastDelivery.At)
+			require.Equal(t, 503, w.LastDelivery.Status)
+			require.Equal(t, "http_status", w.LastDelivery.Error)
+		}
+	}
+
+	enabled, err := as.ListEnabledWebhooks(ctx)
+	require.NoError(t, err)
+	for _, w := range enabled {
+		if w.ID == wh.ID {
+			require.NotNil(t, w.LastDelivery)
+			require.Equal(t, t1, w.LastDelivery.At)
+			require.Equal(t, 503, w.LastDelivery.Status)
+			require.Equal(t, "http_status", w.LastDelivery.Error)
+		}
+	}
+
+	// Record a newer success, which should overwrite
+	t2 := t1.Add(1 * time.Second)
+	d2 := authstore.WebhookDelivery{At: t2, Status: 200, Error: ""}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d2))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, t2, got.LastDelivery.At)
+	require.Equal(t, 200, got.LastDelivery.Status)
+	require.Equal(t, "", got.LastDelivery.Error)
+}
+
+func TestAuthStore_WebhookDelivery_OlderAttemptDoesNotOverwriteNewer(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	d1 := authstore.WebhookDelivery{At: t1.Add(10 * time.Second), Status: 500, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d1))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, 500, got.LastDelivery.Status)
+
+	// Try to record an older success, which should be rejected
+	d2 := authstore.WebhookDelivery{At: t1, Status: 200, Error: ""}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d2))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+	require.Equal(t, t1.Add(10*time.Second), got.LastDelivery.At, "older attempt must not overwrite newer one")
+	require.Equal(t, 500, got.LastDelivery.Status)
+	require.Equal(t, "http_status", got.LastDelivery.Error)
+}
+
+func TestAuthStore_WebhookDelivery_ResultForAnOldURLIsIgnored(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	// Record with a different URL
+	d := authstore.WebhookDelivery{At: time.Now().UTC(), Status: 503, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, "https://example.com/old", d))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.LastDelivery, "result for an old URL must not be stored")
+}
+
+func TestAuthStore_WebhookDelivery_URLChangeClearsItOtherEditsKeepIt(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Secret:    "secret",
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	// Record a delivery result
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	d := authstore.WebhookDelivery{At: t1, Status: 503, Error: "http_status"}
+	require.NoError(t, as.RecordWebhookDelivery(ctx, wh.ID, wh.URL, d))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery)
+
+	// Update with same URL but different enabled/events/secret/format: result kept
+	wh.Enabled = false
+	wh.Events = []string{"ticket.updated"}
+	wh.Secret = "newsecret"
+	wh.PayloadFormat = "slack"
+	require.NoError(t, as.UpdateWebhook(ctx, wh))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got.LastDelivery, "result kept when other fields change")
+	require.Equal(t, t1, got.LastDelivery.At)
+	require.Equal(t, 503, got.LastDelivery.Status)
+
+	// Update with different URL: result cleared
+	wh.URL = "https://example.com/newhook"
+	require.NoError(t, as.UpdateWebhook(ctx, wh))
+
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.LastDelivery, "result cleared when URL changes")
+}
+
+func TestAuthStore_WebhookDelivery_DeletedHookIsANoop(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	unknownID := uuid.New()
+	d := authstore.WebhookDelivery{At: time.Now().UTC(), Status: 503, Error: "http_status"}
+	// Recording against a deleted/unknown id should not error
+	require.NoError(t, as.RecordWebhookDelivery(ctx, unknownID, "https://example.com/hook", d))
+}
+
+func TestMigration_WebhookLastDeliveryRefusesFreeText(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	ctx := context.Background()
+
+	// Test that free-text error is rejected
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	id := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+		id, "https://example.com/hook")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE webhook_configs SET last_delivery_error = $1 WHERE id = $2`,
+		"connection refused to https://x/tok", id)
+	require.Error(t, err, "free-text error must be rejected by CHECK constraint")
+	tx.Rollback()
+
+	// Test that invalid status is rejected
+	tx, err = db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	id = uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+		id, "https://example.com/hook")
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE webhook_configs SET last_delivery_status = $1 WHERE id = $2`, 42, id)
+	require.Error(t, err, "invalid HTTP status must be rejected by CHECK constraint")
+	tx.Rollback()
+
+	// Test that all valid error classes are accepted
+	for _, errClass := range []string{"", "http_status", "timeout", "dns", "tls", "blocked_address", "connection", "other"} {
+		tx, err := db.SQL.BeginTx(ctx, nil)
+		require.NoError(t, err)
+
+		id := uuid.New()
+		_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+			id, fmt.Sprintf("https://example.com/hook%s", errClass))
+		require.NoError(t, err)
+
+		_, err = tx.ExecContext(ctx,
+			`UPDATE webhook_configs SET last_delivery_error = $1 WHERE id = $2`,
+			errClass, id)
+		require.NoError(t, err, "error class %q must be accepted", errClass)
+		tx.Rollback()
+	}
 }
 
 // A row inserted before the payload_format column existed — or by any code

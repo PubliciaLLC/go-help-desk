@@ -134,6 +134,14 @@ func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error
 
 // ── WebhookConfigStore ───────────────────────────────────────────────────────
 
+// WebhookDelivery is the result of the latest delivery attempt to a hook.
+// Deliberately no message field: see migration 000034.
+type WebhookDelivery struct {
+	At     time.Time `json:"at"`     // when the attempt started
+	Status int       `json:"status"` // HTTP status; 0 when no response came back
+	Error  string    `json:"error"`  // "" on success, else one of notify.DeliveryErrors
+}
+
 // WebhookConfig is the persisted record for an outbound webhook.
 type WebhookConfig struct {
 	ID        uuid.UUID `json:"id"`
@@ -149,6 +157,10 @@ type WebhookConfig struct {
 	// import notify, and the dependency runs the other way (notify's
 	// WebhookDispatcher reads this store).
 	PayloadFormat string `json:"payload_format"`
+
+	// LastDelivery is nil until a delivery has been attempted since the hook
+	// was created or its URL last changed.
+	LastDelivery *WebhookDelivery `json:"last_delivery"`
 }
 
 // defaultPayloadFormat is "raw": the column is NOT NULL with no useful
@@ -157,6 +169,16 @@ type WebhookConfig struct {
 // in the admin handler, means any caller that predates this field (existing
 // tests included) keeps working without having to learn about it.
 const defaultPayloadFormat = "raw"
+
+func webhookFromRow(r dbgen.WebhookConfig) WebhookConfig {
+	wh := WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret,
+		Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
+	if r.LastDeliveryAt.Valid {
+		wh.LastDelivery = &WebhookDelivery{At: r.LastDeliveryAt.Time.UTC(),
+			Status: int(r.LastDeliveryStatus), Error: r.LastDeliveryError}
+	}
+	return wh
+}
 
 func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 	format := wh.PayloadFormat
@@ -179,7 +201,7 @@ func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, er
 	if err != nil {
 		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
 	}
-	return WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}, nil
+	return webhookFromRow(r), nil
 }
 
 func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
@@ -208,7 +230,7 @@ func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
+		out[i] = webhookFromRow(r)
 	}
 	return out, nil
 }
@@ -223,7 +245,18 @@ func (s *Store) ListWebhooks(ctx context.Context) ([]WebhookConfig, error) {
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret, Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
+		out[i] = webhookFromRow(r)
 	}
 	return out, nil
+}
+
+// RecordWebhookDelivery stores d as the hook's latest result, unless a newer
+// attempt has already been recorded or the hook's URL is no longer url.
+func (s *Store) RecordWebhookDelivery(ctx context.Context, id uuid.UUID, url string, d WebhookDelivery) error {
+	if err := s.q.RecordWebhookDelivery(ctx, dbgen.RecordWebhookDeliveryParams{
+		ID: id, Url: url, At: d.At, Status: int32(d.Status), ErrorClass: d.Error,
+	}); err != nil {
+		return fmt.Errorf("recording webhook delivery %s: %w", id, err)
+	}
+	return nil
 }
