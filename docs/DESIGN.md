@@ -2,29 +2,26 @@
 
 ## Overview
 
-Open-source, self-hosted help desk system inspired by HESK, with SAML authentication, a plugin infrastructure, and a REST API. Built with a long-term roadmap toward SaaS (v4).
+Open-source, self-hosted help desk system inspired by HESK, with local, SAML and OIDC sign-in, TOTP and passkey MFA, guest and self-service submission, a REST API and an MCP interface. A plugin infrastructure is specified (v2) but does not work yet. Built with a long-term roadmap toward SaaS (v4).
 
 ## Versioning Roadmap
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), REST API, MCP interface, email + webhook notifications (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
+| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install) |
 | **v3** | Reporting, knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
 
-**1.3 note:** Custom fields, CTI-linked group management, and canned responses were
-built ahead of the original v2 schedule and are already in production — this
-table reflects that rather than the sequence they were originally planned in.
-Full-text search was likewise already implemented as core v1 functionality;
-see Ticket Search below. Plugins move the other direction: the admin UI lists
-and toggles a plugin record, but install/uninstall return `501` and no event
-ever reaches a plugin (`plugin.Registry.Dispatch` is built but never wired into
-the notification chain) — there is no working plugin system today, so it is
-rescheduled to v2 rather than left claiming v1 status it doesn't have. The one
-piece of the original plugin pitch worth keeping on the v1 timeline — chat/ITSM
-notifications — ships as formats on the existing webhook feature instead of
-through the plugin system; see Notifications below.
+Custom fields, CTI-linked group management, canned responses and full-text
+search were built ahead of the original v2 schedule and are shipped; this table
+reflects that, not the order they were planned in. Plugins went the other way:
+the admin UI lists and toggles a plugin record, but install/uninstall return
+`501` and no event ever reaches a plugin (`plugin.Registry.Dispatch` is built
+and never called from the notification chain). There is no working plugin
+system, so it sits at v2 rather than claiming v1. The part of the plugin pitch
+worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
+webhook feature; see Notifications.
 
 ---
 
@@ -52,23 +49,15 @@ Three-level hierarchy: **Category → Type → Item**
 - Types and Items are optional downward — a Category may have no Types, a Type may have no Items
 
 **Setup creates the first Category, so "required" is always satisfiable.**
-Category is required on every ticket, and statuses are seeded by migration
-while categories were not — so a freshly set-up instance had none, and the
-first ticket its new administrator tried to file answered
-`400 category_id is required`. The error named a field rather than the action
-needed, nothing on the way in said "create a category first", and setup does
-not reopen. The whole test suite was blind to it because the harness seeds a
-category of its own, so the state a real first run is in was never exercised.
-
-`POST /setup` therefore takes an optional `category` name alongside the
-administrator, and the wizard asks for it with a sensible value already
-filled in. The category is created **before** the administrator and only when
-none exists: setup answers 409 forever once a user exists, so a failure
-between the two steps must not be able to leave an instance with an
-administrator and no category. That ordering leaves two failure modes, both
-retryable — nothing happened, or a category exists and no user does — and the
-existence check is what makes the retry reuse it instead of stacking
-duplicates. See #323.
+Category is required on every ticket and categories, unlike statuses, are not
+seeded. `POST /setup` therefore takes an optional `category` name (the wizard
+pre-fills one; blank falls back to "General") alongside the administrator. The
+category is created **before** the administrator and only when none exists:
+setup answers 409 forever once a user exists, so a failure between the two
+steps must not leave an instance with an administrator and no category. That
+order leaves two failure modes, both retryable (nothing happened, or a category
+exists and no user does), and the existence check makes a retry reuse the
+category instead of stacking duplicates. See #323.
 
 ### Tickets (v1)
 
@@ -79,7 +68,7 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (configurable levels, e.g. Critical / High / Medium / Low)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable)
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
 - **Assignee** (staff member or group)
 - **Attachments** (file uploads)
@@ -387,7 +376,7 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log — it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after") are covered; priority, CTI and custom-field changes are not, and a cleared assignment is currently recorded as another `assigned` entry rather than `unassigned` (`unassigned` is written only when a departing user's tickets are returned to the queue). Those are pre-existing gaps in what the domain layer records, not something this route introduces — tracked separately rather than fixed here, since closing them is a write-side change to `ticket.Service`, not a read-side one.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"). CTI reclassification and custom-field edits are not recorded, and priority is set at creation and not changed afterwards. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -395,62 +384,28 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 ### Admin-Wide Audit View
 
-`GET /api/v1/admin/audit` (#129's remaining half) answers the same question across every entity, not one ticket at a time. Staff and admin only, same resource gate as the ticket subtree; a reporting user has no route here.
+`GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. Staff and admin only, same resource gate as the ticket subtree; a reporting user has no route here.
 
 Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned.
 
-That second narrowing is part of the query, not something applied to its result. One statement carries the filters (`entity_type`, `action`, `actor_id`, `from`/`to`, `q`) and the scope together, joined against `tickets`, and the count behind `total` applies the same filters and the same scope predicate, without the page (and bounded; see below). So the page, the offset and the total all describe one sequence: `total` is the number of entries the viewer can page through, and says nothing about the ones they cannot see. An earlier version took Search's own count before scope was applied in Go, which told a staff member how many entries existed on tickets they could not see — and with the actor, action and date filters this endpoint accepts, a count plus bisection dates activity on those tickets. Putting scope into the count's own `WHERE` closes that, and is also why staff now get a `total` like an admin does.
+**Scope is part of the query, not applied to its result.** One statement carries the filters (`entity_type`, `action`, `actor_id`, `from`/`to`, `q`) and the scope together, joined against `tickets`, and the count behind `total` applies the same filters and the same scope predicate. The page, the offset and the total therefore describe one sequence: `total` is the number of entries the viewer can page through and says nothing about the ones they cannot see. Counting before scope was applied in Go told a staff member how many entries existed on tickets they could not see, and with the actor, action and date filters a count plus bisection dates activity on those tickets.
 
-The scope predicate is the one the scoped ticket listing uses (`ListTicketsFiltered`): a ticket is visible to a staff member if they reported it, are assigned it, their group is assigned it, or it falls in a Category/Type a group of theirs covers. It is evaluated by the database from the caller's user id, so nothing is looked up per entry or per ticket and the request does not grow with the size of the log. There are still two rules — `ticket.CanView` and the SQL — and the SQL states its half twice, in the page query and in the count (the count finds the visible tickets first and then the entries on them, for the cost reason below; the conditions are the same ones). A test (`TestAdminAudit_ScopeParity`) holds all of them equal, page and `total` alike, across staff in and out of groups, category-level, type-level and combined rules, unscoped tickets, tickets the viewer reported or is assigned, administrators, enforcement on and off, and every filter, so a change to one that is not made to the other fails it.
+The scope predicate is the one the scoped ticket listing uses (`ListTicketsFiltered`): a ticket is visible to a staff member if they reported it, are assigned it, their group is assigned it, or it falls in a Category/Type a group of theirs covers. The database evaluates it from the caller's user id, so nothing is looked up per entry. There are still two statements of the rule, `ticket.CanView` and the SQL (stated twice in the SQL, in the page query and in the count), and `TestAdminAudit_ScopeParity` holds all of them equal, page and `total` alike, so a change to one that is not made to the other fails it.
 
-Non-ticket entries and entries whose ticket no longer exists are never returned to a scoped staff member. To the person asking, an entry on a ticket they may not see and an entry on a ticket that does not exist are the same thing: both answer with nothing, so the view cannot be used to learn which ticket ids exist — the same policy as `404` for a ticket the caller may not see (see the **Authorization** paragraph under "MCP Interface", which also records the REST `404` change, #174). Entries with the same timestamp are ordered by id as well, so the order is exact. Both views page by offset, so new entries arriving between two page requests shift what the next page starts on — as with any offset pager.
+Non-ticket entries and entries whose ticket no longer exists are never returned to a scoped staff member. To the person asking, an entry on a ticket they may not see and an entry on a ticket that does not exist are the same thing: both answer with nothing, so the view cannot be used to learn which ticket ids exist (the same policy as `404` for a ticket the caller may not see; see **Authorization** under "MCP Interface", which also records the REST `404` change, #174). Entries with the same timestamp are ordered by id, so the order is exact. Paging is by offset, so entries arriving between two page requests shift the next page, as with any offset pager. With scope enforcement off (the default) staff may see every ticket, so no scope is applied: they get the admin's query restricted to ticket entries, with entries on tickets that no longer exist included.
 
-**What bounds the cost.** The page is one statement that reads `limit + 1` rows; the extra row is how `has_more` is known, so paging never depends on the count. The count is bounded: it stops after 10,001 matches (`audit.TotalCap`, 10,000). `total` is exact up to and including 10,000 entries; beyond that it is 10,000, `total_capped` is `true`, and the page shows "10,000+". `total_capped` is always sent, `false` included, and a total that merely equals the cap is `false`. Nothing else changes for an instance under the cap: the same exact number, the same order, the same pages. Admin and staff go through the same statements, so the cap applies to both and staff are no more or less capped than an admin who sees the same entries. #331 is why: retention is off by default, so the table only grows, and an exact `COUNT(*)` over it is a full scan on every page view.
+**What bounds the cost** (#331, where the measurements are). The page reads `limit + 1` rows; the extra row is how `has_more` is known, so paging never depends on the count. The count is bounded: it stops after 10,001 matches (`audit.TotalCap`, 10,000). `total` is exact up to and including 10,000; beyond that it is 10,000, `total_capped` is `true` and the page shows "10,000+". `total_capped` is always sent, `false` included, and a total that merely equals the cap is `false`. Admin and staff run the same statements, so the cap applies to both alike. The reason is that retention is off by default, the table only grows, and an exact `COUNT(*)` over it is a full scan on every page view. Limits to know about:
 
-Measured with `EXPLAIN ANALYZE` on a rolled-back seed of 524,000 entries and 30,000 tickets (local PostgreSQL 16, one or two runs each, the statements as the server prepares them): the unfiltered admin count went from about 45 ms to about 2 ms, an `action` filter matching 60% of rows from about 45 ms to 3 ms, and a `q` filter matching a third of them from about 150 ms to 23 ms. The staff count, which before had to walk the whole log joined to `tickets`, took 330–1,400 ms (it varied between runs and machines) for a staff member who sees a tenth of the tickets, a handful, or all of them, and takes 30–190 ms now, the high end being the staff member who sees only a handful, whose matches are rare enough that the count reads most of the log. Those are the cases where matches are plentiful and the cap lets the count stop early. Limits to know about, rather than discover:
+- A filter that matches few rows still reads the table to find that out. `q` is a substring match no b-tree serves, so no index was added for it; `action`, `actor_id` and `created_at` already have one.
+- The staff count builds the set of visible tickets before it touches the log, so it pays for that set even when its filter is narrow. The Category/Type rule is two `IN` lists so the set costs one pass over `tickets`, not a subplan per ticket. That is a known, accepted cost: it grows with the number of tickets, not the size of the log, and the cap does not shorten it. The admin count never builds the set.
+- The page query is unchanged by the cap. For a staff member who sees few tickets its cost depends on how far back it must look for a page of visible entries.
+- Under a generic plan PostgreSQL's JIT can add hundreds of milliseconds to the first runs of a large scan. That is the server's `jit` setting, not a property of the statements.
 
-- A filter that matches few rows still has to read the table to find that out. A `q` that matches nothing took about 137 ms before and after, because `q` is a substring match no existing index serves. A rare `action` (about 500 entries) took 0.8 ms on the existing index. No index was added: the filters that matter (`action`, `actor_id`, `created_at`) already have one, `q` is a substring match a b-tree cannot serve, and the staff count's remaining cost is on the `tickets` side.
-- The staff count builds the set of visible tickets before it touches the log, so it pays for that set even when its filter is narrow. The Category/Type rule is written as two `IN` lists so the set costs one pass over `tickets` (about 8 ms at 30,000 tickets when the viewer sees a tenth of them), not a subplan per ticket. With a narrow indexed filter (an `action` with about 500 entries, a ten-minute window of about 600) a staff count takes 5–12 ms for a staff member who sees a handful or a tenth of the tickets and 25–40 ms for one who sees all 30,000, where it took 3–4 ms before the count was bounded, because the old statement probed `tickets` only for the rows the filter let through. That is a known regression for that case, accepted because the alternative shape (probe per entry) made the staff member with few visible tickets three times slower (411 ms against 143 ms). It grows with the number of tickets, not the size of the log, and the cap does not shorten it. The admin count has no such cost: the set is never built.
-- Under a generic (parameter-independent) plan PostgreSQL's JIT compiler can add several hundred milliseconds to the first runs of a large scan; that was seen on the pre-#331 count and noted in review of the new one. It is a server setting (`jit`, `jit_above_cost`), not a property of the statements, and the figures above leave it out.
+**Known, accepted side channel: response time.** Bulk hidden activity inside a date window is detectable by timing (measured before the count was bounded: about 5,000 hidden rows in a window took roughly 12–13 ms for the page plus about 12 ms for the count, against about 1 ms for an empty window; 20 hidden rows were indistinguishable from none). That is roughly two orders of magnitude smaller than the signal of the walk it replaced and the same class as the scoped ticket listing's. It does not reveal which tickets exist or anything about their content, and the response itself (entries, `total`, `total_capped`, `has_more`) is identical for hidden and missing tickets. Recorded in #331, not re-measured since.
 
-The page query is unchanged. Its cost for a staff member who sees few tickets depends on how far back it has to look for a page of visible entries (about 240–290 ms for a staff member with five visible tickets on that seed, a few milliseconds for one who sees a tenth of them), and the cap does not bound it.
+**Retention is opt-in and off by default.** `audit_retention_days` (admin setting) governs a daily sweep that hard-deletes anything older, with no archive table. The first sweep runs two minutes after start rather than only on the 24-hour tick, so an instance restarted more often than daily still prunes, and startup logs the window when one is set. **Unset, zero, negative or unreadable means keep forever**, which is what every release before retention did by having nothing prune at all. The default is deliberate: a 365-day default would delete the first year of history on any instance older than that, a day after upgrading, from a setting the operator never touched (the "existing behaviour must not change" rule), and an audit log is the worst thing in the system to shorten by accident because it cannot be reconstructed. The upper bound is **36,525 days** (`admin.AuditRetentionMaxDays`, a Gregorian century): the settings endpoint refuses anything above it, and a stored value above it (written before the check existed, or directly in the database) is read as the cap, because a cutoff computed from a larger number can overflow into the future and delete everything.
 
-**Known, accepted side channel: response time.** Bulk hidden activity inside a date window is still detectable by timing: about 5,000 hidden rows in a window measured at roughly 12–13 ms for the page plus about 12 ms for the count, against about 1 ms for an empty window, while 20 hidden rows were indistinguishable from none. That is roughly two orders of magnitude smaller than the removed walk's signal and the same class as the scoped ticket listing's. It does not reveal which tickets exist or anything about their content, and the response itself (entries, `total`, `total_capped`, `has_more`) is identical for hidden and missing tickets. These timings were taken before the count was bounded and have not been re-measured; the note is unchanged.
-
-With scope enforcement off — the default — staff may see every ticket, so no scope is applied: they get the admin's query, restricted to ticket entries, with entries on tickets that no longer exist included, since there is nothing to hide them from.
-
-**Retention is opt-in, and off by default.** `audit_retention_days` (admin
-setting) governs a daily sweep that hard-deletes anything older — no archive
-table. The first sweep runs two minutes after start, not only on the
-24-hour tick, so an instance restarted more often than daily still prunes; when
-a window is set, startup logs it. **Unset, zero or negative means keep forever**, which is what every
-release before this one did by having nothing prune at all.
-
-That default is deliberate and is the opposite of what a first draft of this
-feature shipped. A 365-day default would delete the first year of history on
-any instance that had been running longer, one day after upgrading, from a
-setting the operator never touched — the exact shape CLAUDE.md's "existing
-behaviour must not change" rule exists to stop. An audit log is also the worst
-thing in the system to shorten by accident: it is what you reach for after
-something has already gone wrong, and it cannot be reconstructed.
-
-A misconfigured value fails the same way. Anything unreadable or non-positive
-is treated as forever, so the failure direction loses no evidence.
-
-The upper bound is **36,525 days** (a Gregorian century, leap days included;
-`admin.AuditRetentionMaxDays`). The settings endpoint refuses anything above
-it, and a stored value above it — written before the check existed, or
-directly in the database — is read as the cap, because a cutoff date computed
-from a larger number can overflow into the future and delete everything.
-
-`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a
-machine credential cannot change it. Shortening retention is the one setting
-that destroys evidence rather than merely widening access: set it to 1 and
-tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin`
-entry, so a leaked API key that performed a credential reset could erase the
-record of having done it. That is #306's own reasoning about `ResetMFA`
-("the exact action an attacker would want unrecorded") applied to the record
-rather than the act.
+`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a machine credential cannot change it. Shortening retention is the one setting that destroys evidence rather than merely widening access: set it to 1 and tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin` entry, so a leaked API key that performed a credential reset could erase the record of having done it. That is #306's reasoning about `ResetMFA` ("the exact action an attacker would want unrecorded") applied to the record rather than the act.
 
 ### Tags
 
@@ -475,7 +430,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
-- Reply bodies are not indexed in v2 — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
+- Reply bodies are not indexed — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
 - Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
 
 ### Linked Tickets
