@@ -21,8 +21,8 @@ export function VerifyEmailPage() {
   const [password, setPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   const [error, setError] = useState(token ? '' : 'No verification token found in the URL.')
-  // A link that cannot work replaces the form; a refused password keeps it,
-  // because the link is still good.
+  // A link that cannot work replaces the form; a refused name or password, or
+  // a fault, keeps it, because the link may still be good.
   const [linkDead, setLinkDead] = useState(!token)
   const [loading, setLoading] = useState(false)
   const [account, setAccount] = useState<{ email: string } | null>(null)
@@ -32,8 +32,9 @@ export function VerifyEmailPage() {
 
   // Look the link up first (#370): to show which address this is, to hand a
   // password manager the address, and to say a dead link is dead before a
-  // password is typed. Only a verdict on the link closes the form; a network
-  // error or a server fault leaves it, and the submit gives the real answer.
+  // password is typed. Only a verdict on the link (token_invalid or
+  // token_expired) closes the form, here and on submit; a network error or a
+  // server fault leaves it (#373).
   useEffect(() => {
     if (!token) return
     lookupVerification(token)
@@ -80,10 +81,14 @@ export function VerifyEmailPage() {
       // as invalid or already used, and the advice to sign up again — the one
       // thing that would have helped — was unreachable.
       const code = extractErrorCode(err)
-      if (code === 'password_too_short' || code === 'display_name_required') {
+      if (code === 'token_expired' || code === 'token_invalid') {
+        refuseLink(code)
+      } else if (code === 'password_too_short' || code === 'display_name_required') {
         setError(extractError(err))
       } else {
-        refuseLink(code)
+        // Not a verdict on the link: a network error or a server fault (#373).
+        // The link may still be good, so the form stays.
+        setError('Something went wrong. Please try again.')
       }
     } finally {
       setLoading(false)
@@ -112,8 +117,8 @@ export function VerifyEmailPage() {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* The address only, not the display name: whoever signed up
-                  first chose the name, and that may not be this inbox's owner. */}
+              {/* The address only: it is all the lookup returns. The name is
+                  chosen below; none is stored before verification (#374). */}
               {account && (
                 <div className="space-y-1">
                   <Label htmlFor="email">Email</Label>

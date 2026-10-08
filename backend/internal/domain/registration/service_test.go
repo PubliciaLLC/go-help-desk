@@ -581,3 +581,50 @@ func TestVerify_RequiresADisplayName(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Alice", users.input.DisplayName, "the name is trimmed")
 }
+
+// #373: Verify tells a fault from a verdict, as Lookup does. ErrNotFound,
+// ErrTokenExpired and ErrAlreadyRegistered are verdicts on the link and the
+// page closes the form for them; anything else is a fault, and an outage must
+// not tell somebody their link is dead.
+func TestVerify_TellsAFaultFromAVerdict(t *testing.T) {
+	live := func() *fakeStore {
+		return &fakeStore{record: PendingRegistration{
+			ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(time.Hour),
+		}}
+	}
+	verdicts := []error{ErrNotFound, ErrTokenExpired, ErrAlreadyRegistered}
+
+	t.Run("an unknown link is a verdict", func(t *testing.T) {
+		svc := NewService(&fakeStore{getErr: ErrNotFound}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+
+	// The address gained an account after the link was mailed. Only the
+	// holder of a live link gets here, and they were mailed this address, so
+	// saying so discloses nothing; it is answered as a used link.
+	t.Run("an address that has gained an account is a verdict", func(t *testing.T) {
+		svc := NewService(live(), &fakeUsers{err: user.ErrEmailTaken}, &fakeMailer{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
+		require.ErrorIs(t, err, ErrAlreadyRegistered)
+	})
+
+	faults := []struct {
+		name  string
+		store *fakeStore
+		users *fakeUsers
+	}{
+		{"a store fault on the lookup", &fakeStore{getErr: errors.New("connection refused")}, &fakeUsers{}},
+		{"a store fault creating the account", live(), &fakeUsers{err: errors.New("connection refused")}},
+	}
+	for _, tc := range faults {
+		t.Run(tc.name+" is not a verdict", func(t *testing.T) {
+			svc := NewService(tc.store, tc.users, &fakeMailer{}, "http://localhost")
+			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
+			require.Error(t, err)
+			for _, v := range verdicts {
+				require.NotErrorIs(t, err, v)
+			}
+		})
+	}
+}

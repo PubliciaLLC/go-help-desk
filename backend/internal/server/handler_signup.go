@@ -113,8 +113,10 @@ func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request
 	JSON(w, http.StatusOK, map[string]string{"email": pr.Email})
 }
 
-// verificationRefused answers a link that cannot be used, the same way for
-// the lookup and for the verification itself.
+// verificationRefused answers a verdict on a link: unknown, used, replaced or
+// expired, and for the POST also an address that has gained an account since.
+// The lookup and the verification answer a verdict the same way. A fault is
+// not a verdict and goes to handleError, a 500, on both (#373).
 func verificationRefused(w http.ResponseWriter, err error) {
 	if errors.Is(err, registration.ErrTokenExpired) {
 		Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
@@ -152,7 +154,14 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 			Error(w, http.StatusBadRequest, "password_too_short", err.Error())
 			return
 		}
-		verificationRefused(w, err)
+		// Only a verdict on the link is a 422; anything else is a fault and a
+		// 500, as for the lookup (#373).
+		if errors.Is(err, registration.ErrNotFound) || errors.Is(err, registration.ErrTokenExpired) ||
+			errors.Is(err, registration.ErrAlreadyRegistered) {
+			verificationRefused(w, err)
+			return
+		}
+		handleError(w, err)
 		return
 	}
 

@@ -71,9 +71,9 @@ describe('the verification page', () => {
   })
 
   // #370: the page says which address this is, and hands it to a password
-  // manager, so the saved login is not missing its username. Not the display
-  // name: whoever signed up first chose it, and an attacker who signs up a
-  // victim's address could put any words they like on this page.
+  // manager, so the saved login is not missing its username. The lookup
+  // answers the address and nothing else: no name is stored before
+  // verification (#374).
   it('shows the address the link is for, and not the name', async () => {
     renderWithQuery(<VerifyEmailPage />)
     const email = (await screen.findByLabelText('Email')) as HTMLInputElement
@@ -182,6 +182,39 @@ describe('the verification page', () => {
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/display name is required/i)
     expect(screen.getByLabelText('Password')).toBeTruthy()
+  })
+
+  // #373: only a verdict on the link closes the form. A fault on submit
+  // (a 500, a dropped connection) says nothing about the link, so the form
+  // stays and the person can try again.
+  it('keeps the form after a server fault on submit', async () => {
+    vi.mocked(verifyEmail).mockRejectedValue(apiError('internal_error', 'an internal error occurred'))
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'correct-horse-battery')
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/try again/i)
+    expect(screen.getByLabelText('Password')).toBeTruthy()
+  })
+
+  it('keeps the form after a network error on submit', async () => {
+    vi.mocked(verifyEmail).mockRejectedValue(new Error('Network Error'))
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'correct-horse-battery')
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/try again/i)
+    expect(screen.getByLabelText('Password')).toBeTruthy()
+  })
+
+  it('says a used link is dead on submit, and removes the form', async () => {
+    vi.mocked(verifyEmail).mockRejectedValue(apiError('token_invalid'))
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'correct-horse-battery')
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/invalid or has already been used/i)
+    expect(screen.queryByLabelText('Password')).toBeNull()
   })
 
   it('says an expired link has expired', async () => {

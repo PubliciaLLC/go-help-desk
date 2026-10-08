@@ -34,6 +34,9 @@ var ErrInvalidEmail = fmt.Errorf("invalid email address")
 // stops the verification email, which is what turned this into a dead end —
 // the link arrived, the account could not be created, and the verify page
 // said the token was invalid or already used.
+//
+// Verify returns it too, for a link whose address gained an account after it
+// was mailed (#373); the handler answers that like a used link.
 var ErrAlreadyRegistered = fmt.Errorf("an account already exists for that address")
 
 // ErrDisplayNameRequired is a verification with no name on it. Refused before
@@ -222,8 +225,8 @@ func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
 // using the link, so the verification page can show the address before asking
 // for a password (#370). ErrNotFound is a link that is unknown, replaced or
 // used, and ErrTokenExpired one past its TTL; any other error is a fault, not
-// a verdict on the link. A link that passes can still fail at Verify — if the
-// address has gained an account since, user.Create refuses it.
+// a verdict on the link. A link that passes can still fail at Verify, with
+// ErrAlreadyRegistered, if the address has gained an account since.
 func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistration, error) {
 	pr, err := s.store.GetByToken(ctx, token)
 	if err != nil {
@@ -240,10 +243,13 @@ func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistrat
 // record. Returns the new User so the handler can write a session. A blank
 // name or a password below the minimum is refused before anything is written,
 // so the link still works.
+//
+// ErrNotFound, ErrTokenExpired and ErrAlreadyRegistered are verdicts on the
+// link; any other error is a fault, not a verdict, as for Lookup (#373).
 func (s *Service) Verify(ctx context.Context, token uuid.UUID, displayName, password string) (user.User, error) {
 	pr, err := s.store.GetByToken(ctx, token)
 	if err != nil {
-		return user.User{}, fmt.Errorf("token not found: %w", err)
+		return user.User{}, fmt.Errorf("looking up verification token: %w", err)
 	}
 	if time.Now().After(pr.ExpiresAt) {
 		return user.User{}, ErrTokenExpired
@@ -264,6 +270,12 @@ func (s *Service) Verify(ctx context.Context, token uuid.UUID, displayName, pass
 		Role:        user.RoleUser,
 		Password:    password,
 	})
+	// The address gained an account after the link was mailed: a verdict on
+	// the link, not a fault (#373). Only the holder of a live link gets this
+	// far, and they were mailed this address, so it discloses nothing.
+	if errors.Is(err, user.ErrEmailTaken) {
+		return user.User{}, ErrAlreadyRegistered
+	}
 	if err != nil {
 		return user.User{}, fmt.Errorf("creating user: %w", err)
 	}
