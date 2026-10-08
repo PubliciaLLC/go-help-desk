@@ -89,6 +89,7 @@ func TestCheckIP_RefusalsWrapErrBlockedAddress(t *testing.T) {
 		{"Alibaba metadata", "100.100.100.200", "refusing to connect to internal address 100.100.100.200"},
 		{"unspecified", "0.0.0.0", "refusing to connect to unspecified address 0.0.0.0"},
 		{"link-local multicast", "224.0.0.1", "refusing to connect to link-local address 224.0.0.1"},
+		{"multicast", "239.1.1.1", "refusing to connect to multicast address 239.1.1.1"},
 		{"IPv4-mapped loopback", "::ffff:127.0.0.1", "refusing to connect to loopback address 127.0.0.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

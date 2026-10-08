@@ -206,7 +206,14 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) a
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		d.log.Warn("webhook delivery rejected", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "status", resp.StatusCode)
-		return authstore.WebhookDelivery{At: at, Status: resp.StatusCode, Error: DeliveryHTTPStatus}
+		// The DB CHECK constraint only allows 0 or 100..999. Go's HTTP client
+		// accepts any 3-digit status (e.g., "099" parses as 99, "000" as 0).
+		// Store 0 for out-of-range values to keep the record valid.
+		status := resp.StatusCode
+		if status < 100 || status > 999 {
+			status = 0
+		}
+		return authstore.WebhookDelivery{At: at, Status: status, Error: DeliveryHTTPStatus}
 	}
 	// Retry logic for v2: for now, accept any 2xx.
 	return authstore.WebhookDelivery{At: at, Status: resp.StatusCode}

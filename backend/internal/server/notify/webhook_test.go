@@ -118,6 +118,31 @@ func (r recordingWebhookStore) RecordWebhookDelivery(ctx context.Context, id uui
 	return r.err
 }
 
+type ctxAwareWebhookStore struct {
+	hooks     []authstore.WebhookConfig
+	got       chan recordedWithCtxState
+	ctxIsDone chan bool
+}
+
+type recordedWithCtxState struct {
+	ID        uuid.UUID
+	URL       string
+	D         authstore.WebhookDelivery
+	CtxIsDone bool
+}
+
+func (r ctxAwareWebhookStore) ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error) {
+	return r.hooks, nil
+}
+
+func (r ctxAwareWebhookStore) RecordWebhookDelivery(ctx context.Context, id uuid.UUID, url string, d authstore.WebhookDelivery) error {
+	// Track whether ctx is done at the time of call
+	isDone := ctx.Err() != nil
+	r.got <- recordedWithCtxState{ID: id, URL: url, D: d, CtxIsDone: isDone}
+	r.ctxIsDone <- isDone
+	return nil
+}
+
 func TestSend_LogsFailedDelivery(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -438,10 +463,41 @@ func TestClassifyDeliveryError(t *testing.T) {
 			want: DeliveryTLS,
 		},
 		{
+			name: "TLS record header error",
+			err: &url.Error{
+				Op:  "Post",
+				Err: tls.RecordHeaderError{},
+			},
+			want: DeliveryTLS,
+		},
+		{
+			name: "unexpected EOF",
+			err: &url.Error{
+				Op:  "Post",
+				Err: io.ErrUnexpectedEOF,
+			},
+			want: DeliveryConnection,
+		},
+		{
 			name: "context deadline exceeded",
 			err: &url.Error{
 				Op:  "Post",
 				Err: context.DeadlineExceeded,
+			},
+			want: DeliveryTimeout,
+		},
+		{
+			name: "DNS timeout",
+			err: &url.Error{
+				Op: "dial",
+				Err: &net.OpError{
+					Op: "dial",
+					Err: &net.DNSError{
+						Err:       "i/o timeout",
+						Name:      "x.invalid",
+						IsTimeout: true,
+					},
+				},
 			},
 			want: DeliveryTimeout,
 		},
@@ -548,6 +604,74 @@ func TestSend_ReturnsTheResult(t *testing.T) {
 			require.Equal(t, tc.wantError, result.Error)
 			require.True(t, result.At.After(before) || result.At.Equal(before))
 			require.True(t, result.At.Before(after) || result.At.Equal(after))
+		})
+	}
+}
+
+func TestSend_InvalidStatusCodesAreStoredAsZero(t *testing.T) {
+	cases := []struct {
+		name       string
+		statusLine string // e.g. "099 X" or "000 X"
+		wantStatus int
+	}{
+		{
+			name:       "status 099",
+			statusLine: "099 X",
+			wantStatus: 0,
+		},
+		{
+			name:       "status 000",
+			statusLine: "000 X",
+			wantStatus: 0,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Start a raw TCP server that sends an invalid status code.
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			defer listener.Close()
+
+			go func() {
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+
+				// Read the request until blank line (simple read, don't care about content)
+				buf := make([]byte, 4096)
+				conn.Read(buf)
+
+				// Send invalid status line
+				response := fmt.Sprintf("HTTP/1.1 %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", tc.statusLine)
+				conn.Write([]byte(response))
+			}()
+
+			// Create a client with timeout
+			client := &http.Client{Timeout: 2 * time.Second}
+
+			disp := &WebhookDispatcher{
+				client: client,
+				log:    slog.Default(),
+			}
+
+			hook := authstore.WebhookConfig{
+				ID:  uuid.New(),
+				URL: "http://" + listener.Addr().String() + "/hook",
+			}
+
+			result := disp.send(hook, []byte(`{"test":"data"}`))
+
+			// The result should have Status 0 (not the parsed 099 or 000)
+			require.Equal(t, tc.wantStatus, result.Status,
+				"status %s should be stored as 0, not %d", tc.statusLine, result.Status)
+			require.Equal(t, DeliveryHTTPStatus, result.Error)
+
+			// Verify the record would pass the DB CHECK: 0 or 100..999
+			require.True(t, result.Status == 0 || (result.Status >= 100 && result.Status <= 999),
+				"status %d would violate DB CHECK constraint", result.Status)
 		})
 	}
 }
@@ -734,6 +858,57 @@ func TestDispatch_RecordedResultCarriesNoSecrets(t *testing.T) {
 	require.NotContains(t, recStr, "sekrit-q")
 	require.NotContains(t, recStr, "hmac-sekrit")
 	require.NotContains(t, recStr, "sekrit-body")
+}
+
+func TestDispatch_RecordsEvenWithCancelledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	hookID := uuid.New()
+	hook := authstore.WebhookConfig{
+		ID:      hookID,
+		URL:     server.URL + "/hook",
+		Events:  []string{"*"},
+		Enabled: true,
+	}
+
+	recordedChan := make(chan recordedWithCtxState, 1)
+	ctxIsDoneChan := make(chan bool, 1)
+	store := ctxAwareWebhookStore{
+		hooks:     []authstore.WebhookConfig{hook},
+		got:       recordedChan,
+		ctxIsDone: ctxIsDoneChan,
+	}
+
+	disp := &WebhookDispatcher{
+		store:   store,
+		client:  server.Client(),
+		baseURL: fixtureBaseURL,
+		log:     slog.Default(),
+	}
+
+	// Create a cancelled context and pass it to Dispatch
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	require.NoError(t, disp.Dispatch(ctx, fixtureReplyEvent(false)))
+
+	// Wait for the record to be delivered (up to 2 seconds)
+	select {
+	case rec := <-recordedChan:
+		// The hook should have been delivered
+		require.Equal(t, hookID, rec.ID)
+		require.Equal(t, hook.URL, rec.URL)
+		require.Equal(t, 200, rec.D.Status)
+		require.Equal(t, "", rec.D.Error)
+		// The context passed to record() should NOT be the cancelled one
+		// (dispatcher uses context.Background() for the record call)
+		require.False(t, rec.CtxIsDone, "record() should not be called with a cancelled context")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for webhook delivery record")
+	}
 }
 
 func TestDeliveryErrors_MatchTheList(t *testing.T) {
