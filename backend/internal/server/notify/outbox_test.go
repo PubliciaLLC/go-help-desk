@@ -612,44 +612,50 @@ func TestRedactAddresses(t *testing.T) {
 // the bound (measured, #358 review).
 //
 // The check is a scaling check, not a wall-clock limit: an absolute bound
-// depends on the machine and fails under -race, which slows regexp several
-// fold. Each shape is timed at N and at 2N bytes. A linear matcher takes about
-// twice as long at 2N; an unbounded one takes about four times as long. The
-// ratio is what is asserted. A generous absolute backstop still fails a
-// pathological slowdown on its own.
+// depends on the machine, and -race slows regexp 27 to 49 times. Each shape is
+// timed at N and at 4N bytes, interleaved, with the fastest of five runs at
+// each size. A linear matcher takes about four times as long at 4N; an
+// unbounded one about sixteen times. The ratio is asserted against nine, which
+// is between the two. A generous absolute backstop still fails a pathological
+// slowdown on its own, on any single run.
 func TestRedactAddresses_IsLinear(t *testing.T) {
 	const (
-		maxRatio = 3.0                  // linear is ~2, unbounded ~4
+		maxRatio = 9.0                  // linear is ~4 at 4x the input, unbounded ~16
 		minRatio = 5 * time.Millisecond // below this a ratio is noise, so only the backstop applies
-		backstop = 20 * time.Second
+		backstop = 30 * time.Second     // per run, so a slow failure stops at once
+		runs     = 5
 	)
-	// Sizes are per shape: each is chosen so that the smaller run takes tens
-	// of milliseconds without -race. The unbounded versions are quadratic, so
-	// their 2N run is what hits the backstop when a bound is removed.
+	// Sizes are per shape, chosen so the smaller run takes a few milliseconds
+	// without -race. Under -race the whole test then stays within about 15 s.
+	// The unbounded versions are quadratic, so their 4N run is what hits the
+	// backstop when a bound is removed.
 	shapes := []struct {
 		name, prefix, unit string
-		small              int // bytes at N; the larger run is 2N
+		small              int // bytes at N; the larger run is 4N
 	}{
 		// Mutation M7 (no {0,64} on the quoted local part) is caught here.
-		{"unclosed quoted local part", `"`, `a@b \"`, 16 << 10},
+		{"unclosed quoted local part", `"`, `a@b \"`, 8 << 10},
 		// Whitespace stops the IP literal early.
-		{"unclosed IP literal", "", `a@b x@[`, 128 << 10},
-		// No whitespace, so only the {0,255} bound limits the IP literal.
-		// Measured: this stays linear with or without that bound (up to
-		// 128 KB), so this shape guards against a regression on this input;
-		// it does not by itself detect removing {0,255}.
-		{"unclosed IP literal, no whitespace", "", `a@[`, 32 << 10},
+		{"unclosed IP literal", "", `a@b x@[`, 48 << 10},
+		// The costliest shape per byte. No whitespace, so only the {0,255}
+		// bound limits the IP literal. Measured: this stays linear with or
+		// without that bound (up to 128 KB), so it guards this input against
+		// a regression, but it does not detect removing {0,255}.
+		{"unclosed IP literal, no whitespace", "", `a@[`, 3 << 10},
 	}
 	for _, s := range shapes {
 		t.Run(s.name, func(t *testing.T) {
 			build := func(size int) string {
 				return s.prefix + strings.Repeat(s.unit, size/len(s.unit))
 			}
-			small, large := s.small, 2*s.small
-			redactAddresses(build(small)) // warm-up: the first run pays for setup
-			tSmall := timeRedaction(t, build(small), backstop)
-			tLarge := timeRedaction(t, build(large), backstop)
-			t.Logf("t(%d bytes)=%v t(%d bytes)=%v", len(build(small)), tSmall, len(build(large)), tLarge)
+			small, large := build(s.small), build(4*s.small)
+			redactAddresses(small) // warm-up: the first run pays for setup
+			tSmall, tLarge := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+			for range runs {
+				tSmall = min(tSmall, timeOnce(t, small, backstop))
+				tLarge = min(tLarge, timeOnce(t, large, backstop))
+			}
+			t.Logf("t(%d bytes)=%v t(%d bytes)=%v", len(small), tSmall, len(large), tLarge)
 			if tSmall < minRatio {
 				t.Logf("t(N) below %v: ratio not meaningful, backstop only", minRatio)
 				return
@@ -661,33 +667,22 @@ func TestRedactAddresses_IsLinear(t *testing.T) {
 	}
 }
 
-// timeRedaction returns the fastest of three runs of redactAddresses on in.
-// The minimum is taken to cut noise. Every run is checked against the
-// backstop, so a pathological run stops the test at once.
-func timeRedaction(t *testing.T, in string, backstop time.Duration) time.Duration {
+// timeOnce times one run of redactAddresses on in, and fails the test at once
+// if the run exceeds the backstop.
+func timeOnce(t *testing.T, in string, backstop time.Duration) time.Duration {
 	t.Helper()
-	best := time.Duration(math.MaxInt64)
-	for range 3 {
-		start := time.Now()
-		redactAddresses(in)
-		d := time.Since(start)
-		require.Less(t, int64(d), int64(backstop), "redaction of %d bytes took %v", len(in), d)
-		best = min(best, d)
-	}
-	return best
+	start := time.Now()
+	redactAddresses(in)
+	d := time.Since(start)
+	require.Less(t, int64(d), int64(backstop), "redaction of %d bytes took %v", len(in), d)
+	return d
 }
 
-// fail and deliver both redact the same string on a terminal failure, so
-// redaction must be idempotent. Before the IP literal excluded whitespace, an
-// unclosed "@[" in the first pass closed on the "]" of a "[address]" it
-// inserted, and the second pass swallowed the rejection text after it.
-func TestRedactAddresses_IsIdempotent(t *testing.T) {
-	const relayed = "550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected; was <a@b.com>"
-	once := redactAddresses(relayed)
-	require.Equal(t, once, redactAddresses(once))
-	require.Contains(t, redactAddresses(once), "Recipient address rejected",
-		"the rejection text after the address must survive a second pass")
-
+// Redaction is applied once by design (TestWorker_RedactsTheRawErrorExactlyOnce).
+// It is not idempotent in general: a second pass can see the [address] the
+// first pass inserted and hide text after it. This pins only the documented
+// rows, which a second pass leaves unchanged.
+func TestRedactAddresses_TableRowsAreStableUnderASecondPass(t *testing.T) {
 	for _, tc := range redactAddressCases {
 		once := redactAddresses(tc.in)
 		require.Equal(t, once, redactAddresses(once), "input %q", tc.in)
@@ -707,6 +702,61 @@ func TestWorker_FailRedactsItsOwnReason(t *testing.T) {
 
 	require.Equal(t, "panic: [address]", store.failed[row.ID])
 	require.NotContains(t, logged.String(), "x@y.test")
+}
+
+// A delivery error is redacted exactly once, on its way to last_error and to
+// the log. Redaction is not idempotent in general: the [address] it inserts
+// can close an unclosed "@[" or quote in a second pass and hide the text after
+// it. So neither path may redact a string that was already redacted (#358
+// review). The raw error here has an address-shaped run that the first pass
+// hides and a second pass would widen.
+func TestWorker_RedactsTheRawErrorExactlyOnce(t *testing.T) {
+	const raw = `550 5.7.1 "Recipient address rejected: a@\"@b`
+	const want = `550 5.7.1 "Recipient address rejected: [address]"@b`
+
+	t.Run("retried", func(t *testing.T) {
+		store := newFakeOutbox()
+		email := &recorder{fail: errors.New(raw)}
+		require.NoError(t, NewOutboxDispatcher(store, []string{"email"}, nil).Dispatch(context.Background(), sampleEvent()))
+		w := newTestWorker(store, map[string]notification.Dispatcher{"email": email})
+
+		_, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, []string{want}, store.lastErrors)
+	})
+
+	t.Run("given up", func(t *testing.T) {
+		store := newFakeOutbox()
+		email := &recorder{fail: errors.New(raw)}
+		require.NoError(t, NewOutboxDispatcher(store, []string{"email"}, nil).Dispatch(context.Background(), sampleEvent()))
+		var logged bytes.Buffer
+		w := NewWorker(store, map[string]notification.Dispatcher{"email": email}, slog.New(slog.NewJSONHandler(&logged, nil)))
+		w.MaxAttempts = 1 // the first claim is the last attempt
+
+		_, err := w.RunOnce(context.Background())
+		require.NoError(t, err)
+		require.Len(t, store.failed, 1)
+		for _, reason := range store.failed {
+			require.Equal(t, want, reason, "last_error")
+		}
+		require.Equal(t, want, loggedGiveUpReason(t, logged.Bytes()), "log line")
+	})
+}
+
+// loggedGiveUpReason returns the reason field of the give-up log line.
+func loggedGiveUpReason(t *testing.T, logged []byte) string {
+	t.Helper()
+	for _, line := range bytes.Split(bytes.TrimSpace(logged), []byte("\n")) {
+		var rec map[string]any
+		require.NoError(t, json.Unmarshal(line, &rec))
+		if rec["msg"] == "notification outbox: giving up on a notification" {
+			reason, ok := rec["reason"].(string)
+			require.True(t, ok, "no reason field on the give-up line")
+			return reason
+		}
+	}
+	require.FailNow(t, "no give-up log line was written")
+	return ""
 }
 
 // A verification event queues for the verification channel and nothing else:

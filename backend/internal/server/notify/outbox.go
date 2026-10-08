@@ -304,12 +304,13 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		}
 		return
 	}
-	reason := redactAddresses(err.Error())
+	// fail redacts the raw error itself, so it is redacted exactly once on
+	// either path (redaction is not idempotent; see TestWorker_RedactsTheRawErrorExactlyOnce).
 	if row.Attempts >= w.MaxAttempts {
-		w.fail(settle, row, reason)
+		w.fail(settle, row, err.Error())
 		return
 	}
-	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), reason); rerr != nil {
+	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), redactAddresses(err.Error())); rerr != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not reschedule", "id", row.ID, "error", rerr)
 	}
 }
@@ -335,6 +336,8 @@ func redactAddresses(s string) string {
 	return emailAddress.ReplaceAllString(s, "[address]")
 }
 
+// fail gives up on a row. reason must be the raw text: fail redacts it, and
+// no caller may redact it first, because redaction is applied once (#358).
 func (w *Worker) fail(ctx context.Context, row notification.OutboxRow, reason string) {
 	reason = redactAddresses(reason)
 	w.log.ErrorContext(ctx, "notification outbox: giving up on a notification",
