@@ -74,7 +74,7 @@ Core fields (all editions):
 - **Attachments** (file uploads)
 - **Replies/thread** (staff and user messages)
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
-- **Tracking number** (quoted in notification email, and one half of a guest link re-request)
+- **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → Settings → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
 
 SLA fields (optional feature toggle, all editions):
@@ -96,8 +96,10 @@ Three roles: **Admin**, **Staff**, **User**
 | Role | Capabilities |
 |------|-------------|
 | **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
-| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
+| **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+
+**Admin → Roles** is a read-mostly page: it shows the three roles with a one-line description each and, under each, the users who hold it, with a dropdown that changes a user's role (`PATCH /admin/users/{id}`, the same call the user page makes). It does not define permissions; the roles are fixed. The dropdown is disabled on administrator rows (demote an administrator from their user page) and the page lists the first 500 users.
 
 **Custom admin-defined roles (v3):** admins will be able to define additional roles and grant a curated set of permissions (e.g., "Tier 1 Agent" with ticket read/reply but no assignment rights). The three built-in roles remain as defaults and cannot be removed. Permissions are stored as discrete capability flags rather than hardcoded in code, with the built-in roles expressed as preset bundles so existing behavior is preserved.
 
@@ -111,6 +113,7 @@ Admins manage accounts from **Admin → Users**. The user list is clickable — 
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
 - **Groups** — view current group membership, add to groups, or remove from groups.
+- **Last administrator.** Disabling, deleting or demoting the last active administrator is refused (`400`): setup does not reopen, so an instance with none is orphaned for good. The count and the write are one statement that locks every active administrator row, so two parallel requests (even one administrator removing both another and themselves) cannot both pass. Removing an administrator's *ability to authenticate* is a different door the guard does not watch; see the identity provider guard and the end of Passkeys.
 - **Delete** — marks the account deleted. It stops authenticating immediately, every session is revoked, and it drops out of the admin list; the row itself stays, because the tickets and replies that reference it do. Those keep the person's display name on them: a thread that renamed its participants after the fact would not be an accurate record of what happened. There is no hard delete and no anonymisation, so this is not the tool for a request to erase somebody's data. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
 
 ### Ticket Lifecycle
@@ -429,9 +432,19 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
 - Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
-- Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
+- Users only see results from their own tickets. Staff and admin search within the list they are looking at (see **List filters** below): by default the tickets assigned to them or their groups, or, with `ticket_scope_enforced` on, everything their scope admits.
 - Reply bodies are not indexed — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
 - Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
+
+**List filters.** `GET /api/v1/tickets` takes `q` (above) plus `limit` (default 100, maximum 200) and `offset` (see Other protections), and these filters, checked in this order:
+
+- `reporter_id=<uuid>`: the tickets one account reported. **Admin only** (`403` otherwise); the ticket list's "Filtering by client" chip, linked from the user page, uses it.
+- `assignee_group_id=<uuid>`: the tickets assigned to one group. Staff and admin (`403` for a reporting user). With `ticket_scope_enforced` on, a staff member may only name a group they belong to (`403` otherwise): group ids are listed to every staff member, so without that the filter would hand over tickets the scope refuses everywhere else.
+- `scope=mine|unassigned|all`: `unassigned` (no assignee user or group) and `all` are **admin only** (`403`). `mine`, the default, is the tickets assigned to the caller or to any of their groups; with scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
+
+The ticket list page offers the scope as Mine / Unassigned / All buttons to administrators, an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
+
+**Bulk status change.** On a desktop-width screen staff and admin can tick tickets in the list and apply one status to all of them. There is no bulk endpoint: the page sends one `PATCH /tickets/{id}` per ticket, so each goes through the same transition rules and authorisation as a single change and some can be refused (a move out of a Closed ticket, for one). The page then reports "n of m updated, k refused: reason" and leaves the refused tickets selected. Bulk selection does not exist on a phone (see Small screens).
 
 ### Linked Tickets
 
@@ -482,14 +495,26 @@ separate value for each direction:
 - **Items do not factor into scope** — staff in-scope for a Type see all Items under it
 - Scope is derived **exclusively from group membership** (no direct Category assignment to individual staff)
 - Solo admin scenario: assign all categories to a single group
-- Staff members can see all tickets assigned to any group they belong to, and can take any action on those tickets
+
+Scope does two separate jobs: it can restrict what staff see, and it routes new tickets.
+
+**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → Settings → General → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's default ticket list still shows the tickets assigned to them or their groups.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and the audit views (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`, and the SQL held equal to them by tests). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
+
+**Routing: auto-assignment.** A newly created ticket is routed once, at creation, by the first rule that matches (the assignment is made by the system, so its audit entry has no actor):
+
+1. A group whose scope covers the ticket's Category (or Category + Type). The ticket is assigned to that group; if several match, the first by name.
+2. `auto_assign_group_id`: one catch-all group for everything the rule above did not match.
+3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
+4. Otherwise the ticket stays unassigned.
+
+Routing is best-effort: a failure to assign leaves the ticket unassigned and does not fail the creation. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) have no admin page; they are set through `PATCH /admin/settings`, and an id that does not parse is ignored.
 
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
 - **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
 - Both settings are stored in the database and managed via **Admin → Settings → Branding**.
-- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
+- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled}` — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404).
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
 
 ---
@@ -1794,9 +1819,16 @@ knowledge to drift from the first.
 
 Serves both the frontend SPA and external integrations.
 
-**Notable public endpoints (no auth):**
-- `GET /api/v1/site` — branding info and app version; used by the SPA shell before authentication
-- `GET /api/v1/setup/status` — whether first-run setup is needed
+**Public endpoints (no session or credential):**
+- `GET /health` — liveness, `{"status":"ok"}`. Outside `/api/v1`.
+- `GET /api/v1/site` — branding info, app version and `guest_submission_enabled`; used by the SPA shell and login page before authentication
+- `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
+- `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
+- `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
+- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission).
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a signed-in session. Active entries for a guest or a reporting user, all of them for staff and administrators.
+
+Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
 ### MCP Interface
 
@@ -1807,13 +1839,13 @@ over SSE at `/mcp/`.
 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
-| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. |
+| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. |
 | `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
-| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones (the tool applies no role check to it, unlike the REST catalogue, which shows archived entries to staff and administrators only). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
 | `add_reply` | staff, admin | `internal: true` posts a staff-only note and does not notify the reporter. |
-| `assign_ticket` | staff, admin | To a user or a group. |
+| `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
@@ -1841,7 +1873,7 @@ in this beta's bug-fix branch rather than deferred to a major version — see
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Sits on top of the REST API. Same authentication, and scopes are enforced per tool. |
+| MCP | Inherits from above | Served at `/mcp/` behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
@@ -1902,7 +1934,7 @@ category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates: its own (`/me/password`, `/me/mfa/enroll*`), and — through the
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`), and — through the
 admin surface — **any administrator's**. It may not create an administrator,
 promote a user to administrator, or reset an administrator's password or MFA.
 
@@ -1915,7 +1947,7 @@ administrator, reset the now-staff account's password, sign in — so the rule
 covers the whole account in either direction. Managing non-administrator users
 stays available.
 
-Three more things are off limits to a machine credential, for the same reason:
+Four more things are off limits to a machine credential, for the same reason:
 
 - **Changing the SAML or OIDC configuration.** Login providers are settable from
   the admin UI and nowhere else. Repointing the identity provider at one the
@@ -1925,16 +1957,23 @@ Three more things are off limits to a machine credential, for the same reason:
   Blocked on both doors: the dedicated config routes and the `saml_*` / `oidc_*`
   settings keys. Reading the configuration stays available to automation, since
   the handlers already blank the secrets.
-- **Changing an auth-critical setting** — MFA enablement and enforcement, the
-  SAML/OIDC keys, the email-domain allowlist, the signup toggles, and guest
+- **Changing an auth-critical setting** (`admin.AuthCriticalKeys()`; refused
+  with `403 session_required`). These decide who may authenticate and how, or
+  what the instance will accept and keep: MFA enablement and enforcement; the
+  SAML and OIDC keys; the email-domain allowlist and the signup toggles; guest
   submission (#177: it decides not just whether anonymous people can file a
-  ticket, but also, since the category catalogue stopped being anonymous,
-  whether that catalogue is readable without a session at all — one flag,
-  two exposures). Ordinary configuration such as the site name stays
-  automatable.
-- **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
-  credential reaching it could spend the account's durable failed-attempt budget
-  and lock the owner out repeatedly.
+  ticket but also, since the category catalogue stopped being anonymous,
+  whether that catalogue is readable without a session at all, one flag and two
+  exposures); `closed_reopen_policy` (#349); the attachment policy (scanner
+  address and policy, allowed types, infected and mismatch handling, the
+  reputation toggles, keys and refresh interval); and audit retention and staff
+  visibility of change history. Ordinary configuration such as the site name
+  stays automatable.
+- **Verifying a second factor** (`POST /auth/local/mfa/verify` and
+  `POST /auth/local/passkey/start|finish`). A machine credential reaching the
+  code check could spend the account's durable failed-attempt budget and lock
+  the owner out repeatedly; the passkey routes sit beside it and answer to the
+  same rule.
 - **Issuing a credential broader than itself.** Otherwise `credentials:write` is
   every scope: hold only that, mint a key with `users:write`, use it. A
   signed-in administrator is exempt — they already hold everything a credential
@@ -2144,7 +2183,7 @@ The fields available on a ticket are the union of all fields assigned to its sel
 
 ### Values
 
-Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
+Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page; a reporting user can edit the fields on their own ticket until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester).
 
 Guests are shown no custom fields at all. The guest endpoint accepts none — a deliberate choice, since what an anonymous visitor may write into an operator's own fields is the operator's decision — and the public form no longer offers them. It did offer them for a while and threw the answers away on submit, which also meant a field marked required could stop a visitor filing a ticket at all. Regular authenticated users see category + type fields. Staff/admin see all levels.
 
