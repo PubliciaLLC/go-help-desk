@@ -527,7 +527,7 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 ### Local Auth (Default)
 
-- Username/password with bcrypt hashing. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
+- Username/password with bcrypt hashing
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 
@@ -803,8 +803,8 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 - Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
 - `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
-- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
-- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name and `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`); a link that passes the lookup can still fail at the POST, for instance when the address has since gained an account. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
+- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
+- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`); a link that passes the lookup can still fail at the POST, for instance when the address has since gained an account. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
 
 ### Identity provider lockout guard (#300)
 
@@ -946,6 +946,17 @@ their own (a resend for a ticket they hold) could time their own mail's
 arrival to learn which the probe was. It needs their own mailbox, crosses a
 queue shared with every other notification, and is far noisier than timing the
 request was. Recorded rather than claimed closed.
+
+**Signup verification leaves the same signal** (#361). The request side of
+signup is covered under Self-Service Signup. Verification rows share
+that worker and its order, so one for an address with no account holds it for
+a mail-server round trip and one for a taken address for the two queries that
+decide not to mail. Someone who signs up for an address and then at once for
+their own could time their own verification mail's arrival to learn whether
+the first address has an account. Accepted for the same reasons as above: it
+needs their own mailbox, crosses a queue shared with every other notification,
+and is tens to hundreds of milliseconds against seconds of mail-delivery
+jitter. Recorded rather than claimed closed.
 
 The rotation runs in one transaction with the ticket row locked, so concurrent
 sends for one ticket (two replicas, or a reclaimed row beside a fresh one)
@@ -1890,12 +1901,13 @@ sessions do not: a session **is** the user, with whatever their role allows.
 Scopes exist to give a machine credential *less* than its owner, and there is
 nothing to narrow when a person is driving.
 
-A scope is `resource:action`, where action is `read` or `write`.
+A scope is `resource:action`, where action is `read` or `write`. `audit` has
+only `read`.
 
 | Resource | Covers |
 |----------|--------|
 | `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
-| `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. `audit:write` adds nothing beyond `audit:read` (the log has no write route), but like every write scope it implies read, so it reaches this view |
+| `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
 | `users` | User administration |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |
@@ -1914,8 +1926,9 @@ Four rules govern them:
    An API key acts at its owner's role; an OAuth client acts as staff.
 2. **An empty scope list denies everything.** A credential with no scopes
    reaches nothing at all.
-3. **Write implies read** on the same resource. An integration that may create
-   tickets but not read them back is not a useful shape.
+3. **Write implies read** on the same resource, except `audit`, which has no
+   write scope. An integration that may create tickets but not read them back
+   is not a useful shape.
 4. **There is no wildcard.** A credential that should reach everything lists
    every scope it needs. This keeps what a credential can do legible from the
    credential itself, and means adding a resource later does not silently widen
@@ -2109,10 +2122,10 @@ on the existing webhook feature instead of as plugins.
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
-  events, enable/disable, edit, delete). A secret is write-only: it signs
-  deliveries and is never returned by the API or shown again, and leaving the
-  field empty on edit keeps the stored one. There is no delivery log yet, so a
-  failing hook is visible only in the server log.
+  events, enabled — also when creating — edit, delete). A secret is write-only:
+  it signs deliveries and is never returned by the API or shown again, and
+  leaving the field empty on edit keeps the stored one. There is no delivery log
+  yet, so a failing hook is visible only in the server log.
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
@@ -2146,7 +2159,8 @@ on the existing webhook feature instead of as plugins.
   has an account. Before this a new address dialled the mail server on the
   request and a taken one returned at once, so the timing said who had an
   account. A taken address now gets a pending row that is never mailed, and
-  it expires unused.
+  it expires unused. The send-time timing that remains is recorded under
+  Guest Submission (#361).
 - **The display name and password are chosen at verification, not at
   signup** ([#360](https://github.com/PubliciaLLC/go-help-desk/issues/360),
   [#374](https://github.com/PubliciaLLC/go-help-desk/issues/374)). The

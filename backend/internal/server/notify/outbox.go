@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,12 @@ type OutboxDispatcher struct {
 // next poll.
 func NewOutboxDispatcher(store notification.Outbox, channels []string, wake func()) *OutboxDispatcher {
 	return &OutboxDispatcher{store: store, channels: channels, wake: wake}
+}
+
+// Channels returns the channels Dispatch queues for: a copy, so a caller
+// checking the wiring at startup (#361) cannot change what is queued.
+func (d *OutboxDispatcher) Channels() []string {
+	return slices.Clone(d.channels)
 }
 
 // carries reports whether a channel can deliver an event type at all. A row
@@ -304,19 +311,27 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		}
 		return
 	}
-	reason := redactAddresses(err.Error())
+	// fail redacts the raw error itself, so it is redacted exactly once on
+	// either path (redaction is not idempotent; see TestWorker_RedactsTheRawErrorExactlyOnce).
 	if row.Attempts >= w.MaxAttempts {
-		w.fail(settle, row, reason)
+		w.fail(settle, row, err.Error())
 		return
 	}
-	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), reason); rerr != nil {
+	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), redactAddresses(err.Error())); rerr != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not reschedule", "id", row.ID, "error", rerr)
 	}
 }
 
 // emailAddress matches anything shaped like an address in an error string.
 // Deliberately loose: it only has to find what to hide, never validate it.
-var emailAddress = regexp.MustCompile(`[^\s<>()\[\]@,;:"']+@[^\s<>()\[\]@,;:"']+`)
+// The local part may be quoted ("john doe"@example.com, escapes included) and
+// the domain may be an IP literal (guest@[192.168.1.10]): both pass
+// user.ValidateEmail, so a guest can have one on file (#358). The quoted
+// local part is bounded because an unclosed quote made matching quadratic on
+// relay text (measured; see TestRedactAddresses_IsLinear). The IP literal is
+// bounded to 255 characters, as a domain name is, and excludes whitespace, so
+// a stray "@[" cannot close on a later "]" such as the one in "[address]".
+var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.){0,64}"|[^\s<>()\[\]@,;:"']+)@(?:\[[^\]\s]{0,255}\]|[^\s<>()\[\]@,;:"']+)`)
 
 // redactAddresses hides email addresses in a delivery error before it is
 // stored in last_error or logged (#350). A mail server's rejection usually
@@ -328,6 +343,8 @@ func redactAddresses(s string) string {
 	return emailAddress.ReplaceAllString(s, "[address]")
 }
 
+// fail gives up on a row. reason must be the raw text: fail redacts it, and
+// no caller may redact it first, because redaction is applied once (#358).
 func (w *Worker) fail(ctx context.Context, row notification.OutboxRow, reason string) {
 	reason = redactAddresses(reason)
 	w.log.ErrorContext(ctx, "notification outbox: giving up on a notification",

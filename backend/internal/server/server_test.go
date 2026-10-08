@@ -303,6 +303,12 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 
 	passkeySvc, passkeyStore := testPasskeys(q)
 	verifyMail := &verifyMailbox{}
+	// Verification email is sent at once, through the same channel the outbox
+	// worker uses, so a test can follow the link straight after signing up.
+	// Its dispatcher needs the service, hence the late assignment.
+	verifyNow := &lateDispatcher{}
+	registrationSvc := registration.NewService(registrationstore.New(q), userSvc, verifyMail, verifyNow, "https://help.example.com")
+	verifyNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification)
 	srv := server.New(
 		cfg,
 		sessionStore,
@@ -320,7 +326,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		apiKeyLookup,
 		authSt,
 		authSt,
-		registration.NewService(registrationstore.New(q), userSvc, verifyMail, "https://help.example.com"),
+		registrationSvc,
 		cannedResponseSvc,
 		server.WithAuditStore(auStore),
 	)
@@ -2348,6 +2354,10 @@ func passkeyFor(userID uuid.UUID, credID string) webauthn.Credential {
 		Name:         "Test key",
 	}
 }
+
+// lateDispatcher is a Dispatcher assigned after it is handed out, for a
+// service whose channel needs the service itself.
+type lateDispatcher struct{ notification.Dispatcher }
 
 // sendTimeDispatcher runs the send-time guest-link step synchronously, as the
 // outbox worker would, then hands the event to next. With record set, it

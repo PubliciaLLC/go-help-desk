@@ -108,6 +108,26 @@ func (f *fakeMailer) SendVerificationEmail(_, _, _ string) error {
 	return nil
 }
 
+// sendNow is the queue for tests that follow Register through to the mail: it
+// sends at once, through SendVerification, as the outbox worker would.
+type sendNow struct{ s *Service }
+
+func (n *sendNow) Dispatch(ctx context.Context, ev notification.Event) error {
+	raw, _ := ev.Payload["pending_id"].(string)
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return err
+	}
+	return n.s.SendVerification(ctx, id)
+}
+
+// newSendingService is NewService with a queue that sends at once.
+func newSendingService(store Store, users userCreator, mailer Mailer, baseURL string) *Service {
+	q := &sendNow{}
+	q.s = NewService(store, users, mailer, q, baseURL)
+	return q.s
+}
+
 // ── isEmailDomainAllowed ──────────────────────────────────────────────────────
 
 func TestIsEmailDomainAllowed(t *testing.T) {
@@ -140,7 +160,7 @@ func TestIsEmailDomainAllowed(t *testing.T) {
 
 func TestRegister(t *testing.T) {
 	t.Run("domain not allowed", func(t *testing.T) {
-		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		err := svc.Register(context.Background(), "a@other.com", []string{"example.com"}, false)
 		if !errors.Is(err, ErrDomainNotAllowed) {
 			t.Fatalf("want ErrDomainNotAllowed, got %v", err)
@@ -148,7 +168,7 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("open registration required", func(t *testing.T) {
-		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		err := svc.Register(context.Background(), "a@any.com", nil, false)
 		if !errors.Is(err, ErrOpenRegistrationRequired) {
 			t.Fatalf("want ErrOpenRegistrationRequired, got %v", err)
@@ -158,7 +178,7 @@ func TestRegister(t *testing.T) {
 	t.Run("happy path — email sent", func(t *testing.T) {
 		store := &fakeStore{}
 		mailer := &fakeMailer{}
-		svc := NewService(store, &fakeUsers{}, mailer, "http://localhost")
+		svc := newSendingService(store, &fakeUsers{}, mailer, "http://localhost")
 		err := svc.Register(context.Background(), "alice@example.com", []string{"example.com"}, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -173,7 +193,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("open registration", func(t *testing.T) {
 		mailer := &fakeMailer{}
-		svc := NewService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
+		svc := newSendingService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
 		err := svc.Register(context.Background(), "a@any.com", nil, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -189,7 +209,7 @@ func TestRegister(t *testing.T) {
 func TestVerify(t *testing.T) {
 	t.Run("token not found", func(t *testing.T) {
 		store := &fakeStore{getErr: errors.New("not found")}
-		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if err == nil {
 			t.Fatal("expected error")
@@ -204,7 +224,7 @@ func TestVerify(t *testing.T) {
 				ExpiresAt: time.Now().Add(-time.Hour),
 			},
 		}
-		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if !errors.Is(err, ErrTokenExpired) {
 			t.Fatalf("want ErrTokenExpired, got %v", err)
@@ -220,7 +240,7 @@ func TestVerify(t *testing.T) {
 			},
 		}
 		users := &fakeUsers{}
-		svc := NewService(store, users, &fakeMailer{}, "http://localhost")
+		svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		u, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -258,7 +278,7 @@ func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
 	} {
 		store := &fakeStore{}
 		mailer := &fakeMailer{}
-		svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
+		svc := newSendingService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
 		err := svc.Register(context.Background(), addr, nil, true)
 
@@ -282,7 +302,7 @@ func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
 // A real signup must still work, and the address is normalised on the way in.
 func TestRegister_AcceptsAndNormalisesARealAddress(t *testing.T) {
 	store := &fakeStore{}
-	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "https://help.example.com")
+	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "https://help.example.com")
 
 	if err := svc.Register(context.Background(), "  User@Example.COM  ",
 		nil, true); err != nil {
@@ -308,7 +328,7 @@ func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
 	store := &fakeStore{}
 	store.rewriteEmail = "canonical@example.com"
 	mailer := &recordingMailer{}
-	svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
+	svc := newSendingService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
 	err := svc.Register(context.Background(), "Requested@Example.com", nil, true)
 	require.NoError(t, err)
@@ -353,7 +373,7 @@ func TestVerify_HoldsThePasswordLengthRule(t *testing.T) {
 				ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour),
 			}}
 			users := &fakeUsers{}
-			svc := NewService(store, users, &fakeMailer{}, "http://localhost")
+			svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", tc.password)
 
 			if tc.wantErr != nil {
@@ -389,7 +409,7 @@ func TestVerify_HoldsThePasswordLengthRule(t *testing.T) {
 // is that a link which cannot work is never sent.
 func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
 	mailer := &fakeMailer{}
-	svc := NewService(
+	svc := newSendingService(
 		&fakeStore{},
 		&fakeUsers{existing: map[string]bool{"taken@any.com": true}},
 		mailer, "http://localhost")
@@ -413,7 +433,7 @@ func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
 // was added to prevent, still there for the exact person it was added for.
 func TestRegister_ADeletedAccountStillOwnsItsAddress(t *testing.T) {
 	mailer := &fakeMailer{}
-	svc := NewService(
+	svc := newSendingService(
 		&fakeStore{},
 		&fakeUsers{existing: map[string]bool{"gone@any.com": true}},
 		mailer, "http://localhost")
@@ -454,7 +474,7 @@ func TestRegister_FreshAndTakenAddressesDoTheSameWork(t *testing.T) {
 	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
 	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
 		store, queue, mailer := &countingStore{}, &recordingQueue{}, &fakeMailer{}
-		svc := NewService(store, users, mailer, "http://localhost", WithQueue(queue))
+		svc := NewService(store, users, mailer, queue, "http://localhost")
 		_ = svc.Register(context.Background(), addr, nil, true)
 
 		if store.upserts != 1 || len(queue.events) != 1 {
@@ -494,7 +514,7 @@ func TestSendVerification(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mailer := &sendLog{}
-			svc := NewService(&fakeStore{record: tc.record}, &fakeUsers{existing: tc.existing}, mailer, "https://desk.example")
+			svc := NewService(&fakeStore{record: tc.record}, &fakeUsers{existing: tc.existing}, mailer, &recordingQueue{}, "https://desk.example")
 			if err := svc.SendVerification(ctx, tc.id); err != nil {
 				t.Fatal(err)
 			}
@@ -538,7 +558,7 @@ func TestLookup(t *testing.T) {
 	// A database fault is not a verdict on the link: the page must not tell
 	// somebody their link is dead because of an outage.
 	t.Run("a store fault is not a dead link", func(t *testing.T) {
-		svc := NewService(&fakeStore{getErr: errors.New("connection refused")}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		svc := NewService(&fakeStore{getErr: errors.New("connection refused")}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		_, err := svc.Lookup(context.Background(), uuid.New())
 		require.Error(t, err)
 		require.NotErrorIs(t, err, ErrNotFound)
@@ -547,7 +567,7 @@ func TestLookup(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			users := &fakeUsers{}
-			svc := NewService(tc.store, users, &fakeMailer{}, "http://localhost")
+			svc := NewService(tc.store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 			pr, err := svc.Lookup(context.Background(), uuid.New())
 			if tc.wantErr != nil {
 				require.ErrorIs(t, err, tc.wantErr)
@@ -570,7 +590,7 @@ func TestVerify_RequiresADisplayName(t *testing.T) {
 			ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour),
 		}}
 		users := &fakeUsers{}
-		svc := NewService(store, users, &fakeMailer{}, "http://localhost")
+		svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		_, err := svc.Verify(context.Background(), uuid.New(), name, "a-real-passphrase")
 		require.ErrorIs(t, err, ErrDisplayNameRequired, "name %q", name)
 		require.False(t, store.deleted, "a refused name used up the link")
@@ -579,7 +599,7 @@ func TestVerify_RequiresADisplayName(t *testing.T) {
 
 	store := &fakeStore{record: PendingRegistration{ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour)}}
 	users := &fakeUsers{}
-	_, err := NewService(store, users, &fakeMailer{}, "http://localhost").
+	_, err := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost").
 		Verify(context.Background(), uuid.New(), "  Alice  ", "a-real-passphrase")
 	require.NoError(t, err)
 	require.Equal(t, "Alice", users.input.DisplayName, "the name is trimmed")
@@ -598,7 +618,7 @@ func TestVerify_TellsAFaultFromAVerdict(t *testing.T) {
 	verdicts := []error{ErrNotFound, ErrTokenExpired, ErrAlreadyRegistered}
 
 	t.Run("an unknown link is a verdict", func(t *testing.T) {
-		svc := NewService(&fakeStore{getErr: ErrNotFound}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
+		svc := NewService(&fakeStore{getErr: ErrNotFound}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		require.ErrorIs(t, err, ErrNotFound)
 	})
@@ -607,7 +627,7 @@ func TestVerify_TellsAFaultFromAVerdict(t *testing.T) {
 	// holder of a live link gets here, and they were mailed this address, so
 	// saying so discloses nothing; it is answered as a used link.
 	t.Run("an address that has gained an account is a verdict", func(t *testing.T) {
-		svc := NewService(live(), &fakeUsers{err: user.ErrEmailTaken}, &fakeMailer{}, "http://localhost")
+		svc := NewService(live(), &fakeUsers{err: user.ErrEmailTaken}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		require.ErrorIs(t, err, ErrAlreadyRegistered)
 	})
@@ -622,7 +642,7 @@ func TestVerify_TellsAFaultFromAVerdict(t *testing.T) {
 	}
 	for _, tc := range faults {
 		t.Run(tc.name+" is not a verdict", func(t *testing.T) {
-			svc := NewService(tc.store, tc.users, &fakeMailer{}, "http://localhost")
+			svc := NewService(tc.store, tc.users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 			require.Error(t, err)
 			for _, v := range verdicts {

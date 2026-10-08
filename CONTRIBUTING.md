@@ -54,7 +54,19 @@ Postgres:
 ```
 
 The database is ephemeral: it lives in a tmpfs, listens on **5433** so it can
-never be confused with the dev stack on 5432, and runs with `fsync=off`. Nothing
+never be confused with the dev stack on 5432, and runs with `fsync=off`.
+
+That default is **one shared database**: two runs at once (two worktrees, or
+two agents) tear each other's database down, because `once` ends by removing
+it. To run several, give each its own instance and it gets its own free port:
+
+```sh
+GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once ./...
+```
+
+Use one name per worktree. `GHD_TEST_PORT` pins the port if you need it, and only
+with an instance name: on the shared database it would recreate it under
+anyone using it, so the script refuses. Nothing
 persists between runs and nothing needs seeding — `testutil.NewDB` applies the
 migrations on first connect and each test rolls back its own transaction.
 
@@ -98,6 +110,11 @@ go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./
 # Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
 # and leaves nothing behind. Never points at the development database.
 ./scripts/test-db.sh test
+
+# Several at once (worktrees, parallel agents): name an instance, and each
+# gets its own database on its own free port. Without a name they share one,
+# and the first run to finish tears it down under the others.
+GHD_TEST_INSTANCE=my-branch ./scripts/test-db.sh once
 
 # Or against the development stack's database, which the suite will migrate
 TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...

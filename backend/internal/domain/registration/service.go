@@ -74,52 +74,16 @@ type Service struct {
 	store  Store
 	users  userCreator
 	mailer Mailer
-	// queue carries the verification email off the request (#348). Without
-	// WithQueue it is the service itself, sending at once — the same
-	// SendVerification path, so a test with no outbox still exercises it.
+	// queue carries the verification email off the request (#348): the
+	// notification outbox in production. Required, with no send-at-once
+	// default, so wiring that forgets it does not compile (#361).
 	queue   notification.Dispatcher
 	baseURL string
 }
 
-// NewService returns a Service.
-func NewService(store Store, users userCreator, mailer Mailer, baseURL string, opts ...Option) *Service {
-	s := &Service{store: store, users: users, mailer: mailer, baseURL: baseURL}
-	s.queue = sendNow{s}
-	for _, o := range opts {
-		o(s)
-	}
-	return s
-}
-
-// Option configures a Service.
-type Option func(*Service)
-
-// WithQueue sends verification emails through d — the notification outbox in
-// production — rather than on the request.
-func WithQueue(d notification.Dispatcher) Option {
-	return func(s *Service) { s.queue = d }
-}
-
-// sendNow is the queue a Service has without WithQueue: it sends at once.
-type sendNow struct{ s *Service }
-
-func (n sendNow) Dispatch(ctx context.Context, ev notification.Event) error {
-	id, err := PendingIDOf(ev)
-	if err != nil {
-		return err
-	}
-	return n.s.SendVerification(ctx, id)
-}
-
-// PendingIDOf reads the pending registration an EventRegistrationVerify
-// names. Its payload holds only that id: never the token or the address.
-func PendingIDOf(ev notification.Event) (uuid.UUID, error) {
-	raw, _ := ev.Payload["pending_id"].(string)
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil, fmt.Errorf("verification event without a pending registration id: %w", err)
-	}
-	return id, nil
+// NewService returns a Service that queues verification email on queue.
+func NewService(store Store, users userCreator, mailer Mailer, queue notification.Dispatcher, baseURL string) *Service {
+	return &Service{store: store, users: users, mailer: mailer, queue: queue, baseURL: baseURL}
 }
 
 // Register validates the request, stores a pending registration, and queues

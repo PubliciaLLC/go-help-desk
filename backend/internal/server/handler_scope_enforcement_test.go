@@ -309,3 +309,47 @@ func TestCredentialCreation_RequiresScopes(t *testing.T) {
 		})
 	}
 }
+
+// #371: only the running server writes the audit log, so no API key or OAuth
+// client may be granted audit:write. Refused like an unknown scope, naming it.
+func TestCredentialCreation_RefusesAuditWrite(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	for _, path := range []string{"/api/v1/admin/api-keys", "/api/v1/admin/oauth-clients"} {
+		t.Run(path, func(t *testing.T) {
+			resp := h.doAsAdmin(t, http.MethodPost, path,
+				map[string]any{"name": "audit-writer", "scopes": []string{"audit:read", "audit:write"}})
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			var body struct {
+				Error struct{ Code, Message string } `json:"error"`
+			}
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+			require.Equal(t, "invalid_scope", body.Error.Code)
+			require.Contains(t, body.Error.Message, "audit:write")
+
+			resp = h.doAsAdmin(t, http.MethodPost, path,
+				map[string]any{"name": "audit-reader", "scopes": []string{"audit:read"}})
+			require.Equal(t, http.StatusCreated, resp.StatusCode, "audit:read alone must still be grantable")
+		})
+	}
+}
+
+// #371: a key stored with audit:write before the API refused it does not
+// reach the audit view through write-implies-read. Seeded in the store, since
+// the API can no longer create one.
+func TestAdminAudit_StoredAuditWriteDoesNotReachTheView(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	raw, _, err := auth.GenerateToken()
+	require.NoError(t, err)
+	raw = "GHD_" + raw // hash after prefixing, as handleCreateAPIKey does
+	require.NoError(t, h.authStore.CreateAPIKey(context.Background(), auth.APIKey{
+		ID: uuid.New(), Name: "pre-#371 key", HashedToken: auth.HashToken(raw),
+		UserID: h.adminID, Scopes: []string{"audit:write"}, CreatedAt: time.Now(),
+	}))
+
+	resp := withKey(t, h, raw, http.MethodGet, "/api/v1/admin/audit", nil)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode)
+}
