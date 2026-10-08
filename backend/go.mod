@@ -1,6 +1,6 @@
 module github.com/publiciallc/go-help-desk/backend
 
-go 1.26.1
+go 1.27.1
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
