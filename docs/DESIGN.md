@@ -763,7 +763,7 @@ refuses that and will keep refusing it).
 - **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
 - **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` reports SAML as enabled only when it is on and SAML is configured.
 - **Admin failsafe**: administrators can still sign in with a local password.
-- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion` or `email_not_verified`. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
+- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified` or `sso_session_used`. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
 
 **Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (standard SAML 2.0; additional IdPs should work via metadata import).
 
@@ -775,17 +775,51 @@ request to them 404s, no login completes and no IdP can fetch the metadata, in
 any configuration (found while testing #304; pinned by
 `TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`).
 
-The SAML library's own login cookie (`token`, a signed JWT valid for an hour) is
-a hand-over, not a session: `/auth/saml/complete` clears it as soon as it has
-read it, whatever the outcome, and the app session it writes is the only
-credential from then on. Left in place it would outlive every session
-revocation (password change, MFA reset, a new factor) and let a browser holding
-it mint a fresh session with whatever MFA the original assertion claimed
+The SAML library's own login cookie (`token`, a signed JWT) is a hand-over,
+not a session. `/auth/saml/complete` spends it as soon as it has read it,
+whatever the outcome. The browser is told to delete it (under the name,
+domain and path the library set it with), and the SHA-256 of its signed input
+(`header.payload`, never the signature) is recorded in `spent_saml_handovers`.
+The signature is left out on purpose: the verifier decodes it leniently, so
+one token has several spellings that all verify (unused low bits in the last
+base64 character, or the ECDSA `s` value replaced by `N-s`), and keying on the
+whole cookie would let a respelled copy through. A cookie whose signed input is
+already recorded is refused with `/login?error=sso_session_used`. The app
+session written at hand-over is the only credential from then on, so a copy of
+the cookie captured earlier cannot mint a new session after a revocation
+(password change, MFA reset, a new factor, disable). Without a revocation it
+cannot mint one either
 ([#337](https://github.com/PubliciaLLC/go-help-desk/issues/337); pinned by
-`TestSAMLComplete_SpendsTheLibraryCookie`). "Spent" means the browser is told to
-delete the cookie under the name, domain and path the library set it with; it is
-not server-side invalidation, so a copy captured before the hand-over stays
-valid until it expires (an hour by default).
+`TestSAMLComplete_RefusesASpentLibraryCookie`,
+`TestSAMLComplete_RefusesARespelledSpentCookie` and
+`TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation`). The primary key
+decides, so two concurrent uses of one cookie cannot both succeed. If the
+record cannot be written, the sign-in fails with a 500 rather than going
+ahead. Rows are purged after a day.
+
+Every hand-over JWT carries a random `jti` (`auth.HandoverCodec`), so two
+sign-ins by one person in the same second never share a signed input and
+cannot collide in the record.
+
+The cookie and its JWT live five minutes (`auth.SAMLHandoverMaxAge`), not
+the library's default of one hour. That bounds the case the record cannot
+close: a cookie copied in flight and used before the browser it was issued to
+reached `/complete`. Five minutes rather than seconds, because the JWT's
+expiry is checked against the clock of whichever instance serves `/complete`.
+
+What this does not cover: the assertion POST to the ACS can still be replayed
+for about 90 seconds. The SAML library keeps no record of assertion IDs and
+accepts an assertion for `MaxIssueDelay` (90 seconds) after it was issued, so a
+captured POST body can mint a fresh hand-over cookie in that window. That was
+true before #337 and is not changed by it.
+
+This is a one-time-use record, not a "sessions revoked at" timestamp checked
+against the JWT's issue time. The timestamp would have to be written by
+every revocation path (several, including one in SQL that never calls the
+session store). It would compare one host's clock with another's at
+one-second precision. It would also do nothing against a replay where
+nothing was revoked. OIDC has no equivalent cookie: its login state lives in
+the server-side session and is cleared on use.
 
 ### OIDC (Optional, Off by Default)
 
@@ -1892,7 +1926,8 @@ only shape in which a session can be revoked. Logout, a password change, an MFA
 reset, a role change, disabling and deleting all take effect on the next
 request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
-privilege change. Lifetime is 7 days.
+privilege change. Lifetime is 7 days. SAML's library cookie is not a
+session; it is spent at hand-over (see Authentication → SAML).
 
 ### Credential Scopes
 

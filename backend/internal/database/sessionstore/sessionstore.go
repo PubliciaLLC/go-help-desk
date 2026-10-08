@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/gob"
 	"fmt"
@@ -252,6 +253,33 @@ func (s *Store) DeleteForUser(ctx context.Context, userID uuid.UUID) error {
 // on read, so this is housekeeping rather than a security control.
 func (s *Store) DeleteExpired(ctx context.Context) (int64, error) {
 	return s.q.DeleteExpiredSessions(ctx)
+}
+
+// SpendSAMLHandover records that the SAML library's hand-over cookie has been
+// exchanged for an app session, and reports whether this was its first use.
+//
+// Callers must pass the signed input (header.payload), not the raw cookie
+// value with the signature. The JWT verifier decodes base64 leniently, so one
+// token has several spellings that all verify; different spellings of the
+// signature segment would hash differently and defeat the single-use record
+// (#337).
+//
+// The cookie is a stateless JWT, so nothing else can invalidate it: without
+// this record, a copy captured before the hand-over could mint a new session
+// after every revocation until it expired (#337).
+//
+// Rows older than a day are purged first. That is housekeeping, done here
+// rather than in the hourly sweep because nothing else writes the table.
+func (s *Store) SpendSAMLHandover(ctx context.Context, token string) (bool, error) {
+	if err := s.q.DeleteStaleSAMLHandovers(ctx); err != nil {
+		return false, fmt.Errorf("purging spent SAML hand-overs: %w", err)
+	}
+	sum := sha256.Sum256([]byte(token))
+	n, err := s.q.SpendSAMLHandover(ctx, sum[:])
+	if err != nil {
+		return false, fmt.Errorf("spending SAML hand-over: %w", err)
+	}
+	return n == 1, nil
 }
 
 func newSessionID() (string, error) {

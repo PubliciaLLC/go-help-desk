@@ -2,17 +2,22 @@ package server_test
 
 import (
 	"context"
+	"crypto/elliptic"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/pem"
 	"encoding/xml"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/crewjam/saml"
 	"github.com/crewjam/saml/samlsp"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/stretchr/testify/require"
 )
 
@@ -23,8 +28,11 @@ import (
 // whatever MFA the original assertion claimed (#337).
 //
 // The fix is to treat the cookie as a one-shot hand-over: /complete spends it
-// the moment it has read it. These tests drive the real handler with a cookie
-// signed by the same key the live middleware verifies with.
+// the moment it has read it. The browser is told to delete it (same name,
+// domain and path the library set it with), and the SHA-256 of its signed input
+// (header.payload, not the signature) is recorded in a server-side ledger so a
+// copy is refused. These tests drive the real handler with a cookie signed by
+// the same key the live middleware verifies with.
 
 // samlIdP serves just enough IdP metadata for samlsp.New to build a
 // middleware. No assertion ever travels through it.
@@ -52,7 +60,7 @@ func samlIdP(t *testing.T) *httptest.Server {
 // cookie for a given person, signed as the real middleware would.
 type samlHarness struct {
 	*harness
-	codec samlsp.JWTSessionCodec
+	codec samlsp.SessionCodec
 	// issued is the (name, domain, path) the library gives its cookie when it
 	// sets it. A browser deletes a cookie only when the deletion names the same
 	// triple, so "cleared" below is judged against this, not against a name.
@@ -79,11 +87,14 @@ func newSAMLHarness(t *testing.T) (*samlHarness, func()) {
 	sp, err := url.Parse(h.cfgBaseURL() + "/api/v1/auth/")
 	require.NoError(t, err)
 	opts := samlsp.Options{URL: *sp, Key: key}
-	codec := samlsp.DefaultSessionCodec(opts)
+	// Use HandoverCodec to match production behavior exactly, including random jti.
+	codec := auth.NewHandoverCodec(opts)
 
 	// Ask the library itself what it emits on login, rather than restating it.
 	rec := httptest.NewRecorder()
 	provider := samlsp.DefaultSessionProvider(opts)
+	provider.MaxAge = auth.SAMLHandoverMaxAge
+	provider.Codec = codec
 	require.NoError(t, provider.CreateSession(rec, httptest.NewRequest(http.MethodPost, "/", nil),
 		&saml.Assertion{Subject: &saml.Subject{NameID: &saml.NameID{Value: "x"}}}))
 	set := rec.Result().Cookies()
@@ -133,6 +144,16 @@ func (sh *samlHarness) cleared(res *http.Response) bool {
 	return false
 }
 
+// appSessionCookie returns the non-"token" cookie with a non-empty value, or nil.
+func (sh *samlHarness) appSessionCookie(res *http.Response) *http.Cookie {
+	for _, c := range res.Cookies() {
+		if c.Name != "token" && c.Value != "" {
+			return c
+		}
+	}
+	return nil
+}
+
 func TestSAMLComplete_SpendsTheLibraryCookie(t *testing.T) {
 	sh, cleanup := newSAMLHarness(t)
 	defer cleanup()
@@ -175,8 +196,275 @@ func TestSAMLComplete_SpendsTheLibraryCookieEvenWhenRefused(t *testing.T) {
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 
-	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{cookie})
+	// Fresh cookie for the second request: the first was spent, so retesting the
+	// same cookie tests the ledger, not the disability.
+	cookie2 := sh.libraryCookie(t, "sso@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{cookie2})
 	res.Body.Close()
 	require.Equal(t, "/login?error=account_disabled", res.Header.Get("Location"))
 	require.True(t, sh.cleared(res))
+}
+
+func TestSAMLComplete_RefusesASpentLibraryCookie(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	c := sh.libraryCookie(t, "sso@test.local")
+
+	// First /complete with c returns 303 to "/", with an app cookie.
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/", res.Header.Get("Location"))
+	appCookie := sh.appSessionCookie(res)
+	require.NotNil(t, appCookie, "an app session cookie is issued on first use")
+
+	// Second /complete with the same c returns 303 with sso_session_used,
+	// sets no app cookie, and clears the library cookie.
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+	require.Nil(t, sh.appSessionCookie(res), "no app cookie on replay")
+	require.True(t, sh.cleared(res), "library cookie is cleared even on a spent cookie")
+}
+
+func TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	c := sh.libraryCookie(t, "sso@test.local")
+
+	// c signs in and returns app cookie A. /me with A returns 200.
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	appCookie := sh.appSessionCookie(res)
+	require.NotNil(t, appCookie)
+
+	me := sh.doUnauthWithCookie(t, http.MethodGet, "/api/v1/me", appCookie)
+	me.Body.Close()
+	require.Equal(t, http.StatusOK, me.StatusCode)
+
+	// Look up the user, then doAsAdmin PATCH /api/v1/admin/users/{id} to
+	// reset_mfa. This revokes existing sessions.
+	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
+	require.NoError(t, err)
+	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"reset_mfa": true})
+	r.Body.Close()
+	require.Equal(t, http.StatusOK, r.StatusCode)
+
+	// /me with A returns 401: the revocation happened.
+	me = sh.doUnauthWithCookie(t, http.MethodGet, "/api/v1/me", appCookie)
+	me.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, me.StatusCode)
+
+	// /complete with c redirects to sso_session_used, and no app cookie is issued.
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+	require.Nil(t, sh.appSessionCookie(res))
+}
+
+func TestSAMLComplete_RefusedSignInStillSpendsTheCookie(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	// Create the account: /complete with a fresh cookie returns "/".
+	c1 := sh.libraryCookie(t, "sso@test.local")
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c1})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/", res.Header.Get("Location"))
+
+	// Disable it through doAsAdmin PATCH.
+	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
+	require.NoError(t, err)
+	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": true})
+	r.Body.Close()
+	require.Equal(t, http.StatusOK, r.StatusCode)
+
+	// c2 is fresh. /complete with c2 returns account_disabled.
+	c2 := sh.libraryCookie(t, "sso@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c2})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=account_disabled", res.Header.Get("Location"))
+
+	// Re-enable the account.
+	r = sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": false})
+	r.Body.Close()
+	require.Equal(t, http.StatusOK, r.StatusCode)
+
+	// /complete with c2 again returns sso_session_used, not account_disabled:
+	// c2 was already spent on the refused sign-in.
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c2})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+}
+
+// TestSAMLComplete_RefusesARespelledSpentCookie: the spend is keyed on the
+// signed input (header.payload), not on the cookie text. The JWT verifier
+// decodes the signature leniently, so one token has several spellings that all
+// verify; keyed on the whole value, each would hash differently and a captured
+// cookie could be replayed by respelling its signature (#337).
+//
+// Two respellings are accepted by the library in use:
+//  1. The unused low bits of the signature's last base64 character (an ES256
+//     signature is 64 bytes, so the 86th character carries 2 data bits and
+//     4 unused ones).
+//  2. ECDSA high-S: for the 64-byte signature r||s, replacing s with N-s
+//     (where N is the P-256 group order) still verifies.
+//
+// '=' padding is rejected by the verifier (golang-jwt v4 leaves
+// DecodePaddingAllowed off), so it is not a replay route and is not tested.
+func TestSAMLComplete_RefusesARespelledSpentCookie(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	// respell flips a bit that does not belong to the signature: same bytes,
+	// different text.
+	respell := func(v string) string {
+		last := strings.IndexByte(alphabet, v[len(v)-1])
+		require.GreaterOrEqual(t, last, 0)
+		return v[:len(v)-1] + string(alphabet[last^1])
+	}
+
+	// respellHighS computes the high-S twin of a JWT signature.
+	// For ES256, the signature is r||s (32 bytes each). High-S replaces s with
+	// N - s, where N is the P-256 group order.
+	respellHighS := func(jwtValue string) string {
+		parts := strings.Split(jwtValue, ".")
+		require.Len(t, parts, 3, "JWT must be header.payload.signature")
+
+		// Decode the signature (last part).
+		sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+		require.NoError(t, err, "signature must be valid base64url")
+		require.Len(t, sigBytes, 64, "ES256 signature must be 64 bytes (r||s)")
+
+		// Extract r and s (32 bytes each).
+		r := new(big.Int).SetBytes(sigBytes[:32])
+		s := new(big.Int).SetBytes(sigBytes[32:64])
+
+		// Compute s' = N - s, where N is the P-256 group order.
+		N := elliptic.P256().Params().N
+		sPrime := new(big.Int).Sub(N, s)
+
+		// Reconstruct the signature as r||s'.
+		newSigBytes := make([]byte, 64)
+		rBytes := r.Bytes()
+		copy(newSigBytes[32-len(rBytes):32], rBytes)
+		sPrimeBytes := sPrime.Bytes()
+		copy(newSigBytes[64-len(sPrimeBytes):64], sPrimeBytes)
+
+		// Re-encode and rebuild the JWT.
+		newSig := base64.RawURLEncoding.EncodeToString(newSigBytes)
+		return parts[0] + "." + parts[1] + "." + newSig
+	}
+
+	// Precondition: the library accepts the low-bit respelling, so the replay
+	// below proves something. A fresh, unspent cookie respelled must sign in.
+	fresh := sh.libraryCookie(t, "sso-fresh@test.local")
+	require.NotEqual(t, fresh.Value, respell(fresh.Value))
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: respell(fresh.Value)}})
+	res.Body.Close()
+	require.Equal(t, "/", res.Header.Get("Location"), "precondition: the low-bit respelled signature verifies")
+
+	// Precondition: the library accepts high-S respelling too.
+	fresh = sh.libraryCookie(t, "sso-fresh-hs@test.local")
+	highS := respellHighS(fresh.Value)
+	require.NotEqual(t, fresh.Value, highS)
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: highS}})
+	res.Body.Close()
+	require.Equal(t, "/", res.Header.Get("Location"), "precondition: the high-S respelled signature verifies")
+
+	// Padding is not accepted by the library (documented above); assert it so
+	// this comment cannot go stale if the library changes.
+	fresh = sh.libraryCookie(t, "sso-padded@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: fresh.Value + "=="}})
+	res.Body.Close()
+	require.NotEqual(t, "/", res.Header.Get("Location"), "padded signature must not verify")
+
+	// The attack: spend the cookie, then replay it respelled with low-bit flip.
+	c := sh.libraryCookie(t, "sso@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, "/", res.Header.Get("Location"))
+
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: respell(c.Value)}})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+	require.Nil(t, sh.appSessionCookie(res))
+	require.True(t, sh.cleared(res))
+
+	// The attack with high-S respelling: spend a fresh cookie, then replay it
+	// respelled with high-S.
+	c2 := sh.libraryCookie(t, "sso-hs@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c2})
+	res.Body.Close()
+	require.Equal(t, "/", res.Header.Get("Location"))
+
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{{Name: "token", Value: respellHighS(c2.Value)}})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"),
+		"spent cookie replayed with high-S respelling must be refused")
+	require.Nil(t, sh.appSessionCookie(res))
+	require.True(t, sh.cleared(res))
+}
+
+// TestSAMLComplete_LedgerWriteFailureFailsClosed: if the single-use record
+// cannot be written, the sign-in is refused. Letting it through would turn a
+// database fault into a way to replay a cookie.
+//
+// The failure is injected at the store (FailSAMLSpendForTest), not by breaking
+// the table: a SQL error aborts the harness's shared transaction, so a handler
+// that wrongly carried on would fail on its next query and the test could not
+// tell the difference.
+func TestSAMLComplete_LedgerWriteFailureFailsClosed(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+	sh.srv.FailSAMLSpendForTest()
+
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{sh.libraryCookie(t, "sso@test.local")})
+	res.Body.Close()
+
+	require.Equal(t, http.StatusInternalServerError, res.StatusCode)
+	require.Nil(t, sh.appSessionCookie(res), "no app session when the ledger write fails")
+}
+
+// TestSAMLComplete_TwoMintsInTheSameSecondBothSignIn verifies that two SAML
+// handover tokens minted in the same second for the same person can both be
+// used to sign in. This tests the fix for #337: without random jti on each
+// mint, the two tokens would have identical header.payload and the spend
+// (keyed on header.payload) would reject the second one.
+func TestSAMLComplete_TwoMintsInTheSameSecondBothSignIn(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	// Mint two cookies for the same email in rapid succession.
+	c1 := sh.libraryCookie(t, "sso@test.local")
+	c2 := sh.libraryCookie(t, "sso@test.local")
+
+	// Both should sign in successfully (both return 303 to "/").
+	res1 := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c1})
+	res1.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res1.StatusCode)
+	require.Equal(t, "/", res1.Header.Get("Location"))
+
+	res2 := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c2})
+	res2.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res2.StatusCode)
+	require.Equal(t, "/", res2.Header.Get("Location"))
+
+	// Both should have issued an app session cookie.
+	appCookie1 := sh.appSessionCookie(res1)
+	require.NotNil(t, appCookie1, "first mint must sign in and issue an app cookie")
+
+	appCookie2 := sh.appSessionCookie(res2)
+	require.NotNil(t, appCookie2, "second mint must sign in and issue an app cookie")
 }

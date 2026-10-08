@@ -2,11 +2,13 @@ package sessionstore_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/gob"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -376,4 +378,108 @@ func TestStore_ExpiredSessionDoesNotLoadInsideALongTransaction(t *testing.T) {
 	_, err := q.GetSession(context.Background(), sessionID)
 	require.ErrorIs(t, err, sql.ErrNoRows,
 		"an expired session must stop loading however long the reading transaction has been open")
+}
+
+// TestStore_SpendSAMLHandover_FirstUseOnly tests that spending a SAML hand-over
+// cookie returns true on first use and false on subsequent uses.
+func TestStore_SpendSAMLHandover_FirstUseOnly(t *testing.T) {
+	st, _, cleanup := newStore(t)
+	defer cleanup()
+
+	// First spend returns true
+	first, err := st.SpendSAMLHandover(context.Background(), "a")
+	require.NoError(t, err)
+	require.True(t, first, "first spend of a token must return true")
+
+	// Second spend of same token returns false
+	second, err := st.SpendSAMLHandover(context.Background(), "a")
+	require.NoError(t, err)
+	require.False(t, second, "second spend of same token must return false")
+
+	// Different token returns true
+	third, err := st.SpendSAMLHandover(context.Background(), "b")
+	require.NoError(t, err)
+	require.True(t, third, "spend of a different token must return true")
+}
+
+// TestStore_SpendSAMLHandover_ConcurrentSpendsExactlyOneWins tests that when
+// multiple goroutines attempt to spend the same cookie concurrently, exactly
+// one succeeds (the primary key ensures atomicity).
+func TestStore_SpendSAMLHandover_ConcurrentSpendsExactlyOneWins(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q := dbgen.New(db.SQL)
+	st := sessionstore.New(q, hashKey, blockKey, nil)
+
+	token := uuid.NewString()
+	// Registered first so a failed assertion below still cleans up.
+	t.Cleanup(func() {
+		sum := sha256.Sum256([]byte(token))
+		_, _ = db.SQL.Exec("DELETE FROM spent_saml_handovers WHERE token_hash = $1", sum[:])
+	})
+	numGoroutines := 20
+	results := make(chan bool, numGoroutines)
+	var wg sync.WaitGroup
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			first, err := st.SpendSAMLHandover(context.Background(), token)
+			// t.Errorf, not require: FailNow must not run off the test goroutine.
+			if err != nil {
+				t.Errorf("SpendSAMLHandover: %v", err)
+			}
+			results <- first
+		}()
+	}
+
+	wg.Wait()
+	close(results)
+
+	trueCount := 0
+	for result := range results {
+		if result {
+			trueCount++
+		}
+	}
+
+	require.Equal(t, 1, trueCount, "exactly one concurrent spend must succeed")
+}
+
+// TestStore_SpendSAMLHandover_PurgesOnlyPastRetention tests that the retention
+// purge only deletes rows older than a day, not newer ones.
+func TestStore_SpendSAMLHandover_PurgesOnlyPastRetention(t *testing.T) {
+	st, _, tx, cleanup := newStoreWithLifetime(t, 3600)
+	defer cleanup()
+
+	// Insert old row (25 hours ago) and recent row (23 hours ago) directly
+	oldSum := sha256.Sum256([]byte("old"))
+	recentSum := sha256.Sum256([]byte("recent"))
+
+	_, err := tx.ExecContext(context.Background(),
+		"INSERT INTO spent_saml_handovers (token_hash, spent_at) VALUES ($1, clock_timestamp() - interval '25 hours')",
+		oldSum[:])
+	require.NoError(t, err)
+
+	_, err = tx.ExecContext(context.Background(),
+		"INSERT INTO spent_saml_handovers (token_hash, spent_at) VALUES ($1, clock_timestamp() - interval '23 hours')",
+		recentSum[:])
+	require.NoError(t, err)
+
+	// Call SpendSAMLHandover to trigger the purge
+	_, err = st.SpendSAMLHandover(context.Background(), "trigger")
+	require.NoError(t, err)
+
+	// Old row should be gone
+	var oldCount int
+	err = tx.QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM spent_saml_handovers WHERE token_hash = $1", oldSum[:]).Scan(&oldCount)
+	require.NoError(t, err)
+	require.Equal(t, 0, oldCount, "old row (25 hours) should be purged")
+
+	// Recent row should still be there
+	second, err := st.SpendSAMLHandover(context.Background(), "recent")
+	require.NoError(t, err)
+	require.False(t, second, "recent row (23 hours) should still be present")
 }

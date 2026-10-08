@@ -249,6 +249,11 @@ type Querier interface {
 	// and MFA reset — the events after which a cookie minted under the old state
 	// must stop working.
 	DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUID) error
+	// A row only has to outlive the cookie it records. The cookie lives 5 minutes
+	// (auth.SAMLHandoverMaxAge). A day leaves a wide margin for clock differences
+	// between the replica that minted the cookie (whose clock sets its expiry) and
+	// this database (whose clock sets spent_at).
+	DeleteStaleSAMLHandovers(ctx context.Context) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
 	DeleteType(ctx context.Context, id uuid.UUID) error
@@ -737,6 +742,10 @@ type Querier interface {
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
 	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// One row affected: this is the cookie's first use. Zero: it was spent before.
+	// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
+	// carrying the same cookie cannot both see "not spent" (#337).
+	SpendSAMLHandover(ctx context.Context, tokenHash []byte) (int64, error)
 	// Sets only the breach columns, and only where still NULL. Two evaluators
 	// racing on the same row cannot overwrite each other's stamp or, worse, the
 	// request path's first_response_at / resolved_at. A stamp, once set, is a
