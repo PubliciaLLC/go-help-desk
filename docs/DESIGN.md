@@ -527,7 +527,7 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 ### Local Auth (Default)
 
-- Username/password with bcrypt hashing
+- Username/password with bcrypt hashing. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 
