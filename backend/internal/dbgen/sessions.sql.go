@@ -45,6 +45,19 @@ func (q *Queries) DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUI
 	return err
 }
 
+const deleteStaleSAMLHandovers = `-- name: DeleteStaleSAMLHandovers :exec
+DELETE FROM spent_saml_handovers WHERE spent_at < clock_timestamp() - interval '1 day'
+`
+
+// A row only has to outlive the cookie it records. The cookie lives 5 minutes
+// (auth.SAMLHandoverMaxAge). A day leaves a wide margin for clock differences
+// between the replica that minted the cookie (whose clock sets its expiry) and
+// this database (whose clock sets spent_at).
+func (q *Queries) DeleteStaleSAMLHandovers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteStaleSAMLHandovers)
+	return err
+}
+
 const getSession = `-- name: GetSession :one
 SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at, u.role AS user_role FROM sessions s
 LEFT JOIN users u ON u.id = s.user_id
@@ -101,6 +114,22 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 		&i.UserRole,
 	)
 	return i, err
+}
+
+const spendSAMLHandover = `-- name: SpendSAMLHandover :execrows
+INSERT INTO spent_saml_handovers (token_hash) VALUES ($1)
+ON CONFLICT (token_hash) DO NOTHING
+`
+
+// One row affected: this is the cookie's first use. Zero: it was spent before.
+// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
+// carrying the same cookie cannot both see "not spent" (#337).
+func (q *Queries) SpendSAMLHandover(ctx context.Context, tokenHash []byte) (int64, error) {
+	result, err := q.db.ExecContext(ctx, spendSAMLHandover, tokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertSession = `-- name: UpsertSession :exec

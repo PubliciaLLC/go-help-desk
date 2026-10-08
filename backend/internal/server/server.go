@@ -417,6 +417,10 @@ type SessionStore interface {
 	// Delete removes one session, which is how the id is rotated when a
 	// session gains authority.
 	Delete(ctx context.Context, id string) error
+
+	// SpendSAMLHandover makes the SAML library's hand-over cookie single-use:
+	// true the first time a given cookie is presented, false every time after.
+	SpendSAMLHandover(ctx context.Context, token string) (bool, error)
 }
 
 func (s *Server) buildRouter() *chi.Mux {

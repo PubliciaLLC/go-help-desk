@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -334,16 +336,15 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 		//
 		// So it is spent here, the moment it has been read, and whatever the
 		// sign-in's outcome: this route is the only reader, and the app
-		// session written below is the credential from now on. Cleared
-		// before the user is looked up, so a refusal does not leave it
-		// behind either.
+		// session written below is the credential from now on.
 		//
-		// "Spent" means the browser is told to delete the cookie (same name,
-		// domain and path the library set it with). It is not server-side
-		// invalidation: the JWT is stateless, so a copy captured before this
-		// hand-over stays valid until it expires (an hour by default).
+		// Spent twice: the browser is told to delete the cookie (same name,
+		// domain and path the library set it with), and its hash is recorded
+		// so a copy presented later is refused (SpendSAMLHandover). Both
+		// happen before the user is looked up, so a refused sign-in spends it
+		// too.
 		//
-		// The error branch below is defensive. CookieSessionProvider's
+		// The error branches below are defensive. CookieSessionProvider's
 		// DeleteSession can only fail on a malformed cookie lookup, which
 		// RequireAccount has just ruled out by reading it, so it is not
 		// reachable today; if a different SessionProvider is ever configured,
@@ -352,6 +353,33 @@ func (s *Server) handleSAMLComplete(w http.ResponseWriter, r *http.Request) {
 			handleError(w, fmt.Errorf("clearing SAML login cookie: %w", err))
 			return
 		}
+
+		// Spent on the server too, not only in this browser: a copy taken
+		// before this hand-over is refused from now on (#337). Detached, like
+		// the session revocations: once the row is written, a client that
+		// hangs up must not turn it into a 500 for a cookie that is already
+		// spent.
+		cp, ok := mw.Session.(samlsp.CookieSessionProvider)
+		if !ok {
+			handleError(w, errors.New("SAML session provider is not cookie-based"))
+			return
+		}
+		c, err := r.Cookie(cp.Name)
+		if err != nil {
+			handleError(w, fmt.Errorf("reading SAML login cookie: %w", err))
+			return
+		}
+		first, err := s.sessions.SpendSAMLHandover(context.WithoutCancel(r.Context()), c.Value)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if !first {
+			slog.Warn("spent SAML hand-over cookie presented again")
+			http.Redirect(w, r, "/login?error=sso_session_used", http.StatusSeeOther)
+			return
+		}
+
 		s.handleSAMLSession(w, r)
 	})).ServeHTTP(w, r)
 }

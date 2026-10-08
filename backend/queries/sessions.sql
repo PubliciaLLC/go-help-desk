@@ -76,3 +76,17 @@ DELETE FROM sessions WHERE user_id = $1;
 
 -- name: DeleteExpiredSessions :execrows
 DELETE FROM sessions WHERE expires_at <= clock_timestamp();
+
+-- name: SpendSAMLHandover :execrows
+-- One row affected: this is the cookie's first use. Zero: it was spent before.
+-- ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
+-- carrying the same cookie cannot both see "not spent" (#337).
+INSERT INTO spent_saml_handovers (token_hash) VALUES ($1)
+ON CONFLICT (token_hash) DO NOTHING;
+
+-- name: DeleteStaleSAMLHandovers :exec
+-- A row only has to outlive the cookie it records. The cookie lives 5 minutes
+-- (auth.SAMLHandoverMaxAge). A day leaves a wide margin for clock differences
+-- between the replica that minted the cookie (whose clock sets its expiry) and
+-- this database (whose clock sets spent_at).
+DELETE FROM spent_saml_handovers WHERE spent_at < clock_timestamp() - interval '1 day';

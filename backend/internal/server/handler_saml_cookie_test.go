@@ -23,8 +23,10 @@ import (
 // whatever MFA the original assertion claimed (#337).
 //
 // The fix is to treat the cookie as a one-shot hand-over: /complete spends it
-// the moment it has read it. These tests drive the real handler with a cookie
-// signed by the same key the live middleware verifies with.
+// the moment it has read it. The browser is told to delete it (same name,
+// domain and path the library set it with), and its hash is recorded in a
+// server-side ledger so a copy is refused. These tests drive the real handler
+// with a cookie signed by the same key the live middleware verifies with.
 
 // samlIdP serves just enough IdP metadata for samlsp.New to build a
 // middleware. No assertion ever travels through it.
@@ -133,6 +135,16 @@ func (sh *samlHarness) cleared(res *http.Response) bool {
 	return false
 }
 
+// appSessionCookie returns the non-"token" cookie with a non-empty value, or nil.
+func (sh *samlHarness) appSessionCookie(res *http.Response) *http.Cookie {
+	for _, c := range res.Cookies() {
+		if c.Name != "token" && c.Value != "" {
+			return c
+		}
+	}
+	return nil
+}
+
 func TestSAMLComplete_SpendsTheLibraryCookie(t *testing.T) {
 	sh, cleanup := newSAMLHarness(t)
 	defer cleanup()
@@ -175,8 +187,111 @@ func TestSAMLComplete_SpendsTheLibraryCookieEvenWhenRefused(t *testing.T) {
 	r.Body.Close()
 	require.Equal(t, http.StatusOK, r.StatusCode)
 
-	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{cookie})
+	// Fresh cookie for the second request: the first was spent, so retesting the
+	// same cookie tests the ledger, not the disability.
+	cookie2 := sh.libraryCookie(t, "sso@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{cookie2})
 	res.Body.Close()
 	require.Equal(t, "/login?error=account_disabled", res.Header.Get("Location"))
 	require.True(t, sh.cleared(res))
+}
+
+func TestSAMLComplete_RefusesASpentLibraryCookie(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	c := sh.libraryCookie(t, "sso@test.local")
+
+	// First /complete with c returns 303 to "/", with an app cookie.
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/", res.Header.Get("Location"))
+	appCookie := sh.appSessionCookie(res)
+	require.NotNil(t, appCookie, "an app session cookie is issued on first use")
+
+	// Second /complete with the same c returns 303 with sso_session_used,
+	// sets no app cookie, and clears the library cookie.
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+	require.Nil(t, sh.appSessionCookie(res), "no app cookie on replay")
+	require.True(t, sh.cleared(res), "library cookie is cleared even on a spent cookie")
+}
+
+func TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	c := sh.libraryCookie(t, "sso@test.local")
+
+	// c signs in and returns app cookie A. /me with A returns 200.
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	appCookie := sh.appSessionCookie(res)
+	require.NotNil(t, appCookie)
+
+	me := sh.doUnauthWithCookie(t, http.MethodGet, "/api/v1/me", appCookie)
+	me.Body.Close()
+	require.Equal(t, http.StatusOK, me.StatusCode)
+
+	// Look up the user, then doAsAdmin PATCH /api/v1/admin/users/{id} to
+	// reset_mfa. This revokes existing sessions.
+	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
+	require.NoError(t, err)
+	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"reset_mfa": true})
+	r.Body.Close()
+	require.Equal(t, http.StatusOK, r.StatusCode)
+
+	// /me with A returns 401: the revocation happened.
+	me = sh.doUnauthWithCookie(t, http.MethodGet, "/api/v1/me", appCookie)
+	me.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, me.StatusCode)
+
+	// /complete with c redirects to sso_session_used, and no app cookie is issued.
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
+	require.Nil(t, sh.appSessionCookie(res))
+}
+
+func TestSAMLComplete_RefusedSignInStillSpendsTheCookie(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	// Create the account: /complete with a fresh cookie returns "/".
+	c1 := sh.libraryCookie(t, "sso@test.local")
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c1})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/", res.Header.Get("Location"))
+
+	// Disable it through doAsAdmin PATCH.
+	u, err := sh.userSvc.GetByEmail(context.Background(), "sso@test.local")
+	require.NoError(t, err)
+	r := sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": true})
+	r.Body.Close()
+	require.Equal(t, http.StatusOK, r.StatusCode)
+
+	// c2 is fresh. /complete with c2 returns account_disabled.
+	c2 := sh.libraryCookie(t, "sso@test.local")
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c2})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=account_disabled", res.Header.Get("Location"))
+
+	// Re-enable the account.
+	r = sh.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+u.ID.String(), map[string]any{"disabled": false})
+	r.Body.Close()
+	require.Equal(t, http.StatusOK, r.StatusCode)
+
+	// /complete with c2 again returns sso_session_used, not account_disabled:
+	// c2 was already spent on the refused sign-in.
+	res = sh.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c2})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
 }

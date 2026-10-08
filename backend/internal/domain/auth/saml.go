@@ -21,6 +21,14 @@ import (
 // internal addresses.
 const metadataFetchTimeout = 15 * time.Second
 
+// SAMLHandoverMaxAge is how long the SAML library's own "token" cookie, and
+// the JWT inside it, stay valid. The library's default is an hour, but the
+// cookie only carries the assertion from the ACS to /auth/saml/complete, one
+// redirect later, where it is spent (#337). The lifetime matters only for a
+// copy that never got there. Five minutes, not seconds, because the JWT's
+// expiry is checked against the clock of whichever replica serves /complete.
+const SAMLHandoverMaxAge = 5 * time.Minute
+
 // SAMLConfig holds the parameters needed to initialise a SAML service provider.
 type SAMLConfig struct {
 	// BaseURL is the external root URL of this service, e.g. https://helpdesk.example.com
@@ -108,5 +116,17 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 		Certificate: keyPair.Leaf,
 		IDPMetadata: idpMeta,
 	}
-	return samlsp.New(opts)
+	mw, err := samlsp.New(opts)
+	if err != nil {
+		return nil, err
+	}
+	// Both lifetimes: the cookie's Max-Age, and the JWT's exp, which is what
+	// is actually enforced (a browser can keep a cookie past its Max-Age).
+	codec := samlsp.DefaultSessionCodec(opts)
+	codec.MaxAge = SAMLHandoverMaxAge
+	session := samlsp.DefaultSessionProvider(opts)
+	session.MaxAge = SAMLHandoverMaxAge
+	session.Codec = codec
+	mw.Session = session
+	return mw, nil
 }

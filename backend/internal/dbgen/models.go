@@ -210,6 +210,11 @@ type SlaRecord struct {
 	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
 }
 
+type SpentSamlHandover struct {
+	TokenHash []byte    `json:"token_hash"`
+	SpentAt   time.Time `json:"spent_at"`
+}
+
 type Status struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
