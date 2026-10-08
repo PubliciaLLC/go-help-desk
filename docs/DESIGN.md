@@ -1076,8 +1076,7 @@ The setting `attachment_scan_address` overrides it and takes precedence once
 saved. It has a field under Admin → Settings → Attachments, beside the scan
 policy select (#172): a plain text input showing the current value, accepting
 `tcp://host:port` or `unix:///path/to/socket`, blank to fall back to
-`CLAMAV_ADDR`. The backend validation was already there; only the control was
-missing.
+`CLAMAV_ADDR`.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -1273,22 +1272,18 @@ still named `.log` is detected as `application/gzip`, which is not inert text,
 so it is flagged — and, being text-named, it is stored under its own name
 rather than wrapped or refused.
 
-The second rule is decided by asking the detector, not by a list of our own,
-and the difference is not cosmetic. Three earlier versions were each right for
-the cases in front of them and wrong for the family they were generalised to.
-A list of acceptable detected *extensions* called a container log
-(`application/x-ndjson`), a config file (`text/xml`) and an exported contact
-(`text/vcard`) files lying about themselves — a Kubernetes log arriving on a
-ticket renamed and wrapped is exactly the failure this control exists to
-avoid. A list of media types — `text/*` plus JSON and NDJSON — flagged a
-GeoJSON document, which the registry files under its own name. Accepting
-anything whose name ends `+json` or `+xml` admitted the Visio drawing above,
-which is an archive. The tree has no such gap, because it is the same source
-that produced the media type being judged: a rule written from the detector's
-own answers cannot disagree with the detector.
-A warning that fires on ordinary files is one staff learn to click past, which
-is worse than no warning at all — so where a legitimate case fires, the fix is
-to widen one of these two rules and never to soften the flag.
+The text relaxation (the second) is decided by asking the detector, not by a
+list of our own, and the difference is not cosmetic. A list of acceptable
+detected *extensions* called a container log (`application/x-ndjson`), a config
+file (`text/xml`) and an exported contact (`text/vcard`) files lying about
+themselves; a list of media types (`text/*` plus JSON and NDJSON) flagged a
+GeoJSON document; accepting any name ending `+json` or `+xml` admitted the
+Visio drawing above, which is an archive. The tree has no such gap, because it
+is the same source that produced the media type being judged: a rule written
+from the detector's own answers cannot disagree with the detector. A warning
+that fires on ordinary files is one staff learn to click past, which is worse
+than no warning, so where a legitimate case fires, the fix is to widen one of
+these two rules and never to soften the flag.
 
 The answer is recorded at upload rather than recomputed on read, because a file
 this application renamed has lost the name the uploader claimed: recomputing
@@ -1377,25 +1372,34 @@ with `invalid_mismatch_handling`, following `invalid_scan_policy`.
 nobody opted into is the wrong default for a behaviour only some deployments
 want.
 
-**What an upgrade actually changes.** It is not parity with 1.2.0, and this
-document used to claim it was. 1.2.0 checked a hard-coded signature against the
-claimed extension and had no entry for `.txt` or `.log`, so it was strict about
-a handful of names and blind to the rest; this release detects the content and
-judges it against the operator's allowlist. That moves rows in both directions.
-Measured through the upload handler on a default instance:
+**What a default instance does with a contradicting upload.** The judgement is
+the content against the operator's allowlist, so it moves rows in both
+directions compared with 1.2.0's hard-coded signature check (release notes have
+the comparison). Measured through the upload handler on a default instance:
 
-| Upload | 1.2.0 | Now |
-|---|---|---|
-| plain text named `.pdf`, `.docx` or `.xlsx` | `415` | `201`, stored under its own name, flagged |
-| a real PNG named `.jpg`, or a real PNG named `.pdf` | `415` | `201` |
-| a plain ZIP named `.docx` | `201` | `415` |
-| under four bytes, text-looking, under a text or document name | `415` | `201` |
-| under four bytes, unplaceable, under a binary name | `415` | `415` |
-| under four bytes, text-looking, under an image name | `415` | `422` |
-| under four bytes, unplaceable, under an image name | `415` | `415` |
-| text named `.png` or `.jpg` | `415` | `422` `invalid_image` |
-| a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` | `201` |
-| HTML named `.pdf` | `415` | `415` |
+| Upload | Result |
+|---|---|
+| plain text named `.pdf`, `.docx` or `.xlsx` | `201`, stored under its own name, flagged |
+| a real PNG named `.jpg`, or a real PNG named `.pdf` | `201` |
+| a plain ZIP named `.docx` | `415` |
+| under four bytes, text-looking, under a text or document name | `201` |
+| under four bytes, unplaceable, under a binary name | `415` |
+| under four bytes, text-looking, under an image name | `422` |
+| under four bytes, unplaceable, under an image name | `415` |
+| text named `.png` or `.jpg` | `422` `invalid_image` |
+| a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` |
+| HTML named `.pdf` | `415` |
+
+The first row is the one to understand rather than to fix. A `.pdf` holding
+plain text is a contradiction and is flagged, and it is neither wrapped nor
+refused, because the judgement for tier 2 is the operator's own allowlist and
+`.txt` is on it: the content is something this instance would have accepted
+under its own name, so there is nothing to contain, only something to say.
+Refusing it would need a second list of "types that may not hide inside other
+types", which is the second list this design exists to avoid keeping correct.
+The third row is the stricter direction and is deliberate: any ZIP used to pass
+as a `.docx` because both start `PK\x03\x04`, and an Office document is now
+identified as an Office document.
 
 **Containment only applies to the nine extensions this project ships.** Each
 was checked against the detector, so a contradiction under one of those names
@@ -1434,21 +1438,6 @@ Neither the containment nor the flag applies to an extension we did not ship.
 spelling we cannot check: the row carries the detected type and no verdict,
 which reads as "we looked and could not judge" and is distinguishable from a
 row that predates detection and has neither.
-
-The first row is the one to understand rather than to fix. A `.pdf` holding
-plain text is a contradiction and is flagged, and it is neither wrapped nor
-refused, because the judgement for tier 2 is the operator's own allowlist and
-`.txt` is on it: the content is something this instance would have accepted
-under its own name, so there is nothing to contain — only something to say.
-Refusing it would need a second list of "types that may not hide inside other
-types", which is the second list this design exists to avoid keeping correct.
-1.2.0 caught that one case by looking for `%PDF`, and the same rule let HTML
-into a `.txt` completely unexamined — the two rows are the same trade seen from
-either end.
-
-The third row is the stricter direction and is deliberate: 1.2.0 accepted any
-ZIP under a `.docx` name because both start `PK\x03\x04`, and an Office
-document is now identified as an Office document.
 
 **Why `wrap` exists at all.** Refusing closes off the case this product is
 otherwise good at — the suspicious file a user reported is exactly the file a
