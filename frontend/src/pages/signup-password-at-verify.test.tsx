@@ -41,21 +41,24 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks())
 
 describe('the signup form', () => {
-  it('asks for no password and sends none', async () => {
+  // #374: and no name either. Whoever submits this form need not own the
+  // address, so nothing they type here may reach the account.
+  it('asks for the address only, and sends nothing else', async () => {
     const user = userEvent.setup()
     renderWithQuery(<SignupPage />)
     expect(screen.queryByLabelText(/password/i)).toBeNull()
+    expect(screen.queryByLabelText(/name/i)).toBeNull()
 
     await user.type(screen.getByLabelText('Email'), 'alice@example.com')
-    await user.type(screen.getByLabelText('Display name'), 'Alice')
     await user.click(screen.getByRole('button', { name: /create account/i }))
 
-    await waitFor(() => expect(signup).toHaveBeenCalledWith('alice@example.com', 'Alice'))
+    await waitFor(() => expect(signup).toHaveBeenCalledWith('alice@example.com'))
   })
 })
 
 describe('the verification page', () => {
-  async function choose(user: ReturnType<typeof userEvent.setup>, password: string, confirm = password) {
+  async function choose(user: ReturnType<typeof userEvent.setup>, password: string, confirm = password, name = 'Alice') {
+    if (name) await user.type(await screen.findByLabelText('Display name'), name)
     await user.type(await screen.findByLabelText('Password'), password)
     await user.type(screen.getByLabelText('Confirm password'), confirm)
     await user.click(screen.getByRole('button', { name: /create account/i }))
@@ -139,7 +142,7 @@ describe('the verification page', () => {
     renderWithQuery(<VerifyEmailPage />)
     await choose(user, 'correct-horse-battery')
 
-    await waitFor(() => expect(verifyEmail).toHaveBeenCalledWith('tok-123', 'correct-horse-battery'))
+    await waitFor(() => expect(verifyEmail).toHaveBeenCalledWith('tok-123', 'Alice', 'correct-horse-battery'))
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/dashboard' }))
   })
 
@@ -159,6 +162,25 @@ describe('the verification page', () => {
     await choose(user, 'shortpw')
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/at least 8 characters/i)
+    expect(screen.getByLabelText('Password')).toBeTruthy()
+  })
+
+  // #374: the name is asked for here, empty, never pre-filled: a pre-filled
+  // name could only have come from a signup, which anyone can send.
+  it('asks for the name, empty', async () => {
+    renderWithQuery(<VerifyEmailPage />)
+    const name = (await screen.findByLabelText('Display name')) as HTMLInputElement
+    expect(name.value).toBe('')
+    expect(name.required).toBe(true)
+  })
+
+  it('keeps the form after a blank name, so the link can still be used', async () => {
+    vi.mocked(verifyEmail).mockRejectedValue(apiError('display_name_required', 'display name is required'))
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'correct-horse-battery')
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/display name is required/i)
     expect(screen.getByLabelText('Password')).toBeTruthy()
   })
 

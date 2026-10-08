@@ -41,10 +41,10 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Email       string `json:"email"`
-		DisplayName string `json:"display_name"`
-		// No password (#360): it is chosen on the verification page. One sent
-		// here by an older client is ignored.
+		Email string `json:"email"`
+		// No password (#360) and no display name (#374): both are chosen on
+		// the verification page. Either sent here by an older client is
+		// ignored.
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -54,7 +54,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	allowedDomains := s.adminSvc.AllowedEmailDomains(ctx)
 	openReg := s.adminSvc.OpenRegistrationEnabled(ctx)
 
-	err := s.registration.Register(ctx, body.Email, body.DisplayName, allowedDomains, openReg)
+	err := s.registration.Register(ctx, body.Email, allowedDomains, openReg)
 	if err != nil {
 		switch {
 		case errors.Is(err, registration.ErrAlreadyRegistered):
@@ -66,8 +66,6 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 			// forgotten will reach for the login page, which is where the
 			// answer belongs.
 			signupAccepted(w)
-		case errors.Is(err, registration.ErrDisplayNameRequired):
-			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		case errors.Is(err, registration.ErrDomainNotAllowed):
 			Error(w, http.StatusUnprocessableEntity, "domain_not_allowed", "your email domain is not permitted")
 		case errors.Is(err, registration.ErrOpenRegistrationRequired):
@@ -97,10 +95,6 @@ func signupAccepted(w http.ResponseWriter) {
 // gives a password manager the address, and says a dead link is dead before a
 // password is typed. The token is the only key, and whoever holds it was
 // mailed exactly this address.
-//
-// Not the display name. Whoever signed the address up first chose it, and
-// that may not be the inbox's owner: shown here it would be an attacker's
-// text on this site, in front of somebody who never signed up.
 func (s *Server) handleLookupVerification(w http.ResponseWriter, r *http.Request) {
 	tokenID, err := uuid.Parse(r.URL.Query().Get("token"))
 	if err != nil {
@@ -129,12 +123,13 @@ func verificationRefused(w http.ResponseWriter, err error) {
 	Error(w, http.StatusUnprocessableEntity, "token_invalid", "invalid or already used verification token")
 }
 
-// POST /api/v1/auth/verify-email — exchange a token and the password the
-// account will have for an active session.
+// POST /api/v1/auth/verify-email — exchange a token, and the display name and
+// password the account will have, for an active session.
 func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
+		Token       string `json:"token"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -147,8 +142,12 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.registration.Verify(r.Context(), tokenID, body.Password)
+	u, err := s.registration.Verify(r.Context(), tokenID, body.DisplayName, body.Password)
 	if err != nil {
+		if errors.Is(err, registration.ErrDisplayNameRequired) {
+			Error(w, http.StatusBadRequest, "display_name_required", err.Error())
+			return
+		}
 		if errors.Is(err, registration.ErrPasswordTooShort) {
 			Error(w, http.StatusBadRequest, "password_too_short", err.Error())
 			return

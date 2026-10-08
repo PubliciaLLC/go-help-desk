@@ -140,7 +140,7 @@ func TestIsEmailDomainAllowed(t *testing.T) {
 func TestRegister(t *testing.T) {
 	t.Run("domain not allowed", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@other.com", "Alice", []string{"example.com"}, false)
+		err := svc.Register(context.Background(), "a@other.com", []string{"example.com"}, false)
 		if !errors.Is(err, ErrDomainNotAllowed) {
 			t.Fatalf("want ErrDomainNotAllowed, got %v", err)
 		}
@@ -148,7 +148,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("open registration required", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "Alice", nil, false)
+		err := svc.Register(context.Background(), "a@any.com", nil, false)
 		if !errors.Is(err, ErrOpenRegistrationRequired) {
 			t.Fatalf("want ErrOpenRegistrationRequired, got %v", err)
 		}
@@ -158,7 +158,7 @@ func TestRegister(t *testing.T) {
 		store := &fakeStore{}
 		mailer := &fakeMailer{}
 		svc := NewService(store, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "alice@example.com", "Alice", []string{"example.com"}, false)
+		err := svc.Register(context.Background(), "alice@example.com", []string{"example.com"}, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -173,7 +173,7 @@ func TestRegister(t *testing.T) {
 	t.Run("open registration", func(t *testing.T) {
 		mailer := &fakeMailer{}
 		svc := NewService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "A", nil, true)
+		err := svc.Register(context.Background(), "a@any.com", nil, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -189,7 +189,7 @@ func TestVerify(t *testing.T) {
 	t.Run("token not found", func(t *testing.T) {
 		store := &fakeStore{getErr: errors.New("not found")}
 		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		_, err := svc.Verify(context.Background(), uuid.New(), "a-real-passphrase")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -204,7 +204,7 @@ func TestVerify(t *testing.T) {
 			},
 		}
 		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		_, err := svc.Verify(context.Background(), uuid.New(), "a-real-passphrase")
+		_, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if !errors.Is(err, ErrTokenExpired) {
 			t.Fatalf("want ErrTokenExpired, got %v", err)
 		}
@@ -213,15 +213,14 @@ func TestVerify(t *testing.T) {
 	t.Run("happy path — user created", func(t *testing.T) {
 		store := &fakeStore{
 			record: PendingRegistration{
-				ID:          uuid.New(),
-				Email:       "alice@example.com",
-				DisplayName: "Alice",
-				ExpiresAt:   time.Now().Add(time.Hour),
+				ID:        uuid.New(),
+				Email:     "alice@example.com",
+				ExpiresAt: time.Now().Add(time.Hour),
 			},
 		}
 		users := &fakeUsers{}
 		svc := NewService(store, users, &fakeMailer{}, "http://localhost")
-		u, err := svc.Verify(context.Background(), uuid.New(), "a-real-passphrase")
+		u, err := svc.Verify(context.Background(), uuid.New(), "Alice", "a-real-passphrase")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -233,6 +232,10 @@ func TestVerify(t *testing.T) {
 		// hashed the same way as every other account.
 		if users.input.Password != "a-real-passphrase" {
 			t.Errorf("account created with password %q, want the one given at verification", users.input.Password)
+		}
+		// #374: and the name, for the same reason.
+		if users.input.DisplayName != "Alice" {
+			t.Errorf("account created with name %q, want the one given at verification", users.input.DisplayName)
 		}
 		if !store.deleted {
 			t.Error("expected pending record to be deleted")
@@ -256,7 +259,7 @@ func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
 		mailer := &fakeMailer{}
 		svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
-		err := svc.Register(context.Background(), addr, "Attacker", nil, true)
+		err := svc.Register(context.Background(), addr, nil, true)
 
 		if err == nil {
 			t.Fatalf("Register accepted %q", addr)
@@ -280,7 +283,7 @@ func TestRegister_AcceptsAndNormalisesARealAddress(t *testing.T) {
 	store := &fakeStore{}
 	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "https://help.example.com")
 
-	if err := svc.Register(context.Background(), "  User@Example.COM  ", "User",
+	if err := svc.Register(context.Background(), "  User@Example.COM  ",
 		nil, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -306,7 +309,7 @@ func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
 	mailer := &recordingMailer{}
 	svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
-	err := svc.Register(context.Background(), "Requested@Example.com", "Ada", nil, true)
+	err := svc.Register(context.Background(), "Requested@Example.com", nil, true)
 	require.NoError(t, err)
 	require.Equal(t, "canonical@example.com", mailer.to,
 		"the mail must go to the address the store returned")
@@ -343,11 +346,11 @@ func TestVerify_HoldsThePasswordMinimum(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := &fakeStore{record: PendingRegistration{
-				ID: uuid.New(), Email: "a@any.com", DisplayName: "Alice", ExpiresAt: time.Now().Add(time.Hour),
+				ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour),
 			}}
 			users := &fakeUsers{}
 			svc := NewService(store, users, &fakeMailer{}, "http://localhost")
-			_, err := svc.Verify(context.Background(), uuid.New(), tc.password)
+			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", tc.password)
 
 			if tc.wantErr {
 				if !errors.Is(err, ErrPasswordTooShort) {
@@ -388,7 +391,7 @@ func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
 		&fakeUsers{existing: map[string]bool{"taken@any.com": true}},
 		mailer, "http://localhost")
 
-	err := svc.Register(context.Background(), "taken@any.com", "A", nil, true)
+	err := svc.Register(context.Background(), "taken@any.com", nil, true)
 	if !errors.Is(err, ErrAlreadyRegistered) {
 		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
 	}
@@ -412,7 +415,7 @@ func TestRegister_ADeletedAccountStillOwnsItsAddress(t *testing.T) {
 		&fakeUsers{existing: map[string]bool{"gone@any.com": true}},
 		mailer, "http://localhost")
 
-	err := svc.Register(context.Background(), "gone@any.com", "A", nil, true)
+	err := svc.Register(context.Background(), "gone@any.com", nil, true)
 	if !errors.Is(err, ErrAlreadyRegistered) {
 		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
 	}
@@ -449,7 +452,7 @@ func TestRegister_FreshAndTakenAddressesDoTheSameWork(t *testing.T) {
 	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
 		store, queue, mailer := &countingStore{}, &recordingQueue{}, &fakeMailer{}
 		svc := NewService(store, users, mailer, "http://localhost", WithQueue(queue))
-		_ = svc.Register(context.Background(), addr, "A", nil, true)
+		_ = svc.Register(context.Background(), addr, nil, true)
 
 		if store.upserts != 1 || len(queue.events) != 1 {
 			t.Fatalf("%s: %d pending rows written and %d events queued, want 1 and 1", addr, store.upserts, len(queue.events))
@@ -511,13 +514,13 @@ func (m *sendLog) SendVerificationEmail(to, token, _ string) error {
 	return nil
 }
 
-// #370: the verification page looks the link up before asking for a password,
-// so it can show which address and name the account is for (and give a
+// #370: the verification page looks the link up before asking for a name and
+// password, so it can show which address the account is for (and give a
 // password manager the address), and say a dead link is dead before anything
-// is typed. Lookup answers exactly as Verify would and writes nothing.
+// is typed. Lookup writes nothing.
 func TestLookup(t *testing.T) {
 	live := PendingRegistration{
-		ID: uuid.New(), Email: "alice@any.com", DisplayName: "Alice", ExpiresAt: time.Now().Add(time.Hour),
+		ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(time.Hour),
 	}
 	cases := []struct {
 		name    string
@@ -553,4 +556,28 @@ func TestLookup(t *testing.T) {
 			require.Equal(t, uuid.Nil, users.created.ID, "a lookup must not create an account")
 		})
 	}
+}
+
+// #374: the display name is chosen at verification too, by whoever reads the
+// inbox. A blank one is refused before anything is written, so the link still
+// works and the person can fill it in.
+func TestVerify_RequiresADisplayName(t *testing.T) {
+	for _, name := range []string{"", "   ", "\t\n"} {
+		store := &fakeStore{record: PendingRegistration{
+			ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour),
+		}}
+		users := &fakeUsers{}
+		svc := NewService(store, users, &fakeMailer{}, "http://localhost")
+		_, err := svc.Verify(context.Background(), uuid.New(), name, "a-real-passphrase")
+		require.ErrorIs(t, err, ErrDisplayNameRequired, "name %q", name)
+		require.False(t, store.deleted, "a refused name used up the link")
+		require.Equal(t, uuid.Nil, users.created.ID)
+	}
+
+	store := &fakeStore{record: PendingRegistration{ID: uuid.New(), Email: "a@any.com", ExpiresAt: time.Now().Add(time.Hour)}}
+	users := &fakeUsers{}
+	_, err := NewService(store, users, &fakeMailer{}, "http://localhost").
+		Verify(context.Background(), uuid.New(), "  Alice  ", "a-real-passphrase")
+	require.NoError(t, err)
+	require.Equal(t, "Alice", users.input.DisplayName, "the name is trimmed")
 }

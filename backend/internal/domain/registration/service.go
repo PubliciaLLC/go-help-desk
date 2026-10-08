@@ -36,11 +36,8 @@ var ErrInvalidEmail = fmt.Errorf("invalid email address")
 // said the token was invalid or already used.
 var ErrAlreadyRegistered = fmt.Errorf("an account already exists for that address")
 
-// ErrDisplayNameRequired is a signup with no name on it.
-//
-// Refused at registration rather than at verification, where the same rule
-// already applied: by then the person has been told they are registered and
-// sent a link that cannot work.
+// ErrDisplayNameRequired is a verification with no name on it. Refused before
+// anything is written, so the link still works (#374).
 var ErrDisplayNameRequired = fmt.Errorf("display name is required")
 
 // ErrPasswordTooShort is the refusal for a password chosen at verification
@@ -122,12 +119,12 @@ func PendingIDOf(ev notification.Event) (uuid.UUID, error) {
 // Register validates the request, stores a pending registration, and queues
 // the verification email. allowedDomains and openReg come from admin settings.
 //
-// It takes no password (#360): that is chosen at Verify, by whoever can read
-// the inbox. When signup carried it, a second signup for the same address
-// replaced it, and the owner of the address, following the newest link,
-// created their account with someone else's password.
-func (s *Service) Register(ctx context.Context, email, displayName string, allowedDomains []string, openReg bool) error {
-	displayName = strings.TrimSpace(displayName)
+// It takes no password (#360) and no display name (#374): both are chosen at
+// Verify, by whoever can read the inbox. When signup carried them, a second
+// signup for the same address replaced them, and the owner of the address,
+// following the newest link, created their account with someone else's
+// password, and later still with someone else's name.
+func (s *Service) Register(ctx context.Context, email string, allowedDomains []string, openReg bool) error {
 
 	// Validated before anything is stored. isEmailDomainAllowed does not
 	// inspect the address when open registration is on — it returns openReg
@@ -145,14 +142,6 @@ func (s *Service) Register(ctx context.Context, email, displayName string, allow
 		return ErrDomainNotAllowed
 	}
 
-	// A display name is required by user.Validate, which runs at Verify —
-	// long after the person has been told their registration was accepted and
-	// an email has been sent. Without this they follow the link and are told
-	// the token is invalid or already used, which is neither. Refuse it here,
-	// where they can still fix it.
-	if displayName == "" {
-		return ErrDisplayNameRequired
-	}
 	// The same work for an address that already has an account and one that
 	// does not, all the way to the response (#348). The address is checked,
 	// the pending row written and one event queued in both cases; whether a
@@ -170,12 +159,11 @@ func (s *Service) Register(ctx context.Context, email, displayName string, allow
 	}
 	now := time.Now()
 	pr := PendingRegistration{
-		ID:          uuid.New(),
-		Email:       email,
-		DisplayName: displayName,
-		Token:       uuid.New(),
-		ExpiresAt:   now.Add(tokenTTL),
-		CreatedAt:   now,
+		ID:        uuid.New(),
+		Email:     email,
+		Token:     uuid.New(),
+		ExpiresAt: now.Add(tokenTTL),
+		CreatedAt: now,
 	}
 	stored, err := s.store.Upsert(ctx, pr)
 	if err != nil {
@@ -248,10 +236,11 @@ func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistrat
 }
 
 // Verify looks up a token, checks expiry, creates the user account with the
-// password chosen now (#360), and deletes the pending record. Returns the new
-// User so the handler can write a session. A password below the minimum is
-// refused before anything is written, so the link still works.
-func (s *Service) Verify(ctx context.Context, token uuid.UUID, password string) (user.User, error) {
+// display name and password chosen now (#360, #374), and deletes the pending
+// record. Returns the new User so the handler can write a session. A blank
+// name or a password below the minimum is refused before anything is written,
+// so the link still works.
+func (s *Service) Verify(ctx context.Context, token uuid.UUID, displayName, password string) (user.User, error) {
 	pr, err := s.store.GetByToken(ctx, token)
 	if err != nil {
 		return user.User{}, fmt.Errorf("token not found: %w", err)
@@ -259,15 +248,19 @@ func (s *Service) Verify(ctx context.Context, token uuid.UUID, password string) 
 	if time.Now().After(pr.ExpiresAt) {
 		return user.User{}, ErrTokenExpired
 	}
-	// user.Create applies the same minimum; checked here too so the refusal
-	// is one the handler can name, rather than a generic validation error.
+	// user.Create applies both rules; checked here too so the refusal is one
+	// the handler can name, rather than a generic validation error.
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		return user.User{}, ErrDisplayNameRequired
+	}
 	if len(password) < user.MinPasswordLength {
 		return user.User{}, ErrPasswordTooShort
 	}
 
 	u, err := s.users.Create(ctx, user.CreateUserInput{
 		Email:       pr.Email,
-		DisplayName: pr.DisplayName,
+		DisplayName: displayName,
 		Role:        user.RoleUser,
 		Password:    password,
 	})

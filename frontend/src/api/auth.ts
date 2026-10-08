@@ -55,10 +55,11 @@ export async function getSignupStatus(): Promise<SignupStatus> {
   return res.data
 }
 
-// No password at signup (#360): it is chosen on the verification page, so a
-// second signup for the same address cannot choose it for the owner.
-export async function signup(email: string, displayName: string): Promise<void> {
-  await api.post('/auth/signup', { email, display_name: displayName })
+// The address only (#360, #374): the name and password are chosen on the
+// verification page, so a second signup for the same address cannot choose
+// them for the owner.
+export async function signup(email: string): Promise<void> {
+  await api.post('/auth/signup', { email })
 }
 
 // What a verification link is for, without using it (#370).
@@ -67,8 +68,8 @@ export async function lookupVerification(token: string): Promise<{ email: string
   return res.data
 }
 
-export async function verifyEmail(token: string, password: string): Promise<LoginResponse> {
-  const res = await api.post<LoginResponse>('/auth/verify-email', { token, password })
+export async function verifyEmail(token: string, displayName: string, password: string): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>('/auth/verify-email', { token, display_name: displayName, password })
   return res.data
 }
 

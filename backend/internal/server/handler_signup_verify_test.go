@@ -28,13 +28,13 @@ func (m *verifyMailbox) latest(t *testing.T) string {
 	return m.tokens[len(m.tokens)-1]
 }
 
-// #360: a signup used to carry the password, and a second signup for the same
-// address replaced it. So anyone who knew Alice's address could sign up as her
+// #360, #374: a signup used to carry the password and the display name, and a
+// second signup for the same address replaced them. So anyone who knew Alice's address could sign up as her
 // with their own password after she did; the newest link went to Alice, she
 // clicked it, and her account was created with the other person's password.
 //
-// The password is now chosen on the verification page, so only whoever reads
-// the inbox chooses it. A password sent with the signup is ignored.
+// Both are now chosen on the verification page, so only whoever reads the
+// inbox chooses them. A password or name sent with the signup is ignored.
 func TestSignup_PasswordIsChosenAtVerificationNotAtSignup(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -43,9 +43,9 @@ func TestSignup_PasswordIsChosenAtVerificationNotAtSignup(t *testing.T) {
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyOpenRegistrationEnabled, true))
 	const email = "alice@signup.test"
 
-	signup := func(password string) {
+	signup := func(name, password string) {
 		res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/signup",
-			map[string]any{"email": email, "display_name": "Alice", "password": password})
+			map[string]any{"email": email, "display_name": name, "password": password})
 		res.Body.Close()
 		require.Equal(t, http.StatusAccepted, res.StatusCode)
 	}
@@ -61,34 +61,42 @@ func TestSignup_PasswordIsChosenAtVerificationNotAtSignup(t *testing.T) {
 		return res.StatusCode, out.Error.Code
 	}
 
-	signup("alice-would-have-typed-this")
+	signup("Alice", "alice-would-have-typed-this")
 	first := h.verifyMail.latest(t)
-	signup("mallory-chose-this-one") // Mallory, with Alice's address
+	signup("Your account is locked, call 555-0100", "mallory-chose-this-one") // Mallory, with Alice's address
 	link := h.verifyMail.latest(t)
 	require.NotEqual(t, first, link, "a second signup re-issues the link")
 
-	var stored *string
+	var storedHash, storedName *string
 	require.NoError(t, h.tx.QueryRow(
-		`SELECT password_hash FROM pending_registrations WHERE lower(email) = $1`, email).Scan(&stored))
-	require.Nil(t, stored, "a pending signup must hold no password")
+		`SELECT password_hash, display_name FROM pending_registrations WHERE lower(email) = $1`, email).
+		Scan(&storedHash, &storedName))
+	require.Nil(t, storedHash, "a pending signup must hold no password")
+	require.Nil(t, storedName, "a pending signup must hold no display name (#374)")
 
-	status, code := verify(map[string]any{"token": first, "password": "alice-chooses-now"})
+	status, code := verify(map[string]any{"token": first, "display_name": "Alice", "password": "alice-chooses-now"})
 	require.Equal(t, http.StatusUnprocessableEntity, status, "the replaced link must not work")
 	require.Equal(t, "token_invalid", code)
 
-	// No password, or a short one, is refused and does not use up the link.
-	status, code = verify(map[string]any{"token": link})
+	// No password, a short one, or no name is refused and does not use up
+	// the link.
+	status, code = verify(map[string]any{"token": link, "display_name": "Alice"})
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, "password_too_short", code)
-	status, code = verify(map[string]any{"token": link, "password": "short"})
+	status, code = verify(map[string]any{"token": link, "display_name": "Alice", "password": "short"})
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, "password_too_short", code)
+	status, code = verify(map[string]any{"token": link, "display_name": "  ", "password": "alice-chooses-now"})
+	require.Equal(t, http.StatusBadRequest, status)
+	require.Equal(t, "display_name_required", code)
 
-	status, _ = verify(map[string]any{"token": link, "password": "alice-chooses-now"})
+	status, _ = verify(map[string]any{"token": link, "display_name": "Alice", "password": "alice-chooses-now"})
 	require.Equal(t, http.StatusOK, status)
 
-	_, err := h.userSvc.VerifyPassword(ctx, email, "alice-chooses-now")
+	u, err := h.userSvc.VerifyPassword(ctx, email, "alice-chooses-now")
 	require.NoError(t, err, "the account must have the password chosen at verification")
+	require.Equal(t, "Alice", u.DisplayName, "the account must have the name chosen at verification, "+
+		"not one a signup sent (#374)")
 	for _, p := range []string{"mallory-chose-this-one", "alice-would-have-typed-this"} {
 		_, err := h.userSvc.VerifyPassword(ctx, email, p)
 		require.Error(t, err, "a password sent with a signup must not open the account")
@@ -96,7 +104,7 @@ func TestSignup_PasswordIsChosenAtVerificationNotAtSignup(t *testing.T) {
 }
 
 // #370: GET /auth/verify-email looks a link up without using it, so the page
-// can show the address and name before asking for a password. A dead link
+// can show the address before asking for a name and password. A dead link
 // answers as POST would.
 func TestVerifyEmailLookup(t *testing.T) {
 	h, cleanup := newHarness(t)
@@ -122,8 +130,7 @@ func TestVerifyEmailLookup(t *testing.T) {
 	status, body := lookup(link)
 	require.Equal(t, http.StatusOK, status)
 	require.Equal(t, map[string]any{"email": "bob@signup.test"}, body,
-		"the lookup shows the address and nothing else: no token, no ids, and not the "+
-			"display name, which whoever signed up first chose")
+		"the lookup shows the address and nothing else: no token, no ids")
 
 	// Looking it up does not use it.
 	status, _ = lookup(link)
@@ -161,7 +168,7 @@ func TestVerifyEmail_ASessionThatOwesEnrolmentCanEnrol(t *testing.T) {
 
 	s := &session{h: h}
 	res, body := s.send(t, http.MethodPost, "/api/v1/auth/verify-email",
-		map[string]any{"token": h.verifyMail.latest(t), "password": "carol-chooses-this"})
+		map[string]any{"token": h.verifyMail.latest(t), "display_name": "Carol", "password": "carol-chooses-this"})
 	require.Equal(t, http.StatusOK, res.StatusCode, string(body))
 	var verified struct {
 		MFAEnrollmentNeeded bool `json:"mfa_enrollment_needed"`

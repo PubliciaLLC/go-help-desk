@@ -187,17 +187,18 @@ startup warning surfaces it. To keep scanning on, uncomment the two lines in
 the "Virus scanning" section of `docker/.env.example` (`CLAMAV_ADDR` and
 `COMPOSE_PROFILES=antivirus`) in your own `.env` before restarting.
 
-**Self-service signup: the password is chosen when the email is verified,
-not on the signup form (#360).** Anyone who knew an address could sign up
-again after its owner with a password of their own, and the owner, clicking
-the newest link, got an account with that password. The signup form now asks
-only for the address and display name; the link in the email opens a page
-that asks for the password. For API clients: `POST /api/v1/auth/verify-email`
-now requires `password` beside `token` (refused with `password_too_short`
-below the minimum, without using up the link), a `password` sent to
+**Self-service signup: the display name and password are chosen when the
+email is verified, not on the signup form (#360, #374).** Anyone who knew an
+address could sign up again after its owner with a password (or name) of
+their own, and the owner, clicking the newest link, got an account with it.
+The signup form now asks only for the address; the link in the email opens a
+page that asks for the display name and the password. For API clients:
+`POST /api/v1/auth/verify-email` now requires `display_name` and `password`
+beside `token` (refused with `display_name_required` or `password_too_short`,
+without using up the link), a `display_name` or `password` sent to
 `POST /api/v1/auth/signup` is ignored, and `GET /api/v1/auth/verify-email?token=`
-returns the address a link is for. Signups still pending at
-upgrade keep working: their links now ask for a password.
+returns the address a link is for. Signups still pending at upgrade keep
+working: their links now ask for a name and a password.
 
 **`guest_submission_enabled` now requires a signed-in administrator (#177).**
 It decides both whether anonymous people can file tickets and — since the

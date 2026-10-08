@@ -80,7 +80,7 @@ func TestSignup_FreshAndTakenAddressesDoTheSameDatabaseWork(t *testing.T) {
 
 	register := func(email string) map[string]int64 {
 		before := tableWork(t, tx)
-		_ = svc.Register(ctx, email, "Someone", nil, true)
+		_ = svc.Register(ctx, email, nil, true)
 		return diff(before, tableWork(t, tx))
 	}
 	// Warm up, so plan caching and first-use effects are not part of either.

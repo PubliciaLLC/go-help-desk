@@ -9,7 +9,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function SignupPage() {
   const [email, setEmail] = useState('')
-  const [displayName, setDisplayName] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
@@ -19,7 +18,7 @@ export function SignupPage() {
     setError('')
     setLoading(true)
     try {
-      await signup(email, displayName)
+      await signup(email)
       setDone(true)
     } catch (err) {
       const msg = extractError(err)
@@ -43,7 +42,7 @@ export function SignupPage() {
           {done ? (
             <div className="space-y-3 text-sm text-gray-700">
               <p>
-                Check your email for a verification link. Click it to choose your password and activate your account.
+                Check your email for a verification link. Click it to choose your name and password and activate your account.
               </p>
               <p>
                 <Link to="/login" className="text-blue-600 hover:underline">
@@ -62,17 +61,6 @@ export function SignupPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   required
                   autoComplete="email"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="display_name">Display name</Label>
-                <Input
-                  id="display_name"
-                  type="text"
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  required
-                  autoComplete="name"
                 />
               </div>
               {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
