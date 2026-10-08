@@ -73,6 +73,16 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 -- was measured at 3x slower than the unbounded count (411 ms against 143 ms at
 -- 524k audit rows / 30k tickets), which is the opposite of a bound. The
 -- MATERIALIZED set is empty, and never read, when scoped_to is NULL.
+--
+-- The Category/Type rule is written as two IN lists, not as the per-ticket
+-- EXISTS the page query uses, so each list is built once and the set costs one
+-- pass over tickets rather than one subplan run per ticket (measured: a staff
+-- count with a narrow filter fell from ~125-165 ms to ~5-40 ms). The meaning is
+-- the same: a rule without a type covers its whole category, tickets without a
+-- type included; a rule with a type covers that type only, and the row
+-- comparison is not true for a ticket whose type is NULL, which stays hidden.
+-- IN does not repeat a ticket reached by several groups. The tests in
+-- auditstore_scope_rules_test.go state this in Go and hold both queries to it.
 WITH visible AS MATERIALIZED (
   SELECT t.id FROM tickets t
   WHERE sqlc.narg(scoped_to)::uuid IS NOT NULL
@@ -80,12 +90,15 @@ WITH visible AS MATERIALIZED (
       t.reporter_user_id = sqlc.narg(scoped_to)::uuid
       OR t.assignee_user_id = sqlc.narg(scoped_to)::uuid
       OR t.assignee_group_id IN (SELECT gm.group_id FROM group_members gm WHERE gm.user_id = sqlc.narg(scoped_to)::uuid)
-      OR EXISTS (
-        SELECT 1 FROM group_scopes gs
+      OR t.category_id IN (
+        SELECT gs.category_id FROM group_scopes gs
         JOIN group_members gm ON gm.group_id = gs.group_id
-        WHERE gm.user_id = sqlc.narg(scoped_to)::uuid
-          AND gs.category_id = t.category_id
-          AND (gs.type_id IS NULL OR gs.type_id = t.type_id)
+        WHERE gm.user_id = sqlc.narg(scoped_to)::uuid AND gs.type_id IS NULL
+      )
+      OR (t.category_id, t.type_id) IN (
+        SELECT gs.category_id, gs.type_id FROM group_scopes gs
+        JOIN group_members gm ON gm.group_id = gs.group_id
+        WHERE gm.user_id = sqlc.narg(scoped_to)::uuid AND gs.type_id IS NOT NULL
       )
     )
 )

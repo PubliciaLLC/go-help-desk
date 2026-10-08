@@ -148,6 +148,16 @@ type Querier interface {
 	// was measured at 3x slower than the unbounded count (411 ms against 143 ms at
 	// 524k audit rows / 30k tickets), which is the opposite of a bound. The
 	// MATERIALIZED set is empty, and never read, when scoped_to is NULL.
+	//
+	// The Category/Type rule is written as two IN lists, not as the per-ticket
+	// EXISTS the page query uses, so each list is built once and the set costs one
+	// pass over tickets rather than one subplan run per ticket (measured: a staff
+	// count with a narrow filter fell from ~125-165 ms to ~5-40 ms). The meaning is
+	// the same: a rule without a type covers its whole category, tickets without a
+	// type included; a rule with a type covers that type only, and the row
+	// comparison is not true for a ticket whose type is NULL, which stays hidden.
+	// IN does not repeat a ticket reached by several groups. The tests in
+	// auditstore_scope_rules_test.go state this in Go and hold both queries to it.
 	CountAuditLog(ctx context.Context, arg CountAuditLogParams) (int64, error)
 	// How many administrators this instance would still have if $1 stopped being
 	// one.

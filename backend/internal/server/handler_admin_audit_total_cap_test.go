@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
@@ -120,19 +121,29 @@ func TestAdminAudit_TotalCapBoundary(t *testing.T) {
 }
 
 // A total under the cap is the same exact number it always was, and says so.
+// The entries are planted under their own action, so the expected total is a
+// number this test chose rather than whatever else the database holds.
 func TestAdminAudit_TotalIsNotCappedForSmallInstances(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	createAndResolveTicket(t, h)
+
+	const planted = 7
+	for i := 0; i < planted; i++ {
+		require.NoError(t, h.q.CreateAuditEntry(context.Background(), dbgen.CreateAuditEntryParams{
+			ID: uuid.New(), EntityType: "ticket", EntityID: uuid.New(), Action: "fixture_small",
+			CreatedAt: time.Now().Add(-time.Duration(i) * time.Second),
+		}))
+	}
 
 	for _, do := range []func(*testing.T, string, string, any) *http.Response{h.doAsAdmin, h.do} {
-		resp := do(t, http.MethodGet, "/api/v1/admin/audit?limit=1", nil)
+		resp := do(t, http.MethodGet, "/api/v1/admin/audit?action=fixture_small&limit=1", nil)
 		var p cappedPage
 		decodeJSON(t, resp, &p)
 		resp.Body.Close()
+		require.NotNil(t, p.Total)
 		require.NotNil(t, p.TotalCapped)
+		require.Equal(t, planted, *p.Total)
 		require.False(t, *p.TotalCapped)
-		require.Greater(t, *p.Total, 0)
-		require.Less(t, *p.Total, audit.TotalCap)
+		require.True(t, p.HasMore)
 	}
 }
