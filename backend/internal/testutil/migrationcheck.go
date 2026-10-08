@@ -37,9 +37,6 @@ func migrateAndVerify(ctx context.Context, pool *pgxpool.Pool, dsn string, files
 	}
 	defer conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtext('ghd testutil migrations'))`) //nolint:errcheck
 
-	if err := database.Migrate(ctx, database.MigrateURL(dsn)); err != nil {
-		return fmt.Errorf("migrate: %w%s", err, hint)
-	}
 	if _, err := conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS testutil_migration_checksums (
 		version BIGINT PRIMARY KEY, file TEXT NOT NULL, sha256 TEXT NOT NULL)`); err != nil {
 		return fmt.Errorf("creating checksum table: %w", err)
@@ -52,6 +49,7 @@ func migrateAndVerify(ctx context.Context, pool *pgxpool.Pool, dsn string, files
 	if err != nil {
 		return fmt.Errorf("reading checksums: %w", err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var v int64
 		var f, h string
@@ -92,21 +90,29 @@ func migrateAndVerify(ctx context.Context, pool *pgxpool.Pool, dsn string, files
 				v, theirs[0], theirs[1], name, mine))
 		}
 	}
+
+	// Return mismatch error before running migrations.
+	if len(mismatches) > 0 {
+		return fmt.Errorf("the test database was migrated by different migration files than this tree's:\n%s\n"+
+			"golang-migrate records only the version number, so it treats the database as up to date "+
+			"and the schema these tests expect is not there.%s", strings.Join(mismatches, "\n"), hint)
+	}
+
+	if err := database.Migrate(ctx, database.MigrateURL(dsn)); err != nil {
+		return fmt.Errorf("migrate: %w%s", err, hint)
+	}
+
 	if len(newV) > 0 {
 		if _, err := conn.Exec(ctx, `INSERT INTO testutil_migration_checksums (version, file, sha256)
 			SELECT * FROM unnest($1::bigint[], $2::text[], $3::text[])`, newV, newF, newH); err != nil {
 			return fmt.Errorf("recording checksums: %w", err)
 		}
 	}
-	if len(mismatches) > 0 {
-		return fmt.Errorf("the test database was migrated by different migration files than this tree's:\n%s\n"+
-			"golang-migrate records only the version number, so it treats the database as up to date "+
-			"and the schema these tests expect is not there.%s", strings.Join(mismatches, "\n"), hint)
-	}
 	return nil
 }
 
 const hint = "\nUsual cause: another branch or worktree ran the suite against the same database, " +
 	"or a migration was edited after it was applied. Recreate the test database: " +
-	"./scripts/test-db.sh down (with the same GHD_TEST_INSTANCE, if you set one), " +
-	"or point TEST_DATABASE_URL at a database of your own."
+	"./scripts/test-db.sh down (with the same GHD_TEST_INSTANCE, if you set one). " +
+	"If TEST_DATABASE_URL points at a database of your own, recreate it or point at a throwaway one: " +
+	"test-db.sh down does not touch it."

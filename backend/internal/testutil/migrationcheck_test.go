@@ -2,7 +2,9 @@ package testutil
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"io/fs"
 	"net/url"
 	"os"
@@ -73,7 +75,9 @@ func TestMigrateAndVerify(t *testing.T) {
 		wantErr []string
 	}{
 		{"the same tree again passes", func(t *testing.T) fs.FS { return database.MigrationFiles() }, nil},
-		{"an older checkout after a newer one passes", func(t *testing.T) fs.FS {
+		{"a recorded version this tree lacks is not a mismatch", func(t *testing.T) fs.FS {
+			// A genuinely older checkout that no longer has this version would fail inside
+			// golang-migrate with "no migration found", which the hint covers.
 			return withFile(t, "", "000999_later.up.sql", "SELECT 1;")
 		}, nil},
 		{"another branch's migration under the same number is named", func(t *testing.T) fs.FS {
@@ -172,4 +176,92 @@ func TestMigrateAndVerify_WaitsForTheLock(t *testing.T) {
 	_, err = holder.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('ghd testutil migrations'))`)
 	require.NoError(t, err)
 	require.NoError(t, <-done)
+}
+
+// When a checksum mismatch is detected, the database must not be migrated.
+// golang-migrate always applies the real embedded files, so the only observable
+// difference is whether it ran.
+func TestMigrateAndVerify_MismatchLeavesDatabaseUntouched(t *testing.T) {
+	dsn := freshDSN(t)
+	ctx := context.Background()
+	pool, err := database.New(ctx, dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	// Manually create the checksum table and insert a row for version 33 as if
+	// another branch had recorded it.
+	conn, err := pool.Acquire(ctx)
+	require.NoError(t, err)
+	defer conn.Release()
+	_, err = conn.Exec(ctx, `CREATE TABLE testutil_migration_checksums (
+		version BIGINT PRIMARY KEY, file TEXT NOT NULL, sha256 TEXT NOT NULL)`)
+	require.NoError(t, err)
+
+	// Compute the hash of "-- other branch\n"
+	otherBody := []byte("-- other branch\n")
+	sum := sha256.Sum256(otherBody)
+	otherHash := hex.EncodeToString(sum[:])
+
+	_, err = conn.Exec(ctx,
+		`INSERT INTO testutil_migration_checksums (version, file, sha256) VALUES ($1, $2, $3)`,
+		int64(33), "000033_pending_registrations_no_display_name.up.sql", otherHash)
+	require.NoError(t, err)
+	conn.Release()
+
+	// Call migrateAndVerify with the real files: must error on version 33 mismatch.
+	err = migrateAndVerify(ctx, pool, dsn, database.MigrationFiles())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "version 33")
+	require.Contains(t, err.Error(), "000033_pending_registrations_no_display_name.up.sql")
+	require.Contains(t, err.Error(), "another branch or worktree")
+
+	// Assert database is untouched: schema_migrations and users tables must not exist.
+	conn, err = pool.Acquire(ctx)
+	require.NoError(t, err)
+	defer conn.Release()
+
+	var schemaExists, usersExist bool
+	err = conn.QueryRow(ctx, `SELECT to_regclass('public.schema_migrations') IS NOT NULL`).Scan(&schemaExists)
+	require.NoError(t, err)
+	require.False(t, schemaExists, "schema_migrations should not exist after checksum mismatch")
+
+	err = conn.QueryRow(ctx, `SELECT to_regclass('public.users') IS NOT NULL`).Scan(&usersExist)
+	require.NoError(t, err)
+	require.False(t, usersExist, "users table should not exist after checksum mismatch")
+
+	// Now call migrateAndVerify with fs that includes the "other branch" file.
+	// This time it should pass.
+	err = migrateAndVerify(ctx, pool, dsn, withFile(t, "", "000033_pending_registrations_no_display_name.up.sql", "-- other branch\n"))
+	require.NoError(t, err)
+}
+
+// After migrateAndVerify completes, the advisory lock must be released.
+func TestMigrateAndVerify_ReleasesTheLock(t *testing.T) {
+	dsn := freshDSN(t)
+	ctx := context.Background()
+	pool, err := database.New(ctx, dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	// Run migrateAndVerify successfully.
+	require.NoError(t, migrateAndVerify(ctx, pool, dsn, database.MigrationFiles()))
+
+	// A second pool, so the probe runs in a different session: advisory locks
+	// are re-entrant within one session, and a pooled connection could be the
+	// very one that took the lock.
+	other, err := database.New(ctx, dsn)
+	require.NoError(t, err)
+	defer other.Close()
+	conn, err := other.Acquire(ctx)
+	require.NoError(t, err)
+	defer conn.Release()
+
+	var lockAcquired bool
+	err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('ghd testutil migrations'))`).Scan(&lockAcquired)
+	require.NoError(t, err)
+	require.True(t, lockAcquired, "lock should be available after migrateAndVerify returns")
+
+	// Clean up.
+	_, err = conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('ghd testutil migrations'))`)
+	require.NoError(t, err)
 }
