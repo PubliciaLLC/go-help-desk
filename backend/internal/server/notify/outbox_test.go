@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -573,30 +574,72 @@ func TestWorker_RedactsAddressesFromStoredAndLoggedErrors(t *testing.T) {
 	require.NotContains(t, logged.String(), "Ada.Lovelace")
 }
 
+var redactAddressCases = []struct{ in, want string }{
+	{"550 5.1.1 <guest@example.com>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	{"RCPT TO:<a.b+c@sub.example.co.uk> denied", "RCPT TO:<[address]> denied"},
+	{"two: x@a.test, y@b.test", "two: [address], [address]"},
+	// #358: a quoted local part and an IP-literal domain are legal
+	// addresses (user.ValidateEmail accepts both), so a guest can have one.
+	{`550 5.1.1 <"john doe"@example.com>: Recipient address rejected`, "550 5.1.1 <[address]>: Recipient address rejected"},
+	{`550 5.1.1 <"john \"jj\" doe"@example.com> rejected`, "550 5.1.1 <[address]> rejected"},
+	{"550 5.1.1 <guest@[192.168.1.10]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	{"550 5.1.1 <guest@[IPv6:2001:db8::1]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	// A queue id shaped like an address is hidden too; nothing is lost
+	// that an operator needs.
+	{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
+	// Ordinary errors are left exactly as they are.
+	{"dial tcp 10.0.0.25:587: i/o timeout", "dial tcp 10.0.0.25:587: i/o timeout"},
+	{"421 4.7.0 Try again later", "421 4.7.0 Try again later"},
+	{"dial tcp [2001:db8::1]:587: connect: connection refused", "dial tcp [2001:db8::1]:587: connect: connection refused"},
+	{`unknown channel "pager"`, `unknown channel "pager"`},
+	{"panic: runtime error: index out of range [3] with length 2", "panic: runtime error: index out of range [3] with length 2"},
+	{"", ""},
+}
+
 func TestRedactAddresses(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"550 5.1.1 <guest@example.com>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
-		{"RCPT TO:<a.b+c@sub.example.co.uk> denied", "RCPT TO:<[address]> denied"},
-		{"two: x@a.test, y@b.test", "two: [address], [address]"},
-		// #358: a quoted local part and an IP-literal domain are legal
-		// addresses (user.ValidateEmail accepts both), so a guest can have one.
-		{`550 5.1.1 <"john doe"@example.com>: Recipient address rejected`, "550 5.1.1 <[address]>: Recipient address rejected"},
-		{`550 5.1.1 <"john \"jj\" doe"@example.com> rejected`, "550 5.1.1 <[address]> rejected"},
-		{"550 5.1.1 <guest@[192.168.1.10]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
-		{"550 5.1.1 <guest@[IPv6:2001:db8::1]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
-		// A queue id shaped like an address is hidden too; nothing is lost
-		// that an operator needs.
-		{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
-		// Ordinary errors are left exactly as they are.
-		{"dial tcp 10.0.0.25:587: i/o timeout", "dial tcp 10.0.0.25:587: i/o timeout"},
-		{"421 4.7.0 Try again later", "421 4.7.0 Try again later"},
-		{"dial tcp [2001:db8::1]:587: connect: connection refused", "dial tcp [2001:db8::1]:587: connect: connection refused"},
-		{`unknown channel "pager"`, `unknown channel "pager"`},
-		{"panic: runtime error: index out of range [3] with length 2", "panic: runtime error: index out of range [3] with length 2"},
-		{"", ""},
+	for _, tc := range redactAddressCases {
+		t.Run(tc.in, func(t *testing.T) {
+			require.Equal(t, tc.want, redactAddresses(tc.in))
+		})
 	}
-	for _, tc := range cases {
-		require.Equal(t, tc.want, redactAddresses(tc.in), "input %q", tc.in)
+}
+
+// redactAddresses runs on the outbox worker goroutine, and its input is the
+// SMTP relay's reply, which the relay controls. Go's regexp is linear in the
+// input only when the pattern is bounded: an unbounded quoted local part or
+// IP literal that never closes makes every later match rescan the rest of
+// the input, which took about a minute at 96 KB before the bounds (#358
+// review). The bound is the point of this test: the times are generous, and
+// the result is what matters, not the exact duration.
+func TestRedactAddresses_IsLinear(t *testing.T) {
+	const n = 16 << 10 // 16 K repeats, about 96 KB each
+	hostile := map[string]string{
+		"unclosed quoted local part": `"` + strings.Repeat(`a@b \"`, n),
+		"unclosed IP literal":        strings.Repeat(`a@b x@[`, n),
+	}
+	for name, in := range hostile {
+		t.Run(name, func(t *testing.T) {
+			start := time.Now()
+			redactAddresses(in)
+			require.Less(t, time.Since(start), time.Second, "redaction of %d bytes is not linear", len(in))
+		})
+	}
+}
+
+// fail and deliver both redact the same string on a terminal failure, so
+// redaction must be idempotent. Before the IP literal excluded whitespace, an
+// unclosed "@[" in the first pass closed on the "]" of a "[address]" it
+// inserted, and the second pass swallowed the rejection text after it.
+func TestRedactAddresses_IsIdempotent(t *testing.T) {
+	const relayed = "550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected; was <a@b.com>"
+	once := redactAddresses(relayed)
+	require.Equal(t, once, redactAddresses(once))
+	require.Contains(t, redactAddresses(once), "Recipient address rejected",
+		"the rejection text after the address must survive a second pass")
+
+	for _, tc := range redactAddressCases {
+		once := redactAddresses(tc.in)
+		require.Equal(t, once, redactAddresses(once), "input %q", tc.in)
 	}
 }
 

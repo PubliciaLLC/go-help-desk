@@ -318,8 +318,11 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 // Deliberately loose: it only has to find what to hide, never validate it.
 // The local part may be quoted ("john doe"@example.com, escapes included) and
 // the domain may be an IP literal (guest@[192.168.1.10]): both pass
-// user.ValidateEmail, so a guest can have one on file (#358).
-var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.)*"|[^\s<>()\[\]@,;:"']+)@(?:\[[^\]]*\]|[^\s<>()\[\]@,;:"']+)`)
+// user.ValidateEmail, so a guest can have one on file (#358). Both are
+// bounded, because the input is the relay's reply and an unclosed quote or
+// bracket must not make matching quadratic. An IP literal has no whitespace,
+// so a stray "@[" cannot close on a later "]" such as the one in "[address]".
+var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.){0,64}"|[^\s<>()\[\]@,;:"']+)@(?:\[[^\]\s]{0,255}\]|[^\s<>()\[\]@,;:"']+)`)
 
 // redactAddresses hides email addresses in a delivery error before it is
 // stored in last_error or logged (#350). A mail server's rejection usually

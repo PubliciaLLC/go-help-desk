@@ -1915,8 +1915,9 @@ Four rules govern them:
    An API key acts at its owner's role; an OAuth client acts as staff.
 2. **An empty scope list denies everything.** A credential with no scopes
    reaches nothing at all.
-3. **Write implies read** on the same resource. An integration that may create
-   tickets but not read them back is not a useful shape.
+3. **Write implies read** on the same resource, except `audit`, which has no
+   write scope. An integration that may create tickets but not read them back
+   is not a useful shape.
 4. **There is no wildcard.** A credential that should reach everything lists
    every scope it needs. This keeps what a credential can do legible from the
    credential itself, and means adding a resource later does not silently widen
