@@ -225,4 +225,24 @@ describe('AdminAuditPage', () => {
 
     await waitFor(() => expect(screen.getByText('1–1 of 10,000+')).toBeTruthy())
   })
+
+  it('shows a masked requester distinctly from an account named "Requester"', async () => {
+    mockList({
+      entries: [
+        entry({ id: 'm', action: 'created', actor_name: 'Requester', actor_masked: true }),
+        entry({ id: 'r', action: 'resolved', actor_name: 'Requester' }),
+      ],
+      total: 2,
+      has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('Created')).toBeTruthy())
+    const masked = screen.getByText('Created').closest('tr')!
+    expect(within(masked).getByText('Requester (name hidden)')).toBeTruthy()
+
+    const named = screen.getByText('Resolved').closest('tr')!
+    expect(within(named).getByText('Requester')).toBeTruthy()
+    expect(within(named).queryByText(/name hidden/)).toBeNull()
+  })
 })
