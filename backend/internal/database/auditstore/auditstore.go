@@ -126,9 +126,8 @@ func (s *Store) searchUnscoped(ctx context.Context, p searchParamValues, limit, 
 func (s *Store) searchScoped(ctx context.Context, p searchParamValues, userID uuid.UUID, limit, offset int) ([]dbgen.AuditLog, int64, error) {
 	// If snap is set, run the three reads in a single repeatable-read transaction.
 	// This prevents membership changes between calls from mixing old scope with new
-	// ticket state in one request. If snap is nil, the caller's Queries are already
-	// bound to a transaction (e.g., in tests using testutil.TxQueries), so use them
-	// directly.
+	// ticket state in one request. If snap is nil, the reads run on the caller's
+	// Queries, as before.
 	q := s.q
 	if s.snap != nil {
 		tx, err := s.snap.BeginTx(ctx, &sql.TxOptions{

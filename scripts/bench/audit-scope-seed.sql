@@ -1,3 +1,5 @@
+\set ON_ERROR_STOP on
+
 -- Benchmark seed for the audit scope statements (#331, #353).
 -- 30,000 tickets, 524,000 audit rows, five staff members:
 --   bench-all@   sees every ticket (a group whose scope covers all 10 categories)
