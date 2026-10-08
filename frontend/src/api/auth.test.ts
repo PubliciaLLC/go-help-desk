@@ -46,12 +46,11 @@ describe('signup', () => {
   // blank display name rather than an error.
   it('renames displayName to display_name', async () => {
     const post = vi.spyOn(api, 'post').mockResolvedValue({ data: undefined })
-    await signup('someone@example.com', 'Someone Real', 'pw')
+    await signup('someone@example.com', 'Someone Real')
 
     expect(post).toHaveBeenCalledWith('/auth/signup', {
       email: 'someone@example.com',
       display_name: 'Someone Real',
-      password: 'pw',
     })
   })
 })
@@ -76,7 +75,7 @@ describe('responses that decide what the UI does next', () => {
       data: { user: { id: 'u1' }, mfa_needed: false, mfa_enrollment_needed: true },
     })
 
-    const res = await verifyEmail('token-123')
+    const res = await verifyEmail('token-123', 'a-long-passphrase')
     expect(res.mfa_enrollment_needed).toBe(true)
   })
 })

@@ -829,6 +829,9 @@ type Querier interface {
 	UpsertAttachmentReputation(ctx context.Context, arg UpsertAttachmentReputationParams) (AttachmentReputation, error)
 	// ── Values ────────────────────────────────────────────────────────────────────
 	UpsertCustomFieldValue(ctx context.Context, arg UpsertCustomFieldValueParams) error
+	// No password (#360): it is chosen at verification, so a second signup for
+	// the same address can change the name and re-issue the link, never the
+	// password the account will get.
 	UpsertPendingRegistration(ctx context.Context, arg UpsertPendingRegistrationParams) (PendingRegistration, error)
 	// The lifetime is a duration in seconds, not a timestamp, so that expires_at is
 	// computed by the database — from clock_timestamp(), not now().

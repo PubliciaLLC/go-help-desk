@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -44,8 +43,9 @@ var ErrAlreadyRegistered = fmt.Errorf("an account already exists for that addres
 // sent a link that cannot work.
 var ErrDisplayNameRequired = fmt.Errorf("display name is required")
 
-// ErrPasswordTooShort is the refusal for a signup password below
-// user.MinPasswordLength.
+// ErrPasswordTooShort is the refusal for a password chosen at verification
+// below user.MinPasswordLength. The link stays usable, so the person can try
+// again.
 var ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", user.MinPasswordLength)
 
 // ErrDomainNotAllowed is returned when the email domain is not permitted.
@@ -119,9 +119,14 @@ func PendingIDOf(ev notification.Event) (uuid.UUID, error) {
 	return id, nil
 }
 
-// Register validates the request, stores a pending registration, and sends the
-// verification email. allowedDomains and openReg come from admin settings.
-func (s *Service) Register(ctx context.Context, email, displayName, password string, allowedDomains []string, openReg bool) error {
+// Register validates the request, stores a pending registration, and queues
+// the verification email. allowedDomains and openReg come from admin settings.
+//
+// It takes no password (#360): that is chosen at Verify, by whoever can read
+// the inbox. When signup carried it, a second signup for the same address
+// replaced it, and the owner of the address, following the newest link,
+// created their account with someone else's password.
+func (s *Service) Register(ctx context.Context, email, displayName string, allowedDomains []string, openReg bool) error {
 	displayName = strings.TrimSpace(displayName)
 
 	// Validated before anything is stored. isEmailDomainAllowed does not
@@ -140,15 +145,6 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 		return ErrDomainNotAllowed
 	}
 
-	// The fifth path that sets a password, and the one that was missed when
-	// the minimum was made one rule. Nothing checked the length here, and
-	// Verify creates the account from the stored hash — which skips the check
-	// in user.Service.Create — so a signup with an EMPTY password produced a
-	// real account whose login accepted an empty password. Signup is off by
-	// default, which was the only thing standing in front of it.
-	if len(password) < user.MinPasswordLength {
-		return ErrPasswordTooShort
-	}
 	// A display name is required by user.Validate, which runs at Verify —
 	// long after the person has been told their registration was accepted and
 	// an email has been sent. Without this they follow the link and are told
@@ -159,8 +155,7 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 	}
 	// The same work for an address that already has an account and one that
 	// does not, all the way to the response (#348). The address is checked,
-	// the password hashed, the pending row written and one event queued in
-	// both cases; whether a verification email goes out is decided when it
+	// the pending row written and one event queued in both cases; whether a verification email goes out is decided when it
 	// would be sent (SendVerification), off the request. Before this a fresh
 	// address also dialled the mail server on the request and a taken one
 	// returned at once, so the timing said who had an account even though
@@ -172,20 +167,14 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 	if err != nil {
 		return fmt.Errorf("checking the address: %w", err)
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hashing password: %w", err)
-	}
-
 	now := time.Now()
 	pr := PendingRegistration{
-		ID:           uuid.New(),
-		Email:        email,
-		DisplayName:  displayName,
-		PasswordHash: string(hash),
-		Token:        uuid.New(),
-		ExpiresAt:    now.Add(tokenTTL),
-		CreatedAt:    now,
+		ID:          uuid.New(),
+		Email:       email,
+		DisplayName: displayName,
+		Token:       uuid.New(),
+		ExpiresAt:   now.Add(tokenTTL),
+		CreatedAt:   now,
 	}
 	stored, err := s.store.Upsert(ctx, pr)
 	if err != nil {
@@ -240,9 +229,11 @@ func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// Verify looks up a token, checks expiry, creates the user account, and deletes
-// the pending record. Returns the new User so the handler can write a session.
-func (s *Service) Verify(ctx context.Context, token uuid.UUID) (user.User, error) {
+// Verify looks up a token, checks expiry, creates the user account with the
+// password chosen now (#360), and deletes the pending record. Returns the new
+// User so the handler can write a session. A password below the minimum is
+// refused before anything is written, so the link still works.
+func (s *Service) Verify(ctx context.Context, token uuid.UUID, password string) (user.User, error) {
 	pr, err := s.store.GetByToken(ctx, token)
 	if err != nil {
 		return user.User{}, fmt.Errorf("token not found: %w", err)
@@ -250,12 +241,17 @@ func (s *Service) Verify(ctx context.Context, token uuid.UUID) (user.User, error
 	if time.Now().After(pr.ExpiresAt) {
 		return user.User{}, ErrTokenExpired
 	}
+	// user.Create applies the same minimum; checked here too so the refusal
+	// is one the handler can name, rather than a generic validation error.
+	if len(password) < user.MinPasswordLength {
+		return user.User{}, ErrPasswordTooShort
+	}
 
 	u, err := s.users.Create(ctx, user.CreateUserInput{
-		Email:        pr.Email,
-		DisplayName:  pr.DisplayName,
-		Role:         user.RoleUser,
-		PasswordHash: pr.PasswordHash, // already bcrypt-hashed at registration time
+		Email:       pr.Email,
+		DisplayName: pr.DisplayName,
+		Role:        user.RoleUser,
+		Password:    password,
 	})
 	if err != nil {
 		return user.User{}, fmt.Errorf("creating user: %w", err)
