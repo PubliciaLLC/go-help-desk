@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"testing"
 	"time"
@@ -56,12 +57,15 @@ func TestAudit_RedactsSensitiveValuesThroughBothReaders(t *testing.T) {
 	plantAuditEntry(t, h, "ticket", tid, map[string]any{
 		"password_hash": secret,
 		"mfa_secret":    secret,
-		"subject":       "this one is not sensitive and must survive",
+		// Since #362 a subject is free text and never shown (it can carry
+		// protected data); what must survive is an allow-listed field.
+		"subject":              "Student 4471 IEP, DOB 2009-03-14",
+		"closed_reopen_policy": "this-one-is-allowed-and-must-survive",
 	})
 	plantAuditEntryBefore(t, h, "ticket", tid, map[string]any{
 		"password_hash": secret,
 		"token":         secret,
-		"subject":       "before-side value that is not sensitive",
+		"subject":       "before-side subject, also never shown",
 	})
 
 	for _, route := range []string{
@@ -81,8 +85,10 @@ func TestAudit_RedactsSensitiveValuesThroughBothReaders(t *testing.T) {
 			require.NotContains(t, raw, secret, "a sensitive value reached the wire")
 			require.Contains(t, raw, "[redacted]",
 				"the field was dropped rather than redacted, which hides that it changed")
-			require.Contains(t, raw, "this one is not sensitive and must survive",
-				"redaction removed a field it should have left alone")
+			require.Contains(t, raw, "this-one-is-allowed-and-must-survive",
+				"redaction removed an allow-listed field it should have shown")
+			require.NotContains(t, raw, "Student 4471", "a ticket subject reached the audit view")
+			require.NotContains(t, raw, "before-side subject", "a ticket subject reached the audit view")
 		})
 	}
 }
@@ -639,4 +645,38 @@ func TestAdminAudit_HiddenAndMissingTicketsAreIndistinguishable(t *testing.T) {
 	hidden, missing := read("fixture_hidden"), read("fixture_missing")
 	require.Equal(t, missing, hidden, "a hidden ticket's entries answered differently from a missing ticket's")
 	require.Contains(t, hidden, `"total":0`)
+}
+
+// #362, Erik: the admin-wide audit view is for a signed-in session, or a
+// machine credential that carries audit:read. tickets:read used to reach it,
+// so an admin's integration key could read every entity's audit entries —
+// MFA resets, password resets — though nothing about the key said so.
+func TestAdminAudit_MachineCredentialsNeedAuditRead(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	cases := []struct {
+		name   string
+		scopes []string
+		want   int
+	}{
+		{"tickets:read is not enough", []string{"tickets:read"}, http.StatusForbidden},
+		{"tickets:write is not enough", []string{"tickets:read", "tickets:write"}, http.StatusForbidden},
+		{"audit:read is", []string{"audit:read"}, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			key := mintKey(t, h, tc.scopes)
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/audit", nil)
+			req.Header.Set("Authorization", "ApiKey "+key)
+			rr := httptest.NewRecorder()
+			h.srv.ServeHTTP(rr, req)
+			require.Equal(t, tc.want, rr.Code, rr.Body.String())
+		})
+	}
+
+	// A signed-in administrator needs no scope.
+	s := adminSession(t, h)
+	res, body := s.send(t, http.MethodGet, "/api/v1/admin/audit", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 }

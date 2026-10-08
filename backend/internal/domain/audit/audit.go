@@ -171,13 +171,32 @@ func isSensitive(k string) bool {
 
 const redactedPlaceholder = "[redacted]"
 
-// Redact returns copies of before/after with the value of every sensitive key
-// (see sensitiveFragments) replaced by a placeholder, at any depth: nested
-// maps and slices are walked, and a sensitive key hides its whole value
-// whatever shape it has. nil in, nil out — Entry.Before/After are nil for
-// create/delete actions respectively, and that distinction (no value existed)
-// is different from "a value existed and is hidden", so Redact preserves it
-// rather than allocating an empty map.
+// shownKeys is every Before/After key the audit view may show, normalised
+// (normaliseKey). Each is an id, a status, a flag or a count, written by
+// ticketMap and the ticket audit paths, UnassignForUser, user.ResetMFA and
+// cmd/server/resetfactors.go (whose os_user and host say who ran it, as
+// actor_name does for everyone else).
+//
+// An allow-list, not a deny-list, because of #362: protected or sensitive
+// data — PII, and data under FERPA, HIPAA, SOX or PCI-DSS — is never visible
+// in the audit view, to anyone. A deny-list can only hide what someone
+// thought to name; free text such as a ticket subject can hold any of it.
+// Adding a key here is a decision that its values can never carry such data.
+var shownKeys = map[string]bool{
+	"id": true, "statusid": true, "priority": true,
+	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
+	"forcedreopen": true, "closedreopenpolicy": true,
+	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
+	"osuser": true, "host": true, "source": true,
+}
+
+// Redact returns copies of before/after showing only allow-listed keys
+// (shownKeys) whose values are plain values; every other value is replaced
+// by a placeholder, a nested map or list included. The secret-name deny-list
+// (sensitiveFragments) still applies on top, so an allow-listed name that
+// also looks like a secret is hidden. nil in, nil out — Entry.Before/After
+// are nil for create/delete actions respectively, and that distinction (no
+// value existed) is different from "a value existed and is hidden".
 func Redact(before, after map[string]any) (map[string]any, map[string]any) {
 	return redactMap(before), redactMap(after)
 }
@@ -188,28 +207,19 @@ func redactMap(m map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		if isSensitive(k) {
+		if !shownKeys[normaliseKey(k)] || isSensitive(k) || isContainer(v) {
 			out[k] = redactedPlaceholder
 			continue
 		}
-		out[k] = redactValue(v)
+		out[k] = v
 	}
 	return out
 }
 
-// redactValue handles the two container shapes encoding/json produces; every
-// other value is a leaf.
-func redactValue(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		return redactMap(t)
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = redactValue(e)
-		}
-		return out
-	default:
-		return v
+func isContainer(v any) bool {
+	switch v.(type) {
+	case map[string]any, []any:
+		return true
 	}
+	return false
 }

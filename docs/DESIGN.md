@@ -395,7 +395,9 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 ### Admin-Wide Audit View
 
-`GET /api/v1/admin/audit` (#129's remaining half) answers the same question across every entity, not one ticket at a time. Staff and admin only, same resource gate as the ticket subtree; a reporting user has no route here.
+`GET /api/v1/admin/audit` (#129's remaining half) answers the same question across every entity, not one ticket at a time. Staff and admin only; a reporting user has no route here. A signed-in session needs no scope. An API key or OAuth client needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
+
+**Protected or sensitive data is never visible in the audit view, to anyone**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts, and replaces everything else with `[redacted]`. That includes the ticket subject, which is free text, and any field a writer adds later until it is allow-listed on purpose. The secret-name deny-list still applies on top.
 
 Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned.
 

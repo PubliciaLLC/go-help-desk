@@ -8,17 +8,20 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
 
-func TestRedact_ReplacesOnlyTheDenylistedKeys(t *testing.T) {
-	before := map[string]any{"status": "open", "password_hash": "$2a$...", "priority": "low"}
-	after := map[string]any{"status": "resolved", "api_key": "sk-live-...", "priority": "low"}
+// Secrets are hidden and the fields the view may show are shown. Uses the
+// keys real writers use (status_id, not "status": since #362 the view is an
+// allow-list, and a key nobody writes is not on it).
+func TestRedact_HidesSecretsAndShowsAllowListedFields(t *testing.T) {
+	before := map[string]any{"status_id": "open", "password_hash": "$2a$...", "priority": "low"}
+	after := map[string]any{"status_id": "resolved", "api_key": "sk-live-...", "priority": "low"}
 
 	gotBefore, gotAfter := audit.Redact(before, after)
 
-	require.Equal(t, "open", gotBefore["status"])
+	require.Equal(t, "open", gotBefore["status_id"])
 	require.Equal(t, "low", gotBefore["priority"])
 	require.Equal(t, "[redacted]", gotBefore["password_hash"])
 
-	require.Equal(t, "resolved", gotAfter["status"])
+	require.Equal(t, "resolved", gotAfter["status_id"])
 	require.Equal(t, "[redacted]", gotAfter["api_key"])
 }
 
@@ -68,41 +71,48 @@ func TestRedact_MatchesRegardlessOfCaseAndSeparators(t *testing.T) {
 	}
 }
 
-func TestRedact_LeavesOrdinaryFieldsAlone(t *testing.T) {
-	// Every key a real writer puts in Before/After today: ticketMap,
-	// UnassignForUser and cmd/server/resetfactors.go. Over-redacting these
-	// would blank the diff for no reason.
+// The keys real writers put in Before/After that are safe to show: ids,
+// statuses, flags and counts from ticketMap, UnassignForUser, ResetMFA and
+// cmd/server/resetfactors.go. They are shown as written.
+func TestRedact_ShowsTheAllowListedFields(t *testing.T) {
 	m := map[string]any{
-		"id": "1", "status_id": "2", "priority": "low", "subject": "x",
-		"assignee_user_id": "u", "os_user": "bob", "host": "h", "source": "cli",
+		"id": "1", "status_id": "2", "priority": "low",
+		"assignee_user_id": "u", "assignee_group_id": "g", "follow_up_of": "t",
+		"forced_reopen": true, "closed_reopen_policy": "staff_only",
+		"os_user": "bob", "host": "h", "source": "cli",
 		"passkeys_removed": 2, "totp_cleared": true, "sessions_revoked": true,
 	}
 	got, _ := audit.Redact(m, nil)
 	require.Equal(t, m, got)
 }
 
-func TestRedact_WalksNestedMapsAndSlices(t *testing.T) {
+// #362, Erik: protected or sensitive data — PII, FERPA, HIPAA, SOX, PCI-DSS —
+// is never visible in the audit view, to anyone. The ticket subject is free
+// text a requester typed and can hold any of those, so it is not shown. Nor
+// is any field nobody has decided is safe: the view is an allow-list, so a
+// writer that adds a field later shows "[redacted]" until it is added here on
+// purpose. This replaces the old expectation that the subject passed through
+// and that unknown fields (nested ones included) were shown.
+func TestRedact_FreeTextAndUndecidedFieldsAreNeverShown(t *testing.T) {
 	before := map[string]any{
-		"config": map[string]any{
-			"name":  "smtp",
-			"creds": map[string]any{"accessToken": "t0"},
-			"list":  []any{map[string]any{"client_secret": "s0", "ok": "fine"}, "plain"},
-		},
-		"token": map[string]any{"nested": "whole subtree hidden"},
+		"subject":      "Student 4471's IEP accommodations, DOB 2009-03-14",
+		"description":  "card 4111 1111 1111 1111",
+		"guest_email":  "parent@example.com",
+		"display_name": "Ada Lovelace",
+		"new_field":    "anything",
+		"config":       map[string]any{"name": "smtp", "ok": "fine"},
+		"status_id":    "2",
 	}
-
 	got, _ := audit.Redact(before, nil)
+	for _, k := range []string{"subject", "description", "guest_email", "display_name", "new_field", "config"} {
+		require.Equal(t, "[redacted]", got[k], "%q was shown", k)
+	}
+	require.Equal(t, "2", got["status_id"])
+}
 
-	cfg := got["config"].(map[string]any)
-	require.Equal(t, "smtp", cfg["name"])
-	require.Equal(t, map[string]any{"accessToken": "[redacted]"}, cfg["creds"])
-	item := cfg["list"].([]any)[0].(map[string]any)
-	require.Equal(t, "[redacted]", item["client_secret"])
-	require.Equal(t, "fine", item["ok"])
-	require.Equal(t, "plain", cfg["list"].([]any)[1])
-	require.Equal(t, "[redacted]", got["token"], "a sensitive key hides its whole value, whatever shape it has")
-
-	// The caller's nested structure is untouched.
-	orig := before["config"].(map[string]any)["creds"].(map[string]any)
-	require.Equal(t, "t0", orig["accessToken"])
+// An allow-listed name holding a nested value is still redacted: the allow
+// list vouches for a scalar, not for whatever a writer nests under it.
+func TestRedact_AnAllowListedKeyWithANestedValueIsRedacted(t *testing.T) {
+	got, _ := audit.Redact(map[string]any{"priority": map[string]any{"note": "free text"}}, nil)
+	require.Equal(t, "[redacted]", got["priority"])
 }
