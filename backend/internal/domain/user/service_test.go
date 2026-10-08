@@ -3,6 +3,7 @@ package user_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -728,4 +729,186 @@ func (f *fakeUserStore) ClearMFAFailures(_ context.Context, id uuid.UUID) error 
 
 func (f *fakeUserStore) GetMFALock(_ context.Context, id uuid.UUID) (int, *time.Time, error) {
 	return f.mfaFailures[id], f.mfaLocks[id], nil
+}
+
+// TestValidatePassword checks the password length rule that every path that
+// sets a password applies.
+func TestValidatePassword(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		wantErr error
+	}{
+		{name: "empty", input: "", wantErr: user.ErrPasswordTooShort},
+		{name: "one short of the minimum", input: "passwor", wantErr: user.ErrPasswordTooShort},
+		{name: "exactly the minimum", input: "password", wantErr: nil},
+		{name: "exactly the maximum", input: strings.Repeat("a", 72), wantErr: nil},
+		{name: "one over the maximum", input: strings.Repeat("a", 73), wantErr: user.ErrPasswordTooLong},
+		{name: "far over", input: strings.Repeat("a", 1000), wantErr: user.ErrPasswordTooLong},
+		{name: "36 two-byte characters are exactly 72 bytes", input: strings.Repeat("é", 36), wantErr: nil},
+		{name: "25 three-byte characters are 75 bytes", input: strings.Repeat("密", 25), wantErr: user.ErrPasswordTooLong},
+		{name: "18 four-byte characters are exactly 72 bytes", input: strings.Repeat("🔑", 18), wantErr: nil},
+		{name: "19 four-byte characters are 76 bytes", input: strings.Repeat("🔑", 19), wantErr: user.ErrPasswordTooLong},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := user.ValidatePassword(tc.input)
+			if tc.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tc.wantErr)
+			}
+		})
+	}
+
+	// Guards: the constant is 72, bcrypt accepts exactly 72 bytes and refuses 73
+	// (so the constant matches what bcrypt enforces).
+	require.Equal(t, 72, user.MaxPasswordLength)
+	_, err := bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", user.MaxPasswordLength)), bcrypt.MinCost)
+	require.NoError(t, err, "bcrypt accepts exactly MaxPasswordLength bytes")
+	_, err = bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", user.MaxPasswordLength+1)), bcrypt.MinCost)
+	require.ErrorIs(t, err, bcrypt.ErrPasswordTooLong,
+		"bcrypt refuses to hash anything longer than MaxPasswordLength")
+}
+
+// TestPassword_TheMaximumAppliesOnEveryDomainPath checks that Create,
+// SetPassword, and AdminSetPassword all enforce the maximum and refuse before
+// hashing or writing.
+func TestPassword_TheMaximumAppliesOnEveryDomainPath(t *testing.T) {
+	validPass := strings.Repeat("a", 72)
+	tooLongPass := strings.Repeat("密", 25) // 75 bytes
+	tooShortPass := "short"                // 5 bytes, below minimum 8
+
+	cases := []struct {
+		name   string
+		method func(svc *user.Service, password string) (email string, err error)
+	}{
+		{
+			name: "Create",
+			method: func(svc *user.Service, pwd string) (string, error) {
+				_, err := svc.Create(context.Background(), user.CreateUserInput{
+					Email:       "x@example.com",
+					DisplayName: "X",
+					Role:        user.RoleUser,
+					Password:    pwd,
+				})
+				return "", err
+			},
+		},
+		{
+			name: "SetPassword",
+			method: func(svc *user.Service, pwd string) (string, error) {
+				u, err := svc.Create(context.Background(), user.CreateUserInput{
+					Email:       "y@example.com",
+					DisplayName: "Y",
+					Role:        user.RoleUser,
+					Password:    "a-passphrase",
+				})
+				require.NoError(t, err, "seed account creation must succeed")
+				return u.Email, svc.SetPassword(context.Background(), u.ID, pwd)
+			},
+		},
+		{
+			name: "AdminSetPassword",
+			method: func(svc *user.Service, pwd string) (string, error) {
+				u, err := svc.Create(context.Background(), user.CreateUserInput{
+					Email:       "z@example.com",
+					DisplayName: "Z",
+					Role:        user.RoleUser,
+					Password:    "a-passphrase",
+				})
+				require.NoError(t, err, "seed account creation must succeed")
+				return u.Email, svc.AdminSetPassword(context.Background(), u.ID, pwd, nil)
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Subcase: 72-byte password succeeds
+			store := newFakeUserStore()
+			svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			_, err := tc.method(svc, validPass)
+			require.NoError(t, err, "a 72-byte password must be accepted")
+
+			// Subcase: too-long password (75 bytes) fails with the right error
+			store = newFakeUserStore()
+			svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			email, err := tc.method(svc, tooLongPass)
+			require.Error(t, err)
+			require.ErrorIs(t, err, user.ErrPasswordTooLong,
+				"a too-long password must be refused with ErrPasswordTooLong")
+			require.ErrorIs(t, err, user.ErrValidation,
+				"a validation error must wrap ErrValidation so the handler knows it is a 400")
+			require.NotErrorIs(t, err, bcrypt.ErrPasswordTooLong,
+				"the refusal must happen before bcrypt, not after")
+
+			// For SetPassword and AdminSetPassword, verify old password still works
+			if tc.name != "Create" {
+				_, verifyErr := svc.VerifyPassword(context.Background(), email, "a-passphrase")
+				require.NoError(t, verifyErr, "the old password must still work; the failed change did not write")
+			}
+
+			// Subcase: too-short password fails with the right error
+			store = newFakeUserStore()
+			svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			email, err = tc.method(svc, tooShortPass)
+			require.Error(t, err)
+			require.ErrorIs(t, err, user.ErrPasswordTooShort,
+				"a too-short password must be refused with ErrPasswordTooShort")
+			require.ErrorIs(t, err, user.ErrValidation,
+				"a validation error must wrap ErrValidation so the handler knows it is a 400")
+
+			// For SetPassword and AdminSetPassword, verify old password still works after short password failure too
+			if tc.name != "Create" {
+				_, verifyErr := svc.VerifyPassword(context.Background(), email, "a-passphrase")
+				require.NoError(t, verifyErr, "the old password must still work; the failed change did not write")
+			}
+		})
+	}
+
+	// Guard: the minimum message must stay unchanged (caught by string comparison)
+	store := newFakeUserStore()
+	svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+	_, err := svc.Create(context.Background(), user.CreateUserInput{
+		Email:       "msg@example.com",
+		DisplayName: "M",
+		Role:        user.RoleUser,
+		Password:    "short",
+	})
+	require.EqualError(t, err, "invalid input: password must be at least 8 characters")
+}
+
+// TestVerifyPassword_DoesNotApplyTheMaximum checks that login does not refuse
+// long passwords, so a hash made by truncating bcrypt still accepts its owner's
+// full password.
+func TestVerifyPassword_DoesNotApplyTheMaximum(t *testing.T) {
+	store := newFakeUserStore()
+	svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+
+	// Seed a user with a hash of 72 bytes (what a truncating bcrypt would make).
+	h, _ := bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", 72)), bcrypt.MinCost)
+	u := user.User{
+		ID:           uuid.New(),
+		Email:        "legacy@example.com",
+		DisplayName:  "Legacy",
+		Role:         user.RoleUser,
+		PasswordHash: string(h),
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+	store.seed(u)
+
+	// A 100-byte password whose first 72 bytes match must succeed (login truncates)
+	_, err := svc.VerifyPassword(context.Background(), "legacy@example.com", strings.Repeat("a", 100))
+	require.NoError(t, err, "login must accept a long password if its first 72 bytes match the hash")
+
+	// A 100-byte wrong password must fail like any wrong password
+	_, err = svc.VerifyPassword(context.Background(), "legacy@example.com", strings.Repeat("b", 100))
+	require.Error(t, err)
+	require.NotErrorIs(t, err, user.ErrPasswordTooLong,
+		"a wrong long password must not be refused with ErrPasswordTooLong")
+	require.NotErrorIs(t, err, user.ErrValidation,
+		"a wrong long password is not a validation error; it is an authentication failure")
 }

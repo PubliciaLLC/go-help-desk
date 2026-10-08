@@ -165,6 +165,15 @@ describe('the verification page', () => {
     expect(screen.getByLabelText('Password')).toBeTruthy()
   })
 
+  it('keeps the form after a too-long password, so the link can still be used', async () => {
+    vi.mocked(verifyEmail).mockRejectedValue(apiError('password_too_long', 'password must be at most 72 bytes; accented and non-Latin characters count as 2 to 4 bytes each'))
+    const user = userEvent.setup()
+    renderWithQuery(<VerifyEmailPage />)
+    await choose(user, 'x'.repeat(80))
+    expect((await screen.findByRole('alert')).textContent).toMatch(/at most 72 bytes/i)
+    expect(screen.getByLabelText('Password')).toBeTruthy()
+  })
+
   // #374: the name is asked for here, empty, never pre-filled: a pre-filled
   // name could only have come from a signup, which anyone can send.
   it('asks for the name, empty', async () => {

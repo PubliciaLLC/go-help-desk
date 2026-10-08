@@ -3,6 +3,7 @@ package registration
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -350,17 +351,20 @@ func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
 // a single rule — an EMPTY password once produced a real account. Since #360
 // the password is chosen here rather than at signup, so the rule moves with
 // it.
-func TestVerify_HoldsThePasswordMinimum(t *testing.T) {
+func TestVerify_HoldsThePasswordLengthRule(t *testing.T) {
 	cases := []struct {
 		name     string
 		password string
-		wantErr  bool
+		wantErr  error
 	}{
-		{name: "empty", password: "", wantErr: true},
-		{name: "one character", password: "a", wantErr: true},
-		{name: "one short of the minimum", password: "passwor", wantErr: true},
-		{name: "exactly the minimum", password: "password"},
-		{name: "comfortably over", password: "a-real-passphrase"},
+		{name: "empty", password: "", wantErr: ErrPasswordTooShort},
+		{name: "one character", password: "a", wantErr: ErrPasswordTooShort},
+		{name: "one short of the minimum", password: "passwor", wantErr: ErrPasswordTooShort},
+		{name: "exactly the minimum", password: "password", wantErr: nil},
+		{name: "comfortably over", password: "a-real-passphrase", wantErr: nil},
+		{name: "exactly the maximum", password: strings.Repeat("a", 72), wantErr: nil},
+		{name: "one over the maximum", password: strings.Repeat("a", 73), wantErr: ErrPasswordTooLong},
+		{name: "25 characters, 75 bytes", password: strings.Repeat("密", 25), wantErr: ErrPasswordTooLong},
 	}
 
 	for _, tc := range cases {
@@ -372,23 +376,22 @@ func TestVerify_HoldsThePasswordMinimum(t *testing.T) {
 			svc := NewService(store, users, &fakeMailer{}, &recordingQueue{}, "http://localhost")
 			_, err := svc.Verify(context.Background(), uuid.New(), "Alice", tc.password)
 
-			if tc.wantErr {
-				if !errors.Is(err, ErrPasswordTooShort) {
-					t.Fatalf("a %d-character password was accepted (err=%v)", len(tc.password), err)
-				}
-				if store.deleted || users.created.ID != uuid.Nil {
-					t.Fatal("a refused password used up the link")
-				}
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr,
+					"a %d-byte password was accepted (err=%v)", len(tc.password), err)
+				require.False(t, store.deleted || users.created.ID != uuid.Nil,
+					"a refused password used up the link")
 				return
 			}
-			if err != nil {
-				t.Fatalf("an acceptable password was refused: %v", err)
-			}
+			require.NoError(t, err, "an acceptable password was refused: %v", err)
 		})
 	}
 
 	if user.MinPasswordLength != 8 {
 		t.Fatalf("the cases above are written against a minimum of 8, not %d", user.MinPasswordLength)
+	}
+	if user.MaxPasswordLength != 72 {
+		t.Fatalf("the cases above are written against a maximum of 72, not %d", user.MaxPasswordLength)
 	}
 }
 

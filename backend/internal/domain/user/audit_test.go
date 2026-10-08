@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -204,16 +205,28 @@ func TestAdminSetPassword_RecordsWhoDidIt(t *testing.T) {
 }
 
 func TestAdminSetPassword_RefusalWritesNoAuditEntry(t *testing.T) {
-	store := newFakeUserStore()
-	au := &fakeAuditStore{}
-	target := seedActiveUser(store)
-	actorID := uuid.New()
+	cases := []struct {
+		name     string
+		password string
+	}{
+		{name: "too short", password: "short"},
+		{name: "too long", password: strings.Repeat("a", 73)},
+	}
 
-	svc := user.NewService(store, user.WithAuditStore(au))
-	err := svc.AdminSetPassword(context.Background(), target.ID, "short", &actorID)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeUserStore()
+			au := &fakeAuditStore{}
+			target := seedActiveUser(store)
+			actorID := uuid.New()
 
-	require.Error(t, err, "below MinPasswordLength must still be refused")
-	require.Empty(t, au.entries, "a refused change is not a change; nothing happened to record")
+			svc := user.NewService(store, user.WithAuditStore(au))
+			err := svc.AdminSetPassword(context.Background(), target.ID, tc.password, &actorID)
+
+			require.Error(t, err, "an invalid password must still be refused")
+			require.Empty(t, au.entries, "a refused change is not a change; nothing happened to record")
+		})
+	}
 }
 
 // Same contract as TestResetMFA_StoreFailureWritesNoAuditEntry, for the

@@ -83,7 +83,7 @@ export function VerifyEmailPage() {
       const code = extractErrorCode(err)
       if (code === 'token_expired' || code === 'token_invalid') {
         refuseLink(code)
-      } else if (code === 'password_too_short' || code === 'display_name_required') {
+      } else if (code === 'password_too_short' || code === 'password_too_long' || code === 'display_name_required') {
         setError(extractError(err))
       } else {
         // Not a verdict on the link: a network error or a server fault (#373).
