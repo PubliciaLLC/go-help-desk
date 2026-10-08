@@ -33,9 +33,10 @@ services:
       POSTGRES_INITDB_ARGS: "--no-sync"
 
     # 5433, not 5432: the dev stack may already hold 5432, and a test run must
-    # never silently connect to the development database.
+    # never silently connect to the development database. scripts/test-db.sh
+    # sets GHD_TEST_PORT per instance (GHD_TEST_INSTANCE) so runs can coexist.
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${GHD_TEST_PORT:-5433}:5432"
 
     # No bind mount and no named volume — the data directory lives in RAM. It
     # is faster than the SSD and leaves nothing behind on the machine.

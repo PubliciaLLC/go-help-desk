@@ -301,6 +301,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Events        []string `json:"events"`
 		Secret        string   `json:"secret"`
 		PayloadFormat string   `json:"payload_format"`
+		Enabled       *bool    `json:"enabled"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -327,12 +328,18 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if payloadFormat == "" {
 		payloadFormat = string(notify.FormatRaw)
 	}
+	// Omitted means enabled, which is what create always did. An explicit
+	// false lets an operator save a hook before its receiver is ready.
+	enabled := true
+	if body.Enabled != nil {
+		enabled = *body.Enabled
+	}
 	wh := authstore.WebhookConfig{
 		ID:            uuid.New(),
 		URL:           body.URL,
 		Events:        body.Events,
 		Secret:        body.Secret,
-		Enabled:       true,
+		Enabled:       enabled,
 		CreatedAt:     time.Now(),
 		PayloadFormat: payloadFormat,
 	}

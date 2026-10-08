@@ -61,7 +61,9 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
               {e.actor_name && (
                 <>
                   {' by '}
-                  <span className="font-medium">{e.actor_name}</span>
+                  {e.actor_masked
+                    ? <span className="italic" title="Hidden by the Privacy setting">Requester (name hidden)</span>
+                    : <span className="font-medium">{e.actor_name}</span>}
                 </>
               )}
               <span className="block text-gray-400">

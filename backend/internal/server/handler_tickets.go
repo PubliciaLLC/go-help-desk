@@ -984,13 +984,14 @@ func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request)
 // allows it for. Before/After are omitted (not merely null) for anyone who
 // does not clear that gate — see the role switch in handleListTicketAudit.
 type ticketAuditEntryView struct {
-	ID        uuid.UUID      `json:"id"`
-	Action    string         `json:"action"`
-	ActorID   *uuid.UUID     `json:"actor_id"`
-	ActorName string         `json:"actor_name,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	Before    map[string]any `json:"before,omitempty"`
-	After     map[string]any `json:"after,omitempty"`
+	ID          uuid.UUID      `json:"id"`
+	Action      string         `json:"action"`
+	ActorID     *uuid.UUID     `json:"actor_id"`
+	ActorName   string         `json:"actor_name,omitempty"`
+	ActorMasked bool           `json:"actor_masked,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	Before      map[string]any `json:"before,omitempty"`
+	After       map[string]any `json:"after,omitempty"`
 }
 
 // GET /api/v1/tickets/{id}/audit
@@ -1038,7 +1039,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	// account was later deleted) is cached too, so it costs one failed
 	// GetByID rather than one per entry.
 	maskRequesters := s.masksRequestersIn(r.Context(), admin.MaskRequesterNamesTicketLog)
-	names := make(map[uuid.UUID]string)
+	names := make(map[uuid.UUID]auditActor)
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
 		if showDiff {
@@ -1050,12 +1051,12 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if e.ActorID != nil {
-			name, cached := names[*e.ActorID]
+			a, cached := names[*e.ActorID]
 			if !cached {
 				u, err := s.users.GetByID(r.Context(), *e.ActorID)
 				switch {
 				case err == nil:
-					name = auditActorName(u, maskRequesters)
+					a = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
 					// Account since deleted; actor_id stays (it is a fact
 					// about what happened), only the name is left blank —
@@ -1063,9 +1064,10 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 				default:
 					slog.ErrorContext(r.Context(), "resolving audit actor name failed", "actor_id", *e.ActorID, "error", err)
 				}
-				names[*e.ActorID] = name
+				names[*e.ActorID] = a
 			}
-			v.ActorName = name
+			v.ActorName = a.name
+			v.ActorMasked = a.masked
 		}
 		views[i] = v
 	}

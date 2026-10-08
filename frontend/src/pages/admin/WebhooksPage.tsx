@@ -261,6 +261,7 @@ function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }
 export function WebhooksPage() {
   const qc = useQueryClient()
   const [form, setForm] = useState<FormState>(emptyForm)
+  const [createEnabled, setCreateEnabled] = useState(true)
   const [createError, setCreateError] = useState('')
   const [rowError, setRowError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -274,7 +275,7 @@ export function WebhooksPage() {
   const refresh = () => qc.invalidateQueries({ queryKey: ['admin', 'webhooks'] })
 
   const createMutation = useMutation({
-    mutationFn: () => createWebhook(toInput(form)),
+    mutationFn: () => createWebhook({ ...toInput(form), ...(createEnabled ? {} : { enabled: false }) }),
     onSuccess: () => {
       // Everything but the secret stays so a second, similar hook is quick to
       // add; the secret is not left sitting in a field after it has been sent.
@@ -341,6 +342,10 @@ export function WebhooksPage() {
                 }}
                 secretHint="Optional. Used to sign deliveries; it cannot be read back afterwards."
               />
+              <label className="flex min-h-[24px] items-center gap-2 text-sm text-gray-900">
+                <input type="checkbox" checked={createEnabled} onChange={(e) => setCreateEnabled(e.target.checked)} />
+                <span>Enabled</span>
+              </label>
               {createError && <p role="alert" className="text-sm text-red-600">{createError}</p>}
               <Button type="submit" size="sm" disabled={!canSubmit(form) || createMutation.isPending}>
                 <PlusIcon className="mr-2 h-4 w-4" />
