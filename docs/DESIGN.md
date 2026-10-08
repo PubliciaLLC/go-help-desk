@@ -947,6 +947,16 @@ arrival to learn which the probe was. It needs their own mailbox, crosses a
 queue shared with every other notification, and is far noisier than timing the
 request was. Recorded rather than claimed closed.
 
+**Signup verification leaves the same signal** (#361). Verification rows share
+that worker and its order, so one for an address with no account holds it for
+a mail-server round trip and one for a taken address for the two queries that
+decide not to mail. Someone who signs up for an address and then at once for
+their own could time their own verification mail's arrival to learn whether
+the first address has an account. Accepted for the same reasons as above: it
+needs their own mailbox, crosses a queue shared with every other notification,
+and is tens to hundreds of milliseconds against seconds of mail-delivery
+jitter. Recorded rather than claimed closed.
+
 The rotation runs in one transaction with the ticket row locked, so concurrent
 sends for one ticket (two replicas, or a reclaimed row beside a fresh one)
 leave exactly one working link. The per-ticket resend budget is charged on a

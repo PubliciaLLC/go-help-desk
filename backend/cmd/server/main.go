@@ -266,7 +266,7 @@ func run() error {
 	// dispatcher before the server can be built, hence the late assignment.
 	outboxStore := outboxstore.New(q)
 	var outboxWorker *notify.Worker
-	dispatcher := notify.NewOutboxDispatcher(outboxStore, []string{"email", "webhook", "verification"}, func() {
+	dispatcher := notify.NewOutboxDispatcher(outboxStore, outboxChannels(), func() {
 		if outboxWorker != nil {
 			outboxWorker.Wake()
 		}
@@ -276,8 +276,7 @@ func run() error {
 	// Verification email goes through the outbox too (#348): signup does the
 	// same work for a new address and a taken one, and sending is decided off
 	// the request.
-	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, cfg.BaseURL,
-		registration.WithQueue(dispatcher))
+	registrationSvc := registration.NewService(regStore, userSvc, emailDisp, dispatcher, cfg.BaseURL)
 
 	// ── Plugin registry ───────────────────────────────────────────────────────
 	pluginRegistry := plugin.NewRegistry()
@@ -403,11 +402,15 @@ func run() error {
 	// The outbox worker. Only the email channel carries guest links, so only
 	// it gets the send-time step that creates them. Rows still queued at
 	// shutdown stay queued and are sent after the next start.
-	outboxWorker = notify.NewWorker(outboxStore, map[string]notification.Dispatcher{
+	outboxSenders := map[string]notification.Dispatcher{
 		"email":        notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink),
 		"webhook":      webhookDisp,
 		"verification": notify.NewVerificationDispatcher(registrationSvc.SendVerification),
-	}, slog.Default())
+	}
+	if err := checkOutboxWiring(outboxChannels(), outboxSenders); err != nil {
+		return fmt.Errorf("wiring the notification outbox: %w", err)
+	}
+	outboxWorker = notify.NewWorker(outboxStore, outboxSenders, slog.Default())
 	go outboxWorker.Run(sweepCtx)
 	go func() {
 		t := time.NewTicker(time.Hour)
