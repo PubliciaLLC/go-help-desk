@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
@@ -207,4 +208,54 @@ func TestAuditStore_Search_TotalCapAppliesAfterFiltersAndScope(t *testing.T) {
 		require.Zero(t, n)
 		require.False(t, capped)
 	})
+}
+
+// The bound is the statement's own LIMIT, not something the store trims
+// afterwards: a count that read every match and then clamped the number would
+// return the same answers and bound nothing. So the query is held to its
+// argument directly, and the store is held to passing TotalCap+1.
+func TestAuditStore_CountIsBoundedByTheStatement(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	_, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	newest := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	plantMany(t, tx, "ticket", uuid.New(), "cap_stmt", 10, newest)
+	action := "cap_stmt"
+
+	t.Run("the statement stops at its cap argument", func(t *testing.T) {
+		q := dbgen.New(tx)
+		for _, tc := range []struct {
+			cap  int32
+			want int64
+		}{{3, 3}, {10, 10}, {11, 10}, {1000, 10}} {
+			got, err := q.CountAuditLog(ctx, dbgen.CountAuditLogParams{
+				Action: sql.NullString{String: action, Valid: true}, CountCap: tc.cap,
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got, "cap %d", tc.cap)
+		}
+	})
+
+	t.Run("the store asks for one more than the cap", func(t *testing.T) {
+		rec := &recordingDB{DBTX: tx}
+		_, err := auditstore.New(dbgen.New(rec)).Search(ctx, audit.Filter{Action: action}, 5, 0)
+		require.NoError(t, err)
+		require.Len(t, rec.countArgs, 1, "Search must count exactly once")
+		require.Equal(t, int32(audit.TotalCap+1), rec.countArgs[0][len(rec.countArgs[0])-1])
+	})
+}
+
+// recordingDB remembers the arguments of every single-row query, which is how
+// dbgen runs a :one statement such as CountAuditLog.
+type recordingDB struct {
+	dbgen.DBTX
+	countArgs [][]any
+}
+
+func (r *recordingDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	r.countArgs = append(r.countArgs, args)
+	return r.DBTX.QueryRowContext(ctx, query, args...)
 }
