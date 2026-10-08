@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react'
-import type { WebhookConfig, WebhookPayloadFormat } from '@/api/types'
+import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery } from '@/api/types'
 
 // What the server accepts, in the order it lists them (notify.WebhookEvents).
 // "*" is sent for "all events"; the server refuses an empty list.
@@ -37,6 +37,29 @@ const FORMATS: { value: WebhookPayloadFormat; label: string }[] = [
 ]
 
 const formatLabel = (f: string) => FORMATS.find((x) => x.value === f)?.label ?? f
+
+const FAILURE_LABEL: Record<string, string> = {
+  timeout: 'timed out', dns: 'host not found', tls: 'TLS error',
+  blocked_address: 'blocked address', connection: 'connection failed', other: 'error',
+}
+
+function LastDelivery({ d }: { d: WebhookDelivery | null | undefined }) {
+  if (d == null) return <span className="text-xs text-gray-400">No deliveries yet</span>
+  const ok = d.error === ''
+  const what = ok || d.error === 'http_status' ? String(d.status) : (FAILURE_LABEL[d.error] ?? 'error')
+  return (
+    <div className="space-y-0.5">
+      <span className={ok
+        ? 'rounded bg-green-50 px-1.5 py-0.5 text-xs text-green-700'
+        : 'rounded bg-red-50 px-1.5 py-0.5 text-xs text-red-700'}>
+        {ok ? 'Delivered' : 'Failing'} · {what}
+      </span>
+      <time dateTime={d.at} className="block text-xs text-gray-500">
+        {new Date(d.at).toLocaleString()}
+      </time>
+    </div>
+  )
+}
 
 // ── Form state ────────────────────────────────────────────────────────────────
 
@@ -201,7 +224,7 @@ function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }
 
   return (
     <tr>
-      <td colSpan={5} className="bg-gray-50 px-4 py-4">
+      <td colSpan={6} className="bg-gray-50 px-4 py-4">
         <form
           aria-label="Edit webhook"
           className="space-y-3"
@@ -294,7 +317,7 @@ export function WebhooksPage() {
             Send ticket events to another system as an HTTP POST. Targets must be public
             addresses. When a secret is set, each delivery is signed with it in the{' '}
             <code className="font-mono text-xs">X-GHD-Signature</code> header. A secret is never
-            shown again once saved.
+            shown again once saved. The list shows each hook&apos;s most recent delivery. Failed deliveries are not retried.
           </p>
         </div>
 
@@ -345,6 +368,7 @@ export function WebhooksPage() {
                   <th className="px-4 py-3 text-left">Format</th>
                   <th className="px-4 py-3 text-left">Events</th>
                   <th className="px-4 py-3 text-left">Status</th>
+                  <th className="px-4 py-3 text-left">Last delivery</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
@@ -385,6 +409,7 @@ export function WebhooksPage() {
                           {h.enabled ? 'Enabled' : 'Disabled'}
                         </span>
                       </td>
+                      <td className="px-4 py-3"><LastDelivery d={h.last_delivery} /></td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">
                           <Button
@@ -415,7 +440,7 @@ export function WebhooksPage() {
                 )}
                 {hooks.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
                       No webhooks yet.
                     </td>
                   </tr>

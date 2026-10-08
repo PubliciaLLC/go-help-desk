@@ -331,11 +331,14 @@ type WebauthnCredential struct {
 }
 
 type WebhookConfig struct {
-	ID            uuid.UUID `json:"id"`
-	Url           string    `json:"url"`
-	Events        []string  `json:"events"`
-	Secret        string    `json:"secret"`
-	Enabled       bool      `json:"enabled"`
-	CreatedAt     time.Time `json:"created_at"`
-	PayloadFormat string    `json:"payload_format"`
+	ID                 uuid.UUID    `json:"id"`
+	Url                string       `json:"url"`
+	Events             []string     `json:"events"`
+	Secret             string       `json:"secret"`
+	Enabled            bool         `json:"enabled"`
+	CreatedAt          time.Time    `json:"created_at"`
+	PayloadFormat      string       `json:"payload_format"`
+	LastDeliveryAt     sql.NullTime `json:"last_delivery_at"`
+	LastDeliveryStatus int32        `json:"last_delivery_status"`
+	LastDeliveryError  string       `json:"last_delivery_error"`
 }

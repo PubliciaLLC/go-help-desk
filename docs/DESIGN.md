@@ -2124,8 +2124,13 @@ on the existing webhook feature instead of as plugins.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
   events, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
-  leaving the field empty on edit keeps the stored one. There is no delivery log
-  yet, so a failing hook is visible only in the server log.
+  leaving the field empty on edit keeps the stored one. The list shows each
+  hook's most recent delivery: when it started, the HTTP status, and on failure
+  a class (`http_status`, `timeout`, `dns`, `tls`, `blocked_address`,
+  `connection`, `other`). No error text is stored, because a URL can carry a
+  token and a response body can carry anything; the details are in the server
+  log. The latest-started attempt wins, and changing a hook's URL clears its
+  result. There is no delivery history.
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
@@ -2147,8 +2152,10 @@ on the existing webhook feature instead of as plugins.
   rejection usually names the recipient, and the SMTP status code is what an
   operator needs. Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
-  Webhooks are not retried on HTTP failure: their dispatcher already posts in
-  the background and reports nothing back, unchanged by this.
+  Webhooks are not retried on any failure. The webhook row covers every
+  subscribed hook and is settled as soon as each delivery has started. Each
+  delivery runs in the background and records its result on the hook (above),
+  not on the outbox row.
 - **Signup verification email goes through the outbox too**
   ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
   `verification` channel. Signup answers the same 202 whether or not the
