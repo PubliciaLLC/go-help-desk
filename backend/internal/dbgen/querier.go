@@ -362,6 +362,10 @@ type Querier interface {
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
+	// The send-time read for a queued verification email (#348): the row is read
+	// when the mail goes out, so the token and address are the current ones and
+	// the token is never copied into the outbox.
+	GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error)
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)

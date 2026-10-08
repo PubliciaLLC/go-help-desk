@@ -102,6 +102,8 @@ func carries(channel string, ev notification.Event) bool {
 		// An account holder's status change has nobody to mail. A guest-link
 		// event may have no recipient yet: the send-time step fills it in.
 		return ev.Recipient != "" || ev.GuestLink
+	case "verification":
+		return ev.Type == notification.EventRegistrationVerify
 	}
 	return true
 }
@@ -375,4 +377,30 @@ func (d *GuestLinkDispatcher) Dispatch(ctx context.Context, ev notification.Even
 		return nil
 	}
 	return d.next.Dispatch(ctx, sent)
+}
+
+// VerificationDispatcher is the outbox channel for signup verification email
+// (#348). The event names a pending registration and nothing else; send reads
+// the row, decides whether anyone is to be mailed, and mails the address and
+// token stored on it.
+type VerificationDispatcher struct {
+	send func(context.Context, uuid.UUID) error
+}
+
+// NewVerificationDispatcher sends through send, normally
+// registration.Service.SendVerification.
+func NewVerificationDispatcher(send func(context.Context, uuid.UUID) error) *VerificationDispatcher {
+	return &VerificationDispatcher{send: send}
+}
+
+func (d *VerificationDispatcher) Dispatch(ctx context.Context, ev notification.Event) error {
+	if ev.Type != notification.EventRegistrationVerify {
+		return nil
+	}
+	raw, _ := ev.Payload["pending_id"].(string)
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("verification event without a pending registration id: %w", err)
+	}
+	return d.send(ctx, id)
 }

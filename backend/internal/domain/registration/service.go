@@ -2,6 +2,7 @@ package registration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,11 +10,16 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // ErrTokenExpired is returned when the verification token has passed its TTL.
 var ErrTokenExpired = fmt.Errorf("verification token has expired")
+
+// ErrNotFound is a pending registration that no longer exists: verified,
+// replaced by a later signup for the same address, or swept after expiry.
+var ErrNotFound = fmt.Errorf("pending registration not found")
 
 // ErrInvalidEmail is returned when the address is not a single bare email
 // address. Separate from ErrDomainNotAllowed so the caller can say which of the
@@ -62,15 +68,55 @@ type userCreator interface {
 
 // Service handles the sign-up and email-verification workflow.
 type Service struct {
-	store   Store
-	users   userCreator
-	mailer  Mailer
+	store  Store
+	users  userCreator
+	mailer Mailer
+	// queue carries the verification email off the request (#348). Without
+	// WithQueue it is the service itself, sending at once — the same
+	// SendVerification path, so a test with no outbox still exercises it.
+	queue   notification.Dispatcher
 	baseURL string
 }
 
 // NewService returns a Service.
-func NewService(store Store, users userCreator, mailer Mailer, baseURL string) *Service {
-	return &Service{store: store, users: users, mailer: mailer, baseURL: baseURL}
+func NewService(store Store, users userCreator, mailer Mailer, baseURL string, opts ...Option) *Service {
+	s := &Service{store: store, users: users, mailer: mailer, baseURL: baseURL}
+	s.queue = sendNow{s}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+// Option configures a Service.
+type Option func(*Service)
+
+// WithQueue sends verification emails through d — the notification outbox in
+// production — rather than on the request.
+func WithQueue(d notification.Dispatcher) Option {
+	return func(s *Service) { s.queue = d }
+}
+
+// sendNow is the queue a Service has without WithQueue: it sends at once.
+type sendNow struct{ s *Service }
+
+func (n sendNow) Dispatch(ctx context.Context, ev notification.Event) error {
+	id, err := PendingIDOf(ev)
+	if err != nil {
+		return err
+	}
+	return n.s.SendVerification(ctx, id)
+}
+
+// PendingIDOf reads the pending registration an EventRegistrationVerify
+// names. Its payload holds only that id: never the token or the address.
+func PendingIDOf(ev notification.Event) (uuid.UUID, error) {
+	raw, _ := ev.Payload["pending_id"].(string)
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("verification event without a pending registration id: %w", err)
+	}
+	return id, nil
 }
 
 // Register validates the request, stores a pending registration, and sends the
@@ -111,31 +157,24 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 	if displayName == "" {
 		return ErrDisplayNameRequired
 	}
-	// An address that already has an account is refused HERE and not
-	// disclosed to the requester — the 202 is deliberately the same either
-	// way, so signing up is not a way to find out who has an account. What
-	// changes is that the verification email is not sent, so nobody follows a
-	// link and is told their token is invalid or already used, which it is
-	// not. Same shape as the display-name case above: fail where the failure
-	// is true rather than where it is confusing.
+	// The same work for an address that already has an account and one that
+	// does not, all the way to the response (#348). The address is checked,
+	// the password hashed, the pending row written and one event queued in
+	// both cases; whether a verification email goes out is decided when it
+	// would be sent (SendVerification), off the request. Before this a fresh
+	// address also dialled the mail server on the request and a taken one
+	// returned at once, so the timing said who had an account even though
+	// the 202 did not.
+	//
+	// A taken address gets a pending row that is never mailed, so its token
+	// is never seen and it expires unused. Its account is untouched.
 	taken, err := s.users.EmailIsTaken(ctx, email)
 	if err != nil {
 		return fmt.Errorf("checking the address: %w", err)
 	}
-
-	// Hashed before the taken check is acted on, deliberately.
-	//
-	// The endpoint answers the same 202 either way so that signing up is not
-	// a way to find out who has an account here — and the first version of
-	// this returned before the hash, which made the two paths 3 ms and 70 ms.
-	// Measured, with no overlap across a dozen samples. An identical body
-	// that takes a twentieth of the time is not identical.
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
-	}
-	if taken {
-		return ErrAlreadyRegistered
 	}
 
 	now := time.Now()
@@ -148,17 +187,54 @@ func (s *Service) Register(ctx context.Context, email, displayName, password str
 		ExpiresAt:    now.Add(tokenTTL),
 		CreatedAt:    now,
 	}
-
 	stored, err := s.store.Upsert(ctx, pr)
 	if err != nil {
 		return fmt.Errorf("storing pending registration: %w", err)
 	}
+	if err := s.queue.Dispatch(ctx, notification.Event{
+		Type:       notification.EventRegistrationVerify,
+		OccurredAt: now,
+		Payload:    map[string]any{"pending_id": stored.ID.String()},
+	}); err != nil {
+		return fmt.Errorf("queueing verification email: %w", err)
+	}
+	if taken {
+		// Returned for the caller's logs; the handler answers 202 either way.
+		return ErrAlreadyRegistered
+	}
+	return nil
+}
 
-	// stored.Email, not email: what goes into the message is the address that
-	// is actually on the row, read back from the database, not the string the
-	// request supplied. Same reason stored.Token is used rather than pr.Token.
-	if err := s.mailer.SendVerificationEmail(stored.Email, stored.Token.String(), s.baseURL); err != nil {
-		// Non-fatal: log-worthy but don't expose SMTP failures to callers.
+// SendVerification mails the verification link for a pending registration,
+// at send time (#348). It re-reads the row, so the address and token are the
+// ones stored now, and sends nothing for a row that is gone or expired or an
+// address that has an account — including one created since the signup.
+//
+// An address that already has an account is refused here and not disclosed
+// to the requester: no email goes out, so nobody follows a link and is told
+// their token is invalid or already used. Deleted accounts count, as they do
+// for the unique constraint.
+func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
+	pr, err := s.store.GetByID(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if time.Now().After(pr.ExpiresAt) {
+		return nil
+	}
+	taken, err := s.users.EmailIsTaken(ctx, pr.Email)
+	if err != nil {
+		return fmt.Errorf("checking the address: %w", err)
+	}
+	if taken {
+		return nil
+	}
+	// pr.Email, not what the request typed: the address on the row, read back
+	// from the database. Same for the token.
+	if err := s.mailer.SendVerificationEmail(pr.Email, pr.Token.String(), s.baseURL); err != nil {
 		return fmt.Errorf("sending verification email: %w", err)
 	}
 	return nil

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -41,6 +42,20 @@ func (f *fakeStore) GetByToken(_ context.Context, _ uuid.UUID) (PendingRegistrat
 		return PendingRegistration{}, f.getErr
 	}
 	return f.record, nil
+}
+
+func (f *fakeStore) GetByID(_ context.Context, id uuid.UUID) (PendingRegistration, error) {
+	if f.getErr != nil {
+		return PendingRegistration{}, f.getErr
+	}
+	if f.record.ID != id {
+		return PendingRegistration{}, ErrNotFound
+	}
+	r := f.record
+	if f.rewriteEmail != "" {
+		r.Email = f.rewriteEmail
+	}
+	return r, nil
 }
 
 func (f *fakeStore) Delete(_ context.Context, _ uuid.UUID) error {
@@ -426,4 +441,94 @@ func TestRegister_TheTwoAnswersCostTheSame(t *testing.T) {
 		t.Errorf("a fresh address took %v and a taken one %v (%.1fx) — the timing gives the answer away",
 			freshTotal/samples, takenTotal/samples, ratio)
 	}
+}
+
+// recordingQueue records what Register queues, without sending.
+type recordingQueue struct{ events []notification.Event }
+
+func (q *recordingQueue) Dispatch(_ context.Context, ev notification.Event) error {
+	q.events = append(q.events, ev)
+	return nil
+}
+
+// countingStore counts writes, so two requests can be compared.
+type countingStore struct {
+	fakeStore
+	upserts int
+}
+
+func (c *countingStore) Upsert(ctx context.Context, pr PendingRegistration) (PendingRegistration, error) {
+	c.upserts++
+	return c.fakeStore.Upsert(ctx, pr)
+}
+
+// #348: a fresh address and one that already has an account do the same work
+// on the request — one pending row written, one event queued, the password
+// hashed — so the timing no longer says which it was. The event names the
+// pending row and nothing else: no token, no address.
+func TestRegister_FreshAndTakenAddressesDoTheSameWork(t *testing.T) {
+	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
+	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
+		store, queue, mailer := &countingStore{}, &recordingQueue{}, &fakeMailer{}
+		svc := NewService(store, users, mailer, "http://localhost", WithQueue(queue))
+		_ = svc.Register(context.Background(), addr, "A", "a-passphrase", nil, true)
+
+		if store.upserts != 1 || len(queue.events) != 1 {
+			t.Fatalf("%s: %d pending rows written and %d events queued, want 1 and 1", addr, store.upserts, len(queue.events))
+		}
+		if mailer.sent {
+			t.Fatalf("%s: mail was sent on the request", addr)
+		}
+		ev := queue.events[0]
+		if ev.Type != notification.EventRegistrationVerify || ev.Recipient != "" || ev.GuestToken != "" {
+			t.Fatalf("%s: unexpected event %+v", addr, ev)
+		}
+		if len(ev.Payload) != 1 || ev.Payload["pending_id"] != store.record.ID.String() {
+			t.Fatalf("%s: payload must hold only the pending id, got %v", addr, ev.Payload)
+		}
+	}
+}
+
+func TestSendVerification(t *testing.T) {
+	ctx := context.Background()
+	fresh := PendingRegistration{
+		ID: uuid.New(), Email: "fresh@any.com", Token: uuid.New(), ExpiresAt: time.Now().Add(time.Hour),
+	}
+	cases := []struct {
+		name     string
+		record   PendingRegistration
+		existing map[string]bool
+		id       uuid.UUID
+		wantSent bool
+	}{
+		{"mails the stored address and token", fresh, nil, fresh.ID, true},
+		{"a row that is gone sends nothing", fresh, nil, uuid.New(), false},
+		{"an expired row sends nothing", PendingRegistration{ID: fresh.ID, Email: fresh.Email, Token: fresh.Token,
+			ExpiresAt: time.Now().Add(-time.Minute)}, nil, fresh.ID, false},
+		{"an address with an account sends nothing", fresh, map[string]bool{"fresh@any.com": true}, fresh.ID, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mailer := &sendLog{}
+			svc := NewService(&fakeStore{record: tc.record}, &fakeUsers{existing: tc.existing}, mailer, "https://desk.example")
+			if err := svc.SendVerification(ctx, tc.id); err != nil {
+				t.Fatal(err)
+			}
+			if got := len(mailer.sent) == 1; got != tc.wantSent {
+				t.Fatalf("sent=%v, want %v", got, tc.wantSent)
+			}
+			if tc.wantSent && (mailer.sent[0].to != fresh.Email || mailer.sent[0].token != fresh.Token.String()) {
+				t.Fatalf("mailed %+v, want the stored address and token", mailer.sent[0])
+			}
+		})
+	}
+}
+
+type sentMail struct{ to, token string }
+
+type sendLog struct{ sent []sentMail }
+
+func (m *sendLog) SendVerificationEmail(to, token, _ string) error {
+	m.sent = append(m.sent, sentMail{to, token})
+	return nil
 }

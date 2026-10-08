@@ -587,3 +587,33 @@ func TestRedactAddresses(t *testing.T) {
 		require.Equal(t, tc.want, redactAddresses(tc.in), "input %q", tc.in)
 	}
 }
+
+// A verification event queues for the verification channel and nothing else:
+// it has no recipient for email and is never a webhook event. And the
+// verification channel queues nothing else (#348).
+func TestOutboxDispatcher_VerificationEventsGoOnlyToTheirChannel(t *testing.T) {
+	store := newFakeOutbox()
+	d := NewOutboxDispatcher(store, []string{"email", "webhook", "verification"}, nil)
+	verify := notification.Event{Type: notification.EventRegistrationVerify,
+		Payload: map[string]any{"pending_id": uuid.New().String()}}
+	require.NoError(t, d.Dispatch(context.Background(), verify))
+	require.Equal(t, []string{"verification"}, store.channelsQueued())
+
+	store2 := newFakeOutbox()
+	require.NoError(t, NewOutboxDispatcher(store2, []string{"verification"}, nil).Dispatch(context.Background(), sampleEvent()))
+	require.Empty(t, store2.channelsQueued(), "a ticket event was queued for the verification channel")
+}
+
+func TestVerificationDispatcher(t *testing.T) {
+	id := uuid.New()
+	var got []uuid.UUID
+	d := NewVerificationDispatcher(func(_ context.Context, sent uuid.UUID) error { got = append(got, sent); return nil })
+
+	require.NoError(t, d.Dispatch(context.Background(), sampleEvent()), "a ticket event is ignored")
+	require.Empty(t, got)
+	require.NoError(t, d.Dispatch(context.Background(), notification.Event{
+		Type: notification.EventRegistrationVerify, Payload: map[string]any{"pending_id": id.String()}}))
+	require.Equal(t, []uuid.UUID{id}, got)
+	require.Error(t, d.Dispatch(context.Background(), notification.Event{Type: notification.EventRegistrationVerify}),
+		"a verification event with no id must fail, not vanish")
+}
