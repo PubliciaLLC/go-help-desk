@@ -77,7 +77,7 @@ func TestRedact_MatchesRegardlessOfCaseAndSeparators(t *testing.T) {
 func TestRedact_ShowsTheAllowListedFields(t *testing.T) {
 	m := map[string]any{
 		"id": "1", "status_id": "2", "priority": "low",
-		"assignee_user_id": "u", "assignee_group_id": "g", "follow_up_of": "t",
+		"assignee_user_id": "u", "follow_up_of": "t",
 		"forced_reopen": true, "closed_reopen_policy": "staff_only",
 		"os_user": "bob", "host": "h", "source": "cli",
 		"passkeys_removed": 2, "totp_cleared": true, "sessions_revoked": true,
@@ -90,10 +90,14 @@ func TestRedact_ShowsTheAllowListedFields(t *testing.T) {
 // is never visible in the audit view, to anyone. The ticket subject is free
 // text a requester typed and can hold any of those, so it is not shown. Nor
 // is any field nobody has decided is safe: the view is an allow-list, so a
-// writer that adds a field later shows "[redacted]" until it is added here on
-// purpose. This replaces the old expectation that the subject passed through
-// and that unknown fields (nested ones included) were shown.
-func TestRedact_FreeTextAndUndecidedFieldsAreNeverShown(t *testing.T) {
+// field a writer adds later is left out until it is added on purpose.
+//
+// Left OUT, not shown as "[redacted]": ticketMap writes the subject into both
+// sides of every ticket entry, so a placeholder on both sides read as
+// "subject: [redacted] → [redacted]" — an edit that never happened — on every
+// assignment, close and reopen (#364 review). This replaces the old
+// expectation that the subject and unknown fields were shown.
+func TestRedact_FreeTextAndUndecidedFieldsAreLeftOut(t *testing.T) {
 	before := map[string]any{
 		"subject":      "Student 4471's IEP accommodations, DOB 2009-03-14",
 		"description":  "card 4111 1111 1111 1111",
@@ -104,15 +108,21 @@ func TestRedact_FreeTextAndUndecidedFieldsAreNeverShown(t *testing.T) {
 		"status_id":    "2",
 	}
 	got, _ := audit.Redact(before, nil)
-	for _, k := range []string{"subject", "description", "guest_email", "display_name", "new_field", "config"} {
-		require.Equal(t, "[redacted]", got[k], "%q was shown", k)
-	}
+	require.Equal(t, map[string]any{"status_id": "2"}, got)
+}
+
+// A secret-named field is still shown as a placeholder rather than left out,
+// so a rotated secret stays visible as a change (#329).
+func TestRedact_SecretNamedFieldsShowAsRedacted(t *testing.T) {
+	got, _ := audit.Redact(map[string]any{"api_key": "sk-live", "status_id": "2"}, nil)
+	require.Equal(t, "[redacted]", got["api_key"])
 	require.Equal(t, "2", got["status_id"])
 }
 
 // An allow-listed name holding a nested value is still redacted: the allow
 // list vouches for a scalar, not for whatever a writer nests under it.
-func TestRedact_AnAllowListedKeyWithANestedValueIsRedacted(t *testing.T) {
+func TestRedact_AnAllowListedKeyWithANestedValueIsLeftOut(t *testing.T) {
 	got, _ := audit.Redact(map[string]any{"priority": map[string]any{"note": "free text"}}, nil)
-	require.Equal(t, "[redacted]", got["priority"])
+	_, shown := got["priority"]
+	require.False(t, shown, "a nested value under an allowed name was shown")
 }

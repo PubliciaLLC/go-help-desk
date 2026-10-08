@@ -119,11 +119,10 @@ type Filter struct {
 // a hashtag, "key" hides a monkey — which fails safe: a hidden value is a
 // nuisance, a rendered secret is not.
 //
-// Nothing writes any of these into a Before/After map today — ticketMap
-// (internal/domain/ticket/service.go) only ever carries id, status_id,
-// priority and subject, and the two user-entity entries that touch
-// credentials (mfa_reset, password_reset_by_admin) carry no payload at all.
-// This exists for the shape of the problem #129 named — "if a mutation ever
+// Nothing writes any of these into a Before/After map today — see shownKeys
+// for what the writers record. Since #362 the view is an allow-list, and
+// this deny-list is the layer that keeps a secret-looking key visible only as
+// a placeholder. It exists for the shape of the problem #129 named — "if a mutation ever
 // touched a sensitive field, the value is in there" — not a value observed
 // in this codebase, so it is a denylist of plausible stems rather than a
 // measured list: extend it before extending what writes into Before/After.
@@ -184,17 +183,20 @@ const redactedPlaceholder = "[redacted]"
 // Adding a key here is a decision that its values can never carry such data.
 var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
-	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
+	"assigneeuserid": true, "followupof": true,
 	"forcedreopen": true, "closedreopenpolicy": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
 	"osuser": true, "host": true, "source": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys
-// (shownKeys) whose values are plain values; every other value is replaced
-// by a placeholder, a nested map or list included. The secret-name deny-list
-// (sensitiveFragments) still applies on top, so an allow-listed name that
-// also looks like a secret is hidden. nil in, nil out — Entry.Before/After
+// (shownKeys) whose values are plain values. A key whose name looks like a
+// secret (sensitiveFragments) is kept as a placeholder, so a rotated secret
+// still shows as a change (#329); every other key is LEFT OUT, nested values
+// included. Left out rather than shown as a placeholder because ticketMap
+// writes the free-text subject into both sides of every ticket entry, and a
+// placeholder on both sides read as an edit that never happened. nil in, nil
+// out — Entry.Before/After
 // are nil for create/delete actions respectively, and that distinction (no
 // value existed) is different from "a value existed and is hidden".
 func Redact(before, after map[string]any) (map[string]any, map[string]any) {
@@ -207,11 +209,12 @@ func redactMap(m map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		if !shownKeys[normaliseKey(k)] || isSensitive(k) || isContainer(v) {
+		switch {
+		case isSensitive(k):
 			out[k] = redactedPlaceholder
-			continue
+		case shownKeys[normaliseKey(k)] && !isContainer(v):
+			out[k] = v
 		}
-		out[k] = v
 	}
 	return out
 }

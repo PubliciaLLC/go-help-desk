@@ -33,6 +33,12 @@ const (
 	// ticket.CanForceReopen; this package only stores the choice.
 	KeyClosedReopenPolicy = "closed_reopen_policy"
 
+	// Where an audit view shows a requester (a student, a patient, a
+	// customer) as "Requester" instead of by name (#362): admin_log (the
+	// admin-wide log only), ticket_log (each ticket's Activity feed only) or
+	// everywhere, the default. Staff and admin actors are always named.
+	KeyAuditMaskRequesterNames = "audit_mask_requester_names"
+
 	// What this instance accepts as an attachment: a JSON array of lowercase
 	// extensions with the leading dot, e.g. [".pdf", ".png"]. An empty array
 	// is a legitimate choice and means no attachments at all, not "unset".
@@ -312,6 +318,8 @@ func AuthCriticalKeys() []string {
 		// permission change, not configuration: a leaked API key must not be
 		// able to switch reopening on and then use it.
 		KeyClosedReopenPolicy,
+		// Loosening it shows requester names in the audit views (#362).
+		KeyAuditMaskRequesterNames,
 		// Whether anonymous people on the internet may file tickets — and,
 		// since the category catalogue stopped being anonymous, whether that
 		// catalogue is readable without a session at all (see

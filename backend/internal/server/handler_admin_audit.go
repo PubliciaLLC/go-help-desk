@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -63,9 +65,9 @@ type adminAuditListResponse struct {
 //
 // #129's admin-wide half: searchable across every entity, not just one
 // ticket. Staff and admin only — a reporting user has no route here at all.
-// Gated by RequireResource(auth.ResourceTickets), the same as the per-ticket
-// feed's own route: an API key at staff or admin level reaches this exactly
-// as it reaches every other ticket-adjacent read.
+// Gated by RequireResource(auth.ResourceAudit) (#362): a signed-in session
+// needs no scope, a machine credential needs audit:read. tickets:read does
+// not reach it, because for an admin's key it covers every entity.
 //
 // Staff are narrowed twice, independently:
 //  1. entity_type is forced to "ticket" regardless of what the query string
@@ -118,6 +120,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	showDiff := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(ctx))
 
+	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
 	names := make(map[uuid.UUID]string)
 	for i, e := range entries {
@@ -134,7 +137,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 				u, err := s.users.GetByID(ctx, *e.ActorID)
 				switch {
 				case err == nil:
-					name = u.DisplayName
+					name = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
 					// Account since deleted; actor_id stays, only the name is left blank.
 				default:
@@ -203,3 +206,28 @@ var (
 	errBadTo      = errors.New("to must be an RFC3339 timestamp")
 	errBadText    = errors.New("filters must be valid UTF-8 without NUL bytes")
 )
+
+// auditActorName is the name an audit view shows for an actor (#362, Erik).
+// Staff and administrators are named: the audit trail exists to say which
+// employee did what. A requester — a student, a patient, a customer — is
+// shown as "Requester" where the view masks them (masksRequestersIn); the
+// entry keeps their actor_id, so it stays attributable for an investigation
+// without the view listing end users' names beside their activity.
+func auditActorName(u user.User, maskRequesters bool) string {
+	if maskRequesters && u.Role == user.RoleUser {
+		return "Requester"
+	}
+	return u.DisplayName
+}
+
+// masksRequestersIn reports whether the given audit view masks requester
+// names under the audit_mask_requester_names setting.
+func (s *Server) masksRequestersIn(ctx context.Context, view string) bool {
+	switch s.adminSvc.AuditMaskRequesterNames(ctx) {
+	case admin.MaskRequesterNamesEverywhere:
+		return true
+	case view:
+		return true
+	}
+	return false
+}

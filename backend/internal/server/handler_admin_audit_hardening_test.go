@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -310,6 +311,8 @@ func TestAuditSettings_RefusedToAMachineCredential(t *testing.T) {
 	for _, body := range []map[string]any{
 		{"audit_retention_days": 1},
 		{"staff_can_view_ticket_change_history": true},
+		// Loosening it would show requester names (#362).
+		{"audit_mask_requester_names": "admin_log"},
 		// Mixed with something innocuous: the whole request must be refused,
 		// not quietly applied minus the critical key.
 		{"site_name": "x", "audit_retention_days": 1},
@@ -354,6 +357,13 @@ func TestAuditSettings_Validation(t *testing.T) {
 		// century, and a test with the old number baked in would have gone on
 		// passing while asserting the wrong boundary.
 		{"the cap itself", map[string]any{"audit_retention_days": admin.AuditRetentionMaxDays}, http.StatusNoContent},
+		// Requester-name masking (#362): one of three values, nothing else.
+		{"masking null", map[string]any{"audit_mask_requester_names": nil}, http.StatusBadRequest},
+		{"masking unknown", map[string]any{"audit_mask_requester_names": "nowhere"}, http.StatusBadRequest},
+		{"masking as a bool", map[string]any{"audit_mask_requester_names": true}, http.StatusBadRequest},
+		{"masking admin log only", map[string]any{"audit_mask_requester_names": "admin_log"}, http.StatusNoContent},
+		{"masking ticket log", map[string]any{"audit_mask_requester_names": "ticket_log"}, http.StatusNoContent},
+		{"masking everywhere", map[string]any{"audit_mask_requester_names": "everywhere"}, http.StatusNoContent},
 	}
 	// A signed-in administrator, not the admin API key: these keys are
 	// auth-critical now, so a machine credential is refused before validation
@@ -679,4 +689,97 @@ func TestAdminAudit_MachineCredentialsNeedAuditRead(t *testing.T) {
 	s := adminSession(t, h)
 	res, body := s.send(t, http.MethodGet, "/api/v1/admin/audit", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+}
+
+// #362, Erik: staff and admin actors keep their names — the audit trail says
+// which employee did what — but a requester (student, patient, customer) is
+// shown as "Requester", never by name. Where, is the setting
+// audit_mask_requester_names: admin_log (the admin-wide log only), ticket_log
+// (each ticket's Activity feed only) or everywhere, the default. Their
+// actor_id stays, so an entry is still attributable. And the free-text
+// subject is left out of the diff, so an assignment no longer reads as a
+// subject edit.
+func TestAudit_RequesterNameMasking(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyStaffCanViewTicketChangeHistory, true))
+
+	res := h.doAsUser(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": "Student 4471 IEP", "category_id": h.catID.String(), "priority": "low",
+	})
+	var created struct {
+		ID string `json:"id"`
+	}
+	decodeJSON(t, res, &created)
+	res.Body.Close()
+	res = h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+created.ID, map[string]any{"assignee_user_id": h.staffID.String()})
+	res.Body.Close()
+
+	type entry struct {
+		Action    string         `json:"action"`
+		ActorID   *string        `json:"actor_id"`
+		ActorName string         `json:"actor_name"`
+		Before    map[string]any `json:"before"`
+		After     map[string]any `json:"after"`
+	}
+	// read returns the created entry's actor name in the given view, after
+	// checking the staff actor is named and the subject is absent.
+	read := func(view string) string {
+		var raw string
+		var entries []entry
+		if view == "admin" {
+			res := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket", nil)
+			b, err := readAllBody(res)
+			require.NoError(t, err)
+			res.Body.Close()
+			var page struct {
+				Entries []entry `json:"entries"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(b), &page))
+			raw, entries = b, page.Entries
+		} else {
+			res := h.doAsAdmin(t, http.MethodGet, "/api/v1/tickets/"+created.ID+"/audit", nil)
+			b, err := readAllBody(res)
+			require.NoError(t, err)
+			res.Body.Close()
+			require.NoError(t, json.Unmarshal([]byte(b), &entries))
+			raw = b
+		}
+		require.NotContains(t, raw, "Student 4471", "%s view: the subject reached the view", view)
+		createdName := ""
+		for _, e := range entries {
+			switch e.Action {
+			case "created":
+				require.NotNil(t, e.ActorID, "%s view: the requester's id must stay", view)
+				createdName = e.ActorName
+			case "assigned":
+				require.NotEqual(t, "Requester", e.ActorName, "%s view: a staff actor was masked", view)
+				require.NotEmpty(t, e.ActorName)
+				_, inBefore := e.Before["subject"]
+				_, inAfter := e.After["subject"]
+				require.False(t, inBefore || inAfter, "%s view: the subject appeared in the diff", view)
+			}
+		}
+		require.NotEmpty(t, createdName, "%s view: no created entry", view)
+		return createdName
+	}
+
+	for _, tc := range []struct {
+		setting           string // "" = never set: the default
+		admin, ticketFeed string
+	}{
+		{"", "Requester", "Requester"},
+		{"everywhere", "Requester", "Requester"},
+		{"admin_log", "Requester", "Reporting User"},
+		{"ticket_log", "Reporting User", "Requester"},
+	} {
+		t.Run("setting="+tc.setting, func(t *testing.T) {
+			if tc.setting != "" {
+				require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyAuditMaskRequesterNames, tc.setting))
+			}
+			require.Equal(t, tc.admin, read("admin"), "admin-wide log")
+			require.Equal(t, tc.ticketFeed, read("ticket"), "ticket Activity feed")
+		})
+	}
 }
