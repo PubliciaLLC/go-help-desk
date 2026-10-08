@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -88,6 +89,12 @@ type OutboxDispatcher struct {
 // next poll.
 func NewOutboxDispatcher(store notification.Outbox, channels []string, wake func()) *OutboxDispatcher {
 	return &OutboxDispatcher{store: store, channels: channels, wake: wake}
+}
+
+// Channels returns the channels Dispatch queues for: a copy, so a caller
+// checking the wiring at startup (#361) cannot change what is queued.
+func (d *OutboxDispatcher) Channels() []string {
+	return slices.Clone(d.channels)
 }
 
 // carries reports whether a channel can deliver an event type at all. A row

@@ -75,8 +75,7 @@ func TestSignup_FreshAndTakenAddressesDoTheSameDatabaseWork(t *testing.T) {
 	require.NoError(t, err)
 
 	queue := &queued{}
-	svc := registration.NewService(registrationstore.New(q), users, noMail{}, "https://desk.example",
-		registration.WithQueue(queue))
+	svc := registration.NewService(registrationstore.New(q), users, noMail{}, queue, "https://desk.example")
 
 	register := func(email string) map[string]int64 {
 		before := tableWork(t, tx)
