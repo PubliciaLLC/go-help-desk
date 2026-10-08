@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -301,16 +302,32 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		}
 		return
 	}
+	reason := redactAddresses(err.Error())
 	if row.Attempts >= w.MaxAttempts {
-		w.fail(settle, row, err.Error())
+		w.fail(settle, row, reason)
 		return
 	}
-	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), err.Error()); rerr != nil {
+	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), reason); rerr != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not reschedule", "id", row.ID, "error", rerr)
 	}
 }
 
+// emailAddress matches anything shaped like an address in an error string.
+// Deliberately loose: it only has to find what to hide, never validate it.
+var emailAddress = regexp.MustCompile(`[^\s<>()\[\]@,;:"']+@[^\s<>()\[\]@,;:"']+`)
+
+// redactAddresses hides email addresses in a delivery error before it is
+// stored in last_error or logged (#350). A mail server's rejection usually
+// names the recipient ("550 5.1.1 <guest@example.com>: Recipient address
+// rejected"), and before the outbox those errors were thrown away; keeping
+// them should not mean keeping a copy of the address for 30 days. The SMTP
+// status, which is what an operator needs, is left intact.
+func redactAddresses(s string) string {
+	return emailAddress.ReplaceAllString(s, "[address]")
+}
+
 func (w *Worker) fail(ctx context.Context, row notification.OutboxRow, reason string) {
+	reason = redactAddresses(reason)
 	w.log.ErrorContext(ctx, "notification outbox: giving up on a notification",
 		"id", row.ID, "channel", row.Channel, "attempts", row.Attempts, "reason", reason)
 	if err := w.store.Fail(ctx, row.ID, reason); err != nil {
