@@ -529,7 +529,7 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 - Username/password with bcrypt hashing
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
-- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in.
+- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 
 ### Passkeys (WebAuthn)
 
@@ -804,7 +804,7 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
 - `POST /api/v1/auth/signup` takes `{email, display_name}` and answers `403 signup_disabled` when off. The signup form takes no password (#360; one sent by an older client is ignored). The address must be a single valid email and the name is required (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address, display name and a 24-hour token; one pending row per address, and a repeat replaces the name and re-issues the token, never touching a password, since none is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
 - **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
-- **The password is chosen at verification** (#360). The link opens the `/verify-email` page, which asks for a password. `POST /api/v1/auth/verify-email` takes `{token, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, and `400 password_too_short` for a password under 8 characters, which is refused without using up the link. On success it creates the account with that password, deletes the pending row and signs the person in (`mfa_enrollment_needed` is true when MFA is enforced for the `user` role). Choosing it there means only whoever holds the link, that is the owner of the mailbox, sets the password: when signup carried it, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with their password.
+- **The password is chosen at verification** (#360). The link opens the `/verify-email` page, which asks for a password. `POST /api/v1/auth/verify-email` takes `{token, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, and `400 password_too_short` for a password under 8 characters, which is refused without using up the link. On success it creates the account with that password, deletes the pending row and signs the person in. When MFA is required for requesters the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses a dead link exactly as the POST does (`422 token_invalid` or `token_expired`). That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before a password is typed. It never returns the display name: whoever signed the address up first chose it, and that may be an attacker putting words on this site in front of the inbox's owner. Choosing the password there means only whoever holds the link, that is the owner of the mailbox, sets the password: when signup carried it, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with their password.
 
 ### Identity provider lockout guard (#300)
 
@@ -1825,7 +1825,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/site` — branding info, app version and `guest_submission_enabled`; used by the SPA shell and login page before authentication
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
-- `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
+- `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
 - `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up` additionally answers `404` while guest submission is off.
 - `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
@@ -2159,6 +2159,17 @@ on the existing webhook feature instead of as plugins.
   with their password. A second signup can now change the display name and
   re-issue the link, never the password. `pending_registrations.password_hash`
   is no longer written and is dropped in a later migration.
+  The page first looks the link up (`GET /auth/verify-email?token=`, which
+  answers the address and nothing else, and refuses a dead link the same way
+  the POST does), so it shows which address the account is for, gives a
+  password manager the address, and says a dead link is dead before a
+  password is typed. Not the display name: whoever signed the address up
+  first chose it, and that may be an attacker putting words on this site in
+  front of the inbox's owner
+  ([#370](https://github.com/PubliciaLLC/go-help-desk/issues/370)). When MFA
+  is required for requesters, the verified session owes enrolment like a
+  password login does, and the page goes to the same enrolment form before
+  the dashboard ([#369](https://github.com/PubliciaLLC/go-help-desk/issues/369)).
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — shipped in v1.
   Not a plugin, and not a separate integration surface: a webhook
   subscription has a `payload_format` setting (`raw`, the default,

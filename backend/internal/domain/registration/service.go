@@ -155,8 +155,9 @@ func (s *Service) Register(ctx context.Context, email, displayName string, allow
 	}
 	// The same work for an address that already has an account and one that
 	// does not, all the way to the response (#348). The address is checked,
-	// the pending row written and one event queued in both cases; whether a verification email goes out is decided when it
-	// would be sent (SendVerification), off the request. Before this a fresh
+	// the pending row written and one event queued in both cases; whether a
+	// verification email goes out is decided when it would be sent
+	// (SendVerification), off the request. Before this a fresh
 	// address also dialled the mail server on the request and a taken one
 	// returned at once, so the timing said who had an account even though
 	// the 202 did not.
@@ -227,6 +228,23 @@ func (s *Service) SendVerification(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("sending verification email: %w", err)
 	}
 	return nil
+}
+
+// Lookup returns the pending registration a verification link names, without
+// using the link, so the verification page can show the address before asking
+// for a password (#370). ErrNotFound is a link that is unknown, replaced or
+// used, and ErrTokenExpired one past its TTL; any other error is a fault, not
+// a verdict on the link. A link that passes can still fail at Verify — if the
+// address has gained an account since, user.Create refuses it.
+func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistration, error) {
+	pr, err := s.store.GetByToken(ctx, token)
+	if err != nil {
+		return PendingRegistration{}, err
+	}
+	if time.Now().After(pr.ExpiresAt) {
+		return PendingRegistration{}, ErrTokenExpired
+	}
+	return pr, nil
 }
 
 // Verify looks up a token, checks expiry, creates the user account with the
