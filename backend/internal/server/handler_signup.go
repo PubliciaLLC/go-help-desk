@@ -43,7 +43,8 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email       string `json:"email"`
 		DisplayName string `json:"display_name"`
-		Password    string `json:"password"`
+		// No password (#360): it is chosen on the verification page. One sent
+		// here by an older client is ignored.
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -53,7 +54,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	allowedDomains := s.adminSvc.AllowedEmailDomains(ctx)
 	openReg := s.adminSvc.OpenRegistrationEnabled(ctx)
 
-	err := s.registration.Register(ctx, body.Email, body.DisplayName, body.Password, allowedDomains, openReg)
+	err := s.registration.Register(ctx, body.Email, body.DisplayName, allowedDomains, openReg)
 	if err != nil {
 		switch {
 		case errors.Is(err, registration.ErrAlreadyRegistered):
@@ -66,8 +67,6 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 			// answer belongs.
 			signupAccepted(w)
 		case errors.Is(err, registration.ErrDisplayNameRequired):
-			Error(w, http.StatusBadRequest, "bad_request", err.Error())
-		case errors.Is(err, registration.ErrPasswordTooShort):
 			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		case errors.Is(err, registration.ErrDomainNotAllowed):
 			Error(w, http.StatusUnprocessableEntity, "domain_not_allowed", "your email domain is not permitted")
@@ -93,10 +92,12 @@ func signupAccepted(w http.ResponseWriter) {
 	})
 }
 
-// POST /api/v1/auth/verify-email — exchange a token for an active session.
+// POST /api/v1/auth/verify-email — exchange a token and the password the
+// account will have for an active session.
 func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Token string `json:"token"`
+		Token    string `json:"token"`
+		Password string `json:"password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -109,8 +110,12 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.registration.Verify(r.Context(), tokenID)
+	u, err := s.registration.Verify(r.Context(), tokenID, body.Password)
 	if err != nil {
+		if errors.Is(err, registration.ErrPasswordTooShort) {
+			Error(w, http.StatusBadRequest, "password_too_short", err.Error())
+			return
+		}
 		if errors.Is(err, registration.ErrTokenExpired) {
 			Error(w, http.StatusUnprocessableEntity, "token_expired", "verification link has expired")
 			return

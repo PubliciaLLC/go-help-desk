@@ -119,11 +119,10 @@ type Filter struct {
 // a hashtag, "key" hides a monkey — which fails safe: a hidden value is a
 // nuisance, a rendered secret is not.
 //
-// Nothing writes any of these into a Before/After map today — ticketMap
-// (internal/domain/ticket/service.go) only ever carries id, status_id,
-// priority and subject, and the two user-entity entries that touch
-// credentials (mfa_reset, password_reset_by_admin) carry no payload at all.
-// This exists for the shape of the problem #129 named — "if a mutation ever
+// Nothing writes any of these into a Before/After map today — see shownKeys
+// for what the writers record. Since #362 the view is an allow-list, and
+// this deny-list is the layer that keeps a secret-looking key visible only as
+// a placeholder. It exists for the shape of the problem #129 named — "if a mutation ever
 // touched a sensitive field, the value is in there" — not a value observed
 // in this codebase, so it is a denylist of plausible stems rather than a
 // measured list: extend it before extending what writes into Before/After.
@@ -171,13 +170,35 @@ func isSensitive(k string) bool {
 
 const redactedPlaceholder = "[redacted]"
 
-// Redact returns copies of before/after with the value of every sensitive key
-// (see sensitiveFragments) replaced by a placeholder, at any depth: nested
-// maps and slices are walked, and a sensitive key hides its whole value
-// whatever shape it has. nil in, nil out — Entry.Before/After are nil for
-// create/delete actions respectively, and that distinction (no value existed)
-// is different from "a value existed and is hidden", so Redact preserves it
-// rather than allocating an empty map.
+// shownKeys is every Before/After key the audit view may show, normalised
+// (normaliseKey). Each is an id, a status, a flag or a count, written by
+// ticketMap and the ticket audit paths, UnassignForUser, user.ResetMFA and
+// cmd/server/resetfactors.go (whose os_user and host say who ran it, as
+// actor_name does for everyone else).
+//
+// An allow-list, not a deny-list, because of #362: protected or sensitive
+// data — PII, and data under FERPA, HIPAA, SOX or PCI-DSS — is never visible
+// in the audit view, to anyone. A deny-list can only hide what someone
+// thought to name; free text such as a ticket subject can hold any of it.
+// Adding a key here is a decision that its values can never carry such data.
+var shownKeys = map[string]bool{
+	"id": true, "statusid": true, "priority": true,
+	"assigneeuserid": true, "followupof": true,
+	"forcedreopen": true, "closedreopenpolicy": true,
+	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
+	"osuser": true, "host": true, "source": true,
+}
+
+// Redact returns copies of before/after showing only allow-listed keys
+// (shownKeys) whose values are plain values. A key whose name looks like a
+// secret (sensitiveFragments) is kept as a placeholder, so a rotated secret
+// still shows as a change (#329); every other key is LEFT OUT, nested values
+// included. Left out rather than shown as a placeholder because ticketMap
+// writes the free-text subject into both sides of every ticket entry, and a
+// placeholder on both sides read as an edit that never happened. nil in, nil
+// out — Entry.Before/After
+// are nil for create/delete actions respectively, and that distinction (no
+// value existed) is different from "a value existed and is hidden".
 func Redact(before, after map[string]any) (map[string]any, map[string]any) {
 	return redactMap(before), redactMap(after)
 }
@@ -188,28 +209,20 @@ func redactMap(m map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(m))
 	for k, v := range m {
-		if isSensitive(k) {
+		switch {
+		case isSensitive(k):
 			out[k] = redactedPlaceholder
-			continue
+		case shownKeys[normaliseKey(k)] && !isContainer(v):
+			out[k] = v
 		}
-		out[k] = redactValue(v)
 	}
 	return out
 }
 
-// redactValue handles the two container shapes encoding/json produces; every
-// other value is a leaf.
-func redactValue(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		return redactMap(t)
-	case []any:
-		out := make([]any, len(t))
-		for i, e := range t {
-			out[i] = redactValue(e)
-		}
-		return out
-	default:
-		return v
+func isContainer(v any) bool {
+	switch v.(type) {
+	case map[string]any, []any:
+		return true
 	}
+	return false
 }

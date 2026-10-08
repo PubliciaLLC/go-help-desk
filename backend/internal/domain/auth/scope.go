@@ -46,6 +46,14 @@ const (
 	// escalation path by design — treat it as equivalent to the owner's full
 	// access, and prefer not to grant it to an integration.
 	ResourceCredentials = "credentials"
+
+	// ResourceAudit covers the admin-wide audit view (#362). A signed-in
+	// session needs no scope; a machine credential needs audit:read, which
+	// an administrator grants on purpose. tickets:read used to reach it, so
+	// an integration key could read every entity's audit entries without
+	// anything about the key saying so. audit:write grants nothing: the
+	// audit log has no write route.
+	ResourceAudit = "audit"
 )
 
 // Scope is one resource and one action.
@@ -59,7 +67,7 @@ func (s Scope) String() string { return s.Resource + ":" + string(s.Action) }
 var resources = []string{
 	ResourceTickets, ResourceUsers, ResourceGroups, ResourceCategories,
 	ResourceTags, ResourceCannedResponses, ResourceSLA, ResourceSettings,
-	ResourcePlugins, ResourceWebhooks, ResourceCredentials,
+	ResourcePlugins, ResourceWebhooks, ResourceCredentials, ResourceAudit,
 }
 
 // All returns every valid scope, for validation and for the admin UI's picker.

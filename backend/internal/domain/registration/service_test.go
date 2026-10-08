@@ -65,6 +65,7 @@ func (f *fakeStore) Delete(_ context.Context, _ uuid.UUID) error {
 
 type fakeUsers struct {
 	created user.User
+	input   user.CreateUserInput
 	err     error
 	// existing is the set of addresses that already have an account, so the
 	// pre-check can be exercised.
@@ -82,6 +83,7 @@ func (f *fakeUsers) Create(_ context.Context, in user.CreateUserInput) (user.Use
 	if f.err != nil {
 		return user.User{}, f.err
 	}
+	f.input = in
 	u := user.User{
 		ID:          uuid.New(),
 		Email:       in.Email,
@@ -138,7 +140,7 @@ func TestIsEmailDomainAllowed(t *testing.T) {
 func TestRegister(t *testing.T) {
 	t.Run("domain not allowed", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@other.com", "Alice", "a-passphrase", []string{"example.com"}, false)
+		err := svc.Register(context.Background(), "a@other.com", "Alice", []string{"example.com"}, false)
 		if !errors.Is(err, ErrDomainNotAllowed) {
 			t.Fatalf("want ErrDomainNotAllowed, got %v", err)
 		}
@@ -146,7 +148,7 @@ func TestRegister(t *testing.T) {
 
 	t.Run("open registration required", func(t *testing.T) {
 		svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "Alice", "a-passphrase", nil, false)
+		err := svc.Register(context.Background(), "a@any.com", "Alice", nil, false)
 		if !errors.Is(err, ErrOpenRegistrationRequired) {
 			t.Fatalf("want ErrOpenRegistrationRequired, got %v", err)
 		}
@@ -156,7 +158,7 @@ func TestRegister(t *testing.T) {
 		store := &fakeStore{}
 		mailer := &fakeMailer{}
 		svc := NewService(store, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "alice@example.com", "Alice", "password123", []string{"example.com"}, false)
+		err := svc.Register(context.Background(), "alice@example.com", "Alice", []string{"example.com"}, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -171,7 +173,7 @@ func TestRegister(t *testing.T) {
 	t.Run("open registration", func(t *testing.T) {
 		mailer := &fakeMailer{}
 		svc := NewService(&fakeStore{}, &fakeUsers{}, mailer, "http://localhost")
-		err := svc.Register(context.Background(), "a@any.com", "A", "a-passphrase", nil, true)
+		err := svc.Register(context.Background(), "a@any.com", "A", nil, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -187,7 +189,7 @@ func TestVerify(t *testing.T) {
 	t.Run("token not found", func(t *testing.T) {
 		store := &fakeStore{getErr: errors.New("not found")}
 		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		_, err := svc.Verify(context.Background(), uuid.New())
+		_, err := svc.Verify(context.Background(), uuid.New(), "a-real-passphrase")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -202,7 +204,7 @@ func TestVerify(t *testing.T) {
 			},
 		}
 		svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-		_, err := svc.Verify(context.Background(), uuid.New())
+		_, err := svc.Verify(context.Background(), uuid.New(), "a-real-passphrase")
 		if !errors.Is(err, ErrTokenExpired) {
 			t.Fatalf("want ErrTokenExpired, got %v", err)
 		}
@@ -211,21 +213,26 @@ func TestVerify(t *testing.T) {
 	t.Run("happy path — user created", func(t *testing.T) {
 		store := &fakeStore{
 			record: PendingRegistration{
-				ID:           uuid.New(),
-				Email:        "alice@example.com",
-				DisplayName:  "Alice",
-				PasswordHash: "hashed",
-				ExpiresAt:    time.Now().Add(time.Hour),
+				ID:          uuid.New(),
+				Email:       "alice@example.com",
+				DisplayName: "Alice",
+				ExpiresAt:   time.Now().Add(time.Hour),
 			},
 		}
 		users := &fakeUsers{}
 		svc := NewService(store, users, &fakeMailer{}, "http://localhost")
-		u, err := svc.Verify(context.Background(), uuid.New())
+		u, err := svc.Verify(context.Background(), uuid.New(), "a-real-passphrase")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if u.Email != "alice@example.com" {
 			t.Errorf("unexpected user email: %s", u.Email)
+		}
+		// #360: the password is the one typed at verification, handed to
+		// user.Create as plain text so it is held to the same minimum and
+		// hashed the same way as every other account.
+		if users.input.Password != "a-real-passphrase" {
+			t.Errorf("account created with password %q, want the one given at verification", users.input.Password)
 		}
 		if !store.deleted {
 			t.Error("expected pending record to be deleted")
@@ -249,7 +256,7 @@ func TestRegister_RefusesAMalformedEmailBeforeStoringAnything(t *testing.T) {
 		mailer := &fakeMailer{}
 		svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
-		err := svc.Register(context.Background(), addr, "Attacker", "password123", nil, true)
+		err := svc.Register(context.Background(), addr, "Attacker", nil, true)
 
 		if err == nil {
 			t.Fatalf("Register accepted %q", addr)
@@ -274,7 +281,7 @@ func TestRegister_AcceptsAndNormalisesARealAddress(t *testing.T) {
 	svc := NewService(store, &fakeUsers{}, &fakeMailer{}, "https://help.example.com")
 
 	if err := svc.Register(context.Background(), "  User@Example.COM  ", "User",
-		"password123", nil, true); err != nil {
+		nil, true); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if store.record.Email != "user@example.com" {
@@ -299,7 +306,7 @@ func TestRegister_MailsTheStoredAddressNotTheRequestedOne(t *testing.T) {
 	mailer := &recordingMailer{}
 	svc := NewService(store, &fakeUsers{}, mailer, "https://help.example.com")
 
-	err := svc.Register(context.Background(), "Requested@Example.com", "Ada", "correct horse", nil, true)
+	err := svc.Register(context.Background(), "Requested@Example.com", "Ada", nil, true)
 	require.NoError(t, err)
 	require.Equal(t, "canonical@example.com", mailer.to,
 		"the mail must go to the address the store returned")
@@ -312,16 +319,15 @@ func (m *recordingMailer) SendVerificationEmail(to, _, _ string) error {
 	return nil
 }
 
-// Signup is held to the same password minimum as every other path that sets
-// one.
+// Verification is held to the same password minimum as every other path that
+// sets one, and a refused password does not use up the link: the person can
+// try again with a longer one.
 //
-// It was the fifth path, and the one missed when the minimum was made a
-// single rule: nothing checked the length here, and Verify creates the
-// account from the stored hash, which skips the check in user.Service.Create.
-// So a signup with an EMPTY password produced a real account whose login
-// accepted an empty password. Self-service signup is off by default, which
-// was the only thing standing in front of it.
-func TestRegister_HoldsThePasswordMinimum(t *testing.T) {
+// Signup was the fifth such path, and the one missed when the minimum was made
+// a single rule — an EMPTY password once produced a real account. Since #360
+// the password is chosen here rather than at signup, so the rule moves with
+// it.
+func TestVerify_HoldsThePasswordMinimum(t *testing.T) {
 	cases := []struct {
 		name     string
 		password string
@@ -336,12 +342,19 @@ func TestRegister_HoldsThePasswordMinimum(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost")
-			err := svc.Register(context.Background(), "a@any.com", "Alice", tc.password, nil, true)
+			store := &fakeStore{record: PendingRegistration{
+				ID: uuid.New(), Email: "a@any.com", DisplayName: "Alice", ExpiresAt: time.Now().Add(time.Hour),
+			}}
+			users := &fakeUsers{}
+			svc := NewService(store, users, &fakeMailer{}, "http://localhost")
+			_, err := svc.Verify(context.Background(), uuid.New(), tc.password)
 
 			if tc.wantErr {
 				if !errors.Is(err, ErrPasswordTooShort) {
 					t.Fatalf("a %d-character password was accepted (err=%v)", len(tc.password), err)
+				}
+				if store.deleted || users.created.ID != uuid.Nil {
+					t.Fatal("a refused password used up the link")
 				}
 				return
 			}
@@ -375,7 +388,7 @@ func TestRegister_StopsWhenTheAddressAlreadyHasAnAccount(t *testing.T) {
 		&fakeUsers{existing: map[string]bool{"taken@any.com": true}},
 		mailer, "http://localhost")
 
-	err := svc.Register(context.Background(), "taken@any.com", "A", "a-passphrase", nil, true)
+	err := svc.Register(context.Background(), "taken@any.com", "A", nil, true)
 	if !errors.Is(err, ErrAlreadyRegistered) {
 		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
 	}
@@ -399,47 +412,12 @@ func TestRegister_ADeletedAccountStillOwnsItsAddress(t *testing.T) {
 		&fakeUsers{existing: map[string]bool{"gone@any.com": true}},
 		mailer, "http://localhost")
 
-	err := svc.Register(context.Background(), "gone@any.com", "A", "a-passphrase", nil, true)
+	err := svc.Register(context.Background(), "gone@any.com", "A", nil, true)
 	if !errors.Is(err, ErrAlreadyRegistered) {
 		t.Fatalf("want ErrAlreadyRegistered, got %v", err)
 	}
 	if mailer.sent {
 		t.Error("a verification email was sent for an address that cannot be registered")
-	}
-}
-
-// Both paths pay for the password hash, so the answer does not give the
-// address away by how long it takes.
-//
-// The endpoint answers the same 202 either way, which is what stops signing
-// up being a way to find out who has an account here. The first version
-// returned before the hash: measured against a real server, a taken address
-// answered in 3 ms and a fresh one in 70 ms, with no overlap across a dozen
-// samples. An identical body that takes a twentieth of the time is not
-// identical.
-func TestRegister_TheTwoAnswersCostTheSame(t *testing.T) {
-	const samples = 3
-	taken := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
-
-	var takenTotal, freshTotal time.Duration
-	for range samples {
-		start := time.Now()
-		_ = NewService(&fakeStore{}, taken, &fakeMailer{}, "http://localhost").
-			Register(context.Background(), "taken@any.com", "A", "a-passphrase", nil, true)
-		takenTotal += time.Since(start)
-
-		start = time.Now()
-		_ = NewService(&fakeStore{}, &fakeUsers{}, &fakeMailer{}, "http://localhost").
-			Register(context.Background(), "fresh@any.com", "A", "a-passphrase", nil, true)
-		freshTotal += time.Since(start)
-	}
-
-	// bcrypt dominates both, so they land within a small factor of each
-	// other. The defect this catches was a factor of twenty.
-	ratio := float64(freshTotal) / float64(takenTotal)
-	if ratio > 4 || ratio < 0.25 {
-		t.Errorf("a fresh address took %v and a taken one %v (%.1fx) — the timing gives the answer away",
-			freshTotal/samples, takenTotal/samples, ratio)
 	}
 }
 
@@ -463,15 +441,14 @@ func (c *countingStore) Upsert(ctx context.Context, pr PendingRegistration) (Pen
 }
 
 // #348: a fresh address and one that already has an account do the same work
-// on the request — one pending row written, one event queued, the password
-// hashed — so the timing no longer says which it was. The event names the
+// on the request — one pending row written, one event queued — so the timing no longer says which it was. The event names the
 // pending row and nothing else: no token, no address.
 func TestRegister_FreshAndTakenAddressesDoTheSameWork(t *testing.T) {
 	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
 	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
 		store, queue, mailer := &countingStore{}, &recordingQueue{}, &fakeMailer{}
 		svc := NewService(store, users, mailer, "http://localhost", WithQueue(queue))
-		_ = svc.Register(context.Background(), addr, "A", "a-passphrase", nil, true)
+		_ = svc.Register(context.Background(), addr, "A", nil, true)
 
 		if store.upserts != 1 || len(queue.events) != 1 {
 			t.Fatalf("%s: %d pending rows written and %d events queued, want 1 and 1", addr, store.upserts, len(queue.events))

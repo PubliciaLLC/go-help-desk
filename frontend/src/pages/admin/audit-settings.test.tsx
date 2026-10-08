@@ -148,3 +148,36 @@ describe('the audit log settings', () => {
     })
   })
 })
+
+// #362: where audit views show a requester as "Requester" instead of by name.
+describe('the requester-name masking setting', () => {
+  function maskSelect(): HTMLSelectElement {
+    return screen.getByRole('combobox', { name: /mask requester names in audit trail/i }) as HTMLSelectElement
+  }
+
+  it('is in the Privacy section and defaults to Everywhere, as the server does', async () => {
+    await renderSettings({})
+    expect(screen.getByRole('heading', { name: 'Privacy' })).toBeTruthy()
+    expect(maskSelect().value).toBe('everywhere')
+  })
+
+  it('offers exactly the three choices', async () => {
+    await renderSettings({})
+    const options = Array.from(maskSelect().options).map((o) => [o.value, o.textContent])
+    expect(options).toEqual([
+      ['admin_log', 'Admin Audit Log Only'],
+      ['ticket_log', 'Ticket Audit Log'],
+      ['everywhere', 'Everywhere'],
+    ])
+  })
+
+  it('shows what the instance has stored and sends a change under its own key', async () => {
+    const patch = await renderSettings({ audit_mask_requester_names: 'admin_log' })
+    expect(maskSelect().value).toBe('admin_log')
+    await userEvent.selectOptions(maskSelect(), 'ticket_log')
+    await save()
+    await waitFor(() => {
+      expect(lastPatch(patch)).toMatchObject({ audit_mask_requester_names: 'ticket_log' })
+    })
+  })
+})

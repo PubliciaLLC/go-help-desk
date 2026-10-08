@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
@@ -39,6 +40,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -96,6 +98,7 @@ type harness struct {
 	q               *dbgen.Queries      // raw queries on the test transaction, for fixtures the stores won't build
 	dispatcher      *sendTimeDispatcher // see newHarnessWith
 	attachDir       string              // where uploads land, so a test can check the disk
+	verifyMail      *verifyMailbox      // the signup verification links sent, so a test can follow one
 }
 
 func newHarness(t *testing.T) (*harness, func()) {
@@ -299,6 +302,7 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 	})
 
 	passkeySvc, passkeyStore := testPasskeys(q)
+	verifyMail := &verifyMailbox{}
 	srv := server.New(
 		cfg,
 		sessionStore,
@@ -316,13 +320,14 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 		apiKeyLookup,
 		authSt,
 		authSt,
-		nil, // registration service not needed in integration tests
+		registration.NewService(registrationstore.New(q), userSvc, verifyMail, "https://help.example.com"),
 		cannedResponseSvc,
 		server.WithAuditStore(auStore),
 	)
 
 	dispatcher.prepare = srv.PrepareGuestLink
 	h := &harness{
+		verifyMail:      verifyMail,
 		dispatcher:      dispatcher,
 		srv:             srv,
 		q:               q,

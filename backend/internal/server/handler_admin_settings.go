@@ -230,6 +230,22 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Requester-name masking (#362): one of three values. The reader falls
+	// back to "everywhere", so a typo would leave an operator who meant to
+	// narrow it believing they had; refused by name instead, and null too.
+	if raw, ok := body[admin.KeyAuditMaskRequesterNames]; ok {
+		var v string
+		if err := unmarshalSetting(raw, "audit_mask_requester_names", &v); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidMaskRequesterNames(v) {
+			Error(w, http.StatusBadRequest, "invalid_audit_mask_requester_names",
+				"audit_mask_requester_names must be one of: admin_log, ticket_log, everywhere")
+			return
+		}
+	}
+
 	// The diff toggle is a bool and nothing else, null included.
 	if raw, ok := body[admin.KeyStaffCanViewTicketChangeHistory]; ok {
 		var on bool

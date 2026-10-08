@@ -383,11 +383,15 @@ This route only *reads* the audit log; it does not change what the domain layer 
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
-The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is redacted by field name (`audit.Redact`) — a denylist of plausible secret-field stems (`password`, `secret`, `token`, `hash`, …) plus any key ending in `key` or `pass` (so every write-only setting in `secretSettingKeys` is covered, and a test keeps it that way), matched with case and separators ignored (`passwordHash`, `API_KEY` and `api-key` all land) and applied at every depth of nested maps and lists, not anything actually written into a ticket's before/after today (`ticketMap` only ever carries `id`, `status_id`, `priority`, `subject`), kept ready for the other entity types the admin-wide view below can show.
+The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is filtered by `audit.Redact`, an allow-list described under Admin-Wide Audit View below: the same rule applies to this feed. The feed itself is reached with `tickets:read` by a machine credential (it holds ticket entries only, never MFA or password resets); the admin-wide view needs `audit:read`.
 
 ### Admin-Wide Audit View
 
-`GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. Staff and admin only, same resource gate as the ticket subtree; a reporting user has no route here.
+`GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. Staff and admin only; a reporting user has no route here. A signed-in session needs no scope. An API key or OAuth client needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
+
+**Protected or sensitive data is never visible in the audit view, to anyone**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts, and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
+
+**Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`. A masked entry keeps its `actor_id`, so it stays attributable for an investigation. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
 
 Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned.
 
@@ -798,9 +802,9 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 
 - Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
-- `POST /api/v1/auth/signup` takes `{email, display_name, password}` and answers `403 signup_disabled` when off. The address must be a single valid email, the name is required and the password at least 8 characters (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (the bcrypt hash and a 24-hour token; one pending row per address, a repeat replaces it) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
-- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the password hashed, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because no mail is dialled on the request for one case and not the other, the timing does not tell them apart either. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
-- `POST /api/v1/auth/verify-email` takes `{token}`: `422 token_invalid` for an unknown, used or malformed token and `422 token_expired` past 24 hours. On success it creates the account from the stored hash, deletes the pending row and signs the person in (`mfa_enrollment_needed` is true when MFA is enforced for the `user` role). The page is `/verify-email`.
+- `POST /api/v1/auth/signup` takes `{email, display_name}` and answers `403 signup_disabled` when off. The signup form takes no password (#360; one sent by an older client is ignored). The address must be a single valid email and the name is required (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address, display name and a 24-hour token; one pending row per address, and a repeat replaces the name and re-issues the token, never touching a password, since none is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
+- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
+- **The password is chosen at verification** (#360). The link opens the `/verify-email` page, which asks for a password. `POST /api/v1/auth/verify-email` takes `{token, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, and `400 password_too_short` for a password under 8 characters, which is refused without using up the link. On success it creates the account with that password, deletes the pending row and signs the person in (`mfa_enrollment_needed` is true when MFA is enforced for the `user` role). Choosing it there means only whoever holds the link, that is the owner of the mailbox, sets the password: when signup carried it, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with their password.
 
 ### Identity provider lockout guard (#300)
 
@@ -1890,7 +1894,8 @@ A scope is `resource:action`, where action is `read` or `write`.
 
 | Resource | Covers |
 |----------|--------|
-| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) and the admin-wide audit view (`/admin/audit`) |
+| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
+| `audit` | The admin-wide audit view (`/admin/audit`). A session needs no scope; an API key or OAuth client needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. `audit:write` grants nothing, as the log has no write route |
 | `users` | User administration |
 | `groups` | Groups, their members, and their category/type scopes |
 | `categories` | Categories, types, items, and custom-field assignments |
@@ -1963,8 +1968,9 @@ Four more things are off limits to a machine credential, for the same reason:
   whether that catalogue is readable without a session at all, one flag and two
   exposures); `closed_reopen_policy` (#349); the attachment policy (scanner
   address and policy, allowed types, infected and mismatch handling, the
-  reputation toggles, keys and refresh interval); and audit retention and staff
-  visibility of change history. Ordinary configuration such as the site name
+  reputation toggles, keys and refresh interval); and audit retention, staff
+  visibility of change history and whether requester names are masked in audit
+  views. Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
   `POST /auth/local/passkey/start|finish`). A machine credential reaching the
@@ -2110,7 +2116,8 @@ on the existing webhook feature instead of as plugins.
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
-  channel that can carry the event (email, webhook, and `verification` for signup mail, below), and returns. A worker in every server process
+  channel that can carry the event (`email`, `webhook`, and `verification`
+  for signup mail, below), and returns. A worker in every server process
   claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
   a ten-minute lease that returns a row whose worker died; a claim takes at
   most as many rows as can each run to their full time inside the
@@ -2120,7 +2127,7 @@ on the existing webhook feature instead of as plugins.
   on success. A failed send is retried after 30 seconds, doubling to at most an
   hour, eight attempts in all; then the row is marked failed, logged, and
   deleted after thirty days. One row per channel means a failing channel is
-  retried alone and the other is not sent twice; a channel that cannot carry an
+  retried alone and the others are not sent twice; a channel that cannot carry an
   event type (webhooks never receive `guest.link_resent`) gets no row. A send
   that panics fails its row. A failed send's error is kept in `last_error` and
   the log with email addresses replaced by `[address]` (#350): a mail server's
@@ -2132,14 +2139,26 @@ on the existing webhook feature instead of as plugins.
 - **Signup verification email goes through the outbox too**
   ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
   `verification` channel. Signup answers the same 202 whether or not the
-  address already has an account, and does the same work for both: it hashes
-  the password, writes the pending registration and queues one row naming
-  only that registration's id. The send re-reads the row and mails the stored
+  address already has an account, and does the same work for both: it
+  writes the pending registration and queues one row naming only that
+  registration's id. The send re-reads the row and mails the stored
   address and token, or nothing if the row is gone or expired or the address
   has an account. Before this a new address dialled the mail server on the
   request and a taken one returned at once, so the timing said who had an
   account. A taken address now gets a pending row that is never mailed, and
   it expires unused.
+- **The password is chosen at verification, not at signup**
+  ([#360](https://github.com/PubliciaLLC/go-help-desk/issues/360)). The
+  signup form takes only the address and display name. The link in the
+  verification email opens a page that asks for the password, held to the
+  usual minimum, and `POST /auth/verify-email` takes the token and the
+  password together. A password that is too short is refused without using
+  up the link. When signup carried the password, a second signup for the same
+  address replaced it, so anyone who knew an address could sign up after its
+  owner and have the owner, following the newest link, create an account
+  with their password. A second signup can now change the display name and
+  re-issue the link, never the password. `pending_registrations.password_hash`
+  is no longer written and is dropped in a later migration.
 - **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — shipped in v1.
   Not a plugin, and not a separate integration surface: a webhook
   subscription has a `payload_format` setting (`raw`, the default,

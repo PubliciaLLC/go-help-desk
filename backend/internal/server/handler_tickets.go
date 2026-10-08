@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -1036,6 +1037,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	// thread, say) can appear on many entries, and a lookup miss (the
 	// account was later deleted) is cached too, so it costs one failed
 	// GetByID rather than one per entry.
+	maskRequesters := s.masksRequestersIn(r.Context(), admin.MaskRequesterNamesTicketLog)
 	names := make(map[uuid.UUID]string)
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
@@ -1053,7 +1055,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 				u, err := s.users.GetByID(r.Context(), *e.ActorID)
 				switch {
 				case err == nil:
-					name = u.DisplayName
+					name = auditActorName(u, maskRequesters)
 				case errors.Is(err, user.ErrNotFound):
 					// Account since deleted; actor_id stays (it is a fact
 					// about what happened), only the name is left blank —

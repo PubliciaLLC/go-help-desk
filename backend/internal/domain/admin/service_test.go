@@ -164,3 +164,24 @@ func TestAdminService_MFARequiredFor(t *testing.T) {
 		})
 	}
 }
+
+// #362: anything but the three known values reads as "everywhere", the most
+// masking — a typo or a damaged row must never show requester names.
+func TestAuditMaskRequesterNames(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct{ stored, want string }{
+		{"", "everywhere"}, {"everywhere", "everywhere"},
+		{"admin_log", "admin_log"}, {"ticket_log", "ticket_log"},
+		{"nowhere", "everywhere"}, {"ADMIN_LOG", "everywhere"},
+	} {
+		svc := admin.NewService(newFakeAdminStore())
+		if tc.stored != "" {
+			if err := svc.SetString(ctx, admin.KeyAuditMaskRequesterNames, tc.stored); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := svc.AuditMaskRequesterNames(ctx); got != tc.want {
+			t.Errorf("stored %q: got %q, want %q", tc.stored, got, tc.want)
+		}
+	}
+}

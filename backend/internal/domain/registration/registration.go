@@ -11,14 +11,17 @@ import (
 const tokenTTL = 24 * time.Hour
 
 // PendingRegistration is a not-yet-verified sign-up request.
+//
+// It holds no password (#360). That is chosen on the verification page, so
+// only whoever reads the inbox chooses it; held here, a second signup for the
+// same address could replace it with its own.
 type PendingRegistration struct {
-	ID           uuid.UUID
-	Email        string
-	DisplayName  string
-	PasswordHash string
-	Token        uuid.UUID
-	ExpiresAt    time.Time
-	CreatedAt    time.Time
+	ID          uuid.UUID
+	Email       string
+	DisplayName string
+	Token       uuid.UUID
+	ExpiresAt   time.Time
+	CreatedAt   time.Time
 }
 
 // Store persists pending registrations.
