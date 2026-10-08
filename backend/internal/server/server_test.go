@@ -1696,29 +1696,58 @@ func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	// Both wrong passwords — one short, one overlong — get the same response.
-	shortWrong := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+	// Both wrong passwords — one short, one overlong — get the same 401 response
+	// with the same error code and message.
+	wrongResp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
 		"email":    "staff@test.local",
-		"password": "wrongpassword",
+		"password": "wrongpass",
 	})
-	defer shortWrong.Body.Close()
+	defer wrongResp.Body.Close()
 
-	overlongWrong := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+	overlongResp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
 		"email":    "staff@test.local",
 		"password": strings.Repeat("x", 200),
 	})
-	defer overlongWrong.Body.Close()
+	defer overlongResp.Body.Close()
 
-	require.Equal(t, shortWrong.StatusCode, overlongWrong.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, wrongResp.StatusCode)
+	require.Equal(t, http.StatusUnauthorized, overlongResp.StatusCode)
 
-	var shortBody, overlongBody struct {
+	var wrongBody, overlongBody struct {
 		Error struct {
-			Code string `json:"code"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
-	_ = json.NewDecoder(shortWrong.Body).Decode(&shortBody)
-	_ = json.NewDecoder(overlongWrong.Body).Decode(&overlongBody)
-	require.Equal(t, shortBody.Error.Code, overlongBody.Error.Code)
+	decodeJSON(t, wrongResp, &wrongBody)
+	decodeJSON(t, overlongResp, &overlongBody)
+	require.Equal(t, wrongBody.Error.Code, overlongBody.Error.Code,
+		"both wrong passwords must return the same error code")
+	require.Equal(t, wrongBody.Error.Message, overlongBody.Error.Message,
+		"both wrong passwords must return the same error message")
+
+	// Test that an overlong password whose first 72 bytes match signs in.
+	// Since staff@test.local was seeded with "password" (8 bytes), we create
+	// a new user with exactly 72 bytes, then try to log in with that password
+	// plus 100 extra bytes. Login truncates at 72, so it should match.
+	fullPassword := strings.Repeat("a", 72)
+	createResp := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"email":        "test72@example.com",
+		"display_name": "Test 72 Byte",
+		"role":         "user",
+		"password":     fullPassword,
+	})
+	require.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+	// Log in with the 72-byte password plus 100 extra bytes; should succeed
+	// because bcrypt truncates and the first 72 bytes match.
+	signInResp := h.doUnauth(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email":    "test72@example.com",
+		"password": fullPassword + strings.Repeat("x", 100),
+	})
+	defer signInResp.Body.Close()
+	require.Equal(t, http.StatusOK, signInResp.StatusCode,
+		"an overlong password whose first 72 bytes match must sign in")
 }
 
 func TestLogout(t *testing.T) {

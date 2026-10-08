@@ -762,8 +762,8 @@ func TestValidatePassword(t *testing.T) {
 		})
 	}
 
-	// Guards: ValidatePassword must check both limits, bcrypt must accept exactly
-	// 72 bytes, and the constant must match what bcrypt enforces.
+	// Guards: the constant is 72, bcrypt accepts exactly 72 bytes and refuses 73
+	// (so the constant matches what bcrypt enforces).
 	require.Equal(t, 72, user.MaxPasswordLength)
 	_, err := bcrypt.GenerateFromPassword([]byte(strings.Repeat("a", user.MaxPasswordLength)), bcrypt.MinCost)
 	require.NoError(t, err, "bcrypt accepts exactly MaxPasswordLength bytes")
@@ -778,62 +778,64 @@ func TestValidatePassword(t *testing.T) {
 func TestPassword_TheMaximumAppliesOnEveryDomainPath(t *testing.T) {
 	validPass := strings.Repeat("a", 72)
 	tooLongPass := strings.Repeat("密", 25) // 75 bytes
+	tooShortPass := "short"                // 5 bytes, below minimum 8
 
 	cases := []struct {
 		name   string
-		method func(*user.Service, *fakeUserStore, string) error
+		method func(svc *user.Service, password string) (email string, err error)
 	}{
 		{
 			name: "Create",
-			method: func(svc *user.Service, _ *fakeUserStore, pwd string) error {
+			method: func(svc *user.Service, pwd string) (string, error) {
 				_, err := svc.Create(context.Background(), user.CreateUserInput{
 					Email:       "x@example.com",
 					DisplayName: "X",
 					Role:        user.RoleUser,
 					Password:    pwd,
 				})
-				return err
+				return "", err
 			},
 		},
 		{
 			name: "SetPassword",
-			method: func(svc *user.Service, store *fakeUserStore, pwd string) error {
-				u, _ := svc.Create(context.Background(), user.CreateUserInput{
+			method: func(svc *user.Service, pwd string) (string, error) {
+				u, err := svc.Create(context.Background(), user.CreateUserInput{
 					Email:       "y@example.com",
 					DisplayName: "Y",
 					Role:        user.RoleUser,
 					Password:    "a-passphrase",
 				})
-				return svc.SetPassword(context.Background(), u.ID, pwd)
+				require.NoError(t, err, "seed account creation must succeed")
+				return u.Email, svc.SetPassword(context.Background(), u.ID, pwd)
 			},
 		},
 		{
 			name: "AdminSetPassword",
-			method: func(svc *user.Service, store *fakeUserStore, pwd string) error {
-				u, _ := svc.Create(context.Background(), user.CreateUserInput{
+			method: func(svc *user.Service, pwd string) (string, error) {
+				u, err := svc.Create(context.Background(), user.CreateUserInput{
 					Email:       "z@example.com",
 					DisplayName: "Z",
 					Role:        user.RoleUser,
 					Password:    "a-passphrase",
 				})
-				return svc.AdminSetPassword(context.Background(), u.ID, pwd, nil)
+				require.NoError(t, err, "seed account creation must succeed")
+				return u.Email, svc.AdminSetPassword(context.Background(), u.ID, pwd, nil)
 			},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// Subcase: 72-byte password succeeds
 			store := newFakeUserStore()
 			svc := user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
-
-			// Subcase: 72-byte password succeeds
-			err := tc.method(svc, store, validPass)
+			_, err := tc.method(svc, validPass)
 			require.NoError(t, err, "a 72-byte password must be accepted")
 
-			// Subcase: 75-byte password fails with the right error
-			store = newFakeUserStore() // fresh for the next attempt
+			// Subcase: too-long password (75 bytes) fails with the right error
+			store = newFakeUserStore()
 			svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
-			err = tc.method(svc, store, tooLongPass)
+			email, err := tc.method(svc, tooLongPass)
 			require.Error(t, err)
 			require.ErrorIs(t, err, user.ErrPasswordTooLong,
 				"a too-long password must be refused with ErrPasswordTooLong")
@@ -842,20 +844,26 @@ func TestPassword_TheMaximumAppliesOnEveryDomainPath(t *testing.T) {
 			require.NotErrorIs(t, err, bcrypt.ErrPasswordTooLong,
 				"the refusal must happen before bcrypt, not after")
 
-			// For SetPassword and AdminSetPassword, check the old password still works
+			// For SetPassword and AdminSetPassword, verify old password still works
 			if tc.name != "Create" {
-				store = newFakeUserStore()
-				svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
-				_, _ = svc.Create(context.Background(), user.CreateUserInput{
-					Email:       "w@example.com",
-					DisplayName: "W",
-					Role:        user.RoleUser,
-					Password:    "old-passphrase",
-				})
-				_ = tc.method(svc, store, tooLongPass) // attempt and fail
-				// Old password must still work, unchanged
-				_, err := svc.VerifyPassword(context.Background(), "w@example.com", "old-passphrase")
-				require.NoError(t, err, "the old password must still work; the failed change did not write")
+				_, verifyErr := svc.VerifyPassword(context.Background(), email, "a-passphrase")
+				require.NoError(t, verifyErr, "the old password must still work; the failed change did not write")
+			}
+
+			// Subcase: too-short password fails with the right error
+			store = newFakeUserStore()
+			svc = user.NewService(store, user.WithBcryptCost(bcrypt.MinCost))
+			email, err = tc.method(svc, tooShortPass)
+			require.Error(t, err)
+			require.ErrorIs(t, err, user.ErrPasswordTooShort,
+				"a too-short password must be refused with ErrPasswordTooShort")
+			require.ErrorIs(t, err, user.ErrValidation,
+				"a validation error must wrap ErrValidation so the handler knows it is a 400")
+
+			// For SetPassword and AdminSetPassword, verify old password still works after short password failure too
+			if tc.name != "Create" {
+				_, verifyErr := svc.VerifyPassword(context.Background(), email, "a-passphrase")
+				require.NoError(t, verifyErr, "the old password must still work; the failed change did not write")
 			}
 		})
 	}

@@ -194,8 +194,8 @@ their own, and the owner, clicking the newest link, got an account with it.
 The signup form now asks only for the address; the link in the email opens a
 page that asks for the display name and the password. For API clients:
 `POST /api/v1/auth/verify-email` now requires `display_name` and `password`
-beside `token` (refused with `display_name_required` or `password_too_short`,
-without using up the link), a `display_name` or `password` sent to
+beside `token` (refused with `display_name_required`, `password_too_short` or
+`password_too_long`, without using up the link), a `display_name` or `password` sent to
 `POST /api/v1/auth/signup` is ignored, and `GET /api/v1/auth/verify-email?token=`
 returns the address a link is for. Signups still pending at upgrade keep
 working: their links now ask for a name and a password.
