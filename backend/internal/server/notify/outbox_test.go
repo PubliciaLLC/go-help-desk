@@ -609,6 +609,19 @@ var redactAddressCases = []struct{ in, want string }{
 	{`550 5.1.1 <"john \"jj\" doe"@example.com> rejected`, "550 5.1.1 <[address]> rejected"},
 	{"550 5.1.1 <guest@[192.168.1.10]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
 	{"550 5.1.1 <guest@[IPv6:2001:db8::1]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	// The IP literal's \s exclusion: an unclosed "[" must not run on to a later
+	// "]". The first row alone does not show it (no "]" follows the whitespace);
+	// the second does, because without the exclusion it swallows the text after "[".
+	{"550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <a@b.com>", "550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <[address]>"},
+	{"550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <a@b.com>] x", "550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <[address]>] x"},
+	// The quoted local part's {0,64} bound: the quote must close within 64
+	// inner characters, so 64 is an address and 65 is not.
+	{`"` + strings.Repeat("a", 64) + `"@example.com`, "[address]"},
+	{`"` + strings.Repeat("a", 65) + `"@example.com`, `"` + strings.Repeat("a", 65) + `"@example.com`},
+	// The IP literal's {0,255} bound: 255 inner characters are an address, and
+	// 256 are not (the closing "]" is out of reach).
+	{"550 <guest@[" + strings.Repeat("1", 255) + "]>", "550 <[address]>"},
+	{"550 <guest@[" + strings.Repeat("1", 256) + "]>", "550 <guest@[" + strings.Repeat("1", 256) + "]>"},
 	// A queue id shaped like an address is hidden too; nothing is lost
 	// that an operator needs.
 	{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
@@ -631,31 +644,28 @@ func TestRedactAddresses(t *testing.T) {
 
 // redactAddresses runs on the outbox worker goroutine, and its input is the
 // SMTP relay's reply, which the relay controls. Go's regexp is linear in the
-// input only when the pattern is bounded: an unbounded quoted local part
-// that never closes made matching quadratic, about a minute at 96 KB before
-// the bound (measured, #358 review).
+// input only when the pattern is bounded: without the {0,64} on the quoted
+// local part, an unclosed quote made matching quadratic (measured, #358 review).
 //
 // The bound is checked against a time limit, not a ratio. Ratios between
 // sizes were tried and are not robust: under CPU contention the larger run
 // spans more scheduler slices, so a linear matcher can measure 9 to 16 times
 // its smaller run, which is the range a quadratic one reaches. The limit is
-// far from both sides instead. At these sizes the bounded pattern takes about
-// 0.1 to 0.2 s without -race and 3 to 5 s with it, so the limit has more than
-// 6 times the race-detector cost of the good case, and more than 100 times
-// without -race. The unbounded pattern took 57 to 61 s at these sizes, so a
-// 30 s limit fails it, and fails it fast, rather than after a minute.
+// far from both sides instead. The deterministic table rows below pin each
+// bound on its own; this test only catches the time blow-up.
 func TestRedactAddresses_IsLinear(t *testing.T) {
 	const limit = 30 * time.Second
 	shapes := []struct{ name, in string }{
-		// Mutation M7 (no {0,64} on the quoted local part) is caught here.
-		{"unclosed quoted local part", `"` + strings.Repeat(`a@b \"`, 16<<10)},
-		// Whitespace stops the IP literal early.
+		// Without {0,64} this shape is quadratic: 82 s at 129 KB without -race
+		// (measured), against the 30 s limit. The bounded pattern takes about
+		// 0.1 s without -race and 3 s with it.
+		{"unclosed quoted local part", `"` + strings.Repeat(`a@b \"`, 21<<10)},
+		// Catches only the two removals together: the \s exclusion stops the
+		// IP literal at whitespace, and {0,255} stops it at 255 characters.
+		// Drop either one alone and the scan is still bounded; drop both and
+		// each "@[" scans to the end of the input. Each removal alone is
+		// pinned by a table row.
 		{"unclosed IP literal", strings.Repeat(`a@b x@[`, 16<<10)},
-		// The costliest shape per byte. No whitespace, so only the {0,255}
-		// bound limits the IP literal. Measured: this stays linear with or
-		// without that bound (up to 128 KB), so it guards this input against
-		// a regression, but it does not detect removing {0,255}.
-		{"unclosed IP literal, no whitespace", strings.Repeat(`a@[`, 32<<10)},
 	}
 	for _, s := range shapes {
 		t.Run(s.name, func(t *testing.T) {
