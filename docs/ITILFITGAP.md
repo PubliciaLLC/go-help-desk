@@ -8,6 +8,15 @@
 > Recommendations that would change the roadmap in `docs/DESIGN.md` are marked
 > **[roadmap decision]** and need the owner's call before they become scope.
 
+> **Since this assessment (as of v1.3.0-beta, 2026-10-09).** The text below is
+> the 2026-09-09 snapshot. Since then a background scheduler runs auto-close and
+> SLA breach evaluation (#126), SLA pauses during Pending (#127), the SLA
+> indicator is rendered (#128) and the audit log is readable (#129). So the SLA
+> findings marked non-functional below are fixed: breaches are detected and
+> stamped, though nothing yet acts on a breach (#408). Roadmap issues filed from
+> this analysis: #403 (assets), #405 (continual improvement), #406 (suppliers),
+> #407 (relationships), #408 (incident management).
+
 ---
 
 ## 1. Method
@@ -113,8 +122,8 @@ log behind every mutation.
 - **No functional escalation tiers.** Reassign-to-group is the only mechanism.
   There is no L1/L2/L3 tier model and no escalation record, so "how often does
   L1 resolve without escalating" is unanswerable.
-- **No hierarchic escalation on SLA breach** — breaches are not detected at all
-  (§3.6).
+- **No hierarchic escalation on SLA breach** — at the time, breaches were not
+  detected at all (§3.6). They are now (#126), but nothing acts on one (#408).
 - No work log / time-spent capture, so effort per incident is not measurable.
 
 ---
@@ -407,8 +416,8 @@ entities, for outage-driven major incidents and availability reporting.
 |---|-----------------|-------|------------------|
 | 3.1 | Service Desk | ✅ Fit | v1 — shipped |
 | 3.15 | Information Security Management | ✅ Fit | v1 — shipped |
-| 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix v4 |
-| 3.6 | Service Level Management | 🟡 Partial | v1 — **partly non-functional** |
+| 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix v4 (#135); major incidents, escalation, work log #408 |
+| 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128) |
 | 3.17 | Relationship Management | 🟡 Partial | roadmap #407 (organization entity with v4 #35), unscheduled |
 | 3.3 | Service Request Management | ❌ Gap | v4 (type only) |
 | 3.4 | Problem Management | ❌ Gap | v4 (type only) |
