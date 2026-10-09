@@ -121,6 +121,48 @@ func TestAudit_MaskedActorIsFlaggedSoARealRequesterNameIsNot(t *testing.T) {
 	require.True(t, foundAssigned, "no assigned entry in %s", body)
 }
 
+// The admin-wide view has its own actor_masked tag (adminAuditEntryView), so the
+// per-ticket raw-JSON check above does not cover it: an unmasked entry must not
+// carry the key, a masked one must carry it as true.
+func TestAudit_AdminViewCarriesActorMaskedOnlyWhenTrue(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	id := createTicketVia(t, h, h.doAsUser)
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+id, map[string]any{"assignee_user_id": h.staffID.String()})
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	res.Body.Close()
+
+	res = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket&limit=500", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	body, err := readAllBody(res)
+	require.NoError(t, err)
+	res.Body.Close()
+	var page struct {
+		Entries []map[string]json.RawMessage `json:"entries"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+
+	entryFor := func(action string) map[string]json.RawMessage {
+		t.Helper()
+		for _, m := range page.Entries {
+			var entityID, act string
+			require.NoError(t, json.Unmarshal(m["entity_id"], &entityID))
+			require.NoError(t, json.Unmarshal(m["action"], &act))
+			if entityID == id && act == action {
+				return m
+			}
+		}
+		t.Fatalf("no %q entry for %s in %s", action, id, body)
+		return nil
+	}
+
+	var masked bool
+	require.NoError(t, json.Unmarshal(entryFor("created")["actor_masked"], &masked))
+	require.True(t, masked)
+	require.NotContains(t, entryFor("assigned"), "actor_masked")
+}
+
 func TestAudit_RequesterMaskReadsTheActorsCurrentRole(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
