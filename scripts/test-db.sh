@@ -194,7 +194,16 @@ cmd_up() {
   require_runtime
   compose up -d --wait 2>/dev/null || compose up -d
   wait_ready
-  if ! reaches_this_db; then
+  # wait_ready asks pg_isready inside the container. Under colima the forward
+  # to the host comes up a moment after that says ready, so a single probe can
+  # fail on a port nobody holds. A real squatter fails every try.
+  local tries=0
+  until reaches_this_db; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 10 ] || break
+    sleep 1
+  done
+  if [ "$tries" -ge 10 ]; then
     # Only an unpinned instance gets a new port from down-then-up; anywhere
     # else, the same port and the same squatter come back.
     local next="Free port $GHD_TEST_PORT, or set GHD_TEST_INSTANCE to get a free port of its own."
