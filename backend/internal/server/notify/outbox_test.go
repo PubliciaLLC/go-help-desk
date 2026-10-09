@@ -618,6 +618,30 @@ var redactAddressCases = []struct{ in, want string }{
 	{"550 recipient 'guest@example.com' rejected", "550 recipient '[address]' rejected"},
 	// #389: an IP literal the relay never closed is hidden too.
 	{"550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
+	// The quoted local part's {0,64} bound: the quote must close within 64
+	// units (an escaped pair counts as one), so 64 is an address and 65 is not.
+	{`"` + strings.Repeat("a", 64) + `"@example.com`, "[address]"},
+	{`"` + strings.Repeat("a", 65) + `"@example.com`, `"` + strings.Repeat("a", 65) + `"@example.com`},
+	// An empty quoted local part is a valid address (RFC 5321/5322), so the
+	// quoted alternative's {0,64} must allow zero inner characters.
+	{`550 <""@example.com> rejected`, "550 <[address]> rejected"},
+	// The IP literal's {0,255} bound: 255 inner characters are an address
+	// with its closing "]"; a 256th leaves the "]" (and that character)
+	// outside the match.
+	{"550 <guest@[" + strings.Repeat("1", 255) + "]>", "550 <[address]>"},
+	{"550 <guest@[" + strings.Repeat("1", 256) + "]>", "550 <[address]1]>"},
+	// The IP literal's whitespace exclusion: the run stops at whitespace, so
+	// a later "]" is not swallowed. Without it the first row would hide
+	// "rest]" too. The CRLF and tab rows have no space between "[" and "]",
+	// so only a \r, \n or \t can stop the run (a literal-space class
+	// would not).
+	{"x guest@[10.0.0.1 rest] tail", "x [address] rest] tail"},
+	// "<" ends the run like ">" does, and the run stops at the closing "]"
+	// (a port after it stays visible).
+	{"550 <guest@[10.0.0.1<a@b.com>", "550 <[address]<[address]>"},
+	{"550 guest@[192.168.1.10]:25 rest", "550 [address]:25 rest"},
+	{"550 5.1.1 <guest@[10.0.0.1\r\nx@b.com]>", "550 5.1.1 <[address]\r\n[address]]>"},
+	{"550 5.1.1 <guest@[10.0.0.1\ta@b.com]>", "550 5.1.1 <[address]\t[address]]>"},
 	// A queue id shaped like an address is hidden too; nothing is lost
 	// that an operator needs.
 	{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
@@ -640,9 +664,8 @@ func TestRedactAddresses(t *testing.T) {
 
 // redactAddresses runs on the outbox worker goroutine, and its input is the
 // SMTP relay's reply, which the relay controls. Go's regexp is linear in the
-// input only when the pattern is bounded: an unbounded quoted local part
-// that never closes made matching quadratic, about a minute at 96 KB before
-// the bound (measured, #358 review).
+// input only when the pattern is bounded: without the {0,64} on the quoted
+// local part, an unclosed quote made matching quadratic (measured, #358 review).
 //
 // The bound is checked against a time limit, not a ratio. Ratios between
 // sizes were tried and are not robust: under CPU contention the larger run

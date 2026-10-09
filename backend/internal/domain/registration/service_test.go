@@ -455,6 +455,28 @@ func (q *recordingQueue) Dispatch(_ context.Context, ev notification.Event) erro
 	return nil
 }
 
+// failingQueue refuses every event, as a broken outbox would.
+type failingQueue struct{ err error }
+
+func (q failingQueue) Dispatch(context.Context, notification.Event) error { return q.err }
+
+// A refused queue fails the signup, for a fresh address and a taken one alike.
+// For a taken address the queue error must win over ErrAlreadyRegistered: the
+// event never reached the outbox, and the caller's log should say so.
+func TestRegister_QueueFailureIsReturned(t *testing.T) {
+	queueErr := errors.New("outbox unavailable")
+	users := &fakeUsers{existing: map[string]bool{"taken@any.com": true}}
+	for _, addr := range []string{"fresh@any.com", "taken@any.com"} {
+		t.Run(addr, func(t *testing.T) {
+			svc := NewService(&fakeStore{}, users, &fakeMailer{}, failingQueue{queueErr}, "http://localhost")
+
+			err := svc.Register(context.Background(), addr, nil, true)
+			require.ErrorIs(t, err, queueErr)
+			require.NotErrorIs(t, err, ErrAlreadyRegistered)
+		})
+	}
+}
+
 // countingStore counts writes, so two requests can be compared.
 type countingStore struct {
 	fakeStore

@@ -15,6 +15,18 @@ func outboxChannels() []string {
 	return []string{"email", "webhook", "verification"}
 }
 
+// outboxSenderMap gives each outbox channel the dispatcher that sends it.
+// The keys must be exactly outboxChannels (TestOutboxSenderMap). The three
+// arguments share one type, so swapping two at the call site compiles and no
+// unit test sees it; only a nil is refused, at startup, by checkOutboxWiring.
+func outboxSenderMap(guestLink, webhook, verification notification.Dispatcher) map[string]notification.Dispatcher {
+	return map[string]notification.Dispatcher{
+		"email":        guestLink,
+		"webhook":      webhook,
+		"verification": verification,
+	}
+}
+
 // checkOutboxWiring refuses to start when signup verification email could
 // never be sent (#361). The outbox dispatcher skips a channel it does not
 // list and returns nil, so without "verification" in queued every signup
