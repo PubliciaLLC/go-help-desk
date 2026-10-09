@@ -1634,6 +1634,8 @@ unreachable. Separate keys are the other half of what one selected provider
 could not do: switching services no longer destroys the key you had already
 pasted, and an operator can hold keys for two without choosing between them.
 
+The rule is checked for each provider whose toggle or key the write includes. A write that mentions neither is not refused because of that provider's stored state ([#394](https://github.com/PubliciaLLC/go-help-desk/issues/394)). Only a database edit can leave a provider enabled with no key, and checking it on every write refused them all, including the one that would fix it. Such a provider does no lookups.
+
 **Every enabled provider is queried, and every answer is stored.** They answer
 different questions, which is the point of allowing more than one: VirusTotal
 counts engines, CIRCL says whether a catalogue has the file on record, and a
@@ -1887,7 +1889,7 @@ Serves both the frontend SPA and external integrations.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
-**Settings dump and choice-list settings.** Six settings take one value from a fixed list: `closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling` and `attachment_reputation_refresh`. `PATCH /admin/settings` refuses any other value, `null` and a non-string included. `GET /admin/settings` reports each one as the value in force, not the stored bytes. A stored value the `PATCH` would refuse (only a direct database edit can put one there) is reported as what the server does with it instead: `off`, `everywhere`, `refuse`, `refuse` and `biweekly` respectively. The exception is `attachment_scan_policy`, which is reported as unset, because an unrecognised scan policy follows the scanner address exactly as an unset one does. The settings page sends every setting on each save, so echoing the stored value made every save on every tab fail until someone changed that one dropdown ([#383](https://github.com/PubliciaLLC/go-help-desk/issues/383)). An unset setting stays absent from the dump.
+**Settings dump and choice-list settings.** Six settings take one value from a fixed list: `closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling` and `attachment_reputation_refresh`. `PATCH /admin/settings` refuses any other value, `null` and a non-string included. `GET /admin/settings` reports each one as the value in force, not the stored bytes. A stored value the `PATCH` would refuse (only a direct database edit can put one there) is reported as what the server does with it instead: `off`, `everywhere`, `refuse`, `refuse` and `biweekly` respectively. The exception is `attachment_scan_policy`, which is reported as unset, because an unrecognised scan policy follows the scanner address exactly as an unset one does. Echoing the stored value made every save on every tab fail until someone changed that one dropdown, because the settings page sent every setting on each save ([#383](https://github.com/PubliciaLLC/go-help-desk/issues/383)). The page now sends only the settings the operator changed ([#394](https://github.com/PubliciaLLC/go-help-desk/issues/394)), so a damaged value of any kind blocks only a save that changes it. The dump still reports the value in force, for clients that send it back whole. An unset setting stays absent from the dump.
 
 ### MCP Interface
 
