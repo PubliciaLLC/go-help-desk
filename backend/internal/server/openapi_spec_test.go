@@ -80,6 +80,13 @@ type specOp struct {
 	line         int
 }
 
+// String names the operation in a failure message: where it is, what it
+// is, and its operationId.
+func (o specOp) String() string {
+	id, _ := o.op["operationId"].(string)
+	return fmt.Sprintf("line %d %s %s (%s)", o.line, o.method, o.path, id)
+}
+
 func loadSpec(t *testing.T) specDoc {
 	t.Helper()
 	raw, err := os.ReadFile(specFile)
@@ -108,13 +115,18 @@ func loadSpec(t *testing.T) specDoc {
 				continue
 			}
 			key := strings.ToUpper(m) + " " + p
-			doc.ops[key] = specOp{path: p, method: strings.ToUpper(m), item: item, op: op, line: lines[p]}
+			line := lines[key]
+			if line == 0 {
+				line = lines[p]
+			}
+			doc.ops[key] = specOp{path: p, method: strings.ToUpper(m), item: item, op: op, line: line}
 		}
 	}
 	return doc
 }
 
-// pathLines maps each key under paths: to its line, for messages.
+// pathLines maps each key under paths: to its line, and each operation,
+// "GET /api/v1/x", to the line of its method key, for messages.
 func pathLines(n *yaml.Node) map[string]int {
 	out := map[string]int{}
 	if n.Kind == yaml.DocumentNode && len(n.Content) > 0 {
@@ -126,7 +138,12 @@ func pathLines(n *yaml.Node) map[string]int {
 		}
 		ps := n.Content[i+1]
 		for j := 0; j+1 < len(ps.Content); j += 2 {
-			out[ps.Content[j].Value] = ps.Content[j].Line
+			p := ps.Content[j].Value
+			out[p] = ps.Content[j].Line
+			item := ps.Content[j+1]
+			for k := 0; k+1 < len(item.Content); k += 2 {
+				out[strings.ToUpper(item.Content[k].Value)+" "+p] = item.Content[k].Line
+			}
 		}
 	}
 	return out
@@ -446,14 +463,21 @@ func reachableRefs(root map[string]any) map[string]bool {
 }
 
 // callerSentence is the first sentence of a role-restricted operation's
-// description, generated from the same values the router is checked against
-// (x-ghd-roles, x-ghd-mfa and whether a machine credential is admitted), so
-// the prose cannot drift from them.
+// description, generated from what the router measurably admits (the roles,
+// whether a second factor is required, and whether a machine credential gets
+// in), so the prose cannot drift from the code.
 func callerSentence(roles []string, mfa, machine bool) string {
 	noun := map[string]string{"admin": "administrators", "staff": "staff", "user": "reporting users"}
 	var who []string
 	for i := len(roles) - 1; i >= 0; i-- {
-		who = append(who, noun[roles[i]])
+		w, ok := noun[roles[i]]
+		if !ok {
+			w = fmt.Sprintf("%q", roles[i]) // not a role; the caller reports it
+		}
+		who = append(who, w)
+	}
+	if len(who) == 0 {
+		return ""
 	}
 	s := who[len(who)-1]
 	if len(who) > 1 {
@@ -479,6 +503,9 @@ func TestCallerSentence(t *testing.T) {
 		{[]string{"admin", "staff"}, true, true, "Staff and administrators only (second factor required)."},
 		{[]string{"admin"}, true, false, "Administrators only, in a signed-in session (second factor required)."},
 		{[]string{"admin", "user"}, false, true, "Reporting users and administrators only."},
+		// Not a role: no panic, and nothing a real description would match.
+		{[]string{"admins"}, true, true, `"admins" only (second factor required).`},
+		{nil, true, true, ""},
 	}
 	for _, tc := range cases {
 		if got := callerSentence(tc.roles, tc.mfa, tc.machine); got != tc.want {
@@ -505,6 +532,8 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 	if _, ok := root["security"]; ok {
 		fail("top-level security is not used; every operation states its own")
 	}
+
+	paths, _ := root["paths"].(map[string]any)
 
 	// Every $ref is local and resolves, and every key is a string.
 	var walk func(v any, at string)
@@ -546,7 +575,21 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 			}
 		}
 	}
-	walk(root, "#")
+	for k, v := range root {
+		if k != "paths" {
+			walk(v, "#/"+k)
+		}
+	}
+	for p, v := range paths {
+		item, _ := v.(map[string]any)
+		for k, c := range item {
+			if o, ok := doc.ops[strings.ToUpper(k)+" "+p]; ok {
+				walk(c, o.String())
+			} else {
+				walk(c, p+" "+k)
+			}
+		}
+	}
 
 	// Nothing defined and never used, so merged fragments leave no litter.
 	reachable := reachableRefs(root)
@@ -581,7 +624,6 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 	usedTags := map[string]bool{}
 	opIDs := map[string]string{}
 
-	paths, _ := root["paths"].(map[string]any)
 	for p, v := range paths {
 		if !pathPattern.MatchString(p) {
 			fail("path %q is not canonical (lowercase segments, {param} names, no trailing slash)", p)
@@ -595,7 +637,7 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 	}
 
 	for key, o := range doc.ops {
-		where := fmt.Sprintf("line %d %s", o.line, key)
+		where := o.String()
 		id, _ := o.op["operationId"].(string)
 		switch {
 		case !opIDPattern.MatchString(id):
@@ -607,6 +649,13 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 		}
 		if s, _ := o.op["summary"].(string); strings.TrimSpace(s) == "" || strings.HasPrefix(s, "TODO") {
 			fail("%s: summary is missing", where)
+		} else if !strings.HasSuffix(s, ".") {
+			fail("%s: summary %q does not end with a period, as every other summary does", where, s)
+		}
+		for _, role := range stringList(o.op["x-ghd-roles"]) {
+			if !slices.Contains(specRoles, role) {
+				fail("%s: x-ghd-roles has %q, which is not a role (%s)", where, role, strings.Join(specRoles, ", "))
+			}
 		}
 		ts, _ := o.op["tags"].([]any)
 		if len(ts) != 1 {
@@ -626,7 +675,6 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 		if !ok {
 			fail("%s: security must be stated, [] for a public operation", where)
 		}
-		machine := false
 		for i, req := range sec {
 			m, ok := req.(map[string]any)
 			if !ok {
@@ -644,16 +692,6 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 					fail("%s: security scheme %q has %v for scopes, want a list", where, name, scopes)
 				}
 				usedSchemes[name] = true
-				machine = machine || name == "apiKey" || name == "oauthClient"
-			}
-		}
-
-		// Who may call it, in the first sentence, where not everyone may.
-		if roles := stringList(o.op["x-ghd-roles"]); len(roles) > 0 && len(roles) < len(specRoles) {
-			mfa, _ := o.op["x-ghd-mfa"].(bool)
-			want := callerSentence(roles, mfa, machine)
-			if d, _ := o.op["description"].(string); !strings.HasPrefix(strings.TrimSpace(d), want) {
-				fail("%s: the description of an operation open to some roles only starts by saying so: %q", where, want)
 			}
 		}
 
@@ -988,20 +1026,33 @@ func TestOpenAPISpec_AuthMatchesRouter(t *testing.T) {
 		}
 		ra := probeRoute(t, r, keys)
 		bad := func(format string, args ...any) {
-			problems = append(problems, fmt.Sprintf("line %d %s: ", o.line, key)+fmt.Sprintf(format, args...))
+			problems = append(problems, o.String()+": "+fmt.Sprintf(format, args...))
 		}
+		authAgrees := true
 		got := securityOf(o.op)
 		want := expectedSecurity(ra)
 		if !slices.Equal(got, want) {
 			bad("security is %v; the router admits %v", got, want)
+			authAgrees = false
 		}
 		gotRoles := stringList(o.op["x-ghd-roles"])
 		if !slices.Equal(gotRoles, ra.roles) {
 			bad("x-ghd-roles is %v; the router admits sessions with roles %v", gotRoles, ra.roles)
+			authAgrees = false
 		}
 		gotMFA, _ := o.op["x-ghd-mfa"].(bool)
 		if _, present := o.op["x-ghd-mfa"]; present != (len(ra.roles) > 0) || gotMFA != ra.mfa {
 			bad("x-ghd-mfa is %v; the router requires a passed second factor: %v", o.op["x-ghd-mfa"], ra.mfa)
+			authAgrees = false
+		}
+		// Who may call it, in the first sentence, where not everyone may.
+		// Only once the flags above agree with the router: when they do not,
+		// that is the cause to report, and the sentence follows from them.
+		if authAgrees && len(ra.roles) > 0 && len(ra.roles) < len(specRoles) {
+			want := callerSentence(ra.roles, ra.mfa, ra.apiKey || ra.oauth)
+			if d, _ := o.op["description"].(string); !strings.HasPrefix(strings.TrimSpace(d), want) {
+				bad("the description of an operation open to some roles only starts by saying so: %q", want)
+			}
 		}
 		when, _ := o.op["x-ghd-anonymous-when"].(string)
 		if (when == "guest_submission_enabled") != ra.anonymousWhenGuests || (when != "" && !ra.anonymousWhenGuests) {

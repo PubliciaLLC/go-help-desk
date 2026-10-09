@@ -4,10 +4,10 @@ info:
   version: 1.3.0-beta
   summary: REST API of Go Help Desk, served under /api/v1 beside the SPA.
   description: |
-    Hand-written. backend/internal/server/openapi_spec_test.go walks the real
-    chi router and fails when this file and the router disagree on any route,
-    on who may call it, or on which handler serves it. When the two disagree,
-    the code is the truth and this file is what gets fixed.
+    Hand-written, and checked by a test that walks the server's real router
+    and fails when this file and the router disagree on any route, on who may
+    call it, or on which handler serves it. When the two disagree, the code is
+    the truth and this file is what gets fixed.
 
     Conventions that hold for every operation except where an operation says
     otherwise, so they are not repeated on each:
@@ -18,8 +18,7 @@ info:
       served as application/json. Refusals produced by the authentication
       middleware (401 unauthorized, 403 forbidden / mfa_required /
       insufficient_scope / session_required) carry the same envelope but are
-      served as text/plain; charset=utf-8, because they are written with
-      net/http's http.Error.
+      served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
       handler that panics is answered 500 with an empty body, not the
@@ -355,7 +354,7 @@ paths:
       summary: Sign in with an email address and password.
       description: >-
         Verifies the password, then starts a new session. Only failed attempts
-        count against the per-address budget, and a correct password is always
+        count against the per-email-address budget, and a correct password is always
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
         refused attempt answers 429 with Retry-After: 60. The response says what
@@ -1742,7 +1741,6 @@ paths:
         Staff and administrators only (second factor required).
         Returns every group with its name and description, so a ticket can be assigned to one. Membership
         and category scopes are not included; those come from the admin group endpoints. Not paged.
-        Available to administrators and staff.
       tags: ['Reference data']
       x-ghd-handler: handleListGroups
       security:
@@ -1775,7 +1773,7 @@ paths:
         Only one follow-up can be opened from a closed ticket. Every refusal that would reveal the state of a
         link or a ticket is the same 404 not_found, including a ticket that is still open, a follow-up that
         already exists, and guest submission being switched off. An archived category answers 400 and names
-        the reason. The per-address submission budget applies, and it is shared with POST /guest/tickets.
+        the reason. The per-client-address submission budget applies, and it is shared with POST /guest/tickets.
       tags: ['Guest']
       x-ghd-handler: handleGuestFollowUp
       security:
@@ -1848,7 +1846,7 @@ paths:
         whether or not anything matched, so the answer does not reveal whether a tracking number or an address exists. Matching
         happens later, when the email is prepared. Both fields are needed for any work to be queued.
         On an open ticket the new link replaces the previous one. On a closed ticket it is added beside the
-        existing links, and it can only read. The request is charged against a per-address budget. A
+        existing links, and it can only read. The request is charged against a per-client-address budget. A
         per-ticket budget is charged when the email is prepared, and a request that exceeds it sends nothing.
       tags: ['Guest']
       x-ghd-handler: handleGuestResend
@@ -1926,7 +1924,7 @@ paths:
         address without a display name. guest_name is required. guest_phone is optional. Priority is always
         medium and cannot be set by a guest.
         The response carries only the tracking number. The access link is emailed to guest_email, so a guest
-        proves ownership of the address by using the link. The per-address budget is shared with
+        proves ownership of the address by using the link. The per-client-address budget is shared with
         POST /guest/follow-up.
       tags: ['Guest']
       x-ghd-handler: handleGuestCreateTicket
@@ -2349,8 +2347,7 @@ paths:
         Returns every account that is not deleted, with its id, display name and an assignable flag, ordered
         by display name. The list is deliberately not limited to staff: reporting users appear too, with assignable set to false,
         so a ticket already assigned to a colleague who has since been disabled or moved to the reporting role
-        can still show their name. Email, role and login state are not included. Not paged. Available to
-        administrators and staff.
+        can still show their name. Email, role and login state are not included. Not paged.
       tags: ['Reference data']
       x-ghd-handler: handleListAssignableStaff
       security:
@@ -2453,7 +2450,7 @@ paths:
   /api/v1/admin/audit:
     get:
       operationId: listAdminAudit
-      summary: Search the audit log across every entity
+      summary: Search the audit log across every entity.
       description: |
         Staff and administrators only (second factor required).
         The admin-wide half of the audit trail, searchable across every
@@ -2543,7 +2540,7 @@ paths:
   /api/v1/tickets:
     get:
       operationId: listTickets
-      summary: List the tickets the caller may work with
+      summary: List the tickets the caller may work with.
       description: |
         Returns the tickets the caller may see, each as a TicketView: the ticket
         plus its live SLA status and can_reopen. Which tickets come back depends
@@ -2638,7 +2635,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     post:
       operationId: createTicket
-      summary: Open a new ticket
+      summary: Open a new ticket.
       description: |
         Creates a ticket and answers 201 with the new Ticket (the bare ticket,
         not the TicketView). The tracking number uses the instance's ticket
@@ -2738,7 +2735,7 @@ paths:
   /api/v1/tickets/fields:
     get:
       operationId: resolveFieldsForCTI
-      summary: List the custom fields for a category, type and item
+      summary: List the custom fields for a category, type and item.
       description: |
         The custom field assignments that apply to a classification, used by the
         new-ticket form. Every signed-in role may call it. category_id is
@@ -2795,7 +2792,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: getTicket
-      summary: Get one ticket
+      summary: Get one ticket.
       description: |
         Returns one ticket as a TicketView. This is the only route under
         /tickets/{id} that accepts a tracking number as well as a UUID (matched
@@ -2827,7 +2824,7 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     patch:
       operationId: updateTicket
-      summary: Change a ticket's status, assignment or classification
+      summary: Change a ticket's status, assignment or classification.
       description: |
         Applies whichever of status_id, clear_assignee, assignee_user_id,
         assignee_group_id and category_id are sent, and answers 200 with the bare
@@ -2949,7 +2946,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listTicketAudit
-      summary: List a ticket's audit trail
+      summary: List a ticket's audit trail.
       description: |
         The per-ticket activity feed: every audit entry recorded against
         the ticket, oldest first, capped at the newest 500 entries. Each entry has
@@ -3004,7 +3001,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listTicketCannedResponses
-      summary: List the canned responses for this ticket's category and type
+      summary: List the canned responses for this ticket's category and type.
       description: |
         Staff and administrators only (second factor required).
         The reply-composer picker. Returns the canned responses that apply to the
@@ -3058,7 +3055,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     post:
       operationId: closeTicket
-      summary: Close a ticket
+      summary: Close a ticket.
       description: |
         Administrators only. Moves the ticket to Closed and answers 200 with the
         Ticket. Closing a ticket that is already Closed succeeds and writes
@@ -3116,7 +3113,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listTicketCustomFields
-      summary: List the custom field values on a ticket
+      summary: List the custom field values on a ticket.
       description: |
         The custom field values stored on the ticket, as a bare array (empty when
         none are set). The id must be a UUID.
@@ -3157,7 +3154,7 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     put:
       operationId: putTicketCustomFields
-      summary: Set custom field values on a ticket
+      summary: Set custom field values on a ticket.
       description: |
         The body maps custom field definition ids to values. Each key must be a
         field this ticket has through its classification, and a select field's
@@ -3221,7 +3218,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     post:
       operationId: createFollowUp
-      summary: Open a follow-up ticket from a closed ticket
+      summary: Open a follow-up ticket from a closed ticket.
       description: |
         Creates a new ticket that starts open and is linked to the closed one. The
         closed ticket is left as it is. It is created through the same path as any
@@ -3298,7 +3295,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listStatusHistory
-      summary: List a ticket's status changes
+      summary: List a ticket's status changes.
       description: |
         Every status transition on the ticket, oldest first. Status names and
         colours are read from the statuses table when the request is served. The
@@ -3343,7 +3340,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listLinks
-      summary: List this ticket's links to other tickets
+      summary: List this ticket's links to other tickets.
       description: |
         Every link in which this ticket is the source or the target, in no
         guaranteed order. A link is directional: source_id is the ticket it starts
@@ -3385,7 +3382,7 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     post:
       operationId: addLink
-      summary: Link this ticket to another ticket
+      summary: Link this ticket to another ticket.
       description: |
         Creates a directed link from this ticket (the source) to target_id. The
         link type is one of related_to, parent_child (the source is the parent),
@@ -3501,7 +3498,7 @@ paths:
           type: string
     delete:
       operationId: removeLink
-      summary: Remove a link from this ticket to another
+      summary: Remove a link from this ticket to another.
       description: |
         Deletes the link of type linkType that runs from this ticket to targetId.
         Direction matters: a link stored the other way round is not touched.
@@ -3558,7 +3555,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     post:
       operationId: reopenTicket
-      summary: Force-reopen a Closed ticket
+      summary: Force-reopen a Closed ticket.
       description: |
         Moves a Closed ticket back to the reopen target status. That is the
         configured status, falling back to New when it does not resolve. Answers
@@ -3628,7 +3625,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listReplies
-      summary: List the reply thread
+      summary: List the reply thread.
       description: |
         The reply thread, oldest first. Internal notes are left out for a
         reporting user, and staff and administrators see them. A reply written by
@@ -3670,7 +3667,7 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     post:
       operationId: addReply
-      summary: Post a reply to a ticket
+      summary: Post a reply to a ticket.
       description: |
         Adds a reply and answers 201 with the Reply. The response carries no
         author_name; listReplies does. body is required after
@@ -3763,7 +3760,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     post:
       operationId: resolveTicket
-      summary: Mark a ticket Resolved
+      summary: Mark a ticket Resolved.
       description: |
         Sets the ticket to Resolved, stores the optional notes as its resolution
         notes, and answers 200 with the bare Ticket. Staff and administrators
@@ -3839,7 +3836,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listTicketTags
-      summary: List the tags on a ticket
+      summary: List the tags on a ticket.
       description: |
         Staff and administrators only (second factor required).
         A reporting user gets 403 forbidden on a
@@ -3890,7 +3887,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     post:
       operationId: addTicketTag
-      summary: Add a tag to a ticket
+      summary: Add a tag to a ticket.
       description: |
         Staff and administrators only (second factor required).
         The name is trimmed and lower-cased. If no
@@ -3972,7 +3969,7 @@ paths:
           type: string
     delete:
       operationId: removeTicketTag
-      summary: Remove a tag from a ticket
+      summary: Remove a tag from a ticket.
       description: |
         Staff and administrators only (second factor required).
         Detaches the tag from the ticket and answers
@@ -4017,7 +4014,7 @@ paths:
   /api/v1/admin/security-warnings:
     get:
       operationId: getSecurityWarnings
-      summary: Report insecure secrets and whether attachment scanning works now
+      summary: Report insecure secrets and whether attachment scanning works now.
       description: |
         Administrators only (second factor required).
         Deliberately not part of the public site payload.
@@ -4080,7 +4077,7 @@ paths:
   /api/v1/admin/settings:
     get:
       operationId: getSettings
-      summary: Read the stored instance settings
+      summary: Read the stored instance settings.
       description: |
         Administrators only (second factor required).
         Returns every stored setting keyed by name, with each
@@ -4146,7 +4143,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     patch:
       operationId: updateSettings
-      summary: Change one or more instance settings
+      summary: Change one or more instance settings.
       description: |
         Administrators only (second factor required).
         The body is a JSON object that maps setting names to
@@ -4273,7 +4270,7 @@ paths:
   /api/v1/admin/settings/logo:
     post:
       operationId: uploadLogo
-      summary: Upload the site logo
+      summary: Upload the site logo.
       description: |
         Administrators only (second factor required).
         Accepts one PNG, JPEG or GIF of at most 2 MB in the
@@ -4336,7 +4333,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     delete:
       operationId: deleteLogo
-      summary: Remove the site logo
+      summary: Remove the site logo.
       description: |
         Administrators only (second factor required).
         Deletes the stored logo file and clears the
@@ -4364,7 +4361,7 @@ paths:
   /api/v1/guest/attachments:
     post:
       operationId: guestUploadAttachment
-      summary: Attach a file to the ticket a guest link names
+      summary: Attach a file to the ticket a guest link names.
       description: |
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
@@ -4462,7 +4459,7 @@ paths:
       - $ref: '#/components/parameters/TicketRef'
     get:
       operationId: listAttachments
-      summary: List the attachments on a ticket
+      summary: List the attachments on a ticket.
       description: |
         Anyone who may see the ticket may list its attachments. A reporting user
         sees only their own tickets, and a ticket that is not theirs answers 404.
@@ -4512,7 +4509,7 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     post:
       operationId: uploadAttachment
-      summary: Upload a file to a ticket
+      summary: Upload a file to a ticket.
       description: |
         Multipart upload of one file in the field file, up to 25 MB. The checks run
         in this order.
@@ -4653,7 +4650,7 @@ paths:
           format: uuid
     get:
       operationId: downloadAttachment
-      summary: Download an attachment
+      summary: Download an attachment.
       description: |
         Streams the stored file as a download. The response is always
         application/octet-stream with Content-Disposition: attachment, whatever the
@@ -4800,7 +4797,7 @@ paths:
         '404':
           $ref: '#/components/responses/TicketNotFound'
         '412':
-          description: An If-Match, If-Unmodified-Since or If-Range precondition failed. No body.
+          description: An If-Match or If-Unmodified-Since precondition failed. No body.
         '416':
           description: The Range cannot be satisfied. Content-Range gives the file's size.
           headers:
@@ -4826,7 +4823,7 @@ paths:
           format: uuid
     post:
       operationId: recheckAttachmentReputation
-      summary: Ask the reputation providers about a file again
+      summary: Ask the reputation providers about a file again.
       description: |
         Staff and administrators only (second factor required).
         Re-checks the verdict on one file with each
@@ -4926,7 +4923,7 @@ paths:
   /api/v1/admin/api-keys:
     get:
       operationId: listAPIKeys
-      summary: List the caller's API keys
+      summary: List the caller's API keys.
       description: >-
         Administrators only (second factor required).
         Returns the API keys owned by the caller, newest first. The caller is the
@@ -4956,7 +4953,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createAPIKey
-      summary: Create an API key
+      summary: Create an API key.
       description: >-
         Administrators only (second factor required).
         Creates an API key that acts at the caller's role and counts as having
@@ -5058,7 +5055,7 @@ paths:
           format: uuid
     delete:
       operationId: deleteAPIKey
-      summary: Delete an API key
+      summary: Delete an API key.
       description: >-
         Administrators only (second factor required).
         Deletes the key with this id, whoever owns it, so the key stops working on
@@ -5096,7 +5093,7 @@ paths:
           format: uuid
     get:
       operationId: listGroupsForCategory
-      summary: List groups scoped to a whole category
+      summary: List groups scoped to a whole category.
       description: >-
         Administrators only (second factor required).
         Returns the groups that hold a category-level scope entry, meaning one
@@ -5151,7 +5148,7 @@ paths:
           format: uuid
     get:
       operationId: listGroupsForType
-      summary: List groups scoped to one category type
+      summary: List groups scoped to one category type.
       description: >-
         Administrators only (second factor required).
         Returns the groups with a scope entry for exactly this category and type,
@@ -5188,7 +5185,7 @@ paths:
   /api/v1/admin/groups:
     get:
       operationId: listGroups
-      summary: List groups
+      summary: List groups.
       description: >-
         Administrators only (second factor required). Returns every group, ordered
         by name.
@@ -5214,7 +5211,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createGroup
-      summary: Create a group
+      summary: Create a group.
       description: >-
         Administrators only (second factor required).
         Creates a group with no members and no scopes. name is required and is
@@ -5278,7 +5275,7 @@ paths:
           format: uuid
     get:
       operationId: getGroup
-      summary: Get a group
+      summary: Get a group.
       description: >-
         Administrators only (second factor required).
         Returns one group. An unknown id answers 500 internal_error, not 404.
@@ -5316,7 +5313,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     patch:
       operationId: updateGroup
-      summary: Update a group
+      summary: Update a group.
       description: >-
         Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their value. The group
@@ -5372,7 +5369,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     delete:
       operationId: deleteGroup
-      summary: Delete a group
+      summary: Delete a group.
       description: >-
         Administrators only (second factor required).
         Deletes the group together with its memberships and scopes. Tickets
@@ -5411,7 +5408,7 @@ paths:
           format: uuid
     get:
       operationId: listGroupMembers
-      summary: List a group's members
+      summary: List a group's members.
       description: >-
         Administrators only (second factor required).
         Returns the members as user objects, with password and MFA secrets never
@@ -5446,7 +5443,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: addGroupMember
-      summary: Add a member to a group
+      summary: Add a member to a group.
       description: >-
         Administrators only (second factor required).
         Adds a user to the group. Adding someone who is already a member answers
@@ -5512,7 +5509,7 @@ paths:
           format: uuid
     delete:
       operationId: removeGroupMember
-      summary: Remove a member from a group
+      summary: Remove a member from a group.
       description: >-
         Administrators only (second factor required).
         Removes the user from the group. Removing someone who is not a member also
@@ -5550,7 +5547,7 @@ paths:
           format: uuid
     get:
       operationId: listGroupScopes
-      summary: List a group's scopes
+      summary: List a group's scopes.
       description: >-
         Administrators only (second factor required).
         Returns the category and type entries that route tickets to this group. An
@@ -5585,7 +5582,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: addGroupScope
-      summary: Add a category or type scope to a group
+      summary: Add a category or type scope to a group.
       description: >-
         Administrators only (second factor required).
         Routes tickets in a category, or in one type of it, to this group. Omit
@@ -5641,7 +5638,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     delete:
       operationId: removeGroupScope
-      summary: Remove a category or type scope from a group
+      summary: Remove a category or type scope from a group.
       description: >-
         Administrators only (second factor required).
         Removes the entry that matches category_id and type_id. A missing or null
@@ -5687,7 +5684,7 @@ paths:
   /api/v1/admin/oauth-clients:
     get:
       operationId: listOAuthClients
-      summary: List OAuth clients
+      summary: List OAuth clients.
       description: >-
         Administrators only (second factor required).
         Returns every OAuth client, ordered by name. The client secret is kept only
@@ -5715,7 +5712,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createOAuthClient
-      summary: Create an OAuth client
+      summary: Create an OAuth client.
       description: >-
         Administrators only (second factor required).
         Creates a client that can obtain bearer tokens from POST
@@ -5803,7 +5800,7 @@ paths:
           format: uuid
     delete:
       operationId: deleteOAuthClient
-      summary: Delete an OAuth client
+      summary: Delete an OAuth client.
       description: >-
         Administrators only (second factor required).
         Deletes the client. Its tokens stop being accepted on the next request,
@@ -5833,7 +5830,7 @@ paths:
   /api/v1/admin/plugins:
     get:
       operationId: listPlugins
-      summary: List plugins
+      summary: List plugins.
       description: >-
         Administrators only (second factor required).
         Returns the plugins registered with the running server. In v1 no plugin is
@@ -5862,7 +5859,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: installPlugin
-      summary: Install a plugin (not implemented)
+      summary: Install a plugin (not implemented).
       description: >-
         Administrators only (second factor required).
         Always answers 501 not_implemented. WASM plugin upload is not implemented in
@@ -5899,7 +5896,7 @@ paths:
           type: string
     patch:
       operationId: updatePlugin
-      summary: Enable or disable a plugin
+      summary: Enable or disable a plugin.
       description: >-
         Administrators only (second factor required).
         Sets the plugin's enabled state. The enabled field is a plain boolean, so an
@@ -5949,7 +5946,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     delete:
       operationId: uninstallPlugin
-      summary: Uninstall a plugin (not implemented)
+      summary: Uninstall a plugin (not implemented).
       description: >-
         Administrators only (second factor required).
         Always answers 501 not_implemented. Plugin uninstall is not implemented in
@@ -5978,7 +5975,7 @@ paths:
   /api/v1/admin/scopes:
     get:
       operationId: listScopes
-      summary: List the scope catalogue
+      summary: List the scope catalogue.
       description: >-
         Administrators only (second factor required).
         Returns every scope a credential can hold, as resource:action pairs. Write
@@ -6020,7 +6017,7 @@ paths:
   /api/v1/admin/users:
     get:
       operationId: listUsers
-      summary: List users
+      summary: List users.
       description: >-
         Administrators only (second factor required).
         Returns up to 200 accounts, newest first. Disabled accounts are included and
@@ -6051,7 +6048,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createUser
-      summary: Create a user
+      summary: Create a user.
       description: >-
         Administrators only (second factor required).
         Creates an account with the given role. The account has no second factor.
@@ -6142,7 +6139,7 @@ paths:
           format: uuid
     get:
       operationId: getUser
-      summary: Get a user
+      summary: Get a user.
       description: >-
         Administrators only (second factor required).
         Returns one account with its groups and passkey count. Soft-deleted accounts
@@ -6182,7 +6179,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     patch:
       operationId: updateUser
-      summary: Update a user
+      summary: Update a user.
       description: >-
         Administrators only (second factor required).
         Applies the fields that are sent, in this order: disabled (disabling also
@@ -6276,7 +6273,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     delete:
       operationId: deleteUser
-      summary: Delete a user
+      summary: Delete a user.
       description: >-
         Administrators only (second factor required).
         Soft-deletes the account. It is hidden from lists, its sign-in is refused, its
@@ -6338,7 +6335,7 @@ paths:
           format: uuid
     post:
       operationId: adminResetPassword
-      summary: Set a user's password
+      summary: Set a user's password.
       description: >-
         Administrators only (second factor required).
         Sets a new local password without asking for the old one, and ends all of the
@@ -6409,7 +6406,7 @@ paths:
   /api/v1/admin/webhooks:
     get:
       operationId: listWebhooks
-      summary: List webhooks
+      summary: List webhooks.
       description: >-
         Administrators only (second factor required).
         Returns every webhook subscription, enabled or not, oldest first. A disabled
@@ -6437,7 +6434,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
     post:
       operationId: createWebhook
-      summary: Create a webhook
+      summary: Create a webhook.
       description: >-
         Administrators only (second factor required).
         Creates a subscription that receives a POST for each matching event. url and
@@ -6516,7 +6513,7 @@ paths:
           format: uuid
     patch:
       operationId: updateWebhook
-      summary: Update a webhook
+      summary: Update a webhook.
       description: >-
         Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their stored value. url,
@@ -6593,7 +6590,7 @@ paths:
                 $ref: '#/components/schemas/Error'
     delete:
       operationId: deleteWebhook
-      summary: Delete a webhook
+      summary: Delete a webhook.
       description: >-
         Administrators only (second factor required).
         Deletes the subscription and its last_delivery. A delivery already in flight
@@ -8207,7 +8204,7 @@ paths:
         Administrators only (second factor required).
         Partial update. An absent field is unchanged. The system statuses New, Resolved
         and Closed keep their names, because lifecycle rules find them by name. Renaming
-        one is 403 forbidden. Sending active in any form is also 403 forbidden for a
+        one is 403 forbidden. Sending true or false for active is also 403 forbidden for a
         system status, since system statuses cannot be deactivated. Sending a system
         status its current name is not a rename and is allowed. The name is trimmed. An
         empty name is 400 bad_request, and a name in use is 409 status_name_taken. An
@@ -8242,9 +8239,8 @@ paths:
                   description: >-
                     Stored flag. The server does not act on it: an inactive status is
                     still listed by GET /api/v1/statuses and is still accepted when a
-                    ticket's status is changed. The web interface hides inactive
-                    statuses from its pickers. Refused for a system status whatever
-                    its value.
+                    ticket's status is changed. Refused for a system status when
+                    sent as true or false; null is treated as absent.
       responses:
         '200':
           description: The status as stored after the update.
