@@ -296,7 +296,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <p>Other codes are listed in the reference, on the operation that returns them.</p>
 
 <h3>Pagination</h3>
-<p>List endpoints take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. Both are clamped rather than rejected.</p>
+<p>List endpoints take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A value above the maximum is clamped rather than rejected, and a non-numeric value is ignored, so the default applies.</p>
 <p>Most lists return a bare JSON array with no total. Page until a response is shorter than <code>limit</code>.</p>
 <pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
 <p>Two kinds of list differ:</p>
