@@ -551,7 +551,7 @@ Facilities
     <tr><td><code>ticket_replied.tmpl</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default)</td><td>The requester, account holder or guest</td></tr>
     <tr><td><code>ticket_status_changed.tmpl</code></td><td>A guest's ticket changes status, other than to Closed</td><td>The guest</td></tr>
     <tr><td><code>ticket_resolved.tmpl</code></td><td>A guest's ticket is resolved</td><td>The guest</td></tr>
-    <tr><td><code>ticket_reopened.tmpl</code></td><td>A guest's ticket is reopened</td><td>The guest</td></tr>
+    <tr><td><code>ticket_reopened.tmpl</code></td><td>A guest's Closed ticket is reopened with the Reopen action. A reopen by the guest's own reply sends no mail</td><td>The guest</td></tr>
     <tr><td><code>guest_link.tmpl</code></td><td>A guest asks for a new link at <code>/track</code></td><td>The guest</td></tr>
     <tr><td><code>email_verification.tmpl</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
   </tbody>
@@ -728,6 +728,9 @@ function verifySignature(secret, body, header) {
 
 <p>Everything below lives under <em>Admin → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
 
+<img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab: the allowed file types, what happens when a file's content contradicts its name, the malware scanner address and policy, and the start of Reputation lookup with the VirusTotal and MetaDefender settings and their terms notices" width="2880" height="5200" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
+
 <div class="callout callout-note">
   <p><strong>All of these require a signed-in administrator.</strong> An API key or OAuth client that tries to change one is refused with <code>403 session_required</code>, because these settings decide what this instance will hold and where customers' file hashes go. That includes the allowed-types list: a leaked API key must not be able to widen what the instance accepts and then upload what it has just allowed.</p>
 </div>
@@ -876,7 +879,6 @@ function verifySignature(secret, body, header) {
 
 <p>A hash is not a file: nothing here ever uploads one, and only files the scanner identified are looked up. The full account of what leaves the server is on the <a href="attachment-security.html#attach-reputation">Attachment Security</a> page.</p>
 
-<img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab: the allowed file types, what happens when a file's content contradicts its name, the malware scanner address and policy, and the start of Reputation lookup with the VirusTotal and MetaDefender settings and their terms notices" width="2880" height="5200" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <div class="callout callout-note">
   <p><strong>Upgrading from an earlier reputation setting?</strong> Nothing is migrated. The old <code>attachment_vt_lookup</code> / <code>attachment_vt_api_key</code> pair and the <code>attachment_reputation_provider</code> / <code>attachment_reputation_api_key</code> pair that replaced them are read by nothing, and are due to be deleted by a migration in the release after 1.3.0. Re-enter your key against the service you want — copying somebody’s secret from one setting to another on their behalf is not something to do quietly.</p>

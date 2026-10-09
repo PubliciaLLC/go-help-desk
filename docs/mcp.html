@@ -209,7 +209,7 @@
     <tr><td><code>reporter_user_id</code></td><td>string (optional)</td><td>Who the ticket is <em>for</em>. Defaults to the authenticated caller.</td></tr>
   </tbody>
 </table>
-<p>A malformed <code>type_id</code>, <code>item_id</code> or <code>reporter_user_id</code> is refused rather than ignored.</p>
+<p>A malformed <code>type_id</code>, <code>item_id</code> or <code>reporter_user_id</code> is refused rather than ignored. Two things differ from creating a ticket through the REST API: a ticket opened here is not auto-assigned, and custom field values cannot be set.</p>
 
 <h3><code>add_reply</code></h3>
 <p>Add a reply or an internal note to a ticket, authored by the authenticated caller.</p>

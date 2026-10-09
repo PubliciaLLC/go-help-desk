@@ -364,7 +364,7 @@
     <tr><td>Stored as</td><td>A SHA-256 hash. The raw value is never written down anywhere on the server.</td></tr>
     <tr><td>Scope</td><td>Exactly one ticket. The token names the ticket; there is no ticket id in any guest URL.</td></tr>
     <tr><td>Lifetime</td><td>30 days from issue, as an outer bound. On an active ticket it is replaced sooner, every time the help desk writes to the guest (next row).</td></tr>
-    <tr><td>Rotated</td><td>On ticket creation, on a staff reply that notifies the customer, on a status change, on resolve, on reopen, and on a re-request. <strong>The old link stops working immediately</strong>: there is no grace period, so the newest email is always the one that works.</td></tr>
+    <tr><td>Rotated</td><td>On ticket creation, on a staff reply that notifies the customer, on a status change, on resolve, on a reopen by staff, and on a re-request. <strong>The old link stops working immediately</strong>: there is no grace period, so the newest email is always the one that works.</td></tr>
     <tr><td>On close</td><td>Not revoked. Closing stops the rotation and sends no mail. The last link still opens the ticket, read-only, until it expires, and can open a follow-up.</td></tr>
   </tbody>
 </table>
@@ -372,7 +372,7 @@
 <p>Every failure on a guest link, a wrong or expired token or a write to a closed ticket, answers an identical <code>404</code>, so none of them can be told apart from outside.</p>
 
 <h3>Re-requesting a lost link</h3>
-<p><code>/track</code> takes the tracking number and the email address and mails a fresh link, which replaces the previous one. It <strong>always</strong> answers the same way, whether or not those details matched a ticket, so it cannot be used to discover which tickets exist. It works for open and closed tickets. One request per ticket every five minutes.</p>
+<p><code>/track</code> takes the tracking number and the email address and mails a fresh link. On an open ticket it replaces the previous one; on a closed ticket it is added beside it, read-only. It <strong>always</strong> answers the same way, whether or not those details matched a ticket, so it cannot be used to discover which tickets exist. It works for open and closed tickets. One request per ticket every five minutes.</p>
 
 <h3>Rate limiting</h3>
 <p>Guest submission and link re-requests share the sign-in rate limiter: <code>AUTH_RATE_LIMIT_PER_MINUTE</code> a minute (10 by default), keyed on the client address. The shipped <code>docker-compose.yml</code> does not pass that variable to the app, so under Compose it stays at 10 unless you add it to the <code>app</code> service's <code>environment:</code> block.</p>
@@ -404,7 +404,7 @@
 <h3>Creating a key</h3>
 <ol>
   <li>Go to <em>Admin → API Keys</em> and use <em>Create new key</em>.</li>
-  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), choose its scopes, and optionally an expiry date. A key must have at least one scope.</li>
+  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), and choose its scopes. A key must have at least one scope. An expiry date can be set only through the API, as <code>expires_at</code>; the admin screen does not offer one.</li>
   <li>The key is shown <strong>exactly once</strong> after creation. Copy it into a secret manager or CI secret store. It cannot be retrieved later.</li>
 </ol>
 
