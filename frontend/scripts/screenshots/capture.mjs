@@ -5,9 +5,20 @@
 //
 // --phase pre-setup runs against the empty instance, before seed.mjs (shots 15,
 // 15m). --phase main needs $SHOTS_OUT/seed.json written by seed.mjs. Output is
-// $SHOTS_OUT/png/*.png (default ${TMPDIR:-/tmp}/ghd-shots). Env: SHOTS_BASE_URL
-// (pre-setup only; main reads seed.json), SHOTS_CHROMIUM. Exit code is non-zero
-// if a non-optional shot fails. Skipped shots (requires not met) are reported.
+// $SHOTS_OUT/png/*.png (default ${TMPDIR:-/tmp}/ghd-shots), plus
+// $SHOTS_OUT/manifest.txt listing exactly the PNG files this run wrote, one name
+// per line. Env: SHOTS_BASE_URL (pre-setup only; main reads seed.json),
+// SHOTS_CHROMIUM.
+//
+// Line kinds printed at the end, one per shot:
+//   OK    file  WxH  KB       written, pixel size shown
+//   SKIP  file  -  reason    not captured because the seed lacks the data (or an
+//                            optional shot failed); the reason is printed
+//   FAIL  file  -  reason    a required shot or its data check failed
+// Exit code is non-zero if any FAIL line was printed.
+//
+// Known app issue, filed separately (not worked around here): ticket descriptions
+// and subjects use `break-all`, so words split mid-word in shots 05, 12 and 24.
 //
 // Design: scratchpad design-shots.md sections 2 and 4.4. Shot order matters:
 // the passkey shot (22) registers a credential that revokes Sam's sessions, so
@@ -15,7 +26,6 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { chromium } from '@playwright/test'
 
 const DESK = { width: 1440, height: 900 }
 const MOBILE = { width: 390, height: 844 }
@@ -23,47 +33,27 @@ const PAD = 16
 const PASSWORD_FALLBACK = 'Screenshots-2026!'
 const RILEY_PASSWORD = 'Riley-Screenshot-2026!'
 const DEFAULT_CHROMIUM = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
+const DATA_WAIT = 25000
 
 const OUT = process.env.SHOTS_OUT || path.join(process.env.TMPDIR || '/tmp', 'ghd-shots')
 const PNG_DIR = path.join(OUT, 'png')
 const SEED_FILE = path.join(OUT, 'seed.json')
 
-// ── CLI ───────────────────────────────────────────────────────────────────────
-
 const args = process.argv.slice(2)
-function argValue(name) {
-  const i = args.indexOf(name)
-  return i >= 0 ? args[i + 1] : undefined
-}
-const phase = argValue('--phase')
-if (phase !== 'pre-setup' && phase !== 'main') {
-  console.error('usage: capture.mjs --phase pre-setup|main [--only 05,12]')
-  process.exit(2)
-}
-const onlyArg = argValue('--only')
-const only = onlyArg ? new Set(onlyArg.split(',').map((s) => s.trim()).filter(Boolean)) : null
-
-let seed = null
-if (phase === 'main') {
-  if (!fs.existsSync(SEED_FILE)) {
-    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first`)
-    process.exit(2)
-  }
-  seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'))
-}
-const BASE = process.env.SHOTS_BASE_URL || seed?.baseURL || 'http://localhost:18080'
-const PASSWORD = seed?.password || process.env.SHOTS_PASSWORD || PASSWORD_FALLBACK
 
 // ── Shot table ────────────────────────────────────────────────────────────────
 //
 // Each shot: file, phase, role (seed user key or null), path (string or fn of
-// seed), vp (viewport), mobile (bool), requires ('webhooks'|'reputation'|undefined),
+// seed), vp (viewport), mobile (bool), requires (seed.features flag, optional),
 // optional (bool), passkey (bool), prepare(page, ctx, seed), target:
 //   'viewport' | {tall: cap, exact?: bool} | {element: fn} | {union: fn}
+//   | {cutBetween: fn}  (crop height set to a gap between two cards)
 // expect: [w, h] in device pixels, checked after capture (a mismatch is a failure).
 
-const tid = (k) => (s) => s.tickets[k].id
 const ticketPath = (k) => (s) => `/tickets/${s.tickets[k].id}`
+
+// The quarantined-attachment row for the EICAR archive (shots 12, 13).
+const quarantinedRow = (page) => page.locator('div.border-red-300').filter({ hasText: 'invoice-2026-0417.txt.zip' })
 
 function cardOf(page, title) {
   // Card is <div class="rounded-lg ..."> wrapping a CardHeader whose h3 is the title.
@@ -77,22 +67,18 @@ function sectionOf(page, title) {
   return page.getByRole('heading', { name: title, exact: true }).locator('xpath=..')
 }
 
+// Data waits throw on timeout: a missing row is a FAIL, never a silent capture.
 async function waitVisible(locator, timeout = 15000) {
   await locator.first().waitFor({ state: 'visible', timeout })
 }
 
 async function waitActivity(page) {
-  await cardOf(page, 'Activity').locator('li').first().waitFor({ timeout: 15000 }).catch(() => {})
+  await cardOf(page, 'Activity').locator('li').first().waitFor({ timeout: DATA_WAIT })
 }
 
-async function waitReputation(page) {
-  // The reputation line settles to "Asked on …" or "did not complete" once each
-  // provider has answered (lookups have a 5 s budget per request).
-  await page
-    .getByText(/Asked on|did not complete/)
-    .first()
-    .waitFor({ timeout: 25000 })
-    .catch(() => {})
+async function waitCirclKnown(page) {
+  // CIRCL is the provider the reviewed shots depend on (design 3.2): it must say "known".
+  await quarantinedRow(page).getByText(/CIRCL: known file/).first().waitFor({ timeout: DATA_WAIT })
 }
 
 const SHOTS = [
@@ -124,6 +110,7 @@ const SHOTS = [
     },
   },
   {
+    // break-all app issue applies (see header).
     file: '05-ticket-detail.png', phase: 'main', role: 'jordan', path: ticketPath('T1'), vp: DESK,
     async prepare(page) {
       await waitActivity(page)
@@ -172,30 +159,34 @@ const SHOTS = [
     },
   },
   {
+    // break-all app issue applies (see header). Crop ends in the gap between the
+    // Attachments card and the next card, so no sliver of the next card shows.
     file: '12-quarantined-attachment.png', phase: 'main', role: 'jordan', path: ticketPath('T3'), vp: DESK,
-    target: { tall: 1650, exact: true },
+    target: {
+      cutBetween: (page) => [
+        cardOf(page, 'Attachments'),
+        cardOf(page, 'Attachments').locator('xpath=following-sibling::*[1]'),
+      ],
+    },
     async prepare(page) {
       await waitVisible(page.getByRole('alert').filter({ hasText: 'identified as malicious' }))
-      await waitReputation(page)
+      await waitCirclKnown(page)
     },
   },
   {
     file: '13-attachment-reputation.png', phase: 'main', role: 'jordan', path: ticketPath('T3'), vp: DESK,
     requires: 'reputation',
-    target: {
-      element: (page) => page.locator('div.border-red-300').filter({ hasText: 'invoice-2026-0417.txt.zip' }),
-    },
+    target: { element: (page) => quarantinedRow(page) },
     async prepare(page) {
-      await page.getByRole('button', { name: /^Show all 2 services/ }).click()
-      await waitReputation(page)
+      await page.getByRole('button', { name: /^Show all 2 services/ }).click({ timeout: DATA_WAIT })
+      await waitCirclKnown(page)
     },
   },
   {
+    // Full width (sidebar and tab bar included), cap 2600 CSS px: Uploads,
+    // Malware scanning and the top of Reputation lookup (admin-guide.html:791).
     file: '14-admin-settings-attachments.png', phase: 'main', role: 'admin', path: '/admin/settings', vp: DESK,
-    // Only the Reputation lookup section: the four provider rows and their terms
-    // panels (CIRCL included). Uploads and Malware scanning are left out to stay
-    // within the size budget.
-    target: { union: (page) => [sectionOf(page, 'Reputation lookup')] },
+    target: { tall: 2600, exact: true },
     async prepare(page) {
       await page.getByRole('button', { name: 'Attachments', exact: true }).click()
       await waitVisible(page.getByRole('heading', { name: 'Reputation lookup', exact: true }))
@@ -234,10 +225,10 @@ const SHOTS = [
   },
   {
     file: '18-admin-webhooks.png', phase: 'main', role: 'admin', path: '/admin/webhooks', vp: DESK,
-    requires: 'webhooks',
+    requires: 'webhookDelivered',
     target: { tall: 1500 },
     async prepare(page) {
-      await page.getByText(/Failing|Delivered|No deliveries yet/).first().waitFor({ timeout: 15000 }).catch(() => {})
+      await waitVisible(page.getByText(/Failing|Delivered/).first(), DATA_WAIT)
     },
   },
   {
@@ -300,6 +291,7 @@ const SHOTS = [
     },
   },
   {
+    // break-all app issue applies (see header).
     file: '24-mobile-ticket-detail.png', phase: 'main', role: 'jordan', path: ticketPath('T1'), vp: MOBILE, mobile: true,
     async prepare(page) {
       await waitActivity(page)
@@ -335,25 +327,40 @@ const SHOTS = [
   },
 ]
 
+// Why a shot whose seed data flag is false is skipped. Printed on the SKIP line.
+const SKIP_REASON = {
+  reputation: 'seed.features.reputation is false (SHOTS_REPUTATION=0), so no provider lookups',
+  webhookDelivered: 'seed.features.webhookDelivered is false: not every enabled hook has a recorded delivery',
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function shotPrefix(file) {
   return file.slice(0, file.indexOf('-'))
 }
 
+// The id a shot is selected by with --only: its number, plus "m" for the
+// mobile variants that carry a "-mobile" suffix (15m, 21m). Also the --list output.
+function shotId(shot) {
+  const stem = shot.file.replace(/\.png$/, '')
+  return stem.endsWith('-mobile') ? `${shotPrefix(shot.file)}m` : shotPrefix(shot.file)
+}
+
+const SHOT_IDS = [...new Set(SHOTS.map(shotId))]
+const KNOWN_ONLY = new Set([...SHOT_IDS, ...SHOTS.flatMap((x) => [x.file, x.file.replace(/\.png$/, '')])])
+
 function selected(shot) {
   if (!only) return true
-  const base = shotPrefix(shot.file)
-  // "15m" selects the mobile variant of 15; "15" selects only the desktop one.
-  const isMobileVariant = shot.file.replace(/\.png$/, '').endsWith('-mobile')
-  const token = isMobileVariant ? `${base}m` : base
-  return only.has(token) || only.has(shot.file) || only.has(shot.file.replace(/\.png$/, ''))
+  return only.has(shotId(shot)) || only.has(shot.file) || only.has(shot.file.replace(/\.png$/, ''))
 }
 
 // Desktop 2880x1800 and mobile 780x1688 unless the shot is tall or an element crop.
+// A tall shot with `exact` has a fixed height, so its size is known in advance.
 function expectedSize(shot) {
-  if (shot.target?.exact) return [DESK.width * 2, shot.target.tall * 2]
-  if (shot.target && shot.target !== 'viewport') return null
+  const t = shot.target
+  if (t?.cutBetween || t?.union || t?.element) return null
+  if (t?.exact) return [DESK.width * 2, t.tall * 2]
+  if (t?.tall) return null
   if (shot.vp === MOBILE) return [MOBILE.width * 2, MOBILE.height * 2]
   return [DESK.width * 2, DESK.height * 2]
 }
@@ -364,6 +371,8 @@ function pngSize(buf) {
 }
 
 async function settle(page, { keepFocus = false } = {}) {
+  // networkidle may never settle on a page that polls; the data waits below
+  // are what decide whether a shot is valid, so this one is best-effort.
   await page.waitForLoadState('networkidle').catch(() => {})
   await page.locator('.animate-spin').first().waitFor({ state: 'detached', timeout: 8000 }).catch(() => {})
   await page.getByText('Loading…', { exact: true }).first().waitFor({ state: 'detached', timeout: 8000 }).catch(() => {})
@@ -387,10 +396,9 @@ async function login(ctx, email) {
 }
 
 async function newContext(browser, shot) {
-  const viewport = shot.vp
   const opts = {
     baseURL: BASE,
-    viewport,
+    viewport: shot.vp,
     deviceScaleFactor: 2,
     colorScheme: 'light',
     locale: 'en-US',
@@ -413,13 +421,26 @@ async function fitTall(page, cap, exact) {
   await settle(page)
 }
 
-// Clip to the union of locators, plus PAD, clamped to the viewport. The viewport
-// grows first when the element is taller than the window, so nothing is cut off.
+// Scroll <main> so the locator's top edge sits PAD below main's top edge. This is
+// what keeps element clips from starting flush (and clamping to 0), which made
+// heights depend on scroll timing. It is a no-op when the element already sits
+// there or cannot move further up.
+async function alignTop(locator, pad) {
+  await locator.evaluate((el, p) => {
+    const main = document.querySelector('main')
+    const m = main.getBoundingClientRect()
+    const e = el.getBoundingClientRect()
+    main.scrollTop += e.top - (m.top + p)
+  }, pad)
+}
+
+// Clip to the union of locators, plus PAD, clamped to the viewport. Loops until the
+// layout is stable: the viewport grows when the element is taller than the window,
+// and growing it moves <main>'s scroll, so the boxes are re-measured each pass.
 async function elementClip(page, locators) {
-  await locators[0].evaluate((el) => el.scrollIntoView({ block: 'start' }))
-  await settle(page)
-  // Growing the viewport shifts <main>'s scroll, so iterate until the box is stable.
   for (let pass = 0; pass < 6; pass++) {
+    await alignTop(locators[0], PAD)
+    await settle(page, { keepFocus: true })
     const boxes = []
     for (const l of locators) {
       const b = await l.boundingBox()
@@ -434,7 +455,6 @@ async function elementClip(page, locators) {
     const needH = Math.ceil(bottom + PAD)
     if (needH > vp.height) {
       await page.setViewportSize({ width: vp.width, height: needH })
-      await settle(page, { keepFocus: true })
       continue
     }
     const x = Math.max(0, Math.floor(left - PAD))
@@ -443,7 +463,7 @@ async function elementClip(page, locators) {
     const y2 = Math.min(vp.height, Math.ceil(bottom + PAD))
     return { x, y, width: x2 - x, height: y2 - y }
   }
-  throw new Error('elementClip: viewport did not settle')
+  throw new Error('elementClip: layout did not settle in 6 passes')
 }
 
 async function captureShot(browser, shot, s) {
@@ -457,30 +477,78 @@ async function captureShot(browser, shot, s) {
     await shot.prepare(page, ctx, s)
     await settle(page, { keepFocus: false })
 
-    const out = path.join(PNG_DIR, shot.file)
-    shot.expect = expectedSize(shot)
     const t = shot.target ?? 'viewport'
-    let screenshotOpts = { path: out, animations: 'disabled', caret: 'hide', scale: 'device' }
+    const screenshotOpts = { animations: 'disabled', caret: 'hide', scale: 'device' }
     if (t === 'viewport') {
       // as is
     } else if (t.tall) {
       await fitTall(page, t.tall, t.exact === true)
       await settle(page)
     } else if (t.element) {
-      const loc = t.element(page)
-      screenshotOpts.clip = await elementClip(page, [loc])
+      await fitTall(page, 4000, false)
+      screenshotOpts.clip = await elementClip(page, [t.element(page)])
     } else if (t.union) {
       // Grow the window to the whole page first, so no part of the union sits
       // behind <main>'s own scroll.
       await fitTall(page, 4000, false)
       screenshotOpts.clip = await elementClip(page, t.union(page))
+    } else if (t.cutBetween) {
+      // Crop height at the midpoint of the gap between two cards. Card positions
+      // do not depend on the viewport height, so measuring at 900 px is valid.
+      const [above, below] = t.cutBetween(page)
+      const a = await above.boundingBox()
+      const b = await below.boundingBox()
+      if (!a || !b) throw new Error('cutBetween: card not visible')
+      const h = Math.floor((a.y + a.height + b.y) / 2)
+      await page.setViewportSize({ width: DESK.width, height: h })
+      await settle(page)
     }
+    screenshotOpts.path = path.join(PNG_DIR, shot.file)
     const buf = await page.screenshot(screenshotOpts)
-    return { buf, out }
+    return buf
   } finally {
     await ctx.close()
   }
 }
+
+// ── --list: every id --only accepts. No browser, no seed, no env needed. ──────
+
+if (args.includes('--list')) {
+  for (const id of SHOT_IDS) console.log(id)
+  process.exit(0)
+}
+
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
+function argValue(name) {
+  const i = args.indexOf(name)
+  return i >= 0 ? args[i + 1] : undefined
+}
+const phase = argValue('--phase')
+if (phase !== 'pre-setup' && phase !== 'main') {
+  console.error('usage: capture.mjs --phase pre-setup|main [--only 05,12]')
+  process.exit(2)
+}
+const onlyArg = argValue('--only')
+const only = onlyArg ? new Set(onlyArg.split(',').map((s) => s.trim()).filter(Boolean)) : null
+if (only) {
+  const unknown = [...only].filter((id) => !KNOWN_ONLY.has(id))
+  if (unknown.length) {
+    console.error(`capture: unknown --only id(s): ${unknown.join(', ')} (run --list for the valid ids)`)
+    process.exit(2)
+  }
+}
+
+let seed = null
+if (phase === 'main') {
+  if (!fs.existsSync(SEED_FILE)) {
+    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first`)
+    process.exit(2)
+  }
+  seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'))
+}
+const BASE = process.env.SHOTS_BASE_URL || seed?.baseURL || 'http://localhost:18080'
+const PASSWORD = seed?.password || process.env.SHOTS_PASSWORD || PASSWORD_FALLBACK
 
 // ── Runner ────────────────────────────────────────────────────────────────────
 
@@ -489,6 +557,7 @@ fs.mkdirSync(PNG_DIR, { recursive: true })
 const chromiumPath =
   process.env.SHOTS_CHROMIUM || (fs.existsSync(DEFAULT_CHROMIUM) ? DEFAULT_CHROMIUM : undefined)
 
+const { chromium } = await import('@playwright/test')
 const browser = await chromium.launch({
   executablePath: chromiumPath,
   env: { ...process.env },
@@ -498,32 +567,33 @@ const browser = await chromium.launch({
 const queue = SHOTS.filter((x) => x.phase === phase && selected(x)).sort((a, b) => Number(!!a.passkey) - Number(!!b.passkey))
 
 let failed = 0
-const lines = []
+const rows = []
+const written = []
 try {
   for (const shot of queue) {
     if (shot.requires && !seed?.features?.[shot.requires]) {
-      lines.push(`SKIP ${shot.file} (requires ${shot.requires})`)
+      rows.push({ kind: 'SKIP', file: shot.file, detail: SKIP_REASON[shot.requires] ?? `requires ${shot.requires}` })
       continue
     }
     try {
-      const { buf, out } = await captureShot(browser, shot, seed)
-      fs.writeFileSync(out, buf)
+      const buf = await captureShot(browser, shot, seed)
       const { w, h } = pngSize(buf)
-      const kb = Math.round(buf.length / 1024)
-      const mismatch = shot.expect && (shot.expect[0] !== w || shot.expect[1] !== h)
-      const size = `${w}x${h}`
-      if (mismatch) {
+      const expect = expectedSize(shot)
+      if (expect && (expect[0] !== w || expect[1] !== h)) {
         failed++
-        lines.push(`FAIL ${shot.file} ${size} ${kb}KB (expected ${shot.expect.join('x')})`)
-      } else {
-        lines.push(`OK   ${shot.file} ${size} ${kb}KB`)
+        rows.push({ kind: 'FAIL', file: shot.file, detail: `size ${w}x${h}, expected ${expect.join('x')}` })
+        continue
       }
+      fs.writeFileSync(path.join(PNG_DIR, shot.file), buf)
+      written.push(shot.file)
+      rows.push({ kind: 'OK', file: shot.file, size: `${w}x${h}`, kb: Math.round(buf.length / 1024) })
     } catch (err) {
+      const reason = String(err.message).split('\n')[0]
       if (shot.optional) {
-        lines.push(`SKIP ${shot.file} (optional, failed: ${String(err.message).split('\n')[0]})`)
+        rows.push({ kind: 'SKIP', file: shot.file, detail: `optional, failed: ${reason}` })
       } else {
         failed++
-        lines.push(`FAIL ${shot.file}: ${String(err.stack || err.message).split('\n').slice(0, 3).join(' | ')}`)
+        rows.push({ kind: 'FAIL', file: shot.file, detail: reason })
       }
     }
   }
@@ -531,7 +601,26 @@ try {
   await browser.close()
 }
 
-console.log(lines.join('\n'))
+// One line per shot, pixel size included.
+for (const r of rows) {
+  if (r.kind === 'OK') {
+    console.log(`OK    ${r.file.padEnd(34)} ${r.size.padEnd(10)} ${r.kb} KB`)
+  } else {
+    console.log(`${r.kind.padEnd(5)} ${r.file.padEnd(34)} -          ${r.detail}`)
+  }
+}
+
+// manifest.txt: pre-setup starts it fresh; main adds its files to it (a full run
+// is pre-setup then main, so the file ends up listing every PNG of that run).
+const manifestPath = path.join(OUT, 'manifest.txt')
+const previous =
+  phase === 'main' && fs.existsSync(manifestPath)
+    ? fs.readFileSync(manifestPath, 'utf8').split('\n').filter(Boolean)
+    : []
+const listed = [...new Set([...previous, ...written])]
+fs.writeFileSync(manifestPath, listed.map((f) => `${f}\n`).join(''))
+console.log(`manifest: ${listed.length} file(s) listed in ${manifestPath} (${written.length} written by this phase)`)
+
 if (failed > 0) {
   console.error(`capture: ${failed} shot(s) failed`)
   process.exit(1)
