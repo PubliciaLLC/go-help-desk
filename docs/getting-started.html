@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Getting Started — Go Help Desk Docs</title>
-  <meta name="description" content="Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
+  <meta name="description" content="Deploy Go Help Desk in minutes by pulling the published image with Docker Compose. Covers configuration, first-run setup, upgrading and building from source." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/getting-started.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/getting-started.html" />
   <meta property="og:title" content="Getting Started — Go Help Desk Docs" />
-  <meta property="og:description" content="Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
+  <meta property="og:description" content="Deploy Go Help Desk in minutes by pulling the published image with Docker Compose. Covers configuration, first-run setup, upgrading and building from source." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Getting Started — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode." />
+  <meta name="twitter:description" content="Deploy Go Help Desk in minutes by pulling the published image with Docker Compose. Covers configuration, first-run setup, upgrading and building from source." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Getting Started",
-    "description": "Deploy Go Help Desk in minutes with Docker Compose. Covers environment variables, first-run setup, and development mode.",
+    "description": "Deploy Go Help Desk in minutes by pulling the published image with Docker Compose. Covers configuration, first-run setup, upgrading and building from source.",
     "url": "https://gohelpdesk.org/docs/getting-started.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -49,7 +49,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -62,13 +62,18 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
     <ul>
       <li><a href="getting-started.html" class="active">Overview</a></li>
       <li><a href="#quick-start">Quick Start</a></li>
+      <li><a href="#build-from-source">Build from Source</a></li>
+      <li><a href="#pin-version">Pinning a Version</a></li>
       <li><a href="#configuration">Configuration</a></li>
       <li><a href="#first-run">First-Run Setup</a></li>
       <li><a href="#upgrading">Upgrading</a></li>
@@ -84,7 +89,7 @@
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -94,6 +99,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -114,12 +120,26 @@
 
 <p>Go Help Desk is distributed as a single Go binary with the React frontend embedded — there is nothing to install or serve beyond the binary and a PostgreSQL database. The Docker Compose stack in <code>docker/</code> sets both up with a single command.</p>
 
+<div class="callout callout-note">
+  <p><strong>New in 1.3.0.</strong></p>
+  <ul>
+    <li>Published images for amd64 and arm64. <code>docker compose up -d</code> pulls them. Building from source is still supported.</li>
+    <li>Virus scanning is opt-in in Docker Compose. See <a href="#virus-scanning">Virus scanning</a>.</li>
+    <li>Setup also asks for the first category, so a new instance can file a ticket.</li>
+    <li>Example secrets are reported as insecure at startup and in an administrator's warning banner.</li>
+    <li>Email is queued and retried. Webhooks are sent once and are not retried.</li>
+    <li><code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> are removed. Nothing read them.</li>
+  </ul>
+  <p>Upgrading from 1.2? <a href="upgrading-1.3.0.html">Read the upgrade notes.</a></p>
+</div>
+
 <h3>Architecture overview</h3>
 <ul>
-  <li><strong>Binary</strong> — a single Go executable that serves the REST API at <code>/api/</code>, the MCP server at <code>/mcp/</code>, and the React SPA at <code>/</code>.</li>
-  <li><strong>Frontend</strong> — compiled at build time and embedded in the binary via <code>go:embed</code>. No Node.js in production.</li>
-  <li><strong>Database</strong> — PostgreSQL. Schema migrations run automatically on every startup before accepting traffic.</li>
-  <li><strong>Plugins</strong> — WASM modules sandboxed via wazero, loaded from <code>ATTACHMENT_DIR/../plugins/</code>.</li>
+  <li><strong>Binary</strong>: a single Go executable that serves the REST API at <code>/api/</code>, the MCP server at <code>/mcp/</code>, and the React SPA at <code>/</code>.</li>
+  <li><strong>Frontend</strong>: compiled at build time and embedded in the binary via <code>go:embed</code>. No Node.js in production.</li>
+  <li><strong>Database</strong>: PostgreSQL. Schema migrations run automatically on every startup before accepting traffic.</li>
+  <li><strong>Plugins</strong>: a plugin system is planned for v2. Plugins cannot be installed in 1.3.0.</li>
+  <li><strong>Image</strong>: published to <code>ghcr.io/publiciallc/go-help-desk</code> for amd64 and arm64.</li>
 </ul>
 
 
@@ -130,7 +150,7 @@
 <div class="step">
   <div class="step-num">1</div>
   <div class="step-body">
-    <h4>Clone the repository</h4>
+    <h4>Get the Compose file</h4>
     <pre><code>git clone https://github.com/PubliciaLLC/go-help-desk
 cd go-help-desk/docker</code></pre>
   </div>
@@ -141,10 +161,11 @@ cd go-help-desk/docker</code></pre>
   <div class="step-body">
     <h4>Create your environment file</h4>
     <pre><code>cp .env.example .env</code></pre>
-    <p>Open <code>.env</code> and set the three required values. Generate secure secrets with <code>openssl rand -base64 32</code>.</p>
+    <p>Open <code>.env</code> and set <code>SESSION_SECRET</code> and <code>JWT_SECRET</code>. Set <code>BASE_URL</code> as well if you will not reach the instance at <code>http://localhost:8080</code>. Generate secure secrets with <code>openssl rand -base64 32</code>.</p>
     <pre><code>BASE_URL=http://localhost:8080
 SESSION_SECRET=&lt;at-least-32-random-chars&gt;
 JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
+    <p>Compose refuses to start until <code>SESSION_SECRET</code> and <code>JWT_SECRET</code> are set. The example values in <code>.env.example</code> let the server start, but it reports them as insecure at startup and in an administrator's warning banner until you replace them.</p>
   </div>
 </div>
 
@@ -153,8 +174,9 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
   <div class="step-body">
     <h4>Start the stack</h4>
     <pre><code>docker compose up -d</code></pre>
-    <p>Docker pulls the images, builds the application (Go + React), and starts PostgreSQL. Migrations run automatically before the app begins serving traffic. Wait for:</p>
-    <pre><code>go-help-desk  | go-help-desk listening on :8080</code></pre>
+    <p>This pulls a published image. Nothing is compiled on your machine, and one image name covers both Intel and ARM, including Apple Silicon, because the Docker client picks the right architecture for you. Docker also starts PostgreSQL. Migrations run automatically before the app begins serving traffic. Wait until the health check answers:</p>
+    <pre><code>curl http://localhost:8080/health
+# → {"status":"ok"}</code></pre>
   </div>
 </div>
 
@@ -162,109 +184,164 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
   <div class="step-num">4</div>
   <div class="step-body">
     <h4>Open the app and complete setup</h4>
-    <p>Navigate to <code>http://localhost:8080</code>. On a fresh database the app redirects to <code>/setup</code>, where you enter a name, email address, and password to create the first admin account. The setup page is permanently disabled once any user exists — it cannot be reached again.</p>
+    <p>Navigate to <code>http://localhost:8080</code>. On a fresh database the app redirects to <code>/setup</code>, where you enter a name, email address, and password to create the first admin account, and the name of the first category. The setup page is permanently disabled once any user exists, and it cannot be reached again.</p>
   </div>
 </div>
 
 <div class="callout callout-note">
-  <p><strong>Data persistence</strong> — Postgres data is stored in <code>docker/data/postgres/</code> and file attachments in <code>docker/data/attachments/</code>. Both directories are gitignored and survive container restarts and rebuilds.</p>
+  <p><strong>Data persistence.</strong> Postgres data is stored in <code>docker/data/postgres/</code> and file attachments in <code>docker/data/attachments/</code>. When virus scanning is enabled, the ClamAV signature database is stored in <code>docker/data/clamav/</code>. These directories are gitignored and survive container restarts and rebuilds.</p>
 </div>
 
 <h3>Verify the installation</h3>
 <pre><code>curl http://localhost:8080/health
 # → {"status":"ok"}</code></pre>
 
+<h3 id="virus-scanning">Virus scanning (optional)</h3>
+<p>Virus scanning is off by default. To turn it on, uncomment these two lines in <code>docker/.env</code>, which you copied from <code>.env.example</code>:</p>
+<pre><code>CLAMAV_ADDR=tcp://clamav:3310
+COMPOSE_PROFILES=antivirus</code></pre>
+<p>The second line starts a ClamAV container, which downloads its signature database (about 300 MB) on first start. Until that finishes the scanner is unreachable, and once an address is set, uploads are refused with <code>503</code> while it is unreachable. The <code>clamav/clamav</code> image is published for amd64 only, so on Apple Silicon it runs under emulation. See <a href="#config-scanning">Virus scanning (ClamAV)</a> for the settings.</p>
+
+
+<h2 id="build-from-source">Building from source</h2>
+
+<p>Building the image yourself is fully supported and is not a fallback. Some people self-host precisely so that they can run what they built rather than an image somebody else produced. From the <code>docker</code> directory:</p>
+
+<pre><code>docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build</code></pre>
+
+<p><strong>This path requires Docker Buildx.</strong> It cross-compiles for your host's real architecture rather than emulating it, and that needs the <code>docker buildx</code> CLI plugin. Without it, Compose falls back to the classic builder, which does not set <code>$BUILDPLATFORM</code>, and the Dockerfile then has no correct platform to build for (see <a href="https://github.com/PubliciaLLC/go-help-desk/issues/297">#297</a> and <a href="https://github.com/PubliciaLLC/go-help-desk/pull/301">#301</a>). Docker Desktop ships Buildx. Colima and some Linux installations do not. If <code>docker buildx version</code> fails, install it. On macOS with Homebrew, including Colima:</p>
+
+<pre><code>brew install docker-buildx
+mkdir -p ~/.docker/cli-plugins
+ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plugins/docker-buildx</code></pre>
+
+<p>See <a href="https://docs.docker.com/build/architecture/#buildx">docs.docker.com/build/architecture</a> for other platforms.</p>
+
+
+<h2 id="pin-version">Pinning a version</h2>
+
+<p><code>docker compose up -d</code> runs the version pinned in <code>docker-compose.yml</code>. To run a different one, set <code>GHD_VERSION</code> in <code>docker/.env</code>:</p>
+
+<pre><code>GHD_VERSION=1.3.0</code></pre>
+
+<p>Released versions are published as <code>1.3.0</code> and <code>1.3</code>, and the newest stable release is also <code>latest</code>. A prerelease is published under its exact name only, such as <code>1.4.0-beta</code>, and never moves <code>latest</code>, so following <code>latest</code> will not put you on a beta. Images live at <a href="https://github.com/PubliciaLLC/go-help-desk/pkgs/container/go-help-desk">ghcr.io/publiciallc/go-help-desk</a>.</p>
+
+<p>Do not run <code>edge</code>. It is rebuilt on every push to the release branch and overwritten in place, so two machines pulling it on the same day can be running different code.</p>
+
 
 <h2 id="configuration">Configuration reference</h2>
 
-<p>All configuration is read from environment variables at startup. Variables marked <strong>required</strong> cause the server to exit with an error if unset or empty.</p>
+<p>Configuration is read from environment variables at startup. Variables marked <strong>required</strong> cause the server to exit with an error if unset or empty.</p>
 
-<h3>Required</h3>
-<table class="param-table">
-  <thead><tr><th>Variable</th><th>Type</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><code>DATABASE_URL</code></td><td>string</td><td>Full PostgreSQL DSN. Example: <code>postgres://user:pass@host:5432/db?sslmode=disable</code></td></tr>
-    <tr><td><code>BASE_URL</code></td><td>string</td><td>Public-facing URL of the app, no trailing slash. Used in email notification links and SAML SP metadata. Example: <code>https://helpdesk.example.com</code></td></tr>
-    <tr><td><code>SESSION_SECRET</code></td><td>string</td><td>Secret used to sign and verify session cookies. Must be at least 32 characters. Rotating this value invalidates all active user sessions.</td></tr>
-    <tr><td><code>JWT_SECRET</code></td><td>string</td><td>Secret used to sign JWTs for the OAuth2 token endpoint and API bearer tokens. Must be at least 32 characters.</td></tr>
-  </tbody>
-</table>
+<ul>
+  <li>Environment variables control infrastructure. Feature switches (SAML, OIDC, MFA, SLA, guest submission, signup) and branding are managed under <em>Admin → Settings</em> and stored in the database.</li>
+  <li>Changing an auth-related setting requires a signed-in administrator. An API key cannot, whatever scopes it holds.</li>
+  <li>Variables are read once, at startup. After you change <code>.env</code>, run <code>docker compose up -d</code> again.</li>
+</ul>
 
-<h3>Server</h3>
+<h3 id="config-required">Required</h3>
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>HTTP_PORT</code></td><td><code>8080</code></td><td>TCP port the HTTP server listens on. Change this when running behind a reverse proxy that handles TLS.</td></tr>
-    <tr><td><code>ATTACHMENT_DIR</code></td><td><code>/data/attachments</code></td><td>Filesystem path where uploaded files are stored. The directory and its parents are created on startup if they don't exist. Must be writable by the application user (<code>ohd</code> in Docker).</td></tr>
-    <tr><td><code>CLAMAV_ADDR</code></td><td><code>tcp://clamav:3310</code>*</td><td>Address of a ClamAV daemon for virus scanning. The Docker Compose setup runs a ClamAV container automatically and wires this up — you do not need to set it yourself. For bare-metal or Kubernetes installs, point this at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>). This sets what the instance <em>starts</em> with; an administrator can override it under <em>Admin → Settings → Attachments</em> without a restart.<br><br><strong>From v1.3.0-beta, what happens when the scanner cannot be reached is a setting, and the default refuses the upload</strong> — <code>503</code> with a <code>Retry-After</code>, wherever an address is configured. In v1.2.0 and earlier an unreachable scanner meant a logged warning and an upload accepted unchecked. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</td></tr>
-    <tr><td><code>APP_ENV</code></td><td><code>production</code></td><td>Set to <code>development</code> to enable verbose request logging, relaxed CORS, and friendlier error messages in API responses.</td></tr>
-  </tbody>
-</table>
-<p class="text-sm text-muted" style="font-size:0.85em;color:#6b7280;margin-top:0.25rem">* Default shown is for Docker Compose, where ClamAV runs as a sidecar on an internal network. Not applicable to bare-metal or Kubernetes installs.</p>
-
-<h3>Email (SMTP)</h3>
-<p>Email notifications are silently disabled when <code>SMTP_HOST</code> is not set. No restart is needed to toggle email; the app checks this value at startup.</p>
-<table class="param-table">
-  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><code>SMTP_HOST</code></td><td>—</td><td>Hostname of the SMTP server. Examples: <code>smtp.sendgrid.net</code>, <code>email-smtp.us-east-1.amazonaws.com</code></td></tr>
-    <tr><td><code>SMTP_PORT</code></td><td><code>587</code></td><td>SMTP port. 587 for STARTTLS (recommended), 465 for implicit TLS (SMTPS), 25 for plain/relay.</td></tr>
-    <tr><td><code>SMTP_USER</code></td><td>—</td><td>SMTP username for authentication.</td></tr>
-    <tr><td><code>SMTP_PASSWORD</code></td><td>—</td><td>SMTP password. Use a secret manager or Docker secret in production — avoid committing this to <code>.env</code>.</td></tr>
-    <tr><td><code>SMTP_FROM</code></td><td>—</td><td>The <code>From</code> address for all outbound email. Example: <code>Go Help Desk Go Help Desk &lt;helpdesk@example.com&gt;lt;helpdesk@example.comGo Help Desk &lt;helpdesk@example.com&gt;gt;</code></td></tr>
+    <tr><td><code>DATABASE_URL</code></td><td>required</td><td>PostgreSQL connection string, for example <code>postgres://user:pass@host:5432/db?sslmode=disable</code>. Migrations run against this database at every start, before the server accepts traffic.</td></tr>
+    <tr><td><code>BASE_URL</code></td><td>required</td><td>Public URL of the instance, for example <code>https://helpdesk.example.com</code>. Write it without a trailing slash; some uses (the OIDC redirect, SAML and passkeys) take it as written. Used in email and guest links, in the SAML and passkey settings, and as the default OIDC redirect (<code>{BASE_URL}/api/v1/auth/oidc/callback</code>).</td></tr>
+    <tr><td><code>SESSION_SECRET</code></td><td>required</td><td>At least 32 characters, or the server refuses to start. Signs and encrypts session cookies. Changing it signs everyone out. Generate one with <code>openssl rand -base64 32</code>.</td></tr>
+    <tr><td><code>JWT_SECRET</code></td><td>required</td><td>Signs the OAuth2 access tokens and is checked on API bearer tokens. No minimum length is enforced, but use 32 or more characters.</td></tr>
   </tbody>
 </table>
 
-<h3>SAML 2.0</h3>
+<div class="callout callout-warn">
+  <p><strong>Example secrets are insecure.</strong> The example values in <code>docker/.env.example</code> let the server start, but anyone who knows them can forge sessions and API tokens. The server logs an error at startup, and administrators see a warning banner, when <code>SESSION_SECRET</code> or <code>JWT_SECRET</code> is an example value or contains <code>change-me</code>, <code>changeme</code>, <code>insecure</code>, <code>example</code> or <code>placeholder</code>.</p>
+</div>
+
+<h3 id="config-server">Server</h3>
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>SAML_ENABLED</code></td><td><code>false</code></td><td>Enable SAML 2.0 SSO. When <code>true</code>, local auth is disabled for non-admin users.</td></tr>
-    <tr><td><code>SAML_METADATA_URL</code></td><td>—</td><td>URL to your Identity Provider's SAML metadata XML document. Required when <code>SAML_ENABLED=true</code>.</td></tr>
-    <tr><td><code>SAML_CERT_FILE</code></td><td>—</td><td>Container path to the SP certificate PEM file. Required when SAML is enabled.</td></tr>
-    <tr><td><code>SAML_KEY_FILE</code></td><td>—</td><td>Container path to the SP private key PEM file. Required when SAML is enabled.</td></tr>
+    <tr><td><code>HTTP_PORT</code></td><td><code>8080</code></td><td>TCP port the HTTP server listens on. The shipped Compose file fixes it at 8080. Change it when running a bare-metal install behind a reverse proxy that handles TLS.</td></tr>
+    <tr><td><code>ATTACHMENT_DIR</code></td><td><code>/data/attachments</code></td><td>Filesystem path where uploaded files and the uploaded logo are stored. Created on first use if it does not exist. Must be writable by the application user, which is <code>ghd</code> (uid 100) in the image. The shipped Compose file does not pass this variable through.</td></tr>
+    <tr><td><code>LOG_LEVEL</code></td><td><code>info</code></td><td><code>debug</code>, <code>info</code>, <code>warn</code> or <code>error</code>. An unrecognised value is logged as a warning and <code>info</code> is used. Logs are JSON, written to stdout.</td></tr>
+    <tr><td><code>AUTH_RATE_LIMIT_PER_MINUTE</code></td><td><code>10</code></td><td>Failed password attempts allowed per account (keyed on the email address) per minute before the server answers <code>429</code>. Signup attempts from one source address are limited by the same number. <code>0</code> disables both limits. Counters are kept in memory, so a restart clears them and each replica keeps its own. TOTP verification has its own budget, which is not configurable. The shipped Compose file does not pass this variable through.</td></tr>
   </tbody>
 </table>
 
-<h3>Feature flags</h3>
+<h3 id="config-email">Email (SMTP)</h3>
+<p>Email is sent only when <strong>both</strong> <code>SMTP_HOST</code> and <code>SMTP_FROM</code> are set. Without email, self-service signup cannot complete, and guests receive no link. These variables are read at startup, so restart the server after changing them.</p>
+<p>Mail is queued in a database outbox and sent by a background worker. A failed send is retried after 30 seconds, with the wait doubling each time, for eight attempts over about an hour. Webhooks are not retried: each one is sent once.</p>
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>MFA_ENABLED</code></td><td><code>false</code></td><td><strong>This variable does nothing.</strong> In v1.2.0 it is read into the configuration and no code consults it; v1.3.0-beta removes it. MFA is switched on by the <code>mfa_enabled</code> setting under <em>Admin → Settings</em>, where it can also be enforced per role.</td></tr>
-    <tr><td><code>SLA_ENABLED</code></td><td><code>false</code></td><td>Enable SLA policy tracking. When <code>false</code>, no SLA-related UI or data is shown.</td></tr>
-    <tr><td><code>GUEST_SUBMISSION_ENABLED</code></td><td><code>false</code></td><td><strong>This variable does nothing.</strong> In v1.2.0 it is read into the configuration and no code consults it; v1.3.0-beta removes it altogether, and the shipped Compose file and <code>.env.example</code> no longer mention it. Guest submission is switched on by the <code>guest_submission_enabled</code> setting under <em>Admin → Settings</em>, which is the only switch. See <a href="tickets.html#tickets-create">Guest ticket submission</a>.</td></tr>
+    <tr><td><code>SMTP_HOST</code></td><td>—</td><td>Hostname of the SMTP server, for example <code>smtp.sendgrid.net</code> or <code>email-smtp.us-east-1.amazonaws.com</code>.</td></tr>
+    <tr><td><code>SMTP_PORT</code></td><td><code>587</code></td><td>SMTP port. The connection is upgraded with STARTTLS when the server offers it. There is no implicit TLS (SMTPS) mode, so port 465 will not work.</td></tr>
+    <tr><td><code>SMTP_USER</code></td><td>—</td><td>Username for SMTP login. Login is attempted when this is set and the server offers AUTH.</td></tr>
+    <tr><td><code>SMTP_PASSWORD</code></td><td>—</td><td>Password for SMTP login. Use a secret manager or Docker secret in production, not a plain <code>.env</code> file.</td></tr>
+    <tr><td><code>SMTP_FROM</code></td><td>—</td><td>The From address for all outgoing email, for example <code>helpdesk@example.com</code>. A display name is allowed: <code>Help Desk &lt;helpdesk@example.com&gt;</code>.</td></tr>
   </tbody>
 </table>
+
+<h3 id="config-scanning">Virus scanning (ClamAV)</h3>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#virus-scanning">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → Settings → Attachments → Malware scanning</em> without a restart.</td></tr>
+  </tbody>
+</table>
+<p>Once an address is set, the scan policy defaults to <code>required</code>: an upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. Administrators can change the policy under <em>Admin → Settings → Attachments → Malware scanning</em>. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
+
+<h3 id="config-features">Feature switches</h3>
+<table class="param-table">
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>SLA_ENABLED</code></td><td><code>false</code></td><td>Turns SLA tracking on at every start. It never turns it off. The switch is under <em>Admin → Settings</em>, in the SLA section, so this variable only lets an instance start with SLA tracking on.</td></tr>
+  </tbody>
+</table>
+<p>Feature switches are set under <em>Admin → Settings</em> and stored in the database. Multi-factor authentication, guest submission (see <a href="tickets.html#tickets-create">Guest ticket submission</a>) and signup are switched there too. No environment variable controls SAML or OIDC. Configure them under <em>Admin → Settings</em>, in the SAML and OIDC sections. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.</p>
+<p>The variables <code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> were removed in 1.3.0 because nothing read them. Setting them has no effect.</p>
+
+<h3 id="config-compose">With Docker Compose</h3>
+<p><code>.env</code> values reach the app only through the <code>environment</code> block of the <code>app</code> service in <code>docker-compose.yml</code>. The shipped file passes through <code>BASE_URL</code> (default <code>http://localhost:8080</code>), <code>SESSION_SECRET</code>, <code>JWT_SECRET</code>, <code>CLAMAV_ADDR</code>, <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>, <code>SMTP_FROM</code>, <code>SLA_ENABLED</code> and <code>LOG_LEVEL</code>. <code>DATABASE_URL</code> and <code>HTTP_PORT</code> are fixed in the file.</p>
+<p>Any other variable set in <code>.env</code> has no effect, for example <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>ATTACHMENT_DIR</code>. To use one, add it in <code>docker/docker-compose.override.yml</code>, which Compose reads automatically and <code>git pull</code> does not touch:</p>
+<pre><code>services:
+  app:
+    environment:
+      AUTH_RATE_LIMIT_PER_MINUTE: "5"</code></pre>
+<p>When you build from source, add <code>-f docker-compose.override.yml</code> to the build command, because Compose skips the override file when <code>-f</code> is given.</p>
+<p><code>GHD_VERSION</code> is read by Compose, not by the app; see <a href="#pin-version">Pinning a version</a>. <code>COMPOSE_PROFILES=antivirus</code> starts ClamAV.</p>
 
 
 <h2 id="first-run">First-run setup</h2>
 
 <p>After completing the <code>/setup</code> wizard and creating your admin account, work through this checklist before inviting users:</p>
 
+<img src="../screenshots/15-setup.png" alt="The first-run setup form: full name, email, password and confirm password fields, and a First category field set to Hardware" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
 <ol>
   <li>
-    <strong>Create your CTI hierarchy</strong> — go to <em>Admin → Categories</em> and define at least one Category. Without a Category, no ticket can be created. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
+    <strong>Create your CTI hierarchy.</strong> Setup has already created the first Category. Go to <em>Admin → Categories</em> and add the rest. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
   </li>
   <li>
-    <strong>Review ticket statuses</strong> — the system creates five default statuses (New, In Progress, Pending, Resolved, Closed). If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a>.
+    <strong>Review ticket statuses.</strong> The system creates five default statuses (New, In Progress, Pending, Resolved, Closed). Closed is terminal by default. If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a> and <a href="admin-guide.html#admin-closed-reopen">Reopening closed tickets</a>.
   </li>
   <li>
-    <strong>Create groups and assign scope</strong> — define which staff teams handle which categories. See <a href="admin-guide.html#admin-groups">Admin Guide: Groups &amp; scope</a>.
+    <strong>Create groups and assign scope.</strong> Define which staff teams handle which categories. See <a href="admin-guide.html#admin-groups">Admin Guide: Groups &amp; scope</a>.
   </li>
   <li>
-    <strong>Create or invite staff accounts</strong> — create staff accounts from <em>Admin → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
+    <strong>Create or invite staff accounts.</strong> Create staff accounts from <em>Admin → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
   </li>
   <li>
-    <strong>Configure email</strong> (optional) — set the SMTP environment variables and restart. Preview and customize templates under <em>Admin → Email</em>. See <a href="admin-guide.html#admin-email-tpl">Admin Guide: Email templates</a>.
+    <strong>Configure email</strong> (optional). Set <code>SMTP_HOST</code> and <code>SMTP_FROM</code> (both are needed) and any other SMTP variables, then restart. See <a href="#config-email">Email (SMTP)</a>.
   </li>
   <li>
-    <strong>Configure SLA policies</strong> (optional, requires <code>SLA_ENABLED=true</code>) — set response and resolution targets per priority or category under <em>Admin → SLA</em>. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
+    <strong>Configure SLA policies</strong> (optional). Turn on SLA tracking under <em>Admin → Settings</em>, then set response and resolution targets per priority or category in the SLA section. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
   </li>
   <li>
-    <strong>Set up SSO</strong> (optional) — configure SAML environment variables and restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
+    <strong>Set up SSO</strong> (optional). Configure SAML or OIDC under <em>Admin → Settings</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
   </li>
   <li>
-    <strong>Install plugins</strong> (optional) — upload or point to WASM plugin files from <em>Admin → Plugins</em>. See <a href="admin-guide.html#admin-plugins">Admin Guide: Installing plugins</a>.
+    <strong>Check the warning banner.</strong> Administrators see a red banner while an example secret is in use. Replace the secret and restart before inviting users.
+  </li>
+  <li>
+    <strong>Decide audit retention.</strong> Choose whether the audit log is kept forever (the default) or pruned, and whether staff can see ticket change history. Both are under <em>Admin → Settings</em>, in the Audit log section. See <a href="admin-guide.html#admin-audit">Admin Guide: Audit log</a>.
   </li>
 </ol>
 
@@ -274,7 +351,14 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
 <pre><code>cd go-help-desk
 git pull
 cd docker
-docker compose up -d --build</code></pre>
+docker compose pull
+docker compose up -d</code></pre>
+
+<p>If you build from source, do not run the two <code>docker compose</code> commands above. Run the build command from <a href="#build-from-source">Building from source</a> instead.</p>
+
+<div class="callout callout-warn">
+  <p><strong>Upgrading from 1.2.x?</strong> Read <a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a> first. Compose installs that scan attachments with the bundled ClamAV must add two lines to <code>.env</code>. See <a href="upgrading-1.3.0.html#clamav">ClamAV is opt-in</a>.</p>
+</div>
 
 <p>The application runs database migrations automatically on startup, before it begins accepting traffic. There is no manual migration step. If a migration fails (e.g. due to a conflict with manual schema changes), the server exits with an error message — check the container logs.</p>
 

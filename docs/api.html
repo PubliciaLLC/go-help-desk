@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>REST API — Go Help Desk Docs</title>
-  <meta name="description" content="Complete REST API reference for Go Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples." />
+  <meta name="description" content="How the Go Help Desk REST API works: authentication, scopes, identifiers, visibility, errors and pagination. The endpoint reference is generated from OpenAPI 3.1." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/api.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/api.html" />
   <meta property="og:title" content="REST API — Go Help Desk Docs" />
-  <meta property="og:description" content="Complete REST API reference for Go Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples." />
+  <meta property="og:description" content="How the Go Help Desk REST API works: authentication, scopes, identifiers, visibility, errors and pagination. The endpoint reference is generated from OpenAPI 3.1." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="REST API — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Complete REST API reference for Go Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples." />
+  <meta name="twitter:description" content="How the Go Help Desk REST API works: authentication, scopes, identifiers, visibility, errors and pagination. The endpoint reference is generated from OpenAPI 3.1." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,28 +22,13 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "REST API",
-    "description": "Complete REST API reference for Go Help Desk — tickets, users, groups, categories, webhooks, and admin endpoints with request/response examples.",
+    "description": "How the Go Help Desk REST API works: authentication, scopes, identifiers, visibility, errors and pagination. The endpoint reference is generated from OpenAPI 3.1.",
     "url": "https://gohelpdesk.org/docs/api.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
     "isPartOf": { "@type": "SoftwareApplication", "name": "Go Help Desk", "url": "https://gohelpdesk.org" }
   }
   </script>
-  <style>
-    .tag { display:inline-block; padding:0.15rem 0.5rem; border-radius:4px; font-size:0.75rem; font-weight:700; font-family:var(--mono); margin-right:0.4rem; vertical-align:middle; }
-    .tag-get    { background:#dbeafe; color:#1d4ed8; }
-    .tag-post   { background:#dcfce7; color:#15803d; }
-    .tag-patch  { background:#fef9c3; color:#92400e; }
-    .tag-delete { background:#fee2e2; color:#b91c1c; }
-    .endpoint { margin:1.25rem 0; padding:1rem 1.25rem; border:1px solid var(--border); border-radius:8px; }
-    .endpoint-title { font-family:var(--mono); font-size:0.9rem; font-weight:600; margin-bottom:0.5rem; }
-    .endpoint p { font-size:0.9rem; margin-bottom:0.5rem; }
-    .endpoint pre { margin:0.75rem 0 0; font-size:0.8rem; }
-    .endpoint h4 { font-size:0.875rem; margin-top:0.75rem; margin-bottom:0.35rem; }
-    .param-table td:first-child { font-family:var(--mono); font-size:0.83rem; white-space:nowrap; }
-    .param-table td:nth-child(2) { font-size:0.8rem; color:var(--muted); white-space:nowrap; }
-    .param-table td:nth-child(3) { font-size:0.875rem; }
-  </style>
 </head>
 <body>
 
@@ -56,7 +41,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -69,7 +54,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -85,7 +73,7 @@
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -95,20 +83,16 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html" class="active">REST API</a></li>
-      <li><a href="#api-overview">Overview &amp; Auth</a></li>
-      <li><a href="#api-tickets">Tickets</a></li>
-      <li><a href="#api-replies">Replies</a></li>
-      <li><a href="#api-links">Ticket Links</a></li>
-      <li><a href="#api-categories">Categories</a></li>
-      <li><a href="#api-auth-endpoints">Auth Endpoints</a></li>
-      <li><a href="#api-me">Me / Profile</a></li>
-      <li><a href="#api-admin">Admin Endpoints</a></li>
-      <li><a href="#api-more">Tags &amp; attachments</a></li>
-      <li><a href="#api-attachments">Attachment uploads <span class="badge-beta">Beta</span></a></li>
-      <li><a href="#api-guest">Guest endpoints <span class="badge-beta">Beta</span></a></li>
-      <li><a href="#api-signin">Sign-in</a></li>
-      <li><a href="#api-admin-more">More admin</a></li>
-      <li><a href="#api-errors">Errors &amp; Pagination</a></li>
+      <li><a href="#api-overview">Overview</a></li>
+      <li><a href="#api-auth">Authentication</a></li>
+      <li><a href="#api-scopes">Scopes</a></li>
+      <li><a href="#api-session-only">Session-only settings</a></li>
+      <li><a href="#api-visibility">Visibility &amp; tracking numbers</a></li>
+      <li><a href="#api-closed">Closed tickets</a></li>
+      <li><a href="#api-attachments">Attachment downloads</a></li>
+      <li><a href="#api-guest">Guest access</a></li>
+      <li><a href="#api-errors">Errors &amp; pagination</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -125,782 +109,215 @@
 <main class="docs-content">
 
 <h1 class="docs-page-title" id="api-overview">REST API</h1>
-<p class="docs-page-sub">Complete reference for all API endpoints, authentication methods, and data formats.</p>
+<p class="docs-page-sub">How the API works. For every endpoint, parameter and schema, see the API Reference.</p>
 
-<p>The REST API is mounted at <code>/api/v1/</code>. All request and response bodies are JSON (<code>Content-Type: application/json</code>). Timestamps are ISO 8601 strings in UTC. All resource IDs are UUIDs. Tickets additionally carry a human-readable tracking number such as <code>GHD-2026-000001</code>, which every ticket endpoint accepts in place of the UUID. The <code>GHD</code> part is an admin setting, so your instance may use something else.</p>
+<div class="callout callout-note">
+  <p><a href="api-reference.html" class="btn btn-primary btn-sm">Browse the API Reference →</a></p>
+</div>
 
-<h3>Authentication methods</h3>
+<p>The REST API is mounted at <code>/api/v1/</code>. Requests and responses are JSON, except where a route takes a multipart upload, returns a file, or returns another format; the reference marks those. Timestamps are RFC 3339 strings. Resource IDs are UUIDs.</p>
+
+<p>Tickets also carry a human-readable tracking number such as <code>GHD-2026-000001</code>. The prefix (<code>GHD</code>) is the <code>ticket_prefix</code> setting, so your instance may use another. <code>GET /api/v1/tickets/{id}</code> accepts a tracking number in place of the UUID. Every other ticket route takes the UUID only: for a ticket you can see, a tracking number there answers <code>400</code>. See <a href="#api-visibility">Visibility &amp; tracking numbers</a>.</p>
+
+<h3>Base URL</h3>
+<pre><code>&lt;BASE_URL&gt;/api/v1</code></pre>
+
+<h3>Quick example</h3>
+<pre><code>curl https://helpdesk.example.com/api/v1/tickets \
+  -H "Authorization: ApiKey GHD_…"</code></pre>
+<p>The key needs the <code>tickets:read</code> scope. Without it the same request returns <code>403</code>.</p>
+
+
+<h2 id="api-auth">Authentication</h2>
 
 <table>
   <thead><tr><th>Method</th><th>How to authenticate</th><th>Best for</th></tr></thead>
   <tbody>
     <tr>
       <td><strong>Session cookie</strong></td>
-      <td>POST to <code>/api/v1/auth/local/login</code>. The server sets an <code>HttpOnly</code> session cookie automatically. Browsers send it on subsequent requests.</td>
+      <td>POST to <code>/api/v1/auth/local/login</code>. The server sets an <code>HttpOnly</code> <code>ghd_session</code> cookie, and browsers send it on later requests. SAML and OIDC sign-in create the same kind of session. A session that has passed the password but not its second factor (a TOTP code or a passkey) is refused with <code>403 mfa_required</code> on routes that need one.</td>
       <td>The built-in React SPA</td>
     </tr>
     <tr>
       <td><strong>API key</strong></td>
-      <td><code>Authorization: ApiKey &lt;token&gt;</code> — its own scheme, not <code>Bearer</code>, which is reserved for OAuth2 JWTs. The token is 64 hex characters with no prefix, shown once when the key is created.</td>
+      <td><code>Authorization: ApiKey GHD_&lt;64 hex characters&gt;</code>. The <code>GHD_</code> prefix is part of the token. It is shown once, when the key is created. The key acts at its owner's role, counts as having passed MFA, and is limited to its <a href="#api-scopes">scopes</a>.</td>
       <td>Scripts, CLI tools, CI pipelines, monitoring</td>
     </tr>
     <tr>
       <td><strong>OAuth2 JWT</strong></td>
-      <td>POST to <code>/api/v1/auth/oauth/token</code> with <code>client_id</code> + <code>client_secret</code> to get a short-lived JWT. Send as <code>Authorization: Bearer &lt;jwt&gt;</code>.</td>
+      <td>POST to <code>/api/v1/auth/oauth/token</code> with <code>"grant_type": "client_credentials"</code>, <code>client_id</code> and <code>client_secret</code> in a JSON body (form encoding is refused). The token lasts one hour (<code>expires_in: 3600</code>). Send it as <code>Authorization: Bearer &lt;token&gt;</code>. A client acts at the staff role, so it cannot reach admin-only routes. Deleting the client revokes its tokens on the next request.</td>
       <td>Server-to-server integrations (JIRA, chatbots)</td>
+    </tr>
+    <tr>
+      <td><strong>Guest token</strong></td>
+      <td><code>Authorization: Guest &lt;token&gt;</code>, from a link in an email. It names one ticket and grants nothing else. See <a href="#api-guest">Guest access</a>.</td>
+      <td>Reporters without an account</td>
     </tr>
   </tbody>
 </table>
 
-<div class="callout callout-warn">
-  <p><strong>From v1.2.0 every endpoint also checks the credential's scopes.</strong> Authenticating is no longer enough: an API key or OAuth client reaches only the resources it was granted, as read or write. A credential with no scopes reaches nothing — and the v1.1.1 admin UI created credentials with no scopes, so most existing keys stop working on upgrade. <code>GET /api/v1/admin/scopes</code> lists what can be granted. See <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a>.</p>
-</div>
-
 <div class="callout callout-note">
-  <p>The MCP server at <code>/mcp/</code> accepts the same API key and OAuth2 JWT authentication as the REST API. See <a href="mcp.html">MCP Server</a> for connection details.</p>
-</div>
-
-<h3>Base URL</h3>
-<pre><code>https://&lt;BASE_URL&gt;/api/v1</code></pre>
-
-<h3>Quick example</h3>
-<pre><code>curl https://helpdesk.example.com/api/v1/tickets \
-  -H "Authorization: ApiKey 3f8a…"</code></pre>
-<p>The key needs the <code>tickets:read</code> scope. Without it the same request returns <code>403</code>.</p>
-
-
-<h2 id="api-tickets">Tickets</h2>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets</div>
-  <p>List tickets. Scope is applied automatically: staff see tickets assigned to them or their groups; users see only their own tickets. Admins default to their own work queue and can broaden scope with the <code>scope</code> parameter.</p>
-  <h4>Query parameters</h4>
-  <table class="param-table">
-    <thead><tr><th>Param</th><th>Type</th><th>Description</th></tr></thead>
-    <tbody>
-      <tr><td><code>q</code></td><td>string</td><td>Search subject and description. Combines with any of the filters below.</td></tr>
-      <tr><td><code>scope</code></td><td>string</td><td>Admin only. <code>unassigned</code> — tickets with no assignee. <code>all</code> — every ticket. Omit for the caller's own queue. Staff or User receive <code>403</code>.</td></tr>
-      <tr><td><code>reporter_id</code></td><td>UUID</td><td>Admin only. Every ticket filed by that user.</td></tr>
-      <tr><td><code>assignee_group_id</code></td><td>UUID</td><td>Staff and Admin. Tickets assigned to that group. With ticket scope enforced, a Staff member must be a member of the group.</td></tr>
-      <tr><td><code>limit</code></td><td>int</td><td>Default 100, maximum 200.</td></tr>
-      <tr><td><code>offset</code></td><td>int</td><td>Default 0. Values are clamped rather than rejected.</td></tr>
-    </tbody>
-  </table>
-  <h4>Response</h4>
-  <p>A JSON array of tickets. There is no envelope and no total count — page with <code>limit</code> and <code>offset</code>, and stop when a page comes back shorter than <code>limit</code>.</p>
-  <pre><code>[
-  {
-    "id":              "9f1c2d84-5b6e-4a10-9c33-1f0e7b2a4d55",
-    "tracking_number": "GHD-2026-000001",
-    "subject":         "Laptop won't power on",
-    "description":     "My ThinkPad X1 stopped...",
-    "category_id":     "3a7e...",
-    "type_id":         "5c21...",
-    "priority":        "high",
-    "status_id":       "b0d4...",
-    "reporter_user_id":"77aa...",
-    "created_at":      "2026-04-05T09:00:00Z",
-    "updated_at":      "2026-04-05T09:00:00Z"
-  }
-]</code></pre>
-  <p>Optional fields are omitted when unset rather than sent as <code>null</code>: <code>type_id</code>, <code>item_id</code>, <code>assignee_user_id</code>, <code>assignee_group_id</code>, <code>reporter_user_id</code>, <code>guest_email</code>, <code>guest_name</code>, <code>guest_phone</code>, <code>resolution_notes</code>, <code>resolved_at</code>, <code>closed_at</code>.</p>
-  <p>Names are not expanded. A ticket carries <code>category_id</code> and <code>status_id</code>, not a nested category or status object — resolve them against <code>GET /api/v1/categories</code> and <code>GET /api/v1/statuses</code>.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets</div>
-  <p>Create a new ticket. Returns the created ticket with HTTP 201.</p>
-  <h4>Request body</h4>
-  <pre><code>{
-  "subject":     "Laptop won't power on",        // required, 200 chars max
-  "description": "My ThinkPad X1 stopped...",    // required
-  "category_id": "3a7e...",                      // required
-  "type_id":     "5c21...",                      // optional
-  "item_id":     "8b93...",                      // optional
-  "priority":    "high",                         // optional, default "medium"
-  "guest_email": "sam@example.com",              // optional; makes this a guest ticket
-  "guest_name":  "Sam Ortiz",                    // required when guest_email is set
-  "guest_phone": "+1 555 0100",                  // optional
-  "custom_fields": { "asset_tag": "X1-4471" }    // optional
-}</code></pre>
-  <p>Priority values are lower-case: <code>critical</code>, <code>high</code>, <code>medium</code>, <code>low</code>. A value that is present but not one of these is a <code>400</code>.</p>
-  <p><code>guest_email</code> must be a single bare address — no display name, one address only. From v1.2.0 it is validated and normalised; anything else is a <code>400</code>.</p>
-  <p><strong>This endpoint does not create guest tickets.</strong> It requires an authenticated caller, and an authenticated caller's guest fields are discarded rather than stored. From v1.3.0-beta a guest ticket is created at <a href="#api-guest"><code>POST /api/v1/guest/tickets</code></a> instead, which takes no credential at all.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}</div>
-  <p>Get a single ticket by UUID or tracking number. The response is the ticket on its own — replies are a separate request.</p>
-  <h4>Response</h4>
-  <pre><code>{
-  "id":               "9f1c2d84-5b6e-4a10-9c33-1f0e7b2a4d55",
-  "tracking_number":  "GHD-2026-000001",
-  "subject":          "Laptop won't power on",
-  "description":      "My ThinkPad X1 stopped...",
-  "category_id":      "3a7e...",
-  "type_id":          "5c21...",
-  "priority":         "high",
-  "status_id":        "b0d4...",
-  "assignee_user_id": "12ab...",
-  "reporter_user_id": "77aa...",
-  "resolution_notes": "Replaced the power adapter.",
-  "resolved_at":      "2026-04-05T10:30:00Z",
-  "created_at":       "2026-04-05T09:00:00Z",
-  "updated_at":       "2026-04-05T10:30:00Z"
-}</code></pre>
-  <p>There is no <code>sla_deadline</code> on the ticket and no nested category, type, submitter or assignee object — only the ids. <code>tracking_number</code> is always present.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}</div>
-  <p>A tracking number works anywhere <code>{id}</code> is accepted, so <code>/api/v1/tickets/GHD-2026-000001</code> and <code>/api/v1/tickets/&lt;uuid&gt;</code> reach the same ticket. There is no separate lookup endpoint, and no unauthenticated one: the same authentication and the same visibility rules apply either way. A ticket you may not see is reported as not found rather than refused, so tracking numbers cannot be probed for existence.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-patch">PATCH</span>/api/v1/tickets/{id}</div>
-  <p>Update a ticket. All fields are optional — only included fields are modified (partial update).</p>
-  <h4>Request body</h4>
-  <pre><code>{
-  "status_id":          "b0d4...",   // change status
-  "assignee_user_id":   "12ab...",   // assign to a staff member
-  "assignee_group_id":  "44cd...",   // or to a group
-  "clear_assignee":     true,        // unassign; see below
-  "category_id":        "3a7e...",   // reclassify
-  "type_id":            "5c21...",
-  "item_id":            "8b93..."
-}</code></pre>
-  <p><strong>Priority is not editable here.</strong> It is set when the ticket is created.</p>
-  <p><code>clear_assignee</code> exists because an omitted key and an explicit <code>null</code> arrive identically, so there is no way to say "assign this to nobody" with the two assignee fields alone. Send <code>{"clear_assignee": true}</code>.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/resolve</div>
-  <p>Mark a ticket Resolved. Requires Staff or Admin role. The ticket transitions to the system Resolved status and the reopen window starts.</p>
-  <pre><code>{ "notes": "Replaced the power adapter. Confirmed working." }</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/reopen</div>
-  <p>Manually reopen a Resolved or Closed ticket. Staff and Admin only. The ticket transitions back to New.</p>
-  <pre><code>{ "reason": "User says the issue has recurred." }  // optional</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/close</div>
-  <p>Permanently close a Resolved ticket. Admin only. Bypasses the reopen window — closes the ticket immediately rather than waiting for the window to expire. Returns the updated ticket.</p>
+  <p>The MCP server at <code>/mcp/</code> accepts the same session, API key and OAuth2 JWT authentication as the REST API. See <a href="mcp.html">MCP Server</a> for connection details.</p>
 </div>
 
 
-<h2 id="api-replies">Replies</h2>
+<h2 id="api-scopes">Scopes</h2>
 
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}/replies</div>
-  <p>List all replies on a ticket in chronological order. Internal notes are included only for Staff and Admin. For User or guest access, only public replies are returned.</p>
-  <h4>Response</h4>
-  <pre><code>[
-  {
-    "id":              "6d2f...",
-    "ticket_id":       "9f1c...",
-    "author_id":       "12ab...",
-    "body":            "I've ordered the replacement part.",
-    "internal":        false,
-    "notify_customer": true,
-    "created_at":      "2026-04-05T11:00:00Z"
-  }
-]</code></pre>
-  <p>The flag is <code>internal</code>, not <code>is_internal</code>. <code>author_id</code> is omitted for a reply with no author. There is no <code>edited_at</code> and no nested author object.</p>
-</div>
+<p>API keys and OAuth clients carry scopes. A session does not need them. A credential acts at its owner's role (for an API key) or at the staff role (for an OAuth client), and its scopes narrow that further. A scope never widens what the role allows.</p>
 
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/replies</div>
-  <p>Add a reply or internal note to a ticket.</p>
-  <p>If the ticket is Resolved, the authenticated user is a User or guest, and they are within the reopen window, the ticket is automatically reopened and the reply is saved.</p>
-  <p>If <code>internal</code> is <code>true</code>, the request requires Staff or Admin. A User receives <code>403</code>. An internal note never triggers a customer notification, whatever <code>notify_customer</code> says, and its body is not included in the webhook event either.</p>
-  <pre><code>{
-  "body":            "The replacement arrives Thursday morning.",
-  "internal":        false,
-  "notify_customer": true       // optional, defaults to true
-}</code></pre>
-</div>
-
-<div class="callout callout-note">
-  <p><strong>Replies cannot be edited or deleted.</strong> There is no endpoint for either. A reply thread is the record of what was said to a customer and when, so it is append-only — correct a reply by posting another one.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}/canned-responses</div>
-  <p>List the canned responses in scope for this ticket — global templates, plus any scoped to the ticket's category, or category and type. Requires Staff or Admin role; returns 403 for a User or guest, since only staff compose replies with canned responses.</p>
-</div>
-
-
-<h2 id="api-links">Ticket links</h2>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}/links</div>
-  <p>List all linked tickets for the given ticket.</p>
-  <pre><code>[
-  {
-    "source_id": "9f1c...",
-    "target_id": "4e77...",
-    "link_type": "related_to"
-  }
-]</code></pre>
-  <p>A link carries ids only; fetch the target ticket separately for its subject or status.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/links</div>
-  <p>Create a link between two tickets. The reverse link is created automatically. Requires Staff or Admin role.</p>
-  <pre><code>{
-  "target_id": "4e77...",
-  "link_type": "related_to"
-}</code></pre>
-  <p>Valid <code>link_type</code> values: <code>related_to</code>, <code>parent_child</code> (the source is the parent), <code>caused_by</code> (the source was caused by the target), <code>duplicate_of</code>. There is no <code>parent_of</code> or <code>child_of</code> — direction is carried by which ticket is the source.</p>
-  <p>Returns HTTP 201 with both the forward and reverse link objects.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-delete">DELETE</span>/api/v1/tickets/{id}/links/{targetId}/{linkType}</div>
-  <p>Remove a link. The reverse link on the target ticket is also removed. Requires Staff or Admin role.</p>
-</div>
-
-
-<h2 id="api-categories">Categories, types, items &amp; statuses</h2>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/categories</div>
-  <p>List all categories. Returns a flat list; types and items are not nested.</p>
-  <pre><code>[ { "id": "3a7e...", "name": "Hardware", "sort_order": 1, "active": true } ]</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/categories/{id}/types</div>
-  <p>List types for a category. Returns an empty array if the category has no types.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/categories/{id}/types/{typeId}/items</div>
-  <p>List items for a type. Returns an empty array if the type has no items.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/statuses</div>
-  <p>List all ticket statuses, including system and custom statuses, in their configured sort order.</p>
-  <pre><code>[
-  { "id": "b0d4...", "name": "New",         "kind": "system", "color": "#64748b", "sort_order": 1, "active": true, "ticket_count": 12 },
-  { "id": "c1e5...", "name": "In Progress", "kind": "custom", "color": "#2563eb", "sort_order": 2, "active": true, "ticket_count": 4  },
-  { "id": "d2f6...", "name": "Resolved",    "kind": "system", "color": "#16a34a", "sort_order": 3, "active": true, "ticket_count": 31 },
-  { "id": "e3a7...", "name": "Closed",      "kind": "system", "color": "#475569", "sort_order": 4, "active": true, "ticket_count": 88 }
-]</code></pre>
-  <p>The field is <code>kind</code> — <code>system</code> or <code>custom</code> — not <code>is_system</code>.</p>
-</div>
-
-
-<h2 id="api-auth-endpoints">Auth endpoints</h2>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/auth/local/login</div>
-  <p>Authenticate with email and password. Sets an <code>HttpOnly</code> session cookie on success.</p>
-  <p>If MFA is enrolled, the session is created in a <em>pending</em> state and the response body includes <code>"mfa_required": true</code>. The session is not fully authenticated until <code>POST /api/v1/auth/local/mfa/verify</code> succeeds.</p>
-  <pre><code>// Request
-{ "email": "alex@example.com", "password": "hunter2" }
-
-// Response — no MFA
-{ "user": { "id": "...", "name": "Alex Chen", "role": "staff", "mfa_enrolled": false } }
-
-// Response — MFA enrolled
-{ "mfa_required": true }</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/auth/local/mfa/verify</div>
-  <p>Complete MFA verification after a successful password login. Accepts a 6-digit TOTP code or a recovery code. On success, the session is promoted to fully authenticated.</p>
-  <pre><code>// TOTP code
-{ "code": "123456" }
-
-// Recovery code
-{ "code": "AAAA-BBBB" }</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/auth/local/logout</div>
-  <p>Destroy the current session. The session cookie is cleared. Returns HTTP 204 with no body.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/auth/oauth/token</div>
-  <p>OAuth2 client credentials flow. Exchange a <code>client_id</code> and <code>client_secret</code> for a short-lived JWT (1 hour).</p>
-  <pre><code>// Request
-{ "grant_type": "client_credentials", "client_id": "...", "client_secret": "..." }
-
-// Response
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIs...",
-  "token_type":   "Bearer",
-  "expires_in":   3600
-}</code></pre>
-  <p>Use the token as <code>Authorization: Bearer &lt;access_token&gt;</code>. Create OAuth2 client credentials from <em>Admin → Settings → OAuth2 Clients</em>.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/auth/saml/metadata</div>
-  <p>Returns SAML Service Provider metadata XML. No authentication required. Import this URL into your IdP. Only available when <code>SAML_ENABLED=true</code>.</p>
-</div>
-
-
-<h2 id="api-me">Me / profile</h2>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/me</div>
-  <p>Get the currently authenticated user's profile.</p>
-  <pre><code>{
-  "id":           "12ab...",
-  "email":        "alex@example.com",
-  "display_name": "Alex Chen",
-  "role":         "staff",
-  "mfa_enabled":  true,
-  "disabled":     false,
-  "created_at":   "2026-01-15T08:00:00Z",
-  "updated_at":   "2026-03-02T11:20:00Z"
-}</code></pre>
-  <p>The name field is <code>display_name</code>, and the MFA flag is <code>mfa_enabled</code>.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-patch">PATCH</span>/api/v1/me/password</div>
-  <p>Change the authenticated user's password. Minimum 8 characters. Returns <code>204</code>.</p>
-  <p>Every other session for this user is destroyed and the calling session is re-issued — changing your password is how you evict someone holding the old one, so the other sessions have to die, but signing yourself out of the tab you just used would be a bug. The current password is not required, because reaching this endpoint already means holding a valid session for the account.</p>
-  <pre><code>{ "password": "a-new-password" }</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/me/mfa/enroll</div>
-  <p>Begin MFA enrollment. Returns a TOTP provisioning URI and a base64-encoded QR code PNG. Enrollment is not active until confirmed with <code>POST /api/v1/me/mfa/enroll/confirm</code>.</p>
-  <pre><code>{
-  "totp_uri": "otpauth://totp/Open%20Help%20Desk:alex%40example.com?secret=BASE32SECRET&issuer=...",
-  "qr_code":  "data:image/png;base64,..."
-}</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/me/mfa/enroll/confirm</div>
-  <p>Confirm MFA enrollment by submitting the first TOTP code from the authenticator app. On success, MFA is activated and recovery codes are returned. <strong>Store the recovery codes immediately.</strong></p>
-  <pre><code>// Request
-{ "code": "123456" }
-
-// Response
-{ "recovery_codes": ["AAAA-BBBB", "CCCC-DDDD", "EEEE-FFFF", "GGGG-HHHH", "IIII-JJJJ",
-                     "KKKK-LLLL", "MMMM-NNNN", "OOOO-PPPP"] }</code></pre>
-</div>
-
-<div class="callout callout-note">
-  <p><strong>You cannot switch off your own MFA.</strong> There is no endpoint for it. An administrator clears it with <code>PATCH /api/v1/admin/users/{id}</code> and <code>{"reset_mfa": true}</code>, which also ends every session that account holds — a cookie minted before the reset would otherwise let whoever holds it enrol a new authenticator.</p>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/admin/api-keys</div>
-  <p>List the current user's API keys. The key value is never returned after creation — only the name and metadata.</p>
-  <pre><code>{
-  "data": [
-    { "id": "9f1c...", "name": "monitoring-script", "created_at": "2026-03-01T00:00:00Z", "last_used_at": "2026-04-05T08:00:00Z" }
-  ]
-}</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/admin/api-keys</div>
-  <p>Create a new API key. The <code>token</code> field in the response is the plaintext token and is returned <strong>only once</strong>. Store it immediately.</p>
-  <pre><code>// Request
-{ "name": "monitoring-script" }
-
-// Response — HTTP 201
-{ "id": "9f1c…", "name": "monitoring-script", "token": "3f8a…" }</code></pre>
-</div>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-delete">DELETE</span>/api/v1/admin/api-keys/{id}</div>
-  <p>Revoke an API key immediately. Returns HTTP 204. Any in-flight requests using this key will receive <code>401 Unauthorized</code> after revocation.</p>
-</div>
-
-
-<h2 id="api-admin">Admin endpoints</h2>
-
-<p>All <code>/api/v1/admin/*</code> endpoints require the Admin role. Requests from Staff or User accounts receive <code>403 Forbidden</code>.</p>
-
-<h3>Users</h3>
-<table>
-  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/users</code></td><td>List all users. Filter by role with <code>?role=staff</code>.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/users</code></td><td>Create a user with a specified role. Body: <code>{ "name", "email", "password", "role" }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/users/{id}</code></td><td>Update name, email, or role. Set <code>"force_password_reset": true</code> to send a reset email. Set <code>"reset_mfa": true</code> to wipe their TOTP secret.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/users/{id}</code></td><td>Disable/enable: <code>{ "disabled": true }</code>.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/users/{id}</code></td><td>Permanently delete a user. Tickets they submitted or are assigned to are preserved.</td></tr>
-  </tbody>
-</table>
-
-<h3>Groups</h3>
-<table>
-  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/groups</code></td><td>List all groups with member counts and scope entries.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/groups</code></td><td>Create a group. Body: <code>{ "name": "Networking", "scope": [{ "category_id": "...", "type_id": null }], "member_ids": ["..."] }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/groups/{id}</code></td><td>Update name, scope entries, or member list. Scope and members are replaced entirely — include the full desired state.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/groups/{id}</code></td><td>Delete a group. Members are not deleted.</td></tr>
-  </tbody>
-</table>
-
-<h3>Categories, types, items</h3>
-<table>
-  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/categories</code></td><td>Create a category. Body: <code>{ "name": "Hardware" }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/categories/{id}</code></td><td>Update name or sort order. Set <code>"archived": true</code> to hide from new tickets.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/categories/{id}</code></td><td>Delete. Fails with 409 if any tickets reference this category.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/categories/{id}/types</code></td><td>Create a type under a category.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}</code></td><td>Update a type.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}</code></td><td>Delete a type.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items</code></td><td>Create an item under a type.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}</code></td><td>Update an item.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}</code></td><td>Delete an item.</td></tr>
-  </tbody>
-</table>
-
-<h3>Canned responses</h3>
-<table>
-  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/canned-responses</code></td><td>List all canned responses.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/canned-responses</code></td><td>Create one. Body: <code>{ "name", "body", "category_id": null, "type_id": null, "sort_order": 0 }</code>. Both scope fields are optional; <code>type_id</code> requires <code>category_id</code> to also be set.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/canned-responses/{id}</code></td><td>Update name, body, scope, or sort order. Replaces the full record — send all fields.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/canned-responses/{id}</code></td><td>Permanently delete. There's no soft-delete — the body was already copied into any replies that used it.</td></tr>
-  </tbody>
-</table>
-
-<h3>Statuses, SLA, webhooks, plugins, settings</h3>
-<table>
-  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/statuses</code></td><td>Create a custom status. Body: <code>{ "name", "color", "sort_order" }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/statuses/{id}</code></td><td>Update name, color, or sort order. System statuses can be updated but not deleted.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/statuses/{id}</code></td><td>Delete a custom status. Fails if any tickets currently have this status.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/sla/policies</code></td><td>List SLA policies.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/sla/policies</code></td><td>Create an SLA policy. Body: <code>{ "name", "priority", "category_id", "response_hours", "resolution_hours" }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/sla/policies/{id}</code></td><td>Update an SLA policy.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/sla/policies/{id}</code></td><td>Delete an SLA policy.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/webhooks</code></td><td>List configured webhooks.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/webhooks</code></td><td>Create a webhook. Body: <code>{ "url", "secret", "events": [...], "enabled": true }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/webhooks/{id}</code></td><td>Update URL, secret, events, or enabled state.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/webhooks/{id}</code></td><td>Delete a webhook and all its delivery history.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/plugins</code></td><td>List installed plugins with status, version, and error count.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/plugins</code></td><td>Install a plugin. Multipart upload with <code>file</code> field, or JSON body <code>{ "url": "..." }</code>.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/plugins/{id}</code></td><td>Update plugin config or toggle enabled state. Body: <code>{ "enabled": true, "config": { ... } }</code>.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/plugins/{id}</code></td><td>Uninstall a plugin.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/settings</code></td><td>Get all settings as a flat key/value object.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/settings</code></td><td>Update settings. Body is a partial key/value object — only included keys are updated.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/settings/logo</code></td><td>Upload a logo. Multipart form with a <code>logo</code> file field. Accepted: PNG, JPG, GIF (max 2 MB). All three are raster and all are re-encoded as PNG, scaled to fit within 320 × 64 px. <strong>SVG is refused from v1.3.0-beta</strong> with <code>400 invalid_type</code>; earlier releases accepted it behind a sanitiser. Returns <code>{ "url": "/api/v1/logo?v=&lt;timestamp&gt;" }</code>.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/settings/logo</code></td><td>Remove the logo. Clears the stored file and the <code>site_logo_url</code> setting. Returns HTTP 204.</td></tr>
-  </tbody>
-</table>
-
-<h3>Public endpoints</h3>
-<table>
-  <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/site</code></td><td>Returns <code>{ "name", "logo_url", "version", "guest_submission_enabled" }</code>. No authentication required. Used by the SPA shell before login to render the correct site name and logo, and to decide whether the login page offers a link to <code>/submit</code>. <code>guest_submission_enabled</code> is new in v1.3.0-beta.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/logo</code></td><td>Serves the uploaded logo file. <strong>PNG only from v1.3.0-beta</strong> — an SVG left on disk by an earlier release is deliberately not served, and the instance answers 404 as though no logo were set. No authentication required. Cache-Control: <code>public, max-age=300</code>, plus a sandboxing Content-Security-Policy.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/setup/status</code></td><td>Returns <code>{ "needed": true|false }</code>. No authentication required. Used to detect first-run setup.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/setup</code></td><td>Create the first admin account. Only available when no users exist. Body: <code>{ "email", "display_name", "password" }</code>. Returns 409 once setup is complete.</td></tr>
-  </tbody>
-</table>
-
-
-
-<h2 id="api-more">Tags, attachments, custom fields &amp; history</h2>
-
-<p>These live under a ticket and, like every other route under <code>/tickets/{id}/</code>, are refused for a ticket the caller may not see.</p>
-
-<table>
-  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/tags</code></td><td>Tags on a ticket.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/tags</code></td><td>Add a tag. Staff and Admin only.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/tickets/{id}/tags/{tagId}</code></td><td>Remove a tag. Staff and Admin only.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/attachments</code></td><td>List attachments.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/attachments</code></td><td>Upload one, as multipart with a <code>file</code> field. See <a href="#api-attachments">the upload contract</a> below.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/attachments/{attachId}</code></td><td>Download one. Always <code>application/octet-stream</code> with <code>Content-Disposition: attachment</code>, whatever the file is.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/tickets/{id}/attachments/{attachId}/reputation</code></td><td><span class="badge-beta">Beta</span> Re-check a quarantined file's reputation verdict by hand. Staff and Admin only. Optional <code>?provider=</code> names one service.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/custom-fields</code></td><td>Custom field values on a ticket.</td></tr>
-    <tr><td><span class="tag tag-put">PUT</span></td><td><code>/api/v1/tickets/{id}/custom-fields</code></td><td>Replace them. Body: <code>{ "values": { "&lt;field&gt;": "&lt;value&gt;" } }</code>.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/{id}/history</code></td><td>Status history, oldest first.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tickets/fields</code></td><td>Which custom fields apply to a category, type and item, so a form can be built before the ticket exists.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/tags</code></td><td>Tags available to the caller.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/groups</code></td><td>Groups, for assignment pickers.</td></tr>
-  </tbody>
-</table>
-
-
-<h2 id="api-attachments">Attachment uploads and downloads <span class="badge-beta">Beta</span></h2>
-
-<div class="callout callout-warn">
-  <p><strong>Everything under this heading changed in v1.3.0-beta and is not in a released version.</strong> The stable release is v1.2.0. The background is on the <a href="attachment-security.html">Attachment Security</a> page.</p>
-</div>
-
-<h3>Uploading</h3>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/attachments</div>
-  <p>Multipart <code>form-data</code>, one file per request, in a field named <code>file</code>. Requires an authenticated account — a reporting user may upload only to their own ticket, and guests cannot upload at all.</p>
-</div>
-
-<p>Refusals, roughly in the order they are checked:</p>
-
-<table>
-  <thead><tr><th>Status</th><th>Code</th><th>When</th></tr></thead>
-  <tbody>
-    <tr><td><code>413</code></td><td><code>too_large</code></td><td>Over 25 MB. The request body is capped before it is parsed; the declared size and the bytes actually read are checked as well, with the same status, code and message.</td></tr>
-    <tr><td><code>400</code></td><td><code>invalid_filename</code></td><td>The filename is not valid UTF-8, contains a NUL byte, contains a control character or a text-direction override, or is over 255 bytes.</td></tr>
-    <tr><td><code>415</code></td><td><code>unsupported_type</code></td><td>The extension is not on this instance's allowed-types list. Checked before the body is read.</td></tr>
-    <tr><td><code>422</code></td><td><code>infected</code></td><td>The scanner identified the file and <code>attachment_infected_handling</code> is <code>refuse</code>, which is the default. The message carries the scanner's name for the detection.</td></tr>
-    <tr><td><code>503</code></td><td><code>scanner_unavailable</code></td><td>The file could not be scanned and <code>attachment_scan_policy</code> is <code>required</code>, which is the default wherever a scanner address is configured. Carries <code>Retry-After</code>.</td></tr>
-    <tr><td><code>415</code></td><td><code>invalid_file</code></td><td>The content contradicts the extension, the real type is not one this instance accepts, and <code>attachment_mismatch_handling</code> is <code>refuse</code>, which is the default. Same status, code and message as v1.2.0.</td></tr>
-    <tr><td><code>422</code></td><td><code>invalid_image</code></td><td>An image that could not be decoded, or that would cost too much to decode: more than 25 megapixels by its header, more than 100 MB once decoded, or a JPEG whose frame header cannot be read. All of that is decided from the header, before any decode.</td></tr>
-  </tbody>
-</table>
-
-<p><code>201</code> returns the attachment object. Note that <code>filename</code> may not be what was uploaded: a quarantined file is stored as <code>&lt;uploaded name&gt;.zip</code> and a wrapped mismatch as <code>suspicious-&lt;crc32&gt;.zip</code>.</p>
-
-<h3>The attachment object</h3>
-
-<pre><code>{
-  "id":            "9f1c…",
-  "ticket_id":     "3a77…",
-  "filename":      "sample.exe.zip",
-  "mime_type":     "application/zip",       // the file as stored
-  "size_bytes":    4821,                    // the stored file
-  "created_at":    "2026-09-24T10:12:04Z",
-
-  "detected_mime": "application/vnd.microsoft.portable-executable",
-  "sha256":        "5c2f…",                 // of the bytes as UPLOADED
-  "mismatch":      null,                    // null = no judgement was made (.exe is not a shipped extension)
-  "virus_name":    "Eicar-Test-Signature",  // null = not identified as malicious
-
-  "reputation_url": "https://www.virustotal.com/gui/file/5c2f…",
-  "reputation":     { … }                   // null = nothing was attempted
-}</code></pre>
-
-<table class="param-table">
-  <thead><tr><th>Field</th><th></th><th>Notes</th></tr></thead>
-  <tbody>
-    <tr><td>detected_mime</td><td>string or null</td><td>What the content detector made of the bytes, as a bare media type. <code>application/octet-stream</code> when it could not place them. <strong><code>null</code> means the file predates this release</strong> and was never inspected.</td></tr>
-    <tr><td>sha256</td><td>string or null</td><td>Hex SHA-256 of the bytes as uploaded — before image recompression and before any wrapping. <strong>For a recompressed image this is not the hash of the file on disk.</strong></td></tr>
-    <tr><td>mismatch</td><td>bool or null</td><td><code>null</code> means no judgement was made, which is a different statement from <code>false</code>. It is <code>null</code> for a file that predates this release, and for one whose claimed extension is not one of the nine this project ships.</td></tr>
-    <tr><td>virus_name</td><td>string or null</td><td>The scanner's name for the detection on a quarantined file. <code>null</code> means the file was not identified as malicious — either it scanned clean, or nothing scanned it.</td></tr>
-    <tr><td>reputation_url</td><td>string or null</td><td>A VirusTotal page for the hash. Present only where this instance itself found something worth a second opinion: the scanner named the file, or its content contradicts its name. <strong>It does not follow the reputation toggles</strong> — a link sends nothing from the server.</td></tr>
-    <tr><td>reputation</td><td>object or null</td><td><code>null</code> means <em>nothing was attempted</em>: no service is enabled, or this file was never a candidate. It never means a lookup failed — that is a provider entry with state <code>unavailable</code>.</td></tr>
-  </tbody>
-</table>
-
-<h3>The reputation object</h3>
-
-<p>Filled in only for quarantined attachments, only when at least one service is enabled, and only for Staff and Admin callers — a reporting user listing their own ticket never spends the operator's API allowance.</p>
-
-<p>The top level repeats the single most serious answer across the services that replied, and <code>providers</code> carries every one of them:</p>
-
-<table class="param-table">
-  <thead><tr><th>Field</th><th></th><th>Notes</th></tr></thead>
-  <tbody>
-    <tr><td>state</td><td>string</td><td>One of <code>detected</code>, <code>unseen</code>, <code>unscanned</code>, <code>clean</code>, <code>known</code>, <code>unavailable</code>. The ordering is <code>detected &gt; unseen &gt; unscanned &gt; clean &gt; known</code>; <code>unavailable</code> is not in it and appears here only when nothing answered.</td></tr>
-    <tr><td>detected / total</td><td>int or null</td><td>Engines flagging it, engines that ran. <strong>Null except on <code>detected</code> and <code>clean</code></strong> — only a completed analysis has numbers, and <code>0 of 0</code> reads as a clean result.</td></tr>
-    <tr><td>threat_name</td><td>string</td><td>The service's own name for what it found. Often empty, and attacker-influenced text: escape it.</td></tr>
-    <tr><td>known_feeds</td><td>string[]</td><td>Set only on <code>known</code>. Name the feed when rendering: "signed by Microsoft Windows" and "catalogued by NSRL" are not worth the same, and neither is "known good".</td></tr>
-    <tr><td>analysed_at</td><td>time or null</td><td>When the <em>service</em> last analysed the file.</td></tr>
-    <tr><td>fetched_at</td><td>time or null</td><td>When <em>this server</em> last asked.</td></tr>
-    <tr><td>provider / provider_key</td><td>string</td><td>Which service the summary above was copied from — as a person reads it, and as a machine does. Both empty when nothing answered.</td></tr>
-    <tr><td>providers</td><td>array</td><td>One entry per enabled service, including the ones that failed. Each carries the same fields plus <code>link_url</code> (<code>null</code> where the service has no per-hash page — CIRCL has none), <code>recheckable</code>, and <code>inline</code>, which marks the entry the summary was taken from.</td></tr>
-  </tbody>
-</table>
-
-<h3>Re-checking a verdict</h3>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-post">POST</span>/api/v1/tickets/{id}/attachments/{attachId}/reputation</div>
-  <p>Staff and Admin only. Optional <code>?provider=virustotal|metadefender|polyswarm|circl</code>; absent means every enabled service. Returns <code>200</code> with the refreshed attachment object.</p>
-</div>
-
-<table>
-  <thead><tr><th>Status</th><th>Code</th><th>When</th></tr></thead>
-  <tbody>
-    <tr><td><code>400</code></td><td><code>invalid_provider</code></td><td>That service is not enabled on this instance, or the name is misspelled.</td></tr>
-    <tr><td><code>409</code></td><td><code>no_verdict</code></td><td>Nothing has been looked up for this file yet, so there is nothing to re-check. A re-check is deliberately not a first lookup.</td></tr>
-    <tr><td><code>409</code></td><td><code>detection_is_final</code></td><td>Every service asked holds a verdict that cannot change — a detection, or a <code>known</code> file. One code for both; the message distinguishes them.</td></tr>
-    <tr><td><code>429</code></td><td><code>checked_recently</code></td><td>Inside the seven-day manual floor. Carries <code>Retry-After</code>, and the message names the date it clears.</td></tr>
-    <tr><td><code>503</code></td><td><code>reputation_unavailable</code></td><td>The lookup is not configured on this instance, or could not be made right now. Carries <code>Retry-After: 60</code>.</td></tr>
-  </tbody>
-</table>
-
-<h3>Downloading</h3>
-
-<div class="endpoint">
-  <div class="endpoint-title"><span class="tag tag-get">GET</span>/api/v1/tickets/{id}/attachments/{attachId}</div>
-  <p>Streams the file. Every response carries:</p>
-</div>
-
-<pre><code>Content-Type: application/octet-stream
-Content-Disposition: attachment; filename="report.pdf"; filename*=UTF-8''report.pdf
-Vary: Sec-Fetch-Dest
-Cache-Control: private, max-age=3600</code></pre>
-
-<p>The content type is <strong>always</strong> <code>application/octet-stream</code>, whatever the file claims to be. Up to and including v1.2.0 it came from the filename, so a PDF went out as <code>application/pdf</code>.</p>
-
-<p>The route also refuses a request whose <code>Sec-Fetch-Dest</code> header says the browser intends to <em>render</em> the response, with <code>403 not_downloadable</code>. Only <code>document</code>, <code>empty</code> and an absent header are accepted, so an allow list rather than a block list. <strong>Command-line clients send no such header and are unaffected</strong>; an <code>&lt;a download&gt;</code> click and a <code>fetch()</code> both send <code>empty</code> and are accepted.</p>
-
-
-<h2 id="api-guest">Guest endpoints <span class="badge-beta">New in 1.3.0-beta</span></h2>
-
-<p>Four routes under <code>/api/v1/guest</code>, none of which takes a session, an API key or an OAuth token. They exist only while the <code>guest_submission_enabled</code> setting is on; with it off, all four answer <code>404</code>.</p>
-
-<table>
-  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/guest/tickets</code></td><td>Submit a ticket with no credential. Body: <code>{ "subject", "description", "category_id", "guest_email", "guest_name", "guest_phone" }</code>. Returns <code>201 { "tracking_number": "…" }</code> and nothing else — the access link goes by email.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/guest/resend</code></td><td>Re-request the access link, given a tracking number and the email address. Always <code>202</code>, whether or not anything matched.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/guest/ticket</code></td><td>Read the one ticket the token names. Requires <code>Authorization: Guest &lt;token&gt;</code>.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/guest/replies</code></td><td>Reply to it. Body: <code>{ "body": "…" }</code>. Same header.</td></tr>
-  </tbody>
-</table>
-
-<h3>Notes that matter to a client</h3>
+<p>A scope is <code>resource:read</code> or <code>resource:write</code>, and write implies read on the same resource. The resources are:</p>
 <ul>
-  <li><strong>There is no ticket id in any guest URL.</strong> The token names exactly one ticket, so there is nothing to enumerate.</li>
-  <li><strong>The scheme is <code>Guest</code>, not <code>Bearer</code></strong>, deliberately: a guest token is not an API credential and must not be accepted anywhere one is.</li>
-  <li><strong>Every failure is a byte-identical <code>404</code></strong> — wrong token, expired token, closed ticket, feature off. None can be told apart from outside.</li>
-  <li><code>category_id</code> must be an <strong>active</strong> category, checked before anything is written. <code>type_id</code>, <code>item_id</code>, <code>priority</code> and custom field values are ignored if sent; priority is always Medium.</li>
-  <li><code>guest_email</code> must parse as a single bare address with no display name, and is stored lower-cased.</li>
-  <li>The read returns a deliberately narrow view: tracking number, subject, description, status name, timestamps, and the public replies with no author names. <strong>Internal notes are never included, and there is no attachment field at all.</strong></li>
-  <li>Both public routes are rate-limited per client address at the login limiter's rate (10 a minute by default). The re-request is additionally limited to once per ticket every five minutes.</li>
+  <li><code>tickets</code>, <code>users</code>, <code>groups</code>, <code>categories</code>, <code>tags</code>, <code>canned_responses</code>, <code>sla</code>, <code>settings</code>, <code>plugins</code>, <code>webhooks</code> and <code>credentials</code>: read and write.</li>
+  <li><code>audit</code>: read only. No credential can write the audit log. The admin audit view needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
+</ul>
+
+<ul>
+  <li>There is no wildcard. <code>*</code> and <code>tickets:*</code> grant nothing.</li>
+  <li>An empty list denies everything. Creating a key or an OAuth client without scopes answers <code>400 scopes_required</code>. An unknown scope answers <code>400 invalid_scope</code>.</li>
+  <li>A credential cannot grant a scope it does not hold itself, which answers <code>403 insufficient_scope</code>. A request outside the credential's scopes gets the same answer.</li>
+</ul>
+
+<p>The catalogue is served by <code>GET /api/v1/admin/scopes</code>, which needs <code>credentials:read</code>. Credentials issued before scopes were enforced (1.2.0) carry none and stop working until they are reissued. See <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a>.</p>
+
+
+<h2 id="api-session-only">Settings that need a signed-in administrator</h2>
+
+<div class="callout callout-warn">
+  <p><strong>An API key or OAuth client cannot change these settings, whatever scopes it holds.</strong> The settings endpoint answers <code>403 session_required</code>. Writes to the SAML and OIDC configuration, a user's own password and MFA enrolment, and the MFA and passkey sign-in routes refuse machine credentials the same way. Repointing an identity provider, switching off MFA or opening registration would each give whoever holds the key a session they should not have.</p>
+</div>
+
+<p>The settings a machine credential cannot change are:</p>
+<ul>
+  <li><strong>Sign-in:</strong> <code>saml_enabled</code>, <code>saml_metadata_url</code>, <code>saml_cert_pem</code>, <code>saml_key_pem</code>, <code>oidc_enabled</code>, <code>oidc_issuer_url</code>, <code>oidc_client_id</code>, <code>oidc_client_secret</code>, <code>oidc_redirect_url</code>.</li>
+  <li><strong>Second factor:</strong> <code>mfa_enabled</code>, <code>mfa_enforced_roles</code>.</li>
+  <li><strong>Accounts:</strong> <code>self_signup_enabled</code>, <code>open_registration_enabled</code>, <code>allowed_email_domains</code>.</li>
+  <li><strong>Guests:</strong> <code>guest_submission_enabled</code>.</li>
+  <li><strong>Closed tickets and audit:</strong> <code>closed_reopen_policy</code>, <code>audit_mask_requester_names</code>, <code>audit_retention_days</code>, <code>staff_can_view_ticket_change_history</code>.</li>
+  <li><strong>Attachment scanning:</strong> <code>attachment_scan_address</code>, <code>attachment_scan_policy</code>, <code>attachment_allowed_types</code>, <code>attachment_infected_handling</code>, <code>attachment_mismatch_handling</code>.</li>
+  <li><strong>Reputation lookups:</strong> <code>attachment_reputation_refresh</code>, <code>attachment_reputation_virustotal_enabled</code>, <code>attachment_reputation_virustotal_key</code>, <code>attachment_reputation_metadefender_enabled</code>, <code>attachment_reputation_metadefender_key</code>, <code>attachment_reputation_polyswarm_enabled</code>, <code>attachment_reputation_polyswarm_key</code>, <code>attachment_reputation_circl_enabled</code>.</li>
+  <li><strong>Deprecated, still writable:</strong> <code>attachment_vt_lookup</code>, <code>attachment_vt_api_key</code>, <code>attachment_reputation_provider</code>, <code>attachment_reputation_api_key</code>.</li>
 </ul>
 
 
-<h2 id="api-signin">Sign-in and provisioning</h2>
+<h2 id="api-visibility">Visibility and tracking numbers</h2>
 
-<table>
-  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/auth/providers</code></td><td>Which sign-in methods this instance offers. No authentication.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/auth/signup/status</code></td><td>Whether self-signup is on. No authentication.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/auth/signup</code></td><td>Request an account. Body: <code>{ "email", "display_name", "password" }</code>. Throttled per source address. A malformed address is <code>400</code>; a disallowed domain is <code>422</code>.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/auth/verify-email</code></td><td>Complete signup with the token from the verification email.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/auth/saml/login</code></td><td>Begin SAML sign-in.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/auth/saml/acs</code></td><td>Assertion consumer service.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/auth/saml/complete</code></td><td>Finish SAML sign-in and issue the session.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/auth/oidc/login</code></td><td>Begin OIDC sign-in.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/auth/oidc/callback</code></td><td>OIDC redirect target.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/setup/status</code></td><td>Whether first-run setup is still available.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/setup</code></td><td>Create the first administrator. Returns <code>409</code> once any user exists.</td></tr>
-  </tbody>
-</table>
+<p>A ticket you may not see answers <code>404 not_found</code>, the same answer as a ticket that does not exist. It is never <code>403</code>, so tracking numbers, which are sequential, cannot be walked to learn which tickets exist. Earlier releases answered <code>403</code>; from 1.3.0 the answer is <code>404</code>.</p>
+
+<p><code>GET /api/v1/tickets/{id}</code> accepts a tracking number in any letter case, so <code>ghd-2026-000001</code> and <code>GHD-2026-000001</code> reach the same ticket. There is no separate lookup endpoint. Every other route under <code>/api/v1/tickets/{id}</code> takes the UUID, and answers <code>400</code> for a tracking number of a ticket you can see.</p>
 
 
-<h2 id="api-admin-more">Remaining admin endpoints</h2>
+<h2 id="api-closed">Closed tickets</h2>
 
-<p>All under <code>/api/v1/admin/</code>, all requiring the Admin role <em>and</em> the matching scope.</p>
+<p>Closed is read-only and terminal by default. Nothing moves a closed ticket back to an open state unless the <code>closed_reopen_policy</code> setting allows the caller's role. The values are <code>off</code> (the default, nobody may reopen), <code>admin</code> (administrators only) and <code>staff_admin</code> (staff and administrators). A requester can never reopen a closed ticket.</p>
 
-<table>
-  <thead><tr><th>Method</th><th>Endpoint</th><th>Description</th></tr></thead>
-  <tbody>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/scopes</code></td><td>Every scope that can be granted to a credential. Needs the <code>credentials</code> scope itself — the list is a map of the surface.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/security-warnings</code></td><td>Configuration problems worth an administrator's attention.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/users/{id}</code></td><td>One user, disabled ones included.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/users/{id}/password</code></td><td>Set a user's password directly.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/oauth-clients</code></td><td>List OAuth clients. The hashed secret is never returned.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/oauth-clients</code></td><td>Create one. The secret is shown once. Grant scopes explicitly.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/oauth-clients/{id}</code></td><td>Revoke one.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/groups/{id}</code></td><td>One group.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/groups/{id}/members</code></td><td>Members of a group.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/groups/{id}/members</code></td><td>Add a member.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/groups/{id}/members/{userId}</code></td><td>Remove a member.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/groups/{id}/scopes</code></td><td>The category and type pairs a group covers.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/groups/{id}/scopes</code></td><td>Add a scope entry.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/groups/{id}/scopes</code></td><td>Remove one.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories</code></td><td>Categories including archived ones.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}</code></td><td>One category.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/groups</code></td><td>Groups covering a category.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/types</code></td><td>Types under a category.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/groups</code></td><td>Groups covering a type.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items</code></td><td>Items under a type.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/statuses</code></td><td>Statuses including inactive ones.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/tags</code></td><td>Tags including deleted ones.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/tags</code></td><td>Create a tag.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/tags/{id}</code></td><td>Soft-delete a tag.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/tags/{id}/restore</code></td><td>Undo that.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/custom-fields</code></td><td>Field definitions.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/custom-fields</code></td><td>Create one.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/custom-fields/{id}</code></td><td>Update one.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/fields</code></td><td>Which fields are attached at category level. </td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/categories/{id}/fields</code></td><td>Attach a field.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/categories/{id}/fields/{assignmentId}</code></td><td>Change an attachment.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/categories/{id}/fields/{assignmentId}</code></td><td>Detach.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/fields</code></td><td>Fields attached at type level.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/fields</code></td><td>Attach one.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/fields/{assignmentId}</code></td><td>Change it.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/fields/{assignmentId}</code></td><td>Detach.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields</code></td><td>Fields attached at item level.</td></tr>
-    <tr><td><span class="tag tag-post">POST</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields</code></td><td>Attach one.</td></tr>
-    <tr><td><span class="tag tag-patch">PATCH</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}</code></td><td>Change it.</td></tr>
-    <tr><td><span class="tag tag-delete">DELETE</span></td><td><code>/api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}</code></td><td>Detach.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/saml</code></td><td>SAML configuration.</td></tr>
-    <tr><td><span class="tag tag-put">PUT</span></td><td><code>/api/v1/admin/saml</code></td><td>Replace it. Refused for an API key or OAuth client — see below.</td></tr>
-    <tr><td><span class="tag tag-get">GET</span></td><td><code>/api/v1/admin/oidc</code></td><td>OIDC configuration.</td></tr>
-    <tr><td><span class="tag tag-put">PUT</span></td><td><code>/api/v1/admin/oidc</code></td><td>Replace it. Same restriction.</td></tr>
-  </tbody>
-</table>
+<ul>
+  <li>A requester's reply, upload, custom-field edit or link on a closed ticket answers <code>409 ticket_closed</code>. Staff and administrators can still post replies to a closed ticket.</li>
+  <li>A reopen the policy does not allow answers <code>409 ticket_closed</code>, with a message that says why.</li>
+  <li><code>POST /api/v1/tickets/{id}/follow-up</code> opens a new ticket linked to a closed one, and answers <code>201</code> with the new ticket. Staff and administrators can open one for any closed ticket they can see; a requester can open one for their own, once. A ticket that is not closed answers <code>409 ticket_not_closed</code>. A requester's second follow-up of the same ticket answers <code>409 follow_up_exists</code>; staff and administrators are not limited.</li>
+  <li>A requester's reply to a Resolved ticket after the reopen window answers <code>409 reopen_window_closed</code>.</li>
+  <li>A guest's write to a closed ticket answers <code>404 not_found</code>. A guest opens a follow-up with <code>POST /api/v1/guest/follow-up</code>.</li>
+</ul>
 
-<div class="callout callout-warn">
-  <p><strong>Identity settings need a signed-in administrator.</strong> SAML, OIDC, MFA and signup settings cannot be changed with an API key or OAuth client, whatever scopes it holds — the answer is <code>403 session_required</code>. Each of them is a route to a session: repoint the identity provider, or switch on open registration, and an attacker signs in as somebody.</p>
-</div>
+
+<h2 id="api-attachments">Attachment downloads</h2>
+
+<p>Attachments are download-only. <code>GET /api/v1/tickets/{id}/attachments/{attachId}</code> streams the file with these headers:</p>
+
+<pre><code>Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="…"
+Vary: Sec-Fetch-Dest
+Cache-Control: private, max-age=3600</code></pre>
+
+<p>The content type is always <code>application/octet-stream</code>, whatever the file claims to be. No browser renders that type, so a file opened from the link is saved, not shown. The header check below covers browsers that request a file to display it. It cannot stop a script that fetches the bytes and renders them itself.</p>
+
+<p>The route checks <code>Sec-Fetch-Dest</code>. Only <code>document</code>, <code>empty</code> and an absent header are accepted. A request whose header says the browser will render the response, such as an image or a frame, is refused with <code>403 not_downloadable</code>. Command-line clients send no such header and are not affected. An <code>&lt;a download&gt;</code> click and a <code>fetch()</code> send <code>empty</code> and are accepted.</p>
+
+<p>Uploads, the attachment object and the reputation fields are described in the <a href="api-reference.html">API Reference</a>. For why the help desk never renders an attachment, see <a href="attachment-security.html#attach-download">Attachment Security</a>.</p>
+
+
+<h2 id="api-guest">Guest access</h2>
+
+<p>Guests reach six routes under <code>/api/v1/guest</code>. None takes a session, an API key or an OAuth token.</p>
+
+<ul>
+  <li><code>POST /guest/tickets</code> submits a ticket. The body has <code>subject</code>, <code>description</code>, <code>category_id</code>, <code>guest_email</code> and <code>guest_name</code> (the last two are required), and optionally <code>guest_phone</code>. It answers <code>201</code> with the tracking number and nothing else. The access link goes by email.</li>
+  <li><code>POST /guest/resend</code> asks for a new access link, given a tracking number and an address. It answers <code>202</code> whether or not anything matched.</li>
+  <li><code>GET /guest/ticket</code>, <code>POST /guest/replies</code>, <code>POST /guest/attachments</code> and <code>POST /guest/follow-up</code> take the guest token and act on the one ticket it names.</li>
+</ul>
+
+<p>Turning <code>guest_submission_enabled</code> off makes the submit, resend and follow-up routes answer <code>404</code>. The read, reply and upload routes check the token only, not the setting, so a link already sent keeps working on those routes.</p>
+
+<h3>Notes that matter to a client</h3>
+<ul>
+  <li><strong>There is no ticket ID in any guest URL.</strong> The token names exactly one ticket, so there is nothing to enumerate.</li>
+  <li><strong>The scheme is <code>Guest</code>, not <code>Bearer</code>.</strong> A guest token is not an API credential and is not accepted where one is required.</li>
+  <li><strong>Every refusal about the link is the same <code>404 not_found</code>.</strong> A wrong token, an unknown link, a closed ticket on a write route and a switched-off instance (for the routes that check it) cannot be told apart from outside. A good link still gets other answers: <code>400</code> for an invalid body, <code>429</code> past the rate limit, and <code>409 reopen_window_closed</code> for a reply or upload to a Resolved ticket after its reopen window.</li>
+  <li><code>category_id</code> must be an <strong>active</strong> category, checked before anything is written. <code>type_id</code>, <code>item_id</code> and custom fields are not read, and the priority is always Medium.</li>
+  <li><code>guest_email</code> must be a single bare address with no display name. It is stored lower-case.</li>
+  <li>The read returns a narrow view: tracking number, subject, description, status name, timestamps and the replies the guest may see. Replies carry <code>from_you</code> and no author. Assignee, group, reporter and internal-note data are never included, and the read has no attachment list.</li>
+  <li>Closing a ticket does not revoke its guest links. They keep reading the closed ticket until they expire. A resend after the ticket closed gives a read-only link, beside the older ones.</li>
+  <li>Submit, resend and follow-up are limited per client address, at the same budget as password sign-in (see <a href="#api-errors">Errors &amp; pagination</a>). A guest link is re-sent to a ticket at most once every five minutes; a request inside that window still answers <code>202</code>.</li>
+</ul>
+
 
 <h2 id="api-errors">Errors &amp; pagination</h2>
 
 <h3>Error format</h3>
-<p>All error responses use the same JSON shape:</p>
+<p>Most error responses share one JSON shape:</p>
 <pre><code>{
   "error": {
     "code":    "bad_request",
     "message": "subject is required"
   }
 }</code></pre>
-<p>Match on <code>code</code>, not on <code>message</code>. Codes you will meet include <code>bad_request</code>, <code>forbidden</code>, <code>not_found</code>, <code>session_required</code>, <code>reopen_window_closed</code> and <code>internal_error</code>.</p>
+<p>Match on <code>code</code>, not on <code>message</code>. Refusals made by the authentication and role checks (<code>401 unauthorized</code>, and <code>403</code> with <code>forbidden</code>, <code>mfa_required</code>, <code>insufficient_scope</code> or <code>session_required</code>) carry the same envelope but are sent as <code>text/plain</code>. An unknown path answers <code>404</code> with the plain text <code>404 page not found</code>.</p>
 
-<h3>HTTP status codes</h3>
+<h3>Codes</h3>
 <table>
-  <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+  <thead><tr><th>Code</th><th>Status</th><th>When</th></tr></thead>
   <tbody>
-    <tr><td><code>200 OK</code></td><td>Request succeeded.</td></tr>
-    <tr><td><code>201 Created</code></td><td>Resource created. Returned for POST requests that create a new object.</td></tr>
-    <tr><td><code>204 No Content</code></td><td>Request succeeded, no body (DELETE, logout).</td></tr>
-    <tr><td><code>400 Bad Request</code></td><td>Missing or invalid fields. The <code>error</code> message describes the specific problem.</td></tr>
-    <tr><td><code>401 Unauthorized</code></td><td>No valid session, token, or API key. The browser SPA redirects to /login on 401.</td></tr>
-    <tr><td><code>403 Forbidden</code></td><td>Authenticated but insufficient role for the requested operation.</td></tr>
-    <tr><td><code>404 Not Found</code></td><td>The resource does not exist, or you do not have permission to see it.</td></tr>
-    <tr><td><code>409 Conflict</code></td><td>The operation would violate a constraint (e.g. deleting a category that has tickets).</td></tr>
-    <tr><td><code>500 Internal Server Error</code></td><td>Unexpected server error. Check the application logs.</td></tr>
+    <tr><td><code>bad_request</code>, <code>invalid_id</code></td><td>400</td><td>A field is missing or invalid, or a path id is malformed. The message says which.</td></tr>
+    <tr><td><code>scopes_required</code>, <code>invalid_scope</code></td><td>400</td><td>A credential was created with no scopes, or with one that does not exist.</td></tr>
+    <tr><td><code>unauthorized</code></td><td>401</td><td>No valid session, API key or OAuth token.</td></tr>
+    <tr><td><code>forbidden</code></td><td>403</td><td>The caller is known but the role does not allow this.</td></tr>
+    <tr><td><code>mfa_required</code></td><td>403</td><td>The session has not passed its second factor.</td></tr>
+    <tr><td><code>insufficient_scope</code></td><td>403</td><td>The credential does not carry the scope the route needs.</td></tr>
+    <tr><td><code>session_required</code></td><td>403</td><td>A setting or account action that only a signed-in session may perform.</td></tr>
+    <tr><td><code>not_downloadable</code></td><td>403</td><td>An attachment request whose <code>Sec-Fetch-Dest</code> says it will be rendered.</td></tr>
+    <tr><td><code>not_found</code></td><td>404</td><td>The resource does not exist, or you may not see it.</td></tr>
+    <tr><td><code>ticket_closed</code></td><td>409</td><td>The ticket is closed and the caller may not change it.</td></tr>
+    <tr><td><code>ticket_not_closed</code>, <code>follow_up_exists</code></td><td>409</td><td>A follow-up was asked for a ticket that is open, or a requester asked for a second one.</td></tr>
+    <tr><td><code>reopen_window_closed</code></td><td>409</td><td>A requester's reply to a Resolved ticket after the reopen window.</td></tr>
+    <tr><td><code>rate_limited</code></td><td>429</td><td>Too many attempts. <code>Retry-After</code> says when to try again.</td></tr>
+    <tr><td><code>internal_error</code></td><td>500</td><td>An unexpected server error. Check the application logs.</td></tr>
   </tbody>
 </table>
 
+<p>Other codes are listed in the reference, on the operation that returns them.</p>
+
 <h3>Pagination</h3>
-<p>List endpoints return a bare JSON array and take <code>limit</code> and <code>offset</code>. There is no envelope, no page number and no total count.</p>
+<p>Two list endpoints are paged, <code>GET /api/v1/tickets</code> and <code>GET /api/v1/admin/audit</code>. Both take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A <code>limit</code> above the maximum is clamped rather than rejected, and a non-numeric or non-positive value is ignored, so the default applies.</p>
+<ul>
+  <li>The ticket list is a bare JSON array with no total. Page until a response is shorter than <code>limit</code>.</li>
+  <li>The audit list returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
+</ul>
 <pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
-<p><code>limit</code> defaults to 100 and is capped at 200. Both values are clamped rather than rejected, so an absurd <code>offset</code> returns an empty array rather than an error. Page until a response is shorter than <code>limit</code>.</p>
+<p>Every other list returns its whole result as a bare JSON array.</p>
 
 <h3>Rate limiting</h3>
-<p>Credential endpoints are throttled: password login is limited per submitted email address, and signup per source address. Exceeding either returns <code>429</code> with a <code>Retry-After</code> header — honour it, since the header matches the budget that actually refused. TOTP attempts are counted on the user record instead, so they survive a restart and are not multiplied by the replica count.</p>
-<p>Nothing else is throttled. If you need broader limits, configure them in a reverse proxy (nginx, Caddy, Cloudflare).</p>
+<p>The application applies these limits itself. The budget is <code>AUTH_RATE_LIMIT_PER_MINUTE</code> (default 10 a minute). Docker Compose does not pass it to the app, so with the shipped Compose file the default applies.</p>
+<ul>
+  <li><strong>Password sign-in</strong> is limited per submitted email address. Only failed attempts count. Past the budget, further attempts answer <code>429 rate_limited</code> with <code>Retry-After</code>. Each login for an account over its budget is also held for about a second before the password is checked, so a guesser is slowed down while a correct password still works.</li>
+  <li><strong>Signup</strong> is limited per source address.</li>
+  <li><strong>Guest submission, resend and follow-up</strong> are limited per source address.</li>
+  <li><strong>Second-factor codes</strong> lock after five failed codes, for 15 minutes. The count is kept on the user record, so it survives a restart and is not multiplied by the number of replicas.</li>
+</ul>
+<p>For broader limits, put a reverse proxy in front of the application.</p>
 
 
 <div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
   <a href="tickets.html" class="btn btn-outline">← Working with Tickets</a>
-  <a href="mcp.html" class="btn btn-outline">MCP Server →</a>
+  <a href="api-reference.html" class="btn btn-outline">API Reference →</a>
 </div>
 
 </main>

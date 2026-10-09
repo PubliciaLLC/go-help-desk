@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Admin Guide — Go Help Desk Docs</title>
-  <meta name="description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta name="description" content="Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/admin-guide.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/admin-guide.html" />
   <meta property="og:title" content="Admin Guide — Go Help Desk Docs" />
-  <meta property="og:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta property="og:description" content="Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Admin Guide — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta name="twitter:description" content="Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Admin Guide",
-    "description": "Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk.",
+    "description": "Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk.",
     "url": "https://gohelpdesk.org/docs/admin-guide.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -46,7 +46,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -59,7 +59,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -84,14 +87,15 @@
       <li><a href="#admin-sla">SLA Policies</a></li>
       <li><a href="#admin-email-tpl">Email Templates</a></li>
       <li><a href="#admin-webhooks">Webhooks</a></li>
-      <li><a href="#admin-attachments">Attachments <span class="badge-beta">Beta</span></a></li>
-      <li><a href="#admin-plugins">Installing Plugins</a></li>
+      <li><a href="#admin-audit">Audit Log</a></li>
+      <li><a href="#admin-attachments">Attachments</a></li>
+      <li><a href="#admin-plugins">Plugins</a></li>
       <li><a href="#admin-branding">Branding</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -101,6 +105,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -120,6 +125,20 @@
 <p class="docs-page-sub">Configure and manage every aspect of your Go Help Desk installation.</p>
 
 <p>The admin panel is accessible from the sidebar when logged in as an Admin. All configuration in this guide is done through the admin panel unless a restart is required (only for environment variable changes).</p>
+
+<div class="callout callout-note">
+  <p><strong>What's new for administrators in 1.3.0</strong></p>
+  <ul>
+    <li><a href="#admin-audit">Audit log</a>: a per-ticket Activity feed and an admin-wide Audit Log. Entries are kept forever unless you set a retention period.</li>
+    <li><a href="#admin-webhooks">Webhooks</a>: an admin screen, payload formats for Slack, Microsoft Teams, Discord and Jira Automation, and each hook's last delivery result.</li>
+    <li><a href="#admin-statuses">Closed is terminal</a> by default. <a href="#admin-closed-reopen">Reopening closed tickets</a> is an opt-in setting, and a reopen window of 0 closes a Resolved ticket on the next sweep.</li>
+    <li><a href="#admin-sla">SLA tracking</a> works end to end: timers pause while a ticket is Pending.</li>
+    <li><a href="#admin-users">Account recovery</a>: an identity-provider lockout guard, and a <code>reset-factors</code> command for an account that has lost every second factor. MFA reset also clears passkeys.</li>
+    <li><a href="tickets.html#tickets-create">Guest submission</a> works. <code>guest_submission_enabled</code> needs a signed-in administrator.</li>
+    <li><a href="#admin-attachments">Attachment security</a>: content detection, malware scanning and reputation lookup, all configured under <em>Admin → Settings → Attachments</em>.</li>
+    <li>Administration is desktop-only by design. Staff triage and reporting work on a phone.</li>
+  </ul>
+</div>
 
 
 <h2 id="admin-cti">Categories, Types &amp; Items</h2>
@@ -180,7 +199,7 @@ Facilities
   <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
   <li><strong>Add Item</strong> — click <em>Add Item</em> next to a Type.</li>
   <li><strong>Reorder</strong> — drag-and-drop entries to change the order they appear in the ticket form dropdowns.</li>
-  <li><strong>Delete</strong> — Categories and Types with existing tickets cannot be deleted. Archive them (hide from new tickets) instead.</li>
+  <li><strong>Delete</strong>: Categories and Types with existing tickets cannot be deleted.</li>
 </ul>
 
 <h3>Groups in the CTI editor</h3>
@@ -200,11 +219,11 @@ Facilities
   <tbody>
     <tr>
       <td><strong>Admin</strong></td>
-      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, tags, SLA policies, email templates, webhooks, and plugins. Always retains local-auth access even when SAML is enabled.</td>
+      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, tags, SLA policies and webhooks. Always retains local-auth access even when SAML is enabled.</td>
     </tr>
     <tr>
       <td><strong>Staff</strong></td>
-      <td>Can view, reply to, assign, and update tickets within their group scope. Can look up any ticket by ID regardless of scope. Can leave internal notes not visible to users. Can resolve and close tickets. Can add and remove tags on any ticket. Cannot access admin settings.</td>
+      <td>Can view, reply to, assign and update the tickets they can see: every ticket, unless <a href="#admin-groups">Limit staff to their group scope</a> is on. Can leave internal notes not visible to users. Can resolve tickets; only an administrator can close one. Can add and remove tags. Cannot access admin settings.</td>
     </tr>
     <tr>
       <td><strong>User</strong></td>
@@ -218,11 +237,12 @@ Facilities
 <ul>
   <li><strong>Edit profile</strong> — change display name, email address, and role. Disabled accounts must be re-enabled before editing profile fields.</li>
   <li><strong>View account info</strong> — member since date, login type (Local / SSO / Local + SSO), and MFA enrollment status.</li>
-  <li><strong>Reset MFA</strong> — clears the user's TOTP secret. The user is prompted to re-enroll on next login. Only shown when the user has MFA active.</li>
+  <li><strong>Reset MFA</strong>, clears the user's authenticator and every passkey, and ends all of their sessions. The user signs in with their password and enrols again. Only shown when the user has a second factor, an authenticator or a passkey.</li>
   <li><strong>Enable / Disable account</strong> — disabled accounts cannot log in. All tickets and history are preserved. Re-enable at any time.</li>
   <li><strong>Reset password</strong> — set a new password directly from the admin panel. Only shown for accounts that have a local password (not SSO-only accounts).</li>
   <li><strong>Manage group membership</strong> — add the user to or remove them from any group.</li>
-  <li><strong>Delete account</strong> — permanently removes the account. Tickets and replies are preserved with a "removed user" placeholder. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated.</li>
+  <li><strong>Delete account</strong>, a soft delete. The account is kept but can no longer sign in, and its tickets and replies are preserved. The confirmation says they will show as a removed user. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated.</li>
+  <li>The last active administrator cannot be disabled, demoted or deleted. The request is refused with <code>400 bad_request</code>.</li>
 </ul>
 
 <h3>Creating a user</h3>
@@ -236,10 +256,18 @@ Facilities
   <li><strong>Local + SSO</strong> — the account can authenticate with either method (common when an admin account was created before SAML was enabled).</li>
 </ul>
 
+<h3>Locked out of every second factor</h3>
+<p>An administrator who loses every second factor, with no other administrator to reset it, can be recovered from the server. Run this where the server runs, while the <code>app</code> container is up:</p>
+<pre><code>docker compose exec app /app/server reset-factors user@example.com</code></pre>
+<p>The command clears the authenticator and every passkey for that account, and ends its sessions. It does not change the password. It writes an audit entry recording the operating-system user and host that ran it, with <code>source</code> set to <code>cli</code>. The user then signs in with their password and enrols a factor again. Anyone who can run the command already holds the server and database credentials, which is why no web route does the same.</p>
+
+<h3>Identity-provider lockout guard</h3>
+<p>Saving SAML or OIDC settings is refused with <code>400 bad_request</code> when the change would leave no active administrator able to sign in, for example by turning off the only identity provider that an administrator without a password uses. Local password sign-in is not affected by these settings. A change that leaves only some administrators unable to sign in is saved, and the response carries a warning.</p>
+
 
 <h2 id="admin-groups">Groups &amp; scope</h2>
 
-<p>Staff visibility — which tickets a staff member sees in their queue — is controlled entirely by group membership. An admin always sees all tickets. A staff member not in any group sees no tickets (except by direct search by ID).</p>
+<p>Group membership decides which tickets a staff member can see only when <em>Limit staff to their group scope</em> is on, under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see every ticket. With it on, a staff member sees the tickets they reported, tickets assigned to them or to one of their groups, and tickets whose category and type one of their groups covers. A staff member in no group then sees almost nothing, and a ticket outside their visibility answers as not found, even by its tracking number. An admin always sees all tickets.</p>
 
 <h3>How scope is calculated</h3>
 <p>When a staff member loads their ticket queue, the system collects all CTI scope entries from all their groups, unions them, and returns tickets that match any of those entries.</p>
@@ -417,7 +445,7 @@ Facilities
   <tbody>
     <tr><td><strong>New</strong></td><td>The initial status assigned to every newly created ticket.</td></tr>
     <tr><td><strong>Resolved</strong></td><td>Setting this status starts the reopen window timer. Users can reopen the ticket by replying within this window. When set, staff are prompted to enter optional resolution notes.</td></tr>
-    <tr><td><strong>Closed</strong></td><td>Automatically set by a background job when the reopen window expires. No further user-initiated updates are allowed. Staff and admins can still change the status manually.</td></tr>
+    <tr><td><strong>Closed</strong></td><td>Set by a background job when the reopen window expires, or by an administrator. Read-only and terminal by default: nobody moves a ticket out of Closed unless <em>Reopening closed tickets</em> allows their role, and requesters never can. The way on is a follow-up ticket.</td></tr>
   </tbody>
 </table>
 
@@ -446,10 +474,23 @@ Facilities
 <p>Every status transition is automatically recorded on the ticket. The ticket detail page shows a chronological timeline that interleaves replies and status events. Status events show the old and new status (with their colors), who made the change, and the timestamp. The initial status on ticket creation is also recorded.</p>
 
 <h3>Reopen window</h3>
-<p>Configure how many days after Resolved a user can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window (days)</em>. Set to 0 to disable user-initiated reopening entirely (staff and admins can still reopen manually).</p>
+<p>Configure how many days after Resolved a requester can reopen a ticket by replying. Set this from <em>Admin → Settings → General → Ticket lifecycle → Reopen window and auto-close</em>. The default is 7. Set it to 0 for no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
 
 <h3>Reopen target status</h3>
 <p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>.</p>
+
+<h3 id="admin-closed-reopen">Reopening closed tickets</h3>
+<p>Closed is terminal by default. <em>Reopening closed tickets</em>, under <em>Admin → Settings → General → Ticket lifecycle</em>, decides whether a Closed ticket can be force-reopened, and by whom:</p>
+<table>
+  <thead><tr><th>Setting</th><th>Stored value</th><th>Who can reopen a Closed ticket</th></tr></thead>
+  <tbody>
+    <tr><td>Off (terminal)</td><td><code>off</code>, the default</td><td>Nobody.</td></tr>
+    <tr><td>Admins only</td><td><code>admin</code></td><td>Administrators.</td></tr>
+    <tr><td>Staff and admins</td><td><code>staff_admin</code></td><td>Staff and administrators.</td></tr>
+  </tbody>
+</table>
+<p>Requesters, whether account holders or guests, can never reopen a Closed ticket, whatever this is set to. Staff and admins who need more work on a closed ticket open a <a href="tickets.html#tickets-follow-up">follow-up ticket</a> instead. A follow-up is available on every closed ticket; a requester may open one per ticket, and staff and admins are not limited.</p>
+<p>The setting is read on every request, so a change applies at once. It is session-only: an API key or OAuth client that tries to change it is refused with <code>403 session_required</code>. A value the server does not recognise is refused with <code>400 invalid_closed_reopen_policy</code>.</p>
 
 
 <h2 id="admin-sla">SLA policies</h2>
@@ -501,25 +542,31 @@ Facilities
   <p><strong>Editing templates from the admin UI is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
 </div>
 
-<p>There are three, in <code>backend/internal/server/notify/templates/</code>:</p>
+<p>There are seven, in <code>backend/internal/server/notify/templates/</code>:</p>
 
 <table>
   <thead><tr><th>Template</th><th>When sent</th><th>Recipient</th></tr></thead>
   <tbody>
     <tr><td><code>ticket_created.tmpl</code></td><td>A ticket is filed with a guest address</td><td>That address</td></tr>
-    <tr><td><code>ticket_replied.tmpl</code></td><td>A public reply is added and the reporter is being notified</td><td>The reporter</td></tr>
+    <tr><td><code>ticket_replied.tmpl</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default)</td><td>The requester, account holder or guest</td></tr>
+    <tr><td><code>ticket_status_changed.tmpl</code></td><td>A guest's ticket changes status, other than to Closed</td><td>The guest</td></tr>
+    <tr><td><code>ticket_resolved.tmpl</code></td><td>A guest's ticket is resolved</td><td>The guest</td></tr>
+    <tr><td><code>ticket_reopened.tmpl</code></td><td>A guest's Closed ticket is reopened with the Reopen action. A reopen by the guest's own reply sends no mail</td><td>The guest</td></tr>
+    <tr><td><code>guest_link.tmpl</code></td><td>A guest asks for a new link at <code>/track</code></td><td>The guest</td></tr>
     <tr><td><code>email_verification.tmpl</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
   </tbody>
 </table>
 
-<p>Assignment, status change, resolve and close send no email. Neither does an internal note, whatever the notify flag says.</p>
+<p>Assignment, closing and internal notes send no email to anyone. An account holder is emailed only about public replies from staff; the status mails exist for guests, because each one carries the guest's replacement link.</p>
 
 <h3>Template variables</h3>
 
-<p>Two, and deliberately only two:</p>
+<p>The ticket templates get two, and deliberately only two:</p>
 
 <pre><code>{{ .TrackingNumber }}   -- e.g. GHD-2026-000001
-{{ .TicketURL }}        -- the configured base URL plus the ticket path</code></pre>
+{{ .TicketURL }}        -- the ticket's address (a private link for a guest)</code></pre>
+
+<p><code>email_verification.tmpl</code> gets one, <code>{{ .VerifyURL }}</code>.</p>
 
 <p>There is no <code>.Ticket.Subject</code>, no <code>.Reply.Body</code>, no <code>.Submitter</code>. From v1.2.0 a notification email carries no content from the ticket at all — mail leaving the help desk is sent from the operator's domain, and anyone who can file a ticket chooses that text, so the content stays in the application behind the access rules that already govern it. See <a href="upgrading-1.2.0.html#email">Upgrading to 1.2.0</a>.</p>
 
@@ -539,72 +586,64 @@ Read it here:
 
 <h2 id="admin-webhooks">Webhooks</h2>
 
-<p>Webhooks let you push ticket events to external systems in real time.</p>
-
-<div class="callout callout-warn">
-  <p><strong>The admin page for these is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/157">issue #157</a>. There is no <em>Admin → Webhooks</em> screen yet. Until there is, configure them against the API: <code>GET</code> and <code>POST /api/v1/admin/webhooks</code>, <code>PATCH</code> and <code>DELETE /api/v1/admin/webhooks/{id}</code>. The fields below are that API's fields.</p>
-</div>
+<p>Webhooks send ticket events to another system as an HTTP <code>POST</code>. Manage them from <em>Admin → Webhooks</em>.</p>
 
 <h3>Configuration</h3>
 <table class="param-table">
   <thead><tr><th>Field</th><th></th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>URL</code></td><td>required</td><td>The HTTPS endpoint that receives the POST requests.</td></tr>
-    <tr><td><code>Secret</code></td><td>recommended</td><td>A shared secret used to sign delivery payloads with HMAC-SHA256. Verify the signature server-side to reject spoofed requests.</td></tr>
-    <tr><td><code>Events</code></td><td>required</td><td>Select which events trigger this webhook. You can subscribe to all events or specific ones.</td></tr>
-    <tr><td><code>Enabled</code></td><td></td><td>Toggle deliveries on/off without deleting the configuration.</td></tr>
+    <tr><td><code>URL</code></td><td>required</td><td>The <code>http</code> or <code>https</code> endpoint that receives the requests. It must be a public address. A private or internal address is refused when the hook is saved (<code>400 invalid_url</code>), and again when the hook is called.</td></tr>
+    <tr><td><code>Payload format</code></td><td>Raw JSON</td><td>The body shape. See <a href="#admin-webhook-formats">Payload formats</a>.</td></tr>
+    <tr><td><code>Secret</code></td><td>optional</td><td>Signs each delivery with HMAC-SHA256. It is write-only: it is never shown again after it is saved, and an empty secret field on edit keeps the stored one.</td></tr>
+    <tr><td><code>Events</code></td><td>required</td><td>One or more event names from the table below, or <em>All events</em>, which is stored as <code>*</code>.</td></tr>
+    <tr><td><code>Enabled</code></td><td></td><td>A disabled hook receives nothing. A hook can be created switched off, so it can be saved before its receiver is ready.</td></tr>
   </tbody>
 </table>
+
+<h3>Which events a hook receives</h3>
+<ul>
+  <li>Every enabled hook that subscribes to an event's type receives that event. <code>*</code> (All events) subscribes to every event.</li>
+  <li>There are no per-category, per-priority or per-group rules. A hook receives every event of its types, whatever the ticket's category, priority or group.</li>
+  <li><code>guest.link_resent</code> is never sent to webhooks. The API refuses it as a subscription (<code>400 invalid_event_name</code>).</li>
+  <li>The API refuses an empty events list on create and on update (<code>400 missing_events</code>). An empty list is how a hook saved before events were required is stored, and delivery treats it as all events; the admin screen shows it as <em>All events</em>.</li>
+</ul>
 
 <h3>Events</h3>
 <table>
-  <thead><tr><th>Event</th><th>Triggered when</th></tr></thead>
+  <thead><tr><th>Event</th><th>Sent when</th></tr></thead>
   <tbody>
-    <tr><td><code>ticket.created</code></td><td>A new ticket is submitted (any method)</td></tr>
-    <tr><td><code>ticket.assigned</code></td><td>The assignee or assigned group changes</td></tr>
-    <tr><td><code>ticket.status_changed</code></td><td>The ticket status changes to anything</td></tr>
-    <tr><td><code>ticket.reply_added</code></td><td>A public reply is added to a ticket</td></tr>
-    <tr><td><code>ticket.note_added</code></td><td>An internal note is added (staff-only)</td></tr>
-    <tr><td><code>ticket.resolved</code></td><td>Status changes to Resolved specifically</td></tr>
-    <tr><td><code>ticket.closed</code></td><td>Status changes to Closed (auto or manual)</td></tr>
-    <tr><td><code>ticket.reopened</code></td><td>A Resolved or Closed ticket is reopened</td></tr>
+    <tr><td><code>ticket.created</code></td><td>A ticket is created, by any route.</td></tr>
+    <tr><td><code>ticket.assigned</code></td><td>The assignee or the assigned group changes, or the ticket is unassigned.</td></tr>
+    <tr><td><code>ticket.status_changed</code></td><td>The status is changed directly: the status picker, <code>PATCH status_id</code>, or MCP <code>update_ticket_status</code>. That includes a direct change to Resolved or Closed, which sends only this event. The Resolve, Close and Reopen actions send their own events instead of this one.</td></tr>
+    <tr><td><code>ticket.replied</code></td><td>A reply is added. An internal note is sent with this event too, with <code>internal</code> set to true and no reply text. Subscribing to this event therefore includes staff-only notes, in that form.</td></tr>
+    <tr><td><code>ticket.resolved</code></td><td>The ticket is resolved with the Resolve action (<em>Mark Resolved</em>, or <code>POST /api/v1/tickets/{id}/resolve</code>), including when it is resolved as a duplicate.</td></tr>
+    <tr><td><code>ticket.closed</code></td><td>The ticket is closed with <em>Close Ticket</em> by an administrator, or by the automatic sweep.</td></tr>
+    <tr><td><code>ticket.reopened</code></td><td>A Resolved ticket is reopened by its requester's reply, or a Closed ticket is reopened with the Reopen action, which <em>Reopening closed tickets</em> must allow.</td></tr>
+    <tr><td><code>ticket.linked</code></td><td>A link is created between two tickets, including the link a follow-up makes.</td></tr>
   </tbody>
 </table>
 
-<h3>Payload format</h3>
+<h3 id="admin-webhook-formats">Payload formats</h3>
+<p>Each hook has one payload format. <strong>Raw JSON</strong> sends the event as JSON, shown below. <strong>Slack</strong>, <strong>Microsoft Teams</strong>, <strong>Discord</strong> and <strong>Jira Automation</strong> rewrite the body into the shape that service's incoming webhook expects. The signature covers the body that is actually sent.</p>
+
+<h3>Raw JSON body</h3>
 <pre><code>POST https://your-endpoint.example.com/webhook
 Content-Type: application/json
-X-OHD-Event: ticket.reply_added
-X-OHD-Delivery: 01JQXYZ...
+X-GHD-Signature: sha256=&lt;hmac-hex&gt;
 X-OHD-Signature: sha256=&lt;hmac-hex&gt;
 
 {
-  "event":       "ticket.reply_added",
-  "delivery_id": "01JQXYZ...",
-  "occurred_at": "2026-04-05T14:32:00Z",
-  "ticket": {
-    "id":       "01JQABC...",
-    "subject":  "Laptop screen flickering",
-    "status":   "In Progress",
-    "priority": "High",
-    "category": "Hardware",
-    "type":     "Laptop",
-    "item":     "Broken screen"
-  },
-  "actor": {
-    "id":   "01JQDEF...",
-    "name": "Alex Chen",
-    "role": "staff"
-  },
-  "data": {
-    "reply_id":    "01JQGHI...",
-    "body":        "I've ordered a replacement screen, it arrives Thursday.",
-    "is_internal": false
-  }
+  "Type":       "ticket.status_changed",
+  "TicketID":   "01JQABC...",
+  "ActorID":    "01JQDEF...",
+  "Payload":    { "new_status_id": "01JQGHI..." },
+  "OccurredAt": "2026-04-05T14:32:00Z"
 }</code></pre>
 
+<p>The keys are the field names of the event, as they are written in the body. <code>ActorID</code> is <code>null</code> for an event the system made. <code>Payload</code> holds the details of the event, and what it holds differs by event: a status change carries the new status's ID. A public reply carries its text in <code>Payload.ReplyBody</code>. An internal note's <code>ticket.replied</code> has no <code>ReplyBody</code>. A guest's access token is never part of the body.</p>
+
 <h3>Verifying the signature</h3>
-<p>The <code>X-OHD-Signature</code> header is <code>sha256=&lt;hex&gt;</code> where the hex is an HMAC-SHA256 of the raw request body, keyed with your webhook secret.</p>
+<p>The <code>X-GHD-Signature</code> header is <code>sha256=&lt;hex&gt;</code> where the hex is an HMAC-SHA256 of the raw request body, keyed with your webhook secret. Each delivery also carries <code>X-OHD-Signature</code> with the same value, kept for integrations written before the rename. Verify <code>X-GHD-Signature</code>.</p>
 <pre><code># Python
 import hmac, hashlib
 
@@ -624,19 +663,73 @@ function verifySignature(secret, body, header) {
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(header));
 }</code></pre>
 
-<h3>Retries and delivery history</h3>
-<p>If the target URL returns a non-2xx status or times out (5 second timeout), the delivery is retried with exponential backoff: 1s, 2s, 4s, 8s, 16s. After 5 total attempts, the delivery is marked failed.</p>
 
-<p>All deliveries (successful and failed) are logged and visible under <em>Admin → Webhooks → [webhook name] → Deliveries</em>. Each entry shows the event type, HTTP status, response body (truncated), and timing. You can manually re-trigger a failed delivery from this page.</p>
+<h3>Delivery and retries</h3>
+<p>Each delivery is attempted once, with a 10-second timeout. <strong>Webhooks are never retried.</strong> A delivery that fails is recorded on the hook and is not sent again. Webhook deliveries are queued in the same outbox as email, but the outbox treats a webhook as done once the send has started, so there is no retry schedule for them. Email is retried; webhooks are not.</p>
+<p>There is no way to resend a delivery. Fix the receiver, and the next matching event is delivered.</p>
+
+<h3>Last delivery</h3>
+<p>The list shows each hook's most recent delivery: <em>Delivered</em> with the HTTP status, or <em>Failing</em> with the status or a failure class, and when it happened.</p>
+<table>
+  <thead><tr><th>Shown as</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td>Delivered · 2xx</td><td>The receiver answered with a 2xx status.</td></tr>
+    <tr><td>Failing · 3-digit status</td><td>The receiver answered with a status that is not 2xx.</td></tr>
+    <tr><td>Failing · timed out</td><td>There was no answer within 10 seconds.</td></tr>
+    <tr><td>Failing · host not found</td><td>The host name did not resolve.</td></tr>
+    <tr><td>Failing · TLS error</td><td>The TLS handshake or the certificate failed.</td></tr>
+    <tr><td>Failing · blocked address</td><td>The address was private or internal when the delivery was made.</td></tr>
+    <tr><td>Failing · connection failed</td><td>The connection was refused, reset, or closed without a response.</td></tr>
+    <tr><td>Failing · error</td><td>Any other failure.</td></tr>
+  </tbody>
+</table>
+<p>Only the latest result is kept, and it is kept as a class, never as the error text or the response body, because a webhook URL can carry a secret. There is no delivery history. A hook that has never been delivered to shows <em>No deliveries yet</em>.</p>
+<img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page: the New webhook form above a list of three hooks. Two show Failing · 405 as their last delivery, and the disabled third shows No deliveries yet" width="2880" height="2030" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
-<h2 id="admin-attachments">Attachments <span class="badge-beta">Beta</span></h2>
+<h2 id="admin-audit">Audit log</h2>
 
-<div class="callout callout-warn">
-  <p><strong>Every setting in this section is new in v1.3.0-beta and is not in a released version.</strong> The current stable release is <a href="upgrading-1.2.0.html">v1.2.0</a>, where none of these settings exist. Names and defaults can still change before 1.3.0 ships.</p>
-</div>
+<p>The audit log records who changed what, and when. It can be read in two places, and it is kept forever unless you set a retention period.</p>
+
+<h3>What is recorded</h3>
+<p>For tickets, the actions are <code>created</code>, <code>status_changed</code>, <code>assigned</code>, <code>unassigned</code>, <code>resolved</code>, <code>closed</code> and <code>reopened</code>. Changes to a ticket's category, type, item and custom fields are not recorded. Account actions are recorded too. An MFA reset, for example, records the authenticator and the passkeys it cleared, and whether it came from the command line.</p>
+
+<h3>Where you can read it</h3>
+<ul>
+  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → Settings → General → Audit log</em>.</li>
+  <li><strong>Audit Log.</strong> A searchable view across entities, in the sidebar for administrators and staff. Staff see ticket entries only, and only for tickets they can see. Administrators see every entry, including account actions.</li>
+</ul>
+
+<h3>Requester names</h3>
+<p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → Settings → General → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
+<table>
+  <thead><tr><th>Choice</th><th>Requesters are masked in</th></tr></thead>
+  <tbody>
+    <tr><td>Everywhere (default)</td><td>The ticket Activity feed and the Audit Log</td></tr>
+    <tr><td>Ticket Audit Log</td><td>Each ticket's Activity feed only</td></tr>
+    <tr><td>Admin Audit Log Only</td><td>The Audit Log only</td></tr>
+  </tbody>
+</table>
+<p>Staff and administrator actors are always named. Masking changes only what is displayed: it is not an access control, and the ticket page itself still shows the requester's name.</p>
+<img src="../screenshots/19-admin-settings-privacy.png" alt="The General settings tab: Limit staff to their group scope and Staff can view ticket change history switched on, audit Retention at 0 days, and Mask requester names in Audit Trail set to Everywhere under Privacy" width="1408" height="1974" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
+<h3>Retention</h3>
+<p>Set <em>Retention</em>, in days, under <em>Admin → Settings → General → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
+<p>Retention is session-only. An API key or OAuth client cannot change it (<code>403 session_required</code>): shortening the retention would let a leaked key erase the record of what it had done.</p>
+
+<h3>API</h3>
+<ul>
+  <li><code>GET /api/v1/admin/audit</code> is the admin-wide view. A signed-in session needs no scope. An API key or OAuth client needs <code>audit:read</code>; <code>tickets:read</code> does not reach it.</li>
+  <li><code>GET /api/v1/tickets/{id}/audit</code> is the per-ticket feed, and needs <code>tickets:read</code>.</li>
+</ul>
+<p>See the <a href="api-reference.html">API Reference</a> for the parameters and responses.</p>
+
+<h2 id="admin-attachments">Attachments <span class="badge-new">New in 1.3.0</span></h2>
 
 <p>Everything below lives under <em>Admin → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
+
+<img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab: the allowed file types, what happens when a file's content contradicts its name, the malware scanner address and policy, and the start of Reputation lookup with the VirusTotal and MetaDefender settings and their terms notices" width="2880" height="5200" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
 
 <div class="callout callout-note">
   <p><strong>All of these require a signed-in administrator.</strong> An API key or OAuth client that tries to change one is refused with <code>403 session_required</code>, because these settings decide what this instance will hold and where customers' file hashes go. That includes the allowed-types list: a leaked API key must not be able to widen what the instance accepts and then upload what it has just allowed.</p>
@@ -723,7 +816,7 @@ function verifySignature(secret, body, header) {
   <p><strong><code>quarantine</code> does nothing while scanning is off.</strong> It only ever decides what to do with a verdict the scanner actually returned. With the policy set to <code>off</code>, or the scanner unreachable under <code>permissive</code>, nothing is ever identified as malicious and nothing is ever quarantined. The admin screen says so when you pick that combination.</p>
 </div>
 
-<p><strong>The first few minutes after a fresh <code>docker compose up</code> are the case <code>required</code> was chosen for.</strong> ClamAV spends around three minutes downloading its signature database while the application is already serving. Under <code>required</code>, uploads wait for the scanner rather than bypassing it. The help desk works throughout; only attachment upload is delayed.</p>
+<p><strong>The first few minutes after a fresh <code>docker compose up</code> with the <code>antivirus</code> profile enabled are the case <code>required</code> was chosen for.</strong> ClamAV spends around three minutes downloading its signature database while the application is already serving. Under <code>required</code>, uploads wait for the scanner rather than bypassing it. The help desk works throughout; only attachment upload is delayed.</p>
 
 <p><strong>Neither containment setting is retroactive.</strong> Turning quarantine or the wrap on does not rewrap what is already stored, and turning either off does not unwrap it.</p>
 
@@ -731,9 +824,7 @@ function verifySignature(secret, body, header) {
 
 <p><code>GET /api/v1/admin/security-warnings</code> reports what scanning is <em>doing</em>, including a live reachability check rather than a restatement of the configuration — because an instance whose scanner container has died has an address configured and no protection, and those two facts must not look alike. It returns the effective policy, whether an address is configured, whether the scanner answers, and a sentence saying what that combination means.</p>
 
-<div class="callout callout-warn">
-  <p><strong>The admin UI does not show this yet.</strong> The banner built on that endpoint renders only the insecure-secrets warning. Today the scanning status is visible to an administrator who asks the API.</p>
-</div>
+<p>Administrators see the same check as a banner. When the scan policy is not <code>off</code> and the live check fails, an <em>Attachment scanner unreachable</em> banner appears at the top of every page, with that sentence. Scanning that is switched off on purpose is not bannered; the setting shows it.</p>
 
 <h3>Reputation lookup</h3>
 
@@ -788,43 +879,19 @@ function verifySignature(secret, body, header) {
 
 <p>A hash is not a file: nothing here ever uploads one, and only files the scanner identified are looked up. The full account of what leaves the server is on the <a href="attachment-security.html#attach-reputation">Attachment Security</a> page.</p>
 
-<!-- SCREENSHOT NEEDED: Admin → Settings → Attachments, showing the Uploads section (allowed types textarea and the content-contradicts-its-name select), Malware scanning, and the top of the Reputation lookup section with the four provider rows and their terms panels. -->
-<img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
 
 <div class="callout callout-note">
   <p><strong>Upgrading from an earlier reputation setting?</strong> Nothing is migrated. The old <code>attachment_vt_lookup</code> / <code>attachment_vt_api_key</code> pair and the <code>attachment_reputation_provider</code> / <code>attachment_reputation_api_key</code> pair that replaced them are read by nothing, and are due to be deleted by a migration in the release after 1.3.0. Re-enter your key against the service you want — copying somebody’s secret from one setting to another on their behalf is not something to do quietly.</p>
 </div>
 
 
-<h2 id="admin-plugins">Installing plugins</h2>
+<h2 id="admin-plugins">Plugins</h2>
 
-<p>Plugins extend Go Help Desk with custom behavior. They run as sandboxed WASM modules. Manage them from <em>Admin → Plugins</em>.</p>
+<div class="callout callout-warn">
+  <p><strong>Plugins cannot be installed in 1.3.0.</strong> Installing and uninstalling a plugin return <code>501 not_implemented</code>. A working plugin system is planned for v2.</p>
+</div>
 
-<h3>Installing from a file</h3>
-<ol>
-  <li>Click <em>Install plugin</em>.</li>
-  <li>Upload the <code>.wasm</code> file.</li>
-  <li>The system validates the plugin manifest embedded in the binary. If the manifest is missing or malformed, installation is rejected with a specific error.</li>
-  <li>After successful validation, the plugin is listed as installed but <em>disabled</em>. Review its declared permissions (network hosts, capabilities) before enabling.</li>
-  <li>Toggle the plugin to <em>Enabled</em>.</li>
-</ol>
-
-<h3>Installing from a URL</h3>
-<p>Click <em>Install from URL</em> and provide a direct URL to a <code>.wasm</code> file. The application downloads it, validates the manifest, and stores it locally. The URL is not called again after installation — it is not a live reference.</p>
-
-<h3>Plugin configuration</h3>
-<p>If a plugin declares a <code>config_schema</code> in its manifest, a configuration form appears on the plugin's detail page. Fill in the required fields (e.g. API keys, URLs). Configuration changes take effect immediately without a restart. Fields marked <code>"secret": true</code> are stored encrypted and are never returned in the admin UI after saving.</p>
-
-<h3>Enabling and disabling</h3>
-<p>Toggle a plugin on/off from the plugin list. Disabled plugins receive no events. The plugin binary remains installed and can be re-enabled at any time. No restart is required.</p>
-
-<h3>Uninstalling</h3>
-<p>Click <em>Uninstall</em> on the plugin's detail page. The WASM binary and all stored configuration are deleted. Custom fields or UI panels added by the plugin are removed from the ticket form. Ticket data that was set by the plugin (e.g. custom field values) is preserved in the database.</p>
-
-<h3>Error monitoring</h3>
-<p>The plugin list shows a count of errors per plugin over the last 24 hours. Click a plugin's name to see the error log. A plugin that errors on more than 50% of event deliveries over a 10-minute window is automatically disabled and an admin notification is generated. The threshold is configurable under <em>Admin → Settings → Plugin error threshold</em>.</p>
-
-<p>For details on building plugins, see <a href="plugins.html">Plugin Development</a>.</p>
+<p>The admin panel has no Plugins screen in 1.3.0. <code>GET /api/v1/admin/plugins</code> answers an empty list, because nothing can be installed. The <a href="plugins.html">Plugin Development</a> page describes the planned design, which cannot be used in this release.</p>
 
 
 <h2 id="admin-branding">Branding</h2>
@@ -841,7 +908,7 @@ function verifySignature(secret, body, header) {
         Upload a logo file from <em>Admin → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF. Maximum 2 MB.
         <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
           <li><strong>Target size: 320 × 64 px.</strong> Every accepted format is raster: images are proportionally scaled to fit within this bounding box and re-encoded as PNG, which also strips whatever metadata came with them. Images that already fit are kept at their original dimensions.</li>
-          <li><strong>SVG is no longer accepted</strong> <span class="badge-beta">Changed in 1.3.0-beta</span>. It used to be, guarded by a sanitiser that parsed the XML and pattern-matched for scripts, event handlers and <code>javascript:</code> URIs. The <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">1.2.0 advisory</a> already contains one escape from that sanitiser. The logo is the one uploaded file this application renders inline on its own origin, so there is no safe subset worth maintaining. <strong>An SVG logo left on disk by an earlier release is no longer served</strong>: <code>GET /api/v1/logo</code> answers 404 as though no logo were set. Upload a PNG, JPG or GIF to get your logo back.</li>
+          <li><strong>SVG is no longer accepted</strong> <span class="badge-new">Changed in 1.3.0</span>. It used to be, guarded by a sanitiser that parsed the XML and pattern-matched for scripts, event handlers and <code>javascript:</code> URIs. The <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">1.2.0 advisory</a> already contains one escape from that sanitiser. The logo is the one uploaded file this application renders inline on its own origin, so there is no safe subset worth maintaining. <strong>An SVG logo left on disk by an earlier release is no longer served</strong>: <code>GET /api/v1/logo</code> answers 404 as though no logo were set. Upload a PNG, JPG or GIF to get your logo back.</li>
         </ul>
         When set, the logo replaces the site name text in the sidebar. The file is served from <code>GET /api/v1/logo</code> with a 5-minute public cache header.
       </td>
@@ -850,7 +917,7 @@ function verifySignature(secret, body, header) {
 </table>
 
 <div class="callout callout-note">
-  <p>Branding covers site name and logo only. Layout changes, custom page sections, and additional UI components are out of scope for the built-in branding feature — use the <a href="plugins.html#plugin-ui">plugin UI panel</a> system for that.</p>
+  <p>Branding covers site name and logo only. Layout changes, custom page sections and additional UI components are not available.</p>
 </div>
 
 

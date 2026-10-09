@@ -1,0 +1,11 @@
+# Files Wrangler must not upload as public assets (gitignore syntax, anchored at
+# the assets directory, which is the repository root: see wrangler.jsonc).
+# Wrangler itself skips only /.assetsignore, /_headers and /_redirects.
+/.github
+/scripts
+/.git
+# Wrangler reads its config from the project directory, not from the uploaded
+# assets. CNAME is GitHub Pages' custom-domain file; Cloudflare does not read it,
+# and this file does not affect GitHub Pages.
+/wrangler.jsonc
+/CNAME

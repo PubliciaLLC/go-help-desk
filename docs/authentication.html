@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Authentication — Go Help Desk Docs</title>
-  <meta name="description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk." />
+  <meta name="description" content="Local accounts, a second factor by authenticator app or passkey, SAML 2.0 and OIDC sign-in, self-service signup, guest links, API keys and OAuth2 client credentials in Go Help Desk." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/authentication.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/authentication.html" />
   <meta property="og:title" content="Authentication — Go Help Desk Docs" />
-  <meta property="og:description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk." />
+  <meta property="og:description" content="Local accounts, a second factor by authenticator app or passkey, SAML 2.0 and OIDC sign-in, self-service signup, guest links, API keys and OAuth2 client credentials in Go Help Desk." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Authentication — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk." />
+  <meta name="twitter:description" content="Local accounts, a second factor by authenticator app or passkey, SAML 2.0 and OIDC sign-in, self-service signup, guest links, API keys and OAuth2 client credentials in Go Help Desk." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Authentication",
-    "description": "Configure local accounts with bcrypt + TOTP MFA, SAML 2.0 SSO (Okta, Azure AD, Google Workspace), API keys, and OAuth2 client credentials in Go Help Desk.",
+    "description": "Local accounts, a second factor by authenticator app or passkey, SAML 2.0 and OIDC sign-in, self-service signup, guest links, API keys and OAuth2 client credentials in Go Help Desk.",
     "url": "https://gohelpdesk.org/docs/authentication.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -51,7 +51,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -64,7 +64,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -75,10 +78,11 @@
     <ul>
       <li><a href="authentication.html" class="active">Overview</a></li>
       <li><a href="#auth-local">Local Accounts</a></li>
-      <li><a href="#auth-mfa">TOTP MFA</a></li>
+      <li><a href="#auth-mfa">Second Factor &amp; Passkeys</a></li>
       <li><a href="#auth-saml">SAML 2.0</a></li>
-      <li><a href="#auth-guest">Guest Access <span class="badge-beta">Beta</span></a></li>
-      <li><a href="#auth-api-keys">API Keys</a></li>
+      <li><a href="#auth-oidc">OIDC</a></li>
+      <li><a href="#auth-guest">Guest Access</a></li>
+      <li><a href="#auth-api-keys">API Keys &amp; OAuth</a></li>
     </ul>
   </div>
   <div class="sidebar-group">
@@ -87,7 +91,7 @@
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -97,6 +101,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -113,95 +118,88 @@
 <main class="docs-content">
 
 <h1 class="docs-page-title" id="auth-overview">Authentication</h1>
-<p class="docs-page-sub">Local accounts, TOTP MFA, SAML 2.0 SSO, and API keys.</p>
+<p class="docs-page-sub">Local accounts, a second factor by authenticator app or passkey, SAML 2.0 and OIDC sign-in, guest links, and API credentials.</p>
 
-<p>Go Help Desk supports three authentication paths. They can be combined — for example, SAML SSO for most users plus TOTP MFA for admin accounts, with API keys for scripted access.</p>
+<p>Go Help Desk signs people in with a local password, or through an identity provider over SAML 2.0 or OpenID Connect. A password sign-in can require a second factor: an authenticator app (TOTP) or a passkey. Scripts and integrations use API keys or OAuth2 client credentials, and a guest reaches their one ticket through a private link.</p>
+
+<p>Every switch in the table below is an administrator setting under <em>Admin → Settings → Authentication</em> (or <em>General</em>, for guest submission), stored in the database and applied without a restart. None of them is an environment variable, and none can be changed by an API key or OAuth client: they need a signed-in administrator.</p>
 
 <table>
-  <thead><tr><th>Method</th><th>Who it's for</th><th>Enabled by default</th></tr></thead>
+  <thead><tr><th>Method</th><th>Who it's for</th><th>Default</th></tr></thead>
   <tbody>
-    <tr><td>Local accounts</td><td>All roles</td><td>Yes</td></tr>
-    <tr><td>TOTP MFA</td><td>All roles (layered on local auth)</td><td>No — set <code>MFA_ENABLED=true</code></td></tr>
-    <tr><td>SAML 2.0</td><td>All roles (replaces local for non-admins)</td><td>No — set <code>SAML_ENABLED=true</code></td></tr>
-        <tr><td>API keys</td><td>Scripts and integrations</td><td>Yes (self-service by users)</td></tr>
+    <tr><td>Local accounts</td><td>All roles</td><td>On</td></tr>
+    <tr><td>Second factor (TOTP or passkey)</td><td>Password sign-ins, all roles</td><td>Off: <em>Multi-factor authentication → Enable MFA</em></td></tr>
+    <tr><td>SAML 2.0</td><td>All roles</td><td>Off: <em>SAML → Enable SAML login</em></td></tr>
+    <tr><td>OIDC</td><td>All roles</td><td>Off: <em>OIDC / OpenID Connect → Enable OIDC login</em></td></tr>
+    <tr><td>Self-service signup</td><td>New reporting users</td><td>Off: <em>Registration → Allow self-service signup</em></td></tr>
+    <tr><td>Guest links</td><td>People without an account</td><td>Off: <em>General → Submissions → Guest submission</em></td></tr>
+    <tr><td>API keys and OAuth clients</td><td>Scripts and integrations</td><td>Created by an administrator</td></tr>
   </tbody>
 </table>
 
 
 <h2 id="auth-local">Local accounts</h2>
 
-<p>Local authentication is enabled by default. Users log in with their email address and password. Passwords are hashed with bcrypt at a cost factor of 12.</p>
+<p>Users sign in with their email address and password. Passwords are hashed with bcrypt at its default cost.</p>
 
 <h3>Account creation</h3>
-<p>Accounts are created in one of three ways:</p>
+<p>Accounts are created in one of four ways:</p>
 <ul>
-  <li><strong>Self-registration</strong> — any visitor can register at the login page. New self-registered accounts receive the <em>User</em> role. Admins can promote the account afterwards.</li>
-  <li><strong>Admin-created</strong> — an admin creates an account from <em>Admin → Users → New user</em> and assigns any role directly.</li>
-  <li><strong>SAML just-in-time provisioning</strong> — when SAML is enabled, accounts are created automatically on first login from IdP assertion attributes. See <a href="#auth-saml">SAML 2.0</a>.</li>
+  <li><strong>Admin-created</strong>: an administrator clicks <em>Add User</em> under <em>Admin → Users</em> and assigns any role.</li>
+  <li><strong>Self-service signup</strong>: only when <em>Allow self-service signup</em> is on, which it is not by default. Signup is limited to the <em>Allowed email domains</em> unless <em>Allow open registration</em> is on. A signup page at <code>/signup</code> asks only for an email address and sends a verification link, valid for 24 hours. The display name and password are chosen when the link is opened. A self-registered account gets the <em>User</em> role. Email must be configured, or no link is sent.</li>
+  <li><strong>SAML or OIDC</strong>: an account is created at the first sign-in through the identity provider. See <a href="#auth-saml">SAML 2.0</a> and <a href="#auth-oidc">OIDC</a>.</li>
+  <li><strong>First-run setup</strong>: the first administrator, created at <code>/setup</code> on an empty database.</li>
 </ul>
 
+<img src="../screenshots/20-signup.png" alt="The self-registration page, which asks only for an email address, with a Create account button and a Sign in link" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/21-verify-email.png" alt="The Finish creating your account page: the email address is shown, with Display name and Password fields for the new account" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
 <h3>Password requirements</h3>
-<p>Passwords must be at least 10 characters. There is no additional complexity enforcement — length is the most effective password policy for user-chosen passwords. Admins can force a password reset from <em>Admin → Users → [user] → Reset password</em>.</p>
+<p>A password must be at least 8 characters and at most 72 bytes. There is no other complexity rule. Users change their own password on the <em>Your account</em> page. An administrator can set a new password for a user under <em>Admin → Users → [user] → Reset password</em>, which is shown only for accounts that have a password.</p>
 
-<h3>When SAML is enabled</h3>
-<p>Enabling SAML disables local auth for Staff and User accounts. Admin accounts always retain local-auth access as a deliberate failsafe — if the IdP is unavailable, admins can still log in at the standard login page and choose <em>Sign in with password</em>.</p>
+<p>Repeated wrong passwords for one address are throttled: after <code>AUTH_RATE_LIMIT_PER_MINUTE</code> failures in a minute (10 by default), further attempts get <code>429</code>.</p>
+
+<h3>When SAML login is enabled</h3>
+<p>Turning on <em>Enable SAML login</em> removes password sign-in for Staff and User accounts. Administrators keep it as a failsafe: if the identity provider is unavailable, an administrator can still sign in with their password on the normal login page. Enabling OIDC does not remove password sign-in for anyone.</p>
 
 
-<h2 id="auth-mfa">TOTP MFA</h2>
+<h2 id="auth-mfa">Second factor: authenticator app and passkeys</h2>
 
-<p>Set <code>MFA_ENABLED=true</code> in your environment to enable time-based one-time password (TOTP) MFA across the application. TOTP works with Google Authenticator, Authy, 1Password, Bitwarden, and any RFC 6238-compliant app.</p>
+<p>A password sign-in can be followed by a second factor: a six-digit code from an authenticator app (TOTP, RFC 6238: Google Authenticator, Authy, 1Password, Bitwarden and others), or a passkey or hardware security key. A passkey is used after the password, not instead of it.</p>
 
-<h3>Enrollment flow</h3>
-<p>A user who has not yet enrolled in MFA is redirected to the enrollment page after their next successful password login.</p>
+<p>Second factors are checked only while <em>Admin → Settings → Authentication → Multi-factor authentication → Enable MFA</em> is on. It is off by default. A sign-in through SAML or OIDC is not asked for a local second factor; that is the identity provider's job.</p>
 
-<div class="step">
-  <div class="step-num">1</div>
-  <div class="step-body">
-    <h4>Scan the QR code</h4>
-    <p>The enrollment page displays a QR code and a text secret. Scan the code with your TOTP app, or enter the secret manually.</p>
-  </div>
-</div>
-<div class="step">
-  <div class="step-num">2</div>
-  <div class="step-body">
-    <h4>Confirm with a live code</h4>
-    <p>Enter the current 6-digit code from the TOTP app. This verifies that enrollment succeeded and activates MFA on the account.</p>
-  </div>
-</div>
-<div class="step">
-  <div class="step-num">3</div>
-  <div class="step-body">
-    <h4>Save recovery codes</h4>
-    <p>Recovery codes are displayed once after enrollment. Store them securely — each code is single-use and cannot be retrieved later. If you lose both your device and your recovery codes, an admin must reset your MFA from the user management panel.</p>
-  </div>
-</div>
+<img src="../screenshots/22-account-passkeys.png" alt="The account page: a password form, a Passkeys section listing a passkey named Work laptop marked This device only, and an Authenticator app section with a Set up button" width="2880" height="1970" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
-<h3>Login flow with MFA enrolled</h3>
+<h3>Enrolling</h3>
+<p>Each user enrols on their own <em>Your account</em> page:</p>
+<ul>
+  <li><strong>Authenticator app</strong>: <em>Set up an authenticator app</em> shows a QR code and a text secret. Scan it, then enter the current six-digit code to confirm.</li>
+  <li><strong>Passkey</strong>: name the key and click <em>Add a passkey</em>. The browser or the security key does the rest. A user can hold several passkeys and remove any of them.</li>
+</ul>
+
+<h3>Requiring a second factor</h3>
+<p><em>Require MFA for roles</em>, shown once MFA is enabled, makes a second factor mandatory for Admin, Staff or User accounts. A user in a required role with no factor is taken through authenticator setup at their next sign-in and cannot continue until it is done. With no role ticked, a second factor is optional.</p>
+
+<h3>Signing in</h3>
 <ol>
-  <li>User enters email and password. Credentials are validated.</li>
-  <li>The session is marked as <em>MFA pending</em> — authenticated but not yet fully authorized.</li>
-  <li>The user is redirected to the MFA verification page and prompted for their TOTP code.</li>
-  <li>On successful code entry, the session is promoted to fully authenticated and the user is redirected to the dashboard.</li>
+  <li>The user enters their email and password.</li>
+  <li>If they have an authenticator, they are asked for its code. If they have only passkeys, they are asked to confirm with one.</li>
+  <li>Until the second step succeeds, the session can do nothing but finish signing in.</li>
 </ol>
+<p>Five wrong codes in a row lock the account's code entry for 15 minutes.</p>
 
-<p>The MFA pending session has a 5-minute expiry. If the user doesn't complete MFA verification within 5 minutes of the password step, they must restart the login.</p>
+<h3>Losing every factor</h3>
+<p>There are no recovery codes. A user who has lost their authenticator and every passkey is reset by an administrator: <em>Admin → Users → [user] → Reset MFA</em> clears the authenticator and every passkey and ends the user's sessions. They then sign in with their password and enrol again; if MFA is required for their role, they are asked to at that sign-in.</p>
+<p>An administrator with no other administrator to reset them recovers on the server with <code>go-help-desk reset-factors &lt;email&gt;</code>. See <a href="admin-guide.html#admin-users">Admin Guide: Users</a>.</p>
 
-<h3>Admin enforcement</h3>
-<p>Admins can enforce MFA for specific roles from <em>Admin → Settings → Authentication → Require MFA for</em>. Users with enforced MFA who have not yet enrolled are redirected to enrollment on their next login and cannot proceed until they complete it.</p>
-
-<h3>Recovery codes</h3>
-<p>At the MFA verification prompt, users can click <em>Use recovery code</em> and enter one of their saved codes instead of a TOTP code. Each recovery code is permanently invalidated after use. If fewer than 3 recovery codes remain, the app prompts the user to regenerate a new set from their profile.</p>
-
-<h3>Admin MFA reset</h3>
-<p>To reset a user's MFA (e.g. after they lose their device and all recovery codes): <em>Admin → Users → [user] → Reset MFA</em>. This deletes the TOTP secret and all recovery codes. The user is prompted to re-enroll on their next login.</p>
-
-<h3>TOTP codes in the API</h3>
-<p>For programmatic login, submit the TOTP code to <code>POST /api/v1/auth/local/mfa/verify</code> after a successful password login. See the <a href="api.html#api-auth-endpoints">API: Auth endpoints</a>.</p>
+<h3>Second factors in the API</h3>
+<p>For a programmatic sign-in, submit the code to <code>POST /api/v1/auth/local/mfa/verify</code> after a successful password sign-in, or complete a passkey with <code>POST /api/v1/auth/local/passkey/start</code> and <code>/finish</code>. API keys and OAuth clients are refused on these routes. See the <a href="api-reference.html">API Reference</a>.</p>
 
 
 <h2 id="auth-saml">SAML 2.0 SSO</h2>
 
-<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP). It works with any standards-compliant Identity Provider.</p>
+<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP) and works with any standards-compliant Identity Provider. It is configured entirely under <em>Admin → Settings → Authentication → SAML</em>. Saving the settings fetches the IdP metadata and applies the change at once, with no restart.</p>
 
 <h3>General setup</h3>
 
@@ -209,12 +207,11 @@
   <div class="step-num">1</div>
   <div class="step-body">
     <h4>Generate an SP certificate and private key</h4>
-    <p>SAML requires the SP to present a certificate to the IdP for request signing and response verification.</p>
+    <p>The SP presents a certificate to the IdP for request signing and response verification.</p>
     <pre><code>openssl req -x509 -newkey rsa:4096 \
   -keyout saml.key -out saml.crt \
   -days 3650 -nodes \
   -subj "/CN=Go Help Desk"</code></pre>
-    <p>Store both files somewhere accessible to the container (e.g. a Docker volume or secret). Set the container paths in <code>SAML_CERT_FILE</code> and <code>SAML_KEY_FILE</code>.</p>
   </div>
 </div>
 
@@ -222,31 +219,19 @@
   <div class="step-num">2</div>
   <div class="step-body">
     <h4>Register the SP with your IdP</h4>
-    <p>Once the app is running, your SP metadata is at:</p>
-    <pre><code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></pre>
-    <p>Import this URL into your IdP's application configuration. The ACS (Assertion Consumer Service) URL is:</p>
-    <pre><code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></pre>
-    <p>At minimum, configure your IdP to send these attributes in the SAML assertion:</p>
-    <table>
-      <thead><tr><th>Attribute name</th><th>Value</th></tr></thead>
-      <tbody>
-        <tr><td><code>email</code></td><td>User's email address</td></tr>
-        <tr><td><code>firstName</code></td><td>User's given name</td></tr>
-        <tr><td><code>lastName</code></td><td>User's family name</td></tr>
-      </tbody>
-    </table>
+    <p>Your SP metadata, which is also the SP entity ID, is at:</p>
+    <pre><code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></pre>
+    <p>The ACS (Assertion Consumer Service) URL is:</p>
+    <pre><code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></pre>
+    <p>Configure the IdP to send the user's email address, as an attribute named <code>email</code> (or <code>mail</code>), or as an email-format NameID. For the display name, Go Help Desk reads <code>displayName</code>, then <code>cn</code>, then <code>name</code>, then <code>givenName</code> and <code>sn</code> together, and falls back to the email address.</p>
   </div>
 </div>
 
 <div class="step">
   <div class="step-num">3</div>
   <div class="step-body">
-    <h4>Set the IdP metadata URL and enable SAML</h4>
-    <pre><code>SAML_ENABLED=true
-SAML_METADATA_URL=https://your-idp.example.com/saml/metadata
-SAML_CERT_FILE=/run/secrets/saml.crt
-SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
-    <p>Restart the application. The server fetches and caches the IdP metadata on startup.</p>
+    <h4>Enter the settings</h4>
+    <p>Under <em>Admin → Settings → Authentication → SAML</em>, turn on <em>Enable SAML login</em>, then fill in <em>IdP metadata URL</em>, <em>SP certificate (PEM)</em> and <em>SP private key (PEM)</em>, and save. A save that would leave no administrator able to sign in is refused.</p>
   </div>
 </div>
 
@@ -254,7 +239,7 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
   <div class="step-num">4</div>
   <div class="step-body">
     <h4>Test with a non-admin account</h4>
-    <p>Open a private browser window and click <em>Sign in with SSO</em>. Your admin account's local-auth login is still available by clicking <em>Sign in with password</em>.</p>
+    <p>Open a private browser window and click <em>Sign in with SAML</em> on the login page. Keep your administrator session open until it works; your administrator password still signs you in either way.</p>
   </div>
 </div>
 
@@ -267,20 +252,20 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
       <li>In Okta Admin: <em>Applications → Create App Integration → SAML 2.0</em></li>
       <li>On the SAML Settings page:
         <ul>
-          <li><strong>Single sign-on URL</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
-          <li><strong>Audience URI (SP Entity ID)</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
+          <li><strong>Single sign-on URL</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
+          <li><strong>Audience URI (SP Entity ID)</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
           <li><strong>Name ID format</strong>: EmailAddress</li>
         </ul>
       </li>
       <li>Under <em>Attribute Statements</em>, add:
         <ul>
           <li><code>email</code> → <code>user.email</code></li>
-          <li><code>firstName</code> → <code>user.firstName</code></li>
-          <li><code>lastName</code> → <code>user.lastName</code></li>
+          <li><code>givenName</code> → <code>user.firstName</code></li>
+          <li><code>sn</code> → <code>user.lastName</code></li>
         </ul>
       </li>
       <li>Finish the app creation. Go to the <em>Sign On</em> tab and copy the <strong>Identity Provider metadata</strong> URL.</li>
-      <li>Set that URL as <code>SAML_METADATA_URL</code>.</li>
+      <li>Paste that URL into <em>IdP metadata URL</em>.</li>
       <li>Assign users or groups to the Okta application.</li>
     </ol>
   </div>
@@ -294,13 +279,13 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
       <li>Go to <em>Single sign-on → SAML</em>.</li>
       <li>Under <em>Basic SAML Configuration</em>:
         <ul>
-          <li><strong>Identifier (Entity ID)</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
-          <li><strong>Reply URL (ACS)</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
+          <li><strong>Identifier (Entity ID)</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
+          <li><strong>Reply URL (ACS)</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
         </ul>
       </li>
-      <li>Under <em>Attributes &amp; Claims</em>, verify that <code>emailaddress</code>, <code>givenname</code>, and <code>surname</code> are present. Map them to <code>email</code>, <code>firstName</code>, and <code>lastName</code> respectively.</li>
+      <li>Under <em>Attributes &amp; Claims</em>, add claims named <code>email</code> (the user's email address) and <code>displayName</code> (their display name), with no namespace.</li>
       <li>Under <em>SAML Certificates</em>, copy the <strong>App Federation Metadata Url</strong>.</li>
-      <li>Set that URL as <code>SAML_METADATA_URL</code>.</li>
+      <li>Paste that URL into <em>IdP metadata URL</em>.</li>
       <li>Under <em>Users and groups</em>, assign the users or groups that should have access.</li>
     </ol>
   </div>
@@ -312,45 +297,55 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
     <ol>
       <li>In Google Admin console: <em>Apps → Web and mobile apps → Add app → Add custom SAML app</em>.</li>
       <li>Give the app a name and click Continue.</li>
-      <li>On the Google Identity Provider details page, click <strong>Download Metadata</strong> and host the XML at a stable URL, or note the <strong>SSO URL</strong> and certificate to build the metadata manually.</li>
+      <li>On the Google Identity Provider details page, click <strong>Download Metadata</strong> and host the XML at a stable URL.</li>
       <li>Under <em>Service provider details</em>:
         <ul>
-          <li><strong>ACS URL</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
-          <li><strong>Entity ID</strong>: <code>https://&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
+          <li><strong>ACS URL</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
+          <li><strong>Entity ID</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
           <li><strong>Name ID format</strong>: EMAIL</li>
         </ul>
       </li>
       <li>Under <em>Attribute mapping</em>:
         <ul>
           <li>Primary Email → <code>email</code></li>
-          <li>First name → <code>firstName</code></li>
-          <li>Last name → <code>lastName</code></li>
+          <li>First name → <code>givenName</code></li>
+          <li>Last name → <code>sn</code></li>
         </ul>
       </li>
-      <li>Set the URL of your hosted metadata XML as <code>SAML_METADATA_URL</code>.</li>
+      <li>Paste the URL of your hosted metadata XML into <em>IdP metadata URL</em>.</li>
       <li>In the app settings, turn on access for the relevant organizational units.</li>
     </ol>
   </div>
 </details>
 
 <h3>Just-in-time user provisioning</h3>
-<p>When a user logs in via SAML for the first time, their account is automatically created from the assertion attributes (<code>email</code>, <code>firstName</code>, <code>lastName</code>). The new account receives the <em>User</em> role. Promote accounts to Staff or Admin from <em>Admin → Users</em>.</p>
+<p>When someone signs in through SAML for the first time, an account is created from the assertion with the <em>User</em> role, provided their email domain is on the <em>Allowed email domains</em> list (an empty list allows any domain). Promote accounts to Staff or Admin from <em>Admin → Users</em>.</p>
 
-<p>Subsequent logins update the user's name if it has changed in the IdP, but do not change their role.</p>
+<p>Later sign-ins update the user's email address and name from the IdP, but never their role.</p>
 
 <h3>SP certificate rotation</h3>
-<p>To rotate the SP certificate without downtime: generate new cert/key files, update <code>SAML_CERT_FILE</code> and <code>SAML_KEY_FILE</code>, update the SP certificate in your IdP's configuration (most IdPs allow configuring a secondary certificate during the transition period), then restart the application.</p>
+<p>Generate a new certificate and key, add the new certificate to your IdP's configuration (most IdPs accept a secondary certificate during a transition), then upload the new certificate and key under <em>Admin → Settings → Authentication → SAML</em> and save.</p>
 
 <div class="callout callout-warn">
-  <p><strong>Admin failsafe</strong> — Admin accounts can always log in with their local password by clicking <em>Sign in with password</em> on the login page, even when SAML is the default auth method. Do not lose your admin password.</p>
+  <p><strong>Administrator failsafe.</strong> Administrators can always sign in with their local password on the login page, even with SAML login enabled. Do not lose your administrator password.</p>
 </div>
 
 
-<h2 id="auth-guest">Guest access <span class="badge-beta">New in 1.3.0-beta</span></h2>
+<h2 id="auth-oidc">OpenID Connect (OIDC)</h2>
 
-<div class="callout callout-warn">
-  <p><strong>This works from v1.3.0-beta and does not work in v1.2.0 or any earlier release.</strong> Up to and including 1.2.0 the pieces existed and did not connect — turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>. It is off by default.</p>
-</div>
+<p>OIDC is configured under <em>Admin → Settings → Authentication → OIDC / OpenID Connect</em>: <em>Enable OIDC login</em>, the provider's <em>Issuer URL</em>, a <em>Client ID</em> and a <em>Client secret</em>. The secret is write-only; leaving it blank on a later save keeps the stored one. Register this redirect URL with the provider, which the settings page shows with a copy button:</p>
+<pre><code>&lt;BASE_URL&gt;/api/v1/auth/oidc/callback</code></pre>
+<p>Saving applies the change without a restart. The login page then offers <em>Sign in with OIDC</em>.</p>
+<ul>
+  <li>Go Help Desk asks for the <code>openid</code>, <code>profile</code> and <code>email</code> scopes, and uses the email address only when the provider marks it verified.</li>
+  <li>The first sign-in creates an account with the <em>User</em> role, subject to <em>Allowed email domains</em>. A sign-in can also attach to an existing account with the same verified address, unless that account is an administrator's or already uses SAML.</li>
+  <li>A save that would leave no administrator able to sign in is refused, here as for SAML.</li>
+</ul>
+
+
+<h2 id="auth-guest">Guest access</h2>
+
+<p>Guest submission is off by default. Turn it on under <em>Admin → Settings → General → Submissions → Guest submission</em>. Up to and including 1.2.0 the pieces existed and did not connect: turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>.</p>
 
 <p>A guest is not an account. There is no guest password, no guest session and no guest role — <strong>possession of a private link is the whole credential</strong>, and possession of the mailbox it was sent to is what earns it.</p>
 
@@ -358,7 +353,7 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
 <ol>
   <li>They submit a ticket at <code>/submit</code>. The page shows a tracking number and the server emails the address a link to that one ticket.</li>
   <li>The link is <code>/g#&lt;token&gt;</code>. The token sits after the <code>#</code> deliberately: a fragment is never sent to the server, so it cannot land in a request log. The page reads it once and removes it from the address bar, so it survives neither browser history nor a screenshot of the URL.</li>
-  <li>From then on the browser sends it as an <code>Authorization: Guest &lt;token&gt;</code> header against two endpoints: read that ticket, and reply to it.</li>
+  <li>From then on the browser sends it as an <code>Authorization: Guest &lt;token&gt;</code> header to the guest API: read the ticket, reply to it, and open a follow-up once it is closed. The API also accepts an attachment upload, which the guest page does not offer.</li>
 </ol>
 
 <h3>What the token is, and how long it lives</h3>
@@ -368,64 +363,68 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
     <tr><td>Length</td><td>32 random bytes, hex encoded</td></tr>
     <tr><td>Stored as</td><td>A SHA-256 hash. The raw value is never written down anywhere on the server.</td></tr>
     <tr><td>Scope</td><td>Exactly one ticket. The token names the ticket; there is no ticket id in any guest URL.</td></tr>
-    <tr><td>Lifetime</td><td>30 days from issue, as an outer bound. On an active ticket it is replaced sooner, every time the help desk writes to the guest — see the next row.</td></tr>
-    <tr><td>Rotated</td><td>On ticket creation, on a staff reply that notifies the customer, on a status change, on resolve, on reopen, and on a re-request. <strong>The old link stops working immediately</strong> — there is no grace period, so the newest email is always the one that works.</td></tr>
-    <tr><td>Revoked</td><td>When the ticket is closed. No mail is sent for the close, and the link simply stops working.</td></tr>
+    <tr><td>Lifetime</td><td>30 days from issue, as an outer bound. On an active ticket it is replaced sooner, every time the help desk writes to the guest (next row).</td></tr>
+    <tr><td>Rotated</td><td>On ticket creation, on a staff reply that notifies the customer, on a status change, on resolve, on a reopen by staff, and on a re-request. <strong>The old link stops working immediately</strong>: there is no grace period, so the newest email is always the one that works.</td></tr>
+    <tr><td>On close</td><td>Not revoked. Closing stops the rotation and sends no mail. The last link still opens the ticket, read-only, until it expires, and can open a follow-up.</td></tr>
   </tbody>
 </table>
 
-<p>Every failure on a guest endpoint — wrong token, expired token, closed ticket, guest submission switched off — answers an identical <code>404</code>, so none of them can be told apart from outside.</p>
+<p>Every failure on a guest link, a wrong or expired token or a write to a closed ticket, answers an identical <code>404</code>, so none of them can be told apart from outside.</p>
 
 <h3>Re-requesting a lost link</h3>
-<p><code>/track</code> takes the tracking number and the email address and mails a fresh link, which replaces the previous one. It <strong>always</strong> answers the same way, whether or not those details matched an open ticket, so it cannot be used to discover which tickets exist. One request per ticket every five minutes.</p>
+<p><code>/track</code> takes the tracking number and the email address and mails a fresh link. On an open ticket it replaces the previous one; on a closed ticket it is added beside it, read-only. It <strong>always</strong> answers the same way, whether or not those details matched a ticket, so it cannot be used to discover which tickets exist. It works for open and closed tickets. One request per ticket every five minutes.</p>
 
 <h3>Rate limiting</h3>
-<p>Guest submission and link re-requests share the login rate limiter — 10 attempts a minute by default (<code>AUTH_RATE_LIMIT_PER_MINUTE</code>), keyed on the client address.</p>
+<p>Guest submission and link re-requests share the sign-in rate limiter: <code>AUTH_RATE_LIMIT_PER_MINUTE</code> a minute (10 by default), keyed on the client address. The shipped <code>docker-compose.yml</code> does not pass that variable to the app, so under Compose it stays at 10 unless you add it to the <code>app</code> service's <code>environment:</code> block.</p>
 
 <div class="callout callout-warn">
-  <p><strong>Behind a reverse proxy, that key is the proxy.</strong> The limiter reads the connection's remote address and the application deliberately does not trust a forwarded-for header, so on the default Docker deployment every visitor shares one bucket: 10 guest submissions a minute for the whole instance. Rate-limit guest endpoints at your proxy if you need a per-visitor limit.</p>
+  <p><strong>Behind a reverse proxy, that key is the proxy.</strong> The limiter reads the connection's remote address and deliberately does not trust a forwarded-for header, so every visitor arriving through one proxy shares one bucket. Rate-limit guest endpoints at your proxy if you need a per-visitor limit.</p>
 </div>
 
 <h3>What a guest can and cannot do</h3>
 <ul>
   <li><strong>Can</strong> read the ticket's subject, description, status and public replies, and post a reply. Lifecycle rules still apply, including the reopen window.</li>
+  <li><strong>Can</strong> open one follow-up from their ticket once it is closed.</li>
   <li><strong>Cannot</strong> see internal notes, staff names, the assignee, the reporter or resolution notes. The guest view is built from a deliberately narrow set of fields rather than by hiding parts of the normal one.</li>
-  <li><strong>Cannot</strong> upload or download attachments. There is no attachment route on the guest surface at all, and the guest view does not indicate whether a ticket has any.</li>
+  <li><strong>Cannot</strong> attach a file from the guest page, or download an attachment. The guest view does not indicate whether a ticket has any.</li>
   <li><strong>Cannot</strong> reach any other ticket. The token names one.</li>
 </ul>
 
-<p>Guest notification email carries no ticket content — only the tracking number and the link. That has been true since v1.2.0.</p>
+<p>Guest notification email carries no ticket content, only the tracking number and the link. That has been true since v1.2.0.</p>
 
 <div class="callout callout-note">
-  <p><strong>Turning guest submission on is not session-gated.</strong> Unlike MFA, SSO and the registration settings, <code>guest_submission_enabled</code> can be changed by an API key or OAuth client with settings write access, and its value is not validated at the write. Treat write access to settings accordingly.</p>
+  <p><strong>Turning guest submission on needs a signed-in administrator.</strong> Like the MFA, SSO and registration settings, <code>guest_submission_enabled</code> cannot be changed by an API key or OAuth client: they get <code>403 session_required</code>. A value that is not a boolean is refused.</p>
 </div>
 
 
-<h2 id="auth-api-keys">API keys</h2>
+<h2 id="auth-api-keys">API keys and OAuth clients</h2>
 
-<p>API keys are long-lived bearer tokens for use in scripts, CI pipelines, and tool integrations where a browser-based login flow is impractical.</p>
+<p>API keys are long-lived credentials for scripts, CI pipelines and tool integrations where a browser sign-in is impractical. OAuth clients do the same job with short-lived tokens. Both are created by an administrator.</p>
 
 <h3>Creating a key</h3>
 <ol>
-  <li>Log in and navigate to <em>My Profile → API Keys → New key</em>.</li>
-  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>, <code>jira-integration</code>).</li>
-  <li>The key is shown <strong>exactly once</strong> after creation. Copy it immediately and store it in a secret manager, CI secret store, or equivalent. It cannot be retrieved after the dialog closes.</li>
+  <li>Go to <em>Admin → API Keys</em> and use <em>Create new key</em>.</li>
+  <li>Give the key a descriptive name (e.g. <code>monitoring-script</code>), and choose its scopes. A key must have at least one scope. An expiry date can be set only through the API, as <code>expires_at</code>; the admin screen does not offer one.</li>
+  <li>The key is shown <strong>exactly once</strong> after creation. Copy it into a secret manager or CI secret store. It cannot be retrieved later.</li>
 </ol>
 
-<p>API keys are stored as SHA-256 hashes. Even if the database is compromised, the plaintext key values are not exposed.</p>
+<p>Keys are stored as SHA-256 hashes, so a copy of the database does not reveal them.</p>
 
 <h3>Using a key</h3>
-<p>Pass the key as a Bearer token in the <code>Authorization</code> header:</p>
+<p>Send the key in the <code>Authorization</code> header with the <code>ApiKey</code> scheme:</p>
 <pre><code>curl https://helpdesk.example.com/api/v1/tickets \
-  -H "Authorization: ApiKey 3f8a…"</code></pre>
+  -H "Authorization: ApiKey GHD_3f8a…"</code></pre>
 
-<p>All <code>/api/</code> endpoints and the <code>/mcp/</code> server accept API key auth.</p>
+<p>The REST API and the <a href="mcp.html">MCP server</a> accept API keys, except on the routes that change how an account signs in (password, second factors, passkeys) and the settings that need a signed-in administrator. Those refuse every API key and OAuth client.</p>
 
 <h3>Permissions</h3>
-<p>An API key inherits the full permissions of the account that created it. A key from a Staff account can do anything a Staff user can do — and nothing more. To perform admin operations via the API, create the key while logged in as an Admin.</p>
+<p>A key acts as the administrator who created it, but only within the scopes it was given. There is no wildcard scope. <code>GET /api/v1/admin/scopes</code> lists them. See <a href="api.html#api-scopes">REST API: Scopes</a>.</p>
+
+<h3>OAuth clients</h3>
+<p>Under <em>Admin → OAuth Clients</em>, an administrator creates a client with its scopes. The client exchanges its ID and secret for a short-lived bearer token at <code>POST /api/v1/auth/oauth/token</code> and sends it as <code>Authorization: Bearer &lt;token&gt;</code>. An OAuth client has no user identity of its own, so it cannot do anything that has to be recorded as a person's act, such as filing or replying to a ticket.</p>
 
 <h3>Revoking a key</h3>
-<p>Go to <em>My Profile → API Keys</em>, find the key by name, and click <em>Revoke</em>. Revocation is immediate — in-flight requests using that key will receive <code>401 Unauthorized</code>. There is no grace period.</p>
+<p>On <em>Admin → API Keys</em>, click <em>Revoke</em> next to the key. Revocation is immediate: the next request with that key gets <code>401</code>. Disabling the user who created a key also stops the key working.</p>
 
 <h3>Key naming conventions</h3>
 <p>Since the key value cannot be retrieved after creation, the name is your only way to identify a key later. Use names that describe the consumer: <code>pagerduty-webhook</code>, <code>ci-pipeline-prod</code>, <code>alex-cli-dev</code>. Include dates in names if you rotate keys on a schedule.</p>

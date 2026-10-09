@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Plugin Development — Go Help Desk Docs</title>
-  <meta name="description" content="Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
+  <meta name="description" content="The planned Go Help Desk plugin design, a v2 feature: sandboxed WASM modules that react to ticket events. Plugins cannot be installed in 1.3.0." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/plugins.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/plugins.html" />
   <meta property="og:title" content="Plugin Development — Go Help Desk Docs" />
-  <meta property="og:description" content="Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
+  <meta property="og:description" content="The planned Go Help Desk plugin design, a v2 feature: sandboxed WASM modules that react to ticket events. Plugins cannot be installed in 1.3.0." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Plugin Development — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems." />
+  <meta name="twitter:description" content="The planned Go Help Desk plugin design, a v2 feature: sandboxed WASM modules that react to ticket events. Plugins cannot be installed in 1.3.0." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Plugin Development",
-    "description": "Build sandboxed WASM plugins to extend Go Help Desk with custom fields, UI panels, and integrations with Slack, JIRA, and other external systems.",
+    "description": "The planned Go Help Desk plugin design, a v2 feature: sandboxed WASM modules that react to ticket events. Plugins cannot be installed in 1.3.0.",
     "url": "https://gohelpdesk.org/docs/plugins.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -47,7 +47,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -60,7 +60,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -76,7 +79,7 @@
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -86,6 +89,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -110,9 +114,13 @@
 <main class="docs-content">
 
 <h1 class="docs-page-title" id="plugin-overview">Plugin Development</h1>
-<p class="docs-page-sub">Build WASM plugins that react to ticket events, call external APIs, and add custom UI panels.</p>
+<p class="docs-page-sub">The planned design for WASM plugins, a v2 feature. Nothing on this page runs in 1.3.0.</p>
 
-<p>Go Help Desk plugins are WebAssembly modules that run sandboxed inside the application process via <a href="https://wazero.io">wazero</a>. They communicate with the host through a defined set of imported and exported functions.</p>
+<div class="callout callout-warn">
+  <p><strong>The plugin system does not work in 1.3.0.</strong> It is planned for v2. The API refuses to install a plugin and to uninstall one (both return <code>501 Not Implemented</code>), and no event reaches a plugin. The rest of this page describes the planned design, not something you can run today.</p>
+</div>
+
+<p>As designed, Go Help Desk plugins are WebAssembly modules that would run sandboxed inside the application process via <a href="https://wazero.io">wazero</a>, which 1.3.0 does not include. They communicate with the host through a defined set of imported and exported functions.</p>
 
 <p>Plugins can be written in any language that compiles to WASM with a C-compatible ABI. Well-supported options include:</p>
 <ul>

@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Attachment Security — Go Help Desk Docs</title>
-  <meta name="description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/attachment-security.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/attachment-security.html" />
   <meta property="og:title" content="Attachment Security — Go Help Desk Docs" />
-  <meta property="og:description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta property="og:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Attachment Security — Go Help Desk Docs" />
-  <meta name="twitter:description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="twitter:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Attachment Security",
-    "description": "What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do.",
+    "description": "What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do.",
     "url": "https://gohelpdesk.org/docs/attachment-security.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -46,7 +46,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -59,7 +59,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -96,6 +99,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -111,14 +115,10 @@
 
 <main class="docs-content">
 
-<h1 class="docs-page-title" id="attach-overview">Attachment Security <span class="badge-beta">Beta</span></h1>
+<h1 class="docs-page-title" id="attach-overview">Attachment Security <span class="badge-new">New in 1.3.0</span></h1>
 <p class="docs-page-sub">What the server does with a file somebody uploads to a ticket — and, just as important, what it does not do.</p>
 
-<div class="callout callout-warn">
-  <p><strong>Everything on this page is new in v1.3.0-beta and is not in a released version.</strong> The current stable release is <a href="upgrading-1.2.0.html">v1.2.0</a>. There is no 1.3.0 tag and no 1.3.0 release. Names, defaults and responses described here can still change before 1.3.0 ships. Run this on a deployment you are willing to treat as a beta.</p>
-</div>
-
-<p>Up to and including 1.2.0, an attachment was checked in one way: a hard-coded signature test against the file's extension, which had no entry for <code>.txt</code> or <code>.log</code> and ended by accepting anything it had no entry for. 1.3.0-beta replaces that with three separate things, which are worth keeping apart in your head because they answer different questions:</p>
+<p>Up to and including 1.2.0, an attachment was checked in one way: a hard-coded signature test against the file's extension, which had no entry for <code>.txt</code> or <code>.log</code> and ended by accepting anything it had no entry for. 1.3.0 replaces that with three separate things, which are worth keeping apart in your head because they answer different questions:</p>
 
 <ul>
   <li><strong>Detection</strong> — what the bytes actually are, recorded on every file, never a reason to refuse one.</li>
@@ -132,7 +132,7 @@
 <p>Every step below runs on <code>POST /api/v1/tickets/{id}/attachments</code>, in this order. The first one that refuses ends it — nothing is written to disk and nothing is recorded.</p>
 
 <ol>
-  <li><strong>Is the caller allowed?</strong> Uploading needs a signed-in account. A reporting user may upload only to their own ticket.</li>
+  <li><strong>Is the caller allowed?</strong> Uploading needs a signed-in account. A reporting user may upload only to their own ticket. The guest API's upload, <code>POST /api/v1/guest/attachments</code>, takes the same steps once the guest's link is checked; the guest page itself has no upload control.</li>
   <li><strong>Is it within 25 MB?</strong> Checked three times — the request body is capped before it is parsed, then the size the upload declares is checked, then the bytes actually read. Over that is <code>413 too_large</code> whichever check catches it.</li>
   <li><strong>Is the filename storable, and honest?</strong> It must be valid UTF-8, contain no NUL byte, contain no control character and no text-direction override (the characters that make <code>invoice&lt;U+202E&gt;txt.pdf</code> display as <code>invoicefdp.txt</code>), and be 255 bytes or shorter. Anything else is <code>400 invalid_filename</code>.</li>
   <li><strong>Is the extension one this instance accepts?</strong> Checked against the operator's allowed-types list, before the file body is read. Anything else is <code>415 unsupported_type</code>.</li>
@@ -275,8 +275,7 @@
 <h3>What staff see</h3>
 <p>A ticket holding quarantined attachments carries a persistent red banner naming how many there are. Each quarantined row shows the scanner's name for the detection, the archive password, the detected type, the SHA-256 with a copy control, and a <em>Download…</em> button that opens a confirmation dialog rather than a link. The download URL is deliberately not on the row: a link that calls <code>preventDefault</code> is still reachable by middle-click, "Save link as" and the keyboard context menu, and a button is not.</p>
 
-<!-- SCREENSHOT NEEDED: a ticket detail page with the red quarantine banner at the top and one quarantined attachment row — the "Identified as malicious by the scanner" line with the detection name, the "password: infected" line, the "Content:" line with the detected type, the SHA-256 with its Copy control and "Look up on VirusTotal" link, and the Download… button. Nothing on the row expands; it is all visible at once. -->
-<img src="../screenshots/12-quarantined-attachment.png" alt="A ticket showing the quarantine banner and a quarantined attachment row" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/12-quarantined-attachment.png" alt="A ticket with a red banner saying one attachment was quarantined, and the quarantined row showing the detection name, the archive password, the content type, the SHA-256 with a Copy button, a VirusTotal link and a Download button" width="2880" height="3274" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
 <h2 id="attach-download">Downloads are downloads. Nothing is ever rendered</h2>
@@ -290,7 +289,7 @@
 <table class="param-table">
   <thead><tr><th>Header</th><th></th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td>Content-Type</td><td>always</td><td><code>application/octet-stream</code> on every attachment, whatever the file claims to be. No browser renders that. Before 1.3.0-beta the type came from the filename, so a PDF went out as <code>application/pdf</code>.</td></tr>
+    <tr><td>Content-Type</td><td>always</td><td><code>application/octet-stream</code> on every attachment, whatever the file claims to be. No browser renders that. Before 1.3.0 the type came from the filename, so a PDF went out as <code>application/pdf</code>.</td></tr>
     <tr><td>Content-Disposition</td><td>always</td><td><code>attachment</code>, carrying the original filename in both RFC 6266 forms, so an accented name survives.</td></tr>
     <tr><td>Sec-Fetch-Dest</td><td>checked</td><td>The download route <strong>refuses</strong> a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render the response — <code>403 not_downloadable</code>. Only <code>document</code>, <code>empty</code> and an absent header are allowed. The response also carries <code>Vary: Sec-Fetch-Dest</code>, so a browser cache cannot answer a rendering request out of an allowed one.</td></tr>
   </tbody>
@@ -303,11 +302,11 @@
 </ul>
 
 <div class="callout callout-note">
-  <p><strong>The site logo is the one exception</strong>, and the only upload this application renders inline. 1.3.0-beta removed SVG from that uploader: PNG, JPEG and GIF are accepted and all re-encoded as PNG, and the logo route keeps its own sandboxing policy on top. An SVG left on disk by an older release is no longer served. See <a href="admin-guide.html#admin-branding">Admin Guide: Branding</a>.</p>
+  <p><strong>The site logo is the one exception</strong>, and the only upload this application renders inline. 1.3.0 removed SVG from that uploader: PNG, JPEG and GIF are accepted and all re-encoded as PNG, and the logo route keeps its own sandboxing policy on top. An SVG left on disk by an older release is no longer served. See <a href="admin-guide.html#admin-branding">Admin Guide: Branding</a>.</p>
 </div>
 
 
-<h2 id="attach-reputation">Reputation lookup <span class="badge-beta">Beta</span></h2>
+<h2 id="attach-reputation">Reputation lookup</h2>
 
 <p>A quarantined sample's SHA-256 can be looked up at third-party reputation services. <strong>All four are off by default</strong>, and all four off is a supported configuration rather than a broken one: it means attachments are judged by this instance's own scanner alone.</p>
 
@@ -360,7 +359,7 @@
 <ul>
   <li><strong>Only for quarantined files.</strong> A file the scanner named. Not ordinary attachments, and not files that were merely flagged as mislabelled.</li>
   <li><strong>Only for staff.</strong> A reporting customer opening their own ticket never spends the operator's allowance.</li>
-  <li><strong>Lazily, on a page render</strong> — when staff open a ticket carrying a quarantined attachment with no current verdict. Never at upload. There is no background queue, because this project has no background job runner and a queue would be a table nothing drains.</li>
+  <li><strong>Lazily, on a page render</strong>, when staff open a ticket carrying a quarantined attachment with no current verdict. Never at upload, and there is no background queue for lookups.</li>
   <li><strong>Cached against the hash and the service</strong>, not the attachment, so the same file on five tickets costs one lookup per service. Each service's verdict has its own expiry clock.</li>
 </ul>
 
@@ -403,8 +402,7 @@
 
 <p>Staff get a <em>Check again</em> control on a verdict that can still change. The server allows <strong>one manual re-check per hash per service every seven days</strong>, whatever the interval says — including when it says <code>never</code>, because an operator who turned automatic checking off to save quota did not mean that nobody may ever ask. It is a floor and not an override: the daily budget still applies, a re-check inside the week is refused with the date it clears, and a re-check of a final verdict is refused outright. The control is disabled rather than hidden while the week runs.</p>
 
-<!-- SCREENSHOT NEEDED: a quarantined attachment row with more than one reputation service enabled, after clicking "Show all N services" — the one-line summary above it (attributed to a named service), then one line per service with its own verdict sentence, its "Asked on" date, its "Open <service>" link (CIRCL has none) and, on a verdict that can still change, its own Check again control. Nothing in the expanded list marks which line the summary was copied from: the API sends that flag but the page does not draw it (issue #173), so do not wait for one. -->
-<img src="../screenshots/13-attachment-reputation.png" alt="The expanded per-provider reputation view on a quarantined attachment" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/13-attachment-reputation.png" alt="The expanded reputation view for a quarantined attachment: VirusTotal's lookup did not complete, and CIRCL reports the file as known, with an Asked on date for each service" width="584" height="1528" loading="lazy" style="width:100%;max-width:292px;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>No provider can hold a page open</h3>
 
@@ -439,8 +437,8 @@
   <li><strong>Containment is not retroactive.</strong> Turning quarantine or the wrap on does not rewrap what is already stored; turning either off does not unwrap it.</li>
   <li><strong>The quarantine password is not confidentiality.</strong> It is published, and ZipCrypto is weak on purpose.</li>
   <li><strong>The Sec-Fetch-Dest check cannot reach everything.</strong> Absent headers are allowed, and same-origin page script can fetch the bytes and render them itself. Nothing on the server can tell that apart from a download.</li>
-  <li><strong>The expanded reputation list does not mark which line the row's summary came from.</strong> The summary names its service, and the API sends an <code>inline</code> flag on the matching entry, but the ticket page does not draw it yet — tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/173">issue #173</a>.</li>
-  <li><strong>There is no admin screen for scanner health yet.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, including a live reachability check rather than a restatement of the configuration — but the admin UI renders only the insecure-secrets warning from that response. Today this is visible to an administrator who asks the API.</li>
+  <li><strong>The expanded reputation list does not mark which line the row's summary came from.</strong> The summary names its service, and the API sends an <code>inline</code> flag on the matching entry, but the ticket page does not draw it.</li>
+  <li><strong>Scanner health is a banner, not a screen.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, with a live reachability check. Administrators see it only when it matters: an <em>Attachment scanner unreachable</em> banner on every page while the policy is not <code>off</code> and the scanner does not answer. There is no page that shows a healthy scanner as healthy.</li>
 </ul>
 
 

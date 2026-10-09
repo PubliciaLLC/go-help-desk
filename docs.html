@@ -85,7 +85,7 @@
     <ul class="nav-links">
       <li><a href="index.html">Home</a></li>
       <li><a href="docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk" class="btn btn-outline btn-sm">Star on GitHub</a></li>
@@ -98,10 +98,23 @@
     <p class="section-label" style="margin-bottom:0.5rem;">Documentation</p>
     <h1>Go Help Desk Docs</h1>
     <p>Everything you need to deploy, configure, and extend Go Help Desk. Start with <a href="docs/getting-started.html">Getting Started</a> or jump to the section you need.</p>
-    <p style="font-size:0.9rem;color:var(--muted);margin-top:0.75rem;"><strong>v1.2.0 is the current stable release.</strong> Pages and sections marked <span class="badge-beta">Beta</span> describe <strong>v1.3.0-beta</strong>, which has no tag and no release — chiefly the new attachment handling and guest ticket submission. Everything unmarked applies to v1.2.0.</p>
+    <p style="font-size:0.9rem;color:var(--muted);margin-top:0.75rem;"><strong>v1.3.0 is the current release.</strong> Upgrading from 1.2? Read <a href="docs/upgrading-1.3.0.html">Upgrading to 1.3.0</a> first.</p>
   </div>
 
   <div class="doc-cards">
+
+    <a class="doc-card" href="docs/upgrading-1.3.0.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+      </div>
+      <h3>Upgrading to 1.3.0</h3>
+      <p>A feature release with a few changes an existing install relies on.</p>
+      <ul>
+        <li>ClamAV is opt-in in Docker Compose</li>
+        <li>Signup asks for name and password at verification</li>
+        <li>The audit log is readable, and kept by default</li>
+      </ul>
+    </a>
 
     <a class="doc-card" href="docs/upgrading-1.2.0.html">
       <div class="doc-card-icon">
@@ -134,8 +147,8 @@
       <div class="doc-card-icon">
         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
       </div>
-      <h3>Attachment Security <span class="badge-beta">Beta</span></h3>
-      <p>What the server does with an uploaded file in 1.3.0-beta, end to end — and what it deliberately does not do.</p>
+      <h3>Attachment Security</h3>
+      <p>What the server does with an uploaded file in 1.3.0, end to end, and what it deliberately does not do.</p>
       <ul>
         <li>What is detected, and what is recorded</li>
         <li>The three storage tiers and the quarantine archive</li>
@@ -151,9 +164,9 @@
       <h3>Getting Started</h3>
       <p>Deploy with Docker Compose in minutes. Full configuration reference and first-run checklist.</p>
       <ul>
-        <li>Docker Compose quick start</li>
+        <li>Pull the published image</li>
+        <li>Build from source</li>
         <li>All environment variables</li>
-        <li>First-run setup order</li>
         <li>Upgrading</li>
       </ul>
     </a>
@@ -163,11 +176,11 @@
         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
       </div>
       <h3>Authentication</h3>
-      <p>Local accounts, TOTP MFA, SAML 2.0 SSO with Okta, Azure AD and Google, and API keys.</p>
+      <p>Local accounts, a second factor by authenticator app or passkey, SAML 2.0 and OIDC sign-in, guest access, and API keys.</p>
       <ul>
         <li>Local accounts &amp; passwords</li>
-        <li>TOTP MFA enrollment</li>
-        <li>SAML 2.0 setup (Okta, Azure, Google)</li>
+        <li>Authenticator app and passkeys</li>
+        <li>SAML 2.0 and OIDC setup</li>
         <li>API key management</li>
       </ul>
     </a>
@@ -177,12 +190,13 @@
         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>
       </div>
       <h3>Admin Guide</h3>
-      <p>Configure categories, manage users and groups, define SLA policies, set up email, webhooks, and plugins.</p>
+      <p>Configure categories, manage users and groups, define SLA policies, and set up email and webhooks.</p>
       <ul>
         <li>CTI category hierarchy</li>
         <li>Groups &amp; staff scope</li>
         <li>SLA policies</li>
-        <li>Email templates &amp; webhooks</li>
+        <li>Webhooks</li>
+        <li>Audit log</li>
       </ul>
     </a>
 
@@ -205,12 +219,26 @@
         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
       </div>
       <h3>REST API</h3>
-      <p>Complete endpoint reference with request/response examples, authentication methods, error formats, and pagination.</p>
+      <p>How the API works: authentication, scopes, visibility, errors and pagination.</p>
       <ul>
-        <li>Auth (session, API key, OAuth2)</li>
+        <li>Auth (session, API key, OAuth2, guest link)</li>
+        <li>Scopes</li>
+        <li>Errors &amp; pagination</li>
+        <li>Attachment downloads</li>
+      </ul>
+    </a>
+
+    <a class="doc-card" href="docs/api-reference.html">
+      <div class="doc-card-icon">
+        <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      </div>
+      <h3>API Reference</h3>
+      <p>Every endpoint, parameter and schema, generated from the OpenAPI 3.1 description.</p>
+      <ul>
         <li>Tickets, replies, links</li>
         <li>Admin endpoints</li>
-        <li>Errors &amp; pagination</li>
+        <li>Auth &amp; guest routes</li>
+        <li>Download openapi.yaml</li>
       </ul>
     </a>
 
@@ -219,12 +247,12 @@
         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
       </div>
       <h3>MCP Server</h3>
-      <p>Connect AI assistants to Go Help Desk as native tools. Configure Claude, VS Code, and other MCP clients.</p>
+      <p>Connect AI assistants to Go Help Desk as native tools, over the MCP SSE transport.</p>
       <ul>
-        <li>Available tools &amp; permissions</li>
-        <li>Connecting Claude</li>
-        <li>Connecting VS Code</li>
-        <li>Generic HTTP client config</li>
+        <li>Available tools</li>
+        <li>Connecting clients (SSE)</li>
+        <li>Authentication</li>
+        <li>Permissions</li>
       </ul>
     </a>
 
@@ -233,12 +261,12 @@
         <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M20.24 12.24a6 6 0 0 0-8.49-8.49L5 10.5V19h8.5z"/><line x1="16" y1="8" x2="2" y2="22"/><line x1="17.5" y1="15" x2="9" y2="15"/></svg>
       </div>
       <h3>Plugin Development</h3>
-      <p>Build WASM plugins that react to ticket events, call external APIs, and add custom UI panels.</p>
+      <p>Specification for the plugin system planned for v2. Plugins cannot be installed in 1.3.0.</p>
       <ul>
         <li>Plugin manifest &amp; config schema</li>
         <li>Event hooks &amp; payloads</li>
         <li>Full host API reference</li>
-        <li>Working Slack example</li>
+        <li>Slack example (planned API)</li>
       </ul>
     </a>
 
@@ -261,6 +289,10 @@
   <div class="quick-links">
     <h2>Common tasks</h2>
     <div class="quick-link-grid">
+      <a class="quick-link" href="docs/upgrading-1.3.0.html">
+        Upgrade to 1.3.0
+        <span>Read before upgrading</span>
+      </a>
       <a class="quick-link" href="docs/getting-started.html#quick-start">
         Deploy with Docker
         <span>Quick start guide</span>
@@ -272,6 +304,10 @@
       <a class="quick-link" href="docs/api.html#api-overview">
         Use the REST API
         <span>Auth &amp; endpoints</span>
+      </a>
+      <a class="quick-link" href="docs/api-reference.html">
+        API reference
+        <span>Every endpoint</span>
       </a>
       <a class="quick-link" href="docs/mcp.html#mcp-connect">
         Connect an AI assistant
@@ -291,7 +327,7 @@
       </a>
       <a class="quick-link" href="docs/plugins.html#plugin-example">
         Write a plugin
-        <span>Slack example in Go</span>
+        <span>Planned for v2</span>
       </a>
       <a class="quick-link" href="docs/contributing.html#dev-setup">
         Contribute code

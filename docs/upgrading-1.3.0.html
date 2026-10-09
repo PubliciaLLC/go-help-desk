@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upgrading to 1.3.0 — Go Help Desk Docs</title>
+  <meta name="description" content="What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image." />
+  <link rel="canonical" href="https://gohelpdesk.org/docs/upgrading-1.3.0.html" />
+  <meta property="og:site_name" content="Go Help Desk" />
+  <meta property="og:type" content="article" />
+  <meta property="og:url" content="https://gohelpdesk.org/docs/upgrading-1.3.0.html" />
+  <meta property="og:title" content="Upgrading to 1.3.0 — Go Help Desk Docs" />
+  <meta property="og:description" content="What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image." />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:site" content="@go_help_desk" />
+  <meta name="twitter:title" content="Upgrading to 1.3.0 — Go Help Desk Docs" />
+  <meta name="twitter:description" content="What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image." />
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+  <link rel="stylesheet" href="../style.css" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Upgrading to 1.3.0",
+    "description": "What changes when you upgrade Go Help Desk to 1.3.0: ClamAV becomes opt-in in Docker Compose, the audit log becomes readable and is kept by default, signup asks for the name and password at verification, and the quick start pulls a published image.",
+    "url": "https://gohelpdesk.org/docs/upgrading-1.3.0.html",
+    "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
+    "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
+    "isPartOf": { "@type": "SoftwareApplication", "name": "Go Help Desk", "url": "https://gohelpdesk.org" }
+  }
+  </script>
+  <style>
+    .breaks-table td:first-child { font-weight:600; white-space:nowrap; }
+    .breaks-table td:nth-child(2) { font-size:0.9rem; }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="container nav-inner">
+    <a href="../index.html" class="nav-logo" style="text-decoration:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Go Help Desk
+    </a>
+    <ul class="nav-links">
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
+      <li><a href="/docs/security.html">Security</a></li>
+      <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="docs-layout">
+<aside class="docs-sidebar">
+  <div style="padding:0.75rem 0.5rem 1rem;"><a href="../docs.html" style="font-size:0.8rem;color:var(--muted);text-decoration:none;">← All docs</a></div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Upgrading to 1.3.0</div>
+    <ul>
+      <li><a href="upgrading-1.3.0.html" class="active">Overview</a></li>
+      <li><a href="#whats-new">What's new</a></li>
+      <li><a href="#clamav">ClamAV is opt-in</a></li>
+      <li><a href="#audit">The audit log is readable</a></li>
+      <li><a href="#signup">Signup asks later</a></li>
+      <li><a href="#guest-setting">Guest setting needs a person</a></li>
+      <li><a href="#reporter-attachments">Reporters can attach</a></li>
+      <li><a href="#buildx">Building needs Buildx</a></li>
+      <li><a href="#env-removed">Two variables are gone</a></li>
+      <li><a href="#steps">Doing the upgrade</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Earlier releases</div>
+    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Getting Started</div>
+    <ul><li><a href="getting-started.html">Overview</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Authentication</div>
+    <ul><li><a href="authentication.html">Authentication</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Administration</div>
+    <ul><li><a href="admin-guide.html">Admin Guide</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Security</div>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Tickets</div>
+    <ul><li><a href="tickets.html">Working with Tickets</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Integrations</div>
+    <ul>
+      <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
+      <li><a href="mcp.html">MCP Server</a></li>
+    </ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Extend</div>
+    <ul><li><a href="plugins.html">Plugin Development</a></li></ul>
+  </div>
+  <div class="sidebar-group">
+    <div class="sidebar-group-label">Contribute</div>
+    <ul><li><a href="contributing.html">Contributing</a></li></ul>
+  </div>
+</aside>
+
+<main class="docs-content">
+
+<h1 class="docs-page-title" id="introduction">Upgrading to 1.3.0</h1>
+<p class="docs-page-sub">A feature release. Most of it is new ground; a handful of changes touch something an existing install or integration relies on. Read this before you upgrade, not after.</p>
+
+<div class="callout callout-warn">
+  <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Add two lines to <code>docker/.env</code> to keep it. See <a href="#clamav">ClamAV is opt-in</a>.</p>
+</div>
+
+<div class="callout callout-note">
+  <p><strong>Coming from 1.1.x?</strong> Read <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a> as well; every item there applies too.</p>
+</div>
+
+<p>Everything below is additive unless it says otherwise. Each item names who notices.</p>
+
+<table class="breaks-table">
+  <thead><tr><th>What changes</th><th>Who notices</th></tr></thead>
+  <tbody>
+    <tr><td>ClamAV is opt-in in Docker Compose</td><td>Compose installs that relied on the bundled scanner</td></tr>
+    <tr><td>The audit log is readable, and kept forever by default</td><td>Administrators; staff see a per-ticket feed</td></tr>
+    <tr><td>Signup asks for name and password at verification</td><td>Self-signup users; API clients of <code>/auth/signup</code> and <code>/auth/verify-email</code></td></tr>
+    <tr><td><code>guest_submission_enabled</code> needs a signed-in administrator</td><td>Automation that changes settings with an API key</td></tr>
+    <tr><td>Reporters can attach files to replies</td><td>Reporting users</td></tr>
+    <tr><td>Building from source needs Docker Buildx</td><td>Anyone who builds the image</td></tr>
+    <tr><td><code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> are gone</td><td><code>.env</code> files that set them</td></tr>
+  </tbody>
+</table>
+
+<h2 id="whats-new">What's new in 1.3.0</h2>
+
+<ul>
+  <li><strong>Passkeys.</strong> Passkeys and hardware security keys work as a second factor, beside authenticator apps. A passkey is checked after the password, never instead of it. <a href="authentication.html#auth-mfa">Second factor</a></li>
+  <li><strong>An Account page.</strong> Change your password, set up an authenticator app, add and remove passkeys, and verify a second factor.</li>
+  <li><strong>Recovery from lost factors.</strong> The <code>reset-factors &lt;email&gt;</code> subcommand of the server binary clears every second factor from one account, so its owner can sign in with their password and enrol again. It is run on the server, not through the web. In the Compose stack: <code>docker compose exec app /app/server reset-factors &lt;email&gt;</code>.</li>
+  <li><strong>Identity-provider lockout guard.</strong> A SAML or OIDC settings change that would leave no administrator able to sign in is refused. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#identity-provider-lockout-guard-300">Design notes</a></li>
+  <li><strong>Signup asks later.</strong> The display name and password are chosen when the email is verified. <a href="#signup">Details</a></li>
+  <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply and attach a file. <a href="authentication.html#auth-guest">Guest access</a></li>
+  <li><strong>Closed means closed.</strong> A closed ticket is read-only and stays closed by default. The way on is a linked follow-up ticket. An operator can allow admins, or staff and admins, to reopen a closed ticket. <a href="tickets.html#tickets-follow-up">Follow-up tickets</a></li>
+  <li><strong>The lifecycle runs itself.</strong> An auto-close sweep runs every five minutes. A reopen window of 0 closes a resolved ticket on the next sweep.</li>
+  <li><strong>SLA tracking end to end.</strong> Timers pause while a ticket is Pending, a breach sweep runs, and the indicators are colour-coded. The switch is under <strong>Admin → Settings</strong>.</li>
+  <li><strong>Reporters can attach files to replies.</strong> <a href="#reporter-attachments">Details</a></li>
+  <li><strong>Works on a phone.</strong> Staff triage and reporters can use the app on a phone. Administration stays on the desktop. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#small-screens">Design notes</a></li>
+  <li><strong>First-run setup creates a category.</strong> A new instance can file a ticket straight away. <a href="getting-started.html#first-run">First-run setup</a></li>
+  <li><strong>A readable audit log.</strong> A per-ticket activity feed and an admin-wide searchable view. <a href="admin-guide.html#admin-audit">Audit log</a></li>
+  <li><strong>Notifications from an outbox.</strong> Email is queued in the database and retried after 30 seconds, doubling each time, up to eight attempts. Webhooks are queued too, but each one is sent once and never retried; the Webhooks screen shows each hook's last delivery result.</li>
+  <li><strong>Webhooks with chat formats.</strong> An Admin → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
+  <li><strong>Attachment security.</strong> Content detection, mismatch handling, quarantine, download-only files, and optional scanning and reputation lookups. <a href="attachment-security.html">Attachment Security</a></li>
+  <li><strong>Published images.</strong> Multi-architecture images for amd64 and arm64, published to GHCR. Building from source is still supported. <a href="getting-started.html#quick-start">Quick start</a></li>
+  <li><strong>Loud configuration warnings.</strong> Example secrets are reported at startup and in a red banner for administrators; "scanning is off" is reported at startup and by <code>GET /api/v1/admin/security-warnings</code>.</li>
+</ul>
+
+<h2 id="clamav">ClamAV is opt-in</h2>
+
+<p>Docker Compose used to start the bundled ClamAV scanner and set <code>CLAMAV_ADDR</code> for you. From 1.3.0 it is opt-in (#297). An install that relied on that, and whose <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line, stops scanning attachments on upgrade. Nothing else changes.</p>
+
+<p>Nothing in the admin interface says so: with no scanner address the scan policy is off, and the warning banner only appears when a configured scanner is unreachable. The server logs <code>attachment scanning is OFF: no scanner address is configured</code> at startup (#303), and <code>GET /api/v1/admin/security-warnings</code> reports <em>Attachments are not scanned. Uploads are accepted without being checked.</em> Check <strong>Admin → Settings → Attachments → Malware scanning</strong>. Nothing stops the upgrade, so check for it. To keep scanning on, uncomment the two lines in the "Virus scanning" section of <code>docker/.env.example</code> in your own <code>docker/.env</code>, then restart:</p>
+
+<pre><code>CLAMAV_ADDR=tcp://clamav:3310
+COMPOSE_PROFILES=antivirus</code></pre>
+
+<p><code>clamav/clamav</code> is published for <code>linux/amd64</code> only. On Apple Silicon the scanner runs under emulation rather than failing to pull.</p>
+
+<p>Once <code>CLAMAV_ADDR</code> is set, uploads are refused with <code>503</code> while the scanner cannot be reached. That covers the first few minutes after the first start, while the scanner downloads its signature database (about 300 MB). Everything other than attachment upload keeps working.</p>
+
+<p>See <a href="getting-started.html#config-scanning">Getting Started → Virus scanning</a>.</p>
+
+<h2 id="audit">The audit log is readable, and still kept forever</h2>
+
+<p>Entries were written before 1.3.0, but nothing could read them. From 1.3.0 there is a per-ticket activity feed and an admin-wide searchable view.</p>
+
+<p>Nothing is deleted unless you ask. <code>audit_retention_days</code> defaults to 0, which keeps everything. To start pruning, set it to a number of days under <strong>Admin → Settings</strong>. The maximum is 36,525 days, a century. Set it back to 0 to keep everything again. The first sweep runs two minutes after the server starts, then once a day, so an instance that restarts more often than daily still prunes. Only a signed-in administrator can change this setting. An API key cannot, because shortening retention destroys evidence rather than merely widening access.</p>
+
+<p>Staff see the per-ticket feed. The field-level before and after diff is behind a second setting, <code>staff_can_view_ticket_change_history</code>. It is <strong>off by default</strong>, so no instance starts showing staff something it did not show them in 1.2.0.</p>
+
+<p>A machine credential needs the <code>audit:read</code> scope to read the admin-wide view.</p>
+
+<p>See <a href="admin-guide.html#admin-audit">Admin Guide → Audit log</a>.</p>
+
+<h2 id="signup">Signup asks for the name and password when the email is verified</h2>
+
+<p>Before this change, anyone who knew an address could sign up again after its owner, with a password or name of their own. The owner, clicking the newest link, got an account with it. The signup form now asks only for the email address. The link in the email opens a page that asks for the display name and the password.</p>
+
+<p>For API clients:</p>
+
+<ul>
+  <li><code>POST /api/v1/auth/verify-email</code> requires <code>token</code>, <code>display_name</code> and <code>password</code>. A request with a missing or invalid name or password is refused with <code>display_name_required</code>, <code>password_too_short</code> or <code>password_too_long</code>, and the link is not used up.</li>
+  <li>A <code>display_name</code> or <code>password</code> sent to <code>POST /api/v1/auth/signup</code> is ignored.</li>
+  <li><code>GET /api/v1/auth/verify-email?token=</code> returns the email address the link is for.</li>
+</ul>
+
+<p>Signups still pending at upgrade keep working. Their links now ask for a name and a password.</p>
+
+<h2 id="guest-setting"><code>guest_submission_enabled</code> requires a signed-in administrator</h2>
+
+<p>This setting decides whether anonymous people can file tickets. It also decides whether the category list can be read without signing in. An API key with settings-write scope could previously switch it either way. Now only a signed-in administrator can change it. An API key cannot, whatever scopes it holds. The refusal is <code>403 session_required</code>.</p>
+
+<p>A malformed or <code>null</code> value is refused outright, rather than being read back as <code>false</code>.</p>
+
+<p>See <a href="api.html#api-session-only">the API settings that need a person</a>.</p>
+
+<h2 id="reporter-attachments">Reporters can attach files to replies</h2>
+
+<p>The upload API never checked the role. Any signed-in user who could see a ticket could already attach a file to it. The reply composer offered the control to staff only. A reporting user replying to their own ticket now sees the same <em>Add files</em> control that staff have.</p>
+
+<h2 id="buildx">Building from source needs Docker Buildx</h2>
+
+<p>Building the image yourself with <code>docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build</code> needs the <code>docker buildx</code> CLI plugin. Without it, on Apple Silicon and other hosts that are not amd64, the build fails at its first step with a <code>--platform=</code> parse error. A later attempt to work around that produced an image that builds cleanly and does not run, so it was reverted.</p>
+
+<p>Docker Desktop includes Buildx. If <code>docker buildx version</code> fails, install the plugin. The steps are under <a href="getting-started.html#build-from-source">Building from source</a> in Getting Started.</p>
+
+<p>This only affects building. The quick start pulls a published image, so most people never run a builder at all.</p>
+
+<h2 id="env-removed">Two environment variables are gone</h2>
+
+<p><code>MFA_ENABLED</code> and <code>GUEST_SUBMISSION_ENABLED</code> were removed in 1.3.0. Nothing read them, so an instance that set them got no error and no change. MFA and guest submission are switched on under <strong>Admin → Settings</strong>, and that setting is the switch.</p>
+
+<p><code>SLA_ENABLED</code> still exists. It switches SLA tracking on at each start, and never off. The setting under <strong>Admin → Settings</strong> is the switch.</p>
+
+<p>No SAML environment variable is read. SAML and OIDC are configured under <strong>Admin → Settings → Authentication</strong>.</p>
+
+<h2 id="steps">Doing the upgrade</h2>
+
+<ol>
+  <li><strong>Take a database backup.</strong> Migrations are forward-only; there is no automatic rollback.</li>
+  <li><strong>If you scan attachments with the bundled ClamAV,</strong> add the two lines to <code>docker/.env</code>. See <a href="#clamav">ClamAV is opt-in</a>.</li>
+  <li><strong>Update and restart.</strong>
+    <pre><code>cd go-help-desk
+git pull
+cd docker
+docker compose pull
+docker compose up -d</code></pre>
+    If you checked out a tag earlier (for example <code>v1.2.0</code>), run <code>git checkout main</code> before <code>git pull</code>. If you build from source, run the build command from <a href="getting-started.html#build-from-source">Building from source</a> instead of the two <code>docker compose</code> commands. Migrations run automatically on startup, before the server accepts traffic.
+  </li>
+  <li><strong>Sign in as an administrator.</strong> Look for the red insecure-configuration banner, and check the scanning setup under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
+  <li><strong>If you have API clients that drive signup,</strong> update them for <a href="#signup">the new verification request</a>.</li>
+</ol>
+
+<p>For the general mechanics, including zero-downtime upgrades, see <a href="getting-started.html#upgrading">Getting Started → Upgrading</a>.</p>
+
+<div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
+  <a href="getting-started.html" class="btn btn-outline">← Getting Started</a>
+  <a href="upgrading-1.2.0.html" class="btn btn-outline">Upgrading to 1.2.0 →</a>
+</div>
+
+</main>
+</div>
+
+<footer>
+  <div class="container footer-inner">
+    <span>Go Help Desk — <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">AGPL v3</a></span>
+    <span style="display:flex;gap:1.5rem;"><a href="../docs.html">Docs</a><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a><a href="https://x.com/go_help_desk" rel="me">X</a><a href="https://ko-fi.com/erikpt">Support</a></span>
+  </div>
+</footer>
+
+<script>
+  const links = document.querySelectorAll('.docs-sidebar a[href^="#"]');
+  const sections = Array.from(links).map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        links.forEach(l => l.classList.remove('active'));
+        const link = document.querySelector(`.docs-sidebar a[href="#${entry.target.id}"]`);
+        if (link) link.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-5% 0px -85% 0px' });
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>
