@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Contributing — Go Help Desk Docs</title>
-  <meta name="description" content="How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
+  <meta name="description" content="How to contribute to Go Help Desk: development setup, running tests, coding conventions, and pull request guidelines." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/contributing.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/contributing.html" />
   <meta property="og:title" content="Contributing — Go Help Desk Docs" />
-  <meta property="og:description" content="How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
+  <meta property="og:description" content="How to contribute to Go Help Desk: development setup, running tests, coding conventions, and pull request guidelines." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Contributing — Go Help Desk Docs" />
-  <meta name="twitter:description" content="How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines." />
+  <meta name="twitter:description" content="How to contribute to Go Help Desk: development setup, running tests, coding conventions, and pull request guidelines." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,18 +22,13 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Contributing",
-    "description": "How to contribute to Go Help Desk — development setup, running tests, coding conventions, and pull request guidelines.",
+    "description": "How to contribute to Go Help Desk: development setup, running tests, coding conventions, and pull request guidelines.",
     "url": "https://gohelpdesk.org/docs/contributing.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
     "isPartOf": { "@type": "SoftwareApplication", "name": "Go Help Desk", "url": "https://gohelpdesk.org" }
   }
   </script>
-  <style>
-    .step { display:flex; gap:1rem; margin-bottom:1.5rem; }
-    .step-num { flex-shrink:0; width:28px; height:28px; border-radius:50%; background:var(--blue); color:#fff; font-size:0.8rem; font-weight:700; display:flex; align-items:center; justify-content:center; margin-top:2px; }
-    .step-body h4 { margin-top:0; margin-bottom:0.4rem; }
-  </style>
 </head>
 <body>
 
@@ -111,27 +106,23 @@
 
 <main class="docs-content">
 
-<h1 class="docs-page-title" id="contributing">Contributing</h1>
+<h1 class="docs-page-title" id="contributing">Contributing to Go Help Desk</h1>
 <p class="docs-page-sub">Set up a local development environment and contribute to Go Help Desk.</p>
 
 <div class="callout callout-note">
   <p>This page mirrors <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> in the repository, which is the canonical copy.</p>
 </div>
 
-<p>All contributions are welcome — bug reports, documentation improvements, and code changes.</p>
+<p>All contributions are welcome: bug reports, documentation improvements, and code changes.</p>
 
-<h3>Before writing code</h3>
+<h2 id="before-writing-code">Before writing code</h2>
 <ol>
-  <li><strong>Read <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/docs/DESIGN.md">DESIGN.md</a></strong>. It is the specification. Every feature and behavior described there is intentional. If something is ambiguous or you think the design is wrong, open an issue to discuss it — don't work around it.</li>
-  <li><strong>Check the <a href="https://github.com/PubliciaLLC/go-help-desk/issues">issue tracker</a></strong>. Your bug may already be filed, or your feature may already be planned or deliberately excluded.</li>
+  <li><strong>Read <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/docs/DESIGN.md">docs/DESIGN.md</a>.</strong> It is the specification. Every feature and behavior described there is intentional. If something is ambiguous or you think the design is wrong, open an issue to discuss it. Don't work around it.</li>
+  <li><strong>Check the issue tracker.</strong> Your bug may already be filed, or your feature may already be planned or deliberately excluded.</li>
   <li><strong>Open an issue for non-trivial changes</strong> before submitting a PR. This prevents wasted effort if the direction isn't right.</li>
-  <li><strong>Tests are required</strong>. Write a failing test that defines "done" before implementing anything. No untested code will be merged.</li>
+  <li><strong>Tests are required.</strong> Write a failing test that defines "done" before implementing anything. No untested code will be merged.</li>
 </ol>
-
-<div class="callout callout-note">
-  <p>Go Help Desk is licensed under the <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">GNU Affero General Public License v3.0</a>. By contributing you agree that your contributions will be released under the same license.</p>
-</div>
-
+<p>Go Help Desk is licensed under the <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE">GNU Affero General Public License v3.0</a>. By contributing you agree that your contributions will be released under the same license.</p>
 
 <h2 id="dev-setup">Development environment</h2>
 
@@ -146,19 +137,19 @@
 <h3>Backend</h3>
 <pre><code>cd backend
 go mod download</code></pre>
-
 <p>Start the backend server:</p>
 <pre><code>DATABASE_URL="postgres://localhost:5432/helpdesk_dev?sslmode=disable" \
 BASE_URL="http://localhost:8080" \
 SESSION_SECRET="dev-session-secret-change-me-32c" \
 JWT_SECRET="dev-jwt-secret-change-me" \
+ATTACHMENT_DIR="$HOME/ghd-attachments" \
 go run ./cmd/server</code></pre>
+<p><code>ATTACHMENT_DIR</code> defaults to <code>/data/attachments</code>, which a non-root developer cannot create. The server creates the directory on the first upload, so the parent must be writable by your user. Keep it outside the repository: <code>backend/data</code> is not gitignored.</p>
 
 <h3>Frontend</h3>
 <pre><code>cd frontend
 npm ci
 npm run dev   # starts at http://localhost:5173</code></pre>
-
 <p>The Vite dev server proxies <code>/api</code> and <code>/mcp</code> to <code>:8080</code>.</p>
 
 <h3>Optional: local email</h3>
@@ -175,50 +166,29 @@ SMTP_FROM=dev@localhost</code></pre>
 <pre><code>go build -ldflags "-X github.com/publiciallc/go-help-desk/backend/internal/version.Version=1.0.0" ./cmd/server</code></pre>
 <p>The Docker build path is <code>docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build</code>, run from the <code>docker/</code> directory. It needs Docker Buildx. See <a href="https://gohelpdesk.org/docs/getting-started#build-from-source">Building from source</a>.</p>
 
-
 <h2 id="testing">Running tests</h2>
 
 <h3>Integration tests (Postgres)</h3>
-<p>Integration tests skip themselves when <code>TEST_DATABASE_URL</code> is unset, so the unit tests (below) need nothing installed. To run the full suite you need a throwaway Postgres:</p>
-<pre><code>./scripts/test-db.sh once            # start db, run everything, tear it all down
-./scripts/test-db.sh test ./internal/server/ -run OIDC   # iterate on one package
-./scripts/test-db.sh up              # leave it running while you work
-./scripts/test-db.sh down            # stop it</code></pre>
-
-<p>The database is ephemeral: it lives in a tmpfs, listens on <strong>5433</strong> so it can never be confused with the dev stack on 5432, and runs with <code>fsync=off</code>.</p>
-
-<p>That default is <strong>one shared database</strong>: two runs at once (two worktrees, or two agents) tear each other's database down, because <code>once</code> ends by removing it. To run several, give each its own instance and it gets its own free port:</p>
-<pre><code>GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once ./...</code></pre>
-
-<p>Use one name per worktree. <code>GHD_TEST_PORT</code> pins the port if you need it, and only with an instance name: on the shared database it would recreate it under anyone using it, so the script refuses. Nothing persists between runs and nothing needs seeding — <code>testutil.NewDB</code> applies the migrations on first connect and each test rolls back its own transaction.</p>
-
+<p>Integration tests skip themselves when <code>TEST_DATABASE_URL</code> is unset, so the unit tests (below) need nothing installed. To run the full suite you need a throwaway Postgres. <code>scripts/test-db.sh</code> manages one:</p>
+<pre><code>./scripts/test-db.sh up                                  # start it, wait until it accepts connections
+./scripts/test-db.sh test                                # start it, run the suite, leave it running
+./scripts/test-db.sh test ./internal/server/ -run OIDC   # the same, for one package; extra arguments go to go test
+./scripts/test-db.sh once                                # start it, run the suite, tear everything down
+./scripts/test-db.sh down                                # destroy it</code></pre>
+<p>The database is ephemeral: it lives in a tmpfs, listens on <strong>5433</strong> so it can never be confused with the dev stack on 5432, and runs with <code>fsync=off</code>. <code>test</code> leaves it running until you run <code>down</code>. <code>once</code> removes it when the run ends.</p>
+<p>Without a name there is one shared database, <code>ghd-test</code> on port 5433, and two runs at once tear each other's database down, because <code>once</code> ends by removing it. To run several at once (two worktrees, or two agents), give each its own instance name, and each gets its own database on its own free port:</p>
+<pre><code>GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once</code></pre>
+<p>Use one name per worktree. <code>GHD_TEST_PORT</code> pins the port of a named instance, and the script refuses it without an instance name, because on the shared database it would recreate the database under anyone using it. Nothing persists between runs and nothing needs seeding: <code>testutil.NewDB</code> applies the migrations on first connect, and each test rolls back its own transaction.</p>
 <p>The suite records a checksum of every migration it applies. If it stops with "the test database was migrated by different migration files than this tree's", the database was migrated by another branch that numbered a migration the same as yours, or a migration you edited after it was applied. golang-migrate tracks only the number, so it would otherwise call the database up to date and your tests would fail on a missing table. Recreate the test database (<code>./scripts/test-db.sh down</code>, with the same <code>GHD_TEST_INSTANCE</code> if you set one). Pointing <code>TEST_DATABASE_URL</code> at the dev database adds one table, <code>testutil_migration_checksums</code>, which the server ignores. If two open branches both add the next migration number, the second one to merge renumbers.</p>
-
 <p>On macOS the script will start <a href="https://colima.run">colima</a> if no container runtime is responding, and stop it again on teardown, so no VM idles between runs:</p>
 <pre><code>brew install colima</code></pre>
-
-<p>Do <strong>not</strong> run <code>brew services start colima</code> — that restarts the VM at every login, which is what this setup exists to avoid.</p>
+<p>Do <strong>not</strong> run <code>brew services start colima</code>, because that restarts the VM at every login, which is what this setup exists to avoid.</p>
+<p>To run the suite against the development stack's database instead, which the suite will migrate:</p>
+<pre><code>TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...</code></pre>
 
 <h3>Unit tests (no DB required)</h3>
 <pre><code>cd backend
 go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...</code></pre>
-
-<h3>Integration tests</h3>
-<pre><code># Against a throwaway database (recommended)
-#
-# Starts an ephemeral Postgres on 127.0.0.1:5433, runs the suite against it,
-# and leaves nothing behind. Never points at the development database.
-./scripts/test-db.sh test
-
-# Several at once (worktrees, parallel agents): name an instance, and each
-# gets its own database on its own free port. Without a name they share one,
-# and the first run to finish tears it down under the others.
-GHD_TEST_INSTANCE=my-branch ./scripts/test-db.sh once
-
-# Or against the development stack's database, which the suite will migrate
-TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...</code></pre>
-
-<p>If <code>TEST_DATABASE_URL</code> is not set, integration tests are skipped (not failed).</p>
 
 <h3>Full check</h3>
 <pre><code>cd backend
@@ -226,49 +196,43 @@ go build ./...
 go vet ./...
 go test ./internal/domain/... ./internal/config/... ./internal/middleware/... ./internal/server/notify/...
 TEST_DATABASE_URL="..." go test ./... -race -count=1</code></pre>
+<p>If <code>TEST_DATABASE_URL</code> is not set, integration tests are skipped (not failed).</p>
 
 <h3>Test-coverage guard</h3>
 <p>CI fails a pull request that adds or changes Go code without tests. Run the same check locally before you push:</p>
 <pre><code>scripts/check-test-coverage.sh            # defaults to origin/main...HEAD
 scripts/check-test-coverage.sh main HEAD  # or name the refs explicitly</code></pre>
-
 <p>It reports two levels:</p>
 <ul>
-  <li><strong>Blocking</strong> — a change lands in a package with no tests at all, or adds a new <code>.go</code> file with no test accompanying it.</li>
-  <li><strong>Warning</strong> — a package with existing tests was changed but no test changed with it. Not fatal, but if the change alters behaviour, a test should move too.</li>
+  <li><strong>Blocking:</strong> a change lands in a package with no tests at all, or adds a new <code>.go</code> file with no test accompanying it.</li>
+  <li><strong>Warning:</strong> a package with existing tests was changed but no test changed with it. Not fatal, but if the change alters behaviour, a test should move too.</li>
 </ul>
-
-<p>Generated and wiring-only paths are exempt; the list is at the top of the script. Note that the guard only checks a test <em>exists</em> — it cannot tell a real assertion from a line that makes a fake satisfy a new interface. It is a floor, not a substitute for reading the tests.</p>
+<p>Generated and wiring-only paths are exempt; the list is at the top of the script. Note that the guard only checks a test <em>exists</em>. It cannot tell a real assertion from a line that makes a fake satisfy a new interface. It is a floor, not a substitute for reading the tests.</p>
 
 <h3>Frontend tests</h3>
 <pre><code>cd frontend
 npm test          # unit tests (vitest)
-npm run test:e2e  # end-to-end tests (Playwright)</code></pre>
-
+npm run test:e2e  # layout tests (Playwright)</code></pre>
+<p><code>npm run test:e2e</code> runs browser layout tests in Chromium. It starts the Vite dev server itself and mocks every backend call inside each test, so it needs neither Postgres nor the Go server. The current suite checks that the main pages fit a phone-width viewport (<code>frontend/e2e/mobile-layout.spec.ts</code>). Install the browser once with <code>npx playwright install chromium</code> before the first run.</p>
 
 <h2 id="schema-changes">Schema changes</h2>
-
 <ol>
   <li>Add a numbered migration pair to <code>backend/internal/database/migrations/</code> (e.g. <code>000010_foo.up.sql</code> / <code>000010_foo.down.sql</code>). Always write both directions.</li>
   <li>Add queries to <code>backend/queries/</code>.</li>
-  <li>Run <code>sqlc generate</code> from <code>backend/</code>. Review the diff in <code>backend/internal/dbgen/</code> — never hand-edit that directory.</li>
+  <li>Run <code>sqlc generate</code> from <code>backend/</code>. Review the diff in <code>backend/internal/dbgen/</code>. Never hand-edit that directory.</li>
   <li>Add store methods in <code>backend/internal/database/&lt;feature&gt;store/</code> that call the generated functions.</li>
   <li>Add integration tests before using the new code in domain services or HTTP handlers.</li>
 </ol>
 
-
 <h2 id="conventions">Code conventions</h2>
-
 <p>For code conventions, see <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/docs/code-conventions.md">docs/code-conventions.md</a>.</p>
 
-
 <h2 id="pr-process">PR process</h2>
-
 <ol>
-  <li><strong>Fork and branch</strong> — create a feature branch from <code>main</code>. Name it descriptively: <code>feat/webhook-retries</code>, <code>fix/sla-timer-pause</code>.</li>
-  <li><strong>Keep the diff small</strong> — one logical change per PR. Split refactoring from feature work.</li>
-  <li><strong>Tests green</strong> — run the full test suite locally before opening the PR.</li>
-  <li><strong>Write a clear description</strong> — explain what the change does and why. Link to the relevant issue.</li>
+  <li><strong>Fork and branch.</strong> Create a feature branch from <code>main</code>. Name it descriptively: <code>feat/webhook-retries</code>, <code>fix/sla-timer-pause</code>.</li>
+  <li><strong>Keep the diff small.</strong> One logical change per PR. Split refactoring from feature work.</li>
+  <li><strong>Tests green.</strong> Run the full test suite locally before opening the PR.</li>
+  <li><strong>Write a clear description.</strong> Explain what the change does and why. Link to the relevant issue.</li>
 </ol>
 
 <h3>What gets merged quickly</h3>

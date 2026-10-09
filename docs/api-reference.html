@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="img-src 'self' data:" />
   <title>API Reference — Go Help Desk Docs</title>
   <meta name="description" content="Every Go Help Desk REST endpoint, parameter and schema, rendered from the project's OpenAPI 3.1 description." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/api-reference.html" />
@@ -33,15 +34,21 @@
     Renderer: Redoc 2.5.4, vendored as ../vendor/redoc/2.5.4/redoc.standalone.js. The
     bundle is byte-identical to the npm tarball; the integrity attribute below is its
     sha384. It is MIT licensed (Copyright (c) 2015-present, Rebilly, Inc.). The MIT
-    notice is in ../vendor/redoc/2.5.4/LICENSE, and the licenses of the libraries it
-    bundles are in ../vendor/redoc/2.5.4/redoc.standalone.js.LICENSE.txt.
+    notice is in ../vendor/redoc/2.5.4/LICENSE, copied from the package.
+    ../vendor/redoc/2.5.4/redoc.standalone.js.LICENSE.txt is the file the npm package
+    ships beside the bundle: the license comments webpack extracted from the bundled
+    sources (classnames, Redoc, Stickyfill, perfect-scrollbar, DOMPurify, mark.js,
+    React, Prism, react-is). It is not a complete list of the libraries in the bundle.
 
     No "Try it out": this reference describes a server per install, and there is no
     shared instance to call. Every request the page makes is same-origin.
 
-    The site sends no Content-Security-Policy today. If one is added, Redoc needs
-    style-src 'unsafe-inline' (its styles are generated at runtime) and possibly
-    worker-src blob:.
+    The Content-Security-Policy meta above restricts images only (img-src 'self'
+    data:). It is a backstop for the logo shim below: if a future Redoc loads an image
+    from another host, the browser refuses it instead of making the request. A wider
+    policy would need style-src 'unsafe-inline' (Redoc's styles are generated at
+    runtime), script-src 'unsafe-inline' (or hashes) for the inline scripts on this page, and
+    possibly worker-src blob:.
   -->
 </head>
 <body>

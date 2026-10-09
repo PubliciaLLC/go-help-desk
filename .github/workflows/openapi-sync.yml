@@ -1,22 +1,24 @@
 # Guards the website's copy of the OpenAPI description (docs/openapi/).
 #
-# check   (blocking, every run): docs/openapi/openapi.yaml must equal
-#         docs/api/openapi.yaml at the commit named in docs/openapi/SOURCE.
-# stale   (advisory on push and pull_request, blocking on the weekly schedule):
-#         the newest release tag must not carry a newer spec than the copy.
+# check (blocking, every push and pull request): docs/openapi/openapi.yaml must
+# equal docs/api/openapi.yaml at the commit named in docs/openapi/SOURCE.
 #
-# Update procedure, at a release:
-#   scripts/openapi-sync.sh pull v1.3.1 && git commit -am "Re-pin the API reference to v1.3.1"
+# There is no scheduled or manual trigger, on purpose. GitHub fires `schedule`
+# and `workflow_dispatch` only for workflows on the repository's default branch,
+# and this file lives on the website branch, so either trigger would never run.
+# No branch filter either: the workflow exists only on website branches, so it
+# runs wherever it is, whatever the site branch is called.
+#
+# Whether the copy is older than the newest release (`scripts/openapi-sync.sh
+# stale`) is a manual release-checklist step, not a CI job. At each app release:
+#   scripts/openapi-sync.sh pull v1.3.0
+#   scripts/openapi-sync.sh check && scripts/openapi-sync.sh stale
+#   git commit -am "Re-pin the API reference to v1.3.0"
 name: openapi-sync
 
 on:
   push:
-    branches: [v1.3.0-beta-web]
   pull_request:
-    branches: [v1.3.0-beta-web]
-  schedule:
-    - cron: "17 6 * * 1"
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,12 +33,3 @@ jobs:
 
       - name: Copy matches the pinned app commit
         run: scripts/openapi-sync.sh check
-
-      - name: Pinned copy is not older than the newest release (weekly, blocking)
-        if: github.event_name == 'schedule'
-        run: scripts/openapi-sync.sh stale
-
-      - name: Pinned copy is not older than the newest release (advisory)
-        if: github.event_name != 'schedule'
-        continue-on-error: true
-        run: scripts/openapi-sync.sh stale
