@@ -14,6 +14,35 @@ import { MFAEnrollForm } from '@/components/MFAEnrollForm'
 
 type Step = 'credentials' | 'verify' | 'enroll' | 'passkey'
 
+// Refusal codes the server puts in /login?error= after SAML or OIDC sends the
+// browser back. Only these strings are ever shown: the query string is
+// attacker-controlled, so the code is a key and never text (#401). A Map, not
+// an object literal, so "constructor" or "__proto__" cannot find anything.
+const SSO_ERRORS = new Map<string, string>([
+  ['email_taken', 'Another account here already uses the email address your identity provider sent. Ask an administrator to sort it out.'],
+  ['domain_not_allowed', 'Accounts from your email domain cannot sign in here.'],
+  ['account_disabled', 'This account is disabled. Ask an administrator if you need access.'],
+  ['account_link_refused', 'Your single sign-on identity could not be linked to the existing account with that email address. Ask an administrator.'],
+  ['invalid_assertion', 'Your identity provider did not send the details this help desk needs. Ask an administrator to check the single sign-on setup.'],
+  ['email_not_verified', 'Your identity provider did not send a verified email address, so you could not be signed in.'],
+  ['invalid_email', 'Your identity provider sent an email address this help desk cannot use. Ask an administrator.'],
+  ['sso_session_used', 'That sign-in has already been used. Please sign in again.'],
+  ['invalid_session', 'Your sign-in expired or was started in another window. Please try again.'],
+  ['invalid_state', 'Your sign-in expired or was started in another window. Please try again.'],
+  ['idp_error', 'Your identity provider did not allow the sign-in.'],
+  ['missing_code', 'The response from your identity provider could not be checked. Please try again.'],
+  ['missing_id_token', 'The response from your identity provider could not be checked. Please try again.'],
+  ['invalid_id_token', 'The response from your identity provider could not be checked. Please try again.'],
+  ['internal_error', 'Something went wrong while signing you in. Please try again.'],
+])
+const SSO_ERROR_FALLBACK = 'Single sign-on did not finish. Please try again, or ask an administrator.'
+
+function ssoErrorMessage(search: string): string {
+  const code = new URLSearchParams(search).get('error')
+  if (code === null) return ''
+  return SSO_ERRORS.get(code) ?? SSO_ERROR_FALLBACK
+}
+
 export function LoginPage() {
   const navigate = useNavigate()
   const { name: siteName } = useSiteBranding()
@@ -22,7 +51,9 @@ export function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
-  const [error, setError] = useState('')
+  // Seeded from ?error= so a refused single sign-on says why; handleLogin
+  // clears it when the person tries again.
+  const [error, setError] = useState(() => ssoErrorMessage(window.location.search))
   const [loading, setLoading] = useState(false)
   const [signupEnabled, setSignupEnabled] = useState(false)
   const [guestEnabled, setGuestEnabled] = useState(false)
@@ -193,6 +224,17 @@ export function LoginPage() {
                 Sign in with OIDC
                </Button>
              )}
+            {/* A plain link, not a button with an onClick: a full-page
+                navigation the router leaves alone (#393). Classes match the
+                OIDC button; Button has no asChild. */}
+            {providers.saml && (
+              <a
+                href="/api/v1/auth/saml/login"
+                className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+              >
+                Sign in with SAML
+              </a>
+            )}
             </>
           )}
 

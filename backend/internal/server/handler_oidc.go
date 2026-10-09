@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -49,6 +50,13 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, req.URL, http.StatusFound)
 }
 
+// loginRefused sends a browser that came back from the identity provider to
+// the login page with one of our own fixed codes, never anything from the
+// request. The page turns the code into text; JSON here was shown raw (#401).
+func loginRefused(w http.ResponseWriter, r *http.Request, code string) {
+	http.Redirect(w, r, "/login?error="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	s.oidcMu.RLock()
@@ -72,39 +80,33 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData)
 
 	if !ok {
-		Error(w,
-			http.StatusUnauthorized,
-			"invalid_session",
-			"OIDC session state missing")
+		loginRefused(w, r, "invalid_session")
 		return
 	}
 
 	// An absent state parameter can never equal the non-empty session state, so
 	// this one check covers a missing, stale and mismatched state alike.
 	if sd.OIDCState == "" || r.URL.Query().Get("state") != sd.OIDCState {
-		Error(w,
-			http.StatusUnauthorized,
-			"invalid_state",
-			"OIDC state validation failed")
+		loginRefused(w, r, "invalid_state")
 		return
 	}
 
 	// The state is now spent: one authorization request, one callback. fail
 	// drops it from the session before reporting the failure, so a state left
 	// behind by a failed callback cannot be completed later with another code.
-	fail := func(status int, code, message string) {
+	fail := func(code string) {
 		sd.OIDCState = ""
 		sd.OIDCNonce = ""
 		sd.OIDCCodeVerifier = ""
 		if err := s.writeSession(w, r, sd); err != nil {
 			slog.Error("clearing spent OIDC state", "error", err)
 		}
-		Error(w, status, code, message)
+		loginRefused(w, r, code)
 	}
 
 	failInternal := func(err error) {
 		slog.Error("OIDC callback failed", "error", err)
-		fail(http.StatusInternalServerError, "internal_error", "an internal error occurred")
+		fail("internal_error")
 	}
 
 	// The IdP reports a refusal (access_denied, consent_required, …) by
@@ -115,18 +117,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("OIDC provider returned an error",
 			"error", idpErr,
 			"description", r.URL.Query().Get("error_description"))
-		fail(http.StatusBadRequest,
-			"idp_error",
-			"the identity provider did not authorize the login")
+		fail("idp_error")
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 
 	if code == "" {
-		fail(http.StatusBadRequest,
-			"missing_code",
-			"OIDC authorization code missing")
+		fail("missing_code")
 		return
 	}
 
@@ -144,9 +142,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	rawIDToken, ok := token.Extra("id_token").(string)
 
 	if !ok {
-		fail(http.StatusUnauthorized,
-			"missing_id_token",
-			"OIDC provider did not return id_token")
+		fail("missing_id_token")
 		return
 	}
 
@@ -162,9 +158,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, auth.ErrNonceMismatch) {
 			slog.Warn("OIDC id token nonce mismatch")
 		}
-		fail(http.StatusUnauthorized,
-			"invalid_id_token",
-			"OIDC token validation failed")
+		fail("invalid_id_token")
 		return
 	}
 
@@ -189,9 +183,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// The allowed-domain list applies to every federated login, as it does for
 	// SAML JIT provisioning.
 	if email != "" && !user.IsEmailDomainAllowed(email, s.adminSvc.AllowedEmailDomains(r.Context())) {
-		fail(http.StatusForbidden,
-			"domain_not_allowed",
-			"this email domain is not allowed")
+		fail("domain_not_allowed")
 		return
 	}
 
@@ -217,28 +209,23 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, user.ErrUserDisabled):
-			fail(http.StatusForbidden, "account_disabled", "this account is disabled")
+			fail("account_disabled")
 		case errors.Is(err, user.ErrAccountLinkRefused):
-			fail(http.StatusForbidden, "account_link_refused",
-				"this identity may not be linked to the existing account for that email address")
+			fail("account_link_refused")
 		case errors.Is(err, user.ErrSubjectRequired):
-			fail(http.StatusUnauthorized, "invalid_id_token",
-				"the identity provider did not supply a subject claim")
+			fail("invalid_id_token")
 		case errors.Is(err, user.ErrEmailRequired):
-			fail(http.StatusForbidden, "email_not_verified",
-				"the identity provider did not supply a verified email address")
+			fail("email_not_verified")
 		case errors.Is(err, user.ErrValidation):
-			fail(http.StatusBadRequest, "invalid_email",
-				"the identity provider sent an email address this help desk cannot use")
+			fail("invalid_email")
 		case errors.Is(err, user.ErrDomainNotAllowed):
-			fail(http.StatusForbidden, "domain_not_allowed", "this email domain is not allowed")
+			fail("domain_not_allowed")
 		case errors.Is(err, user.ErrEmailTaken):
 			// Somebody else here already holds the address the identity
 			// provider sends. That is an administrator's problem to resolve,
 			// not a fault, and it used to be reported as an internal error on
 			// every sign-in attempt.
-			fail(http.StatusConflict, "email_taken",
-				"another account on this help desk already uses that email address")
+			fail("email_taken")
 		default:
 			failInternal(err)
 		}

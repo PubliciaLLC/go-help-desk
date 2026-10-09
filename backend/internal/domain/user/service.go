@@ -658,7 +658,16 @@ func (s *Service) UpsertOIDCUser(
 	}
 
 	if email != "" {
-		u, err := s.store.GetByEmail(ctx, email)
+		// Looked up by the parsed address, the form every account is stored
+		// in. The raw claim missed the account when the provider wrapped it in
+		// brackets or needless quotes (<a@x>, "a"@x), and the login then
+		// created a second account or failed email_taken (#401). An address
+		// that does not parse is the same refusal Create would give.
+		addr, err := ValidateEmail(email)
+		if err != nil {
+			return User{}, err
+		}
+		u, err := s.store.GetByEmail(ctx, addr)
 		switch {
 		case err == nil:
 			if err := canAdoptByEmail(u, oidcSubject); err != nil {
@@ -694,7 +703,7 @@ func (s *Service) UpsertOIDCUser(
 			return User{}, fmt.Errorf("looking up user by email: %w", err)
 		}
 		return s.Create(ctx, CreateUserInput{
-			Email:       email,
+			Email:       addr,
 			DisplayName: displayName,
 			Role:        RoleUser,
 			OIDCSubject: oidcSubject,

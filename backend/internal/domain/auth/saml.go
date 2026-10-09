@@ -185,6 +185,23 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	session := samlsp.DefaultSessionProvider(opts)
 	session.MaxAge = SAMLHandoverMaxAge
 	session.Codec = codec
+	// The "token" cookie is set on the ACS response and read by /complete,
+	// a top-level GET that the ACS redirects to, so Lax is enough. Explicit,
+	// so it does not rest on each browser's default.
+	session.SameSite = http.SameSiteLaxMode
 	mw.Session = session
+
+	// The tracking cookie ("saml_" + RelayState) has to come back on the IdP's
+	// cross-site POST to the ACS, which only SameSite=None allows. Set on the
+	// tracker alone: opts.CookieSameSite would put None on "token" as well.
+	// Over http it is left unset, because browsers reject None without
+	// Secure (the library sets Secure only for an https ACS); Lax would be
+	// worse than unset there, since Chrome's two-minute POST allowance
+	// applies only to cookies with no SameSite at all (#399).
+	tracker := samlsp.DefaultRequestTracker(opts, &mw.ServiceProvider)
+	if spURL.Scheme == "https" {
+		tracker.SameSite = http.SameSiteNoneMode
+	}
+	mw.RequestTracker = tracker
 	return mw, nil
 }
