@@ -2,11 +2,12 @@ package database_test
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
@@ -23,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -1894,52 +1896,34 @@ func TestMigration_WebhookLastDeliveryRefusesFreeText(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Test that free-text error is rejected
-	tx, err := db.SQL.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer tx.Rollback()
-
-	id := uuid.New()
-	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
-		id, "https://example.com/hook")
-	require.NoError(t, err)
-
-	_, err = tx.ExecContext(ctx,
-		`UPDATE webhook_configs SET last_delivery_error = $1 WHERE id = $2`,
-		"connection refused to https://x/tok", id)
-	require.Error(t, err, "free-text error must be rejected by CHECK constraint")
-	tx.Rollback()
-
-	// Test that invalid status is rejected
-	tx, err = db.SQL.BeginTx(ctx, nil)
-	require.NoError(t, err)
-	defer tx.Rollback()
-
-	id = uuid.New()
-	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
-		id, "https://example.com/hook")
-	require.NoError(t, err)
-
-	_, err = tx.ExecContext(ctx,
-		`UPDATE webhook_configs SET last_delivery_status = $1 WHERE id = $2`, 42, id)
-	require.Error(t, err, "invalid HTTP status must be rejected by CHECK constraint")
-	tx.Rollback()
-
-	// Test that all valid error classes are accepted
-	for _, errClass := range []string{"", "http_status", "timeout", "dns", "tls", "blocked_address", "connection", "other"} {
+	// set writes one column of a fresh row, in a transaction of its own: a
+	// refused statement aborts the transaction it ran in.
+	set := func(column string, value any) error {
 		tx, err := db.SQL.BeginTx(ctx, nil)
 		require.NoError(t, err)
-
+		defer tx.Rollback()
 		id := uuid.New()
-		_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
-			id, fmt.Sprintf("https://example.com/hook%s", errClass))
+		_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`, id, "https://example.com/hook")
 		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx, `UPDATE webhook_configs SET `+column+` = $1 WHERE id = $2`, value, id)
+		return err
+	}
+	// Refused by the CHECK in particular (check_violation). Any error would
+	// also pass for a misspelt column or a length limit standing in for it.
+	requireCheckViolation := func(err error, what string) {
+		t.Helper()
+		var pgErr *pgconn.PgError
+		require.True(t, errors.As(err, &pgErr), "%s: expected a Postgres error, got: %v", what, err)
+		require.Equal(t, "23514", pgErr.Code, "%s: expected check_violation, got: %v", what, err)
+	}
 
-		_, err = tx.ExecContext(ctx,
-			`UPDATE webhook_configs SET last_delivery_error = $1 WHERE id = $2`,
-			errClass, id)
-		require.NoError(t, err, "error class %q must be accepted", errClass)
-		tx.Rollback()
+	requireCheckViolation(set("last_delivery_error", "connection refused to https://x/tok"), "free-text error")
+	requireCheckViolation(set("last_delivery_status", 42), "status 42")
+
+	// Every class the dispatcher can record, read from the list it records
+	// from, so a class added there without a migration fails here.
+	for _, class := range append([]string{""}, notify.DeliveryErrors...) {
+		require.NoError(t, set("last_delivery_error", class), "error class %q must be accepted", class)
 	}
 }
 

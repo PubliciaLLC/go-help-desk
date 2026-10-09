@@ -147,8 +147,7 @@ func TestAuditStore_Search_SnapshotOn_Scoped(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		plantEntry(ticketAssignedToStaff.ID)
 	}
-	plantEntry(ticketByReporter.ID)
-	plantEntry(ticketByOther.ID)
+	hiddenIDs := []uuid.UUID{plantEntry(ticketByReporter.ID), plantEntry(ticketByOther.ID)}
 
 	// Compute expected result FIRST using plain store, before running snapshot.
 	plainStore := auditstore.New(q)
@@ -167,6 +166,9 @@ func TestAuditStore_Search_SnapshotOn_Scoped(t *testing.T) {
 		expectedIDs[e.ID] = true
 	}
 	require.Len(t, expectedIDs, 4, "expected 4 unique entries")
+	for _, id := range hiddenIDs {
+		require.False(t, expectedIDs[id], "an entry on a ticket staff cannot see must not be in the plain store's page")
+	}
 
 	// Create a closed DB so reads not through the snapshot tx will fail.
 	dsn := os.Getenv("TEST_DATABASE_URL")
@@ -174,7 +176,10 @@ func TestAuditStore_Search_SnapshotOn_Scoped(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, closedDB.Close())
 
-	// Snapshot store uses the closed DB and spy.
+	// Snapshot store uses the closed DB and spy. The spy hands searchScoped the
+	// fixture's own transaction, and searchScoped rolls back what it began:
+	// after Search the fixture is gone, q can no longer be used, and the
+	// deferred rollback above is a no-op.
 	spy := &SpyTxBeginner{tx: tx}
 	snapshotStore := auditstore.New(dbgen.New(closedDB)).SnapshotOn(spy)
 
@@ -202,6 +207,9 @@ func TestAuditStore_Search_SnapshotOn_Scoped(t *testing.T) {
 	}
 	require.Equal(t, expectedIDs, snapshotIDs,
 		"snapshot store Entries must be the same as plain store (same IDs, same count)")
+	for _, id := range hiddenIDs {
+		require.False(t, snapshotIDs[id], "an entry on a ticket staff cannot see must not be in the snapshot store's page")
+	}
 }
 
 // TestAuditStore_Search_SnapshotOn_Unscoped verifies that unscoped searches
