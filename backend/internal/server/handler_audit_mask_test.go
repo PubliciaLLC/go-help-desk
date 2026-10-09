@@ -157,8 +157,10 @@ func TestAudit_AdminViewCarriesActorMaskedOnlyWhenTrue(t *testing.T) {
 		return nil
 	}
 
+	created := entryFor("created")
+	require.Contains(t, created, "actor_masked", "the masked entry must carry actor_masked")
 	var masked bool
-	require.NoError(t, json.Unmarshal(entryFor("created")["actor_masked"], &masked))
+	require.NoError(t, json.Unmarshal(created["actor_masked"], &masked))
 	require.True(t, masked)
 	require.NotContains(t, entryFor("assigned"), "actor_masked")
 }

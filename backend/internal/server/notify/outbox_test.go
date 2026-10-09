@@ -610,8 +610,11 @@ var redactAddressCases = []struct{ in, want string }{
 	{"550 5.1.1 <guest@[192.168.1.10]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
 	{"550 5.1.1 <guest@[IPv6:2001:db8::1]>: Recipient address rejected", "550 5.1.1 <[address]>: Recipient address rejected"},
 	// The IP literal's \s exclusion: an unclosed "[" must not run on to a later
-	// "]". The first row alone does not show it (no "]" follows the whitespace);
-	// the second does, because without the exclusion it swallows the text after "[".
+	// "]". The first row has no "]" after the whitespace, so under the mutation
+	// that drops the exclusion it is caught only by
+	// TestRedactAddresses_TableRowsAreStableUnderASecondPass (the first pass's
+	// "[address]" supplies the "]"). The second row is caught in this table,
+	// with a clear diff.
 	{"550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <a@b.com>", "550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <[address]>"},
 	{"550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <a@b.com>] x", "550 5.1.1 <guest@[10.0.0.1>: Recipient address rejected: <[address]>] x"},
 	// The quoted local part's {0,64} bound: the quote must close within 64
@@ -622,6 +625,19 @@ var redactAddressCases = []struct{ in, want string }{
 	// 256 are not (the closing "]" is out of reach).
 	{"550 <guest@[" + strings.Repeat("1", 255) + "]>", "550 <[address]>"},
 	{"550 <guest@[" + strings.Repeat("1", 256) + "]>", "550 <guest@[" + strings.Repeat("1", 256) + "]>"},
+	// Line breaks and tabs are whitespace for the IP literal too: a multi-line
+	// SMTP reply (CRLF) must not let an unclosed "[" run on to the next line.
+	// The first row is a reply as a relay sends it; it pins the output but no
+	// literal-space mutation changes it (the first space ends the run anyway).
+	// The second and third rows are the ones that kill a literal-space class:
+	// they have no space between "[" and "]", so only a \r, \n or \t can stop
+	// the match before the "]", and the mutation then redacts past it.
+	{"550 5.1.1 <guest@[10.0.0.1\r\n550 second line a@b.com>", "550 5.1.1 <guest@[10.0.0.1\r\n550 second line [address]>"},
+	{"550 5.1.1 <guest@[10.0.0.1\r\nx@b.com]>", "550 5.1.1 <guest@[10.0.0.1\r\n[address]]>"},
+	{"550 5.1.1 <guest@[10.0.0.1\ta@b.com>] x", "550 5.1.1 <guest@[10.0.0.1\t[address]>] x"},
+	// An empty quoted local part is a valid address (RFC 5321/5322), so the
+	// quoted alternative's {0,64} must allow zero inner characters.
+	{`550 <""@example.com> rejected`, "550 <[address]> rejected"},
 	// A queue id shaped like an address is hidden too; nothing is lost
 	// that an operator needs.
 	{"250 2.0.0 Ok: queued as 4ABC123@mail.example.com", "250 2.0.0 Ok: queued as [address]"},
