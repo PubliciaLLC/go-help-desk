@@ -132,4 +132,21 @@ describe('AuditFeed', () => {
     await waitFor(() => expect(screen.getAllByText('Requester (name hidden)')).toHaveLength(1))
     expect(screen.getAllByText('Requester')).toHaveLength(1)
   })
+
+  // #382: the label is text a display name can copy, so the marker is an icon,
+  // and there is no hover-only tooltip a keyboard or touch user cannot reach.
+  it('marks a masked requester with an icon a display name cannot copy', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([
+      entry({ id: 'e1', action: 'created', actor_name: 'Requester', actor_masked: true }),
+      entry({ id: 'e2', action: 'closed', actor_name: 'Requester (name hidden)' }),
+    ])
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getAllByText('Requester (name hidden)')).toHaveLength(2))
+    const [masked, named] = screen.getAllByText('Requester (name hidden)')
+    expect(masked.querySelector('svg')).not.toBeNull()
+    expect(masked.getAttribute('title')).toBeNull()
+    expect(named.querySelector('svg')).toBeNull()
+  })
 })

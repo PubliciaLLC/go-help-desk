@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { listTicketAudit } from '@/api/tickets'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuditDiff } from '@/components/AuditDiff'
+import { EyeOffIcon } from 'lucide-react'
 
 interface AuditFeedProps {
   ticketId: string
@@ -62,7 +63,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
                 <>
                   {' by '}
                   {e.actor_masked
-                    ? <span className="italic" title="Hidden by the Privacy setting">Requester (name hidden)</span>
+                    ? <span className="italic"><EyeOffIcon aria-hidden="true" className="mr-0.5 inline h-3 w-3" />Requester (name hidden)</span>
                     : <span className="font-medium">{e.actor_name}</span>}
                 </>
               )}

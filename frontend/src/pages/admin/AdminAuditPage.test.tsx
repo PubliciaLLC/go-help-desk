@@ -245,4 +245,26 @@ describe('AdminAuditPage', () => {
     expect(within(named).getByText('Requester')).toBeTruthy()
     expect(within(named).queryByText(/name hidden/)).toBeNull()
   })
+
+  // #382: the label is text a display name can copy, so the marker is an icon,
+  // and there is no hover-only tooltip a keyboard or touch user cannot reach.
+  it('marks a masked requester with an icon a display name cannot copy', async () => {
+    mockList({
+      entries: [
+        entry({ id: 'm', action: 'created', actor_name: 'Requester', actor_masked: true }),
+        entry({ id: 'r', action: 'resolved', actor_name: 'Requester (name hidden)' }),
+      ],
+      total: 2,
+      has_more: false,
+    })
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('Created')).toBeTruthy())
+    const masked = within(screen.getByText('Created').closest('tr')!).getByText('Requester (name hidden)')
+    expect(masked.querySelector('svg')).not.toBeNull()
+    expect(masked.getAttribute('title')).toBeNull()
+
+    const named = within(screen.getByText('Resolved').closest('tr')!).getByText('Requester (name hidden)')
+    expect(named.querySelector('svg')).toBeNull()
+  })
 })
