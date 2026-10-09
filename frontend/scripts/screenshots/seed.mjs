@@ -300,6 +300,20 @@ async function main() {
     else console.log('H. webhook deliveries recorded')
   }
 
+  // Reputation lookups run after the upload returns; poll up to 30 s for the quarantined file's result.
+  if (features.reputation) {
+    const deadline = Date.now() + 30_000
+    let looked = false
+    while (Date.now() < deadline) {
+      const atts = await call(admin, 'GET', `/api/v1/tickets/${T.T3.id}/attachments`, null, 200)
+      looked = atts.some((a) => a.filename.endsWith('.zip') && a.reputation)
+      if (looked) break
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    if (!looked) console.warn('H. warning: the quarantined attachment has no reputation result within 30 s')
+    else console.log('H. attachment reputation recorded')
+  }
+
   // Signup: the address only, then the token from the database (no mail server here).
   await call(anon, 'POST', '/api/v1/auth/signup', { email: RILEY }, 202)
   // The password goes in the child's environment (PGPASSWORD), not in argv, where `ps` would show it.
