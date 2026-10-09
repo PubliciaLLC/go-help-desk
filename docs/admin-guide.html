@@ -679,6 +679,7 @@ function verifySignature(secret, body, header) {
   </tbody>
 </table>
 <p>Only the latest result is kept, and it is kept as a class, never as the error text or the response body, because a webhook URL can carry a secret. There is no delivery history. A hook that has never been delivered to shows <em>No deliveries yet</em>.</p>
+<img src="../screenshots/18-admin-webhooks.png" alt="Admin Webhooks page: the New webhook form above a list of three hooks. Two show Failing · 405 as their last delivery, and the disabled third shows No deliveries yet" width="2880" height="2030" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
 <h2 id="admin-audit">Audit log</h2>
@@ -875,8 +876,7 @@ function verifySignature(secret, body, header) {
 
 <p>A hash is not a file: nothing here ever uploads one, and only files the scanner identified are looked up. The full account of what leaves the server is on the <a href="attachment-security.html#attach-reputation">Attachment Security</a> page.</p>
 
-<!-- SCREENSHOT NEEDED: Admin → Settings → Attachments, showing the Uploads section (allowed types textarea and the content-contradicts-its-name select), Malware scanning, and the top of the Reputation lookup section with the four provider rows and their terms panels. -->
-<img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab" loading="lazy" style="width:100%;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/14-admin-settings-attachments.png" alt="The reputation lookup section of Admin Settings, Attachments: VirusTotal switched on with its key stored, MetaDefender and PolySwarm off, CIRCL on, each service with its terms panel" width="1408" height="5084" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <div class="callout callout-note">
   <p><strong>Upgrading from an earlier reputation setting?</strong> Nothing is migrated. The old <code>attachment_vt_lookup</code> / <code>attachment_vt_api_key</code> pair and the <code>attachment_reputation_provider</code> / <code>attachment_reputation_api_key</code> pair that replaced them are read by nothing, and are due to be deleted by a migration in the release after 1.3.0. Re-enter your key against the service you want — copying somebody’s secret from one setting to another on their behalf is not something to do quietly.</p>
