@@ -138,7 +138,7 @@ func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error
 // Deliberately no message field: see migration 000034.
 type WebhookDelivery struct {
 	At     time.Time `json:"at"`     // when the attempt started
-	Status int       `json:"status"` // HTTP status; 0 when no response came back
+	Status int       `json:"status"` // HTTP status; 0 when no response came back, or one outside 100..999 did (Error tells which)
 	Error  string    `json:"error"`  // "" on success, else one of notify.DeliveryErrors
 }
 

@@ -10,25 +10,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Omitted and an explicit null both mean "enabled", which is what create did
+// before the field existed. Null is pinned on its own: a decoder that tells a
+// present-but-null field apart from a missing one would otherwise be free to
+// read it as false.
 func TestWebhookCreate_EnabledDefaultsToTrue(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"omitted", map[string]any{"url": "https://example.com/hook", "events": []string{"*"}}},
+		{"null", map[string]any{"url": "https://example.com/hook", "events": []string{"*"}, "enabled": nil}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
 
-	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks",
-		map[string]any{"url": "https://example.com/hook", "events": []string{"*"}})
-	defer res.Body.Close()
-	require.Equal(t, http.StatusCreated, res.StatusCode)
+			res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks", tc.body)
+			defer res.Body.Close()
+			require.Equal(t, http.StatusCreated, res.StatusCode)
 
-	var created struct {
-		ID      string `json:"id"`
-		Enabled bool   `json:"enabled"`
+			var created struct {
+				ID      string `json:"id"`
+				Enabled bool   `json:"enabled"`
+			}
+			require.NoError(t, json.NewDecoder(res.Body).Decode(&created))
+			require.True(t, created.Enabled, "enabled must default to true in response")
+
+			stored, err := h.authStore.GetWebhook(context.Background(), uuid.MustParse(created.ID))
+			require.NoError(t, err)
+			require.True(t, stored.Enabled, "enabled must default to true in storage")
+		})
 	}
-	require.NoError(t, json.NewDecoder(res.Body).Decode(&created))
-	require.True(t, created.Enabled, "enabled must default to true in response")
-
-	stored, err := h.authStore.GetWebhook(context.Background(), uuid.MustParse(created.ID))
-	require.NoError(t, err)
-	require.True(t, stored.Enabled, "enabled must default to true in storage")
 }
 
 func TestWebhookCreate_EnabledFalseIsStoredDisabled(t *testing.T) {

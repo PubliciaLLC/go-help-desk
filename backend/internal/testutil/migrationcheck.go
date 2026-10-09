@@ -17,8 +17,9 @@ import (
 // migrateAndVerify checks that every version the database has recorded was
 // applied from the same file this tree carries, and only then migrates.
 // Under its lock it compares the recorded checksums first and stops on a
-// mismatch without touching the schema, then runs the migrations, then
-// records the versions it has not seen.
+// mismatch before migrating anything (by then it has created only its own
+// checksum table), then runs the migrations, then records the versions it
+// has not seen.
 //
 // golang-migrate records only a version number. Two branches that each add a
 // migration 29 both see "version 29, nothing to do" on a database the other
