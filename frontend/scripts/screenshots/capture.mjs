@@ -26,7 +26,6 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { chromium } from '@playwright/test'
 
 const DESK = { width: 1440, height: 900 }
 const MOBILE = { width: 390, height: 844 }
@@ -40,31 +39,7 @@ const OUT = process.env.SHOTS_OUT || path.join(process.env.TMPDIR || '/tmp', 'gh
 const PNG_DIR = path.join(OUT, 'png')
 const SEED_FILE = path.join(OUT, 'seed.json')
 
-// ── CLI ───────────────────────────────────────────────────────────────────────
-
 const args = process.argv.slice(2)
-function argValue(name) {
-  const i = args.indexOf(name)
-  return i >= 0 ? args[i + 1] : undefined
-}
-const phase = argValue('--phase')
-if (phase !== 'pre-setup' && phase !== 'main') {
-  console.error('usage: capture.mjs --phase pre-setup|main [--only 05,12]')
-  process.exit(2)
-}
-const onlyArg = argValue('--only')
-const only = onlyArg ? new Set(onlyArg.split(',').map((s) => s.trim()).filter(Boolean)) : null
-
-let seed = null
-if (phase === 'main') {
-  if (!fs.existsSync(SEED_FILE)) {
-    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first`)
-    process.exit(2)
-  }
-  seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'))
-}
-const BASE = process.env.SHOTS_BASE_URL || seed?.baseURL || 'http://localhost:18080'
-const PASSWORD = seed?.password || process.env.SHOTS_PASSWORD || PASSWORD_FALLBACK
 
 // ── Shot table ────────────────────────────────────────────────────────────────
 //
@@ -364,13 +339,19 @@ function shotPrefix(file) {
   return file.slice(0, file.indexOf('-'))
 }
 
+// The id a shot is selected by with --only: its number, plus "m" for the
+// mobile variants that carry a "-mobile" suffix (15m, 21m). Also the --list output.
+function shotId(shot) {
+  const stem = shot.file.replace(/\.png$/, '')
+  return stem.endsWith('-mobile') ? `${shotPrefix(shot.file)}m` : shotPrefix(shot.file)
+}
+
+const SHOT_IDS = [...new Set(SHOTS.map(shotId))]
+const KNOWN_ONLY = new Set([...SHOT_IDS, ...SHOTS.flatMap((x) => [x.file, x.file.replace(/\.png$/, '')])])
+
 function selected(shot) {
   if (!only) return true
-  const base = shotPrefix(shot.file)
-  // "15m" selects the mobile variant of 15; "15" selects only the desktop one.
-  const isMobileVariant = shot.file.replace(/\.png$/, '').endsWith('-mobile')
-  const token = isMobileVariant ? `${base}m` : base
-  return only.has(token) || only.has(shot.file) || only.has(shot.file.replace(/\.png$/, ''))
+  return only.has(shotId(shot)) || only.has(shot.file) || only.has(shot.file.replace(/\.png$/, ''))
 }
 
 // Desktop 2880x1800 and mobile 780x1688 unless the shot is tall or an element crop.
@@ -530,6 +511,45 @@ async function captureShot(browser, shot, s) {
   }
 }
 
+// ── --list: every id --only accepts. No browser, no seed, no env needed. ──────
+
+if (args.includes('--list')) {
+  for (const id of SHOT_IDS) console.log(id)
+  process.exit(0)
+}
+
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
+function argValue(name) {
+  const i = args.indexOf(name)
+  return i >= 0 ? args[i + 1] : undefined
+}
+const phase = argValue('--phase')
+if (phase !== 'pre-setup' && phase !== 'main') {
+  console.error('usage: capture.mjs --phase pre-setup|main [--only 05,12]')
+  process.exit(2)
+}
+const onlyArg = argValue('--only')
+const only = onlyArg ? new Set(onlyArg.split(',').map((s) => s.trim()).filter(Boolean)) : null
+if (only) {
+  const unknown = [...only].filter((id) => !KNOWN_ONLY.has(id))
+  if (unknown.length) {
+    console.error(`capture: unknown --only id(s): ${unknown.join(', ')} (run --list for the valid ids)`)
+    process.exit(2)
+  }
+}
+
+let seed = null
+if (phase === 'main') {
+  if (!fs.existsSync(SEED_FILE)) {
+    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first`)
+    process.exit(2)
+  }
+  seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'))
+}
+const BASE = process.env.SHOTS_BASE_URL || seed?.baseURL || 'http://localhost:18080'
+const PASSWORD = seed?.password || process.env.SHOTS_PASSWORD || PASSWORD_FALLBACK
+
 // ── Runner ────────────────────────────────────────────────────────────────────
 
 fs.mkdirSync(PNG_DIR, { recursive: true })
@@ -537,6 +557,7 @@ fs.mkdirSync(PNG_DIR, { recursive: true })
 const chromiumPath =
   process.env.SHOTS_CHROMIUM || (fs.existsSync(DEFAULT_CHROMIUM) ? DEFAULT_CHROMIUM : undefined)
 
+const { chromium } = await import('@playwright/test')
 const browser = await chromium.launch({
   executablePath: chromiumPath,
   env: { ...process.env },
