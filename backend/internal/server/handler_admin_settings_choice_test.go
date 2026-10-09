@@ -214,33 +214,43 @@ func TestSettings_DamagedChoiceSettingDoesNotBlockOtherSaves(t *testing.T) {
 	}
 }
 
-// D5: With six choice keys in a map, the order of PATCH validation is fixed
-// by sorting keys, so a request with two bad values always names the same one.
-func TestSettings_ChoiceSortingMakesErrorsDeterministic(t *testing.T) {
+// A request with two bad values names whichever the handler checks first.
+// That precedence is what clients see, so it is recorded here from the code
+// before the shared table existed, and the table must not reorder it: the six
+// choice checks sit in the handler at their original positions, with the
+// non-choice checks between them.
+func TestSettings_PatchRefusalPrecedenceIsUnchanged(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	sess := adminSession(t, h)
 
-	// Two bad values on different keys.
-	const trials = 50
-	var seenCode string
-	for i := 0; i < trials; i++ {
-		res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings",
-			map[string]any{
-				admin.KeyAttachmentScanPolicy: "bogus",
-				admin.KeyClosedReopenPolicy:   "invalid",
-			})
-		require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
-		var errResp map[string]map[string]any
-		require.NoError(t, json.Unmarshal(body, &errResp))
-		code := errResp["error"]["code"].(string)
-
-		if seenCode == "" {
-			seenCode = code
-		} else {
-			require.Equal(t, seenCode, code, "iteration %d: error code should be consistent", i)
-		}
+	bad := "bogus"
+	cases := []struct {
+		name string
+		body map[string]any
+		code string
+	}{
+		{"scan + closed", map[string]any{admin.KeyAttachmentScanPolicy: bad, admin.KeyClosedReopenPolicy: bad}, "invalid_closed_reopen_policy"},
+		{"infected + closed", map[string]any{admin.KeyAttachmentInfectedHandling: bad, admin.KeyClosedReopenPolicy: bad}, "invalid_closed_reopen_policy"},
+		{"refresh + mask", map[string]any{admin.KeyAttachmentReputationRefresh: bad, admin.KeyAuditMaskRequesterNames: bad}, "invalid_audit_mask_requester_names"},
+		{"mask + closed", map[string]any{admin.KeyAuditMaskRequesterNames: bad, admin.KeyClosedReopenPolicy: bad}, "invalid_closed_reopen_policy"},
+		{"scan + infected", map[string]any{admin.KeyAttachmentScanPolicy: bad, admin.KeyAttachmentInfectedHandling: bad}, "invalid_scan_policy"},
+		{"mismatch + infected", map[string]any{admin.KeyAttachmentMismatchHandling: bad, admin.KeyAttachmentInfectedHandling: bad}, "invalid_infected_handling"},
+		{"refresh + mismatch", map[string]any{admin.KeyAttachmentReputationRefresh: bad, admin.KeyAttachmentMismatchHandling: bad}, "invalid_mismatch_handling"},
+		{"infected + bad scanner address", map[string]any{admin.KeyAttachmentInfectedHandling: bad, admin.KeyAttachmentScanAddress: "not an address"}, "invalid_scanner_address"},
+		{"refresh + bad reputation toggle", map[string]any{admin.KeyAttachmentReputationRefresh: bad, admin.KeyAttachmentReputationVirusTotalEnabled: "x"}, "invalid_reputation_config"},
+		{"scan + bad change-history toggle", map[string]any{admin.KeyAttachmentScanPolicy: bad, admin.KeyStaffCanViewTicketChangeHistory: "x"}, "bad_request"},
 	}
-	// Should be the alphabetically first key that's bad among those tested: attachment_scan_policy (before closed_reopen_policy).
-	require.Equal(t, "invalid_scan_policy", seenCode)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Repeated, because the old map-order loop was random.
+			for i := 0; i < 20; i++ {
+				res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", c.body)
+				require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+				var got struct{ Error struct{ Code string } }
+				require.NoError(t, json.Unmarshal(body, &got))
+				require.Equal(t, c.code, got.Error.Code)
+			}
+		})
+	}
 }

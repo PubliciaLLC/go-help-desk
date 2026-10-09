@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -93,30 +92,60 @@ type choiceSetting struct {
 // unrecognised value; TestSettings_DumpReportsEveryChoiceSettingInForce holds
 // them to it.
 var choiceSettings = map[string]choiceSetting{
-	// Closed reopen: unmarshalSetting rejects null.
+	// Anything else reads as off, so Closed stays terminal. Null and wrong types are refused by name (#349).
 	admin.KeyClosedReopenPolicy: {ticket.ValidClosedReopenPolicy, ticket.ReopenPolicyOff,
 		"invalid_closed_reopen_policy", "closed reopen policy must be one of: off, admin, staff_admin",
 		true, ""},
-	// Requester-name masking: unmarshalSetting rejects null.
+	// Anything else reads as everywhere, the most masking (#362). Null and wrong types are refused by name.
 	admin.KeyAuditMaskRequesterNames: {admin.ValidMaskRequesterNames, admin.MaskRequesterNamesEverywhere,
 		"invalid_audit_mask_requester_names", "audit_mask_requester_names must be one of: admin_log, ticket_log, everywhere",
 		true, ""},
-	// Scan policy: no fallback (depends on address). Bare unmarshal, null becomes "".
+	// No fallback, on purpose: an unrecognised value follows the scanner address (required with one, off without), so reporting today's answer would let a save pin it. Decoded bare for compatibility: null gets the invalid_scan_policy refusal, not a null error.
 	admin.KeyAttachmentScanPolicy: {antivirus.ValidPolicy, "",
 		"invalid_scan_policy", "scan policy must be one of: off, required, permissive",
 		false, "scan policy must be a string"},
-	// Infected handling: bare unmarshal, null becomes "".
+	// Anything else reads as refuse. Decoded bare for compatibility: null gets the invalid_* refusal, not a null error.
 	admin.KeyAttachmentInfectedHandling: {admin.ValidInfectedHandling, admin.InfectedHandlingRefuse,
 		"invalid_infected_handling", "infected attachment handling must be one of: refuse, quarantine",
 		false, "infected attachment handling must be a string"},
-	// Mismatch handling: bare unmarshal, null becomes "".
+	// Anything else reads as refuse. "quarantine" is refused here, not read as wrap (see the PATCH). Decoded bare for compatibility, as above.
 	admin.KeyAttachmentMismatchHandling: {admin.ValidMismatchHandling, admin.MismatchHandlingRefuse,
 		"invalid_mismatch_handling", "mismatched attachment handling must be one of: refuse, wrap",
 		false, "mismatched attachment handling must be a string"},
-	// Reputation refresh: bare unmarshal, null becomes "".
+	// Anything else reads as biweekly, never "never". Decoded bare for compatibility, as above.
 	admin.KeyAttachmentReputationRefresh: {admin.ValidReputationRefresh, admin.ReputationRefreshBiweekly,
 		"invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never",
 		false, "reputation refresh must be a string"},
+}
+
+// refuseChoice writes the 400 for a choice-list key in body that the setting
+// refuses, and reports whether it did. It is called at the position each
+// check always had in handleUpdateSettings, not in a loop over the table: a
+// request with two bad values names whichever is checked first, and that
+// order is part of what clients see.
+func refuseChoice(w http.ResponseWriter, body map[string]json.RawMessage, key string) bool {
+	raw, ok := body[key]
+	if !ok {
+		return false
+	}
+	c := choiceSettings[key]
+	var v string
+	if c.strict {
+		if err := unmarshalSetting(raw, key, &v); err != nil {
+			handleError(w, err)
+			return true
+		}
+	} else if err := json.Unmarshal(raw, &v); err != nil {
+		// Bare Unmarshal: null is no error here, it decodes to "" and gets
+		// the setting's own refusal below.
+		Error(w, http.StatusBadRequest, "bad_request", c.wrongType)
+		return true
+	}
+	if !c.valid(v) {
+		Error(w, http.StatusBadRequest, c.code, c.message)
+		return true
+	}
+	return false
 }
 
 // inForce is what the settings dump reports for this setting's stored bytes:
@@ -295,38 +324,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Every choice-list setting: one of a fixed set of strings, null and
-	// non-strings refused too. See choiceSettings. Iterate in sorted key order
-	// so error reporting is deterministic.
-	keys := make([]string, 0, len(choiceSettings))
-	for k := range choiceSettings {
-		keys = append(keys, k)
+	// Who may force-reopen a Closed ticket (#349). The reader falls back to
+	// "off", so a typo would leave an operator who just opened this up
+	// believing Closed tickets can be reopened — safe, and baffling. Refused by
+	// name instead, and null with it.
+	if refuseChoice(w, body, admin.KeyClosedReopenPolicy) {
+		return
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		c := choiceSettings[k]
-		raw, ok := body[k]
-		if !ok {
-			continue
-		}
-		var v string
-		if c.strict {
-			// unmarshalSetting: null is an error.
-			if err := unmarshalSetting(raw, k, &v); err != nil {
-				handleError(w, err)
-				return
-			}
-		} else {
-			// Bare unmarshal: null becomes "". Wrong-type error.
-			if err := json.Unmarshal(raw, &v); err != nil {
-				Error(w, http.StatusBadRequest, "bad_request", c.wrongType)
-				return
-			}
-		}
-		if !c.valid(v) {
-			Error(w, http.StatusBadRequest, c.code, c.message)
-			return
-		}
+
+	// Requester-name masking (#362): one of three values. The reader falls
+	// back to "everywhere", so a typo would leave an operator who meant to
+	// narrow it believing they had; refused by name instead, and null too.
+	if refuseChoice(w, body, admin.KeyAuditMaskRequesterNames) {
+		return
 	}
 
 	// The diff toggle is a bool and nothing else, null included.
@@ -336,6 +346,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
+	}
+
+	// Same reasoning as the prefix above: a value that is accepted and then
+	// ignored is worse than a refusal, and here the ignored value is a
+	// security control. An unrecognised policy falls back to "required", so a
+	// typo would silently refuse every upload rather than disable scanning —
+	// safe, but baffling. Refusing it says what is wrong instead.
+	if refuseChoice(w, body, admin.KeyAttachmentScanPolicy) {
+		return
 	}
 
 	// The scanner address is a network target an operator supplies, so it goes
@@ -358,6 +377,28 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// And what happens to an upload the scanner calls infected. The reader
+	// falls back to "refuse", so a typo here would quietly refuse malware an
+	// infosec team had deliberately asked to keep — safe, and baffling for
+	// exactly the operator who went looking for this setting.
+	if refuseChoice(w, body, admin.KeyAttachmentInfectedHandling) {
+		return
+	}
+
+	// And what happens to a file whose content contradicts its name. Same
+	// reasoning as the setting above, which this deliberately mirrors: the
+	// reader falls back to "refuse", so a typo would quietly go on refusing
+	// the mislabelled files a triage team had just asked to keep — safe, and
+	// baffling for exactly the operator who went looking for this setting.
+	//
+	// "quarantine" is the value most likely to be typed here by mistake,
+	// because it is the other setting's word, and it is refused rather than
+	// charitably read as "wrap": guessing at intent is how an operator ends
+	// up with a policy nobody wrote.
+	if refuseChoice(w, body, admin.KeyAttachmentMismatchHandling) {
+		return
+	}
+
 	// Enabling a provider requires its key, and the whole write is refused
 	// when one is missing.
 	//
@@ -368,6 +409,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// like a provider that had nothing to say.
 	if err := validateReputationConfig(r.Context(), s.adminSvc, body); err != nil {
 		Error(w, http.StatusBadRequest, "invalid_reputation_config", err.Error())
+		return
+	}
+
+	// And how often a stored verdict is re-checked. The reader falls back to
+	// biweekly, so a typo would leave an operator who chose "never" to save
+	// quota still spending it, or one who chose "weekly" reading a verdict a
+	// fortnight old — and in both cases the page looks exactly as it should.
+	if refuseChoice(w, body, admin.KeyAttachmentReputationRefresh) {
 		return
 	}
 

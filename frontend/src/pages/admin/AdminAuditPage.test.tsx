@@ -262,6 +262,9 @@ describe('AdminAuditPage', () => {
     await waitFor(() => expect(screen.getByText('Created')).toBeTruthy())
     const masked = within(screen.getByText('Created').closest('tr')!).getByText('Requester (name hidden)')
     expect(masked.querySelector('svg')).not.toBeNull()
+    // Decorative: the words already say it, and a screen reader should not
+    // hear the icon announce itself as well.
+    expect(masked.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
     expect(masked.getAttribute('title')).toBeNull()
 
     const named = within(screen.getByText('Resolved').closest('tr')!).getByText('Requester (name hidden)')

@@ -146,6 +146,9 @@ describe('AuditFeed', () => {
     await waitFor(() => expect(screen.getAllByText('Requester (name hidden)')).toHaveLength(2))
     const [masked, named] = screen.getAllByText('Requester (name hidden)')
     expect(masked.querySelector('svg')).not.toBeNull()
+    // Decorative: the words already say it, and a screen reader should not
+    // hear the icon announce itself as well.
+    expect(masked.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
     expect(masked.getAttribute('title')).toBeNull()
     expect(named.querySelector('svg')).toBeNull()
   })
