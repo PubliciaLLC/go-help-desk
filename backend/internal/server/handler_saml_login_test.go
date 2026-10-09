@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -81,6 +82,27 @@ func TestSAMLLogin_IgnoresReturnToParameters(t *testing.T) {
 		require.Equal(t, "/api/v1/auth/saml/complete", tr.URI, q)
 		require.NotContains(t, res.Header.Get("Location"), "evil.example", q)
 	}
+}
+
+// The stored post-ACS URI must not be derived from the Host or X-Forwarded-*
+// headers: an attacker-chosen host would receive the browser after sign-in,
+// and X-Forwarded-Proto=http would drop the Secure session cookie.
+func TestSAMLLogin_IgnoresHostAndForwardedHeaders(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/login", nil)
+	req.Host = "evil.example"
+	req.Header.Set("X-Forwarded-Host", "evil.example")
+	req.Header.Set("X-Forwarded-Proto", "http")
+	rr := httptest.NewRecorder()
+	sh.srv.ServeHTTP(rr, req)
+	res := rr.Result()
+	res.Body.Close()
+
+	require.Equal(t, http.StatusFound, res.StatusCode)
+	tr, _ := sh.trackedRequest(t, res)
+	require.Equal(t, "/api/v1/auth/saml/complete", tr.URI)
 }
 
 // A "token" cookie already in the browser must not answer for the IdP. Going
