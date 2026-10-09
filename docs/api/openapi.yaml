@@ -4181,8 +4181,10 @@ paths:
         - Each reputation provider's enabled setting must be a boolean or null;
           null is stored and read as false. Enabling
           VirusTotal, MetaDefender or PolySwarm needs a key, either stored already
-          or sent in the same request (invalid_reputation_config). CIRCL needs no
-          key.
+          or sent in the same request (invalid_reputation_config). Only a
+          provider the request names (its enabled setting or its key) is checked;
+          the stored state of the others is not this request's to judge. CIRCL
+          needs no key.
         - saml_metadata_url, saml_cert_pem, saml_key_pem, oidc_issuer_url,
           oidc_client_id and oidc_client_secret must be strings and oidc_enabled a
           boolean; null is refused (bad_request). saml_enabled and
