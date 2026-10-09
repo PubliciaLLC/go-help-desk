@@ -41,7 +41,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -402,11 +401,11 @@ func run() error {
 	// The outbox worker. Only the email channel carries guest links, so only
 	// it gets the send-time step that creates them. Rows still queued at
 	// shutdown stay queued and are sent after the next start.
-	outboxSenders := map[string]notification.Dispatcher{
-		"email":        notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink),
-		"webhook":      webhookDisp,
-		"verification": notify.NewVerificationDispatcher(registrationSvc.SendVerification),
-	}
+	outboxSenders := outboxSenderMap(
+		notify.NewGuestLinkDispatcher(emailDisp, srv.PrepareGuestLink),
+		webhookDisp,
+		notify.NewVerificationDispatcher(registrationSvc.SendVerification),
+	)
 	if err := checkOutboxWiring(dispatcher.Channels(), outboxSenders); err != nil {
 		return fmt.Errorf("wiring the notification outbox: %w", err)
 	}
