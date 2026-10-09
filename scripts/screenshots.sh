@@ -26,8 +26,9 @@
 #     backend/internal/ui/dist/index.html, is restored on exit. The script
 #     refuses to start while that file has uncommitted changes.
 #   The PostgreSQL database named by SHOTS_DB, dropped on exit unless --keep.
-#   A work directory under TMPDIR, with the server binary and the attachments
-#   (including the quarantined test archive). Removed on exit.
+#   A work directory under TMPDIR, named g.* and at most 61 characters long,
+#   holding the server binary, the attachments (including the quarantined test
+#   archive) and Chromium's profile. Removed on exit, even after a signal.
 #
 # Exposure: for the length of the run the server listens on every interface
 # (HTTP_PORT binds ":port"). Each run uses a random SHOTS_PASSWORD unless one is
@@ -63,12 +64,14 @@
 #                        line, exactly the files that run wrote (empty if none)
 
 set -euo pipefail
-umask 077
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fe="$root/frontend"
 shots="$fe/scripts/screenshots"
 ui_dist="$root/backend/internal/ui/dist"
+# The caller's TMPDIR. The run's own temporary files go under a work directory
+# made from it, and TMPDIR is pointed there for the children (see main).
+user_tmp="${TMPDIR:-/tmp}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -228,13 +231,6 @@ preflight() {
   for f in fake-clamd.mjs seed.mjs capture.mjs; do
     [ -f "$shots/$f" ] || die "missing $shots/$f"
   done
-  # Playwright keeps Chromium's profile under TMPDIR, and Chromium's socket path
-  # in it must fit in a Unix socket address. Measured here: 61 characters
-  # launches, 62 dies with "Target page, context or browser has been closed".
-  local tmp="${TMPDIR:-/tmp}"
-  if [ "${#tmp}" -gt 61 ]; then
-    die "TMPDIR is ${#tmp} characters; Chromium cannot open its profile socket with more than 61. Point TMPDIR at a shorter directory."
-  fi
   if [ -z "$chromium" ]; then
     printf 'note: no SHOTS_CHROMIUM and no pinned build; capture uses Playwright'\''s own browser\n'
   fi
@@ -529,7 +525,8 @@ export_for_node() {
 }
 
 node_capture() { ( cd "$fe" && node "$shots/capture.mjs" "$@" ); }
-node_seed() { ( cd "$fe" && node "$shots/seed.mjs" ); }
+# seed.json holds the seeded passwords, so the seed writes it under umask 077.
+node_seed() { ( umask 077; cd "$fe" && node "$shots/seed.mjs" ); }
 
 # capture PHASE: each phase writes its own manifest; the file is moved aside so
 # the next phase cannot overwrite it.
@@ -638,7 +635,15 @@ main() {
   preflight
   # Checks that can fail come before the output directory is created, so a
   # rejected run leaves nothing behind but its work directory, which is removed.
-  work="$(mktemp -d "${TMPDIR:-/tmp}/ghd-work.XXXXXX")"
+  work="$(mktemp -d "$user_tmp/g.XXXXXX")"
+  # Chromium's profile is created under TMPDIR, so the children get the work
+  # directory as TMPDIR: exit removes the profile even after a signal. Chromium's
+  # socket path must fit in a Unix socket address. Measured: a TMPDIR of 61
+  # characters launches, 62 dies with "Target page, context or browser has been closed".
+  if [ "${#work}" -gt 61 ]; then
+    die "the work directory path under TMPDIR is ${#work} characters; Chromium cannot open its profile socket with more than 61. Point TMPDIR at a shorter directory."
+  fi
+  export TMPDIR="$work"
   ensure_deps
   if [ -n "$only" ]; then validate_only; fi
 
@@ -649,9 +654,10 @@ main() {
 
   if [ -n "$out_given" ]; then
     out="$out_given"
-    mkdir -p "$out"
+    # Private if this creates it. Existing directories keep their mode.
+    ( umask 077; mkdir -p "$out" )
   else
-    out="$(mktemp -d "${TMPDIR:-/tmp}/ghd-shots.XXXXXX")"
+    out="$(mktemp -d "$user_tmp/ghd-shots.XXXXXX")"
   fi
   printf 'output directory: %s\n' "$out"
   mkdir -p "$out/png"
