@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Attachment Security — Go Help Desk Docs</title>
-  <meta name="description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/attachment-security.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/attachment-security.html" />
   <meta property="og:title" content="Attachment Security — Go Help Desk Docs" />
-  <meta property="og:description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta property="og:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Attachment Security — Go Help Desk Docs" />
-  <meta name="twitter:description" content="What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="twitter:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Attachment Security",
-    "description": "What Go Help Desk 1.3.0-beta does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do.",
+    "description": "What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do.",
     "url": "https://gohelpdesk.org/docs/attachment-security.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -46,7 +46,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -59,7 +59,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -96,6 +99,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -111,14 +115,14 @@
 
 <main class="docs-content">
 
-<h1 class="docs-page-title" id="attach-overview">Attachment Security <span class="badge-beta">Beta</span></h1>
+<h1 class="docs-page-title" id="attach-overview">Attachment Security</h1>
 <p class="docs-page-sub">What the server does with a file somebody uploads to a ticket — and, just as important, what it does not do.</p>
 
 <div class="callout callout-warn">
-  <p><strong>Everything on this page is new in v1.3.0-beta and is not in a released version.</strong> The current stable release is <a href="upgrading-1.2.0.html">v1.2.0</a>. There is no 1.3.0 tag and no 1.3.0 release. Names, defaults and responses described here can still change before 1.3.0 ships. Run this on a deployment you are willing to treat as a beta.</p>
+  <p><strong>New in 1.3.0.</strong> Everything on this page describes behaviour new in 1.3.0.</p>
 </div>
 
-<p>Up to and including 1.2.0, an attachment was checked in one way: a hard-coded signature test against the file's extension, which had no entry for <code>.txt</code> or <code>.log</code> and ended by accepting anything it had no entry for. 1.3.0-beta replaces that with three separate things, which are worth keeping apart in your head because they answer different questions:</p>
+<p>Up to and including 1.2.0, an attachment was checked in one way: a hard-coded signature test against the file's extension, which had no entry for <code>.txt</code> or <code>.log</code> and ended by accepting anything it had no entry for. 1.3.0 replaces that with three separate things, which are worth keeping apart in your head because they answer different questions:</p>
 
 <ul>
   <li><strong>Detection</strong> — what the bytes actually are, recorded on every file, never a reason to refuse one.</li>
@@ -290,7 +294,7 @@
 <table class="param-table">
   <thead><tr><th>Header</th><th></th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td>Content-Type</td><td>always</td><td><code>application/octet-stream</code> on every attachment, whatever the file claims to be. No browser renders that. Before 1.3.0-beta the type came from the filename, so a PDF went out as <code>application/pdf</code>.</td></tr>
+    <tr><td>Content-Type</td><td>always</td><td><code>application/octet-stream</code> on every attachment, whatever the file claims to be. No browser renders that. Before 1.3.0 the type came from the filename, so a PDF went out as <code>application/pdf</code>.</td></tr>
     <tr><td>Content-Disposition</td><td>always</td><td><code>attachment</code>, carrying the original filename in both RFC 6266 forms, so an accented name survives.</td></tr>
     <tr><td>Sec-Fetch-Dest</td><td>checked</td><td>The download route <strong>refuses</strong> a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render the response — <code>403 not_downloadable</code>. Only <code>document</code>, <code>empty</code> and an absent header are allowed. The response also carries <code>Vary: Sec-Fetch-Dest</code>, so a browser cache cannot answer a rendering request out of an allowed one.</td></tr>
   </tbody>
@@ -303,11 +307,11 @@
 </ul>
 
 <div class="callout callout-note">
-  <p><strong>The site logo is the one exception</strong>, and the only upload this application renders inline. 1.3.0-beta removed SVG from that uploader: PNG, JPEG and GIF are accepted and all re-encoded as PNG, and the logo route keeps its own sandboxing policy on top. An SVG left on disk by an older release is no longer served. See <a href="admin-guide.html#admin-branding">Admin Guide: Branding</a>.</p>
+  <p><strong>The site logo is the one exception</strong>, and the only upload this application renders inline. 1.3.0 removed SVG from that uploader: PNG, JPEG and GIF are accepted and all re-encoded as PNG, and the logo route keeps its own sandboxing policy on top. An SVG left on disk by an older release is no longer served. See <a href="admin-guide.html#admin-branding">Admin Guide: Branding</a>.</p>
 </div>
 
 
-<h2 id="attach-reputation">Reputation lookup <span class="badge-beta">Beta</span></h2>
+<h2 id="attach-reputation">Reputation lookup</h2>
 
 <p>A quarantined sample's SHA-256 can be looked up at third-party reputation services. <strong>All four are off by default</strong>, and all four off is a supported configuration rather than a broken one: it means attachments are judged by this instance's own scanner alone.</p>
 
