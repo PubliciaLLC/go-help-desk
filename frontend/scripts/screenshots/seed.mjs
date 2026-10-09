@@ -1,7 +1,7 @@
 // Usage: SHOTS_BASE_URL=http://localhost:18080 DATABASE_URL=postgres://... [SHOTS_PASSWORD SHOTS_OUT SHOTS_REPUTATION=0] node frontend/scripts/screenshots/seed.mjs
 import { request } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -300,9 +300,34 @@ async function main() {
     else console.log('H. webhook deliveries recorded')
   }
 
+  // Reputation lookups run after the upload returns; poll up to 30 s for the quarantined file's result.
+  if (features.reputation) {
+    const deadline = Date.now() + 30_000
+    let looked = false
+    while (Date.now() < deadline) {
+      const atts = await call(admin, 'GET', `/api/v1/tickets/${T.T3.id}/attachments`, null, 200)
+      looked = atts.some((a) => a.filename.endsWith('.zip') && a.reputation)
+      if (looked) break
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    if (!looked) console.warn('H. warning: the quarantined attachment has no reputation result within 30 s')
+    else console.log('H. attachment reputation recorded')
+  }
+
   // Signup: the address only, then the token from the database (no mail server here).
   await call(anon, 'POST', '/api/v1/auth/signup', { email: RILEY }, 202)
-  const token = execFileSync('psql', [DATABASE_URL, '-Atc', `select token from pending_registrations where lower(email)='${RILEY}'`], { encoding: 'utf8' }).trim()
+  // The password goes in the child's environment (PGPASSWORD), not in argv, where `ps` would show it.
+  const db = new URL(DATABASE_URL)
+  const pgenv = {
+    ...process.env,
+    PGHOST: db.hostname,
+    PGPORT: db.port || '5432',
+    PGUSER: decodeURIComponent(db.username),
+    PGPASSWORD: decodeURIComponent(db.password),
+    PGDATABASE: decodeURIComponent(db.pathname.slice(1)),
+    PGSSLMODE: db.searchParams.get('sslmode') || 'prefer',
+  }
+  const token = execFileSync('psql', ['-Atc', `select token from pending_registrations where lower(email)='${RILEY}'`], { encoding: 'utf8', env: pgenv }).trim()
   if (!token) throw new Error('no pending registration found for the signup address')
   const verify = await call(anon, 'GET', `/api/v1/auth/verify-email?token=${encodeURIComponent(token)}`, null, 200)
   if (verify.email !== RILEY) throw new Error('verify-email returned an unexpected address')
@@ -316,8 +341,11 @@ async function main() {
     signupToken: token,
     features,
   }
-  writeFileSync(join(OUT, 'seed.json'), JSON.stringify(seed, null, 2) + '\n')
-  console.log(`wrote ${join(OUT, 'seed.json')}`)
+  // Owner-only: the file holds the throwaway admin password and the signup token.
+  const seedPath = join(OUT, 'seed.json')
+  writeFileSync(seedPath, JSON.stringify(seed, null, 2) + '\n', { mode: 0o600 })
+  chmodSync(seedPath, 0o600)
+  console.log(`wrote ${seedPath} (mode 0600)`)
   for (const c of contexts) await c.dispose()
 }
 
