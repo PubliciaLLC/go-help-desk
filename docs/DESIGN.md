@@ -947,7 +947,11 @@ mailer then could not send to: the guest was never sent their link. One with
 a leading space, `" a"@example.com`, was worse and was mailed to
 `a@example.com`. Quotes that were never needed are dropped and the address
 is kept: `"john"@example.com` is stored as `john@example.com`. Addresses
-already stored are not changed.
+already stored are not changed. First-time single sign-on (OIDC or SAML) with
+such an address is refused with a login-page error (`invalid_email`). An
+existing single sign-on user keeps their stored address when the identity
+provider sends one that needs quotes; their other details still sync and
+sign-in succeeds.
 
 **Closed means read-only, not revoked** (#349). Closing, a status change to
 Closed and the auto-close sweep **stop rotating** the guest's link; they do not

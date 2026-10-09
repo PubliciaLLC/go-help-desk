@@ -620,7 +620,12 @@ func (s *Service) UpsertOIDCUser(
 			return User{}, ErrUserDisabled
 		}
 		if email != "" {
-			u.Email = email
+			// Validate the email but keep the stored address if invalid. An IdP now
+			// sending an address that cannot be mailed must not lock out or
+			// overwrite an existing account (#389).
+			if _, err := ValidateEmail(email); err == nil {
+				u.Email = email
+			}
 		}
 		if displayName != "" {
 			u.DisplayName = displayName
@@ -742,7 +747,12 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 		// must not blank what is already stored: the email column is unique, so
 		// the second user that happened to could not log in at all.
 		if email != "" {
-			u.Email = email
+			// Validate the email but keep the stored address if invalid. An IdP now
+			// sending an address that cannot be mailed must not lock out or
+			// overwrite an existing account (#389).
+			if _, err := ValidateEmail(email); err == nil {
+				u.Email = email
+			}
 		}
 		if displayName != "" {
 			u.DisplayName = displayName

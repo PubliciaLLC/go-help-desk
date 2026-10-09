@@ -241,6 +241,28 @@ func TestUpsertOIDCUser(t *testing.T) {
 			wantCreates:   0,
 			wantUpdates:   0,
 		},
+		{
+			name:        "existing user keeps stored email when IdP sends quoted address (space)",
+			seed:        []user.User{existingBySubject},
+			subject:     "sub-sync",
+			email:       `"a b"@example.com`,
+			displayName: "New Name",
+			wantEmail:   "old@example.com",
+			wantName:    "New Name",
+			wantSameID:  &existingBySubject.ID,
+			wantUpdates: 1,
+		},
+		{
+			name:        "existing user keeps stored email when IdP sends quoted address (leading space)",
+			seed:        []user.User{existingBySubject},
+			subject:     "sub-sync",
+			email:       `" a"@example.com`,
+			displayName: "New Name",
+			wantEmail:   "old@example.com",
+			wantName:    "New Name",
+			wantSameID:  &existingBySubject.ID,
+			wantUpdates: 1,
+		},
 	}
 
 	for _, tc := range cases {

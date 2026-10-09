@@ -227,6 +227,9 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, user.ErrEmailRequired):
 			fail(http.StatusForbidden, "email_not_verified",
 				"the identity provider did not supply a verified email address")
+		case errors.Is(err, user.ErrValidation):
+			fail(http.StatusBadRequest, "invalid_email",
+				"the identity provider sent an email address this help desk cannot use")
 		case errors.Is(err, user.ErrDomainNotAllowed):
 			fail(http.StatusForbidden, "domain_not_allowed", "this email domain is not allowed")
 		case errors.Is(err, user.ErrEmailTaken):

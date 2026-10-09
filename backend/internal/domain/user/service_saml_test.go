@@ -176,3 +176,27 @@ func TestUpsertSAMLUser_DomainCheckIsCaseInsensitive(t *testing.T) {
 	require.NoError(t, err,
 		"an allowed domain must match regardless of the case the IdP sends")
 }
+
+// TestUpsertSAMLUser_ExistingUserKeepsStoredEmailWhenIdPSendsQuotedAddress
+// pins the behaviour for #389: when an IdP starts sending a quoted email
+// address, an existing user is not locked out and keeps their stored address.
+func TestUpsertSAMLUser_ExistingUserKeepsStoredEmailWhenIdPSendsQuotedAddress(t *testing.T) {
+	for _, idpEmail := range []string{`"a b"@example.com`, `" a"@example.com`} {
+		existing := seedUser("real@example.com", "Real Name", user.RoleUser)
+		existing.SAMLSubject = "saml-existing"
+
+		store := newFakeUserStore()
+		store.seed(existing)
+		svc := user.NewService(store)
+
+		got, err := svc.UpsertSAMLUser(context.Background(),
+			"saml-existing", idpEmail, "New Name", nil)
+		require.NoError(t, err,
+			"an existing user must not be locked out when IdP sends %q", idpEmail)
+		require.Equal(t, "real@example.com", got.Email,
+			"stored email must be preserved when IdP sends %q", idpEmail)
+		require.Equal(t, "New Name", got.DisplayName,
+			"other attributes must still be synced")
+		require.Equal(t, existing.ID, got.ID, "must be the same account")
+	}
+}
