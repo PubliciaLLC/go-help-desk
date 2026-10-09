@@ -5,11 +5,28 @@
 #
 #   scripts/openapi-sync.sh check        fail unless the copy matches that commit
 #   scripts/openapi-sync.sh stale        fail (with a ::warning::) when the newest
-#                                        release tag carries a different spec
+#                                        release tag carries a different spec, or
+#                                        when origin cannot be asked
 #   scripts/openapi-sync.sh pull <ref>   copy the spec at <ref> (branch, tag or
 #                                        commit on origin) and rewrite SOURCE
 #
-# Update at a release:  scripts/openapi-sync.sh pull v1.3.1 && git commit -am "..."
+# CI (.github/workflows/openapi-sync.yml) runs `check` on every push and pull
+# request. Nothing runs `stale` on a schedule: GitHub fires scheduled and manual
+# workflows only from the default branch, and this file lives on the website
+# branch. `stale` is a manual release-checklist step instead.
+#
+# At each app release (example for 1.3.0):
+#   scripts/openapi-sync.sh pull v1.3.0
+#   scripts/openapi-sync.sh check && scripts/openapi-sync.sh stale
+#   git commit -am "Re-pin the API reference to v1.3.0"
+#
+# When upgrading the vendored Redoc (vendor/redoc/<version>/), list the hosts the
+# new bundle names, before publishing it:
+#   grep -oE 'https?://[A-Za-z0-9.-]+' vendor/redoc/<version>/redoc.standalone.js | sort | uniq -c
+# Anything it could load at runtime other than JSON-schema identifiers and links
+# (2.5.4: only cdn.redoc.ly, the sidebar logo) needs handling in
+# docs/api-reference.html, as the logo shim and the img-src policy there do.
+#
 # The origin remote must be the app repository, where docs/api/openapi.yaml lives.
 set -eu
 
@@ -54,7 +71,11 @@ cmd_check() {
 
 cmd_stale() {
   # Newest release tag: vX.Y.Z only, no pre-release suffix, no peeled ^{} entries.
-  tag=$(git ls-remote --tags origin 'refs/tags/v*' |
+  # Asked separately so that an unreachable origin fails rather than reading as
+  # "no release tag" (a pipeline's status is its last command's).
+  refs=$(git ls-remote --tags origin 'refs/tags/v*') ||
+    die "cannot list tags on origin"
+  tag=$(printf '%s\n' "$refs" |
     sed -n 's#.*refs/tags/\(v[^^]*\)$#\1#p' |
     grep -v -- '-' | sort -V | tail -n 1)
   if [ -z "$tag" ]; then

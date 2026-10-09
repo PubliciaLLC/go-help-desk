@@ -86,7 +86,7 @@
       <li><a href="#api-overview">Overview</a></li>
       <li><a href="#api-auth">Authentication</a></li>
       <li><a href="#api-scopes">Scopes</a></li>
-      <li><a href="#api-session-only">Admin-only settings</a></li>
+      <li><a href="#api-session-only">Session-only settings</a></li>
       <li><a href="#api-visibility">Visibility &amp; tracking numbers</a></li>
       <li><a href="#api-closed">Closed tickets</a></li>
       <li><a href="#api-attachments">Attachment downloads</a></li>
@@ -120,7 +120,7 @@
 <p>Tickets also carry a human-readable tracking number such as <code>GHD-2026-000001</code>. The prefix (<code>GHD</code>) is the <code>ticket_prefix</code> setting, so your instance may use another. <code>GET /api/v1/tickets/{id}</code> accepts a tracking number in place of the UUID. Every other ticket route takes the UUID only: for a ticket you can see, a tracking number there answers <code>400</code>. See <a href="#api-visibility">Visibility &amp; tracking numbers</a>.</p>
 
 <h3>Base URL</h3>
-<pre><code>https://&lt;BASE_URL&gt;/api/v1</code></pre>
+<pre><code>&lt;BASE_URL&gt;/api/v1</code></pre>
 
 <h3>Quick example</h3>
 <pre><code>curl https://helpdesk.example.com/api/v1/tickets \
@@ -145,7 +145,7 @@
     </tr>
     <tr>
       <td><strong>OAuth2 JWT</strong></td>
-      <td>POST to <code>/api/v1/auth/oauth/token</code> with <code>"grant_type": "client_credentials"</code>, <code>client_id</code> and <code>client_secret</code>. The token lasts one hour (<code>expires_in: 3600</code>). Send it as <code>Authorization: Bearer &lt;token&gt;</code>. A client acts at the staff role, so it cannot reach admin-only routes. Deleting the client revokes its tokens on the next request.</td>
+      <td>POST to <code>/api/v1/auth/oauth/token</code> with <code>"grant_type": "client_credentials"</code>, <code>client_id</code> and <code>client_secret</code> in a JSON body (form encoding is refused). The token lasts one hour (<code>expires_in: 3600</code>). Send it as <code>Authorization: Bearer &lt;token&gt;</code>. A client acts at the staff role, so it cannot reach admin-only routes. Deleting the client revokes its tokens on the next request.</td>
       <td>Server-to-server integrations (JIRA, chatbots)</td>
     </tr>
     <tr>
@@ -183,7 +183,7 @@
 <h2 id="api-session-only">Settings that need a signed-in administrator</h2>
 
 <div class="callout callout-warn">
-  <p><strong>An API key or OAuth client cannot change these settings, whatever scopes it holds.</strong> The settings endpoint answers <code>403 session_required</code>. The SAML and OIDC configuration routes, a user's own password and MFA enrolment, and the MFA and passkey sign-in routes refuse machine credentials the same way. Repointing an identity provider, switching off MFA or opening registration would each give whoever holds the key a session they should not have.</p>
+  <p><strong>An API key or OAuth client cannot change these settings, whatever scopes it holds.</strong> The settings endpoint answers <code>403 session_required</code>. Writes to the SAML and OIDC configuration, a user's own password and MFA enrolment, and the MFA and passkey sign-in routes refuse machine credentials the same way. Repointing an identity provider, switching off MFA or opening registration would each give whoever holds the key a session they should not have.</p>
 </div>
 
 <p>The settings a machine credential cannot change are:</p>
@@ -208,12 +208,12 @@
 
 <h2 id="api-closed">Closed tickets</h2>
 
-<p>Closed is read-only and terminal by default. Nothing moves a closed ticket back to an open state unless the <code>closed_reopen_policy</code> setting allows the caller's role. The values are <code>off</code> (the default, nobody may reopen), <code>admin</code> (administrators only) and <code>staff_admin</code> (staff and administrators). A requester never reopens a ticket.</p>
+<p>Closed is read-only and terminal by default. Nothing moves a closed ticket back to an open state unless the <code>closed_reopen_policy</code> setting allows the caller's role. The values are <code>off</code> (the default, nobody may reopen), <code>admin</code> (administrators only) and <code>staff_admin</code> (staff and administrators). A requester can never reopen a closed ticket.</p>
 
 <ul>
-  <li>A requester's reply, upload or update to a closed ticket answers <code>409 ticket_closed</code>. Staff and administrators can still post replies to a closed ticket.</li>
+  <li>A requester's reply, upload, custom-field edit or link on a closed ticket answers <code>409 ticket_closed</code>. Staff and administrators can still post replies to a closed ticket.</li>
   <li>A reopen the policy does not allow answers <code>409 ticket_closed</code>, with a message that says why.</li>
-  <li><code>POST /api/v1/tickets/{id}/follow-up</code> opens a new ticket linked to a closed one, and answers <code>201</code> with the new ticket. Staff and administrators can open one for any closed ticket they can see; a requester can open one for their own. A ticket that is not closed answers <code>409 ticket_not_closed</code>, and a second follow-up of the same ticket answers <code>409 follow_up_exists</code>.</li>
+  <li><code>POST /api/v1/tickets/{id}/follow-up</code> opens a new ticket linked to a closed one, and answers <code>201</code> with the new ticket. Staff and administrators can open one for any closed ticket they can see; a requester can open one for their own, once. A ticket that is not closed answers <code>409 ticket_not_closed</code>. A requester's second follow-up of the same ticket answers <code>409 follow_up_exists</code>; staff and administrators are not limited.</li>
   <li>A requester's reply to a Resolved ticket after the reopen window answers <code>409 reopen_window_closed</code>.</li>
   <li>A guest's write to a closed ticket answers <code>404 not_found</code>. A guest opens a follow-up with <code>POST /api/v1/guest/follow-up</code>.</li>
 </ul>
@@ -251,7 +251,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <ul>
   <li><strong>There is no ticket ID in any guest URL.</strong> The token names exactly one ticket, so there is nothing to enumerate.</li>
   <li><strong>The scheme is <code>Guest</code>, not <code>Bearer</code>.</strong> A guest token is not an API credential and is not accepted where one is required.</li>
-  <li><strong>Every guest refusal is the same <code>404 not_found</code>.</strong> A wrong token, an unknown link, a closed ticket on a write route and a switched-off instance (for the routes that check it) cannot be told apart from outside.</li>
+  <li><strong>Every refusal about the link is the same <code>404 not_found</code>.</strong> A wrong token, an unknown link, a closed ticket on a write route and a switched-off instance (for the routes that check it) cannot be told apart from outside. A good link still gets other answers: <code>400</code> for an invalid body, <code>429</code> past the rate limit, and <code>409 reopen_window_closed</code> for a reply or upload to a Resolved ticket after its reopen window.</li>
   <li><code>category_id</code> must be an <strong>active</strong> category, checked before anything is written. <code>type_id</code>, <code>item_id</code> and custom fields are not read, and the priority is always Medium.</li>
   <li><code>guest_email</code> must be a single bare address with no display name. It is stored lower-case.</li>
   <li>The read returns a narrow view: tracking number, subject, description, status name, timestamps and the replies the guest may see. Replies carry <code>from_you</code> and no author. Assignee, group, reporter and internal-note data are never included, and the read has no attachment list.</li>
@@ -286,7 +286,7 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>not_downloadable</code></td><td>403</td><td>An attachment request whose <code>Sec-Fetch-Dest</code> says it will be rendered.</td></tr>
     <tr><td><code>not_found</code></td><td>404</td><td>The resource does not exist, or you may not see it.</td></tr>
     <tr><td><code>ticket_closed</code></td><td>409</td><td>The ticket is closed and the caller may not change it.</td></tr>
-    <tr><td><code>ticket_not_closed</code>, <code>follow_up_exists</code></td><td>409</td><td>A follow-up was asked for a ticket that is open, or that already has one.</td></tr>
+    <tr><td><code>ticket_not_closed</code>, <code>follow_up_exists</code></td><td>409</td><td>A follow-up was asked for a ticket that is open, or a requester asked for a second one.</td></tr>
     <tr><td><code>reopen_window_closed</code></td><td>409</td><td>A requester's reply to a Resolved ticket after the reopen window.</td></tr>
     <tr><td><code>rate_limited</code></td><td>429</td><td>Too many attempts. <code>Retry-After</code> says when to try again.</td></tr>
     <tr><td><code>internal_error</code></td><td>500</td><td>An unexpected server error. Check the application logs.</td></tr>
@@ -296,17 +296,16 @@ Cache-Control: private, max-age=3600</code></pre>
 <p>Other codes are listed in the reference, on the operation that returns them.</p>
 
 <h3>Pagination</h3>
-<p>List endpoints take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A value above the maximum is clamped rather than rejected, and a non-numeric value is ignored, so the default applies.</p>
-<p>Most lists return a bare JSON array with no total. Page until a response is shorter than <code>limit</code>.</p>
-<pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
-<p>Two kinds of list differ:</p>
+<p>Two list endpoints are paged, <code>GET /api/v1/tickets</code> and <code>GET /api/v1/admin/audit</code>. Both take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A <code>limit</code> above the maximum is clamped rather than rejected, and a non-numeric or non-positive value is ignored, so the default applies.</p>
 <ul>
-  <li><code>GET /api/v1/admin/audit</code> returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
-  <li>Some lists are not paged at all. The reference says which.</li>
+  <li>The ticket list is a bare JSON array with no total. Page until a response is shorter than <code>limit</code>.</li>
+  <li>The audit list returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
 </ul>
+<pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
+<p>Every other list returns its whole result as a bare JSON array.</p>
 
 <h3>Rate limiting</h3>
-<p>The application applies these limits itself. The per-address budget is <code>AUTH_RATE_LIMIT_PER_MINUTE</code>, which is 10 a minute by default.</p>
+<p>The application applies these limits itself. The budget is <code>AUTH_RATE_LIMIT_PER_MINUTE</code> (default 10 a minute). Docker Compose does not pass it to the app, so with the shipped Compose file the default applies.</p>
 <ul>
   <li><strong>Password sign-in</strong> is limited per submitted email address. Only failed attempts count. Past the budget, further attempts answer <code>429 rate_limited</code> with <code>Retry-After</code>. Each login for an account over its budget is also held for about a second before the password is checked, so a guesser is slowed down while a correct password still works.</li>
   <li><strong>Signup</strong> is limited per source address.</li>
