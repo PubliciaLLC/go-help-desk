@@ -6,8 +6,8 @@
 // --phase pre-setup runs against the empty instance, before seed.mjs (shots 15,
 // 15m). --phase main needs $SHOTS_OUT/seed.json written by seed.mjs. Output is
 // $SHOTS_OUT/png/*.png (default ${TMPDIR:-/tmp}/ghd-shots), plus
-// $SHOTS_OUT/manifest.txt listing exactly the PNG files this run wrote, one name
-// per line. Env: SHOTS_BASE_URL (pre-setup only; main reads seed.json),
+// $SHOTS_OUT/manifest.txt listing exactly the PNG files this invocation wrote, one
+// name per line (overwritten by each invocation). Env: SHOTS_BASE_URL (pre-setup only; main reads seed.json),
 // SHOTS_CHROMIUM.
 //
 // Line kinds printed at the end, one per shot:
@@ -168,15 +168,16 @@ const SHOTS = [
         cardOf(page, 'Attachments').locator('xpath=following-sibling::*[1]'),
       ],
     },
-    async prepare(page) {
+    async prepare(page, _ctx, seed) {
       await waitVisible(page.getByRole('alert').filter({ hasText: 'identified as malicious' }))
-      await waitCirclKnown(page)
+      if (seed?.features?.reputation) await waitCirclKnown(page)
     },
   },
   {
     file: '13-attachment-reputation.png', phase: 'main', role: 'jordan', path: ticketPath('T3'), vp: DESK,
     requires: 'reputation',
-    target: { element: (page) => quarantinedRow(page) },
+    // padTop 0: the 16 px pad would catch the Copy button of the row above.
+    target: { element: (page) => quarantinedRow(page), padTop: 0 },
     async prepare(page) {
       await page.getByRole('button', { name: /^Show all 2 services/ }).click({ timeout: DATA_WAIT })
       await waitCirclKnown(page)
@@ -437,9 +438,9 @@ async function alignTop(locator, pad) {
 // Clip to the union of locators, plus PAD, clamped to the viewport. Loops until the
 // layout is stable: the viewport grows when the element is taller than the window,
 // and growing it moves <main>'s scroll, so the boxes are re-measured each pass.
-async function elementClip(page, locators) {
+async function elementClip(page, locators, { top: padTop = PAD, bottom: padBottom = PAD } = {}) {
   for (let pass = 0; pass < 6; pass++) {
-    await alignTop(locators[0], PAD)
+    await alignTop(locators[0], padTop)
     await settle(page, { keepFocus: true })
     const boxes = []
     for (const l of locators) {
@@ -452,15 +453,15 @@ async function elementClip(page, locators) {
     const right = Math.max(...boxes.map((b) => b.x + b.width))
     const bottom = Math.max(...boxes.map((b) => b.y + b.height))
     const vp = page.viewportSize()
-    const needH = Math.ceil(bottom + PAD)
+    const needH = Math.ceil(bottom + padBottom)
     if (needH > vp.height) {
       await page.setViewportSize({ width: vp.width, height: needH })
       continue
     }
     const x = Math.max(0, Math.floor(left - PAD))
-    const y = Math.max(0, Math.floor(top - PAD))
+    const y = Math.max(0, Math.floor(top - padTop))
     const x2 = Math.min(vp.width, Math.ceil(right + PAD))
-    const y2 = Math.min(vp.height, Math.ceil(bottom + PAD))
+    const y2 = Math.min(vp.height, Math.ceil(bottom + padBottom))
     return { x, y, width: x2 - x, height: y2 - y }
   }
   throw new Error('elementClip: layout did not settle in 6 passes')
@@ -486,7 +487,7 @@ async function captureShot(browser, shot, s) {
       await settle(page)
     } else if (t.element) {
       await fitTall(page, 4000, false)
-      screenshotOpts.clip = await elementClip(page, [t.element(page)])
+      screenshotOpts.clip = await elementClip(page, [t.element(page)], { top: t.padTop ?? PAD })
     } else if (t.union) {
       // Grow the window to the whole page first, so no part of the union sits
       // behind <main>'s own scroll.
@@ -499,7 +500,10 @@ async function captureShot(browser, shot, s) {
       const a = await above.boundingBox()
       const b = await below.boundingBox()
       if (!a || !b) throw new Error('cutBetween: card not visible')
-      const h = Math.floor((a.y + a.height + b.y) / 2)
+      // <main> ends above the footer, so the window must be taller than the cut
+      // by the footer's height; otherwise the bottom of <main> sits behind it.
+      const footer = await page.evaluate(() => window.innerHeight - document.querySelector('main').getBoundingClientRect().bottom)
+      const h = Math.floor((a.y + a.height + b.y) / 2 + footer)
       await page.setViewportSize({ width: DESK.width, height: h })
       await settle(page)
     }
@@ -610,16 +614,13 @@ for (const r of rows) {
   }
 }
 
-// manifest.txt: pre-setup starts it fresh; main adds its files to it (a full run
-// is pre-setup then main, so the file ends up listing every PNG of that run).
+// manifest.txt: exactly the PNG files this invocation wrote, one name per line.
+// Each invocation overwrites it. A full run is pre-setup then main, so the
+// orchestrator must keep the pre-setup list (copy it before main runs) and
+// concatenate the two.
 const manifestPath = path.join(OUT, 'manifest.txt')
-const previous =
-  phase === 'main' && fs.existsSync(manifestPath)
-    ? fs.readFileSync(manifestPath, 'utf8').split('\n').filter(Boolean)
-    : []
-const listed = [...new Set([...previous, ...written])]
-fs.writeFileSync(manifestPath, listed.map((f) => `${f}\n`).join(''))
-console.log(`manifest: ${listed.length} file(s) listed in ${manifestPath} (${written.length} written by this phase)`)
+fs.writeFileSync(manifestPath, written.map((f) => `${f}\n`).join(''))
+console.log(`manifest: ${written.length} file(s) written by this invocation, listed in ${manifestPath}`)
 
 if (failed > 0) {
   console.error(`capture: ${failed} shot(s) failed`)
