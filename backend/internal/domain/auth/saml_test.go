@@ -158,6 +158,29 @@ func TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts(t *testing.T) {
 		"must match the POST /saml/acs route mounted under /api/v1/auth in routes.go")
 }
 
+// TestNewSAMLMiddleware_RefusesIdPInitiatedResponses pins what DESIGN.md's
+// account of an ACS replay rests on. With IdP-initiated login off, the
+// library accepts a response only when its InResponseTo matches a request ID
+// from a "saml_" tracking cookie in the same request, so a captured POST body
+// is not enough on its own. Turning it on drops that check and lets the POST
+// choose its own RelayState redirect.
+func TestNewSAMLMiddleware_RefusesIdPInitiatedResponses(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL:     "https://helpdesk.example.com",
+		MetadataURL: idp.URL,
+		CertPEM:     certPEM,
+		KeyPEM:      keyPEM,
+	})
+	require.NoError(t, err)
+	require.False(t, mw.ServiceProvider.AllowIDPInitiated)
+}
+
 // TestNewSAMLMiddleware_RejectsBadKeyPair guards the error path that runs
 // before any network call, so a misconfigured keypair fails fast and clearly.
 func TestNewSAMLMiddleware_RejectsBadKeyPair(t *testing.T) {

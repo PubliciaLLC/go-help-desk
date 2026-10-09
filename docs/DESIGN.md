@@ -759,7 +759,7 @@ refuses that and will keep refusing it).
 
 ### SAML (Optional, Off by Default)
 
-- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`; sign-in starts at `GET /api/v1/auth/saml/login` and returns to `POST /api/v1/auth/saml/acs`, then `GET /api/v1/auth/saml/complete`. The login page currently has a button for OIDC only.
+- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page currently has a button for OIDC only.
 - **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
 - **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` reports SAML as enabled only when it is on and SAML is configured.
 - **Admin failsafe**: administrators can still sign in with a local password.
@@ -807,11 +807,7 @@ close: a cookie copied in flight and used before the browser it was issued to
 reached `/complete`. Five minutes rather than seconds, because the JWT's
 expiry is checked against the clock of whichever instance serves `/complete`.
 
-What this does not cover: the assertion POST to the ACS can still be replayed
-for about 90 seconds. The SAML library keeps no record of assertion IDs and
-accepts an assertion for `MaxIssueDelay` (90 seconds) after it was issued, so a
-captured POST body can mint a fresh hand-over cookie in that window. That was
-true before #337 and is not changed by it.
+What this does not cover: the assertion POST to the ACS can still be replayed for about 90 seconds, by someone holding both the POST body and the browser's request-tracking cookie (`saml_` followed by the RelayState: HttpOnly, sent only to the ACS path). IdP-initiated sign-in is off, so the library accepts a response only when its `InResponseTo` matches the request ID inside a tracking cookie sent with it; the body alone is refused (pinned by `TestNewSAMLMiddleware_RefusesIdPInitiatedResponses`). Neither half is single-use. The library keeps no record of assertion IDs, the browser is only asked to delete the tracking cookie, and both are accepted for `MaxIssueDelay` (90 seconds), so a copy of the pair can mint a fresh hand-over cookie in that window. That was true before #337 and is not changed by it.
 
 This is a one-time-use record, not a "sessions revoked at" timestamp checked
 against the JWT's issue time. The timestamp would have to be written by
