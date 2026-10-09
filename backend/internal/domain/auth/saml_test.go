@@ -311,3 +311,60 @@ func TestNewSAMLMiddleware_TwoMintsInTheSameSecondDifferByJti(t *testing.T) {
 
 	require.NotEqual(t, claims1.Id, claims2.Id, "two mints must have distinct jti values")
 }
+
+// samlCookies builds a middleware for baseURL and returns the raw Set-Cookie
+// lines for the tracking cookie (from starting a sign-in) and for "token"
+// (from creating a session).
+func samlCookies(t *testing.T, baseURL string) (tracking, token string) {
+	t.Helper()
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(samlIDPMetadataXML))
+	}))
+	defer idp.Close()
+	certPEM, keyPEM := selfSignedSP(t)
+	mw, err := auth.NewSAMLMiddleware(context.Background(), auth.SAMLConfig{
+		BaseURL: baseURL, MetadataURL: idp.URL, CertPEM: certPEM, KeyPEM: keyPEM,
+	})
+	require.NoError(t, err)
+
+	rec := httptest.NewRecorder()
+	mw.HandleStartAuthFlow(rec, httptest.NewRequest(http.MethodGet, "/api/v1/auth/saml/complete", nil))
+	for _, line := range rec.Header().Values("Set-Cookie") {
+		if strings.HasPrefix(line, "saml_") {
+			tracking = line
+		}
+	}
+	require.NotEmpty(t, tracking, "starting a sign-in sets the tracking cookie")
+
+	rec = httptest.NewRecorder()
+	require.NoError(t, mw.Session.CreateSession(rec, httptest.NewRequest(http.MethodPost, "/", nil),
+		&saml.Assertion{Subject: &saml.Subject{NameID: &saml.NameID{Value: "x"}}}))
+	token = rec.Header().Get("Set-Cookie")
+	require.True(t, strings.HasPrefix(token, "token="))
+	return tracking, token
+}
+
+// The IdP's POST to the ACS is cross-site, so the tracking cookie must say
+// SameSite=None (with Secure, or browsers drop it) rather than rest on each
+// browser's default (#399).
+func TestNewSAMLMiddleware_TrackingCookieIsSameSiteNoneOverHTTPS(t *testing.T) {
+	tracking, _ := samlCookies(t, "https://helpdesk.example.com")
+	require.Contains(t, tracking, "SameSite=None")
+	require.Contains(t, tracking, "Secure")
+}
+
+// Over http, None would be refused without Secure, and Lax would stop the
+// cookie on the cross-site POST: it is left unset.
+func TestNewSAMLMiddleware_TrackingCookieHasNoSameSiteOverHTTP(t *testing.T) {
+	tracking, _ := samlCookies(t, "http://localhost:8080")
+	require.NotContains(t, tracking, "SameSite")
+}
+
+// "token" is read only on the top-level GET the ACS redirects to: Lax, never
+// None, over either scheme.
+func TestNewSAMLMiddleware_HandoverCookieIsSameSiteLax(t *testing.T) {
+	for _, base := range []string{"https://helpdesk.example.com", "http://localhost:8080"} {
+		_, token := samlCookies(t, base)
+		require.Contains(t, token, "SameSite=Lax", base)
+	}
+}

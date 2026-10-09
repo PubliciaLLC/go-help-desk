@@ -8,6 +8,15 @@
 > Recommendations that would change the roadmap in `docs/DESIGN.md` are marked
 > **[roadmap decision]** and need the owner's call before they become scope.
 
+> **Since this assessment (as of v1.3.0-beta, 2026-10-09).** The text below is
+> the 2026-09-09 snapshot. Since then a background scheduler runs auto-close and
+> SLA breach evaluation (#126), SLA pauses during Pending (#127), the SLA
+> indicator is rendered (#128) and the audit log is readable (#129). So the SLA
+> findings marked non-functional below are fixed: breaches are detected and
+> stamped, though nothing yet acts on a breach (#408). Roadmap issues filed from
+> this analysis: #403 (assets), #405 (continual improvement), #406 (suppliers),
+> #407 (relationships), #408 (incident management).
+
 ---
 
 ## 1. Method
@@ -113,8 +122,8 @@ log behind every mutation.
 - **No functional escalation tiers.** Reassign-to-group is the only mechanism.
   There is no L1/L2/L3 tier model and no escalation record, so "how often does
   L1 resolve without escalating" is unanswerable.
-- **No hierarchic escalation on SLA breach** — breaches are not detected at all
-  (§3.6).
+- **No hierarchic escalation on SLA breach** — at the time, breaches were not
+  detected at all (§3.6). They are now (#126), but nothing acts on one (#408).
 - No work log / time-spent capture, so effort per incident is not measurable.
 
 ---
@@ -293,6 +302,11 @@ expected alongside a help desk, since hardware tickets reference a device.
 Distinct from CMDB (assets are financial/lifecycle; CIs are operational), and
 frequently a separate product.
 
+**Direction: integrate with [Snipe-IT](https://snipeitapp.com/), do not build an
+asset register** (#403). Snipe-IT is an open-source, self-hosted asset manager,
+which fits this project's deployment model. Integration shapes and the target
+version are open questions on #403.
+
 ---
 
 ### 3.11 Monitoring & Event Management — ❌ Gap
@@ -402,20 +416,20 @@ entities, for outage-driven major incidents and availability reporting.
 |---|-----------------|-------|------------------|
 | 3.1 | Service Desk | ✅ Fit | v1 — shipped |
 | 3.15 | Information Security Management | ✅ Fit | v1 — shipped |
-| 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix v4 |
-| 3.6 | Service Level Management | 🟡 Partial | v1 — **partly non-functional** |
-| 3.17 | Relationship Management | 🟡 Partial | implied by v4 |
+| 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix v4 (#135); major incidents, escalation, work log #408 |
+| 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128) |
+| 3.17 | Relationship Management | 🟡 Partial | roadmap #407 (organization entity with v4 #35), unscheduled |
 | 3.3 | Service Request Management | ❌ Gap | v4 (type only) |
 | 3.4 | Problem Management | ❌ Gap | v4 (type only) |
 | 3.5 | Change Enablement | ❌ Gap | v4 (type only) |
 | 3.7 | Knowledge Management | ❌ Gap | v3 |
 | 3.8 | Service Catalogue Management | ❌ Gap | not on roadmap |
 | 3.9 | Service Configuration Management | ❌ Gap | not on roadmap |
-| 3.10 | IT Asset Management | ❌ Gap | not on roadmap |
+| 3.10 | IT Asset Management | ❌ Gap | integrate with Snipe-IT (#403), unscheduled |
 | 3.11 | Monitoring & Event Management | ❌ Gap | not on roadmap |
 | 3.13 | Measurement & Reporting | ❌ Gap | v3 |
-| 3.14 | Continual Improvement | ❌ Gap | not on roadmap |
-| 3.16 | Supplier Management | ❌ Gap | not on roadmap |
+| 3.14 | Continual Improvement | ❌ Gap | roadmap #405 (CSAT #133 first), unscheduled |
+| 3.16 | Supplier Management | ❌ Gap | roadmap #406, unscheduled |
 | 3.12 | Release & Deployment Management | ⚪ Out of scope | — |
 | 3.18 | Availability & Capacity Management | ⚪ Out of scope | — |
 
@@ -504,8 +518,9 @@ SaaS bundle.
 ### Explicitly recommend *not* building
 
 Full CMDB discovery and dependency mapping; release and deployment management;
-capacity management; IT financial management. These are separate products with
-mature incumbents. Integrate; do not rebuild.
+capacity management; IT financial management; an IT asset register. These are
+separate products with mature incumbents. Integrate; do not rebuild. For assets
+the integration target is Snipe-IT (#403).
 
 ---
 
