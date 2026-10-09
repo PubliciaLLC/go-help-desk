@@ -51,7 +51,7 @@
     <ul class="nav-links">
       <li><a href="../index.html">Home</a></li>
       <li><a href="../docs.html" style="color:var(--blue);">Docs</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
     </ul>
@@ -64,7 +64,10 @@
 
   <div class="sidebar-group">
     <div class="sidebar-group-label">Upgrading</div>
-    <ul><li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li></ul>
+    <ul>
+      <li><a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a></li>
+      <li><a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a></li>
+    </ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Getting Started</div>
@@ -77,7 +80,7 @@
       <li><a href="#auth-local">Local Accounts</a></li>
       <li><a href="#auth-mfa">TOTP MFA</a></li>
       <li><a href="#auth-saml">SAML 2.0</a></li>
-      <li><a href="#auth-guest">Guest Access <span class="badge-beta">Beta</span></a></li>
+      <li><a href="#auth-guest">Guest Access</a></li>
       <li><a href="#auth-api-keys">API Keys</a></li>
     </ul>
   </div>
@@ -87,7 +90,7 @@
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Security</div>
-    <ul><li><a href="attachment-security.html">Attachment Security <span class="badge-beta">Beta</span></a></li></ul>
+    <ul><li><a href="attachment-security.html">Attachment Security</a></li></ul>
   </div>
   <div class="sidebar-group">
     <div class="sidebar-group-label">Tickets</div>
@@ -97,6 +100,7 @@
     <div class="sidebar-group-label">Integrations</div>
     <ul>
       <li><a href="api.html">REST API</a></li>
+      <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
     </ul>
   </div>
@@ -193,10 +197,10 @@
 <p>At the MFA verification prompt, users can click <em>Use recovery code</em> and enter one of their saved codes instead of a TOTP code. Each recovery code is permanently invalidated after use. If fewer than 3 recovery codes remain, the app prompts the user to regenerate a new set from their profile.</p>
 
 <h3>Admin MFA reset</h3>
-<p>To reset a user's MFA (e.g. after they lose their device and all recovery codes): <em>Admin → Users → [user] → Reset MFA</em>. This deletes the TOTP secret and all recovery codes. The user is prompted to re-enroll on their next login.</p>
+<p>To reset a user's MFA (e.g. after they lose their device): <em>Admin → Users → [user] → Reset MFA</em>. This clears the TOTP secret and every passkey, and ends the user's sessions. If MFA is enforced for their role, they are asked to enroll again at their next login.</p>
 
 <h3>TOTP codes in the API</h3>
-<p>For programmatic login, submit the TOTP code to <code>POST /api/v1/auth/local/mfa/verify</code> after a successful password login. See the <a href="api.html#api-auth-endpoints">API: Auth endpoints</a>.</p>
+<p>For programmatic login, submit the TOTP code to <code>POST /api/v1/auth/local/mfa/verify</code> after a successful password login. See the <a href="api-reference.html">API Reference</a>.</p>
 
 
 <h2 id="auth-saml">SAML 2.0 SSO</h2>
@@ -346,10 +350,10 @@ SAML_KEY_FILE=/run/secrets/saml.key</code></pre>
 </div>
 
 
-<h2 id="auth-guest">Guest access <span class="badge-beta">New in 1.3.0-beta</span></h2>
+<h2 id="auth-guest">Guest access <span class="badge-new">New in 1.3.0</span></h2>
 
 <div class="callout callout-warn">
-  <p><strong>This works from v1.3.0-beta and does not work in v1.2.0 or any earlier release.</strong> Up to and including 1.2.0 the pieces existed and did not connect — turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>. It is off by default.</p>
+  <p><strong>New in 1.3.0.</strong> Up to and including 1.2.0 the pieces existed and did not connect — turning the toggle on produced no error and no guest tickets. It shipped as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/154">issue #154</a>. It is off by default.</p>
 </div>
 
 <p>A guest is not an account. There is no guest password, no guest session and no guest role — <strong>possession of a private link is the whole credential</strong>, and possession of the mailbox it was sent to is what earns it.</p>
