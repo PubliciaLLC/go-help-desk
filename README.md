@@ -25,13 +25,11 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Roles (Admin, Staff, User), groups, and group scoping by CTI category
 - Guest submission and self-service signup, both off by default
 - Custom fields, tags, canned responses, and full-text search
-- Optional SLA tracking and auto-close
+- Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
 - Readable audit log with opt-in retention
-- Email and webhook notifications (Slack, Teams, Discord and JIRA formats), queued with retries
+- Email notifications, queued with retries, and webhooks (Slack, Teams, Discord and JIRA formats), sent once
 - Attachments: content detection, optional ClamAV scanning and reputation lookups, download only
-- REST API with OpenAPI 3.1 and an MCP server for AI assistant integration
-
-Full list and details: https://gohelpdesk.org
+- REST API (OpenAPI 3.1 reference on the website) and an MCP server for AI assistant integration
 
 ## Quick start
 
@@ -42,9 +40,7 @@ cp .env.example .env   # set SESSION_SECRET, JWT_SECRET, BASE_URL
 docker compose up -d
 ```
 
-This pulls a published image. Nothing is compiled on your machine, and one
-image name covers both Intel and ARM — including Apple Silicon — because the
-Docker client picks the right architecture for you.
+This pulls a published image. Nothing is compiled on your machine, and one image name covers both Intel and ARM, including Apple Silicon, because the Docker client picks the right architecture for you.
 
 Open `http://localhost:8080`. On a fresh database the app redirects to `/setup`, where you create the first admin account. The setup route is permanently disabled once any user exists.
 
@@ -57,8 +53,6 @@ These are covered on the site:
 ## Documentation
 
 - [Getting started and configuration](https://gohelpdesk.org/docs/getting-started#configuration)
-- [Upgrading to 1.3.0](https://gohelpdesk.org/docs/upgrading-1.3.0)
-- [Upgrading to 1.2.0](https://gohelpdesk.org/docs/upgrading-1.2.0)
 - [Admin guide](https://gohelpdesk.org/docs/admin-guide)
 - [REST API guide](https://gohelpdesk.org/docs/api) and [API reference](https://gohelpdesk.org/docs/api-reference)
 - [MCP server](https://gohelpdesk.org/docs/mcp)
@@ -66,7 +60,7 @@ These are covered on the site:
 
 ## Upgrading
 
-Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrading-1.3.0) · [1.2.0](https://gohelpdesk.org/docs/upgrading-1.2.0).
+Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrading-1.3.0) and [1.2.0](https://gohelpdesk.org/docs/upgrading-1.2.0).
 
 **1.3.0**
 
@@ -80,7 +74,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 
 **1.2.0**
 
-- API keys and OAuth clients created through the admin UI stop working, because scopes are enforced. Everyone is signed out once. [Details](https://gohelpdesk.org/docs/upgrading-1.2.0#credentials)
+- API keys and OAuth clients created through the 1.1.1 admin UI stop working: the UI created them with no scopes, and scopes are enforced from 1.2.0. Credentials created through the API with scopes keep working. Everyone is signed out once, and sessions now last 7 days. [Details](https://gohelpdesk.org/docs/upgrading-1.2.0#credentials)
 - Notification email no longer carries ticket content. [Details](https://gohelpdesk.org/docs/upgrading-1.2.0#email)
 - Webhooks to private addresses are refused, and existing internal hooks stop silently. [Details](https://gohelpdesk.org/docs/upgrading-1.2.0#webhooks)
 - Also: the [GHD tracking prefix](https://gohelpdesk.org/docs/upgrading-1.2.0#tracking-prefix), a [Content-Security-Policy](https://gohelpdesk.org/docs/upgrading-1.2.0#csp), [email validation](https://gohelpdesk.org/docs/upgrading-1.2.0#email-addresses), [staff-only tags](https://gohelpdesk.org/docs/upgrading-1.2.0#tags) and a [TOTP lockout](https://gohelpdesk.org/docs/upgrading-1.2.0#totp).
@@ -91,4 +85,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, tests and pull
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE). Modifications — including hosting as a service — must be released under the same license.
+[GNU Affero General Public License v3.0](LICENSE). Modifications, including hosting as a service, must be released under the same license.
