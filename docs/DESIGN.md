@@ -82,7 +82,7 @@ SLA fields (optional feature toggle, all editions):
 
 - **SLA target** (response time and resolution time targets, configurable per Priority and/or Category)
 
-ITSM fields (v1.4, #135):
+ITSM fields (v1.4, #135; behind an admin setting, off by default, so an install that sorts work by Category alone sees no change):
 
 - **Ticket Type** (Incident, Service Request, Problem, Change Request)
 - **Impact** (High / Medium / Low — how broadly the issue affects the organization)
