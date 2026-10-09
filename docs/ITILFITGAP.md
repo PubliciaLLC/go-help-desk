@@ -293,6 +293,11 @@ expected alongside a help desk, since hardware tickets reference a device.
 Distinct from CMDB (assets are financial/lifecycle; CIs are operational), and
 frequently a separate product.
 
+**Direction: integrate with [Snipe-IT](https://snipeitapp.com/), do not build an
+asset register** (#403). Snipe-IT is an open-source, self-hosted asset manager,
+which fits this project's deployment model. Integration shapes and the target
+version are open questions on #403.
+
 ---
 
 ### 3.11 Monitoring & Event Management — ❌ Gap
@@ -411,7 +416,7 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.7 | Knowledge Management | ❌ Gap | v3 |
 | 3.8 | Service Catalogue Management | ❌ Gap | not on roadmap |
 | 3.9 | Service Configuration Management | ❌ Gap | not on roadmap |
-| 3.10 | IT Asset Management | ❌ Gap | not on roadmap |
+| 3.10 | IT Asset Management | ❌ Gap | integrate with Snipe-IT (#403), unscheduled |
 | 3.11 | Monitoring & Event Management | ❌ Gap | not on roadmap |
 | 3.13 | Measurement & Reporting | ❌ Gap | v3 |
 | 3.14 | Continual Improvement | ❌ Gap | not on roadmap |
@@ -504,8 +509,9 @@ SaaS bundle.
 ### Explicitly recommend *not* building
 
 Full CMDB discovery and dependency mapping; release and deployment management;
-capacity management; IT financial management. These are separate products with
-mature incumbents. Integrate; do not rebuild.
+capacity management; IT financial management; an IT asset register. These are
+separate products with mature incumbents. Integrate; do not rebuild. For assets
+the integration target is Snipe-IT (#403).
 
 ---
 
