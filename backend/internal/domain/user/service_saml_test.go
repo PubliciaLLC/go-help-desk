@@ -200,3 +200,23 @@ func TestUpsertSAMLUser_ExistingUserKeepsStoredEmailWhenIdPSendsQuotedAddress(t 
 		require.Equal(t, existing.ID, got.ID, "must be the same account")
 	}
 }
+
+// The sync stores what ValidateEmail returns, not the input: a bracketed or
+// needlessly quoted address is stored bare (#389).
+func TestUpsertSAMLUser_ExistingUserSyncStoresTheBareAddress(t *testing.T) {
+	for in, want := range map[string]string{
+		`<new@test.local>`:  "new@test.local",
+		`"john"@test.local`: "john@test.local",
+	} {
+		existing := seedUser("real@example.com", "Real Name", user.RoleUser)
+		existing.SAMLSubject = "saml-existing"
+
+		store := newFakeUserStore()
+		store.seed(existing)
+		svc := user.NewService(store)
+
+		got, err := svc.UpsertSAMLUser(context.Background(), "saml-existing", in, "Real Name", nil)
+		require.NoError(t, err)
+		require.Equal(t, want, got.Email, "IdP sent %q", in)
+	}
+}

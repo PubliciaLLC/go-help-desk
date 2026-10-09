@@ -623,8 +623,11 @@ func (s *Service) UpsertOIDCUser(
 			// Validate the email but keep the stored address if invalid. An IdP now
 			// sending an address that cannot be mailed must not lock out or
 			// overwrite an existing account (#389).
-			if _, err := ValidateEmail(email); err == nil {
-				u.Email = email
+			// The parsed form is stored, not the input: ValidateEmail strips
+			// brackets and needless quotes, and storing "<a@b>" verbatim made
+			// an account that could only be signed into by typing the brackets.
+			if addr, err := ValidateEmail(email); err == nil {
+				u.Email = addr
 			}
 		}
 		if displayName != "" {
@@ -750,8 +753,11 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 			// Validate the email but keep the stored address if invalid. An IdP now
 			// sending an address that cannot be mailed must not lock out or
 			// overwrite an existing account (#389).
-			if _, err := ValidateEmail(email); err == nil {
-				u.Email = email
+			// The parsed form is stored, not the input: ValidateEmail strips
+			// brackets and needless quotes, and storing "<a@b>" verbatim made
+			// an account that could only be signed into by typing the brackets.
+			if addr, err := ValidateEmail(email); err == nil {
+				u.Email = addr
 			}
 		}
 		if displayName != "" {
