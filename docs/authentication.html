@@ -144,6 +144,9 @@
   <li><strong>SAML just-in-time provisioning</strong> — when SAML is enabled, accounts are created automatically on first login from IdP assertion attributes. See <a href="#auth-saml">SAML 2.0</a>.</li>
 </ul>
 
+<img src="../screenshots/20-signup.png" alt="The self-registration page, which asks only for an email address, with a Create account button and a Sign in link" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/21-verify-email.png" alt="The Finish creating your account page: the email address is shown, with Display name and Password fields for the new account" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
 <h3>Password requirements</h3>
 <p>Passwords must be at least 10 characters. There is no additional complexity enforcement — length is the most effective password policy for user-chosen passwords. Admins can force a password reset from <em>Admin → Users → [user] → Reset password</em>.</p>
 
@@ -154,6 +157,8 @@
 <h2 id="auth-mfa">TOTP MFA</h2>
 
 <p>Set <code>MFA_ENABLED=true</code> in your environment to enable time-based one-time password (TOTP) MFA across the application. TOTP works with Google Authenticator, Authy, 1Password, Bitwarden, and any RFC 6238-compliant app.</p>
+
+<img src="../screenshots/22-account-passkeys.png" alt="The account page: a password form, a Passkeys section listing a passkey named Work laptop marked This device only, and an Authenticator app section with a Set up button" width="2880" height="1970" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Enrollment flow</h3>
 <p>A user who has not yet enrolled in MFA is redirected to the enrollment page after their next successful password login.</p>
