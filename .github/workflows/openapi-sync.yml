@@ -1,0 +1,42 @@
+# Guards the website's copy of the OpenAPI description (docs/openapi/).
+#
+# check   (blocking, every run): docs/openapi/openapi.yaml must equal
+#         docs/api/openapi.yaml at the commit named in docs/openapi/SOURCE.
+# stale   (advisory on push and pull_request, blocking on the weekly schedule):
+#         the newest release tag must not carry a newer spec than the copy.
+#
+# Update procedure, at a release:
+#   scripts/openapi-sync.sh pull v1.3.1 && git commit -am "Re-pin the API reference to v1.3.1"
+name: openapi-sync
+
+on:
+  push:
+    branches: [v1.3.0-beta-web]
+  pull_request:
+    branches: [v1.3.0-beta-web]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  openapi-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Copy matches the pinned app commit
+        run: scripts/openapi-sync.sh check
+
+      - name: Pinned copy is not older than the newest release (weekly, blocking)
+        if: github.event_name == 'schedule'
+        run: scripts/openapi-sync.sh stale
+
+      - name: Pinned copy is not older than the newest release (advisory)
+        if: github.event_name != 'schedule'
+        continue-on-error: true
+        run: scripts/openapi-sync.sh stale
