@@ -946,3 +946,26 @@ func TestOIDCCallback_FactorVerifiedOnlyWhenTheProviderAssertsMFA(t *testing.T) 
 		})
 	}
 }
+
+func TestOIDCCallback_QuotedEmailIsRefusedNotAnInternalError(t *testing.T) {
+	oh, cleanup := newOIDCHarness(t)
+	defer cleanup()
+
+	resp := oh.login(t, fakeOIDCClaims{
+		Subject:       "quoted-email-sub",
+		Email:         `"john doe"@test.local`,
+		EmailVerified: true,
+		Name:          "John Doe",
+	})
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode,
+		"a quoted email must return 400 not 500")
+	require.Equal(t, "invalid_email", errorCode(t, resp),
+		"a quoted email must return invalid_email error code")
+
+	_, ok := findUser(t, oh.harness, `"john doe"@test.local`)
+	require.False(t, ok, "a quoted email must not create a user account")
+
+	_, ok = findUser(t, oh.harness, "john doe@test.local")
+	require.False(t, ok, "normalized version must not create a user account")
+}

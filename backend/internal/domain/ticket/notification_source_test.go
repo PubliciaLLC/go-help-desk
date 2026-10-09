@@ -113,6 +113,7 @@ func TestCreate_RefusesAGuestAddressThatIsNotOne(t *testing.T) {
 		{"not an address at all", "not-an-address"},
 		{"header injection attempt", "victim@example.com\r\nBcc: attacker@evil.test"},
 		{"two addresses", "a@example.com, b@example.com"},
+		{"quoted local part that could never be mailed (#389)", `"john doe"@example.com`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)

@@ -27,6 +27,14 @@ func TestValidateEmail(t *testing.T) {
 			{"display name attached", "Attacker <victim@example.com>"},
 			{"two addresses", "a@b.test, c@d.test"},
 			{"angle brackets with name", `"Ops" <ops@example.com>`},
+			// #389: parsing drops the quotes, and what is left is not an
+			// address, so it could be stored but never mailed.
+			{"quoted local part with a space", `"john doe"@example.com`},
+			{"quoted local part with an at sign", `"a@b"@example.com`},
+			{"quoted local part with an escaped quote", `"a\"b"@example.com`},
+			// Parses again, but as a different address: the mailer would
+			// have sent to a@example.com.
+			{"quoted local part with a leading space", `" a"@example.com`},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				_, err := user.ValidateEmail(tc.in)
@@ -41,6 +49,11 @@ func TestValidateEmail(t *testing.T) {
 			{"User@Example.COM", "user@example.com"},
 			{"  user@example.com  ", "user@example.com"},
 			{"first.last+tag@sub.example.co.uk", "first.last+tag@sub.example.co.uk"},
+			// #389: quotes that were never needed are dropped, and the
+			// result is an ordinary address.
+			{`"john"@example.com`, "john@example.com"},
+			{"o'brien@example.com", "o'brien@example.com"},
+			{"guest@[192.168.1.10]", "guest@[192.168.1.10]"},
 		} {
 			got, err := user.ValidateEmail(tc.in)
 			require.NoError(t, err, "%q must be accepted", tc.in)
