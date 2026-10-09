@@ -84,13 +84,13 @@ type choiceSetting struct {
 // refuses a value outside the list and the dump that reports a stored one
 // (#383).
 //
-// The dump reports the value in force, not the stored bytes. The settings page
-// sends every setting from every tab on each save, so a stored value the PATCH
-// refuses (only a direct database edit can put one there) used to come back on
-// every save and fail it, on every tab, until someone changed that one
-// dropdown. Each fallback must be what the setting's reader returns for an
-// unrecognised value; TestSettings_DumpReportsEveryChoiceSettingInForce holds
-// them to it.
+// The dump reports the value in force, not the stored bytes. A client that
+// sends the dump back (the settings page did until #394) sends every setting on
+// each save, so a stored value the PATCH refuses (only a direct database edit can
+// put one there) used to come back on every save and fail it, on every tab, until
+// someone changed that one dropdown. Each fallback must be what the setting's
+// reader returns for an unrecognised value;
+// TestSettings_DumpReportsEveryChoiceSettingInForce holds them to it.
 var choiceSettings = map[string]choiceSetting{
 	// Anything else reads as off, so Closed stays terminal. Null and wrong types are refused by name (#349).
 	admin.KeyClosedReopenPolicy: {ticket.ValidClosedReopenPolicy, ticket.ReopenPolicyOff,
@@ -725,6 +725,10 @@ func hasSecretValue(raw []byte) bool {
 // their provider is on and the provider is never asked. A setting accepted and
 // then ignored is the failure this handler refuses everywhere else.
 //
+// It looks only at providers the write mentions: a write that includes neither a
+// provider's toggle nor its key is not refused because of that provider's stored
+// state. See #394.
+//
 // The error message names the PROVIDER and never the key. There are three keys
 // now, and an error string is the easiest place for a write-only secret to
 // escape into a log.
@@ -732,6 +736,20 @@ func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body
 	for _, p := range reputation.ProviderNames() {
 		enabledKey, apiKeyKey, ok := admin.ReputationSettingKeys(p)
 		if !ok {
+			continue
+		}
+
+		// Only a provider this write mentions. The stored state of one it does not
+		// mention is not this request's to judge: a provider enabled with no key can
+		// only come from a database edit, and checking it here refused every write to
+		// the settings, including the one that would fix it (#394). Such a provider
+		// does no lookups (reputation.CanLookup), so nothing is accepted and ignored.
+		_, togglePresent := body[enabledKey]
+		keyPresent := false
+		if apiKeyKey != "" {
+			_, keyPresent = body[apiKeyKey]
+		}
+		if !togglePresent && !keyPresent {
 			continue
 		}
 

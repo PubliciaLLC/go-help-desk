@@ -506,8 +506,8 @@ describe('what happens to a file whose content contradicts its name', () => {
     await waitFor(() => {
       expect(lastPatch(patch)).toMatchObject({
         attachment_mismatch_handling: 'refuse',
-        attachment_infected_handling: 'quarantine',
       })
+      expect(Object.keys(lastPatch(patch))).not.toContain('attachment_infected_handling')
     })
   })
 
@@ -523,8 +523,8 @@ describe('what happens to a file whose content contradicts its name', () => {
     await waitFor(() => {
       expect(lastPatch(patch)).toMatchObject({
         attachment_infected_handling: 'refuse',
-        attachment_mismatch_handling: 'wrap',
       })
+      expect(Object.keys(lastPatch(patch))).not.toContain('attachment_mismatch_handling')
     })
   })
 
@@ -1023,5 +1023,76 @@ describe('the always-present VirusTotal link on attachments', () => {
 
     expect(bodyText()).toMatch(/own browser/i)
     expect(bodyText()).toMatch(/sends nothing/i)
+  })
+})
+
+// ── a save sends only what changed (#394) ─────────────────────────────────────
+
+describe('a save sends only what changed (#394)', () => {
+  it('sends the one edited setting and nothing else from the dump', async () => {
+    const patch = await renderSettings(SETTINGS)
+
+    await userEvent.selectOptions(control(MISMATCH), 'refuse')
+    await save()
+
+    await waitFor(() => {
+      expect(lastPatch(patch)).toEqual({ attachment_mismatch_handling: 'refuse' })
+    })
+  })
+
+  it('does not send back a damaged value nobody touched', async () => {
+    const patch = await renderSettings({
+      ...SETTINGS,
+      ticket_prefix: 'bad!',
+      attachment_scan_address: 'not an address',
+      attachment_reputation_polyswarm_enabled: true,
+      audit_retention_days: 'x',
+    })
+
+    await userEvent.selectOptions(control(/re-check stored verdicts/i), 'weekly')
+    await save()
+
+    await waitFor(() => {
+      expect(lastPatch(patch)).toEqual({ attachment_reputation_refresh: 'weekly' })
+    })
+  })
+
+  it('a setting changed and changed back is not sent', async () => {
+    const patch = await renderSettings(SETTINGS)
+
+    await setToggle(/polyswarm/i, true)
+    await setToggle(/polyswarm/i, false)
+    await save()
+
+    await waitFor(() => {
+      expect(lastPatch(patch)).toEqual({})
+    })
+  })
+
+  it('a setting the dump did not have is sent once set', async () => {
+    const patch = await renderSettings(omit(SETTINGS, 'attachment_mismatch_handling'))
+
+    await userEvent.selectOptions(control(MISMATCH), 'refuse')
+    await save()
+
+    await waitFor(() => {
+      expect(lastPatch(patch)).toMatchObject({ attachment_mismatch_handling: 'refuse' })
+    })
+  })
+
+  // The field rebuilds the array on every keystroke, so a list typed back to
+  // what it was is a different array holding the same entries. Compared by
+  // reference it would be sent as a change.
+  it('a list edited and typed back is not sent', async () => {
+    const patch = await renderSettings(SETTINGS)
+    const original = typesField().value
+
+    await userEvent.clear(typesField())
+    await userEvent.type(typesField(), original)
+    await save()
+
+    await waitFor(() => {
+      expect(lastPatch(patch)).toEqual({})
+    })
   })
 })

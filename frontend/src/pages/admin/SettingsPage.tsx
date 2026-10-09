@@ -1897,7 +1897,14 @@ export function SettingsPage() {
          that name which nothing ever reads. */
       const patch: Record<string, unknown> = {}
       for (const [k, v] of Object.entries(local)) {
-        if (!k.endsWith('_set')) patch[k] = v
+        if (k.endsWith('_set')) continue
+        /* Only what the operator changed (#394). A stored value the server refuses
+           (only a database edit can put one there) used to travel back with every
+           save and fail it, on every tab. JSON.stringify so an untouched array
+           compares equal; a key absent from the dump stringifies to undefined and
+           is always sent. */
+        if (settings && JSON.stringify(settings[k]) === JSON.stringify(v)) continue
+        patch[k] = v
       }
       for (const p of REPUTATION_PROVIDERS) {
         if (!p.keySetting) continue
