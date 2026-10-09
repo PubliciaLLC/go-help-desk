@@ -4,10 +4,10 @@ info:
   version: 1.3.0-beta
   summary: REST API of Go Help Desk, served under /api/v1 beside the SPA.
   description: |
-    Hand-written, and checked by a test that walks the server's real router
-    and fails when this file and the router disagree on any route, on who may
-    call it, or on which handler serves it. When the two disagree, the code is
-    the truth and this file is what gets fixed.
+    Every endpoint under /api/v1, written by hand and checked in the project's
+    test suite against the server's real routes, so no route is missing or
+    stale. Where this file and the server's behaviour disagree on anything
+    else, the server is right and the file has a bug; please report it.
 
     Conventions that hold for every operation except where an operation says
     otherwise, so they are not repeated on each:
