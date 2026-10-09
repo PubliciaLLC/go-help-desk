@@ -200,12 +200,12 @@ https://help.example.com/tickets/…</code></pre>
 <p>The recipient's own address is also written bare, with no display name, for the same reason.</p>
 
 <div class="callout callout-warn">
-  <p><strong>Guest tickets.</strong> In 1.2.0 a guest recipient has nowhere to read the reply, since the link leads to the sign-in page — and nothing is affected, because guest submission does not work in 1.2.0 at all. Both halves landed together in 1.3.0: a guest now receives a private link to their own ticket. See <a href="authentication.html#auth-guest">Guest access</a>.</p>
+  <p><strong>Guest tickets.</strong> In 1.2.0 a guest recipient has nowhere to read the reply, since the link leads to the sign-in page. Nothing is affected, because guest submission does not work in 1.2.0 at all. Both halves landed together in 1.3.0: a guest now receives a private link to their own ticket. See <a href="authentication.html#auth-guest">Guest access</a>.</p>
 </div>
 
 <h2 id="guest">Guest email addresses are validated</h2>
 
-<p>Nothing checked them before: any string at all was accepted, stored, and handed to the mailer. A guest address that is not a single bare address is now refused with <code>400</code>, and the stored value is normalised — trimmed and lower-cased. In 1.2.0 nothing meets this rule, since guest submission is not live there; from 1.3.0 it is the rule every guest submission meets.</p>
+<p>Nothing checked them before: any string at all was accepted, stored, and handed to the mailer. A guest address that is not a single bare address is now refused with <code>400</code>, and the stored value is normalised: trimmed and lower-cased. In 1.2.0 nothing meets this rule, since guest submission is not live there; from 1.3.0 it is the rule every guest submission meets.</p>
 
 <p>If you create tickets through the API with a guest address, check that what you send parses as one address and carries no display name.</p>
 
@@ -261,12 +261,17 @@ frame-ancestors 'none'; base-uri 'none'; form-action 'self'</code></pre>
 
 <h2 id="steps">Doing the upgrade</h2>
 
+<div class="callout callout-note">
+  <p><strong>Going straight to 1.3.0?</strong> Read this page and <a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a>, then follow the steps there.</p>
+</div>
+
 <ol>
   <li><strong>Take a database backup.</strong> Migrations are forward-only; there is no automatic rollback.</li>
   <li><strong>List your credentials</strong> and note what each integration actually calls, so you can re-issue with the right scopes rather than guessing.</li>
   <li><strong>Upgrade.</strong>
     <pre><code>cd go-help-desk
-git pull
+git fetch --tags
+git checkout v1.2.0
 cd docker
 docker compose up -d --build</code></pre>
     Migrations run automatically on startup, before the server accepts traffic.

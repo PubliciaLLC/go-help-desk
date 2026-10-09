@@ -175,7 +175,7 @@ nav {
 }
 
 .hero-code {
-  max-width: 520px;
+  max-width: 640px;
   margin: 0 auto;
   text-align: left;
   border-radius: 10px;
@@ -289,6 +289,14 @@ section + section { border-top: 1px solid var(--border); }
   display: block;
   object-fit: cover;
   object-position: top left;
+}
+
+/* A screenshot that is not a desktop-shaped frame (a phone screen, a single
+   panel) is shown whole, centred, instead of cropped to its top-left corner. */
+.scr-thumb-fit img {
+  object-fit: contain;
+  object-position: center;
+  background: var(--bg-2);
 }
 
 .scr-thumb span {

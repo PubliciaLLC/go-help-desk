@@ -123,7 +123,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
     <div class="section-header">
       <p class="section-label">Release</p>
       <h2 class="section-title">New in 1.3.0</h2>
-      <p class="section-sub">The biggest release since 1.0 — here is what changed.</p>
+      <p class="section-sub">The biggest release since 1.0. Here is what changed.</p>
     </div>
     <div class="features-grid">
 
@@ -234,7 +234,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
         <img src="screenshots/16-admin-audit-log.png" alt="Admin audit log with when, entity, action and actor columns, where a requester is shown as name hidden" loading="lazy" />
         <span>Audit log</span>
       </button>
-      <button class="scr-thumb" data-src="screenshots/17-ticket-activity-feed.png" data-caption="Activity feed: who filed, assigned and changed a ticket, with the requester's name hidden">
+      <button class="scr-thumb scr-thumb-fit" data-src="screenshots/17-ticket-activity-feed.png" data-caption="Activity feed: who filed, assigned and changed a ticket, with the requester's name hidden">
         <img src="screenshots/17-ticket-activity-feed.png" alt="Ticket activity panel with the requester hidden, an assignment, and a status change with its field diff" loading="lazy" />
         <span>Activity feed</span>
       </button>
@@ -242,7 +242,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
         <img src="screenshots/22-account-passkeys.png" alt="Account page with a password form, a passkey named Work laptop, and an authenticator app section" loading="lazy" />
         <span>Passkeys</span>
       </button>
-      <button class="scr-thumb" data-src="screenshots/26-mobile-new-ticket.png" data-caption="On a phone: the new ticket form">
+      <button class="scr-thumb scr-thumb-fit" data-src="screenshots/26-mobile-new-ticket.png" data-caption="On a phone: the new ticket form">
         <img src="screenshots/26-mobile-new-ticket.png" alt="New ticket form on a phone: subject, description, category, type and attachments in one column" loading="lazy" />
         <span>Phone new ticket</span>
       </button>
@@ -384,7 +384,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
         </div>
         <h3>Plugin System (planned for v2)</h3>
-        <p>The admin screen lists plugin records, but plugins cannot be installed yet. This is not available in 1.3.0.</p>
+        <p>A plugin system is planned for v2. Plugins cannot be installed in 1.3.0.</p>
       </div>
 
       <div class="feature-card">
@@ -416,7 +416,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
         <h3>Guest Submission</h3>
-        <p>Anyone can file a ticket without an account and follow it through a private emailed link — no password, no signup. The link is scoped to one ticket, replaced whenever the help desk writes back, and read-only once the ticket closes. <a href="docs/authentication.html#auth-guest">Read how it works →</a></p>
+        <p>Anyone can file a ticket without an account and follow it through a private emailed link. No password, no signup. The link is scoped to one ticket, replaced whenever the help desk writes back, and read-only once the ticket closes. <a href="docs/authentication.html#auth-guest">Read how it works →</a></p>
       </div>
 
     </div>
@@ -489,12 +489,14 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
     <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem;">
 
       <div style="padding: 1.5rem; border: 2px solid var(--blue); border-radius: 10px; background: var(--blue-light);">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v1 · Shipped — latest v1.3.0</div>
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v1 · Shipped · latest v1.3.0</div>
         <h4 style="margin-bottom: 0.75rem;">Core</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
           <li>✓ CTI ticketing</li>
-          <li>✓ SAML + MFA</li>
-          <li>✓ Linked tickets</li>
+          <li>✓ Local, SAML + OIDC sign-in</li>
+          <li>✓ TOTP + passkey MFA</li>
+          <li>✓ Self-service signup</li>
+          <li>✓ Linked tickets + follow-ups</li>
           <li>✓ SLA tracking</li>
           <li>✓ Custom fields</li>
           <li>✓ REST API + MCP</li>
@@ -504,6 +506,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>✓ Full-text search</li>
           <li>✓ Attachment security</li>
           <li>✓ Guest submission</li>
+          <li>✓ Audit log with retention</li>
         </ul>
       </div>
 
@@ -533,6 +536,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>Plugin registry</li>
           <li>ITSM ticket types</li>
           <li>Impact × Urgency matrix</li>
+          <li>Default ticket type per CTI</li>
         </ul>
       </div>
 

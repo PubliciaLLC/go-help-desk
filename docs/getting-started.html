@@ -124,7 +124,7 @@
   <p><strong>New in 1.3.0.</strong></p>
   <ul>
     <li>Published images for amd64 and arm64. <code>docker compose up -d</code> pulls them. Building from source is still supported.</li>
-    <li>Virus scanning is opt-in in Docker Compose. See <a href="#quick-start">Virus scanning</a>.</li>
+    <li>Virus scanning is opt-in in Docker Compose. See <a href="#virus-scanning">Virus scanning</a>.</li>
     <li>Setup also asks for the first category, so a new instance can file a ticket.</li>
     <li>Example secrets are reported as insecure at startup and in an administrator's warning banner.</li>
     <li>Email is queued and retried. Webhooks are sent once and are not retried.</li>
@@ -135,11 +135,11 @@
 
 <h3>Architecture overview</h3>
 <ul>
-  <li><strong>Binary</strong> — a single Go executable that serves the REST API at <code>/api/</code>, the MCP server at <code>/mcp/</code>, and the React SPA at <code>/</code>.</li>
-  <li><strong>Frontend</strong> — compiled at build time and embedded in the binary via <code>go:embed</code>. No Node.js in production.</li>
-  <li><strong>Database</strong> — PostgreSQL. Schema migrations run automatically on every startup before accepting traffic.</li>
-  <li><strong>Plugins</strong> — a plugin system is planned for v2. The admin screen lists plugin records but cannot install them yet.</li>
-  <li><strong>Image</strong> — published to <code>ghcr.io/publiciallc/go-help-desk</code> for amd64 and arm64.</li>
+  <li><strong>Binary</strong>: a single Go executable that serves the REST API at <code>/api/</code>, the MCP server at <code>/mcp/</code>, and the React SPA at <code>/</code>.</li>
+  <li><strong>Frontend</strong>: compiled at build time and embedded in the binary via <code>go:embed</code>. No Node.js in production.</li>
+  <li><strong>Database</strong>: PostgreSQL. Schema migrations run automatically on every startup before accepting traffic.</li>
+  <li><strong>Plugins</strong>: a plugin system is planned for v2. Plugins cannot be installed in 1.3.0.</li>
+  <li><strong>Image</strong>: published to <code>ghcr.io/publiciallc/go-help-desk</code> for amd64 and arm64.</li>
 </ul>
 
 
@@ -184,19 +184,19 @@ JWT_SECRET=&lt;different-32-random-chars&gt;</code></pre>
   <div class="step-num">4</div>
   <div class="step-body">
     <h4>Open the app and complete setup</h4>
-    <p>Navigate to <code>http://localhost:8080</code>. On a fresh database the app redirects to <code>/setup</code>, where you enter a name, email address, and password to create the first admin account, and the name of the first category. The setup page is permanently disabled once any user exists — it cannot be reached again.</p>
+    <p>Navigate to <code>http://localhost:8080</code>. On a fresh database the app redirects to <code>/setup</code>, where you enter a name, email address, and password to create the first admin account, and the name of the first category. The setup page is permanently disabled once any user exists, and it cannot be reached again.</p>
   </div>
 </div>
 
 <div class="callout callout-note">
-  <p><strong>Data persistence</strong> — Postgres data is stored in <code>docker/data/postgres/</code> and file attachments in <code>docker/data/attachments/</code>. When virus scanning is enabled, the ClamAV signature database is stored in <code>docker/data/clamav/</code>. These directories are gitignored and survive container restarts and rebuilds.</p>
+  <p><strong>Data persistence.</strong> Postgres data is stored in <code>docker/data/postgres/</code> and file attachments in <code>docker/data/attachments/</code>. When virus scanning is enabled, the ClamAV signature database is stored in <code>docker/data/clamav/</code>. These directories are gitignored and survive container restarts and rebuilds.</p>
 </div>
 
 <h3>Verify the installation</h3>
 <pre><code>curl http://localhost:8080/health
 # → {"status":"ok"}</code></pre>
 
-<h3>Virus scanning (optional)</h3>
+<h3 id="virus-scanning">Virus scanning (optional)</h3>
 <p>Virus scanning is off by default. To turn it on, uncomment these two lines in <code>docker/.env</code>, which you copied from <code>.env.example</code>:</p>
 <pre><code>CLAMAV_ADDR=tcp://clamav:3310
 COMPOSE_PROFILES=antivirus</code></pre>
@@ -244,7 +244,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>DATABASE_URL</code></td><td>required</td><td>PostgreSQL connection string, for example <code>postgres://user:pass@host:5432/db?sslmode=disable</code>. Migrations run against this database at every start, before the server accepts traffic.</td></tr>
-    <tr><td><code>BASE_URL</code></td><td>required</td><td>Public URL of the instance, for example <code>https://helpdesk.example.com</code>. Write it without a trailing slash: the value is used as written. Used in email and guest links, in the SAML and passkey settings, and as the default OIDC redirect (<code>{BASE_URL}/api/v1/auth/oidc/callback</code>).</td></tr>
+    <tr><td><code>BASE_URL</code></td><td>required</td><td>Public URL of the instance, for example <code>https://helpdesk.example.com</code>. Write it without a trailing slash; some uses (the OIDC redirect, SAML and passkeys) take it as written. Used in email and guest links, in the SAML and passkey settings, and as the default OIDC redirect (<code>{BASE_URL}/api/v1/auth/oidc/callback</code>).</td></tr>
     <tr><td><code>SESSION_SECRET</code></td><td>required</td><td>At least 32 characters, or the server refuses to start. Signs and encrypts session cookies. Changing it signs everyone out. Generate one with <code>openssl rand -base64 32</code>.</td></tr>
     <tr><td><code>JWT_SECRET</code></td><td>required</td><td>Signs the OAuth2 access tokens and is checked on API bearer tokens. No minimum length is enforced, but use 32 or more characters.</td></tr>
   </tbody>
@@ -267,7 +267,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 
 <h3 id="config-email">Email (SMTP)</h3>
 <p>Email is sent only when <strong>both</strong> <code>SMTP_HOST</code> and <code>SMTP_FROM</code> are set. Without email, self-service signup cannot complete, and guests receive no link. These variables are read at startup, so restart the server after changing them.</p>
-<p>Mail is queued in a database outbox and sent by a background worker. A failed send is retried after 30 seconds, with the wait doubling up to one hour, for eight attempts in all. Webhooks are not retried: each one is sent once.</p>
+<p>Mail is queued in a database outbox and sent by a background worker. A failed send is retried after 30 seconds, with the wait doubling each time, for eight attempts over about an hour. Webhooks are not retried: each one is sent once.</p>
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
@@ -283,10 +283,10 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#quick-start">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → Settings → Malware scanning</em> without a restart.</td></tr>
+    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#virus-scanning">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → Settings → Attachments → Malware scanning</em> without a restart.</td></tr>
   </tbody>
 </table>
-<p>Once an address is set, the scan policy defaults to <code>required</code>: an upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. Administrators can change the policy under <em>Admin → Settings → Malware scanning</em>. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
+<p>Once an address is set, the scan policy defaults to <code>required</code>: an upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. Administrators can change the policy under <em>Admin → Settings → Attachments → Malware scanning</em>. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
 
 <h3 id="config-features">Feature switches</h3>
 <table class="param-table">
@@ -300,7 +300,12 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 
 <h3 id="config-compose">With Docker Compose</h3>
 <p><code>.env</code> values reach the app only through the <code>environment</code> block of the <code>app</code> service in <code>docker-compose.yml</code>. The shipped file passes through <code>BASE_URL</code> (default <code>http://localhost:8080</code>), <code>SESSION_SECRET</code>, <code>JWT_SECRET</code>, <code>CLAMAV_ADDR</code>, <code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_USER</code>, <code>SMTP_PASSWORD</code>, <code>SMTP_FROM</code>, <code>SLA_ENABLED</code> and <code>LOG_LEVEL</code>. <code>DATABASE_URL</code> and <code>HTTP_PORT</code> are fixed in the file.</p>
-<p>Any other variable set in <code>.env</code> has no effect. To use one, add it under <code>environment:</code> in <code>docker-compose.yml</code> yourself, for example <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>ATTACHMENT_DIR</code>.</p>
+<p>Any other variable set in <code>.env</code> has no effect, for example <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>ATTACHMENT_DIR</code>. To use one, add it in <code>docker/docker-compose.override.yml</code>, which Compose reads automatically and <code>git pull</code> does not touch:</p>
+<pre><code>services:
+  app:
+    environment:
+      AUTH_RATE_LIMIT_PER_MINUTE: "5"</code></pre>
+<p>When you build from source, add <code>-f docker-compose.override.yml</code> to the build command, because Compose skips the override file when <code>-f</code> is given.</p>
 <p><code>GHD_VERSION</code> is read by Compose, not by the app; see <a href="#pin-version">Pinning a version</a>. <code>COMPOSE_PROFILES=antivirus</code> starts ClamAV.</p>
 
 
@@ -312,31 +317,31 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 
 <ol>
   <li>
-    <strong>Create your CTI hierarchy</strong> — setup has already created the first Category. Go to <em>Admin → Categories</em> and add the rest. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
+    <strong>Create your CTI hierarchy.</strong> Setup has already created the first Category. Go to <em>Admin → Categories</em> and add the rest. See the <a href="admin-guide.html#admin-cti">Admin Guide: Categories</a> for a worked example.
   </li>
   <li>
-    <strong>Review ticket statuses</strong> — the system creates five default statuses (New, In Progress, Pending, Resolved, Closed). Closed is terminal by default. If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a> and <a href="admin-guide.html#admin-closed-reopen">Reopening closed tickets</a>.
+    <strong>Review ticket statuses.</strong> The system creates five default statuses (New, In Progress, Pending, Resolved, Closed). Closed is terminal by default. If you need intermediate statuses (e.g. "Awaiting Vendor"), add them now under <em>Admin → Statuses</em>. See <a href="admin-guide.html#admin-statuses">Admin Guide: Statuses</a> and <a href="admin-guide.html#admin-closed-reopen">Reopening closed tickets</a>.
   </li>
   <li>
-    <strong>Create groups and assign scope</strong> — define which staff teams handle which categories. See <a href="admin-guide.html#admin-groups">Admin Guide: Groups &amp; scope</a>.
+    <strong>Create groups and assign scope.</strong> Define which staff teams handle which categories. See <a href="admin-guide.html#admin-groups">Admin Guide: Groups &amp; scope</a>.
   </li>
   <li>
-    <strong>Create or invite staff accounts</strong> — create staff accounts from <em>Admin → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
+    <strong>Create or invite staff accounts.</strong> Create staff accounts from <em>Admin → Users</em>, or have staff register themselves and then promote their role. See <a href="admin-guide.html#admin-users">Admin Guide: Users &amp; roles</a>.
   </li>
   <li>
-    <strong>Configure email</strong> (optional) — set <code>SMTP_HOST</code> and <code>SMTP_FROM</code> (both are needed) and any other SMTP variables, then restart. See <a href="#config-email">Email (SMTP)</a>.
+    <strong>Configure email</strong> (optional). Set <code>SMTP_HOST</code> and <code>SMTP_FROM</code> (both are needed) and any other SMTP variables, then restart. See <a href="#config-email">Email (SMTP)</a>.
   </li>
   <li>
-    <strong>Configure SLA policies</strong> (optional) — turn on SLA tracking under <em>Admin → Settings</em>, then set response and resolution targets per priority or category in the SLA section. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
+    <strong>Configure SLA policies</strong> (optional). Turn on SLA tracking under <em>Admin → Settings</em>, then set response and resolution targets per priority or category in the SLA section. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
   </li>
   <li>
-    <strong>Set up SSO</strong> (optional) — configure SAML or OIDC under <em>Admin → Settings</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
+    <strong>Set up SSO</strong> (optional). Configure SAML or OIDC under <em>Admin → Settings</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
   </li>
   <li>
-    <strong>Check the warning banner</strong> — administrators see a red banner while an example secret is in use. Replace the secret and restart before inviting users.
+    <strong>Check the warning banner.</strong> Administrators see a red banner while an example secret is in use. Replace the secret and restart before inviting users.
   </li>
   <li>
-    <strong>Decide audit retention</strong> — choose whether the audit log is kept forever (the default) or pruned, and whether staff can see ticket change history. Both are under <em>Admin → Settings</em>, in the Audit log section. See <a href="admin-guide.html#admin-audit">Admin Guide: Audit log</a>.
+    <strong>Decide audit retention.</strong> Choose whether the audit log is kept forever (the default) or pruned, and whether staff can see ticket change history. Both are under <em>Admin → Settings</em>, in the Audit log section. See <a href="admin-guide.html#admin-audit">Admin Guide: Audit log</a>.
   </li>
 </ol>
 
