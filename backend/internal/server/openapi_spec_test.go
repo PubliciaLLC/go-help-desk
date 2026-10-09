@@ -3,13 +3,13 @@ package server
 // docs/api/openapi.yaml is hand-written. These tests are what keep it honest:
 // they build the real router, walk it, and fail when the spec and the code
 // disagree about which routes exist, which handler serves each one, or who may
-// call it. When they disagree the code is right and the spec is what changes —
+// call it. When they disagree the code is right and the spec is what changes,
 // unless the code is the bug, in which case the test has done its job anyway.
 //
-// No database: the router is built by New with nil services, which is enough
-// because building it calls no service method. Nothing here serves a request
-// through a handler; the auth probe runs each route's own middleware in front
-// of a sentinel instead.
+// No database: the router is built by New with nil for almost every service.
+// Building it touches only the two collaborators routeOnlyServer supplies, and
+// nothing here serves a request through a handler: the auth probe runs each
+// route's own middleware in front of a sentinel instead.
 
 import (
 	"context"
@@ -37,6 +37,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+	"github.com/publiciallc/go-help-desk/backend/internal/version"
 )
 
 // specFile is relative to this package's directory, which is where go test
@@ -53,6 +54,18 @@ var specExcludedRoutes = map[string]string{}
 var specOnlyRoutes = map[string]string{}
 
 var specMethods = []string{"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
+// specRoles is every session role, in the order x-ghd-roles lists them.
+var specRoles = []string{string(user.RoleAdmin), string(user.RoleStaff), string(user.RoleUser)}
+
+// The Authorization prefixes the security schemes document. The probe sends
+// the first two, so a wrong one fails test 3; the guest one is checked by
+// TestOpenAPISpec_FrameMatchesCode.
+const (
+	apiKeyPrefix = "ApiKey "
+	bearerPrefix = "Bearer "
+	guestPrefix  = "Guest "
+)
 
 // ── loading ────────────────────────────────────────────────────────────────
 
@@ -215,11 +228,15 @@ func walkRouter(t *testing.T, s *Server) map[string]walkedRoute {
 
 // ── test 1: the route sets agree ───────────────────────────────────────────
 
+// anyParam reduces a route key to its shape, so a renamed parameter can be
+// suggested as the closest match.
+var anyParam = regexp.MustCompile(`\{[^}]*\}`)
+
 // diffRoutes is the comparison, separate so its own behaviour is tested
 // without editing the spec file (TestDiffRoutes).
 func diffRoutes(router map[string]string, spec map[string]string, excluded, specOnly map[string]string) []string {
 	var problems []string
-	shape := func(k string) string { return regexp.MustCompile(`\{[^}]*\}`).ReplaceAllString(k, "{}") }
+	shape := func(k string) string { return anyParam.ReplaceAllString(k, "{}") }
 	near := func(k string, in map[string]string) string {
 		var hits []string
 		for o := range in {
@@ -333,6 +350,8 @@ func TestDiffRoutes(t *testing.T) {
 			want:     []string{"in specExcludedRoutes but the spec documents it"}},
 		{name: "stale spec-only entry", specOnly: map[string]string{"GET /mcp/sse": "mounted on the ServeMux"},
 			want: []string{"specOnlyRoutes lists GET /mcp/sse"}},
+		{name: "spec-only yet served", specOnly: map[string]string{"GET /api/v1/a": "mounted on the ServeMux"},
+			want: []string{"GET /api/v1/a is in specOnlyRoutes but the router serves it"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -377,6 +396,97 @@ var (
 	pathItemKeys   = []string{"summary", "description", "parameters"}
 )
 
+const (
+	responsesPrefix = "#/components/responses/"
+	ticketRefParam  = "#/components/parameters/TicketRef"
+)
+
+// refsIn lists every $ref under v.
+func refsIn(v any) []string {
+	var out []string
+	switch x := v.(type) {
+	case map[string]any:
+		if ref, ok := x["$ref"].(string); ok {
+			out = append(out, ref)
+		}
+		for _, c := range x {
+			out = append(out, refsIn(c)...)
+		}
+	case []any:
+		for _, c := range x {
+			out = append(out, refsIn(c)...)
+		}
+	}
+	return out
+}
+
+// reachableRefs is every $ref reachable from outside components, following
+// each one into the component it names. A component that only refers to
+// itself, or to another unused one, is not reachable.
+func reachableRefs(root map[string]any) map[string]bool {
+	var queue []string
+	for k, v := range root {
+		if k != "components" {
+			queue = append(queue, refsIn(v)...)
+		}
+	}
+	seen := map[string]bool{}
+	for len(queue) > 0 {
+		ref := queue[0]
+		queue = queue[1:]
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		if target, ok := resolvePointer(root, ref); ok {
+			queue = append(queue, refsIn(target)...)
+		}
+	}
+	return seen
+}
+
+// callerSentence is the first sentence of a role-restricted operation's
+// description, generated from the same values the router is checked against
+// (x-ghd-roles, x-ghd-mfa and whether a machine credential is admitted), so
+// the prose cannot drift from them.
+func callerSentence(roles []string, mfa, machine bool) string {
+	noun := map[string]string{"admin": "administrators", "staff": "staff", "user": "reporting users"}
+	var who []string
+	for i := len(roles) - 1; i >= 0; i-- {
+		who = append(who, noun[roles[i]])
+	}
+	s := who[len(who)-1]
+	if len(who) > 1 {
+		s = strings.Join(who[:len(who)-1], ", ") + " and " + s
+	}
+	s = strings.ToUpper(s[:1]) + s[1:] + " only"
+	if !machine {
+		s += ", in a signed-in session"
+	}
+	if mfa {
+		s += " (second factor required)"
+	}
+	return s + "."
+}
+
+func TestCallerSentence(t *testing.T) {
+	cases := []struct {
+		roles        []string
+		mfa, machine bool
+		want         string
+	}{
+		{[]string{"admin"}, true, true, "Administrators only (second factor required)."},
+		{[]string{"admin", "staff"}, true, true, "Staff and administrators only (second factor required)."},
+		{[]string{"admin"}, true, false, "Administrators only, in a signed-in session (second factor required)."},
+		{[]string{"admin", "user"}, false, true, "Reporting users and administrators only."},
+	}
+	for _, tc := range cases {
+		if got := callerSentence(tc.roles, tc.mfa, tc.machine); got != tc.want {
+			t.Errorf("callerSentence(%v, %v, %v) = %q, want %q", tc.roles, tc.mfa, tc.machine, got, tc.want)
+		}
+	}
+}
+
 func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 	doc := loadSpec(t)
 	root := doc.root
@@ -396,8 +506,7 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 		fail("top-level security is not used; every operation states its own")
 	}
 
-	// Every $ref is local and resolves; remember what was referenced.
-	referenced := map[string]bool{}
+	// Every $ref is local and resolves, and every key is a string.
 	var walk func(v any, at string)
 	walk = func(v any, at string) {
 		switch x := v.(type) {
@@ -407,12 +516,29 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 					fail("%s: $ref %q is not local", at, ref)
 				} else if _, ok := resolvePointer(root, ref); !ok {
 					fail("%s: $ref %q does not resolve", at, ref)
-				} else {
-					referenced[ref] = true
 				}
+				// Beside a Reference Object (anything but a schema) OpenAPI
+				// 3.1 ignores every key except summary and description.
+				if !strings.HasPrefix(ref, "#/components/schemas/") {
+					for k := range x {
+						if k != "$ref" && k != "summary" && k != "description" {
+							fail("%s: %q beside $ref %q is ignored by OpenAPI 3.1", at, k, ref)
+						}
+					}
+				}
+			}
+			if _, ok := x["nullable"].(bool); ok {
+				fail("%s: nullable is OpenAPI 3.0; in 3.1 write type: [<type>, 'null']", at)
 			}
 			for k, c := range x {
 				walk(c, at+"/"+k)
+			}
+		case map[any]any:
+			for k, c := range x {
+				if _, ok := k.(string); !ok {
+					fail("%s: key %v is a %T, not a string; quote it (a status code is written '200')", at, k, k)
+				}
+				walk(c, fmt.Sprintf("%s/%v", at, k))
 			}
 		case []any:
 			for i, c := range x {
@@ -423,20 +549,22 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 	walk(root, "#")
 
 	// Nothing defined and never used, so merged fragments leave no litter.
+	reachable := reachableRefs(root)
 	comps, _ := root["components"].(map[string]any)
 	for kind, v := range comps {
 		if kind == "securitySchemes" {
-			continue
+			continue // used by name, not by $ref: checked below
 		}
 		defs, _ := v.(map[string]any)
 		for name := range defs {
-			if !referenced["#/components/"+kind+"/"+name] {
-				fail("components.%s.%s is never referenced", kind, name)
+			if !reachable["#/components/"+kind+"/"+name] {
+				fail("components.%s.%s is never referenced from an operation", kind, name)
 			}
 		}
 	}
 
 	schemes, _ := comps["securitySchemes"].(map[string]any)
+	usedSchemes := map[string]bool{}
 	declaredTags := map[string]bool{}
 	tags, _ := root["tags"].([]any)
 	for _, tg := range tags {
@@ -446,6 +574,9 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 			fail("tag %q is declared twice", name)
 		}
 		declaredTags[name] = true
+		if d, _ := m["description"].(string); strings.TrimSpace(d) == "" {
+			fail("tag %q has no description", name)
+		}
 	}
 	usedTags := map[string]bool{}
 	opIDs := map[string]string{}
@@ -495,15 +626,40 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 		if !ok {
 			fail("%s: security must be stated, [] for a public operation", where)
 		}
-		for _, req := range sec {
-			for name := range req.(map[string]any) {
+		machine := false
+		for i, req := range sec {
+			m, ok := req.(map[string]any)
+			if !ok {
+				fail("%s: security[%d] is %v, want a map from scheme to scopes such as {sessionCookie: []}", where, i, req)
+				continue
+			}
+			if len(m) > 1 {
+				fail("%s: security[%d] names %d schemes in one requirement, which means a caller needs all of them at once; the router never requires two credentials together, so give each its own entry", where, i, len(m))
+			}
+			for name, scopes := range m {
 				if _, ok := schemes[name]; !ok {
 					fail("%s: security scheme %q is not declared", where, name)
 				}
+				if _, ok := scopes.([]any); !ok {
+					fail("%s: security scheme %q has %v for scopes, want a list", where, name, scopes)
+				}
+				usedSchemes[name] = true
+				machine = machine || name == "apiKey" || name == "oauthClient"
 			}
 		}
-		resps, _ := o.op["responses"].(map[string]any)
-		if len(resps) == 0 {
+
+		// Who may call it, in the first sentence, where not everyone may.
+		if roles := stringList(o.op["x-ghd-roles"]); len(roles) > 0 && len(roles) < len(specRoles) {
+			mfa, _ := o.op["x-ghd-mfa"].(bool)
+			want := callerSentence(roles, mfa, machine)
+			if d, _ := o.op["description"].(string); !strings.HasPrefix(strings.TrimSpace(d), want) {
+				fail("%s: the description of an operation open to some roles only starts by saying so: %q", where, want)
+			}
+		}
+
+		rv, present := o.op["responses"]
+		resps, isMap := rv.(map[string]any)
+		if !present || (isMap && len(resps) == 0) {
 			fail("%s: no responses", where)
 		}
 		hasSuccess := false
@@ -515,10 +671,15 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 				hasSuccess = true
 			}
 			rm, _ := r.(map[string]any)
-			if _, isRef := rm["$ref"]; !isRef {
-				if d, _ := rm["description"].(string); strings.TrimSpace(d) == "" || strings.HasPrefix(d, "TODO") {
-					fail("%s: response %s has no description", where, code)
+			if ref, isRef := rm["$ref"].(string); isRef {
+				if !strings.HasPrefix(ref, responsesPrefix) {
+					fail("%s: response %s is $ref %q; a response refers to %s", where, code, ref, responsesPrefix)
 				}
+				if code == "401" && ref != responsesPrefix+"Unauthorized" {
+					fail("%s: response 401 is $ref %q; a 401 that refers to a component refers to Unauthorized", where, ref)
+				}
+			} else if d, _ := rm["description"].(string); strings.TrimSpace(d) == "" || strings.HasPrefix(d, "TODO") {
+				fail("%s: response %s has no description", where, code)
 			}
 		}
 		// A stub (handler answers 501 not_implemented and nothing else) says
@@ -527,46 +688,43 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 			if hasSuccess || resps["501"] == nil {
 				fail("%s: x-ghd-stub operations document 501 and no success response", where)
 			}
-		} else if !hasSuccess {
+		} else if isMap && !hasSuccess {
 			fail("%s: no 1xx/2xx/3xx response (a 501 stub says x-ghd-stub: true)", where)
 		}
 
-		// Template parameters and declared path parameters are the same set,
-		// each declared once and required.
+		// Each parameter is declared once, and template parameters and
+		// declared path parameters are the same set, each required.
 		want := map[string]bool{}
 		for _, m := range templateParams.FindAllStringSubmatch(o.path, -1) {
 			want[m[1]] = true
 		}
-		got := map[string]int{}
-		for _, list := range []any{o.item["parameters"], o.op["parameters"]} {
-			ps, _ := list.([]any)
-			for _, pv := range ps {
-				pm, _ := pv.(map[string]any)
-				if ref, ok := pm["$ref"].(string); ok {
-					r, _ := resolvePointer(root, ref)
-					pm, _ = r.(map[string]any)
-				}
-				if pm["in"] != "path" {
-					continue
-				}
-				name, _ := pm["name"].(string)
-				got[name]++
-				if pm["required"] != true {
-					fail("%s: path parameter %q must be required: true", where, name)
-				}
+		got := map[string]bool{}
+		declared := map[string]int{}
+		for _, pm := range operationParams(root, o) {
+			name, _ := pm["name"].(string)
+			in, _ := pm["in"].(string)
+			declared[in+" "+name]++
+			if in != "path" {
+				continue
+			}
+			got[name] = true
+			if pm["required"] != true {
+				fail("%s: path parameter %q must be required: true", where, name)
+			}
+		}
+		for k, c := range declared {
+			if c > 1 {
+				fail("%s: parameter %s is declared %d times", where, k, c)
 			}
 		}
 		for n := range want {
-			if got[n] == 0 {
+			if !got[n] {
 				fail("%s: path parameter {%s} is not declared", where, n)
 			}
 		}
-		for n, c := range got {
+		for n := range got {
 			if !want[n] {
 				fail("%s: declares path parameter %q that is not in the path", where, n)
-			}
-			if c > 1 {
-				fail("%s: path parameter %q is declared %d times", where, n, c)
 			}
 		}
 	}
@@ -575,6 +733,45 @@ func TestOpenAPISpec_IsWellFormed(t *testing.T) {
 			fail("tag %q is declared but no operation uses it", name)
 		}
 	}
+	for name := range schemes {
+		if !usedSchemes[name] {
+			fail("components.securitySchemes.%s is never used by an operation", name)
+		}
+	}
+}
+
+// operationParams is every parameter that applies to an operation, path
+// item's and operation's own, with $refs resolved.
+func operationParams(root map[string]any, o specOp) []map[string]any {
+	var out []map[string]any
+	for _, list := range []any{o.item["parameters"], o.op["parameters"]} {
+		ps, _ := list.([]any)
+		for _, pv := range ps {
+			pm, _ := pv.(map[string]any)
+			if ref, ok := pm["$ref"].(string); ok {
+				r, _ := resolvePointer(root, ref)
+				pm, _ = r.(map[string]any)
+			}
+			if pm != nil {
+				out = append(out, pm)
+			}
+		}
+	}
+	return out
+}
+
+// declaresParamRef reports whether the operation takes the parameter as a
+// $ref to target, at the path item or on the operation.
+func declaresParamRef(o specOp, target string) bool {
+	for _, list := range []any{o.item["parameters"], o.op["parameters"]} {
+		ps, _ := list.([]any)
+		for _, pv := range ps {
+			if pm, _ := pv.(map[string]any); pm["$ref"] == target {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func resolvePointer(root any, ref string) (any, bool) {
@@ -592,14 +789,70 @@ func resolvePointer(root any, ref string) (any, bool) {
 	return cur, true
 }
 
+// ── the frame: what the shared components say about the code ──────────────
+
+func TestOpenAPISpec_FrameMatchesCode(t *testing.T) {
+	doc := loadSpec(t)
+	info, _ := doc.root["info"].(map[string]any)
+	if v, _ := info["version"].(string); v != version.Version {
+		t.Errorf("%s: info.version is %q, but the server reports %q", specFile, v, version.Version)
+	}
+
+	comps, _ := doc.root["components"].(map[string]any)
+	schemes, _ := comps["securitySchemes"].(map[string]any)
+	cases := []struct {
+		name     string
+		fields   map[string]string
+		mentions string // the description shows the caller this
+	}{
+		{"sessionCookie", map[string]string{"type": "apiKey", "in": "cookie", "name": auth.SessionName}, ""},
+		{"apiKey", map[string]string{"type": "apiKey", "in": "header", "name": "Authorization"}, "Authorization: " + apiKeyPrefix},
+		{"oauthClient", map[string]string{"type": "http", "scheme": "bearer", "bearerFormat": "JWT"}, "Authorization: " + bearerPrefix},
+		{"guestToken", map[string]string{"type": "apiKey", "in": "header", "name": "Authorization"}, "Authorization: " + guestPrefix},
+	}
+	if len(schemes) != len(cases) {
+		t.Errorf("%s: %d security schemes are declared, want the %d the auth middleware implements", specFile, len(schemes), len(cases))
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, ok := schemes[tc.name].(map[string]any)
+			if !ok {
+				t.Fatalf("%s: components.securitySchemes.%s is missing", specFile, tc.name)
+			}
+			for k, want := range tc.fields {
+				if got, _ := s[k].(string); got != want {
+					t.Errorf("%s: securitySchemes.%s.%s is %q, want %q", specFile, tc.name, k, got, want)
+				}
+			}
+			if d, _ := s["description"].(string); !strings.Contains(d, tc.mentions) {
+				t.Errorf("%s: securitySchemes.%s.description does not show %q", specFile, tc.name, tc.mentions)
+			}
+		})
+	}
+
+	// The guest prefix is the one the auth probe never sends.
+	reached := false
+	h := authmw.GuestAuth(func(context.Context, string) (string, error) { return "ticket", nil })(
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", guestPrefix+"token")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if !reached {
+		t.Errorf("GuestAuth refuses %q, which securitySchemes.guestToken documents", guestPrefix+"<token>")
+	}
+}
+
 // ── test 3: who may call each route ────────────────────────────────────────
 
 // routeAuth is what the router's own middleware admits, measured.
 type routeAuth struct {
 	public, guest, anonymousWhenGuests, ticketAccess bool
 	roles                                            []string
-	mfa, apiKey, oauth                               bool
-	scope                                            string
+	mfa                                              bool
+	apiKey, oauth                                    bool
+	keyScopes, oauthScopes                           []string // a smallest set that is admitted
+	anonStatus                                       int      // what a caller with no credential got
+	refusals                                         map[int]bool
 }
 
 // Middleware the probe does not need to run: not authentication.
@@ -608,9 +861,25 @@ var probeIgnored = []string{
 	"server.requestLogger", "server.securityHeaders", "server.reputationDeadline",
 }
 
+// minimalScopes shrinks all to a smallest set that admits still accepts,
+// dropping later scopes first: auth.All lists read before write, so write,
+// which implies read, goes before the read it would otherwise shadow.
+func minimalScopes(all []string, admits func([]string) bool) []string {
+	cur := slices.Clone(all)
+	for i := len(all) - 1; i >= 0; i-- {
+		drop := all[i]
+		trial := slices.DeleteFunc(slices.Clone(cur), func(s string) bool { return s == drop })
+		if admits(trial) {
+			cur = trial
+		}
+	}
+	sort.Strings(cur)
+	return cur
+}
+
 func probeRoute(t *testing.T, r walkedRoute, keys map[string]probeKey) routeAuth {
 	t.Helper()
-	var ra routeAuth
+	ra := routeAuth{refusals: map[int]bool{}}
 	var chain []func(http.Handler) http.Handler
 	for _, m := range r.mws {
 		name := funcName(m)
@@ -630,7 +899,12 @@ func probeRoute(t *testing.T, r walkedRoute, keys map[string]probeKey) routeAuth
 			t.Fatalf("%s %s: the probe does not know middleware %s; teach probeRoute what it means for authentication", r.method, r.path, name)
 		}
 	}
-	reaches := func(header, value string) bool {
+	if ra.guest {
+		return ra
+	}
+	// reach runs the chain and reports whether the sentinel was reached and,
+	// when it was not, the status the router answered with instead.
+	reach := func(header, value string) (bool, int) {
 		reached := false
 		var h http.Handler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })
 		for i := len(chain) - 1; i >= 0; i-- {
@@ -640,35 +914,51 @@ func probeRoute(t *testing.T, r walkedRoute, keys map[string]probeKey) routeAuth
 		if header != "" {
 			req.Header.Set(header, value)
 		}
-		h.ServeHTTP(httptest.NewRecorder(), req)
-		return reached
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return reached, rec.Code
+	}
+	admits := func(header, value string) bool {
+		ok, code := reach(header, value)
+		if !ok {
+			ra.refusals[code] = true
+		}
+		return ok
 	}
 	n := len(keys)
 	apiKey := func(role user.Role, scopes []string) string {
 		n++
 		raw := fmt.Sprintf("probe-key-%d", n)
 		keys[auth.HashToken(raw)] = probeKey{role, scopes}
-		return "ApiKey " + raw
+		return apiKeyPrefix + raw
+	}
+	bearer := func(scopes []string) string {
+		tok, err := auth.IssueAccessToken(auth.OAuthClient{ID: uuid.New(), ClientID: "probe", Scopes: scopes}, probeJWTSecret)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bearerPrefix + tok
 	}
 	var all []string
 	for _, sc := range auth.All() {
 		all = append(all, sc.String())
 	}
-	if ra.guest {
-		return ra
-	}
-	ra.public = !ra.anonymousWhenGuests && reaches("", "")
-	if ra.public {
+
+	if ok, code := reach("", ""); !ok {
+		ra.anonStatus = code
+		ra.refusals[code] = true
+	} else if !ra.anonymousWhenGuests {
+		ra.public = true
 		return ra
 	}
 	var owner user.Role
 	for _, role := range []user.Role{user.RoleAdmin, user.RoleStaff, user.RoleUser} {
-		if reaches("X-Probe-Session", string(role)+":mfa") {
+		if admits("X-Probe-Session", string(role)+":mfa") {
 			ra.roles = append(ra.roles, string(role))
 			if owner == "" {
 				owner = role
 			}
-			if !reaches("X-Probe-Session", string(role)+":nomfa") {
+			if !admits("X-Probe-Session", string(role)+":nomfa") {
 				ra.mfa = true
 			}
 		}
@@ -676,20 +966,12 @@ func probeRoute(t *testing.T, r walkedRoute, keys map[string]probeKey) routeAuth
 	if owner == "" {
 		return ra
 	}
-	ra.apiKey = reaches("Authorization", apiKey(owner, all))
-	if ra.apiKey && !reaches("Authorization", apiKey(owner, nil)) {
-		for _, sc := range all { // read before write, so a GET finds :read
-			if reaches("Authorization", apiKey(owner, []string{sc})) {
-				ra.scope = sc
-				break
-			}
-		}
+	if ra.apiKey = admits("Authorization", apiKey(owner, all)); ra.apiKey {
+		ra.keyScopes = minimalScopes(all, func(sc []string) bool { return admits("Authorization", apiKey(owner, sc)) })
 	}
-	tok, err := auth.IssueAccessToken(auth.OAuthClient{ID: uuid.New(), ClientID: "probe", Scopes: all}, probeJWTSecret)
-	if err != nil {
-		t.Fatal(err)
+	if ra.oauth = admits("Authorization", bearer(all)); ra.oauth {
+		ra.oauthScopes = minimalScopes(all, func(sc []string) bool { return admits("Authorization", bearer(sc)) })
 	}
-	ra.oauth = reaches("Authorization", "Bearer "+tok)
 	return ra
 }
 
@@ -729,18 +1011,30 @@ func TestOpenAPISpec_AuthMatchesRouter(t *testing.T) {
 		has := func(code string) bool { _, ok := resps[code]; return ok }
 		refIs := func(code, name string) bool {
 			m, _ := resps[code].(map[string]any)
-			return m["$ref"] == "#/components/responses/"+name
+			return m["$ref"] == responsesPrefix+name
 		}
 		gated := !ra.public && !ra.guest
 		if gated && !has("401") {
 			bad("an authenticated operation must document 401")
 		}
-		restricted := len(ra.roles) < 3 || ra.mfa || ra.scope != "" || (gated && !ra.apiKey)
-		if gated && restricted && !has("403") {
-			bad("the router can refuse this with 403 (role, MFA, scope or machine credential); document it")
+		if ra.anonStatus != 0 && ra.anonStatus != http.StatusUnauthorized {
+			bad("a caller with no credential is answered %d, not 401; the role check has to run before RequireMFA and the other gates", ra.anonStatus)
+		}
+		var refused []int
+		for code := range ra.refusals {
+			if code != http.StatusUnauthorized && !has(fmt.Sprint(code)) { // 401: reported above
+				refused = append(refused, code)
+			}
+		}
+		sort.Ints(refused)
+		for _, code := range refused {
+			bad("the router refuses some callers with %d (role, MFA, scope or machine credential); document it", code)
 		}
 		if ra.ticketAccess && !refIs("404", "TicketNotFound") {
 			bad("routes under /tickets/{id} answer 404 for a ticket the caller may not see; 404 must be $ref TicketNotFound")
+		}
+		if ra.ticketAccess && !declaresParamRef(o, ticketRefParam) {
+			bad("routes under /tickets/{id} take {id} as $ref TicketRef, which says what the router does with a UUID and with a tracking number")
 		}
 		if ra.guest && !refIs("404", "GuestNotFound") {
 			bad("guest-token routes refuse with the single guest 404; 404 must be $ref GuestNotFound")
@@ -752,23 +1046,33 @@ func TestOpenAPISpec_AuthMatchesRouter(t *testing.T) {
 	}
 }
 
-// securityOf renders an operation's security requirements as sorted strings
-// such as "apiKey:tickets:read", "sessionCookie", "anonymous".
+// securityOf renders an operation's security requirements as sorted strings,
+// one per requirement object, such as "apiKey:tickets:read", "sessionCookie",
+// "anonymous". An object naming two schemes, which would mean a caller needs
+// both, renders as "apiKey:tickets:read+sessionCookie" and so never matches.
 func securityOf(op map[string]any) []string {
 	var out []string
 	reqs, _ := op["security"].([]any)
 	for _, req := range reqs {
-		m, _ := req.(map[string]any)
-		if len(m) == 0 {
-			out = append(out, "anonymous")
+		m, ok := req.(map[string]any)
+		if !ok {
+			out = append(out, fmt.Sprintf("invalid(%v)", req))
+			continue
 		}
+		var parts []string
 		for name, v := range m {
 			s := name
 			if vals := stringList(v); len(vals) > 0 {
+				sort.Strings(vals)
 				s += ":" + strings.Join(vals, ",")
 			}
-			out = append(out, s)
+			parts = append(parts, s)
 		}
+		if len(parts) == 0 {
+			parts = []string{"anonymous"}
+		}
+		sort.Strings(parts)
+		out = append(out, strings.Join(parts, "+"))
 	}
 	sort.Strings(out)
 	return out
@@ -782,21 +1086,23 @@ func expectedSecurity(ra routeAuth) []string {
 	case ra.guest:
 		return []string{"guestToken"}
 	}
+	withScopes := func(name string, scopes []string) string {
+		if len(scopes) == 0 {
+			return name
+		}
+		return name + ":" + strings.Join(scopes, ",")
+	}
 	if ra.anonymousWhenGuests {
 		out = append(out, "anonymous")
 	}
 	if len(ra.roles) > 0 {
 		out = append(out, "sessionCookie")
 	}
-	suffix := ""
-	if ra.scope != "" {
-		suffix = ":" + ra.scope
-	}
 	if ra.apiKey {
-		out = append(out, "apiKey"+suffix)
+		out = append(out, withScopes("apiKey", ra.keyScopes))
 	}
 	if ra.oauth {
-		out = append(out, "oauthClient"+suffix)
+		out = append(out, withScopes("oauthClient", ra.oauthScopes))
 	}
 	sort.Strings(out)
 	return out

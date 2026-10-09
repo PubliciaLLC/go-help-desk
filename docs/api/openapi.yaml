@@ -9,11 +9,11 @@ info:
     on who may call it, or on which handler serves it. When the two disagree,
     the code is the truth and this file is what gets fixed.
 
-    Conventions that hold for every operation, so they are not repeated on each:
+    Conventions that hold for every operation except where an operation says
+    otherwise, so they are not repeated on each:
 
-    - Every JSON request body is decoded with a 1 MiB cap and unknown fields
-      are ignored (server/respond.go DecodeJSON). A body that is not JSON, or
-      is over the cap, answers 400.
+    - Every JSON request body is read with a 1 MiB cap, and unknown fields are
+      ignored. A body that is not JSON, or is over the cap, answers 400.
     - Every error from a handler is the envelope in components.schemas.Error,
       served as application/json. Refusals produced by the authentication
       middleware (401 unauthorized, 403 forbidden / mfa_required /
@@ -21,11 +21,34 @@ info:
       served as text/plain; charset=utf-8, because they are written with
       net/http's http.Error.
     - Any operation may answer 500 internal_error ("an internal error
-      occurred"); it is listed only where a handler has a 5xx of its own.
-    - A chi-level miss (unknown path) is 404 with the plain-text body
-      "404 page not found"; a known path with the wrong method is 405.
+      occurred"); it is listed only where a handler has a 5xx of its own. A
+      handler that panics is answered 500 with an empty body, not the
+      envelope.
+    - An unknown path is 404 with the plain-text body "404 page not found",
+      and a known path with the wrong method is 405, but only for a caller
+      that the enclosing group of routes admits. Under /api/v1/admin,
+      /api/v1/tickets, /api/v1/me and /api/v1/groups the group's own checks
+      run first, so a caller it does not admit gets that group's 401 or 403
+      instead.
     - Paths are documented without a trailing slash. Routes mounted at a
       sub-router root (for example /api/v1/tickets) also answer with one.
+
+    Who may call an operation is stated by its security requirements and by
+    three extensions on the operation:
+
+    - x-ghd-roles: the roles a signed-in session may have (admin, staff,
+      user). A machine credential acts at a role too: an API key at its
+      owner's, an OAuth client as staff. A role outside the list is refused
+      with 403 forbidden. Absent on public and guest-token operations.
+    - x-ghd-mfa: true when a session must have passed its second factor;
+      one that has not is refused with 403 mfa_required. API keys and OAuth
+      clients count as having passed it. Present wherever x-ghd-roles is.
+    - x-ghd-anonymous-when: guest_submission_enabled marks an operation that
+      also admits a caller with no credential, but only while the instance
+      accepts guest submissions.
+
+    An operation open to some roles only says so in the first sentence of its
+    description.
 
     The MCP server at /mcp/ (GET /mcp/sse, POST /mcp/message) is JSON-RPC over
     Server-Sent Events, authenticated by the same chain as /api/; see
@@ -64,27 +87,36 @@ tags:
   - name: Audit
     description: The admin-wide audit view.
   - name: "Admin: Users"
+    description: Accounts, their roles and passwords, and disabling or deleting them.
   - name: "Admin: Groups"
+    description: Groups, their members, and the categories and types each group is scoped to.
   - name: "Admin: Catalogue"
     description: Categories, types, items, custom-field definitions and their assignments.
   - name: "Admin: SLA"
+    description: SLA policies, the response and resolution targets tickets are measured against.
   - name: "Admin: Statuses"
+    description: The system and custom ticket statuses.
   - name: "Admin: Settings"
     description: Instance settings, the logo, and security warnings.
   - name: "Admin: Single sign-on"
     description: SAML and OIDC configuration.
   - name: "Admin: Plugins"
+    description: Installed plugins and whether each is enabled. Installing and uninstalling are not implemented.
   - name: "Admin: Credentials"
     description: The scope catalogue, API keys and OAuth clients.
   - name: "Admin: Webhooks"
+    description: Outgoing webhook subscriptions.
   - name: "Admin: Tags"
+    description: The tag list, including deactivating and restoring tags.
   - name: "Admin: Canned responses"
+    description: Reusable reply texts, global or scoped to a category and type.
 paths:
   /api/v1/admin/oidc:
     get:
       operationId: getOIDCConfig
       summary: Read the OIDC sign-in configuration.
       description: >-
+        Administrators only (second factor required).
         Returns the saved OIDC settings. The client secret is never returned:
         client_secret is always the empty string. configured reports only whether
         an issuer URL, client ID and client secret are stored, not whether OIDC is
@@ -132,6 +164,7 @@ paths:
       operationId: saveOIDCConfig
       summary: Save the OIDC sign-in configuration.
       description: >-
+        Administrators only, in a signed-in session (second factor required).
         Saves the OIDC settings. A blank client_secret keeps the stored secret.
         redirect_url is not accepted from the body: the stored value is kept, or
         the callback URL is derived from the server's base URL. Enabling OIDC
@@ -206,6 +239,7 @@ paths:
       operationId: getSAMLConfig
       summary: Read the SAML sign-in configuration.
       description: >-
+        Administrators only (second factor required).
         Returns the saved SAML settings and the URL of this server's service
         provider metadata, which is what the administrator gives the identity
         provider. The private key is never returned. Requires the settings:read
@@ -249,6 +283,7 @@ paths:
       operationId: saveSAMLConfig
       summary: Save the SAML sign-in configuration.
       description: >-
+        Administrators only, in a signed-in session (second factor required).
         Each field may be omitted, which keeps the stored value, or sent. A field
         sent as an empty string clears it, and null is treated the same as an
         omitted field. The certificate and key are checked as a pair before
@@ -454,7 +489,10 @@ paths:
         whether the answer verifies or not, so a failed attempt must start again.
         A challenge expires five minutes after it was issued. The sign count is
         recorded but not enforced. Reachable with a session only (403
-        session_required for an API key or OAuth client).
+        session_required for an API key or OAuth client). The body is read by
+        the WebAuthn library, not by the server's JSON decoder, so the 1 MiB cap
+        does not apply, and a body that is not JSON is not a 400: once a
+        challenge is in progress it answers 401 assertion_refused.
       tags: ['Authentication']
       x-ghd-handler: handlePasskeyLoginFinish
       security:
@@ -483,8 +521,8 @@ paths:
         '401':
           description: >-
             Either no session (unauthorized, text/plain, from the auth middleware)
-            or an answer that did not verify (assertion_refused, application/json,
-            from the handler).
+            or an answer that did not verify, including a body that is not JSON
+            (assertion_refused, application/json, from the handler).
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -1350,8 +1388,9 @@ paths:
       operationId: adminListCannedResponses
       summary: List every canned response.
       description: |
+        Administrators only (second factor required).
         Returns every canned response, global and scoped alike, ordered by sort_order and then by name.
-        The list is not paged. Administrators only.
+        The list is not paged.
       tags: ['Admin: Canned responses']
       x-ghd-handler: handleAdminListCannedResponses
       security:
@@ -1380,6 +1419,7 @@ paths:
       operationId: adminCreateCannedResponse
       summary: Create a canned response.
       description: |
+        Administrators only (second factor required).
         Creates a reusable reply template. Its scope comes from category_id and type_id. When both are
         absent or null the response is global. A category_id alone makes it available on every ticket in
         that category. Both together make it available only on tickets of that category and type. A type_id
@@ -1452,6 +1492,7 @@ paths:
       operationId: adminUpdateCannedResponse
       summary: Replace a canned response.
       description: |
+        Administrators only (second factor required).
         Replaces every field of the response. Despite the verb this is not a merge. A field left out of the
         body takes its zero value, so an omitted category_id or type_id makes the response global and an
         omitted sort_order sets it to 0. Send the complete record.
@@ -1515,6 +1556,7 @@ paths:
       operationId: adminDeleteCannedResponse
       summary: Delete a canned response.
       description: |
+        Administrators only (second factor required).
         Hard-deletes the response. Replies that already contain its text are not affected, because the body
         was copied into the reply when it was inserted. Deleting an id that does not exist also answers 204.
       tags: ['Admin: Canned responses']
@@ -1543,8 +1585,9 @@ paths:
       operationId: adminListTags
       summary: List every tag, including deactivated ones.
       description: |
+        Administrators only (second factor required).
         Returns all tags, active and deactivated, ordered by name. A deactivated tag carries deleted_at.
-        The list is not paged. Administrators only.
+        The list is not paged.
       tags: ['Admin: Tags']
       x-ghd-handler: handleAdminListTags
       security:
@@ -1573,6 +1616,7 @@ paths:
       operationId: adminCreateTag
       summary: Create a tag by name.
       description: |
+        Administrators only (second factor required).
         The name is trimmed and lowercased. If an active tag already has that name, that tag is returned
         with 201 and nothing new is created, so a repeated name is not a conflict. If the name belongs to a
         deactivated tag, the answer is 409 tag_deleted, and the tag has to be restored instead.
@@ -1629,6 +1673,7 @@ paths:
       operationId: adminDeleteTag
       summary: Deactivate a tag.
       description: |
+        Administrators only (second factor required).
         Soft-deletes the tag. It disappears from autocomplete and stays on every ticket that already carries
         it. Deactivating an unknown or already deactivated id also answers 204.
       tags: ['Admin: Tags']
@@ -1665,6 +1710,7 @@ paths:
       operationId: adminRestoreTag
       summary: Restore a deactivated tag.
       description: |
+        Administrators only (second factor required).
         Clears the deactivation, so the tag is usable again. Restoring an unknown id, or a tag that is already
         active, also answers 204.
       tags: ['Admin: Tags']
@@ -1693,6 +1739,7 @@ paths:
       operationId: listGroupsForAssignment
       summary: List groups for ticket assignment.
       description: |
+        Staff and administrators only (second factor required).
         Returns every group with its name and description, so a ticket can be assigned to one. Membership
         and category scopes are not included; those come from the admin group endpoints. Not paged.
         Available to administrators and staff.
@@ -2105,6 +2152,8 @@ paths:
         The name query parameter labels the key. A name longer than 128 bytes is cut short on a character
         boundary, not refused. Session only. If the account already has a second factor, the session must
         have proved one, or the answer is 403 mfa_required.
+        The body is read by the WebAuthn library, not by the server's JSON decoder, so the 1 MiB cap does
+        not apply. A body that is not JSON answers 400 registration_refused once a challenge is in progress.
       tags: ['Account']
       x-ghd-handler: handlePasskeyRegisterFinish
       security:
@@ -2134,7 +2183,8 @@ paths:
         '400':
           description: |
             no_challenge when no registration is in progress in this session. challenge_expired when the challenge
-            has timed out. registration_refused when the authenticator's response did not verify.
+            has timed out. registration_refused when the authenticator's response did not verify, including a
+            body that is not JSON.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2295,6 +2345,7 @@ paths:
       operationId: listAssignableStaff
       summary: List accounts for the assignee picker.
       description: |
+        Staff and administrators only (second factor required).
         Returns every account that is not deleted, with its id, display name and an assignable flag, ordered
         by display name. The list is deliberately not limited to staff: reporting users appear too, with assignable set to false,
         so a ticket already assigned to a colleague who has since been disabled or moved to the reporting role
@@ -2362,6 +2413,7 @@ paths:
       operationId: listActiveTags
       summary: Search active tags for autocomplete.
       description: |
+        Staff and administrators only (second factor required).
         Returns active tags only, ordered by name. With q, returns the tags whose names start with q, matched
         case-insensitively after trimming, and at most 20 of them. Without q, returns every active tag. The
         value of q is used as a LIKE prefix, and its % and _ characters are not escaped, so they match as
@@ -2403,6 +2455,7 @@ paths:
       operationId: listAdminAudit
       summary: Search the audit log across every entity
       description: |
+        Staff and administrators only (second factor required).
         The admin-wide half of the audit trail, searchable across every
         entity type. Entries are newest first. Pages are read with limit and
         offset; has_more says whether another page exists.
@@ -2953,6 +3006,7 @@ paths:
       operationId: listTicketCannedResponses
       summary: List the canned responses for this ticket's category and type
       description: |
+        Staff and administrators only (second factor required).
         The reply-composer picker. Returns the canned responses that apply to the
         ticket's category and type, in sort order and then by name. Staff and
         administrators only. A reporting user gets 403 forbidden for a ticket they
@@ -3787,7 +3841,8 @@ paths:
       operationId: listTicketTags
       summary: List the tags on a ticket
       description: |
-        Staff and administrators only. A reporting user gets 403 forbidden on a
+        Staff and administrators only (second factor required).
+        A reporting user gets 403 forbidden on a
         ticket they can see, and 404 on one they cannot. Tags come back ordered by
         name. A tag that has since been deactivated still appears, with deleted_at
         set. The id must be a UUID.
@@ -3837,7 +3892,8 @@ paths:
       operationId: addTicketTag
       summary: Add a tag to a ticket
       description: |
-        Staff and administrators only. The name is trimmed and lower-cased. If no
+        Staff and administrators only (second factor required).
+        The name is trimmed and lower-cased. If no
         tag has that name it is created, and then attached to the ticket. Adding a
         tag that is already on the ticket succeeds and changes nothing. Answers
         201 with the Tag.
@@ -3918,7 +3974,8 @@ paths:
       operationId: removeTicketTag
       summary: Remove a tag from a ticket
       description: |
-        Staff and administrators only. Detaches the tag from the ticket and answers
+        Staff and administrators only (second factor required).
+        Detaches the tag from the ticket and answers
         204. The tag itself is kept. Removing a tag that is not on the ticket also
         answers 204. Both the path id and tagId must be UUIDs.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3962,7 +4019,8 @@ paths:
       operationId: getSecurityWarnings
       summary: Report insecure secrets and whether attachment scanning works now
       description: |
-        Administrator only, and deliberately not part of the public site payload.
+        Administrators only (second factor required).
+        Deliberately not part of the public site payload.
         Lists the environment secrets that look insecure (names only, never
         values): empty, one of the example values the project ships with, or
         containing change-me, changeme, insecure, example or placeholder,
@@ -4024,7 +4082,8 @@ paths:
       operationId: getSettings
       summary: Read the stored instance settings
       description: |
-        Administrator only. Returns every stored setting keyed by name, with each
+        Administrators only (second factor required).
+        Returns every stored setting keyed by name, with each
         value as stored, except the choice-list settings, which report the value in
         force (see updateSettings). attachment_scan_policy is the exception among
         those: a stored value that is not off, required or permissive is left out
@@ -4089,7 +4148,8 @@ paths:
       operationId: updateSettings
       summary: Change one or more instance settings
       description: |
-        Administrator only. The body is a JSON object that maps setting names to
+        Administrators only (second factor required).
+        The body is a JSON object that maps setting names to
         values. This is a patch: a name left out keeps its stored value. Each name
         is written as sent, and the writes happen one key at a time, not in one
         transaction, so a store failure partway through leaves the keys already
@@ -4215,7 +4275,8 @@ paths:
       operationId: uploadLogo
       summary: Upload the site logo
       description: |
-        Administrator only. Accepts one PNG, JPEG or GIF of at most 2 MB in the
+        Administrators only (second factor required).
+        Accepts one PNG, JPEG or GIF of at most 2 MB in the
         multipart field logo. SVG is refused. The image is scaled to fit within 320
         by 64 pixels with its aspect ratio kept, then stored as PNG, which also
         strips its metadata. A new logo replaces the old one and sets the
@@ -4277,7 +4338,8 @@ paths:
       operationId: deleteLogo
       summary: Remove the site logo
       description: |
-        Administrator only. Deletes the stored logo file and clears the
+        Administrators only (second factor required).
+        Deletes the stored logo file and clears the
         site_logo_url setting. With no logo stored it still answers 204.
       tags: ['Admin: Settings']
       x-ghd-handler: handleDeleteLogo
@@ -4766,7 +4828,8 @@ paths:
       operationId: recheckAttachmentReputation
       summary: Ask the reputation providers about a file again
       description: |
-        Staff and admin only. Re-checks the verdict on one file with each
+        Staff and administrators only (second factor required).
+        Re-checks the verdict on one file with each
         enabled provider, or with only the provider named in the provider query
         parameter. A person asked for this, so a page render never does it.
         Each provider's verdict has its own clock. For each file, a provider can be
@@ -4865,6 +4928,7 @@ paths:
       operationId: listAPIKeys
       summary: List the caller's API keys
       description: >-
+        Administrators only (second factor required).
         Returns the API keys owned by the caller, newest first. The caller is the
         signed-in administrator or, for an API key, the administrator who owns that
         key. Keys owned by other administrators are not listed. The token and its
@@ -4894,6 +4958,7 @@ paths:
       operationId: createAPIKey
       summary: Create an API key
       description: >-
+        Administrators only (second factor required).
         Creates an API key that acts at the caller's role and counts as having
         passed MFA. The raw token is returned once, in this response, and cannot
         be shown again. It has the form GHD_ followed by 64 hexadecimal
@@ -4995,6 +5060,7 @@ paths:
       operationId: deleteAPIKey
       summary: Delete an API key
       description: >-
+        Administrators only (second factor required).
         Deletes the key with this id, whoever owns it, so the key stops working on
         the next request. An unknown id also answers 204, because nothing checks
         that a row was removed.
@@ -5032,6 +5098,7 @@ paths:
       operationId: listGroupsForCategory
       summary: List groups scoped to a whole category
       description: >-
+        Administrators only (second factor required).
         Returns the groups that hold a category-level scope entry, meaning one
         with no type_id. The category editor uses this to show which groups handle
         the category. Groups that cover only one type of the category are not
@@ -5086,6 +5153,7 @@ paths:
       operationId: listGroupsForType
       summary: List groups scoped to one category type
       description: >-
+        Administrators only (second factor required).
         Returns the groups with a scope entry for exactly this category and type,
         which the type editor shows. Groups scoped to the whole category are not
         included. An unknown id answers 200 with an empty array.
@@ -5121,7 +5189,9 @@ paths:
     get:
       operationId: listGroups
       summary: List groups
-      description: Returns every group, ordered by name.
+      description: >-
+        Administrators only (second factor required). Returns every group, ordered
+        by name.
       tags: ['Admin: Groups']
       x-ghd-handler: handleListGroups
       security:
@@ -5146,6 +5216,7 @@ paths:
       operationId: createGroup
       summary: Create a group
       description: >-
+        Administrators only (second factor required).
         Creates a group with no members and no scopes. name is required and is
         trimmed of surrounding spaces. A blank name, and a name already held by
         another group, both answer 500 internal_error rather than 400 or 409.
@@ -5209,6 +5280,7 @@ paths:
       operationId: getGroup
       summary: Get a group
       description: >-
+        Administrators only (second factor required).
         Returns one group. An unknown id answers 500 internal_error, not 404.
       tags: ['Admin: Groups']
       x-ghd-handler: handleGetGroup
@@ -5246,6 +5318,7 @@ paths:
       operationId: updateGroup
       summary: Update a group
       description: >-
+        Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their value. The group
         is read before the body is decoded, so an unknown id answers 500 whatever
         the body holds. A blank or taken name answers 500. The name is stored as
@@ -5301,6 +5374,7 @@ paths:
       operationId: deleteGroup
       summary: Delete a group
       description: >-
+        Administrators only (second factor required).
         Deletes the group together with its memberships and scopes. Tickets
         assigned to the group lose that group assignment (their assigned user, if
         any, is kept), and no audit entry records the change on those tickets. An
@@ -5339,6 +5413,7 @@ paths:
       operationId: listGroupMembers
       summary: List a group's members
       description: >-
+        Administrators only (second factor required).
         Returns the members as user objects, with password and MFA secrets never
         included. Disabled members are listed. Soft-deleted members are left out.
         An unknown group id answers 200 with an empty array.
@@ -5373,6 +5448,7 @@ paths:
       operationId: addGroupMember
       summary: Add a member to a group
       description: >-
+        Administrators only (second factor required).
         Adds a user to the group. Adding someone who is already a member answers
         204 and changes nothing. A user_id that names no account answers 500
         internal_error, as do a missing user_id and an unknown group id. A
@@ -5438,6 +5514,7 @@ paths:
       operationId: removeGroupMember
       summary: Remove a member from a group
       description: >-
+        Administrators only (second factor required).
         Removes the user from the group. Removing someone who is not a member also
         answers 204.
       tags: ['Admin: Groups']
@@ -5475,6 +5552,7 @@ paths:
       operationId: listGroupScopes
       summary: List a group's scopes
       description: >-
+        Administrators only (second factor required).
         Returns the category and type entries that route tickets to this group. An
         entry with no type_id covers every type in the category. An unknown group
         id answers 200 with an empty array.
@@ -5509,6 +5587,7 @@ paths:
       operationId: addGroupScope
       summary: Add a category or type scope to a group
       description: >-
+        Administrators only (second factor required).
         Routes tickets in a category, or in one type of it, to this group. Omit
         type_id, or send null, to cover the whole category. Adding an entry that
         already exists answers 204. A category that does not exist, a type that
@@ -5564,6 +5643,7 @@ paths:
       operationId: removeGroupScope
       summary: Remove a category or type scope from a group
       description: >-
+        Administrators only (second factor required).
         Removes the entry that matches category_id and type_id. A missing or null
         type_id matches the whole-category entry. The entry is named by the body,
         not by a path segment. Matching nothing answers 204.
@@ -5609,6 +5689,7 @@ paths:
       operationId: listOAuthClients
       summary: List OAuth clients
       description: >-
+        Administrators only (second factor required).
         Returns every OAuth client, ordered by name. The client secret is kept only
         as a hash and is never returned. Use id to delete a client, and client_id
         as the value a caller presents to the token endpoint.
@@ -5636,6 +5717,7 @@ paths:
       operationId: createOAuthClient
       summary: Create an OAuth client
       description: >-
+        Administrators only (second factor required).
         Creates a client that can obtain bearer tokens from POST
         /api/v1/auth/oauth/token. The client acts as staff, so it never reaches an
         administrator-only route. The client_secret is returned once. The response
@@ -5723,6 +5805,7 @@ paths:
       operationId: deleteOAuthClient
       summary: Delete an OAuth client
       description: >-
+        Administrators only (second factor required).
         Deletes the client. Its tokens stop being accepted on the next request,
         because the client is looked up again on every request. An unknown id also
         answers 204.
@@ -5752,6 +5835,7 @@ paths:
       operationId: listPlugins
       summary: List plugins
       description: >-
+        Administrators only (second factor required).
         Returns the plugins registered with the running server. In v1 no plugin is
         registered at startup, so the array is always empty. The registry is held in
         memory and enabled state is not stored. Installing a plugin is not
@@ -5780,6 +5864,7 @@ paths:
       operationId: installPlugin
       summary: Install a plugin (not implemented)
       description: >-
+        Administrators only (second factor required).
         Always answers 501 not_implemented. WASM plugin upload is not implemented in
         v1. This route is documented as a stub so that its status is not mistaken for
         a working endpoint.
@@ -5816,6 +5901,7 @@ paths:
       operationId: updatePlugin
       summary: Enable or disable a plugin
       description: >-
+        Administrators only (second factor required).
         Sets the plugin's enabled state. The enabled field is a plain boolean, so an
         absent field counts as false: a body of {} disables the plugin. An empty
         body is refused with 400. In v1 no plugin is registered, so every id answers
@@ -5865,6 +5951,7 @@ paths:
       operationId: uninstallPlugin
       summary: Uninstall a plugin (not implemented)
       description: >-
+        Administrators only (second factor required).
         Always answers 501 not_implemented. Plugin uninstall is not implemented in
         v1. This route is documented as a stub.
       tags: ['Admin: Plugins']
@@ -5893,6 +5980,7 @@ paths:
       operationId: listScopes
       summary: List the scope catalogue
       description: >-
+        Administrators only (second factor required).
         Returns every scope a credential can hold, as resource:action pairs. Write
         implies read on the same resource, and the audit resource has only read.
         There is no wildcard scope. The admin UI builds its picker from this list,
@@ -5934,6 +6022,7 @@ paths:
       operationId: listUsers
       summary: List users
       description: >-
+        Administrators only (second factor required).
         Returns up to 200 accounts, newest first. Disabled accounts are included and
         soft-deleted accounts are left out. There are no paging parameters, so an
         instance with more than 200 accounts shows only the first 200 here, as the
@@ -5964,6 +6053,7 @@ paths:
       operationId: createUser
       summary: Create a user
       description: >-
+        Administrators only (second factor required).
         Creates an account with the given role. The account has no second factor.
         password is optional. When present it must be 8 to 72 bytes. An account
         created without a password has no local sign-in until one is set with
@@ -6054,6 +6144,7 @@ paths:
       operationId: getUser
       summary: Get a user
       description: >-
+        Administrators only (second factor required).
         Returns one account with its groups and passkey count. Soft-deleted accounts
         are still returned here, so a deleted account can be inspected by id. The
         has_password field says whether a local password is set.
@@ -6093,6 +6184,7 @@ paths:
       operationId: updateUser
       summary: Update a user
       description: >-
+        Administrators only (second factor required).
         Applies the fields that are sent, in this order: disabled (disabling also
         ends the account's sessions), reset_mfa (clears the authenticator and every
         passkey, and ends sessions), role (ends sessions), then display_name and
@@ -6186,6 +6278,7 @@ paths:
       operationId: deleteUser
       summary: Delete a user
       description: >-
+        Administrators only (second factor required).
         Soft-deletes the account. It is hidden from lists, its sign-in is refused, its
         sessions end, and its open tickets return to the unassigned queue. A failure to
         return the tickets is logged and does not change the answer. The row is kept,
@@ -6247,6 +6340,7 @@ paths:
       operationId: adminResetPassword
       summary: Set a user's password
       description: >-
+        Administrators only (second factor required).
         Sets a new local password without asking for the old one, and ends all of the
         account's sessions, since a reset usually answers a compromise. The order of
         the checks depends on the caller. For a signed-in session the password is
@@ -6317,6 +6411,7 @@ paths:
       operationId: listWebhooks
       summary: List webhooks
       description: >-
+        Administrators only (second factor required).
         Returns every webhook subscription, enabled or not, oldest first. A disabled
         hook stays listed so that it can be switched back on. The secret is never
         returned. last_delivery shows the latest delivery attempt only.
@@ -6344,6 +6439,7 @@ paths:
       operationId: createWebhook
       summary: Create a webhook
       description: >-
+        Administrators only (second factor required).
         Creates a subscription that receives a POST for each matching event. url and
         events are required. events must list one or more of the event names in the
         WebhookEvent schema, and "*" subscribes to every ticket event. The checks run
@@ -6422,6 +6518,7 @@ paths:
       operationId: updateWebhook
       summary: Update a webhook
       description: >-
+        Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their stored value. url,
         events and payload_format are validated only when sent, so a request that sets
         only enabled is never refused for a field it does not touch. A changed url clears
@@ -6498,6 +6595,7 @@ paths:
       operationId: deleteWebhook
       summary: Delete a webhook
       description: >-
+        Administrators only (second factor required).
         Deletes the subscription and its last_delivery. A delivery already in flight
         finishes, but its result is discarded because the record is gone. An unknown id
         also answers 204.
@@ -6527,6 +6625,7 @@ paths:
       operationId: listCategories
       summary: List all categories, including archived ones.
       description: >-
+        Administrators only (second factor required).
         Returns every category as a bare array, active and inactive. This is the
         administrator's view. The catalogue that guests and reporting users see
         (GET /api/v1/categories) serves only the active categories.
@@ -6553,6 +6652,7 @@ paths:
       operationId: createCategory
       summary: Create a category.
       description: >-
+        Administrators only (second factor required).
         Creates an active category. The name is trimmed and must not be empty.
         An empty name is refused, but with 500 internal_error rather than 400.
         sort_order defaults to 0.
@@ -6609,6 +6709,7 @@ paths:
       operationId: getCategory
       summary: Get one category.
       description: >-
+        Administrators only (second factor required).
         Looks the category up by its UUID. An id that does not exist is answered
         500 internal_error, not 404. The field-definition and assignment update
         routes do answer 404 for a missing record.
@@ -6642,6 +6743,7 @@ paths:
       operationId: updateCategory
       summary: Rename, reorder or archive a category.
       description: >-
+        Administrators only (second factor required).
         Partial update. An absent field is unchanged. Setting active to false
         archives the category: the catalogue that guests and reporting users see
         stops listing it, and tickets that already use it keep it. The name is
@@ -6693,6 +6795,7 @@ paths:
       operationId: deleteCategory
       summary: Delete a category.
       description: >-
+        Administrators only (second factor required).
         Hard delete. The category's types and, through them, its items are removed
         by cascade, and so are the SLA policies scoped to it, the group scopes that
         name it and the canned responses scoped to it. A category that a ticket uses,
@@ -6739,6 +6842,7 @@ paths:
       operationId: listCategoryFieldAssignments
       summary: List custom-field assignments on a category.
       description: >-
+        Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this category, identified
         by {id}. Each entry carries its field definition under field_def, filled
         with id, name, field_type, options and active only. In that embedded copy
@@ -6769,6 +6873,7 @@ paths:
       operationId: createCategoryFieldAssignment
       summary: Assign a custom field to a category.
       description: >-
+        Administrators only (second factor required).
         Assigns the field definition field_def_id to this category, identified by
         {id}, and answers 201 with the new assignment. The category is not confirmed
         to exist. visible_on_new and required_on_new default to false when omitted.
@@ -6832,6 +6937,7 @@ paths:
       operationId: updateCategoryFieldAssignment
       summary: Change the order or flags of a category's field assignment.
       description: >-
+        Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
         assignment cannot be changed here. Only assignmentId is read; the other ids in
@@ -6877,6 +6983,7 @@ paths:
       operationId: deleteCategoryFieldAssignment
       summary: Remove a custom-field assignment from a category.
       description: >-
+        Administrators only (second factor required).
         Removes one assignment, identified by assignmentId. Only assignmentId is read.
         The other ids in the path are not checked against it. Answers 204 whether or
         not the assignment existed. Ticket values already stored for the field are not
@@ -6910,6 +7017,7 @@ paths:
       operationId: listTypes
       summary: List the types of a category.
       description: >-
+        Administrators only (second factor required).
         Lists the types of this category, active and archived, as a bare array. Only
         {id} is read. An unknown category returns an empty array rather than 404.
       tags: ['Admin: Catalogue']
@@ -6937,6 +7045,7 @@ paths:
       operationId: createType
       summary: Create a type under a category.
       description: >-
+        Administrators only (second factor required).
         Creates an active type under this category, identified by {id}. The name is
         trimmed and must not be empty. An empty name is refused with 500 internal_error.
         A category that does not exist is also answered 500 internal_error.
@@ -7000,6 +7109,7 @@ paths:
       operationId: updateType
       summary: Rename, reorder or archive a type.
       description: >-
+        Administrators only (second factor required).
         Partial update of the type identified by typeId. An absent field is unchanged,
         and active set to false archives the type. The category of a type cannot be
         changed here, so a category_id in the body is ignored. The {id} segment is not
@@ -7052,6 +7162,7 @@ paths:
       operationId: deleteType
       summary: Delete a type.
       description: >-
+        Administrators only (second factor required).
         Hard delete. The type's items are removed by cascade, and so are the canned
         responses and the group scope entries scoped to the type. Deleting a type that
         a ticket uses, or whose item a ticket uses, is refused with 500
@@ -7100,6 +7211,7 @@ paths:
       operationId: listTypeFieldAssignments
       summary: List custom-field assignments on a type.
       description: >-
+        Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this type, identified by
         {typeId}. The {id} segment is not checked against it. Each entry carries its field definition under field_def,
         filled with id, name, field_type, options and active only. In that embedded
@@ -7130,6 +7242,7 @@ paths:
       operationId: createTypeFieldAssignment
       summary: Assign a custom field to a type.
       description: >-
+        Administrators only (second factor required).
         Assigns the field definition field_def_id to this type, identified by {typeId},
         and answers 201 with the new assignment. The {id} segment is not checked, and
         the type is not confirmed to exist. visible_on_new and required_on_new default
@@ -7199,6 +7312,7 @@ paths:
       operationId: updateTypeFieldAssignment
       summary: Change the order or flags of a type's field assignment.
       description: >-
+        Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
         assignment cannot be changed here. Only assignmentId is read; the other ids in
@@ -7244,6 +7358,7 @@ paths:
       operationId: deleteTypeFieldAssignment
       summary: Remove a custom-field assignment from a type.
       description: >-
+        Administrators only (second factor required).
         Removes one assignment, identified by assignmentId. Only assignmentId is read.
         The other ids in the path are not checked against it. Answers 204 whether or
         not the assignment existed. Ticket values already stored for the field are not
@@ -7283,6 +7398,7 @@ paths:
       operationId: listItems
       summary: List the items of a type.
       description: >-
+        Administrators only (second factor required).
         Lists the items of this type, active and archived, as a bare array. Only
         {typeId} is read. An unknown type returns an empty array rather than 404.
       tags: ['Admin: Catalogue']
@@ -7310,6 +7426,7 @@ paths:
       operationId: createItem
       summary: Create an item under a type.
       description: >-
+        Administrators only (second factor required).
         Creates an active item under this type, identified by {typeId}. The name is
         trimmed and must not be empty. An empty name is refused with 500 internal_error.
         A type that does not exist is also answered 500 internal_error. The {id}
@@ -7379,6 +7496,7 @@ paths:
       operationId: updateItem
       summary: Rename, reorder or archive an item.
       description: >-
+        Administrators only (second factor required).
         Partial update of the item identified by itemId. An absent field is unchanged,
         and active set to false archives the item. The type of an item cannot be
         changed here, so a type_id in the body is ignored. The {id} and {typeId}
@@ -7431,6 +7549,7 @@ paths:
       operationId: deleteItem
       summary: Delete an item.
       description: >-
+        Administrators only (second factor required).
         Hard delete of the item identified by itemId. Deleting an item that a ticket
         uses is refused with 500 internal_error, not 409. Custom-field assignments
         made to the item are not removed. An unknown id answers 204. The {id} and
@@ -7484,6 +7603,7 @@ paths:
       operationId: listItemFieldAssignments
       summary: List custom-field assignments on an item.
       description: >-
+        Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this item, identified by
         {itemId}. The {id} and {typeId} segments are not checked against it. Each
         entry carries its field definition under field_def,
@@ -7515,6 +7635,7 @@ paths:
       operationId: createItemFieldAssignment
       summary: Assign a custom field to an item.
       description: >-
+        Administrators only (second factor required).
         Assigns the field definition field_def_id to this item, identified by {itemId},
         and answers 201 with the new assignment. The {id} and {typeId} segments are
         not checked, and the item is not confirmed to exist. visible_on_new and
@@ -7590,6 +7711,7 @@ paths:
       operationId: updateItemFieldAssignment
       summary: Change the order or flags of an item's field assignment.
       description: >-
+        Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
         assignment cannot be changed here. Only assignmentId is read; the other ids in
@@ -7635,6 +7757,7 @@ paths:
       operationId: deleteItemFieldAssignment
       summary: Remove a custom-field assignment from an item.
       description: >-
+        Administrators only (second factor required).
         Removes one assignment, identified by assignmentId. Only assignmentId is read.
         The other ids in the path are not checked against it. Answers 204 whether or
         not the assignment existed. Ticket values already stored for the field are not
@@ -7660,6 +7783,7 @@ paths:
       operationId: listFieldDefs
       summary: List custom field definitions.
       description: >-
+        Administrators only (second factor required).
         Lists every custom field definition as a bare array, including deactivated
         ones. Each entry's active flag says which are active. Definitions are never
         deleted.
@@ -7686,6 +7810,7 @@ paths:
       operationId: createFieldDef
       summary: Create a custom field definition.
       description: >-
+        Administrators only (second factor required).
         Creates an active field definition. The name is trimmed, must not be empty and
         must be unique across definitions. field_type is one of text, textarea, number
         or select. A select field needs at least one option. options are stored as
@@ -7746,6 +7871,7 @@ paths:
       operationId: updateFieldDef
       summary: Rename, retype, reorder or deactivate a custom field definition.
       description: >-
+        Administrators only (second factor required).
         Partial update. An absent field is unchanged. options, when sent, replaces the
         whole list, and an empty list is refused for a select field. Setting active to
         false deactivates the definition. It is never deleted, and its existing ticket
@@ -7803,6 +7929,7 @@ paths:
       operationId: listSLAPolicies
       summary: List SLA policies.
       description: >-
+        Administrators only (second factor required).
         Lists every SLA policy as a bare array, ordered by priority compared as text
         (critical, high, low, medium), with policies that have no priority last,
         then by name.
@@ -7829,6 +7956,7 @@ paths:
       operationId: createSLAPolicy
       summary: Create an SLA policy.
       description: >-
+        Administrators only (second factor required).
         Creates an SLA policy. Omitting priority, or sending null, makes the policy
         apply to every priority. Omitting category_id, or sending null, makes it apply
         to every category. A policy that narrows neither is the catch-all tier. The two
@@ -7894,6 +8022,7 @@ paths:
       operationId: updateSLAPolicy
       summary: Change an SLA policy.
       description: >-
+        Administrators only (second factor required).
         Partial update. An absent field is unchanged. A null priority or category_id is
         treated as absent, so it leaves the value as it is. To clear one, send
         clear_priority or clear_category set to true. Those flags win over a value sent
@@ -7957,6 +8086,7 @@ paths:
       operationId: deleteSLAPolicy
       summary: Delete an SLA policy.
       description: >-
+        Administrators only (second factor required).
         Deletes the policy. It is refused with 409 policy_in_use while any ticket's SLA
         record is measured against it. An unknown id answers 204.
       tags: ['Admin: SLA']
@@ -7985,6 +8115,7 @@ paths:
       operationId: adminListStatuses
       summary: List ticket statuses, with counts across all tickets.
       description: >-
+        Administrators only (second factor required).
         Lists every ticket status, system and custom, as a bare array. ticket_count is
         the number of tickets in each status across all tickets, because the caller is
         an administrator. A count that cannot be read is reported as 0 rather than
@@ -8013,6 +8144,7 @@ paths:
       operationId: createStatus
       summary: Create a custom ticket status.
       description: >-
+        Administrators only (second factor required).
         Creates an active custom status. The name is trimmed and must not be empty, and
         it must be unique: a name already in use is 409 status_name_taken. color is free
         text, stored as sent, and the server does not check that it is a colour.
@@ -8072,6 +8204,7 @@ paths:
       operationId: updateStatus
       summary: Change a ticket status.
       description: >-
+        Administrators only (second factor required).
         Partial update. An absent field is unchanged. The system statuses New, Resolved
         and Closed keep their names, because lifecycle rules find them by name. Renaming
         one is 403 forbidden. Sending active in any form is also 403 forbidden for a
@@ -8144,6 +8277,7 @@ paths:
       operationId: deleteStatus
       summary: Delete a custom ticket status.
       description: >-
+        Administrators only (second factor required).
         Hard delete. The three system statuses cannot be deleted, and a request for one
         is 403 forbidden. A custom status is refused with 409 status_in_use while any
         ticket is in it or any past ticket transition references it. In that case
@@ -8189,7 +8323,8 @@ components:
         Browser session. An opaque id; the session is a server-side row, so
         logout, password change, MFA reset, role change and disabling revoke
         it on the next request. Set by the sign-in routes; HttpOnly,
-        SameSite=Lax, 7-day lifetime. A session that has passed the password
+        SameSite=Lax, 7-day lifetime, and Secure when the instance's BASE_URL
+        is https. A session that has passed the password
         but not the second factor is refused by every operation whose
         x-ghd-mfa is true (403 mfa_required).
     apiKey:
@@ -8244,11 +8379,13 @@ components:
       name: limit
       in: query
       required: false
-      description: Page size. Non-numeric or non-positive values are ignored (default used); values above 200 are clamped to 200.
+      description: >-
+        Page size, at most 200. A larger value is not refused: the server
+        clamps it to 200. Non-numeric or non-positive values are ignored and
+        the default is used.
       schema:
         type: integer
         default: 100
-        maximum: 200
     Offset:
       name: offset
       in: query
@@ -8260,7 +8397,12 @@ components:
         minimum: 0
   headers:
     RetryAfter:
-      description: Seconds until the refused budget allows another attempt.
+      description: >-
+        Seconds to wait before trying again. On a 429 rate_limited it is the
+        length of the budget window, an upper bound, since the window can reset
+        sooner. On a 429 checked_recently it is the time until the earliest
+        provider's seven-day floor clears. On a 503 it is a fixed 60, a
+        suggestion rather than a promise.
       schema:
         type: integer
   schemas:
@@ -9333,8 +9475,7 @@ components:
     GuestNotFound:
       description: |
         The single guest refusal, byte-identical for every cause:
-        `{"error":{"code":"not_found","message":"not found"}}` plus a newline
-        (middleware/guestauth.go:69).
+        `{"error":{"code":"not_found","message":"not found"}}` plus a newline.
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
