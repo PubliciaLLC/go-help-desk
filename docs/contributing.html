@@ -184,7 +184,8 @@ SMTP_FROM=dev@localhost</code></pre>
 <pre><code>brew install colima</code></pre>
 <p>Do <strong>not</strong> run <code>brew services start colima</code>, because that restarts the VM at every login, which is what this setup exists to avoid.</p>
 <p>To run the suite against the development stack's database instead, which the suite will migrate:</p>
-<pre><code>TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...</code></pre>
+<pre><code>cd backend
+TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...</code></pre>
 
 <h3>Unit tests (no DB required)</h3>
 <pre><code>cd backend
