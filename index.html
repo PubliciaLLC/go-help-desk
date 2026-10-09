@@ -35,7 +35,7 @@
     "applicationCategory": "BusinessApplication",
     "operatingSystem": "Linux, macOS, Windows",
     "license": "https://www.gnu.org/licenses/agpl-3.0.html",
-    "softwareVersion": "1.2.0",
+    "softwareVersion": "1.3.0",
     "offers": {
       "@type": "Offer",
       "price": "0",
@@ -64,7 +64,7 @@
     <ul class="nav-links">
       <li><a href="docs.html">Docs</a></li>
       <li><a href="/docs/api.html">API</a></li>
-      <li><a href="/docs/upgrading-1.2.0.html">Upgrading</a></li>
+      <li><a href="/docs/upgrading-1.3.0.html">Upgrading</a></li>
       <li><a href="/docs/security.html">Security</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk">GitHub</a></li>
       <li><a href="https://github.com/PubliciaLLC/go-help-desk" class="btn btn-outline btn-sm">Star on GitHub</a></li>
@@ -73,26 +73,17 @@
 </nav>
 
 <!-- ── Hero ──────────────────────────────────────────────────────────────── -->
-<!-- v1.3.0-beta, in a quiet colour: the beta is an invitation rather than a
-     recommendation, and 1.2.0 is still what everyone should be running.
-     Remove when 1.3.0 is tagged.
-
-     This used to sit below two dark banners carrying the 1.2.0 security
-     advisory and its upgrade warning. Those are gone: the nav now has
-     Upgrading and Security as top-level links, which says the same thing on
-     every page instead of only the home page, and says "important" rather
-     than "alarming". -->
-<div style="background:#fffbeb;color:#92400e;padding:.6rem 0;font-size:.85rem;border-bottom:1px solid #f59e0b;">
+<!-- Release band for 1.3.0. -->
+<div style="background:var(--blue-light);color:var(--blue-dark);padding:.6rem 0;font-size:.85rem;border-bottom:1px solid var(--blue);">
   <div class="container" style="display:flex;gap:.75rem;align-items:baseline;flex-wrap:wrap;">
-    <strong>In beta:</strong>
     <span style="flex:1;min-width:16rem;">
-      <strong>v1.3.0-beta</strong> rebuilds attachment handling — the server detects what an uploaded file
-      really is, can quarantine what the scanner names, and can optionally ask any of four reputation
-      services about a quarantined file's hash. Guest ticket submission works for the first time.
-      <strong>There is no 1.3.0 release yet</strong>; v1.2.0 remains the release to run in production.
+      <strong>Go Help Desk 1.3.0 is out.</strong>
+      Passkeys, a readable audit log, guest submission that works, published container images, and a usable layout on phones.
     </span>
-    <a href="docs/attachment-security.html"
-       style="color:#92400e;text-decoration:underline;white-space:nowrap;">Attachment security →</a>
+    <a href="#new-in-1-3"
+       style="color:var(--blue-dark);text-decoration:underline;white-space:nowrap;">What's new →</a>
+    <a href="docs/upgrading-1.3.0.html"
+       style="color:var(--blue-dark);text-decoration:underline;white-space:nowrap;">Upgrading from 1.2 →</a>
   </div>
 </div>
 
@@ -120,9 +111,88 @@
       </div>
       <pre style="border-radius:0 0 10px 10px; margin:0;"><code>git clone https://github.com/PubliciaLLC/go-help-desk
 cd go-help-desk/docker
-cp .env.example .env      <span style="color:#64748b"># set your secrets</span>
-docker compose up -d      <span style="color:#22c55e"># that's it</span></code></pre>
+cp .env.example .env      <span style="color:#64748b"># set SESSION_SECRET, JWT_SECRET, BASE_URL</span>
+docker compose up -d      <span style="color:#22c55e"># pulls the published image</span></code></pre>
     </div>
+  </div>
+</section>
+
+<!-- ── New in 1.3.0 ──────────────────────────────────────────────────────── -->
+<section id="new-in-1-3">
+  <div class="container">
+    <div class="section-header">
+      <p class="section-label">Release</p>
+      <h2 class="section-title">New in 1.3.0</h2>
+      <p class="section-sub">The biggest release since 1.0 — here is what changed.</p>
+    </div>
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+        </div>
+        <h3>Pull, don't build</h3>
+        <p>Published images for amd64 and arm64. <code>docker compose up -d</code> pulls them, and nothing is compiled on your machine. <a href="docs/getting-started.html#quick-start">Quick start →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <h3>Passkeys and an Account page</h3>
+        <p>Passkeys and hardware security keys work as a second factor beside TOTP, used after the password. A new Account page changes your password and manages your factors. <a href="docs/upgrading-1.3.0.html#whats-new">What's new →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+        </div>
+        <h3>Guest submission</h3>
+        <p>Guest submission works end to end. A visitor files a ticket without an account, then replies and attaches files through a private link. The link becomes read-only when the ticket closes. <a href="docs/authentication.html#auth-guest">Read how it works →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
+        </div>
+        <h3>Closed means closed</h3>
+        <p>Closed tickets are read-only and stay closed by default. The way on is a linked follow-up ticket. Resolved tickets close automatically once the reopen window passes. <a href="docs/tickets.html#tickets-lifecycle">Read the lifecycle →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+        </div>
+        <h3>A readable audit log</h3>
+        <p>Each ticket has an activity feed, and administrators get a searchable audit view. The log is kept forever unless you set a retention period. <a href="docs/admin-guide.html#admin-audit">Read about the audit log →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        </div>
+        <h3>Webhooks for Slack, Teams, Discord and JIRA</h3>
+        <p>Each enabled webhook receives the events it subscribes to, in the payload format you choose. Webhooks are sent once and are not retried. <a href="docs/admin-guide.html#admin-webhooks">Read about webhooks →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+        </div>
+        <h3>Works on a phone</h3>
+        <p>Staff can triage, and reporters can file and follow requests, from a phone. Administration stays on the desktop. <a href="docs/upgrading-1.3.0.html#whats-new">What's new →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h3>Attachment security</h3>
+        <p>Uploads are checked against their content, optionally scanned by ClamAV, and optionally looked up at reputation services. Files are download-only, and nothing is rendered in the browser. <a href="docs/attachment-security.html">Read how it works →</a></p>
+      </div>
+
+    </div>
+    <p style="margin-top:2rem;">Upgrading from 1.2? <a href="docs/upgrading-1.3.0.html">Read the upgrade notes first.</a></p>
   </div>
 </section>
 
@@ -242,7 +312,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>
         </div>
         <h3>Ticket Lifecycle</h3>
-        <p>Configurable statuses, a reopen window for resolved tickets, and automatic closure — so nothing falls through the cracks.</p>
+        <p>Configurable statuses, a reopen window for resolved tickets, and automatic closure. Closed is read-only by default; a linked follow-up ticket carries on the work.</p>
       </div>
 
       <div class="feature-card">
@@ -258,7 +328,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </div>
         <h3>SSO &amp; MFA</h3>
-        <p>Local accounts with TOTP MFA, and SAML 2.0 for Okta, Azure AD, Google Workspace, and any standard IdP. Admins always keep local-auth access.</p>
+        <p>Local accounts, SAML 2.0 and OIDC sign-in. A second factor by authenticator app (TOTP) or passkey / security key.</p>
       </div>
 
       <div class="feature-card">
@@ -274,7 +344,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
         </div>
         <h3>SLA Tracking</h3>
-        <p>Optional SLA targets per priority and category. Track response and resolution times against your commitments.</p>
+        <p>Optional SLA targets per priority and category. Track response and resolution times against your commitments. Timers pause while a ticket is in the Pending status.</p>
       </div>
 
       <div class="feature-card">
@@ -282,7 +352,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
         <h3>Email &amp; Webhooks</h3>
-        <p>Notify users and staff on ticket events via SMTP. Fire outbound webhooks for integration with your existing tooling.</p>
+        <p>Notify users and staff on ticket events via SMTP, queued and retried on failure. Outbound webhooks for Slack, Teams, Discord and JIRA formats, or raw JSON, sent once without retry.</p>
       </div>
 
       <div class="feature-card">
@@ -290,15 +360,15 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
         </div>
         <h3>REST API &amp; MCP</h3>
-        <p>Full REST API with API key auth. Plus an MCP server so AI assistants can create and manage tickets as native tools.</p>
+        <p>Full REST API with API key and OAuth2 client-credential auth, documented as OpenAPI 3.1 in the <a href="docs/api-reference.html">API Reference</a>. Plus an MCP server so AI assistants can create and manage tickets as native tools.</p>
       </div>
 
       <div class="feature-card">
         <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
         </div>
-        <h3>Plugin System</h3>
-        <p>Extend behavior with sandboxed WASM plugins. Hook into ticket events, add UI panels, and integrate external systems.</p>
+        <h3>Plugin System (planned for v2)</h3>
+        <p>The admin screen lists plugin records, but plugins cannot be installed yet. This is not available in 1.3.0.</p>
       </div>
 
       <div class="feature-card">
@@ -321,7 +391,7 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
         </div>
-        <h3>Attachment Security <span class="badge-beta">Beta</span></h3>
+        <h3>Attachment Security</h3>
         <p>Every upload is detected, hashed and compared against the name it arrived under. ClamAV scanning, an optional quarantine tier, and an optional hash lookup at four reputation services. Nothing is ever rendered in the browser. <a href="docs/attachment-security.html">Read how it works →</a></p>
       </div>
 
@@ -329,8 +399,8 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
         <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
-        <h3>Guest Submission <span class="badge-beta">Beta</span></h3>
-        <p>Anyone can file a ticket without an account and follow it through a private emailed link — no password, no signup. The link is scoped to one ticket, replaced whenever the help desk writes back, and revoked when the ticket closes. <a href="docs/authentication.html#auth-guest">Read how it works →</a></p>
+        <h3>Guest Submission</h3>
+        <p>Anyone can file a ticket without an account and follow it through a private emailed link — no password, no signup. The link is scoped to one ticket, replaced whenever the help desk writes back, and read-only once the ticket closes. <a href="docs/authentication.html#auth-guest">Read how it works →</a></p>
       </div>
 
     </div>
@@ -382,11 +452,11 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
       </div>
       <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
         <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
-        <span>Non-root Docker image (~20 MB runtime layer)</span>
+        <span>Non-root Docker image</span>
       </div>
       <div style="display:flex; gap: 0.5rem; align-items: flex-start;">
         <span style="color: var(--green); font-weight:700; margin-top:2px;">✓</span>
-        <span>Plugins sandboxed via WASM (wazero)</span>
+        <span>Multi-architecture images (amd64 + arm64)</span>
       </div>
     </div>
   </div>
@@ -402,8 +472,8 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
     </div>
     <div style="display: grid; grid-template-columns: repeat(4,1fr); gap: 1rem;">
 
-      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v1 · Shipped — latest v1.2.0</div>
+      <div style="padding: 1.5rem; border: 2px solid var(--blue); border-radius: 10px; background: var(--blue-light);">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v1 · Shipped — latest v1.3.0</div>
         <h4 style="margin-bottom: 0.75rem;">Core</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
           <li>✓ CTI ticketing</li>
@@ -413,19 +483,19 @@ docker compose up -d      <span style="color:#22c55e"># that's it</span></code><
           <li>✓ Custom fields</li>
           <li>✓ REST API + MCP</li>
           <li>✓ Email + webhooks</li>
-          <li>✓ Plugins (WASM)</li>
           <li>✓ Docker deploy</li>
+          <li>✓ Canned responses</li>
+          <li>✓ Full-text search</li>
+          <li>✓ Attachment security</li>
+          <li>✓ Guest submission</li>
         </ul>
       </div>
 
-      <div style="padding: 1.5rem; border: 2px solid var(--blue); border-radius: 10px; background: var(--blue-light);">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--blue); margin-bottom: 0.5rem;">v2 · Now</div>
-        <h4 style="margin-bottom: 0.75rem;">Productivity</h4>
+      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v2 · Next</div>
+        <h4 style="margin-bottom: 0.75rem;">Extensibility</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
-          <li>✓ Canned responses</li>
-          <li>✓ Full-text search</li>
-          <li>Attachment security <span class="badge-beta">Beta</span></li>
-          <li>Guest submission <span class="badge-beta">Beta</span></li>
+          <li>Plugin system (planned; not working yet)</li>
         </ul>
       </div>
 
