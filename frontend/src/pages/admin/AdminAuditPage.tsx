@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { AuditDiff } from '@/components/AuditDiff'
+import { EyeOffIcon } from 'lucide-react'
 import type { AdminAuditEntry } from '@/api/types'
 
 const PAGE_SIZE = 50
@@ -200,7 +201,7 @@ export function AdminAuditPage() {
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {e.actor_masked
-                          ? <span className="italic text-gray-500" title="Hidden by the Privacy setting">Requester (name hidden)</span>
+                          ? <span className="italic text-gray-500"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
                           : (e.actor_name || '—')}
                       </td>
                     </tr>

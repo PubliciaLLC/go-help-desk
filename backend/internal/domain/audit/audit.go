@@ -176,9 +176,11 @@ const redactedPlaceholder = "[redacted]"
 // cmd/server/resetfactors.go (whose os_user and host say who ran it, as
 // actor_name does for everyone else).
 //
-// An allow-list, not a deny-list, because of #362: protected or sensitive
-// data — PII, and data under FERPA, HIPAA, SOX or PCI-DSS — is never visible
-// in the audit view, to anyone. A deny-list can only hide what someone
+// An allow-list, not a deny-list, because of #362: the audit view is built
+// not to display protected or sensitive data — PII, and data under FERPA,
+// HIPAA, SOX or PCI-DSS — and this diff is where it would otherwise appear.
+// (Requester names in the actor column are the one configurable exception: the
+// audit_mask_requester_names setting.) A deny-list can only hide what someone
 // thought to name; free text such as a ticket subject can hold any of it.
 // Adding a key here is a decision that its values can never carry such data.
 var shownKeys = map[string]bool{
