@@ -489,7 +489,7 @@ Facilities
     <tr><td>Staff and admins</td><td><code>staff_admin</code></td><td>Staff and administrators.</td></tr>
   </tbody>
 </table>
-<p>Requesters, whether account holders or guests, can never reopen a Closed ticket, whatever this is set to. Staff and admins who need more work on a closed ticket open a <a href="tickets.html#tickets-follow-up">follow-up ticket</a> instead. A follow-up is available on every closed ticket, one per ticket.</p>
+<p>Requesters, whether account holders or guests, can never reopen a Closed ticket, whatever this is set to. Staff and admins who need more work on a closed ticket open a <a href="tickets.html#tickets-follow-up">follow-up ticket</a> instead. A follow-up is available on every closed ticket; a requester may open one per ticket, and staff and admins are not limited.</p>
 <p>The setting is read on every request, so a change applies at once. It is session-only: an API key or OAuth client that tries to change it is refused with <code>403 session_required</code>. A value the server does not recognise is refused with <code>400 invalid_closed_reopen_policy</code>.</p>
 
 

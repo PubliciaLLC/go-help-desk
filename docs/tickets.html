@@ -227,7 +227,7 @@
 </ul>
 <img src="../screenshots/27-closed-ticket-requester.png" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, and a timeline ending Resolved to Closed" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
-<p>Each closed ticket can have one follow-up. A second request is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts as well. Staff, admins and the requester open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
+<p>A requester can open one follow-up per closed ticket. A second request from a requester is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts towards that one. Staff and administrators are not limited. Staff, admins and the requester open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
 
 
 <h2 id="tickets-replies">Replies &amp; internal notes</h2>

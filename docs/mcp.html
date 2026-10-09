@@ -255,7 +255,7 @@
     <tr><td><code>ticket_id</code></td><td>string (required)</td><td>UUID of the closed ticket to continue.</td></tr>
   </tbody>
 </table>
-<p>It copies the subject, description, category, type, item, priority and requester, not the replies, attachments, history or custom fields. It works only on a Closed ticket, and each closed ticket can have one follow-up. See <a href="tickets.html#tickets-follow-up">Follow-up tickets</a>.</p>
+<p>It copies the subject, description, category, type, item, priority and requester, not the replies, attachments, history or custom fields. It works only on a Closed ticket. Staff and administrators can open as many follow-ups from one closed ticket as they need; only a requester is limited to one. See <a href="tickets.html#tickets-follow-up">Follow-up tickets</a>.</p>
 
 <h2 id="mcp-connect">Connecting clients</h2>
 
@@ -266,7 +266,7 @@
 <h3>Claude Code</h3>
 <pre><code>claude mcp add --transport sse helpdesk \
   https://helpdesk.example.com/mcp/sse \
-  --header "Authorization: ApiKey 3f8a…"</code></pre>
+  --header "Authorization: ApiKey GHD_3f8a…"</code></pre>
 
 <h3>Other clients</h3>
 <p>Any MCP client that supports the SSE transport and custom request headers works. Give it the <code>/mcp/sse</code> URL and the <code>Authorization</code> header. A client configured for the newer Streamable HTTP transport against <code>/mcp/</code> will not connect.</p>
@@ -281,7 +281,7 @@
 <p>The MCP server sits behind the same authentication as the REST API and accepts any of:</p>
 
 <ul>
-  <li><strong>API key</strong>: <code>Authorization: ApiKey &lt;token&gt;</code>. The token is 64 hex characters with no prefix, shown once when an administrator creates the key under <em>Admin → API Keys</em>.</li>
+  <li><strong>API key</strong>: <code>Authorization: ApiKey &lt;token&gt;</code>. The token is <code>GHD_</code> followed by 64 hex characters, shown once when an administrator creates the key under <em>Admin → API Keys</em>.</li>
   <li><strong>OAuth2 access token</strong>: get one from <code>POST /api/v1/auth/oauth/token</code> with client credentials, and send it as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
   <li><strong>Session cookie</strong>: works, but is only useful from a browser.</li>
 </ul>
