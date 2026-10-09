@@ -324,14 +324,27 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 
 // emailAddress matches anything shaped like an address in an error string.
 // Deliberately loose: it only has to find what to hide, never validate it.
-// The local part may be quoted ("john doe"@example.com, escapes included) and
-// the domain may be an IP literal (guest@[192.168.1.10]): both pass
-// user.ValidateEmail, so a guest can have one on file (#358). The quoted
-// local part is bounded because an unclosed quote made matching quadratic on
-// relay text (measured; see TestRedactAddresses_IsLinear). The IP literal is
-// bounded to 255 characters, as a domain name is, and excludes whitespace, so
-// a stray "@[" cannot close on a later "]" such as the one in "[address]".
-var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.){0,64}"|[^\s<>()\[\]@,;:"']+)@(?:\[[^\]\s]{0,255}\]|[^\s<>()\[\]@,;:"']+)`)
+//
+// The unquoted local part may contain an apostrophe (o'brien@example.com is an
+// ordinary, sendable address, #389), but may not start with one, so an address
+// a relay wraps in single quotes keeps both of them: '[address]'. The local
+// part may also be quoted ("john doe"@example.com, escapes included):
+// user.ValidateEmail refuses one that needs its quotes (#389), but a relay can
+// write one itself. The domain may be an IP literal
+// (guest@[192.168.1.10]), closed or not: an unterminated "@[10.0.0.1>" is
+// hidden up to the ">" (#389).
+//
+// Linear on relay text, which the relay controls. Go's regexp is linear for one
+// search, but redaction searches again after every match, so a branch that can
+// scan far ahead and then fail is rescanned once per match: quadratic. That is
+// why the quoted local part is bounded to 64 characters (unbounded it took about
+// a minute on 96 KB; see TestRedactAddresses_IsLinear). The IP literal cannot
+// fail once "@[" is seen, because its "]" is optional, so it has no such cost;
+// its 255-character bound, as a domain name has, and its stop at whitespace only
+// limit how much of the following text an unclosed one hides. The unquoted
+// local part needs no bound: every thread in it reaches the same "@", so the
+// earliest one is the match.
+var emailAddress = regexp.MustCompile(`(?:"(?:[^"\\]|\\.){0,64}"|[^\s<>()\[\]@,;:"'][^\s<>()\[\]@,;:"]*)@(?:\[[^\]\s<>]{0,255}\]?|[^\s<>()\[\]@,;:"']+)`)
 
 // redactAddresses hides email addresses in a delivery error before it is
 // stored in last_error or logged (#350). A mail server's rejection usually

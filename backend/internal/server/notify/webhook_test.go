@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"syscall"
 	"testing"
 	"time"
@@ -119,9 +120,8 @@ func (r recordingWebhookStore) RecordWebhookDelivery(ctx context.Context, id uui
 }
 
 type ctxAwareWebhookStore struct {
-	hooks     []authstore.WebhookConfig
-	got       chan recordedWithCtxState
-	ctxIsDone chan bool
+	hooks []authstore.WebhookConfig
+	got   chan recordedWithCtxState
 }
 
 type recordedWithCtxState struct {
@@ -139,7 +139,6 @@ func (r ctxAwareWebhookStore) RecordWebhookDelivery(ctx context.Context, id uuid
 	// Track whether ctx is done at the time of call
 	isDone := ctx.Err() != nil
 	r.got <- recordedWithCtxState{ID: id, URL: url, D: d, CtxIsDone: isDone}
-	r.ctxIsDone <- isDone
 	return nil
 }
 
@@ -608,7 +607,9 @@ func TestSend_ReturnsTheResult(t *testing.T) {
 	}
 }
 
-func TestSend_InvalidStatusCodesAreStoredAsZero(t *testing.T) {
+// The CHECK allows 0 or 100..999. Anything outside is stored as 0; the edges
+// themselves are kept, so a clamp that is off by one either way fails here.
+func TestSend_StatusOutsideTheCheckRangeIsStoredAsZero(t *testing.T) {
 	cases := []struct {
 		name       string
 		statusLine string // e.g. "099 X" or "000 X"
@@ -624,6 +625,11 @@ func TestSend_InvalidStatusCodesAreStoredAsZero(t *testing.T) {
 			statusLine: "000 X",
 			wantStatus: 0,
 		},
+		// Go returns a 101 as the final response; 100 and 102..199 are
+		// informational and it waits for another, so 101 is the lowest edge
+		// this can test.
+		{name: "status 101 is kept", statusLine: "101 Switching Protocols", wantStatus: 101},
+		{name: "status 999 is kept", statusLine: "999 X", wantStatus: 999},
 	}
 
 	for _, tc := range cases {
@@ -664,9 +670,8 @@ func TestSend_InvalidStatusCodesAreStoredAsZero(t *testing.T) {
 
 			result := disp.send(hook, []byte(`{"test":"data"}`))
 
-			// The result should have Status 0 (not the parsed 099 or 000)
 			require.Equal(t, tc.wantStatus, result.Status,
-				"status %s should be stored as 0, not %d", tc.statusLine, result.Status)
+				"status line %q should be stored as %d, not %d", tc.statusLine, tc.wantStatus, result.Status)
 			require.Equal(t, DeliveryHTTPStatus, result.Error)
 
 			// Verify the record would pass the DB CHECK: 0 or 100..999
@@ -875,11 +880,9 @@ func TestDispatch_RecordsEvenWithCancelledContext(t *testing.T) {
 	}
 
 	recordedChan := make(chan recordedWithCtxState, 1)
-	ctxIsDoneChan := make(chan bool, 1)
 	store := ctxAwareWebhookStore{
-		hooks:     []authstore.WebhookConfig{hook},
-		got:       recordedChan,
-		ctxIsDone: ctxIsDoneChan,
+		hooks: []authstore.WebhookConfig{hook},
+		got:   recordedChan,
 	}
 
 	disp := &WebhookDispatcher{
@@ -912,32 +915,24 @@ func TestDispatch_RecordsEvenWithCancelledContext(t *testing.T) {
 }
 
 func TestDeliveryErrors_MatchTheList(t *testing.T) {
-	// Read the migration file and verify each error class is listed.
-	wd, err := os.Getwd()
+	// The stored values, spelled out: the admin page's FAILURE_LABEL keys on
+	// these strings, so renaming one is a contract change, not a refactor.
+	require.Equal(t, []string{"http_status", "timeout", "dns", "tls", "blocked_address", "connection", "other"},
+		DeliveryErrors)
+
+	migration, err := os.ReadFile(filepath.Join("..", "..", "database", "migrations", "000034_webhook_last_delivery.up.sql"))
 	require.NoError(t, err)
 
-	migrationPath := filepath.Join(wd, "../../database/migrations/000034_webhook_last_delivery.up.sql")
-	migrationBytes, err := os.ReadFile(migrationPath)
-	require.NoError(t, err, "could not read migration file at %s", migrationPath)
-
-	migration := string(migrationBytes)
-
-	// Check that DeliveryErrors list exactly matches the migration CHECK.
-	for _, errClass := range DeliveryErrors {
-		if errClass != "" { // Empty string is the success case
-			require.Contains(t, migration, fmt.Sprintf("'%s'", errClass),
-				"error class %q not found in migration CHECK constraint", errClass)
-		}
+	// Only the CHECK's own list counts. The comment above it quotes values
+	// too, and a class found there proves nothing about what Postgres accepts.
+	check := regexp.MustCompile(`(?s)last_delivery_error\s+IN\s*\(([^)]*)\)`).FindSubmatch(migration)
+	require.NotNil(t, check, "no CHECK (last_delivery_error IN (...)) in the migration")
+	var allowed []string
+	for _, m := range regexp.MustCompile(`'([^']*)'`).FindAllSubmatch(check[1], -1) {
+		allowed = append(allowed, string(m[1]))
 	}
 
-	// Verify the list is exactly right by checking order.
-	require.Equal(t, []string{
-		DeliveryHTTPStatus,
-		DeliveryTimeout,
-		DeliveryDNS,
-		DeliveryTLS,
-		DeliveryBlockedAddress,
-		DeliveryConnection,
-		DeliveryOther,
-	}, DeliveryErrors)
+	// Both directions: a class the dispatcher can record but the CHECK refuses
+	// loses the result, and a class only the CHECK allows is free text's way back in.
+	require.ElementsMatch(t, append([]string{""}, DeliveryErrors...), allowed)
 }

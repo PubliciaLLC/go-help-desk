@@ -32,40 +32,47 @@ const metadataFetchTimeout = 15 * time.Second
 // expiry is checked against the clock of whichever replica serves /complete.
 const SAMLHandoverMaxAge = 5 * time.Minute
 
-// HandoverCodec embeds samlsp.JWTSessionCodec and overrides New to set a
-// random jti (JWT ID) on each minted token. This ensures that two tokens
-// minted for the same person in the same second have different header.payload
-// signatures, so the spend (keyed on SHA-256 of header.payload) does not
-// reject the second sign-in wrongly (#337).
+// HandoverCodec is the library's JWT session codec with one change: every
+// token it mints carries a random jti.
+//
+// /auth/saml/complete records each hand-over cookie it accepts by the SHA-256
+// of the JWT's header.payload, and refuses one it has seen before (#337).
+// Without a jti, that payload is the assertion's attributes plus iat, nbf and
+// exp at one-second precision, so one person signing in twice within the
+// same second gets two tokens whose header.payload is byte-for-byte equal,
+// and the second, genuine sign-in is refused as a replay. The jti makes each
+// token's header.payload, and so its spend key, unique.
 type HandoverCodec struct {
 	samlsp.JWTSessionCodec
 }
 
-// New creates a SAML session from the assertion and assigns it a random jti.
-// The result is returned as the value type (samlsp.JWTSessionClaims, not *),
-// as required by the handler and tests.
+// New builds the session exactly as the embedded codec does, then sets a
+// random jti on it (see HandoverCodec for why).
+//
+// The claims are returned by value: the embedded Encode and the /complete
+// handler both type-assert to samlsp.JWTSessionClaims, not a pointer, and
+// Encode panics on anything else.
 func (c HandoverCodec) New(assertion *saml.Assertion) (samlsp.Session, error) {
-	// Delegate to the embedded codec to build the base session.
 	sess, err := c.JWTSessionCodec.New(assertion)
 	if err != nil {
 		return nil, err
 	}
 
-	// Type-assert to JWTSessionClaims to set the jti.
+	// The embedded codec returns this type today. If an upgrade changes that,
+	// fail the sign-in rather than mint a token without a jti, which would
+	// bring back the same-second collision.
 	claims, ok := sess.(samlsp.JWTSessionClaims)
 	if !ok {
 		return nil, fmt.Errorf("expected samlsp.JWTSessionClaims, got %T", sess)
 	}
 
-	// Assign a random 16-byte jti, base64.RawURLEncoded.
+	// 128 random bits: a collision between two live tokens is not a case to
+	// plan for.
 	jtiBytes := make([]byte, 16)
 	if _, err := rand.Read(jtiBytes); err != nil {
 		return nil, fmt.Errorf("generating jti: %w", err)
 	}
 	claims.Id = base64.RawURLEncoding.EncodeToString(jtiBytes)
-
-	// Return as value (not pointer) to match the type expected by handlers and
-	// the CookieSessionProvider contract.
 	return claims, nil
 }
 

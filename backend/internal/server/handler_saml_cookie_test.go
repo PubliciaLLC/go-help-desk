@@ -468,3 +468,26 @@ func TestSAMLComplete_TwoMintsInTheSameSecondBothSignIn(t *testing.T) {
 	appCookie2 := sh.appSessionCookie(res2)
 	require.NotNil(t, appCookie2, "second mint must sign in and issue an app cookie")
 }
+
+func TestSAMLComplete_QuotedEmailIsRefusedNotAnInternalError(t *testing.T) {
+	sh, cleanup := newSAMLHarness(t)
+	defer cleanup()
+
+	res := sh.rawGet(t, "/api/v1/auth/saml/complete",
+		[]*http.Cookie{sh.libraryCookie(t, `"john doe"@test.local`)})
+	res.Body.Close()
+
+	// Should redirect to login with error, not return 500
+	require.Equal(t, http.StatusSeeOther, res.StatusCode,
+		"a quoted email must redirect, not return 500")
+	require.Equal(t, "/login?error=invalid_email", res.Header.Get("Location"),
+		"a quoted email must redirect to /login?error=invalid_email")
+
+	// Verify no user was created
+	users, err := sh.userSvc.ListAdmin(context.Background(), 500, 0)
+	require.NoError(t, err)
+	for _, u := range users {
+		require.NotEqual(t, `"john doe"@test.local`, u.Email, "quoted email must not create a user")
+		require.NotEqual(t, "john doe@test.local", u.Email, "normalized version must not create a user")
+	}
+}

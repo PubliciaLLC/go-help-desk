@@ -457,7 +457,7 @@ export type WebhookDeliveryError =
 
 export interface WebhookDelivery {
   at: string
-  status: number // 0 when no response came back
+  status: number // 0 when no response came back, or one outside 100..999 did (error tells which)
   error: WebhookDeliveryError
 }
 

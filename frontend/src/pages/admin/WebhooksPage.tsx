@@ -342,10 +342,23 @@ export function WebhooksPage() {
                 }}
                 secretHint="Optional. Used to sign deliveries; it cannot be read back afterwards."
               />
-              <label className="flex min-h-[24px] items-center gap-2 text-sm text-gray-900">
-                <input type="checkbox" checked={createEnabled} onChange={(e) => setCreateEnabled(e.target.checked)} />
-                <span>Enabled</span>
-              </label>
+              <div className="space-y-1">
+                <label className="flex min-h-[24px] items-center gap-2 text-sm text-gray-900">
+                  <input
+                    type="checkbox"
+                    checked={createEnabled}
+                    aria-describedby="new-webhook-enabled-hint"
+                    onChange={(e) => {
+                      setCreateEnabled(e.target.checked)
+                      setCreateError('')
+                    }}
+                  />
+                  <span>Enabled</span>
+                </label>
+                <p id="new-webhook-enabled-hint" className="text-xs text-gray-500">
+                  A disabled hook is saved but receives no deliveries until it is enabled.
+                </p>
+              </div>
               {createError && <p role="alert" className="text-sm text-red-600">{createError}</p>}
               <Button type="submit" size="sm" disabled={!canSubmit(form) || createMutation.isPending}>
                 <PlusIcon className="mr-2 h-4 w-4" />

@@ -1743,6 +1743,7 @@ func TestLocalLogin_AnOverlongPasswordIsAnOrdinaryWrongPassword(t *testing.T) {
 		"role":         "user",
 		"password":     fullPassword,
 	})
+	defer createResp.Body.Close()
 	require.Equal(t, http.StatusCreated, createResp.StatusCode)
 
 	// Log in with the 72-byte password plus 100 extra bytes; should succeed

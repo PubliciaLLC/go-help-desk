@@ -86,8 +86,8 @@ func TestRedact_ShowsTheAllowListedFields(t *testing.T) {
 	require.Equal(t, m, got)
 }
 
-// #362, Erik: protected or sensitive data — PII, FERPA, HIPAA, SOX, PCI-DSS —
-// is never visible in the audit view, to anyone. The ticket subject is free
+// #362, Erik: the audit view is built not to display protected or sensitive
+// data — PII, FERPA, HIPAA, SOX, PCI-DSS. The ticket subject is free
 // text a requester typed and can hold any of those, so it is not shown. Nor
 // is any field nobody has decided is safe: the view is an allow-list, so a
 // field a writer adds later is left out until it is added on purpose.

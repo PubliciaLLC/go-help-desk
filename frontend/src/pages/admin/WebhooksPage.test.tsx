@@ -152,6 +152,8 @@ describe('the webhook list', () => {
     const timeEl = cell!.querySelector('time')
     expect(timeEl).toBeTruthy()
     expect(timeEl?.getAttribute('dateTime')).toBe('2026-10-08T14:02:00Z')
+    // What the operator reads, in their own locale and time zone.
+    expect(timeEl?.textContent).toBe(new Date('2026-10-08T14:02:00Z').toLocaleString())
   })
 
   it('shows an HTTP rejection as Failing with its status', async () => {
@@ -330,6 +332,31 @@ describe('creating a webhook', () => {
     const form = within(createForm())
     const enabledCheckbox = form.getByRole('checkbox', { name: 'Enabled' }) as HTMLInputElement
     expect(enabledCheckbox.checked).toBe(true)
+  })
+
+  it('says what a disabled hook means, next to the checkbox', async () => {
+    await renderPage()
+    const box = within(createForm()).getByRole('checkbox', { name: 'Enabled' })
+    const hintId = box.getAttribute('aria-describedby')
+    expect(hintId).toBeTruthy()
+    expect(document.getElementById(hintId!)?.textContent).toMatch(/receives no deliveries/)
+  })
+
+  it('clears a refusal when Enabled is changed, as every other field does', async () => {
+    const { post } = await renderPage()
+    post.mockRejectedValue(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      refusal('invalid_event_name', 'unknown event "ticket.creatd"') as any
+    )
+    const form = within(createForm())
+
+    await userEvent.type(form.getByLabelText('Webhook URL'), 'https://example.com/hook')
+    await userEvent.click(form.getByRole('checkbox', { name: 'All events' }))
+    await userEvent.click(form.getByRole('button', { name: /create/i }))
+    await screen.findByRole('alert')
+
+    await userEvent.click(form.getByRole('checkbox', { name: 'Enabled' }))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('creates a disabled hook when Enabled is unticked', async () => {

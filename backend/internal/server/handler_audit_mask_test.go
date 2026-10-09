@@ -119,6 +119,27 @@ func TestAudit_MaskedActorIsFlaggedSoARealRequesterNameIsNot(t *testing.T) {
 		}
 	}
 	require.True(t, foundAssigned, "no assigned entry in %s", body)
+
+	// And the same on the admin-wide view (#382).
+	res = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/audit?entity_type=ticket&limit=500", nil)
+	body, err = readAllBody(res)
+	require.NoError(t, err)
+	res.Body.Close()
+	var page struct {
+		Entries []map[string]json.RawMessage `json:"entries"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(body), &page))
+	foundAssigned = false
+	for _, m := range page.Entries {
+		var entityID, action string
+		require.NoError(t, json.Unmarshal(m["entity_id"], &entityID))
+		require.NoError(t, json.Unmarshal(m["action"], &action))
+		if entityID == id && action == "assigned" {
+			foundAssigned = true
+			require.NotContains(t, m, "actor_masked")
+		}
+	}
+	require.True(t, foundAssigned, "no assigned entry in %s", body)
 }
 
 // The admin-wide view has its own actor_masked tag (adminAuditEntryView), so the

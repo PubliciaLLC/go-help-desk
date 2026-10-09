@@ -273,10 +273,22 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/auth/saml/login — initiates the IdP redirect.
-// We clone the request and rewrite the URL to the complete endpoint so that
-// crewjam uses /saml/complete as the RelayState, ensuring the browser lands
-// there after the ACS round-trip.
+// GET /api/v1/auth/saml/login — starts a fresh SAML sign-in at the IdP.
+//
+// It calls HandleStartAuthFlow directly. mw.ServeHTTP serves only the
+// metadata and ACS paths and 404s everything else (#390), and redirecting to
+// /saml/complete instead would let a "token" cookie already in the browser
+// answer for the IdP: a spent one would send the person to
+// /login?error=sso_session_used with no way to start over.
+//
+// The library records r.URL as where the browser goes after the ACS, so the
+// URL is replaced with /saml/complete: left as /saml/login, every successful
+// assertion would start another sign-in. It is a bare path on purpose. An
+// absolute URL built from the request would take its host from the Host
+// header and its scheme from r.TLS, which is nil behind a TLS-terminating
+// proxy, so the browser would be sent to http:// and its Secure "token"
+// cookie would not go with it. Nothing from the query is read, so this route
+// cannot be pointed anywhere else.
 func (s *Server) handleSAMLLogin(w http.ResponseWriter, r *http.Request) {
 	mw := s.samlHTTP()
 	if mw == nil {
@@ -284,17 +296,8 @@ func (s *Server) handleSAMLLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r2 := r.Clone(r.Context())
-	r2.URL = &url.URL{
-		Scheme: func() string {
-			if r.TLS != nil {
-				return "https"
-			}
-			return "http"
-		}(),
-		Host: r.Host,
-		Path: "/api/v1/auth/saml/complete",
-	}
-	mw.ServeHTTP(w, r2)
+	r2.URL = &url.URL{Path: "/api/v1/auth/saml/complete"}
+	mw.HandleStartAuthFlow(w, r2)
 }
 
 // POST /api/v1/auth/saml/acs — assertion consumer service.
@@ -460,6 +463,8 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/login?error=invalid_assertion", http.StatusSeeOther)
 		case errors.Is(err, user.ErrEmailRequired):
 			http.Redirect(w, r, "/login?error=email_not_verified", http.StatusSeeOther)
+		case errors.Is(err, user.ErrValidation):
+			http.Redirect(w, r, "/login?error=invalid_email", http.StatusSeeOther)
 		default:
 			handleError(w, err)
 		}

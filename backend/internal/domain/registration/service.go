@@ -208,8 +208,8 @@ func (s *Service) Lookup(ctx context.Context, token uuid.UUID) (PendingRegistrat
 // Verify looks up a token, checks expiry, creates the user account with the
 // display name and password chosen now (#360, #374), and deletes the pending
 // record. Returns the new User so the handler can write a session. A blank
-// name or a password below the minimum is refused before anything is written,
-// so the link still works.
+// name, or a password below the minimum or above the maximum, is refused
+// before anything is written, so the link still works.
 //
 // ErrNotFound, ErrTokenExpired and ErrAlreadyRegistered are verdicts on the
 // link; any other error is a fault, not a verdict, as for Lookup (#373).
