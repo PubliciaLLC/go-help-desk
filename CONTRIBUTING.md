@@ -119,6 +119,7 @@ Do **not** run `brew services start colima`, because that restarts the VM at eve
 To run the suite against the development stack's database instead, which the suite will migrate:
 
 ```sh
+cd backend
 TEST_DATABASE_URL="postgres://helpdesk:helpdesk@localhost:5432/helpdesk?sslmode=disable" go test ./...
 ```
 
