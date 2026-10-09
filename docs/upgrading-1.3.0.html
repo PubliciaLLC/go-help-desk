@@ -143,7 +143,7 @@
 <h2 id="whats-new">What's new in 1.3.0</h2>
 
 <ul>
-  <li><strong>Passkeys.</strong> Passkeys and hardware security keys work as a second factor, beside authenticator apps. A passkey is checked after the password, never instead of it. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#passkeys-webauthn">Design notes</a></li>
+  <li><strong>Passkeys.</strong> Passkeys and hardware security keys work as a second factor, beside authenticator apps. A passkey is checked after the password, never instead of it. <a href="authentication.html#auth-mfa">Second factor</a></li>
   <li><strong>An Account page.</strong> Change your password, set up an authenticator app, add and remove passkeys, and verify a second factor.</li>
   <li><strong>Recovery from lost factors.</strong> The <code>reset-factors &lt;email&gt;</code> subcommand of the server binary clears every second factor from one account, so its owner can sign in with their password and enrol again. It is run on the server, not through the web. In the Compose stack: <code>docker compose exec app /app/server reset-factors &lt;email&gt;</code>.</li>
   <li><strong>Identity-provider lockout guard.</strong> A SAML or OIDC settings change that would leave no administrator able to sign in is refused. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#identity-provider-lockout-guard-300">Design notes</a></li>
