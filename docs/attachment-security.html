@@ -275,7 +275,7 @@
 <h3>What staff see</h3>
 <p>A ticket holding quarantined attachments carries a persistent red banner naming how many there are. Each quarantined row shows the scanner's name for the detection, the archive password, the detected type, the SHA-256 with a copy control, and a <em>Download…</em> button that opens a confirmation dialog rather than a link. The download URL is deliberately not on the row: a link that calls <code>preventDefault</code> is still reachable by middle-click, "Save link as" and the keyboard context menu, and a button is not.</p>
 
-<img src="../screenshots/12-quarantined-attachment.png" alt="A ticket with a red banner saying one attachment was quarantined, and the quarantined row showing the detection name, the archive password, the content type, the SHA-256 with a Copy button, a VirusTotal link and a Download button" width="2880" height="3300" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/12-quarantined-attachment.png" alt="A ticket with a red banner saying one attachment was quarantined, and the quarantined row showing the detection name, the archive password, the content type, the SHA-256 with a Copy button, a VirusTotal link and a Download button" width="2880" height="3184" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 
 <h2 id="attach-download">Downloads are downloads. Nothing is ever rendered</h2>
@@ -402,7 +402,7 @@
 
 <p>Staff get a <em>Check again</em> control on a verdict that can still change. The server allows <strong>one manual re-check per hash per service every seven days</strong>, whatever the interval says — including when it says <code>never</code>, because an operator who turned automatic checking off to save quota did not mean that nobody may ever ask. It is a floor and not an override: the daily budget still applies, a re-check inside the week is refused with the date it clears, and a re-check of a final verdict is refused outright. The control is disabled rather than hidden while the week runs.</p>
 
-<img src="../screenshots/13-attachment-reputation.png" alt="The expanded reputation view for a quarantined attachment: VirusTotal's lookup did not complete, and CIRCL reports the file as known, with an Asked on date for each service" width="584" height="1528" loading="lazy" style="width:100%;max-width:292px;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/13-attachment-reputation.png" alt="The expanded reputation view for a quarantined attachment: VirusTotal's lookup did not complete, and CIRCL reports the file as known, with an Asked on date for each service" width="584" height="1560" loading="lazy" style="width:100%;max-width:292px;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>No provider can hold a page open</h3>
 
