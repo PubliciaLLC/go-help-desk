@@ -409,7 +409,7 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.15 | Information Security Management | ✅ Fit | v1 — shipped |
 | 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix v4 |
 | 3.6 | Service Level Management | 🟡 Partial | v1 — **partly non-functional** |
-| 3.17 | Relationship Management | 🟡 Partial | implied by v4 |
+| 3.17 | Relationship Management | 🟡 Partial | roadmap #407 (organization entity with v4 #35), unscheduled |
 | 3.3 | Service Request Management | ❌ Gap | v4 (type only) |
 | 3.4 | Problem Management | ❌ Gap | v4 (type only) |
 | 3.5 | Change Enablement | ❌ Gap | v4 (type only) |
@@ -419,8 +419,8 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.10 | IT Asset Management | ❌ Gap | integrate with Snipe-IT (#403), unscheduled |
 | 3.11 | Monitoring & Event Management | ❌ Gap | not on roadmap |
 | 3.13 | Measurement & Reporting | ❌ Gap | v3 |
-| 3.14 | Continual Improvement | ❌ Gap | not on roadmap |
-| 3.16 | Supplier Management | ❌ Gap | not on roadmap |
+| 3.14 | Continual Improvement | ❌ Gap | roadmap #405 (CSAT #133 first), unscheduled |
+| 3.16 | Supplier Management | ❌ Gap | roadmap #406, unscheduled |
 | 3.12 | Release & Deployment Management | ⚪ Out of scope | — |
 | 3.18 | Availability & Capacity Management | ⚪ Out of scope | — |
 
