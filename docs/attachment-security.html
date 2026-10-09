@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Attachment Security — Go Help Desk Docs</title>
-  <meta name="description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/attachment-security.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/attachment-security.html" />
   <meta property="og:title" content="Attachment Security — Go Help Desk Docs" />
-  <meta property="og:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta property="og:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Attachment Security — Go Help Desk Docs" />
-  <meta name="twitter:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do." />
+  <meta name="twitter:description" content="What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Attachment Security",
-    "description": "What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services — and what it deliberately does not do.",
+    "description": "What Go Help Desk 1.3.0 does with an uploaded file: content detection, the three storage tiers, the quarantine archive, the optional reputation lookup at four services, and what it deliberately does not do.",
     "url": "https://gohelpdesk.org/docs/attachment-security.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -115,12 +115,8 @@
 
 <main class="docs-content">
 
-<h1 class="docs-page-title" id="attach-overview">Attachment Security</h1>
+<h1 class="docs-page-title" id="attach-overview">Attachment Security <span class="badge-new">New in 1.3.0</span></h1>
 <p class="docs-page-sub">What the server does with a file somebody uploads to a ticket — and, just as important, what it does not do.</p>
-
-<div class="callout callout-warn">
-  <p><strong>New in 1.3.0.</strong> Everything on this page describes behaviour new in 1.3.0.</p>
-</div>
 
 <p>Up to and including 1.2.0, an attachment was checked in one way: a hard-coded signature test against the file's extension, which had no entry for <code>.txt</code> or <code>.log</code> and ended by accepting anything it had no entry for. 1.3.0 replaces that with three separate things, which are worth keeping apart in your head because they answer different questions:</p>
 
@@ -136,7 +132,7 @@
 <p>Every step below runs on <code>POST /api/v1/tickets/{id}/attachments</code>, in this order. The first one that refuses ends it — nothing is written to disk and nothing is recorded.</p>
 
 <ol>
-  <li><strong>Is the caller allowed?</strong> Uploading needs a signed-in account. A reporting user may upload only to their own ticket.</li>
+  <li><strong>Is the caller allowed?</strong> Uploading needs a signed-in account. A reporting user may upload only to their own ticket. The guest API's upload, <code>POST /api/v1/guest/attachments</code>, takes the same steps once the guest's link is checked; the guest page itself has no upload control.</li>
   <li><strong>Is it within 25 MB?</strong> Checked three times — the request body is capped before it is parsed, then the size the upload declares is checked, then the bytes actually read. Over that is <code>413 too_large</code> whichever check catches it.</li>
   <li><strong>Is the filename storable, and honest?</strong> It must be valid UTF-8, contain no NUL byte, contain no control character and no text-direction override (the characters that make <code>invoice&lt;U+202E&gt;txt.pdf</code> display as <code>invoicefdp.txt</code>), and be 255 bytes or shorter. Anything else is <code>400 invalid_filename</code>.</li>
   <li><strong>Is the extension one this instance accepts?</strong> Checked against the operator's allowed-types list, before the file body is read. Anything else is <code>415 unsupported_type</code>.</li>
@@ -363,7 +359,7 @@
 <ul>
   <li><strong>Only for quarantined files.</strong> A file the scanner named. Not ordinary attachments, and not files that were merely flagged as mislabelled.</li>
   <li><strong>Only for staff.</strong> A reporting customer opening their own ticket never spends the operator's allowance.</li>
-  <li><strong>Lazily, on a page render</strong> — when staff open a ticket carrying a quarantined attachment with no current verdict. Never at upload. There is no background queue, because this project has no background job runner and a queue would be a table nothing drains.</li>
+  <li><strong>Lazily, on a page render</strong>, when staff open a ticket carrying a quarantined attachment with no current verdict. Never at upload, and there is no background queue for lookups.</li>
   <li><strong>Cached against the hash and the service</strong>, not the attachment, so the same file on five tickets costs one lookup per service. Each service's verdict has its own expiry clock.</li>
 </ul>
 
@@ -441,8 +437,8 @@
   <li><strong>Containment is not retroactive.</strong> Turning quarantine or the wrap on does not rewrap what is already stored; turning either off does not unwrap it.</li>
   <li><strong>The quarantine password is not confidentiality.</strong> It is published, and ZipCrypto is weak on purpose.</li>
   <li><strong>The Sec-Fetch-Dest check cannot reach everything.</strong> Absent headers are allowed, and same-origin page script can fetch the bytes and render them itself. Nothing on the server can tell that apart from a download.</li>
-  <li><strong>The expanded reputation list does not mark which line the row's summary came from.</strong> The summary names its service, and the API sends an <code>inline</code> flag on the matching entry, but the ticket page does not draw it yet — tracked as <a href="https://github.com/PubliciaLLC/go-help-desk/issues/173">issue #173</a>.</li>
-  <li><strong>There is no admin screen for scanner health yet.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, including a live reachability check rather than a restatement of the configuration — but the admin UI renders only the insecure-secrets warning from that response. Today this is visible to an administrator who asks the API.</li>
+  <li><strong>The expanded reputation list does not mark which line the row's summary came from.</strong> The summary names its service, and the API sends an <code>inline</code> flag on the matching entry, but the ticket page does not draw it.</li>
+  <li><strong>Scanner health is a banner, not a screen.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, with a live reachability check. Administrators see it only when it matters: an <em>Attachment scanner unreachable</em> banner on every page while the policy is not <code>off</code> and the scanner does not answer. There is no page that shows a healthy scanner as healthy.</li>
 </ul>
 
 

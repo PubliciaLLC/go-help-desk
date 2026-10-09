@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Admin Guide — Go Help Desk Docs</title>
-  <meta name="description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta name="description" content="Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/admin-guide.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/admin-guide.html" />
   <meta property="og:title" content="Admin Guide — Go Help Desk Docs" />
-  <meta property="og:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta property="og:description" content="Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="Admin Guide — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk." />
+  <meta name="twitter:description" content="Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "Admin Guide",
-    "description": "Configure categories, groups, ticket statuses, SLA policies, email templates, webhooks, plugins, and branding in Go Help Desk.",
+    "description": "Configure categories, groups, ticket statuses, SLA policies, webhooks, the audit log, attachment security and branding in Go Help Desk.",
     "url": "https://gohelpdesk.org/docs/admin-guide.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -199,7 +199,7 @@ Facilities
   <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
   <li><strong>Add Item</strong> — click <em>Add Item</em> next to a Type.</li>
   <li><strong>Reorder</strong> — drag-and-drop entries to change the order they appear in the ticket form dropdowns.</li>
-  <li><strong>Delete</strong> — Categories and Types with existing tickets cannot be deleted. Archive them (hide from new tickets) instead.</li>
+  <li><strong>Delete</strong>: Categories and Types with existing tickets cannot be deleted.</li>
 </ul>
 
 <h3>Groups in the CTI editor</h3>
@@ -223,7 +223,7 @@ Facilities
     </tr>
     <tr>
       <td><strong>Staff</strong></td>
-      <td>Can view, reply to, assign, and update tickets within their group scope. Can look up any ticket by ID regardless of scope. Can leave internal notes not visible to users. Can resolve and close tickets. Can add and remove tags on any ticket. Cannot access admin settings.</td>
+      <td>Can view, reply to, assign and update the tickets they can see: every ticket, unless <a href="#admin-groups">Limit staff to their group scope</a> is on. Can leave internal notes not visible to users. Can resolve tickets; only an administrator can close one. Can add and remove tags. Cannot access admin settings.</td>
     </tr>
     <tr>
       <td><strong>User</strong></td>
@@ -267,7 +267,7 @@ Facilities
 
 <h2 id="admin-groups">Groups &amp; scope</h2>
 
-<p>Staff visibility — which tickets a staff member sees in their queue — is controlled entirely by group membership. An admin always sees all tickets. A staff member not in any group sees no tickets (except by direct search by ID).</p>
+<p>Group membership decides which tickets a staff member can see only when <em>Limit staff to their group scope</em> is on, under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see every ticket. With it on, a staff member sees the tickets they reported, tickets assigned to them or to one of their groups, and tickets whose category and type one of their groups covers. A staff member in no group then sees almost nothing, and a ticket outside their visibility answers as not found, even by its tracking number. An admin always sees all tickets.</p>
 
 <h3>How scope is calculated</h3>
 <p>When a staff member loads their ticket queue, the system collects all CTI scope entries from all their groups, unions them, and returns tickets that match any of those entries.</p>
@@ -542,25 +542,31 @@ Facilities
   <p><strong>Editing templates from the admin UI is coming soon</strong> — <a href="https://github.com/PubliciaLLC/go-help-desk/issues/158">issue #158</a>. There is no <em>Admin → Email → Templates</em> page yet, no preview and no send-test. The templates are compiled into the binary; changing one today means editing the file and rebuilding.</p>
 </div>
 
-<p>There are three, in <code>backend/internal/server/notify/templates/</code>:</p>
+<p>There are seven, in <code>backend/internal/server/notify/templates/</code>:</p>
 
 <table>
   <thead><tr><th>Template</th><th>When sent</th><th>Recipient</th></tr></thead>
   <tbody>
     <tr><td><code>ticket_created.tmpl</code></td><td>A ticket is filed with a guest address</td><td>That address</td></tr>
-    <tr><td><code>ticket_replied.tmpl</code></td><td>A public reply is added and the reporter is being notified</td><td>The reporter</td></tr>
+    <tr><td><code>ticket_replied.tmpl</code></td><td>Staff post a public reply with <em>Send ticket update email to customer</em> ticked (the default)</td><td>The requester, account holder or guest</td></tr>
+    <tr><td><code>ticket_status_changed.tmpl</code></td><td>A guest's ticket changes status, other than to Closed</td><td>The guest</td></tr>
+    <tr><td><code>ticket_resolved.tmpl</code></td><td>A guest's ticket is resolved</td><td>The guest</td></tr>
+    <tr><td><code>ticket_reopened.tmpl</code></td><td>A guest's ticket is reopened</td><td>The guest</td></tr>
+    <tr><td><code>guest_link.tmpl</code></td><td>A guest asks for a new link at <code>/track</code></td><td>The guest</td></tr>
     <tr><td><code>email_verification.tmpl</code></td><td>Someone signs up</td><td>The address they gave</td></tr>
   </tbody>
 </table>
 
-<p>Assignment, status change, resolve and close send no email. Neither does an internal note, whatever the notify flag says.</p>
+<p>Assignment, closing and internal notes send no email to anyone. An account holder is emailed only about public replies from staff; the status mails exist for guests, because each one carries the guest's replacement link.</p>
 
 <h3>Template variables</h3>
 
-<p>Two, and deliberately only two:</p>
+<p>The ticket templates get two, and deliberately only two:</p>
 
 <pre><code>{{ .TrackingNumber }}   -- e.g. GHD-2026-000001
-{{ .TicketURL }}        -- the configured base URL plus the ticket path</code></pre>
+{{ .TicketURL }}        -- the ticket's address (a private link for a guest)</code></pre>
+
+<p><code>email_verification.tmpl</code> gets one, <code>{{ .VerifyURL }}</code>.</p>
 
 <p>There is no <code>.Ticket.Subject</code>, no <code>.Reply.Body</code>, no <code>.Submitter</code>. From v1.2.0 a notification email carries no content from the ticket at all — mail leaving the help desk is sent from the operator's domain, and anyone who can file a ticket chooses that text, so the content stays in the application behind the access rules that already govern it. See <a href="upgrading-1.2.0.html#email">Upgrading to 1.2.0</a>.</p>
 
@@ -608,11 +614,11 @@ Read it here:
   <tbody>
     <tr><td><code>ticket.created</code></td><td>A ticket is created, by any route.</td></tr>
     <tr><td><code>ticket.assigned</code></td><td>The assignee or the assigned group changes, or the ticket is unassigned.</td></tr>
-    <tr><td><code>ticket.status_changed</code></td><td>The status changes to anything.</td></tr>
+    <tr><td><code>ticket.status_changed</code></td><td>The status is changed directly: the status picker, <code>PATCH status_id</code>, or MCP <code>update_ticket_status</code>. That includes a direct change to Resolved or Closed, which sends only this event. The Resolve, Close and Reopen actions send their own events instead of this one.</td></tr>
     <tr><td><code>ticket.replied</code></td><td>A reply is added. An internal note is sent with this event too, with <code>internal</code> set to true and no reply text. Subscribing to this event therefore includes staff-only notes, in that form.</td></tr>
-    <tr><td><code>ticket.resolved</code></td><td>The status changes to Resolved.</td></tr>
-    <tr><td><code>ticket.closed</code></td><td>The ticket is closed, by an administrator or by the automatic sweep.</td></tr>
-    <tr><td><code>ticket.reopened</code></td><td>A Resolved ticket is reopened by its requester's reply, or a Closed ticket is force-reopened under <em>Reopening closed tickets</em>.</td></tr>
+    <tr><td><code>ticket.resolved</code></td><td>The ticket is resolved with the Resolve action (<em>Mark Resolved</em>, or <code>POST /api/v1/tickets/{id}/resolve</code>), including when it is resolved as a duplicate.</td></tr>
+    <tr><td><code>ticket.closed</code></td><td>The ticket is closed with <em>Close Ticket</em> by an administrator, or by the automatic sweep.</td></tr>
+    <tr><td><code>ticket.reopened</code></td><td>A Resolved ticket is reopened by its requester's reply, or a Closed ticket is reopened with the Reopen action, which <em>Reopening closed tickets</em> must allow.</td></tr>
     <tr><td><code>ticket.linked</code></td><td>A link is created between two tickets, including the link a follow-up makes.</td></tr>
   </tbody>
 </table>
@@ -636,7 +642,6 @@ X-OHD-Signature: sha256=&lt;hmac-hex&gt;
 
 <p>The keys are the field names of the event, as they are written in the body. <code>ActorID</code> is <code>null</code> for an event the system made. <code>Payload</code> holds the details of the event, and what it holds differs by event: a status change carries the new status's ID. A public reply carries its text in <code>Payload.ReplyBody</code>. An internal note's <code>ticket.replied</code> has no <code>ReplyBody</code>. A guest's access token is never part of the body.</p>
 
-<h3>Verifying the signature</h3>
 <h3>Verifying the signature</h3>
 <p>The <code>X-GHD-Signature</code> header is <code>sha256=&lt;hex&gt;</code> where the hex is an HMAC-SHA256 of the raw request body, keyed with your webhook secret. Each delivery also carries <code>X-OHD-Signature</code> with the same value, kept for integrations written before the rename. Verify <code>X-GHD-Signature</code>.</p>
 <pre><code># Python
@@ -696,7 +701,7 @@ function verifySignature(secret, body, header) {
 </ul>
 
 <h3>Requester names</h3>
-<p>By default, a requester is shown as "Requester" rather than by name in every audit view. Change this under <em>Admin → Settings → General → Audit log</em>, in <em>Mask requester names in Audit Trail</em>:</p>
+<p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → Settings → General → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
 <table>
   <thead><tr><th>Choice</th><th>Requesters are masked in</th></tr></thead>
   <tbody>
@@ -705,7 +710,8 @@ function verifySignature(secret, body, header) {
     <tr><td>Admin Audit Log Only</td><td>The Audit Log only</td></tr>
   </tbody>
 </table>
-<p>Staff and administrator actors are always named. Masking changes only what is displayed.</p>
+<p>Staff and administrator actors are always named. Masking changes only what is displayed: it is not an access control, and the ticket page itself still shows the requester's name.</p>
+<img src="../screenshots/19-admin-settings-privacy.png" alt="The General settings tab: Limit staff to their group scope and Staff can view ticket change history switched on, audit Retention at 0 days, and Mask requester names in Audit Trail set to Everywhere under Privacy" width="1408" height="1974" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Retention</h3>
 <p>Set <em>Retention</em>, in days, under <em>Admin → Settings → General → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
@@ -718,11 +724,7 @@ function verifySignature(secret, body, header) {
 </ul>
 <p>See the <a href="api-reference.html">API Reference</a> for the parameters and responses.</p>
 
-<h2 id="admin-attachments">Attachments</h2>
-
-<div class="callout callout-warn">
-  <p><strong>New in 1.3.0.</strong></p>
-</div>
+<h2 id="admin-attachments">Attachments <span class="badge-new">New in 1.3.0</span></h2>
 
 <p>Everything below lives under <em>Admin → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
 
@@ -819,9 +821,7 @@ function verifySignature(secret, body, header) {
 
 <p><code>GET /api/v1/admin/security-warnings</code> reports what scanning is <em>doing</em>, including a live reachability check rather than a restatement of the configuration — because an instance whose scanner container has died has an address configured and no protection, and those two facts must not look alike. It returns the effective policy, whether an address is configured, whether the scanner answers, and a sentence saying what that combination means.</p>
 
-<div class="callout callout-warn">
-  <p><strong>The admin UI does not show this yet.</strong> The banner built on that endpoint renders only the insecure-secrets warning. Today the scanning status is visible to an administrator who asks the API.</p>
-</div>
+<p>Administrators see the same check as a banner. When the scan policy is not <code>off</code> and the live check fails, an <em>Attachment scanner unreachable</em> banner appears at the top of every page, with that sentence. Scanning that is switched off on purpose is not bannered; the setting shows it.</p>
 
 <h3>Reputation lookup</h3>
 
@@ -889,7 +889,7 @@ function verifySignature(secret, body, header) {
   <p><strong>Plugins cannot be installed in 1.3.0.</strong> Installing and uninstalling a plugin return <code>501 not_implemented</code>. A working plugin system is planned for v2.</p>
 </div>
 
-<p>The plugin API lists plugin records and can enable or disable them, under <code>/api/v1/admin/plugins</code>. The admin panel has no Plugins screen in 1.3.0. The <a href="plugins.html">Plugin Development</a> page describes a plugin SDK that cannot be used in this release.</p>
+<p>The admin panel has no Plugins screen in 1.3.0. <code>GET /api/v1/admin/plugins</code> answers an empty list, because nothing can be installed. The <a href="plugins.html">Plugin Development</a> page describes the planned design, which cannot be used in this release.</p>
 
 
 <h2 id="admin-branding">Branding</h2>
@@ -915,7 +915,7 @@ function verifySignature(secret, body, header) {
 </table>
 
 <div class="callout callout-note">
-  <p>Branding covers site name and logo only. Layout changes, custom page sections, and additional UI components are out of scope for the built-in branding feature — use the <a href="plugins.html#plugin-ui">plugin UI panel</a> system for that.</p>
+  <p>Branding covers site name and logo only. Layout changes, custom page sections and additional UI components are not available.</p>
 </div>
 
 

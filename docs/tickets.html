@@ -117,20 +117,20 @@
 
 <h2 id="tickets-create">Creating a ticket</h2>
 
-<p>Click <em>New ticket</em> from the dashboard or ticket list. Staff and admins can create tickets on behalf of any user. Users create tickets for themselves.</p>
+<p>Click <em>New ticket</em> from the dashboard or ticket list. A ticket is filed as the signed-in user. (Through the <a href="mcp.html">MCP server</a>, staff can name another user as the reporter.)</p>
 
 <h3>Required fields</h3>
 <ul>
-  <li><strong>Subject</strong> — a short summary (max 255 characters). This is the ticket's title across all views.</li>
-  <li><strong>Description</strong> — the full detail of the request or issue. Markdown formatting is supported. Staff will read this first, so include all relevant context: error messages, steps to reproduce, what you've already tried.</li>
+  <li><strong>Subject</strong>: a short summary. This is the ticket's title across all views.</li>
   <li><strong>Category</strong> — required. At least one Category must be configured before any ticket can be created.</li>
 </ul>
 
 <h3>Optional fields</h3>
 <ul>
+  <li><strong>Description</strong>: the full detail of the request, as plain text. Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
   <li><strong>Type</strong> — shown only if the selected Category has Types defined. Filters Items.</li>
   <li><strong>Item</strong> — shown only if the selected Type has Items defined.</li>
-  <li><strong>Priority</strong> — defaults to Medium. Users can set priority if the admin has enabled <em>User-selectable priority</em> in settings. Staff and admins can always set and change priority.</li>
+  <li><strong>Priority</strong>: defaults to Medium. Only staff and admins can choose it, when they create a ticket. It cannot be changed afterwards.</li>
   <li><strong>Attachments</strong> — files can be attached at creation. See <a href="#tickets-attachments">Attachments</a>.</li>
 </ul>
 
@@ -158,7 +158,7 @@
 
 <h3>Guest ticket submission <span class="badge-new">New in 1.3.0</span></h3>
 
-<p>Guest submission is off by default. When it is enabled (<em>Admin → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted, priority is always Medium on a guest ticket.</p>
+<p>Guest submission is off by default. When it is enabled (<em>Admin → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
 
 <img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, description and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -167,7 +167,7 @@
 <h4>The guest link</h4>
 <ul>
   <li><strong>It opens one ticket and nothing else.</strong> A guest sees the subject, description, status, and the public replies — internal notes are never included, and staff names are not shown. They can post a reply, subject to the same lifecycle rules as anyone else, including the reopen window.</li>
-  <li><strong>Attachments are one way for guests.</strong> A guest can attach a file to their ticket while they can still reply to it, under the same rules as a reply. A guest cannot download an attachment, and the guest view does not list any.</li>
+  <li><strong>No attachments on the guest page.</strong> The guest page has no upload control and does not list attachments, and a guest cannot download one. The guest API does accept a file (<code>POST /api/v1/guest/attachments</code>) while the guest could still reply, under the same rules as a reply.</li>
   <li><strong>It is replaced every time the help desk writes to them.</strong> A staff reply, a status change, a resolve or a reopen each send a fresh link and invalidate the previous one immediately. There is no grace period, so the newest email is the one that works.</li>
   <li><strong>Closing the ticket stops the link being replaced, but does not revoke it.</strong> The last link sent still opens the ticket, read-only, until it expires. No mail is sent for the close. A guest can still open a follow-up from a closed ticket with the link.</li>
   <li><strong>It expires 30 days after it was issued.</strong></li>
@@ -193,13 +193,13 @@
 <table>
   <thead><tr><th>Transition</th><th>Who can trigger it</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr><td>Any status → any status</td><td>Staff, Admin</td><td>No restrictions except Closed (see below).</td></tr>
+    <tr><td>Any status → any status</td><td>Staff, Admin</td><td>Only an administrator can move a ticket to Closed, and leaving Closed follows the rows below.</td></tr>
     <tr><td>Any → Resolved</td><td>Staff, Admin</td><td>Optionally captures resolution notes. Starts the reopen window timer.</td></tr>
     <tr><td>Resolved → Closed (automatic)</td><td>System</td><td>Triggered when the reopen window expires. A background sweep checks every five minutes.</td></tr>
     <tr><td>Resolved → Closed (manual)</td><td>Admin only</td><td>Closes a ticket immediately, bypassing the reopen window. Use the <em>Close Ticket</em> button on the ticket detail page or <code>POST /api/v1/tickets/{id}/close</code>.</td></tr>
     <tr><td>Resolved → Reopened (via reply)</td><td>User</td><td>Only within the reopen window. Automatically transitions the ticket to the reopen target status (New by default).</td></tr>
     <tr><td>Closed → any</td><td>Nobody, by default</td><td>Admins, or staff and admins, only if <em>Reopening closed tickets</em> allows it. Requesters never can. Otherwise open a follow-up.</td></tr>
-    <tr><td>Resolved → Reopened (manual)</td><td>Staff, Admin</td><td>Bypasses the reopen window restriction.</td></tr>
+    <tr><td>Resolved → any other status (manual)</td><td>Staff, Admin</td><td>An ordinary status change from the status picker, whatever the reopen window says. The <em>Reopen</em> action itself applies only to a Closed ticket.</td></tr>
     <tr><td>Closed → Reopened (manual)</td><td>Admin, or staff and admin, per policy</td><td>Only when <em>Reopening closed tickets</em> allows the role. Requesters never can.</td></tr>
   </tbody>
 </table>
@@ -212,8 +212,7 @@
 <ol>
   <li>The reply is saved.</li>
   <li>The ticket status is automatically changed to the reopen target status (New by default).</li>
-  <li>The ticket is flagged in the staff queue as reopened.</li>
-  <li>The original assignee (if any) receives an email notification.</li>
+  <li>The reopen is recorded in the ticket's Activity feed, and a <code>ticket.reopened</code> event goes to subscribed webhooks.</li>
 </ol>
 
 <p>After the window expires, the ticket is closed automatically. A closed ticket is read-only for its requester: they can still view it, but cannot reply. It stays Closed unless <em>Reopening closed tickets</em> allows staff or administrators to reopen it. The way on is a <a href="#tickets-follow-up">follow-up ticket</a>.</p>
@@ -226,7 +225,9 @@
   <li><strong>Staff and admins</strong> can open a follow-up from any Closed ticket they can see. It copies the subject, description, category, type, item, priority and requester.</li>
   <li><strong>The requester</strong> can open one from their own Closed ticket: an account holder through their account, or a guest through their link. It copies the subject, description and category, and the type for an account holder, never for a guest. It starts at Medium priority, with no item, unassigned, and with a fresh SLA clock.</li>
 </ul>
-<p>Each closed ticket can have one follow-up. A second request is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts as well. Staff and admins open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
+<img src="../screenshots/27-closed-ticket-requester.png" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, and a timeline ending Resolved to Closed" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+
+<p>Each closed ticket can have one follow-up. A second request is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts as well. Staff, admins and the requester open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
 
 
 <h2 id="tickets-replies">Replies &amp; internal notes</h2>
@@ -238,7 +239,7 @@
   <li>All staff and admins who have access to the ticket</li>
   <li>Guest users with a valid access link (for guest-submitted tickets)</li>
 </ul>
-<p>Email notifications are sent to all participants when a public reply is added.</p>
+<p>When staff post a public reply with <em>Send ticket update email to customer</em> ticked, which is the default, the requester is emailed a notice with a link to the ticket. The email carries no reply text. Nobody else is emailed about replies.</p>
 
 <h3>Internal notes</h3>
 <p>Staff and admins can add internal notes to any ticket. Internal notes are:</p>
@@ -258,21 +259,11 @@
   <li>Documenting failed solutions before finding the correct one</li>
 </ul>
 
-<h3>Markdown support</h3>
-<p>Both replies and notes support a subset of Markdown:</p>
-<ul>
-  <li><code>**bold**</code> and <code>*italic*</code></li>
-  <li>Inline code with backticks: <code>`code`</code></li>
-  <li>Code blocks with triple backticks (with optional language hint for syntax highlighting)</li>
-  <li>Ordered and unordered lists</li>
-  <li>Links: <code>[text](url)</code></li>
-  <li>Blockquotes with <code>&gt;</code></li>
-</ul>
+<h3>Formatting</h3>
+<p>Replies, notes and descriptions are plain text. Line breaks are kept. Markdown and HTML are shown exactly as typed, never rendered.</p>
 
-<p>HTML is not supported and is escaped before rendering.</p>
-
-<h3>Editing and deleting replies</h3>
-<p>Users can edit or delete their own replies within 15 minutes of posting. Staff and admins can edit any reply at any time. Deletions are soft — a "deleted reply" placeholder is shown to staff. The original content is preserved in the audit log.</p>
+<h3>Replies are permanent</h3>
+<p>A reply or note cannot be edited or deleted once it is posted, by anyone. To correct one, post another.</p>
 
 <h3>Inserting canned responses</h3>
 <p>Staff and admins see an <em>Insert canned response</em> button above the reply box. It opens a searchable picker limited to the responses in scope for that ticket — global templates, plus any scoped to the ticket's category or category and type. Selecting one splices the template's body into the reply at the current cursor position (or appends it, if the box is empty), and the inserted text stays fully editable before sending. Managing the templates themselves is an admin task — see <a href="admin-guide.html#admin-canned-responses">Canned Responses</a> in the Admin Guide.</p>
@@ -292,7 +283,7 @@
       <td>They affect similar systems, came from the same user, or are otherwise connected but neither caused the other.</td>
     </tr>
     <tr>
-      <td><code>parent_of</code> / <code>child_of</code></td>
+      <td><code>parent_child</code></td>
       <td>One ticket is a sub-issue of another.</td>
       <td>A "batch laptop deployment" parent ticket with individual "setup laptop for [user]" children. Or a widespread network outage parent with individual "I can't access the VPN" children.</td>
     </tr>
@@ -315,8 +306,6 @@
 <h3>Removing a link</h3>
 <p>Click the <em>×</em> next to any linked ticket. This removes the link in both directions. Staff and admin only — users cannot modify links.</p>
 
-<h3>Bulk operations on linked tickets</h3>
-<p>From a parent ticket, staff can resolve all child tickets at once using <em>Resolve all children</em>. Each child receives the same resolution notes as the parent. This is useful for closing out many individual duplicate or child tickets after resolving the root cause.</p>
 
 
 <h2 id="tickets-tags">Tags</h2>
@@ -338,7 +327,7 @@
 <p>As you type, existing active tags that match the prefix are shown as suggestions. Select a suggestion to apply it, or press Enter to create a new tag with the text you've typed. Tags with no matching suggestions show a "Press Enter to create…" hint.</p>
 
 <h3>Tag visibility</h3>
-<p>Tags are visible to all users who can view the ticket, including the ticket submitter. Only staff and admins can add or remove tags.</p>
+<p>Tags are for staff. Only staff and admins can see, add or remove them; the requester never sees the tags on their ticket.</p>
 
 <h3>Admin tag management</h3>
 <p>Admins can deactivate inappropriate tags or restore previously deactivated ones from <em>Admin → Tags</em>. See <a href="admin-guide.html#admin-tags">Tags</a> in the Admin Guide for details.</p>
@@ -348,7 +337,7 @@
 
 <p>A ticket can be assigned to:</p>
 <ul>
-  <li><strong>A specific staff member</strong> — the ticket appears in their personal queue and they receive an email notification.</li>
+  <li><strong>A specific staff member</strong>: the ticket appears in their personal queue. No email is sent for an assignment.</li>
   <li><strong>A group</strong> — the ticket appears in the queue of every member of that group. Useful when you want a team to handle the ticket without specifying an individual.</li>
   <li><strong>Unassigned</strong> — visible to all staff with scope for the ticket's CTI classification.</li>
 </ul>
@@ -356,14 +345,11 @@
 <h3>Who can assign</h3>
 <p>Staff and admins can assign tickets to any staff member or group, regardless of scope. This is intentional — cross-team escalation should not be blocked by routing rules. A ticket can be assigned to staff outside their normal scope, and it will appear in the assignee's queue.</p>
 
-<h3>Self-assignment</h3>
-<p>Staff can click <em>Assign to me</em> to take ownership of an unassigned ticket immediately.</p>
-
 <h3>Reassignment</h3>
-<p>Reassigning a ticket (changing from one assignee to another) generates an email notification to the new assignee. The old assignee does not receive a notification unless they are also a participant (i.e. they added a reply).</p>
+<p>Reassigning a ticket sends no email to either assignee. It is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks.</p>
 
 <h3>Assignment and scope</h3>
-<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee — if you are assigned a ticket outside your scope, it appears in your queue. You can always find any ticket by its ID using the search bar, regardless of scope or assignment.</p>
+<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see and find every ticket. With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
 
 
 <h2 id="tickets-custom-fields">Custom fields</h2>
@@ -381,7 +367,7 @@
 
 <h2 id="tickets-attachments">Attachments</h2>
 
-<p>Any logged-in user (including regular users) can attach files when creating a ticket. Attachments are listed on the ticket detail page and served through the API. Authentication is required to download. Reporters can also attach files to a reply, up to five per reply. A guest cannot attach a file when submitting a ticket, can attach one later through their link while the ticket is open, and cannot download any attachment.</p>
+<p>Any logged-in user (including regular users) can attach files when creating a ticket. Attachments are listed on the ticket detail page and served through the API. Authentication is required to download. Reporters can also attach files to a reply, up to five per reply. A guest cannot attach a file on the submission form or on the guest page, and cannot download any attachment.</p>
 
 <div class="callout callout-note">
   <p><strong>What the server does with an uploaded file changed substantially in 1.3.0.</strong> This section is the summary; the full account, content detection, the three storage tiers, the quarantine archive, and the optional reputation lookup, is on the <a href="attachment-security.html">Attachment Security</a> page.</p>
@@ -425,7 +411,7 @@
 
 <p>Both the detection and the hash are taken on the file exactly as uploaded, before any recompression or wrapping. For a recompressed image, that means <strong>the recorded hash is not the hash of the file on disk</strong>.</p>
 
-<p>Attachments uploaded before 1.3.0 carry none of this, and nothing is backfilled. The ticket UI renders that as an absence rather than as a clean bill of health, "nobody looked" and "nothing wrong" are different statements.</p>
+<p>Attachments uploaded before 1.3.0 carry none of this, and nothing is backfilled. The ticket UI renders that as an absence rather than as a clean bill of health: "nobody looked" and "nothing wrong" are different statements.</p>
 
 <h3>When content does not match the name</h3>
 
@@ -439,7 +425,7 @@
 <h3>Virus scanning</h3>
 
 <div class="callout callout-warn">
-  <p><strong>An unscannable upload is now refused by default</strong> <span class="badge-new">Changed in 1.3.0</span>. Up to and including 1.2.0, a ClamAV that was unreachable or unconfigured meant a logged warning and an upload accepted unchecked, so an instance whose scanner had been dead for a month accepted everything and showed the administrator nothing. That behaviour is now reachable only by choosing it.</p>
+  <p><strong>An unscannable upload is now refused by default wherever a scanner address is configured</strong> <span class="badge-new">Changed in 1.3.0</span>. Up to and including 1.2.0, a ClamAV that was unreachable or unconfigured meant a logged warning and an upload accepted unchecked, so an instance whose scanner had been dead for a month accepted everything and showed the administrator nothing. That behaviour is now reachable only by choosing it.</p>
 </div>
 
 <p>Uploads are passed to the configured ClamAV daemon before they are stored. What happens to a file the scanner could not look at is the <code>attachment_scan_policy</code> setting:</p>
@@ -455,11 +441,11 @@
 
 <p>A file the scanner identifies is refused with <code>422 infected</code> and the user is shown the scanner's name for it — unless the operator has set <code>attachment_infected_handling</code> to <code>quarantine</code>, in which case it is stored inside a password-protected archive and the ticket carries a warning banner. See the <a href="admin-guide.html#admin-attachments">Admin Guide</a> for both settings.</p>
 
-<p>The Docker Compose setup runs a ClamAV container automatically and wires everything up — no configuration needed. For bare-metal or Kubernetes installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → Settings → Attachments</em>, which takes effect without a restart.</p>
+<p>Docker Compose does not scan by default. To scan with the bundled ClamAV, set <code>CLAMAV_ADDR=tcp://clamav:3310</code> and <code>COMPOSE_PROFILES=antivirus</code> in <code>docker/.env</code>; see <a href="getting-started.html#config-scanning">Getting Started: Virus scanning</a>. For other installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → Settings → Attachments</em>, which takes effect without a restart.</p>
 
 <h3>Downloads</h3>
 
-<p><strong>Attachments are download-only. There is no previewer</strong> <span class="badge-new">Changed in 1.3.0</span>, no lightbox, no thumbnail, no inline PDF view. Every attachment is served as <code>application/octet-stream</code> with <code>Content-Disposition: attachment</code>, whatever the file claims to be, and the download route refuses a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render it. Before 1.3.0 the content type came from the filename, so a PDF went out as <code>application/pdf</code> and one header was holding the whole thing up.</p>
+<p><strong>Attachments are download-only. There is no previewer</strong> <span class="badge-new">Changed in 1.3.0</span>: no lightbox, no thumbnail, no inline PDF view. Every attachment is served as <code>application/octet-stream</code> with <code>Content-Disposition: attachment</code>, whatever the file claims to be, and the download route refuses a request whose <code>Sec-Fetch-Dest</code> says the browser intends to render it. Before 1.3.0 the content type came from the filename, so a PDF went out as <code>application/pdf</code> and one header was holding the whole thing up.</p>
 
 <h3>Storage</h3>
 <p>Files are stored under <code>ATTACHMENT_DIR/tickets/&lt;ticketID&gt;/</code> with UUID-based filenames to prevent enumeration. The original filename is preserved in the database and shown in the UI and <code>Content-Disposition</code> headers on download — except where the server renamed the file itself, which is the quarantine and mismatch wraps above.</p>
@@ -470,9 +456,9 @@
 <h3>Live search</h3>
 <p>The search bar at the top of the ticket list searches across <strong>tracking number</strong>, <strong>subject</strong>, and <strong>description</strong>, the latter two powered by Postgres full-text search and ranked by relevance. Results appear after you type at least 2 characters (with a short debounce). A spinner is shown while results load.</p>
 <ul>
-  <li>Tracking number searches use a <strong>prefix match</strong> — e.g. typing <code>OHD-2025-0</code> matches all tickets in that series.</li>
+  <li>Tracking number searches use a <strong>prefix match</strong>: typing <code>GHD-2026-0</code> matches all tickets in that series.</li>
   <li>Subject and description searches tokenize your query into words and <strong>prefix-match each one</strong> — e.g. <code>print jam</code> matches a ticket containing a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
-  <li>Users only see results from their own tickets. Staff and admins see results from tickets assigned to them and their groups.</li>
+  <li>Users only see results from their own tickets. Administrators search every ticket. Staff search the tickets they can see, which is every ticket unless <em>Limit staff to their group scope</em> is on.</li>
 </ul>
 
 <h3>Jump to ticket (staff and admin)</h3>

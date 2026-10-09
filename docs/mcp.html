@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MCP Server — Go Help Desk Docs</title>
-  <meta name="description" content="Connect AI assistants (Claude, Cursor, and others) to Go Help Desk via the built-in MCP server to create and manage tickets as native tools." />
+  <meta name="description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/mcp.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/mcp.html" />
   <meta property="og:title" content="MCP Server — Go Help Desk Docs" />
-  <meta property="og:description" content="Connect AI assistants (Claude, Cursor, and others) to Go Help Desk via the built-in MCP server to create and manage tickets as native tools." />
+  <meta property="og:description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="MCP Server — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Connect AI assistants (Claude, Cursor, and others) to Go Help Desk via the built-in MCP server to create and manage tickets as native tools." />
+  <meta name="twitter:description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "MCP Server",
-    "description": "Connect AI assistants (Claude, Cursor, and others) to Go Help Desk via the built-in MCP server to create and manage tickets as native tools.",
+    "description": "Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API.",
     "url": "https://gohelpdesk.org/docs/mcp.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -123,44 +123,77 @@
 <h1 class="docs-page-title" id="mcp-overview">MCP Server</h1>
 <p class="docs-page-sub">Give AI assistants native access to your help desk using the Model Context Protocol.</p>
 
-<p>Go Help Desk includes a built-in <a href="https://modelcontextprotocol.io">Model Context Protocol (MCP)</a> server mounted at <code>/mcp/</code>. MCP allows AI assistants — Claude, Cursor, VS Code with Continue, and others — to call help desk operations as structured tools, rather than trying to interact with the web UI.</p>
+<p>Go Help Desk includes a built-in <a href="https://modelcontextprotocol.io">Model Context Protocol (MCP)</a> server under <code>/mcp/</code>. MCP lets an AI assistant call help desk operations as structured tools rather than driving the web UI.</p>
 
 <p>With the MCP server connected, an AI assistant can:</p>
 <ul>
-  <li>List open tickets and summarize them</li>
-  <li>Look up the details and history of a specific ticket</li>
-  <li>Create a ticket on behalf of a user</li>
-  <li>Add a reply or internal note</li>
-  <li>Change a ticket's status or assignee</li>
+  <li>List and search the tickets the caller can see, and read one with its replies and links</li>
+  <li>Look up the category catalogue and the statuses this instance defines</li>
+  <li>Open a ticket, on the caller's behalf or someone else's</li>
+  <li>Add a reply or an internal note</li>
+  <li>Assign or unassign a ticket, change its status, and open a follow-up from a closed ticket</li>
 </ul>
 
-<p>The MCP server sits on top of the REST API — every operation goes through the same permission checks. An AI assistant using a Staff user's API key cannot do anything a Staff user couldn't do manually.</p>
+<p>The tools call the same ticket service as the REST API and use the same visibility rule, so an assistant using an account's credentials sees and changes only what that account could through the API.</p>
 
 
 <h2 id="mcp-tools">Available tools</h2>
 
-<p>Five tools, all requiring a Staff or Admin account. Identifiers are UUIDs.</p>
+<p>Nine tools. Four read and five write. Identifiers are UUIDs, except that <code>get_ticket</code> also takes a tracking number. A tool that fails answers with an MCP tool error, a plain sentence the assistant can show its user.</p>
 
-<h3><code>get_ticket</code></h3>
-<p>Get a ticket by its UUID or tracking number.</p>
 <table>
-  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <thead><tr><th>Tool</th><th>Kind</th><th>Who can call it</th><th>Scope for a machine credential</th></tr></thead>
   <tbody>
-    <tr><td><code>id</code></td><td>string (required)</td><td>Ticket UUID, or tracking number such as <code>OHD-2026-000001</code>.</td></tr>
+    <tr><td><code>get_ticket</code></td><td>read</td><td>Any signed-in role, for tickets it can see</td><td><code>tickets:read</code></td></tr>
+    <tr><td><code>list_tickets</code></td><td>read</td><td>Any signed-in role, over tickets it can see</td><td><code>tickets:read</code></td></tr>
+    <tr><td><code>list_categories</code></td><td>read</td><td>Any signed-in role</td><td><code>tickets:read</code></td></tr>
+    <tr><td><code>list_statuses</code></td><td>read</td><td>Any signed-in role</td><td><code>tickets:read</code></td></tr>
+    <tr><td><code>create_ticket</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
+    <tr><td><code>add_reply</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
+    <tr><td><code>assign_ticket</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
+    <tr><td><code>update_ticket_status</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
+    <tr><td><code>create_follow_up</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
   </tbody>
 </table>
 
-<h3><code>list_tickets</code></h3>
-<p>List tickets assigned to a user.</p>
+<h3><code>get_ticket</code></h3>
+<p>Get one ticket by UUID or tracking number, with its replies and linked tickets.</p>
 <table>
   <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>assignee_user_id</code></td><td>string (required)</td><td>Assignee user UUID.</td></tr>
-    <tr><td><code>limit</code></td><td>number (optional)</td><td>Maximum results. Default 20.</td></tr>
+    <tr><td><code>id</code></td><td>string (required)</td><td>Ticket UUID, or a tracking number such as <code>GHD-2026-000001</code>.</td></tr>
+    <tr><td><code>include_replies</code></td><td>boolean (optional)</td><td>Include the reply thread and the ticket's links. Default <code>true</code>.</td></tr>
+  </tbody>
+</table>
+<p>A reporting user never receives internal notes. A ticket the caller may not see is answered with the same "not found" message as one that does not exist.</p>
+
+<h3><code>list_tickets</code></h3>
+<p>List the tickets the caller can see, with optional filters.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>assignee_user_id</code></td><td>string (optional)</td><td>Only tickets assigned to this user.</td></tr>
+    <tr><td><code>status_id</code></td><td>string (optional)</td><td>Only tickets in this status (see <code>list_statuses</code>).</td></tr>
+    <tr><td><code>priority</code></td><td>string (optional)</td><td><code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>.</td></tr>
+    <tr><td><code>category_id</code></td><td>string (optional)</td><td>Only tickets in this category (see <code>list_categories</code>).</td></tr>
+    <tr><td><code>q</code></td><td>string (optional)</td><td>Full-text search over subject, description and tracking number.</td></tr>
+    <tr><td><code>limit</code></td><td>number (optional)</td><td>1 to 100, default 20. A larger value is clamped to 100.</td></tr>
     <tr><td><code>offset</code></td><td>number (optional)</td><td>Pagination offset.</td></tr>
   </tbody>
 </table>
-<p>This lists by assignee only. It does not filter by status, priority, category or free text — use the REST API for those.</p>
+<p>The filters narrow what the caller can already see. They never widen it: a reporting user lists only their own tickets whatever the arguments say.</p>
+
+<h3><code>list_categories</code></h3>
+<p>The Category, Type and Item catalogue, as a tree, for composing <code>create_ticket</code>.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>include_inactive</code></td><td>boolean (optional)</td><td>Include retired entries. Default <code>false</code>.</td></tr>
+  </tbody>
+</table>
+
+<h3><code>list_statuses</code></h3>
+<p>The ticket statuses this instance defines, with their IDs, for <code>list_tickets</code> and <code>update_ticket_status</code>. No parameters.</p>
 
 <h3><code>create_ticket</code></h3>
 <p>Open a new ticket.</p>
@@ -169,143 +202,112 @@
   <tbody>
     <tr><td><code>subject</code></td><td>string (required)</td><td>Short summary.</td></tr>
     <tr><td><code>category_id</code></td><td>string (required)</td><td>Category UUID.</td></tr>
+    <tr><td><code>type_id</code></td><td>string (optional)</td><td>Type UUID. Must belong to the category.</td></tr>
+    <tr><td><code>item_id</code></td><td>string (optional)</td><td>Item UUID. Must belong to the type.</td></tr>
     <tr><td><code>description</code></td><td>string (optional)</td><td>Full description.</td></tr>
     <tr><td><code>priority</code></td><td>string (optional)</td><td><code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>. Default <code>medium</code>.</td></tr>
     <tr><td><code>reporter_user_id</code></td><td>string (optional)</td><td>Who the ticket is <em>for</em>. Defaults to the authenticated caller.</td></tr>
   </tbody>
 </table>
+<p>A malformed <code>type_id</code>, <code>item_id</code> or <code>reporter_user_id</code> is refused rather than ignored.</p>
 
 <h3><code>add_reply</code></h3>
-<p>Add a reply to a ticket, authored by the authenticated caller.</p>
+<p>Add a reply or an internal note to a ticket, authored by the authenticated caller.</p>
 <table>
   <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID.</td></tr>
     <tr><td><code>body</code></td><td>string (required)</td><td>Reply body.</td></tr>
+    <tr><td><code>internal</code></td><td>boolean (optional)</td><td>An internal note, never shown to the requester. Default <code>false</code>.</td></tr>
   </tbody>
 </table>
-<p>Replies posted through MCP are public and notify the reporter. There is no internal-note option here; use the REST API or the web UI for internal notes.</p>
+<p>A reply added through MCP sends no notification email: the tool does not look up the requester's address. It does raise the <code>ticket.replied</code> event, so webhooks receive it.</p>
 
 <h3><code>assign_ticket</code></h3>
-<p>Assign a ticket to a user or a group, performed as the authenticated caller.</p>
+<p>Assign a ticket to a user or a group, or take it off whoever has it, as the authenticated caller.</p>
 <table>
   <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
     <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID.</td></tr>
     <tr><td><code>assignee_user_id</code></td><td>string (optional)</td><td>User UUID to assign to.</td></tr>
     <tr><td><code>assignee_group_id</code></td><td>string (optional)</td><td>Group UUID to assign to.</td></tr>
+    <tr><td><code>clear_assignee</code></td><td>boolean (optional)</td><td>Take the ticket off whoever has it.</td></tr>
   </tbody>
 </table>
-<p>Omitting both clears the assignment.</p>
+<p>Give an assignee ID, or <code>clear_assignee: true</code>. Omitting both is refused, and so is combining <code>clear_assignee</code> with an ID. An ID that is empty, null, not a string or not a valid UUID is refused rather than read as "nobody", so a mistake never quietly takes a ticket off the person working it.</p>
+
+<h3><code>update_ticket_status</code></h3>
+<p>Move a ticket to another status.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID.</td></tr>
+    <tr><td><code>status_id</code></td><td>string (required)</td><td>Target status UUID (see <code>list_statuses</code>).</td></tr>
+  </tbody>
+</table>
+<p>The same rules as a status change anywhere else apply. Only an administrator can move a ticket to Closed. Moving a ticket out of Closed is refused unless <a href="admin-guide.html#admin-closed-reopen">Reopening closed tickets</a> allows the caller's role, and the refusal says why. To continue the work on a closed ticket, use <code>create_follow_up</code>.</p>
+
+<h3><code>create_follow_up</code></h3>
+<p>Open a new ticket that continues a closed one, linked back to it.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket_id</code></td><td>string (required)</td><td>UUID of the closed ticket to continue.</td></tr>
+  </tbody>
+</table>
+<p>It copies the subject, description, category, type, item, priority and requester, not the replies, attachments, history or custom fields. It works only on a Closed ticket, and each closed ticket can have one follow-up. See <a href="tickets.html#tickets-follow-up">Follow-up tickets</a>.</p>
 
 <h2 id="mcp-connect">Connecting clients</h2>
 
-<h3>Claude (claude.ai / Claude Code)</h3>
-<p>Add a server entry to your MCP configuration. In Claude Code, this lives in <code>.claude/mcp.json</code> (project-level) or <code>~/.claude/mcp.json</code> (global).</p>
-<pre><code>{
-  "mcpServers": {
-    "helpdesk": {
-      "type": "http",
-      "url": "https://helpdesk.example.com/mcp/",
-      "headers": {
-        "Authorization": "ApiKey 3f8a…"
-      }
-    }
-  }
-}</code></pre>
-<p>After saving, Claude will have access to the help desk tools in any conversation where MCP is active.</p>
+<p>The server uses MCP's <strong>HTTP with Server-Sent Events (SSE)</strong> transport. A client opens the event stream at:</p>
+<pre><code>&lt;BASE_URL&gt;/mcp/sse</code></pre>
+<p>and the server tells it where to post messages (<code>/mcp/message</code>). Nothing else under <code>/mcp/</code> answers. Configure your client for an SSE server at that URL, and send an <code>Authorization</code> header with every request (see <a href="#mcp-auth">Authentication</a>).</p>
 
-<h3>VS Code with Continue</h3>
-<pre><code>// .continue/config.json
-{
-  "experimental": {
-    "modelContextProtocolServers": [
-      {
-        "transport": {
-          "type": "http",
-          "url": "https://helpdesk.example.com/mcp/",
-          "requestOptions": {
-            "headers": {
-              "Authorization": "ApiKey 3f8a…"
-            }
-          }
-        }
-      }
-    ]
-  }
-}</code></pre>
+<h3>Claude Code</h3>
+<pre><code>claude mcp add --transport sse helpdesk \
+  https://helpdesk.example.com/mcp/sse \
+  --header "Authorization: ApiKey 3f8a…"</code></pre>
 
-<h3>Cursor</h3>
-<pre><code>// cursor/mcp.json (in project root or ~/.cursor/mcp.json)
-{
-  "mcpServers": {
-    "helpdesk": {
-      "url": "https://helpdesk.example.com/mcp/",
-      "headers": {
-        "Authorization": "ApiKey 3f8a…"
-      }
-    }
-  }
-}</code></pre>
-
-<h3>Any HTTP MCP client</h3>
-<p>The MCP server implements the standard <a href="https://spec.modelcontextprotocol.io/specification/2025-03-26/basic/transports/#streamable-http">Streamable HTTP transport</a>. Point any compliant client at:</p>
-<pre><code>https://&lt;BASE_URL&gt;/mcp/</code></pre>
-<p>Include an <code>Authorization</code> header with either an API key or a JWT from the OAuth2 token endpoint.</p>
+<h3>Other clients</h3>
+<p>Any MCP client that supports the SSE transport and custom request headers works. Give it the <code>/mcp/sse</code> URL and the <code>Authorization</code> header. A client configured for the newer Streamable HTTP transport against <code>/mcp/</code> will not connect.</p>
 
 
 <h2 id="mcp-auth">Authentication</h2>
 
 <div class="callout callout-warn">
-  <p><strong>Run v1.2.0 before exposing <code>/mcp/</code>.</strong> Two separate problems, both fixed:</p>
-  <ul>
-    <li>In v1.0.0, v1.0.1 and v1.1.0 the MCP server required <em>no authentication at all</em> — anyone who could reach the port could read and write any ticket. Fixed in v1.1.1: <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm">GHSA-2x4f-j4jv-m2cm</a>.</li>
-    <li>Up to and including v1.1.1, the tools were authenticated but <em>not</em> scope-checked, so a credential reached every tool whatever scopes it held. Fixed in v1.2.0: <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">GHSA-p2wx-wvfr-7h3p</a>. See <a href="upgrading-1.2.0.html">Upgrading to 1.2.0</a>.</li>
-  </ul>
+  <p><strong>Every published MCP advisory is fixed in v1.2.0, and only the 1.3 line receives security fixes.</strong> Up to and including v1.1.0 the MCP server required no authentication at all (<a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-5g72-m483-3v63">GHSA-5g72-m483-3v63</a>, <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-26xr-728v-639v">GHSA-26xr-728v-639v</a>). Up to and including v1.1.1 it still exposed every ticket (<a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-2x4f-j4jv-m2cm">GHSA-2x4f-j4jv-m2cm</a>) and did not check scopes (<a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">GHSA-p2wx-wvfr-7h3p</a>). See <a href="security.html">Security</a>.</p>
 </div>
 
-<p>Since v1.1.1 the MCP server sits behind the same authentication middleware as the REST API, and accepts any of:</p>
+<p>The MCP server sits behind the same authentication as the REST API and accepts any of:</p>
 
 <ul>
-  <li><strong>API key</strong> (recommended for long-lived client configs) — <code>Authorization: ApiKey &lt;token&gt;</code> — 64 hex characters, no prefix, shown once when the key is created</li>
-  <li><strong>OAuth2 JWT</strong> (recommended for server-to-server) — obtain a token from <code>POST /api/v1/auth/oauth/token</code> and send it as <code>Authorization: Bearer &lt;jwt&gt;</code>.</li>
-  <li><strong>Session cookie</strong> — works, but is only useful from a browser context.</li>
+  <li><strong>API key</strong>: <code>Authorization: ApiKey &lt;token&gt;</code>. The token is 64 hex characters with no prefix, shown once when an administrator creates the key under <em>Admin → API Keys</em>.</li>
+  <li><strong>OAuth2 access token</strong>: get one from <code>POST /api/v1/auth/oauth/token</code> with client credentials, and send it as <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+  <li><strong>Session cookie</strong>: works, but is only useful from a browser.</li>
 </ul>
 
-<p>Unauthenticated requests receive <code>401</code>. Requests from an account without the required role receive <code>403</code>.</p>
+<p>A request with no valid credential gets <code>401</code>. A signed-in session that has not passed its second factor gets <code>403</code>, so MCP cannot be used to skip an MFA challenge. API keys and OAuth tokens do not go through MFA.</p>
 
 <div class="callout callout-note">
-  <p><strong>One API key per integration</strong> — create a dedicated API key for each AI assistant or integration that connects to the MCP server. This lets you revoke a single client's access without affecting others, and gives you a named audit trail in logs.</p>
+  <p><strong>One credential per integration.</strong> Create a dedicated API key for each assistant or integration, with only the scopes it needs: <code>tickets:read</code> for the read tools, plus <code>tickets:write</code> to let it change tickets. Revoking one then leaves the others working.</p>
 </div>
 
 
 <h2 id="mcp-permissions">Permissions</h2>
 
-<p><strong>The MCP server is restricted to Staff and Admin accounts.</strong> A reporting user receives <code>403</code> and cannot reach any tool, regardless of which ticket they are asking about.</p>
+<p><strong>Every signed-in role can connect.</strong> What a caller may then do is decided per tool:</p>
+<ul>
+  <li><strong>Reads</strong> are filtered by the same visibility rule as the REST API. A reporting user sees only their own tickets and never internal notes. Staff see what their ticket visibility allows, which is every ticket unless <em>Limit staff to their group scope</em> is on. Administrators see everything.</li>
+  <li><strong>Writes</strong> need a Staff or Admin account. A reporting user who calls one gets a tool error saying so.</li>
+  <li><strong>Machine credentials</strong> also need the scope in the table above. An API key or OAuth client without it gets a tool error naming the missing scope.</li>
+  <li><strong>An OAuth client can read but not write.</strong> It has no user identity, and every write records which user acted, so the write tools refuse it. Use an API key, which acts as the administrator who created it, to write.</li>
+</ul>
 
-<p>That is deliberately stricter than the REST API, which lets a reporting user read their own tickets by applying a scope check in each handler. Duplicating those checks in a second surface is how the two drifted apart in the first place, so the MCP surface takes the narrower rule instead.</p>
+<p>A ticket the caller may not see is reported exactly as one that does not exist, so the tools cannot be used to find out which tracking numbers are real.</p>
 
-<table>
-  <thead><tr><th>Tool</th><th>Required role</th><th>Notes</th></tr></thead>
-  <tbody>
-    <tr><td><code>get_ticket</code></td><td>Staff / Admin</td><td>Any ticket, by UUID or tracking number.</td></tr>
-    <tr><td><code>list_tickets</code></td><td>Staff / Admin</td><td>Lists by assignee.</td></tr>
-    <tr><td><code>create_ticket</code></td><td>Staff / Admin</td><td>Reporter defaults to the authenticated caller.</td></tr>
-    <tr><td><code>add_reply</code></td><td>Staff / Admin</td><td>Authored by the authenticated caller.</td></tr>
-    <tr><td><code>assign_ticket</code></td><td>Staff / Admin</td><td>Performed as the authenticated caller.</td></tr>
-  </tbody>
-</table>
+<p><strong>Identity comes from the request, never from a tool argument.</strong> An earlier version accepted <code>author_user_id</code> and <code>actor_user_id</code> parameters, so a caller named itself and the server believed it. Those parameters no longer exist. The one identity field that remains, <code>reporter_user_id</code> on <code>create_ticket</code>, names the <em>subject</em> of a ticket rather than the caller, because staff legitimately open tickets on someone's behalf.</p>
 
-<div class="callout callout-note">
-  <p><strong>Group scoping applies from v1.2.0.</strong> Every tool that names a ticket checks that the caller may see it, using the same rule as the REST API: a Staff account reaches tickets assigned to it or its groups, and a reporting user reaches only its own. A ticket the caller may not see is reported as not found rather than refused, so the tools cannot be used to probe which tracking numbers exist.</p>
-  <p>Up to and including v1.1.1 there was no such check: a Staff account reached any ticket through these tools. If you are on an earlier version, do not grant MCP access to accounts that should not see every ticket.</p>
-</div>
-
-<p><strong>Identity comes from the request, never from a tool argument.</strong> Before v1.1.1, <code>add_reply</code> and <code>assign_ticket</code> accepted <code>author_user_id</code> and <code>actor_user_id</code> parameters — a caller named itself and the server believed it. Those parameters no longer exist. The one identity field that remains, <code>reporter_user_id</code> on <code>create_ticket</code>, names the <em>subject</em> of a ticket rather than the caller, because staff legitimately open tickets on someone's behalf.</p>
-
-<p>MFA is enforced for parity with the ticket API, so MCP cannot be used to sidestep a TOTP challenge. API keys and bearer tokens are unaffected.</p>
-
-<p>If a tool call fails a permission check, the MCP server returns a structured error and does not execute the operation. The assistant receives a description of the error and can inform the user.</p>
+<p>Ticket rules are the ticket service's own, not a second copy: an MCP status change, follow-up or reply is refused in exactly the cases the same action through the REST API is.</p>
 
 
 <div style="display:flex; justify-content:space-between; margin-top:3rem; padding-top:2rem; border-top:1px solid var(--border);">
