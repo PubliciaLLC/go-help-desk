@@ -15,7 +15,10 @@
 > findings marked non-functional below are fixed: breaches are detected and
 > stamped, though nothing yet acts on a breach (#408). Roadmap issues filed from
 > this analysis: #403 (assets), #405 (continual improvement), #406 (suppliers),
-> #407 (relationships), #408 (incident management).
+> #407 (relationships), #408 (incident management), #411 (monitoring events),
+> #415 (asset reference). Ticket types and reporting have since moved from
+> v4 and v3 to v1.4, alongside those issues; the Snipe-IT plugin (#403) is v2.
+> The scorecard below shows the current versions.
 
 ---
 
@@ -416,20 +419,20 @@ entities, for outage-driven major incidents and availability reporting.
 |---|-----------------|-------|------------------|
 | 3.1 | Service Desk | ✅ Fit | v1 — shipped |
 | 3.15 | Information Security Management | ✅ Fit | v1 — shipped |
-| 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix v4 (#135); major incidents, escalation, work log #408 |
+| 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix (#135), major incidents, escalation, work log (#408) v1.4 |
 | 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128) |
-| 3.17 | Relationship Management | 🟡 Partial | roadmap #407 (organization entity with v4 #35), unscheduled |
-| 3.3 | Service Request Management | ❌ Gap | v4 (type only) |
-| 3.4 | Problem Management | ❌ Gap | v4 (type only) |
-| 3.5 | Change Enablement | ❌ Gap | v4 (type only) |
+| 3.17 | Relationship Management | 🟡 Partial | v1.4 #407 (organization entity with v4 #35) |
+| 3.3 | Service Request Management | ❌ Gap | v1.4 (type only, #135) |
+| 3.4 | Problem Management | ❌ Gap | v1.4 (type only, #135) |
+| 3.5 | Change Enablement | ❌ Gap | v1.4 (type only, #135) |
 | 3.7 | Knowledge Management | ❌ Gap | v3 |
 | 3.8 | Service Catalogue Management | ❌ Gap | not on roadmap |
 | 3.9 | Service Configuration Management | ❌ Gap | not on roadmap |
-| 3.10 | IT Asset Management | ❌ Gap | integrate with Snipe-IT (#403), unscheduled |
-| 3.11 | Monitoring & Event Management | ❌ Gap | not on roadmap |
-| 3.13 | Measurement & Reporting | ❌ Gap | v3 |
-| 3.14 | Continual Improvement | ❌ Gap | roadmap #405 (CSAT #133 first), unscheduled |
-| 3.16 | Supplier Management | ❌ Gap | roadmap #406, unscheduled |
+| 3.10 | IT Asset Management | ❌ Gap | asset reference v1.4 (#415); Snipe-IT plugin v2 (#403) |
+| 3.11 | Monitoring & Event Management | ❌ Gap | v1.4 (#411) |
+| 3.13 | Measurement & Reporting | ❌ Gap | v1.4 (#131) |
+| 3.14 | Continual Improvement | ❌ Gap | v1.4 #405 (CSAT #133 first) |
+| 3.16 | Supplier Management | ❌ Gap | v1.4 #406 |
 | 3.12 | Release & Deployment Management | ⚪ Out of scope | — |
 | 3.18 | Availability & Capacity Management | ⚪ Out of scope | — |
 
