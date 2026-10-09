@@ -194,6 +194,51 @@ func TestGuest_SubmissionIsRefusedUntilEnabled(t *testing.T) {
 		"the response carries the tracking number and nothing else — not the id, and never the token")
 }
 
+// #389: a quoted local part that needs its quotes loses them when parsed, and
+// what is left cannot be mailed, so the guest would never be sent their link.
+// Refused at the door with a 400 that says why, rather than accepted and
+// silently never answered.
+func TestGuest_AnAddressThatNeedsQuotesIsRefused(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeyGuestSubmissionEnabled, true))
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+		"subject": "Door will not open", "description": "it sticks",
+		"category_id": h.catID.String(), "guest_email": `"john doe"@example.com`, "guest_name": "John",
+	})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	body, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "quotation marks")
+}
+
+// #389: quotes that were never needed are dropped and the address is kept, so
+// "john"@example.com is accepted and stored as john@example.com.
+func TestGuest_AnAddressWithUnneededQuotesIsStoredWithoutThem(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+
+	res := h.doGuest(t, http.MethodPost, "/api/v1/guest/tickets", "", map[string]any{
+		"subject": "Door will not open", "description": "it sticks",
+		"category_id": h.catID.String(), "guest_email": `"john"@example.com`, "guest_name": "John",
+	})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	var out map[string]string
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&out))
+
+	tk, err := h.ticketSvc.GetByTrackingNumber(ctx, ticket.TrackingNumber(out["tracking_number"]))
+	require.NoError(t, err)
+	full, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.NotNil(t, full.GuestEmail)
+	require.Equal(t, "john@example.com", *full.GuestEmail)
+}
+
 // A guest cannot choose their own priority: that is a queue anyone on the
 // internet could jump.
 func TestGuest_CannotSetPriority(t *testing.T) {

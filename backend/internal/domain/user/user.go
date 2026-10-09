@@ -78,6 +78,15 @@ func ValidateEmail(s string) (string, error) {
 	if addr.Address == "" {
 		return "", fmt.Errorf("%w: invalid email address", ErrValidation)
 	}
+	// mail.ParseAddress drops the quotes from a quoted local part, so
+	// "john doe"@example.com comes back as john doe@example.com, which is no
+	// longer an address. Stored, it fails when the mailer parses it again, and
+	// the person is never sent anything (#389). So the result must parse back
+	// to itself. A quoted local part that never needed its quotes
+	// ("john"@example.com, stored as john@example.com) still passes.
+	if again, err := mail.ParseAddress(addr.Address); err != nil || again.Address != addr.Address {
+		return "", fmt.Errorf("%w: %q cannot be used: an address that needs quotation marks is not supported", ErrValidation, trimmed)
+	}
 	return strings.ToLower(addr.Address), nil
 }
 

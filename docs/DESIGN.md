@@ -836,7 +836,7 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 
 - Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
-- `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
+- `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`), and not one whose local part needs quotation marks (#389, see Guest Submission). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email.
 - **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
 - **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`); a link that passes the lookup can still fail at the POST, for instance when the address has since gained an account. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
 
@@ -939,6 +939,15 @@ A visitor with no account files a ticket and is sent a per-ticket link. The link
 is the whole credential, so it is treated like one: stored as a hash, replaced
 whenever the ticket changes in a way the guest is told about, **read-only once
 the ticket closes**, and expiring after thirty days if nothing happens at all.
+
+**An address whose local part needs quotation marks is refused** with `400`
+(#389), here and everywhere else an address is taken. Parsing drops the
+quotes, so `"john doe"@example.com` became `john doe@example.com`, which the
+mailer then could not send to: the guest was never sent their link. One with
+a leading space, `" a"@example.com`, was worse and was mailed to
+`a@example.com`. Quotes that were never needed are dropped and the address
+is kept: `"john"@example.com` is stored as `john@example.com`. Addresses
+already stored are not changed.
 
 **Closed means read-only, not revoked** (#349). Closing, a status change to
 Closed and the auto-close sweep **stop rotating** the guest's link; they do not
@@ -2185,7 +2194,13 @@ on the existing webhook feature instead of as plugins.
   that panics fails its row. A failed send's error is kept in `last_error` and
   the log with email addresses replaced by `[address]` (#350): a mail server's
   rejection usually names the recipient, and the SMTP status code is what an
-  operator needs. Delivery is at least once: a
+  operator needs. The match is loose on purpose, so anything shaped like an
+  address is hidden, including one with an apostrophe or an IP literal the
+  relay never closed (#389). The reply is the relay's text, so the pattern is
+  bounded to stay linear in its length (#358). It still costs about 0.4 s of
+  worker CPU per megabyte of reply for the worst shapes on an Apple M4, and
+  about three times that on a slower server, per attempt; that is accepted
+  (#389). Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
   Webhooks are not retried on any failure. The webhook row covers every
   subscribed hook and is settled as soon as each delivery has started. Each
