@@ -121,13 +121,13 @@
 
 <h3>Required fields</h3>
 <ul>
-  <li><strong>Subject</strong>: a short summary. This is the ticket's title across all views.</li>
+  <li><strong>Subject</strong>: a short summary, up to 500 bytes. Accented and non-Latin characters take two to four bytes each. This is the ticket's title across all views.</li>
   <li><strong>Category</strong> — required. At least one Category must be configured before any ticket can be created.</li>
 </ul>
 
 <h3>Optional fields</h3>
 <ul>
-  <li><strong>Description</strong>: the full detail of the request, as plain text. Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
+  <li><strong>Description</strong>: the full detail of the request, as plain text, up to 50,000 bytes. Staff read this first, so include error messages, steps to reproduce and what you have already tried.</li>
   <li><strong>Type</strong> — shown only if the selected Category has Types defined. Filters Items.</li>
   <li><strong>Item</strong> — shown only if the selected Type has Items defined.</li>
   <li><strong>Priority</strong>: defaults to Medium. Only staff and admins can choose it, when they create a ticket. It cannot be changed afterwards.</li>
@@ -349,7 +349,7 @@
 <p>Reassigning a ticket sends no email to either assignee. It is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks.</p>
 
 <h3>Assignment and scope</h3>
-<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see and find every ticket. With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
+<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. List search still covers only the tickets assigned to them or their groups, and searching every ticket is not available to staff in 1.3.0. <!-- ISSUE:04-staff-ticket-workflow --> With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
 
 
 <h2 id="tickets-custom-fields">Custom fields</h2>
@@ -458,7 +458,7 @@
 <ul>
   <li>Tracking number searches use a <strong>prefix match</strong>: typing <code>GHD-2026-0</code> matches all tickets in that series.</li>
   <li>Subject and description searches tokenize your query into words and <strong>prefix-match each one</strong> — e.g. <code>print jam</code> matches a ticket containing a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
-  <li>Users only see results from their own tickets. Administrators search every ticket. Staff search the tickets they can see, which is every ticket unless <em>Limit staff to their group scope</em> is on.</li>
+  <li>Users only see results from their own tickets. Staff and administrators search the tickets assigned to them or to their groups. Administrators search every ticket when the scope is set to <em>All</em>. With <em>Limit staff to their group scope</em> on, staff search the tickets they can see. Searching every ticket is not available to staff in 1.3.0. <!-- ISSUE:04-staff-ticket-workflow --></li>
 </ul>
 
 <h3>Jump to ticket (staff and admin)</h3>
