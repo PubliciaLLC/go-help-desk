@@ -29,6 +29,7 @@ func TestDownloadAttachment_UnknownAttachmentReturns404(t *testing.T) {
 	res := h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/attachments/"+attID.String(), nil)
 	defer res.Body.Close()
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
+	require.Equal(t, "not_found", errorCode(t, res))
 }
 
 // Recheck reputation on unknown attachment returns 404, not 500 (#418).
@@ -46,7 +47,8 @@ func TestRecheckAttachmentReputation_UnknownAttachmentReturns404(t *testing.T) {
 
 	// Use a non-existent attachment ID.
 	attID := uuid.New()
-	res := h.do(t, http.MethodPost, "/api/v1/tickets/"+tk.ID.String()+"/attachments/"+attID.String()+"/reputation/recheck", nil)
+	res := h.do(t, http.MethodPost, "/api/v1/tickets/"+tk.ID.String()+"/attachments/"+attID.String()+"/reputation", nil)
 	defer res.Body.Close()
 	require.Equal(t, http.StatusNotFound, res.StatusCode)
+	require.Equal(t, "not_found", errorCode(t, res))
 }

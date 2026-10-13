@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -70,7 +71,7 @@ func (s *Store) DeleteCategory(ctx context.Context, id uuid.UUID) error {
 	n, err := s.q.DeleteCategory(ctx, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			return fmt.Errorf("%w: a ticket was filed under it while it was being deleted", category.ErrCategoryInUse)
+			return fmt.Errorf("%w: %s was attached to it while it was being deleted", category.ErrCategoryInUse, blocker(err))
 		}
 		return fmt.Errorf("deleting category %s: %w", id, err)
 	}
@@ -140,7 +141,7 @@ func (s *Store) DeleteType(ctx context.Context, id uuid.UUID) error {
 	n, err := s.q.DeleteType(ctx, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			return fmt.Errorf("%w: a ticket was filed under it while it was being deleted", category.ErrTypeInUse)
+			return fmt.Errorf("%w: %s was attached to it while it was being deleted", category.ErrTypeInUse, blocker(err))
 		}
 		return fmt.Errorf("deleting type %s: %w", id, err)
 	}
@@ -208,7 +209,7 @@ func (s *Store) DeleteItem(ctx context.Context, id uuid.UUID) error {
 	n, err := s.q.DeleteItem(ctx, id)
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			return fmt.Errorf("%w: a ticket was filed under it while it was being deleted", category.ErrItemInUse)
+			return fmt.Errorf("%w: %s was attached to it while it was being deleted", category.ErrItemInUse, blocker(err))
 		}
 		return fmt.Errorf("deleting item %s: %w", id, err)
 	}
@@ -240,4 +241,21 @@ func isForeignKeyViolation(err error) bool {
 func isFKViolationOn(err error, constraint string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == constraint
+}
+
+// blocker says what the foreign key that refused a delete belongs to, by
+// constraint name: a category delete can also be stopped by an SLA record
+// (through the policies it cascades to), which is not a ticket.
+func blocker(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return "another record"
+	}
+	switch {
+	case pgErr.ConstraintName == "sla_records_policy_id_fkey":
+		return "an SLA record"
+	case strings.HasPrefix(pgErr.ConstraintName, "tickets_"):
+		return "a ticket"
+	}
+	return "another record"
 }
