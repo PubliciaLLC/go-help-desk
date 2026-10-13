@@ -16,10 +16,10 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 Custom fields, CTI-linked group management, canned responses and full-text
 search were built ahead of the original v2 schedule and are shipped; this table
 reflects that, not the order they were planned in. Plugins went the other way:
-the admin UI lists and toggles a plugin record, but install/uninstall return
-`501` and no event ever reaches a plugin (`plugin.Registry.Dispatch` is built
-and never called from the notification chain). There is no working plugin
-system, so it sits at v2 rather than claiming v1. The part of the plugin pitch
+the admin API can list and toggle a plugin record (there is no admin page for
+it), but install/uninstall return `501` and no event ever reaches a plugin
+(`plugin.Registry.Dispatch` is built and never called from the notification
+chain). 1.x has no working plugin system; it is a v2 feature. The part of the plugin pitch
 worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
 webhook feature; see Notifications.
 
@@ -29,7 +29,7 @@ webhook feature; see Notifications.
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| Backend | **Go** | Single binary, small Docker image, strong concurrency, good plugin/WASM story |
+| Backend | **Go** | Single binary, small Docker image, strong concurrency, good WASM story for the planned v2 plugin system |
 | Frontend | **React (Vite SPA)** | Large ecosystem, good theming via CSS variables, Shadcn/ui component library |
 | Database | **PostgreSQL** | Row-level security for future multi-tenancy, JSONB for custom fields, native FTS, best managed hosting options |
 | Deployment | **Docker** (`docker-compose`) | Go app + Postgres. Upgrade path to Kubernetes for v4 |
@@ -95,7 +95,7 @@ Three roles: **Admin**, **Staff**, **User**
 
 | Role | Capabilities |
 |------|-------------|
-| **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
+| **Admin** | Full system access. Manage settings, users, groups, categories, tags. (Plugins are not manageable in 1.x; the plugin system is planned for v2.) Can always log in with local auth even when SAML is enabled (failsafe). |
 | **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
 
@@ -2113,9 +2113,10 @@ scopes and are therefore denied; they must be re-issued.
 
 ## Plugin Infrastructure (v2)
 
-Deferred from v1. The data model and an admin CRUD shell exist
-(`internal/domain/plugin/`, `handler_admin_plugins.go`) — a plugin record can be
-listed, enabled and disabled — but none of the capabilities below are wired up:
+Deferred from v1; 1.x has no working plugin system. The data model and an
+admin API shell exist (`internal/domain/plugin/`, `handler_admin_plugins.go`;
+there is no admin page) — a plugin record can be listed, enabled and
+disabled — but none of the capabilities below are wired up:
 install and uninstall return `501 not_implemented`, no WASM runtime is linked
 in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
 so an enabled plugin still receives no events. Treat this section as the
