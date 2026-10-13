@@ -3,6 +3,8 @@ package authstore
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -199,6 +201,9 @@ func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
 	r, err := s.q.GetWebhookConfig(ctx, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return WebhookConfig{}, fmt.Errorf("webhook %s: %w", id, auth.ErrNotFound)
+		}
 		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
 	}
 	return webhookFromRow(r), nil

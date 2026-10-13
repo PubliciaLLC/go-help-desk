@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/stretchr/testify/require"
@@ -61,6 +63,16 @@ func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 			name:       "group.ErrNameTaken maps to 409 (#418)",
 			err:        fmt.Errorf("%w: NewName", group.ErrNameTaken),
 			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "auth.ErrNotFound (webhook/API key) maps to 404 (#418)",
+			err:        fmt.Errorf("webhook abc: %w", auth.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "plugin.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("plugin abc: %w", plugin.ErrNotFound),
+			wantStatus: http.StatusNotFound,
 		},
 		{
 			name:       "sla.ErrValidation maps to 400 (#276)",
