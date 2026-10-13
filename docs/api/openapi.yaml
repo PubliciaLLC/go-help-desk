@@ -4671,10 +4671,10 @@ paths:
         upload time. A request for several ranges gets multipart/byteranges, with
         the same blob type on each part.
         Answers 404 not_found ("attachment not found on this ticket") when the
-        attachment belongs to another ticket, and 404 not_found ("file not found on
-        disk") when its file is missing. An attachId that names no attachment at all
-        answers 500 internal_error. A reporting user asking for a ticket that is
-        not theirs gets the ticket 404 instead.
+        attachment belongs to another ticket, 404 not_found when the attachId names
+        no attachment at all, and 404 not_found ("file not found on disk") when its
+        file is missing. A reporting user asking for a ticket that is not theirs gets
+        the ticket 404 instead.
         The filename in Content-Disposition is the stored name made safe for a
         header: control characters and path separators are removed, it is cut to
         200 bytes keeping the extension, and the plain form replaces every
@@ -4807,12 +4807,6 @@ paths:
               description: bytes */total.
               schema:
                 type: string
-        '500':
-          description: "`internal_error`: attachId names no attachment at all (an unknown attachment is not reported as 404)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
   /api/v1/tickets/{id}/attachments/{attachId}/reputation:
     parameters:
       - $ref: '#/components/parameters/TicketRef'
@@ -4851,7 +4845,7 @@ paths:
         Takes the ticket UUID. The tracking number of a ticket the caller can see
         is refused with 400 invalid_id. An attachment that belongs to another
         ticket is 404 not_found ("attachment not found on this ticket"). An
-        attachId that names no attachment at all answers 500 internal_error.
+        attachId that names no attachment at all is 404 not_found.
       tags: ['Attachments']
       x-ghd-handler: handleRecheckAttachmentReputation
       security:
@@ -4903,12 +4897,6 @@ paths:
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: "`internal_error`: attachId names no attachment at all (an unknown attachment is not reported as 404)."
           content:
             application/json:
               schema:

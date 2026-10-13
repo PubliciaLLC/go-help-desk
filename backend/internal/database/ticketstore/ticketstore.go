@@ -538,7 +538,7 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Attachment, error) {
 	r, err := s.q.GetAttachmentByID(ctx, id)
 	if err != nil {
-		return ticket.Attachment{}, fmt.Errorf("getting attachment %s: %w", id, err)
+		return ticket.Attachment{}, wrapNotFound(err, "attachment", id.String())
 	}
 	return ticket.Attachment{
 		ID:          r.ID,

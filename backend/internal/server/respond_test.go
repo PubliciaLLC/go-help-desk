@@ -37,6 +37,11 @@ func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
+			name:       "ticket.ErrNotFound (attachment) maps to 404 (#418)",
+			err:        fmt.Errorf("getting attachment abc: %w", ticket.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
 			name:       "sla.ErrValidation maps to 400 (#276)",
 			err:        sla.ErrValidation,
 			wantStatus: http.StatusBadRequest,
