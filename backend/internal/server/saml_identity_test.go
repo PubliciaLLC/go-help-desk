@@ -47,9 +47,44 @@ func TestSAMLIdentity(t *testing.T) {
 		{"Entra 1.3 docs (custom email/displayName, no namespace)", "upn@c",
 			map[string][]string{"email": {"a@x"}, "displayName": {"Ada Lovelace"}},
 			"a@x", "Ada Lovelace"},
+		// New in #461.
+		{"firstName and lastName (1.2 docs, Okta and Google)", "a@x",
+			map[string][]string{"email": {"a@x"}, "firstName": {"Ada"}, "lastName": {"Lovelace"}},
+			"a@x", "Ada Lovelace"},
+		{"lastName alone", "a@x",
+			map[string][]string{"lastName": {"Lovelace"}},
+			"a@x", "Lovelace"},
+		{"givenName preferred over firstName", "a@x",
+			map[string][]string{"givenName": {"Ada"}, "firstName": {"Augusta"}, "sn": {"Lovelace"}},
+			"a@x", "Ada Lovelace"},
+		{"mixed givenName with lastName", "a@x",
+			map[string][]string{"givenName": {"Ada"}, "lastName": {"Lovelace"}},
+			"a@x", "Ada Lovelace"},
+		// The name claim is the user principal name in Entra by default, so it
+		// ranks below given name plus surname: otherwise every Entra user would
+		// get their UPN as display name, the bug being fixed.
+		{"Entra default claims", "ada@contoso.onmicrosoft.com",
+			map[string][]string{e + "emailaddress": {"ada@contoso.com"}, e + "givenname": {"Ada"}, e + "surname": {"Lovelace"}, e + "name": {"ada@contoso.onmicrosoft.com"}},
+			"ada@contoso.com", "Ada Lovelace"},
+		{"Entra display name claim", "upn@c",
+			map[string][]string{entraName: {"Ada L."}, e + "givenname": {"Ada"}, e + "surname": {"Lovelace"}},
+			"upn@c", "Ada L."},
+		{"Entra user without a mailbox", "upn@c",
+			map[string][]string{e + "givenname": {"Ada"}, e + "surname": {"Lovelace"}, e + "name": {"upn@c"}},
+			"upn@c", "Ada Lovelace"},
+		{"only the name claim", "upn@c",
+			map[string][]string{e + "name": {"Ada Lovelace"}},
+			"upn@c", "Ada Lovelace"},
+		{"1.2 Azure mapping (emailaddress, givenname, surname mapped to email, firstName, lastName)", "upn@c",
+			map[string][]string{"email": {"a@x"}, "firstName": {"Ada"}, "lastName": {"Lovelace"}},
+			"a@x", "Ada Lovelace"},
+		{"email attribute beats the Entra URI", "sub",
+			map[string][]string{"email": {"a@x"}, e + "emailaddress": {"b@x"}},
+			"a@x", "a@x"},
+		{"Entra URI beats the NameID", "upn@c",
+			map[string][]string{e + "emailaddress": {"mail@c"}},
+			"mail@c", "mail@c"},
 	}
-	_ = e
-	_ = entraName
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			email, name := samlIdentity(tc.nameID, samlsp.Attributes(tc.attrs))
