@@ -627,6 +627,12 @@ type Querier interface {
 	// newer success. Matching on url drops a result for a URL the hook no longer
 	// has. A deleted hook matches nothing, which is fine.
 	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) error
+	// Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
+	// was computed from the old one's password, so it is written only while the
+	// row still holds that old hash: a password changed during the ~250 ms of
+	// hashing wins, and zero rows means exactly that. updated_at is left alone;
+	// the account did not change.
+	RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
