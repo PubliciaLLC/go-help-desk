@@ -859,3 +859,53 @@ func TestOutboxRecord_ARowQueuedBeforeAttrsDecodesWithoutThem(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got.Attrs)
 }
+
+// The filter reads Attrs after the queue (#413). The event is queued, a worker
+// delivers it, and the webhook dispatcher must see the attrs the queue carried:
+// /match is sent to, /miss is not, and nothing is logged as not evaluated. If
+// the outbox dropped Attrs, both hooks would be sent to by fail-open, and the
+// log would say so.
+func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	store := newFakeOutbox()
+	ctx := context.Background()
+
+	ev := notification.Event{
+		Type:       notification.EventTicketCreated,
+		TicketID:   uuid.New(),
+		OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
+		Subject:    "Printer jammed",
+		Attrs:      &notification.TicketAttrs{CategoryID: uuid.New(), Priority: "low"},
+	}
+	require.NoError(t, NewOutboxDispatcher(store, []string{"webhook"}, nil).Dispatch(ctx, ev))
+
+	var buf bytes.Buffer
+	disp := &WebhookDispatcher{
+		store: fakeWebhookStore{
+			{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/match",
+				Filter: notification.WebhookFilter{Priorities: []string{"low"}}},
+			{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/miss",
+				Filter: notification.WebhookFilter{Priorities: []string{"critical"}}},
+		},
+		client:  srv.Client(),
+		baseURL: fixtureBaseURL,
+		log:     slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+	n, err := newTestWorker(store, map[string]notification.Dispatcher{"webhook": disp}).RunOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "the queued event should have been claimed once")
+
+	got := map[string]bool{}
+	window := time.After(300 * time.Millisecond)
+	for collecting := true; collecting; {
+		select {
+		case d := <-deliveries:
+			got[d.path] = true
+		case <-window:
+			collecting = false
+		}
+	}
+	require.Equal(t, map[string]bool{"/match": true}, got)
+	require.NotContains(t, buf.String(), "not evaluated",
+		"the queued event lost its attrs: the filter fell open")
+}
