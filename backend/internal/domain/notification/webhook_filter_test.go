@@ -1,9 +1,11 @@
 package notification
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 )
 
 // TestWebhookFilter_Admits pins the whole predicate: the empty filter, each
@@ -74,4 +76,39 @@ func TestWebhookFilter_Admits(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The API always answers with all four keys, and with arrays, never null: the
+// admin page maps over the lists.
+func TestWebhookFilter_EncodesEmptyListsAsArrays(t *testing.T) {
+	got, err := json.Marshal(WebhookFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"category_ids":[],"priorities":[],"group_ids":[],"invert":false}`
+	if string(got) != want {
+		t.Fatalf("json.Marshal(WebhookFilter{}) = %s, want %s", got, want)
+	}
+}
+
+func TestWebhookFilter_RoundTrips(t *testing.T) {
+	want := WebhookFilter{
+		CategoryIDs: []uuid.UUID{uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")},
+		Priorities:  []string{"critical", "high"},
+		GroupIDs:    []uuid.UUID{uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000001")},
+		Invert:      true,
+	}
+	raw, err := json.Marshal(want)
+	require.NoError(t, err)
+	var got WebhookFilter
+	require.NoError(t, json.Unmarshal(raw, &got))
+	require.Equal(t, want, got)
+}
+
+// {} is what the store holds for "no filter", so it must read back as one.
+func TestWebhookFilter_DecodesAnEmptyObjectAsNoFilter(t *testing.T) {
+	var f WebhookFilter
+	require.NoError(t, json.Unmarshal([]byte(`{}`), &f))
+	require.True(t, f.IsEmpty())
+	require.False(t, f.Invert)
 }

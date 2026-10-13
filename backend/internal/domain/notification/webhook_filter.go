@@ -1,6 +1,7 @@
 package notification
 
 import (
+	"encoding/json"
 	"slices"
 
 	"github.com/google/uuid"
@@ -35,6 +36,23 @@ func (f WebhookFilter) Admits(a *TicketAttrs) (admit, known bool) {
 	}
 	m := in(f.CategoryIDs, a.CategoryID) && in(f.Priorities, a.Priority) && inOpt(f.GroupIDs, a.AssigneeGroupID)
 	return m != f.Invert, true
+}
+
+// MarshalJSON writes nil lists as [] so the API never sends null for them: the
+// admin page maps over them.
+func (f WebhookFilter) MarshalJSON() ([]byte, error) {
+	type plain WebhookFilter
+	p := plain(f)
+	if p.CategoryIDs == nil {
+		p.CategoryIDs = []uuid.UUID{}
+	}
+	if p.Priorities == nil {
+		p.Priorities = []string{}
+	}
+	if p.GroupIDs == nil {
+		p.GroupIDs = []uuid.UUID{}
+	}
+	return json.Marshal(p)
 }
 
 // in reports whether v is admitted by one condition: an empty list is no
