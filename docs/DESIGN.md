@@ -8,7 +8,7 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
+| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
 | **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
 | **v3** | Knowledge base, custom admin-defined roles |
@@ -2173,7 +2173,7 @@ on the existing webhook feature instead of as plugins.
   do carry the full event payload, subject and reply body included: a webhook
   target is registered by an administrator, not chosen by a reporter.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
-  events, enabled — also when creating — edit, delete). A secret is write-only:
+  events, ticket filter, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
   leaving the field empty on edit keeps the stored one. The list shows each
   hook's most recent delivery: when it started, the HTTP status, and on failure
@@ -2182,6 +2182,26 @@ on the existing webhook feature instead of as plugins.
   token and a response body can carry anything; the details are in the server
   log. The latest-started attempt wins, and changing a hook's URL clears its
   result. There is no delivery history.
+- **Webhook ticket filter** ([#413](https://github.com/PubliciaLLC/go-help-desk/issues/413)).
+  A hook can carry one optional filter: sets of categories, priorities and
+  assignee groups. A ticket matches a set when its value is any entry, and
+  every non-empty set must match. `invert` sends for the tickets that do not
+  match, which is how one hook takes "critical Network tickets" and another
+  "everything else". No filter (the default, stored as `{}`) means every
+  ticket, as before. A filter changes when a hook fires, never what it sends:
+  the raw body is unchanged, and the classification travels on the event as
+  fields excluded from JSON, the same way `Subject` and `StatusName` do. The
+  filter is evaluated against the ticket **as it was when the event was
+  raised**, not when the outbox delivers, so a ticket reclassified in between
+  is judged by its old values. Consequences worth knowing: `ticket.created` is
+  raised before auto-assignment, so a group condition never matches it; to
+  hear about tickets landing in a group, subscribe to `ticket.assigned`.
+  Category covers the category's types and items. There are no type or item
+  conditions yet. A filter naming a deleted group or category matches no ticket
+  (inverted: every ticket). If an event cannot be evaluated (one queued before
+  this existed), the hook is sent to and a warning is logged: an extra message
+  beats a missed one. A filtered-out event is not a delivery and is not
+  recorded on the hook. Refusal codes are in the API reference.
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
