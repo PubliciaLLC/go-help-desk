@@ -107,6 +107,9 @@ services:
       # covers the first few minutes here, where clamav is still downloading
       # its signature database while the app is already serving. Everything
       # other than attachment upload works throughout.
+      # Rate limiting (optional — defaults to 10 per minute and 1 second delay)
+      AUTH_RATE_LIMIT_PER_MINUTE: ${AUTH_RATE_LIMIT_PER_MINUTE:-10}
+      AUTH_THROTTLE_DELAY: ${AUTH_THROTTLE_DELAY:-1s}
       CLAMAV_ADDR: ${CLAMAV_ADDR:-}
       # Optional — set in .env to enable email notifications
       SMTP_HOST: ${SMTP_HOST:-}
