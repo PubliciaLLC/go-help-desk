@@ -58,7 +58,7 @@ func renderJIRA(s summary) ([]byte, error) {
 		LinkedTicketID: s.LinkedTicketID,
 		LinkType:       s.LinkType,
 	}
-	if s.Event == notification.EventTicketReplied {
+	if s.Event == notification.EventTicketReplied || s.Event == notification.EventTicketNoteAdded {
 		internal := s.Internal
 		b.Internal = &internal
 		if !s.Internal {

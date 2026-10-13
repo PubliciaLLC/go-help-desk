@@ -6,15 +6,18 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/tls"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -30,6 +33,7 @@ var WebhookEvents = []notification.EventType{
 	notification.EventTicketAssigned,
 	notification.EventTicketStatusChanged,
 	notification.EventTicketReplied,
+	notification.EventTicketNoteAdded,
 	notification.EventTicketResolved,
 	notification.EventTicketClosed,
 	notification.EventTicketReopened,
@@ -71,12 +75,51 @@ type WebhookStore interface {
 	RecordWebhookDelivery(ctx context.Context, id uuid.UUID, url string, d authstore.WebhookDelivery) error
 }
 
+// WebhookLookup reads one hook, for the delivery of a queued row.
+type WebhookLookup interface {
+	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
+}
+
+// WebhookHistory keeps each delivery's attempts and the event Redeliver sends
+// again (#448).
+type WebhookHistory interface {
+	RecordWebhookAttempt(ctx context.Context, a authstore.WebhookAttempt) error
+	GetWebhookDeliveryEvent(ctx context.Context, hookID, deliveryID uuid.UUID) ([]byte, error)
+}
+
+// WebhookQueue is what turns a webhook send from fire-and-forget into
+// per-hook, retried deliveries (#448). Without one a dispatcher sends at once
+// and never retries.
+type WebhookQueue struct {
+	Outbox  notification.Outbox
+	Hooks   WebhookLookup
+	History WebhookHistory
+	Wake    func() // asks the worker to look now; may be nil
+}
+
+// Redeliver refusals.
+var (
+	ErrWebhookNotFound  = errors.New("webhook not found")
+	ErrWebhookDisabled  = errors.New("webhook is disabled")
+	ErrDeliveryNotFound = errors.New("delivery not found")
+)
+
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
 type WebhookDispatcher struct {
 	store   WebhookStore
 	client  *http.Client
 	baseURL string // used only to build the staff ticket link chat/ITSM formats carry
 	log     *slog.Logger
+	queue   *WebhookQueue
+}
+
+// WithQueue makes the dispatcher queue one retried delivery per subscribed
+// hook instead of sending at once. The webhook outbox channel then does two
+// jobs, told apart by Event.TargetWebhook: an event with none is fanned out
+// into one row per hook; an event with one is delivered to that hook.
+func (d *WebhookDispatcher) WithQueue(q WebhookQueue) *WebhookDispatcher {
+	d.queue = &q
+	return d
 }
 
 // NewWebhookDispatcher returns a WebhookDispatcher with sensible timeouts.
@@ -115,6 +158,12 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 	// #212.
 	if !IsWebhookEvent(string(event.Type)) {
 		return nil
+	}
+	if d.queue != nil {
+		if event.TargetWebhook != uuid.Nil {
+			return d.deliverQueued(ctx, event)
+		}
+		return d.fanOut(ctx, event)
 	}
 
 	hooks, err := d.store.ListEnabledWebhooks(ctx)
@@ -155,8 +204,174 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		// Fire-and-forget per webhook, as before; the result is recorded on the
 		// hook so a failing one shows on the admin page (#157), not only in the log.
 		go func(hook authstore.WebhookConfig, body []byte) {
-			d.record(hook, d.send(hook, body))
+			res, _ := d.post(context.Background(), hook, body, uuid.New(), event.Type)
+			d.record(hook, res)
 		}(hook, body)
+	}
+	return nil
+}
+
+// fanOut turns the webhook channel's one row for an event into one row per
+// subscribed hook, so each is retried on its own and a healthy hook is never
+// sent again because another failed (#448). Hook selection is exactly
+// hookSubscribes, as before.
+//
+// The per-hook row ids derive from the fan-out row's id, and the outbox
+// ignores a repeated id, so running this again after a crash (between queueing
+// and settling) queues nothing new.
+func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) error {
+	hooks, err := d.store.ListEnabledWebhooks(ctx)
+	if err != nil {
+		// Unlike the unqueued path this is worth failing: the worker tries
+		// again, where there it meant zero deliveries (#213).
+		return fmt.Errorf("listing enabled webhooks: %w", err)
+	}
+	// What a webhook never carries is dropped here, so the copy kept for
+	// Redeliver holds no recipient address.
+	ev.Recipient, ev.GuestLink = "", false
+
+	parent := RowID(ctx)
+	var first error
+	for _, hook := range hooks {
+		if !hookSubscribes(hook, ev.Type) {
+			continue
+		}
+		perHook := ev
+		perHook.TargetWebhook = hook.ID
+		row, err := encodeEvent(perHook)
+		if err != nil {
+			first = errors.Join(first, fmt.Errorf("encoding event for webhook %s: %w", hook.ID, err))
+			continue
+		}
+		id := uuid.New()
+		if parent != uuid.Nil {
+			id = uuid.NewSHA1(parent, hook.ID[:])
+		}
+		if err := d.queue.Outbox.Enqueue(ctx, id, "webhook", row); err != nil {
+			first = errors.Join(first, err)
+		}
+	}
+	if d.queue.Wake != nil {
+		d.queue.Wake()
+	}
+	return first
+}
+
+// deliverQueued makes one attempt at one hook's row. nil settles the row
+// (delivered, or not worth another try); an error has the worker try again
+// on its schedule, or give up after the last attempt.
+func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.Event) error {
+	hook, err := d.queue.Hooks.GetWebhook(ctx, ev.TargetWebhook)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil // deleted since the event was queued
+	case err != nil:
+		return fmt.Errorf("loading webhook: %w", err)
+	}
+	if !hook.Enabled {
+		return nil
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",
+			"webhook_id", hook.ID, "event", ev.Type, "error", err)
+		return nil // the same bytes would fail every time
+	}
+	body, err := bodyFor(hook, ev, raw, d.baseURL)
+	if err != nil {
+		d.log.WarnContext(ctx, "webhook skipped: payload could not be built",
+			"webhook_id", hook.ID, "payload_format", hook.PayloadFormat,
+			"event", ev.Type, "error", err)
+		return nil
+	}
+
+	// The row's id is the delivery id: it does not change between attempts.
+	deliveryID := RowID(ctx)
+	if deliveryID == uuid.Nil {
+		deliveryID = uuid.New()
+	}
+	res, retryAfter := d.post(ctx, hook, body, deliveryID, ev.Type)
+	d.record(hook, res)
+
+	retry := shouldRetry(res)
+	d.recordAttempt(hook, deliveryID, ev, res, retry && !LastAttempt(ctx))
+	if !retry {
+		return nil
+	}
+	// A class and a status, never a message: this is what lands in last_error.
+	err = fmt.Errorf("webhook delivery failed: %s (status %d)", res.Error, res.Status)
+	if retryAfter > 0 {
+		err = &notification.RetryAfterError{Err: err, After: retryAfter}
+	}
+	return err
+}
+
+// shouldRetry reports whether another attempt could plausibly do better:
+// connection errors, timeouts, 5xx and 429. A refused address, any other
+// status and a request that could not be built would fail the same way again.
+func shouldRetry(r authstore.WebhookDelivery) bool {
+	switch r.Error {
+	case DeliveryTimeout, DeliveryDNS, DeliveryTLS, DeliveryConnection:
+		return true
+	case DeliveryHTTPStatus:
+		return r.Status >= 500 || r.Status == http.StatusTooManyRequests
+	}
+	return false
+}
+
+// parseRetryAfter reads a Retry-After header: seconds, or an HTTP date. Zero
+// when absent, malformed or already past.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		return time.Duration(max(secs, 0)) * time.Second
+	}
+	if at, err := http.ParseTime(v); err == nil {
+		return max(at.Sub(now), 0)
+	}
+	return 0
+}
+
+// Redeliver queues the event of an earlier delivery to the same hook again,
+// as a new delivery with a new id: a receiver that de-duplicates by id would
+// otherwise drop the replay, which is the opposite of what was asked.
+func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uuid.UUID) error {
+	if d.queue == nil {
+		return errors.New("webhook delivery is not queued")
+	}
+	hook, err := d.queue.Hooks.GetWebhook(ctx, hookID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrWebhookNotFound
+	case err != nil:
+		return fmt.Errorf("loading webhook: %w", err)
+	}
+	if !hook.Enabled {
+		return ErrWebhookDisabled
+	}
+	stored, err := d.queue.History.GetWebhookDeliveryEvent(ctx, hookID, deliveryID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrDeliveryNotFound
+	case err != nil:
+		return fmt.Errorf("loading delivery: %w", err)
+	}
+	ev, err := decodeEvent(stored)
+	if err != nil {
+		return fmt.Errorf("reading stored event: %w", err)
+	}
+	ev.TargetWebhook = hookID
+	row, err := encodeEvent(ev)
+	if err != nil {
+		return fmt.Errorf("encoding event: %w", err)
+	}
+	if err := d.queue.Outbox.Enqueue(ctx, uuid.New(), "webhook", row); err != nil {
+		return err
+	}
+	if d.queue.Wake != nil {
+		d.queue.Wake()
 	}
 	return nil
 }
@@ -173,14 +388,35 @@ const (
 	LegacySignatureHeader = "X-OHD-Signature"
 )
 
+// Delivery headers (#448). X-GHD-Delivery names one delivery and is the same
+// on every retry of it, so a receiver can drop a duplicate; X-GHD-Event is the
+// event type, so it can route without parsing the body.
+const (
+	DeliveryHeader = "X-GHD-Delivery"
+	EventHeader    = "X-GHD-Event"
+)
+
+// send makes one unnamed attempt; see post.
 func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) authstore.WebhookDelivery {
+	res, _ := d.post(context.Background(), hook, payload, uuid.New(), "")
+	return res
+}
+
+// post makes one attempt and returns its result, and how long the receiver
+// asked us to wait (Retry-After) when it refused with a status.
+func (d *WebhookDispatcher) post(ctx context.Context, hook authstore.WebhookConfig, payload []byte,
+	deliveryID uuid.UUID, eventType notification.EventType) (authstore.WebhookDelivery, time.Duration) {
 	at := time.Now().UTC()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, hook.URL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, bytes.NewReader(payload))
 	if err != nil {
 		d.log.Warn("webhook request could not be built", "webhook_id", hook.ID)
-		return authstore.WebhookDelivery{At: at, Error: DeliveryOther}
+		return authstore.WebhookDelivery{At: at, Error: DeliveryOther}, 0
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(DeliveryHeader, deliveryID.String())
+	if eventType != "" {
+		req.Header.Set(EventHeader, string(eventType))
+	}
 	if hook.Secret != "" {
 		sig := hmacSHA256(hook.Secret, payload)
 
@@ -201,7 +437,7 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) a
 	resp, err := d.client.Do(req)
 	if err != nil {
 		d.log.Warn("webhook delivery failed", "webhook_id", hook.ID, "payload_format", hook.PayloadFormat, "error", withoutURL(err))
-		return authstore.WebhookDelivery{At: at, Error: classifyDeliveryError(err)}
+		return authstore.WebhookDelivery{At: at, Error: classifyDeliveryError(err)}, 0
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -213,10 +449,10 @@ func (d *WebhookDispatcher) send(hook authstore.WebhookConfig, payload []byte) a
 		if status < 100 || status > 999 {
 			status = 0
 		}
-		return authstore.WebhookDelivery{At: at, Status: status, Error: DeliveryHTTPStatus}
+		return authstore.WebhookDelivery{At: at, Status: status, Error: DeliveryHTTPStatus},
+			parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 	}
-	// Retry logic for v2: for now, accept any 2xx.
-	return authstore.WebhookDelivery{At: at, Status: resp.StatusCode}
+	return authstore.WebhookDelivery{At: at, Status: resp.StatusCode}, 0
 }
 
 func hookSubscribes(hook authstore.WebhookConfig, eventType notification.EventType) bool {
@@ -264,6 +500,25 @@ func (d *WebhookDispatcher) record(hook authstore.WebhookConfig, r authstore.Web
 	defer cancel()
 	if err := d.store.RecordWebhookDelivery(ctx, hook.ID, hook.URL, r); err != nil {
 		d.log.Warn("webhook delivery result not recorded", "webhook_id", hook.ID, "error", err)
+	}
+}
+
+// recordAttempt adds an attempt to the hook's delivery history. Like record:
+// its own short timeout, and a failure is logged and dropped.
+func (d *WebhookDispatcher) recordAttempt(hook authstore.WebhookConfig, deliveryID uuid.UUID,
+	ev notification.Event, r authstore.WebhookDelivery, retrying bool) {
+	stored, err := encodeEvent(ev)
+	if err != nil {
+		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := d.queue.History.RecordWebhookAttempt(ctx, authstore.WebhookAttempt{
+		DeliveryID: deliveryID, HookID: hook.ID, EventType: string(ev.Type), Event: stored,
+		Result: r, Retrying: retrying,
+	}); err != nil {
+		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
 	}
 }
 

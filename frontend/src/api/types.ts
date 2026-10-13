@@ -461,6 +461,19 @@ export interface WebhookDelivery {
   error: WebhookDeliveryError
 }
 
+// One row of a hook's history (#448): an outcome, never content. result is 'ok'
+// or a class; there is no error text.
+export interface WebhookDeliveryRecord {
+  id: string
+  event: string
+  started_at: string
+  last_attempt_at: string
+  status: number
+  result: 'ok' | Exclude<WebhookDeliveryError, ''>
+  attempts: number
+  retrying: boolean
+}
+
 export interface WebhookConfig {
   id: string
   url: string

@@ -2093,9 +2093,10 @@ so they are not removed as dead weight:
   private network is a normal topology — and are restricted by who may set them
   instead.
 - **Webhook payloads omit the body of an internal note** and carry an
-  `internal` flag, so a subscriber can tell a staff-only note from a public
-  reply. Before, it received the text of every internal note and could not tell
-  them apart.
+  `internal` flag. A staff-only note is its own event, `ticket.note_added`
+  ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)), so a hook
+  subscribed to `ticket.replied` is never sent one. Before, it received the
+  text of every internal note and could not tell them apart.
 - **Chat/ITSM payload formats escape mentions and never carry an internal
   note body.** Slack escapes `&`, `<` and `>` in user-chosen text, so a
   subject of `<!channel>` cannot page a channel; Discord always sends
@@ -2168,9 +2169,28 @@ on the existing webhook feature instead of as plugins.
 
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
-- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
-  do carry the full event payload, subject and reply body included: a webhook
-  target is registered by an administrator, not chosen by a reporter.
+- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
+  `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
+  `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
+  staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` and
+  `ticket.linked`.
+  **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The raw body is the event record, not a copy of the ticket: `Type`,
+  `TicketID`, `ActorID` (null for a system event), `OccurredAt` and a `Payload`
+  that depends on the event. Assigned, resolved, closed and reopened have no
+  payload; status changed has `new_status_id`; linked has `target_id` and
+  `link_type`; created has `TrackingNumber`, `Subject`, `Priority` and, for a
+  guest ticket, `guest_email`; replied has `TrackingNumber`, `Subject`,
+  `internal`, `ReplyBody` and `reporter_email` (set only when the customer is
+  being notified); a note has the same without `ReplyBody`, and `internal` is
+  always true. So it is ids for most events, plus the subject and tracking
+  number on create and reply, and the reply text on a public reply. It is not
+  the full ticket, and the tracking number is not a top-level field. A receiver
+  that needs more reads the ticket through the REST API using the id. This
+  format does not change. The Slack, Teams, Discord and JIRA formats keep their
+  own built bodies, including for `ticket.note_added`, and never carry a note's
+  text. A webhook target is registered by an administrator, not chosen by a
+  reporter, which is why the subject and reply text are sent at all.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
   events, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
@@ -2180,7 +2200,20 @@ on the existing webhook feature instead of as plugins.
   `connection`, `other`). No error text is stored, because a URL can carry a
   token and a response body can carry anything; the details are in the server
   log. The latest-started attempt wins, and changing a hook's URL clears its
-  result. There is no delivery history.
+  result.
+  **Headers.** Every delivery carries `X-GHD-Delivery`, a UUID that is the same
+  on every retry of that delivery, and `X-GHD-Event`, the event name. Receivers
+  can see an event more than once (below), and de-duplicate on the first.
+  **History and Redeliver.** Each hook keeps its last 25 deliveries: the event
+  name, when the first and latest attempts started, the HTTP status, a result
+  (`ok` or a class), the number of attempts and whether another is pending.
+  No payload and no error text is shown or returned. The queued event is kept
+  beside each entry only so **Redeliver** can queue it again, as a new delivery
+  with a new `X-GHD-Delivery`; it is the event as it was, not rebuilt from the
+  ticket now, and it holds no recipient address. Changing a hook's URL clears
+  its history, and deleting the hook deletes it.
+  (`GET /admin/webhooks/{id}/deliveries`,
+  `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
@@ -2208,10 +2241,22 @@ on the existing webhook feature instead of as plugins.
   about three times that on a slower server, per attempt; that is accepted
   (#389). Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
-  Webhooks are not retried on any failure. The webhook row covers every
-  subscribed hook and is settled as soon as each delivery has started. Each
-  delivery runs in the background and records its result on the hook (above),
-  not on the outbox row.
+  **Webhooks are retried per hook** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The `webhook` row an event queues is a fan-out: the worker turns it into one
+  row per subscribed hook (the row ids derive from the fan-out row, so a
+  repeat after a crash queues nothing new) and settles it. Each per-hook row
+  is then delivered and retried on its own, on the schedule above: 30 seconds
+  doubling to an hour, eight attempts in all, so a failing hook never causes
+  another to be sent twice. The row's id is the `X-GHD-Delivery`. Connection
+  errors, DNS and TLS failures, timeouts, 5xx and 429 are retried; a
+  `Retry-After` from the receiver (seconds or a date) postpones the next attempt
+  when it is longer than the schedule, to at most an hour. A refused address
+  (`blocked_address`), any other status and a request that cannot be built are
+  final: asking again gets the same answer. A hook disabled or deleted between
+  queueing and sending is skipped, not failed. Each attempt updates the hook's
+  latest result and its history (above), not the outbox row, whose `last_error`
+  holds only a class and a status. Delivery is at least once, so a receiver can
+  see the same event twice.
 - **Signup verification email goes through the outbox too**
   ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
   `verification` channel. Signup answers the same 202 whether or not the

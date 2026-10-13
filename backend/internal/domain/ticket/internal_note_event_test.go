@@ -73,13 +73,50 @@ func replyEventForTest(t *testing.T, body string, internal bool) notification.Ev
 		30, h.newStatus.ID)
 	require.NoError(t, err)
 
+	// An internal note is announced as ticket.note_added, a public reply as
+	// ticket.replied (#448).
+	want := notification.EventTicketReplied
+	if internal {
+		want = notification.EventTicketNoteAdded
+	}
 	for _, e := range h.dispatcher.events {
-		if e.Type == notification.EventTicketReplied {
+		if e.Type == want {
 			return e
 		}
 	}
-	t.Fatal("no ticket.replied event dispatched")
+	t.Fatalf("no %s event dispatched", want)
 	return notification.Event{}
+}
+
+// ticket.replied is customer-visible replies only: a hook subscribed to it
+// must never be handed a staff note, and a note has its own event (#448).
+func TestAddReply_SplitsNotesFromReplies(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		internal bool
+		want     notification.EventType
+		absent   notification.EventType
+	}{
+		{"public reply", false, notification.EventTicketReplied, notification.EventTicketNoteAdded},
+		{"internal note", true, notification.EventTicketNoteAdded, notification.EventTicketReplied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			seeded := h.seedOpen()
+			agent := uuid.New()
+			_, err := h.svc.AddReply(context.Background(), seeded.ID, "text", tc.internal, false,
+				"reporter@example.com",
+				ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
+			require.NoError(t, err)
+
+			var got []notification.EventType
+			for _, e := range h.dispatcher.events {
+				got = append(got, e.Type)
+			}
+			require.Contains(t, got, tc.want)
+			require.NotContains(t, got, tc.absent)
+		})
+	}
 }
 
 // The "Your ticket has been received" email shipped unreachable: Create

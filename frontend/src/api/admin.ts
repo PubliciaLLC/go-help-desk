@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
 
 // ── Site config (public) ──────────────────────────────────────────────────────
@@ -408,6 +408,16 @@ export async function updateWebhook(
 
 export async function deleteWebhook(id: string): Promise<void> {
   await api.delete(`/admin/webhooks/${id}`)
+}
+
+export async function listWebhookDeliveries(id: string): Promise<WebhookDeliveryRecord[]> {
+  const res = await api.get<WebhookDeliveryRecord[]>(`/admin/webhooks/${id}/deliveries`)
+  return res.data
+}
+
+// Queues the delivery's event again as a new delivery; the server answers 202.
+export async function redeliverWebhook(id: string, deliveryId: string): Promise<void> {
+  await api.post(`/admin/webhooks/${id}/deliveries/${deliveryId}/redeliver`)
 }
 
 // ── Custom field definitions ──────────────────────────────────────────────────

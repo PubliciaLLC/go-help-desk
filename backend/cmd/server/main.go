@@ -258,13 +258,23 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
-	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default())
 	// Requests queue notifications in the outbox and return; outboxWorker,
 	// started once the server exists, sends them (#164). The worker needs the
 	// server for the send-time guest-link step, and the ticket service needs a
 	// dispatcher before the server can be built, hence the late assignment.
 	outboxStore := outboxstore.New(q)
 	var outboxWorker *notify.Worker
+	// Each subscribed hook gets its own queued, retried delivery (#448); the
+	// worker below sends them.
+	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default()).
+		WithQueue(notify.WebhookQueue{
+			Outbox: outboxStore, Hooks: authStore, History: authStore,
+			Wake: func() {
+				if outboxWorker != nil {
+					outboxWorker.Wake()
+				}
+			},
+		})
 	dispatcher := notify.NewOutboxDispatcher(outboxStore, outboxChannels(), func() {
 		if outboxWorker != nil {
 			outboxWorker.Wake()
@@ -369,6 +379,7 @@ func run() error {
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
 		server.WithAuditStore(auStore),
+		server.WithWebhookRedeliverer(webhookDisp),
 	)
 
 	srv.InitSAML(ctx)

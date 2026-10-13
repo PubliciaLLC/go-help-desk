@@ -92,6 +92,10 @@ type summary struct {
 // puts it in the payload anyway.
 func summarize(ev notification.Event, baseURL string) summary {
 	internal, _ := ev.Payload["internal"].(bool)
+	// A note is internal by definition; do not rely on the flag being present.
+	if ev.Type == notification.EventTicketNoteAdded {
+		internal = true
+	}
 
 	var body string
 	if !internal {
@@ -157,6 +161,8 @@ func headline(t notification.EventType, statusName string, internal bool, linked
 	switch t {
 	case notification.EventTicketCreated:
 		return "New ticket"
+	case notification.EventTicketNoteAdded:
+		return "Internal note added"
 	case notification.EventTicketReplied:
 		if internal {
 			return "Internal note added"

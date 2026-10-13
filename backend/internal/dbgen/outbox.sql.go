@@ -98,6 +98,7 @@ func (q *Queries) DeleteNotification(ctx context.Context, id uuid.UUID) error {
 
 const enqueueNotification = `-- name: EnqueueNotification :exec
 INSERT INTO notification_outbox (id, channel, event) VALUES ($1, $2, $3)
+ON CONFLICT (id) DO NOTHING
 `
 
 type EnqueueNotificationParams struct {
@@ -106,6 +107,9 @@ type EnqueueNotificationParams struct {
 	Event   json.RawMessage `json:"event"`
 }
 
+// A repeat of an id is ignored, so the webhook fan-out, whose row ids derive
+// from the fan-out row, can be re-run after a crash without queueing a hook
+// twice (#448).
 func (q *Queries) EnqueueNotification(ctx context.Context, arg EnqueueNotificationParams) error {
 	_, err := q.db.ExecContext(ctx, enqueueNotification, arg.ID, arg.Channel, arg.Event)
 	return err

@@ -41,6 +41,8 @@ type outboxRecord struct {
 	Subject        string                 `json:"subject,omitempty"`
 	StatusName     string                 `json:"status_name,omitempty"`
 	GuestLink      bool                   `json:"guest_link,omitempty"`
+	// TargetWebhook is set on the per-hook rows the webhook fan-out queues (#448).
+	TargetWebhook uuid.UUID `json:"webhook_id,omitzero"`
 }
 
 func encodeEvent(ev notification.Event) ([]byte, error) {
@@ -51,6 +53,7 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
 		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
 		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
+		TargetWebhook: ev.TargetWebhook,
 	})
 }
 
@@ -63,6 +66,7 @@ func decodeEvent(b []byte) (notification.Event, error) {
 		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
 		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
 		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
+		TargetWebhook: r.TargetWebhook,
 	}, nil
 }
 
@@ -74,6 +78,26 @@ type attemptKey struct{}
 func Attempt(ctx context.Context) int {
 	n, _ := ctx.Value(attemptKey{}).(int)
 	return n
+}
+
+type (
+	rowKey         struct{}
+	lastAttemptKey struct{}
+)
+
+// RowID reports the id of the queued row being delivered, or uuid.Nil outside
+// the worker. It is stable across a row's retries, which is what makes it the
+// webhook delivery id (#448).
+func RowID(ctx context.Context) uuid.UUID {
+	id, _ := ctx.Value(rowKey{}).(uuid.UUID)
+	return id
+}
+
+// LastAttempt reports whether the worker will give up on the row if this
+// attempt fails.
+func LastAttempt(ctx context.Context) bool {
+	b, _ := ctx.Value(lastAttemptKey{}).(bool)
+	return b
 }
 
 // OutboxDispatcher is the Dispatcher requests call: it queues one row per
@@ -190,6 +214,10 @@ func NewWorker(store notification.Outbox, channels map[string]notification.Dispa
 	}
 }
 
+// maxRetryAfter is the longest a receiver's Retry-After can delay a retry:
+// the longest wait defaultBackoff ever produces.
+const maxRetryAfter = time.Hour
+
 // defaultBackoff doubles from 30 seconds, capped at an hour: eight attempts
 // span a little over an hour, long enough to ride out a mail server restart.
 func defaultBackoff(attempt int) time.Duration {
@@ -301,7 +329,10 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		return
 	}
 
-	sendCtx, cancel := context.WithTimeout(context.WithValue(settle, attemptKey{}, row.Attempts), w.SendTimeout)
+	rowCtx := context.WithValue(settle, attemptKey{}, row.Attempts)
+	rowCtx = context.WithValue(rowCtx, rowKey{}, row.ID)
+	rowCtx = context.WithValue(rowCtx, lastAttemptKey{}, row.Attempts >= w.MaxAttempts)
+	sendCtx, cancel := context.WithTimeout(rowCtx, w.SendTimeout)
 	err = d.Dispatch(sendCtx, ev)
 	cancel()
 	if err == nil {
@@ -317,7 +348,15 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 		w.fail(settle, row, err.Error())
 		return
 	}
-	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(w.Backoff(row.Attempts)), redactAddresses(err.Error())); rerr != nil {
+	delay := w.Backoff(row.Attempts)
+	// A receiver that said how long to wait (Retry-After) is obeyed when that
+	// is longer than the schedule, but never past the longest wait in it: a
+	// header must not be able to park a row for a year.
+	var ra *notification.RetryAfterError
+	if errors.As(err, &ra) && ra.After > delay {
+		delay = min(ra.After, maxRetryAfter)
+	}
+	if rerr := w.store.Retry(settle, row.ID, time.Now().Add(delay), redactAddresses(err.Error())); rerr != nil {
 		w.log.ErrorContext(ctx, "notification outbox: could not reschedule", "id", row.ID, "error", rerr)
 	}
 }

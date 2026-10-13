@@ -266,6 +266,7 @@ type Querier interface {
 	// several rounds removing.
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (uuid.UUID, error)
 	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
+	DeleteWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) error
 	DisableUser(ctx context.Context, id uuid.UUID) error
 	// Disables a user, refusing if that would leave the instance with no active
 	// administrator. Returns the id when it applied, nothing when it did not.
@@ -339,6 +340,9 @@ type Querier interface {
 	// reset rather than silently turning MFA on against an empty secret.
 	EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	EnableUser(ctx context.Context, id uuid.UUID) error
+	// A repeat of an id is ignored, so the webhook fan-out, whose row ids derive
+	// from the fan-out row, can be re-run after a crash without queueing a hook
+	// twice (#448).
 	EnqueueNotification(ctx context.Context, arg EnqueueNotificationParams) error
 	FailNotification(ctx context.Context, arg FailNotificationParams) error
 	// The four tiers DESIGN.md documents, most specific first:
@@ -469,6 +473,7 @@ type Querier interface {
 	// the lookup sign-in depends on. The unique index on credential_id serves it.
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
+	GetWebhookDeliveryEvent(ctx context.Context, arg GetWebhookDeliveryEventParams) (json.RawMessage, error)
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.
 	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
@@ -614,7 +619,11 @@ type Querier interface {
 	// The admin view: every subscription, enabled or not. The dispatcher keeps
 	// using ListEnabledWebhookConfigs.
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
+	// No event column: the history shows outcomes, never content.
+	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
+	// Keeps the newest keep_n deliveries of one hook (#448).
+	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
 	// Counts a failed TOTP attempt and locks the account once the threshold is
 	// reached. Returns the resulting lock time so the caller can refuse
 	// immediately without a second round trip.
@@ -882,6 +891,9 @@ type Querier interface {
 	// reason inverted: a frozen, earlier now() would keep an expired session
 	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
+	// One row per delivery; each attempt updates it. attempts counts them here
+	// rather than trusting the caller, so two replicas cannot disagree.
+	UpsertWebhookDelivery(ctx context.Context, arg UpsertWebhookDeliveryParams) error
 	// Whether a live account holds this id. Used for a supplied reporter, which
 	// unlike an assignee may be any role — a ticket is filed on behalf of whoever
 	// it is about.

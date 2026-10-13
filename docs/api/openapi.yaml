@@ -6595,7 +6595,7 @@ paths:
       summary: Delete a webhook.
       description: >-
         Administrators only (second factor required).
-        Deletes the subscription and its last_delivery. A delivery already in flight
+        Deletes the subscription, its last_delivery and its delivery history. A delivery already in flight
         finishes, but its result is discarded because the record is gone. An unknown id
         also answers 204.
       tags: ['Admin: Webhooks']
@@ -6619,6 +6619,117 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/admin/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List a webhook's recent deliveries.
+      description: >-
+        Administrators only (second factor required).
+        Returns the last 25 deliveries to this hook, newest first. A delivery is one
+        event sent to one hook; its retries update the same entry. Each entry has the
+        outcome only: no payload, no response body and no error text, because a URL can
+        carry a token. Changing the hook's url clears the history.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleListWebhookDeliveries
+      security:
+        - sessionCookie: []
+        - apiKey: ['webhooks:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The deliveries, newest first. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 25
+                items:
+                  $ref: '#/components/schemas/WebhookDeliveryRecord'
+        '400':
+          description: bad_request, message "invalid ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, when no webhook has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/webhooks/{id}/deliveries/{delivery}/redeliver:
+    post:
+      operationId: redeliverWebhook
+      summary: Send an earlier delivery's event to the hook again.
+      description: >-
+        Administrators only (second factor required).
+        Queues the stored event of one of the hook's recent deliveries as a new delivery,
+        with a new X-GHD-Delivery id, so a receiver that de-duplicates by id does not
+        drop it. It is sent by the background worker, not during this request, and
+        retried like any delivery. It appears in the history once it has been
+        attempted. The body is the event as it was queued, not rebuilt from the
+        ticket's current state.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleRedeliverWebhook
+      security:
+        - sessionCookie: []
+        - apiKey: ['webhooks:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+        - name: delivery
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '202':
+          description: Queued. No body.
+        '400':
+          description: >-
+            bad_request, message "invalid ID" or "invalid delivery ID", when a path id is
+            not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when the webhook does not exist, or has no such delivery in its
+            history (a delivery of another hook counts as not found).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: webhook_disabled, when the webhook is disabled. Enable it first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: unavailable, when the server was started without a delivery queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/categories:
     get:
       operationId: listCategories
@@ -9216,9 +9327,10 @@ components:
     WebhookEvent:
       description: >-
         An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        eight. guest.link_resent is never sent to a webhook.
+        nine. guest.link_resent is never sent to a webhook.
+        ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.
@@ -9249,7 +9361,8 @@ components:
           description: >-
             The latest delivery attempt, identified by when it started. Null until a
             delivery has been attempted since the hook was created or its url last
-            changed. Only the latest attempt is kept, and there is no history.
+            changed. Only the latest attempt is kept here; the last 25 deliveries are at
+            GET /api/v1/admin/webhooks/{id}/deliveries.
           anyOf:
             - $ref: '#/components/schemas/WebhookDelivery'
             - type: 'null'
@@ -9280,6 +9393,48 @@ components:
             failed. blocked_address: the target is an internal address, refused by the
             guarded dialer. connection: refused, reset, or closed without a response. other:
             anything else.
+    WebhookDeliveryRecord:
+      description: >-
+        One delivery of one event to one hook, as the history shows it. The id is the
+        X-GHD-Delivery header the receiver saw, and is the same on every retry. No
+        payload, response body or error text is stored.
+      type: object
+      required: [id, event, started_at, last_attempt_at, status, result, attempts, retrying]
+      properties:
+        id: {$ref: '#/components/schemas/Uuid'}
+        event:
+          type: string
+          description: The event name, as sent in X-GHD-Event.
+        started_at:
+          type: string
+          format: date-time
+          description: When the first attempt started, in UTC.
+        last_attempt_at:
+          type: string
+          format: date-time
+          description: When the latest attempt started, in UTC.
+        status:
+          type: integer
+          minimum: 0
+          maximum: 999
+          description: The HTTP status of the latest attempt. 0 when no response came back.
+        result:
+          type: string
+          enum: [ok, http_status, timeout, dns, tls, blocked_address, connection, other]
+          description: >-
+            The latest attempt's outcome: ok, or a failure class as in WebhookDelivery.error.
+        attempts:
+          type: integer
+          minimum: 1
+          description: How many attempts have been made. At most 8.
+        retrying:
+          type: boolean
+          description: >-
+            True while the latest attempt failed in a way that will be tried again.
+            Connection errors, DNS, TLS, timeouts, 5xx and 429 are retried, 30 seconds
+            doubling to an hour, 8 attempts in all; a Retry-After from the receiver
+            delays the next attempt, up to an hour. blocked_address and other statuses
+            are never retried.
     Plugin:
       description: >-
         An installed plugin. The WASM file path is never returned. In v1 no plugin is registered, so no instance of this schema is

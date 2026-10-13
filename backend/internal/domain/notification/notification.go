@@ -14,11 +14,15 @@ const (
 	EventTicketCreated       EventType = "ticket.created"
 	EventTicketAssigned      EventType = "ticket.assigned"
 	EventTicketStatusChanged EventType = "ticket.status_changed"
-	EventTicketReplied       EventType = "ticket.replied"
-	EventTicketResolved      EventType = "ticket.resolved"
-	EventTicketClosed        EventType = "ticket.closed"
-	EventTicketReopened      EventType = "ticket.reopened"
-	EventTicketLinked        EventType = "ticket.linked"
+	// EventTicketReplied is a customer-visible reply only. A staff-only note
+	// is EventTicketNoteAdded, so a subscriber can ask for one without the
+	// other (#448).
+	EventTicketReplied   EventType = "ticket.replied"
+	EventTicketNoteAdded EventType = "ticket.note_added"
+	EventTicketResolved  EventType = "ticket.resolved"
+	EventTicketClosed    EventType = "ticket.closed"
+	EventTicketReopened  EventType = "ticket.reopened"
+	EventTicketLinked    EventType = "ticket.linked"
 
 	// EventGuestLinkResent is a guest asking for a fresh access link, which is
 	// not a change to the ticket. It exists so the mail goes out through the
@@ -78,7 +82,24 @@ type Event struct {
 	// instead: readable by a dispatcher, invisible on the wire.
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
+
+	// TargetWebhook, when set, makes the event a delivery to that one hook
+	// instead of an announcement to all of them: the webhook channel's queued
+	// row is first fanned out into one row per subscribed hook, so each hook
+	// is retried on its own (#448). Never part of the wire body.
+	TargetWebhook uuid.UUID `json:"-"`
 }
+
+// RetryAfterError asks the outbox worker to wait at least After before the
+// next attempt, because the receiver said so (a Retry-After header). The
+// worker never waits longer than its longest backoff.
+type RetryAfterError struct {
+	Err   error
+	After time.Duration
+}
+
+func (e *RetryAfterError) Error() string { return e.Err.Error() }
+func (e *RetryAfterError) Unwrap() error { return e.Err }
 
 // Dispatcher delivers events to whatever sinks are registered.
 // Callers fire and forget — the dispatcher is responsible for retry/durability.
