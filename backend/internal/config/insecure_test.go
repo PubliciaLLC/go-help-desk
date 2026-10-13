@@ -53,7 +53,7 @@ func TestInsecureSecret_AcceptsRealSecrets(t *testing.T) {
 func TestConfig_InsecureSecrets_NamesNotValues(t *testing.T) {
 	c := &config.Config{
 		SessionSecret: "change-me-in-production-this-is-really-insecure",
-		JWTSecret:     "short", // Short JWTSecret is generated, so only SESSION_SECRET is flagged
+		JWTSecret:     "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",
 	}
 	got := c.InsecureSecrets()
 
@@ -78,7 +78,10 @@ func TestConfig_InsecureSecrets_LongJWTSecretExample(t *testing.T) {
 func TestConfig_InsecureSecrets_CleanConfig(t *testing.T) {
 	c := &config.Config{
 		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",
-		JWTSecret:     "", // JWT_SECRET is no longer checked (generated from database if missing)
+		JWTSecret:     "aGVsbG8td29ybGQtdGhpcy1pcy1yYW5kb20tZW5vdWdo",
 	}
+	require.Empty(t, c.InsecureSecrets())
+	// An unset JWT_SECRET is not insecure either: a key is generated.
+	c.JWTSecret = ""
 	require.Empty(t, c.InsecureSecrets())
 }

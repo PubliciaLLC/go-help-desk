@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
@@ -48,6 +48,30 @@ async function openAttachments(scanning: unknown) {
   await screen.findByRole('heading', { name: 'Settings' })
   await userEvent.click(screen.getByRole('button', { name: /attachments/i }))
 }
+
+describe('saving settings refreshes the scanner status', () => {
+  it('re-fetches security-warnings after a save, so "Do not scan" clears the banner at once', async () => {
+    await openAttachments({
+      policy: 'off',
+      configured: false,
+      reachable: false,
+      effect: 'Attachments are not scanned. Uploads are accepted without being checked.',
+      policy_explicit: false,
+      stale_off: true,
+    })
+    await screen.findByRole('group', { name: /scanner status/i })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
+    const calls = () =>
+      vi.mocked(api.get).mock.calls.filter(([url]) => url === '/admin/security-warnings').length
+    const before = calls()
+
+    await userEvent.selectOptions(screen.getByLabelText('Scan attachments for malware'), 'off')
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() => expect(calls()).toBeGreaterThan(before))
+  })
+})
 
 describe('scanner status on Settings -> Attachments', () => {
   it('shows policy, configured, reachable and the effect sentence', async () => {

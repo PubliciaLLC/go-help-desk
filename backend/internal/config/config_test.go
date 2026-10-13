@@ -193,6 +193,8 @@ func TestLoad_AuthThrottleDelay(t *testing.T) {
 				require.Error(t, err, "expected an error but got none")
 				if tc.errMsg != "" {
 					require.Contains(t, err.Error(), tc.errMsg, "error message does not contain expected text")
+					// The switch is for tests; telling operators about it invites its use.
+					require.NotContains(t, err.Error(), "GHD_ALLOW_ZERO_AUTH_THROTTLE")
 				}
 			} else {
 				require.NoError(t, err)

@@ -146,7 +146,8 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
 	// APP_ENV is set but has no effect; the message helps developers understand that.
-	if msg, shouldLog := appEnvNotice(cfg); shouldLog {
+	_, appEnvSet := os.LookupEnv("APP_ENV")
+	if msg, shouldLog := appEnvNotice(appEnvSet); shouldLog {
 		slog.Info(msg)
 	}
 
@@ -596,15 +597,14 @@ func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
 }
 
 // appEnvNotice returns a message and a flag indicating whether to log it.
-// The message is returned only when APP_ENV is explicitly set to a value
-// other than the default (production or empty). Setting APP_ENV is harmless
+// The message is returned whenever APP_ENV is present in the environment,
+// whatever its value. Setting APP_ENV is harmless
 // but has no effect; the message helps developers understand that.
-func appEnvNotice(cfg *config.Config) (string, bool) {
-	// APP_ENV has a default of "production" and is only meaningless when
-	// set to something else. If it is empty (which only happens if the
-	// field was not set by envconfig), or "production" (the intended
-	// default), say nothing.
-	if cfg.AppEnv == "" || cfg.AppEnv == "production" {
+func appEnvNotice(set bool) (string, bool) {
+	// Takes whether the variable is present in the environment, not the
+	// config value: Config.AppEnv defaults to "production", so the value
+	// cannot tell "unset" from "set to production".
+	if !set {
 		return "", false
 	}
 	return "APP_ENV is set but has no effect; it is ignored", true

@@ -4,17 +4,17 @@ These notes document configuration and environment changes in v1.3.0. They will 
 
 ## Antivirus Scanning: Banner for Offline Policies
 
-When the attachment scan policy is off and stored attachments carry earlier scan results (or any attachment exists with no scan policy ever configured), administrators see a banner on the admin panel with the exact fix:
+Administrators see a banner on the admin panel with the exact fix when any attachment exists, no scan policy was ever saved, and no scanner address is set:
 
-1. Add `COMPOSE_PROFILES=antivirus` to `docker/.env`
+1. Add `COMPOSE_PROFILES=antivirus` and `CLAMAV_ADDR=tcp://clamav:3310` to `docker/.env`
 2. Run `docker compose up -d`
-3. Set the scanner address in Settings → Attachments
+3. Confirm the scanner address in Settings → Attachments
 
 The banner reads:
 
 > Attachments are not being scanned. To turn scanning back on, add `COMPOSE_PROFILES=antivirus` and `CLAMAV_ADDR=tcp://clamav:3310` to `docker/.env`, run `docker compose up -d`, then confirm the scanner address under Settings → Attachments. To keep scanning off, choose "Do not scan" there.
 
-It appears only when no scan policy was ever saved, no scanner address is set (in Settings or in the environment) and at least one attachment exists. Settings → Attachments also shows the scanner's policy, whether an address is configured, whether it answers, and what that means for uploads.
+The scanner address counts as set if it is in Settings or in the environment. Settings → Attachments also shows the scanner's policy, whether an address is configured, whether it answers, and what that means for uploads.
 
 Explicitly choosing "Do not scan" in the policy dropdown clears the banner. The exception is documented in DESIGN.md:1177-1183 — until a policy is explicitly set, the banner warns about unscanned uploads even in "off" mode.
 
@@ -46,6 +46,4 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 
 ## `APP_ENV` Variable (Removed from Documentation)
 
-The `APP_ENV` environment variable no longer has any effect. Setting it is harmless and will not break anything, but it is no longer documented. If you set it in your `.env`, you can safely ignore it or remove it; the server logs a single info message at startup if it is set.
-
-The removal stems from #354 — the log level is now controlled via `LOG_LEVEL`, and `APP_ENV` serves no purpose.
+The `APP_ENV` environment variable no longer has any effect. Setting it is harmless and will not break anything, but it is no longer documented. If you set it in your `.env`, you can safely ignore it or remove it; the server logs a single info message at startup whenever it is set, whatever its value. The log level is controlled by `LOG_LEVEL`.

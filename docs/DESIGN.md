@@ -1967,8 +1967,7 @@ generates a random 32-byte key once and keeps it in that table. Do not
   changed, and the key would silently regenerate. Every OAuth client would then
   hold a token the server no longer accepts.
 
-A security scanner flagged this once; this note is here so it is not flagged
-again. A long `JWT_SECRET` in the environment still wins over the stored key.
+A long `JWT_SECRET` in the environment still wins over the stored key.
 
 ### Credential Scopes
 

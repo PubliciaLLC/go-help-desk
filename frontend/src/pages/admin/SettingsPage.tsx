@@ -1953,6 +1953,9 @@ export function SettingsPage() {
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
       qc.invalidateQueries({ queryKey: ['site-config'] })
+      // The scan policy and address feed the banner and the scanner status;
+      // without this a saved "Do not scan" keeps warning for five minutes.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
     onError: (err) => setSaveError(extractError(err)),
   })

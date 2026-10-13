@@ -2,10 +2,13 @@ package database_test
 
 import (
 	"context"
+	"crypto/rand"
 	"sync"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
@@ -15,14 +18,17 @@ func TestSecretStore_InsertIfAbsentAndGet(t *testing.T) {
 	defer cleanup()
 	// In a transaction that is rolled back: a committed jwt_signing row would
 	// leak into every test that follows, since the table holds one per name.
-	q, rollback := testutil.TxQueries(t, db)
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
 	defer rollback()
 	store := database.NewSecretStore(q)
 	ctx := context.Background()
+	// Also inside the transaction: a key already in this database is not touched.
+	_, err := tx.ExecContext(ctx, "DELETE FROM instance_secrets")
+	require.NoError(t, err)
 
 	// Test: insert a secret and retrieve it
 	secret := []byte("this-is-exactly-32-bytes-long!!!")
-	err := store.InsertIfAbsent(ctx, "jwt_signing", secret)
+	err = store.InsertIfAbsent(ctx, "jwt_signing", secret)
 	require.NoError(t, err)
 
 	retrieved, err := store.Get(ctx, "jwt_signing")
@@ -36,14 +42,18 @@ func TestSecretStore_InsertIfAbsentRaceCondition(t *testing.T) {
 	store := database.NewSecretStore(db.Queries)
 	ctx := context.Background()
 
-	// Needs the real pool (concurrent connections), so it commits; remove the
-	// row before and after so it neither sees nor leaves another test's state.
-	clearSecrets := func() {
-		_, err := db.SQL.ExecContext(ctx, "DELETE FROM instance_secrets")
-		require.NoError(t, err)
+	// Needs the real pool (concurrent connections), so it commits. It deletes
+	// only the row it created: if one already exists (a developer's database
+	// with a real signing key) the test skips rather than touch it.
+	var existing int
+	require.NoError(t, db.SQL.QueryRowContext(ctx, "SELECT count(*) FROM instance_secrets").Scan(&existing))
+	if existing > 0 {
+		t.Skip("instance_secrets already holds a row; not deleting a key this test did not create")
 	}
-	clearSecrets()
-	defer clearSecrets()
+	defer func() {
+		_, err := db.SQL.ExecContext(ctx, "DELETE FROM instance_secrets WHERE name = 'jwt_signing'")
+		require.NoError(t, err)
+	}()
 
 	// Test: 20 goroutines try to insert different values concurrently
 	// Only one should succeed (INSERT ... ON CONFLICT DO NOTHING)
@@ -87,6 +97,48 @@ func TestSecretStore_InsertIfAbsentRaceCondition(t *testing.T) {
 		}
 	}
 	require.GreaterOrEqual(t, foundIdx, 0, "retrieved value is not one of the candidates")
+}
+
+// The startup path (#454): main.go calls auth.ResolveJWTSecret with the real
+// store and uses the result as cfg.JWTSecret. A token issued before a restart
+// must still verify after it, and must not verify under any other key.
+func TestResolveJWTSecret_AgainstRealStore_SurvivesRestart(t *testing.T) {
+	db, cleanup := testutil.NewDB(t)
+	defer cleanup()
+	q, tx, rollback := testutil.TxQueriesTx(t, db)
+	defer rollback()
+	store := database.NewSecretStore(q)
+	ctx := context.Background()
+	_, err := tx.ExecContext(ctx, "DELETE FROM instance_secrets")
+	require.NoError(t, err)
+
+	first, source, err := auth.ResolveJWTSecret(ctx, "", store, rand.Reader)
+	require.NoError(t, err)
+	require.Equal(t, "database", source)
+
+	client := auth.OAuthClient{ID: uuid.New(), ClientID: "ci", Scopes: []string{"tickets:read"}}
+	token, err := auth.IssueAccessToken(client, first)
+	require.NoError(t, err)
+
+	// "Restart": a short env value is ignored and the stored key comes back.
+	second, source, err := auth.ResolveJWTSecret(ctx, "short", store, rand.Reader)
+	require.NoError(t, err)
+	require.Equal(t, "database", source)
+	require.Equal(t, first, second)
+
+	claims, err := auth.VerifyAccessToken(token, second)
+	require.NoError(t, err)
+	require.Equal(t, "ci", claims.ClientID)
+
+	_, err = auth.VerifyAccessToken(token, "some-other-key-that-is-long-enough-xx")
+	require.Error(t, err)
+
+	// A long env value wins and the stored key is not consulted.
+	long := "an-environment-secret-of-at-least-32-bytes"
+	got, source, err := auth.ResolveJWTSecret(ctx, long, store, rand.Reader)
+	require.NoError(t, err)
+	require.Equal(t, "environment", source)
+	require.Equal(t, long, got)
 }
 
 func TestSecretStore_CheckConstraint(t *testing.T) {

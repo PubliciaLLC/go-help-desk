@@ -43,10 +43,12 @@ func TestComposeForwardedEnvVars(t *testing.T) {
 	environment, ok := appService["environment"].(map[string]interface{})
 	require.True(t, ok, "environment section not found in app service")
 
-	// Build a set of environment variables in Compose (keys)
+	// A variable counts as forwarded only if its value interpolates itself
+	// from docker/.env. A key with a hard-coded value would pass a key-only
+	// check while ignoring whatever the operator wrote in .env.
 	composeVars := make(map[string]bool)
-	for k := range environment {
-		composeVars[k] = true
+	for k, v := range environment {
+		composeVars[k] = interpolates(k, v)
 	}
 
 	// Compose-only variables that don't need to be in .env.example
@@ -66,6 +68,24 @@ func TestComposeForwardedEnvVars(t *testing.T) {
 		require.True(t, composeVars[varName],
 			"variable %s from .env.example is not forwarded in docker-compose.yml app.environment", varName)
 	}
+}
+
+// interpolates reports whether a Compose environment value reads name from
+// the operator's .env, as ${NAME}, ${NAME:-default} or ${NAME:?message}.
+func interpolates(name string, value interface{}) bool {
+	str, ok := value.(string)
+	return ok && strings.Contains(str, "${"+name)
+}
+
+func TestInterpolates(t *testing.T) {
+	require.True(t, interpolates("AUTH_THROTTLE_DELAY", "${AUTH_THROTTLE_DELAY:-1s}"))
+	require.True(t, interpolates("SESSION_SECRET", "${SESSION_SECRET:?set it}"))
+	require.True(t, interpolates("X", "${X}"))
+	// The case that matters: a hard-coded value is not a forward.
+	require.False(t, interpolates("AUTH_THROTTLE_DELAY", "1s"))
+	// Interpolating some other variable is not a forward either.
+	require.False(t, interpolates("AUTH_THROTTLE_DELAY", "${OTHER:-1s}"))
+	require.False(t, interpolates("X", 10))
 }
 
 // parseEnvVars extracts all variable names from .env.example

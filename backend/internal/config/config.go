@@ -93,7 +93,7 @@ func Load() (*Config, error) {
 	if cfg.AuthThrottleDelay <= 0 {
 		allowZero := os.Getenv("GHD_ALLOW_ZERO_AUTH_THROTTLE") == "1"
 		if !allowZero {
-			return nil, fmt.Errorf("AUTH_THROTTLE_DELAY must be positive (>0); 0 disables rate limiting for all accounts, which is unsafe in production. Set GHD_ALLOW_ZERO_AUTH_THROTTLE=1 (test-only) to override")
+			return nil, fmt.Errorf("AUTH_THROTTLE_DELAY must be a positive duration such as 1s; 0 removes the sign-in delay for accounts that have used up their failed-attempt budget, which makes online password guessing much faster")
 		}
 	}
 
