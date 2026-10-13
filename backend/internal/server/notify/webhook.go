@@ -142,6 +142,19 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		if !hookSubscribes(hook, event.Type) {
 			continue
 		}
+		// The ticket filter (#413) decides whether this hook fires for this
+		// event, and nothing else: the body below is built the same way for
+		// every hook. A filtered-out event is not a delivery, so nothing is
+		// recorded for the hook. An event with no attrs (queued before #413)
+		// is delivered and logged: an extra message beats a missed one.
+		admit, known := hook.Filter.Admits(event.Attrs)
+		if !known {
+			d.log.WarnContext(ctx, "webhook filter not evaluated: event carries no ticket attributes; delivering",
+				"webhook_id", hook.ID, "event", event.Type, "ticket_id", event.TicketID)
+		}
+		if !admit {
+			continue
+		}
 		body, err := bodyFor(hook, event, payload, d.baseURL)
 		if err != nil {
 			// Unknown payload_format: skip this hook rather than falling
