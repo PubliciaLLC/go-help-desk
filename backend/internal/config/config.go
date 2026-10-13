@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/kelseyhightower/envconfig"
@@ -49,7 +51,8 @@ type Config struct {
 	// later — which is the property the ordering of this handler exists to
 	// protect.
 	//
-	// 0 disables it, which the test harness uses.
+	// 0 is refused at startup for safety; Load() returns an error unless
+	// GHD_ALLOW_ZERO_AUTH_THROTTLE=1 (test-only, undocumented).
 	AuthThrottleDelay time.Duration `envconfig:"AUTH_THROTTLE_DELAY" default:"1s"`
 
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`
@@ -81,6 +84,15 @@ func Load() (*Config, error) {
 	if err := envconfig.Process("", &cfg); err != nil {
 		return nil, err
 	}
+
+	// Validate AUTH_THROTTLE_DELAY: must be > 0 unless the test-only switch is set.
+	if cfg.AuthThrottleDelay <= 0 {
+		allowZero := os.Getenv("GHD_ALLOW_ZERO_AUTH_THROTTLE") == "1"
+		if !allowZero {
+			return nil, fmt.Errorf("AUTH_THROTTLE_DELAY must be positive (>0); 0 disables rate limiting for all accounts, which is unsafe in production. Set GHD_ALLOW_ZERO_AUTH_THROTTLE=1 (test-only) to override")
+		}
+	}
+
 	return &cfg, nil
 }
 
