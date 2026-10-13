@@ -575,14 +575,20 @@ footer {
   .docs-content { padding: 2rem 1rem; min-width: 0; }
   /* A wide table scrolls inside its own box rather than widening the page. */
   .docs-content table { display: block; overflow-x: auto; }
-  /* The parameter tables set nowrap per page so names stay on one line on a
-     desktop. On a phone the cells wrap, so the description stays in the box.
-     Only the name column may break mid-word; the default and description keep
-     whole words, because a column that can break anywhere is squeezed to slivers.
-     !important beats the per-page nowrap (same specificity, and the page's own
-     style block loads after this file). */
-  .docs-content .param-table td { white-space: normal !important; }
+  /* The parameter tables and the upgrade pages' breaks tables set nowrap per
+     page so names stay on one line on a desktop. On a phone the cells wrap, so
+     the description stays in the box. !important beats the per-page nowrap
+     (same specificity, and the page's own style block loads after this file). */
+  .docs-content .param-table td,
+  .docs-content .breaks-table td { white-space: normal !important; }
   .docs-content .param-table td:first-child { overflow-wrap: anywhere; }
+  /* Code can break anywhere (below), so a table sizes its columns by their
+     longest content and the name column ends up narrowest: get_ticket and
+     DATABASE_URL split across lines while the description has room. A floor
+     under the first column, and less cell padding, keep names of up to about
+     14 characters whole; only longer ones break. */
+  .docs-content th, .docs-content td { padding: 0.5rem 0.6rem; }
+  .docs-content td:first-child { min-width: 8rem; }
   /* Flex children (the numbered steps) and long inline code must be allowed
      to shrink below their content, or a wide pre inside a step widens the page. */
   .step-body { min-width: 0; }
