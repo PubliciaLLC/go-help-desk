@@ -5049,8 +5049,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Deletes the key with this id, whoever owns it, so the key stops working on
-        the next request. An unknown id also answers 204, because nothing checks
-        that a row was removed.
+        the next request. An unknown id answers 404 not_found.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteAPIKey
       security:
@@ -5072,6 +5071,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, for an id that names no API key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/categories/{id}/groups:
     parameters:
       - name: id
@@ -5205,8 +5211,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates a group with no members and no scopes. name is required and is
-        trimmed of surrounding spaces. A blank name, and a name already held by
-        another group, both answer 500 internal_error rather than 400 or 409.
+        trimmed of surrounding spaces. A blank name answers 400 bad_request, and a name already
+        held by another group answers 409 group_name_taken.
       tags: ['Admin: Groups']
       x-ghd-handler: handleCreateGroup
       security:
@@ -5237,7 +5243,8 @@ paths:
                 $ref: '#/components/schemas/Group'
         '400':
           description: >-
-            bad_request, message "invalid JSON", when the body does not decode.
+            bad_request, with message "invalid JSON" when the body does not decode,
+            or for a blank name.
           content:
             application/json:
               schema:
@@ -5246,10 +5253,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '409':
           description: >-
-            internal_error, for a blank name and for a duplicate name. Neither is
-            reported as a client error.
+            group_name_taken, when another group already has this name.
           content:
             application/json:
               schema:
@@ -5268,7 +5274,7 @@ paths:
       summary: Get a group.
       description: >-
         Administrators only (second factor required).
-        Returns one group. An unknown id answers 500 internal_error, not 404.
+        Returns one group. An unknown id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleGetGroup
       security:
@@ -5294,9 +5300,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            internal_error, for an id that names no group.
+            not_found, for an id that names no group.
           content:
             application/json:
               schema:
@@ -5307,9 +5313,10 @@ paths:
       description: >-
         Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their value. The group
-        is read before the body is decoded, so an unknown id answers 500 whatever
-        the body holds. A blank or taken name answers 500. The name is stored as
-        sent, not trimmed.
+        is read before the body is decoded, so an unknown id answers 404 whatever
+        the body holds. A blank name answers 400 bad_request, and a name held by
+        another group answers 409 group_name_taken. The name is trimmed of
+        surrounding spaces before it is stored.
       tags: ['Admin: Groups']
       x-ghd-handler: handleUpdateGroup
       security:
@@ -5326,7 +5333,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name. Blank is refused with 500. Omit to keep the current name.
+                  description: New name, trimmed. Blank is refused with 400. Omit to keep the current name.
                 description:
                   type: string
                   description: New description. Omit to keep the current one.
@@ -5340,7 +5347,8 @@ paths:
         '400':
           description: >-
             bad_request, with message "invalid group ID" for a path id that is not a
-            UUID, or "invalid JSON" for a body that does not decode.
+            UUID, or "invalid JSON" for a body that does not decode. A blank name is also
+            bad_request.
           content:
             application/json:
               schema:
@@ -5349,10 +5357,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            internal_error, for an unknown group id, a blank name or a name held by
-            another group.
+            not_found, for an id that names no group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            group_name_taken, when another group already has this name.
           content:
             application/json:
               schema:
@@ -5365,7 +5379,7 @@ paths:
         Deletes the group together with its memberships and scopes. Tickets
         assigned to the group lose that group assignment (their assigned user, if
         any, is kept), and no audit entry records the change on those tickets. An
-        unknown id also answers 204.
+        unknown id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleDeleteGroup
       security:
@@ -5387,6 +5401,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, for an id that names no group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/groups/{id}/members:
     parameters:
       - name: id
@@ -5403,7 +5424,7 @@ paths:
         Administrators only (second factor required).
         Returns the members as user objects, with password and MFA secrets never
         included. Disabled members are listed. Soft-deleted members are left out.
-        An unknown group id answers 200 with an empty array.
+        An unknown group id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleListGroupMembers
       security:
@@ -5431,14 +5452,22 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, for an id that names no group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     post:
       operationId: addGroupMember
       summary: Add a member to a group.
       description: >-
         Administrators only (second factor required).
         Adds a user to the group. Adding someone who is already a member answers
-        204 and changes nothing. A user_id that names no account answers 500
-        internal_error, as do a missing user_id and an unknown group id. A
+        204 and changes nothing. An unknown group id answers 404 not_found. A user_id that names no
+        account answers 400 invalid_reference, and a missing or zero user_id answers
+        400 bad_request. A
         soft-deleted account is accepted, and is then left out of the member list.
       tags: ['Admin: Groups']
       x-ghd-handler: handleAddGroupMember
@@ -5464,7 +5493,8 @@ paths:
           description: >-
             bad_request, with message "invalid group ID" for a bad path id, or
             "invalid JSON" for a body that does not decode, including a user_id that
-            is not a UUID.
+            is not a UUID. A missing or zero user_id is bad_request, and a user_id
+            that names no account is invalid_reference.
           content:
             application/json:
               schema:
@@ -5473,10 +5503,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            internal_error, for an unknown group id, or for an unknown or missing
-            user_id.
+            not_found, for a group id that names no group.
           content:
             application/json:
               schema:
@@ -5502,8 +5531,8 @@ paths:
       summary: Remove a member from a group.
       description: >-
         Administrators only (second factor required).
-        Removes the user from the group. Removing someone who is not a member also
-        answers 204.
+        Removes the user from the group. Removing someone who is not a member, or from a group that does
+        not exist, answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleRemoveGroupMember
       security:
@@ -5526,6 +5555,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when the group does not exist or the user is not a member of it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/groups/{id}/scopes:
     parameters:
       - name: id
@@ -5542,7 +5578,7 @@ paths:
         Administrators only (second factor required).
         Returns the category and type entries that route tickets to this group. An
         entry with no type_id covers every type in the category. An unknown group
-        id answers 200 with an empty array.
+        id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleListGroupScopes
       security:
@@ -5570,6 +5606,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, for an id that names no group.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
     post:
       operationId: addGroupScope
       summary: Add a category or type scope to a group.
@@ -5577,9 +5620,10 @@ paths:
         Administrators only (second factor required).
         Routes tickets in a category, or in one type of it, to this group. Omit
         type_id, or send null, to cover the whole category. Adding an entry that
-        already exists answers 204. A category that does not exist, a type that
-        does not belong to the category, and an unknown group id each answer 500
-        internal_error.
+        already exists answers 204. An unknown group id answers 404 not_found. A category that does not
+        exist, a type that does not exist and a type that does not belong to the
+        category each answer 400 invalid_reference. A missing or zero category_id
+        answers 400 bad_request.
       tags: ['Admin: Groups']
       x-ghd-handler: handleAddGroupScope
       security:
@@ -5608,7 +5652,9 @@ paths:
         '400':
           description: >-
             bad_request, with message "invalid group ID" for a bad path id, or
-            "invalid JSON" for a body that does not decode.
+            "invalid JSON" for a body that does not decode. A missing or zero
+            category_id is bad_request. An unknown category or type, or a type of
+            another category, is invalid_reference.
           content:
             application/json:
               schema:
@@ -5617,11 +5663,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            internal_error, for an unknown group, an unknown category, or a type that
-            does not belong to the category. A missing category_id
-            is also refused this way, because the zero UUID names no category.
+            not_found, for a group id that names no group.
           content:
             application/json:
               schema:
@@ -5633,7 +5677,8 @@ paths:
         Administrators only (second factor required).
         Removes the entry that matches category_id and type_id. A missing or null
         type_id matches the whole-category entry. The entry is named by the body,
-        not by a path segment. Matching nothing answers 204.
+        not by a path segment. Matching nothing, including a group that does not exist,
+        answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleRemoveGroupScope
       security:
@@ -5671,6 +5716,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when the group has no entry that matches.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/oauth-clients:
     get:
       operationId: listOAuthClients
@@ -5794,8 +5846,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Deletes the client. Its tokens stop being accepted on the next request,
-        because the client is looked up again on every request. An unknown id also
-        answers 204.
+        because the client is looked up again on every request. An unknown id
+        answers 404 not_found.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteOAuthClient
       security:
@@ -5817,6 +5869,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, for an id that names no OAuth client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/plugins:
     get:
       operationId: listPlugins
@@ -5892,7 +5951,7 @@ paths:
         Sets the plugin's enabled state. The enabled field is a plain boolean, so an
         absent field counts as false: a body of {} disables the plugin. An empty
         body is refused with 400. In v1 no plugin is registered, so every id answers
-        500 internal_error, not 404. The enabled state is held in memory and is lost on
+        404 not_found. The enabled state is held in memory and is lost on
         restart.
       tags: ['Admin: Plugins']
       x-ghd-handler: handleUpdatePlugin
@@ -5926,10 +5985,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            internal_error for any id, because no plugin is registered in v1 and an
-            unknown id is not reported as 404.
+            not_found, for any id, because no plugin is registered in v1.
           content:
             application/json:
               schema:
@@ -6514,7 +6572,7 @@ paths:
         the stored secret, but an empty string clears it, and deliveries then stop being
         signed. payload_format: an empty string means raw. The response is built from the
         record read before the update, so its last_delivery can still show the result for
-        the previous url. An unknown id answers 500, not 404.
+        the previous url. An unknown id answers 404 not_found.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleUpdateWebhook
       security:
@@ -6570,9 +6628,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            internal_error for an id that names no webhook. The id is looked up before the
+            not_found, for an id that names no webhook. The id is looked up before the
             body is read, so this holds whatever the body contains.
           content:
             application/json:
@@ -6585,7 +6643,7 @@ paths:
         Administrators only (second factor required).
         Deletes the subscription and its last_delivery. A delivery already in flight
         finishes, but its result is discarded because the record is gone. An unknown id
-        also answers 204.
+        answers 404 not_found.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleDeleteWebhook
       security:
@@ -6607,6 +6665,13 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, for an id that names no webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/categories:
     get:
       operationId: listCategories
@@ -6641,7 +6706,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates an active category. The name is trimmed and must not be empty.
-        An empty name is refused, but with 500 internal_error rather than 400.
+        An empty name is refused with 400 bad_request.
         sort_order defaults to 0.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateCategory
@@ -6676,13 +6741,6 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
-          description: >-
-            Returned for an empty name after trimming. Reported as internal_error,
-            not bad_request.
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/admin/categories/{id}:
     parameters:
       - name: id
@@ -6698,8 +6756,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Looks the category up by its UUID. An id that does not exist is answered
-        500 internal_error, not 404. The field-definition and assignment update
-        routes do answer 404 for a missing record.
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleGetCategory
       security:
@@ -6719,10 +6776,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            Also returned when no category has this id. The body is
-            internal_error, not not_found.
+            not_found, when no category has this id.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -6735,7 +6791,7 @@ paths:
         archives the category: the catalogue that guests and reporting users see
         stops listing it, and tickets that already use it keep it. The name is
         stored as sent, not trimmed. An empty or whitespace-only name is refused with
-        500 internal_error, and so is an unknown id.
+        400 bad_request, and an unknown id with 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateCategory
       security:
@@ -6752,7 +6808,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 500.
+                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -6771,10 +6827,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            Returned for an unknown category id and for an empty or whitespace-only
-            name. Both are reported as internal_error.
+            not_found, for an unknown category id.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -6786,10 +6841,10 @@ paths:
         Hard delete. The category's types and, through them, its items are removed
         by cascade, and so are the SLA policies scoped to it, the group scopes that
         name it and the canned responses scoped to it. A category that a ticket uses,
-        or whose type or item a ticket uses, is refused with 500 internal_error, not
-        409. So is a category with an SLA policy that a ticket's SLA record uses.
+        or whose type or item a ticket uses, is refused with 409 category_in_use. So is a category with an SLA policy
+        that a ticket's SLA record uses. The message gives the counts.
         Custom-field assignments made to the category or its descendants are not
-        removed, and keep pointing at the deleted record. An unknown id answers 204.
+        removed, and keep pointing at the deleted record. An unknown id answers 404 not_found.
         To retire a category that is in use, archive
         it with active set to false instead.
       tags: ['Admin: Catalogue']
@@ -6808,11 +6863,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            A ticket uses this category, or a type or item under it, or an SLA policy
-            scoped to this category is attached to a ticket's SLA record. Reported as
-            internal_error, not as a conflict.
+            not_found, for an unknown category id.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '409':
+          description: >-
+            category_in_use. A ticket uses this category, or a type or item under it,
+            or an SLA policy scoped to this category is attached to a ticket's SLA record.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -6972,8 +7032,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 204 whether or
-        not the assignment existed. Ticket values already stored for the field are not
+        The other ids in the path are not checked against it. Answers 404 not_found when no
+        assignment has that id. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -6991,6 +7051,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types:
     parameters:
       - name: id
@@ -7034,8 +7096,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates an active type under this category, identified by {id}. The name is
-        trimmed and must not be empty. An empty name is refused with 500 internal_error.
-        A category that does not exist is also answered 500 internal_error.
+        trimmed and must not be empty. An empty name is refused with 400 bad_request.
+        A category that does not exist is answered 404 not_found.
         sort_order defaults to 0.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateType
@@ -7070,10 +7132,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            Returned for an empty name after trimming, and for a category that
-            does not exist. Both are reported as internal_error.
+            not_found, when the category does not exist.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -7101,8 +7162,8 @@ paths:
         and active set to false archives the type. The category of a type cannot be
         changed here, so a category_id in the body is ignored. The {id} segment is not
         checked. The name is stored as sent, not trimmed. An empty or whitespace-only
-        name is refused with 500 internal_error, and an unknown type is also 500
-        internal_error.
+        name is refused with 400 bad_request, and an unknown type answers 404
+        not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateType
       security:
@@ -7119,7 +7180,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 500.
+                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -7138,10 +7199,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            Returned for an unknown type id and for an empty or whitespace-only
-            name. Both are reported as internal_error.
+            not_found, for an unknown type id.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -7152,9 +7212,9 @@ paths:
         Administrators only (second factor required).
         Hard delete. The type's items are removed by cascade, and so are the canned
         responses and the group scope entries scoped to the type. Deleting a type that
-        a ticket uses, or whose item a ticket uses, is refused with 500
-        internal_error, not 409. Custom-field assignments made to the type or its
-        items are not removed. An unknown id answers 204. The {id} segment is not
+        a ticket uses, or whose item a ticket uses, is refused with 409
+        type_in_use. Custom-field assignments made to the type or its
+        items are not removed. An unknown id answers 404 not_found. The {id} segment is not
         checked. To retire a type that is in use, archive it instead.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteType
@@ -7172,10 +7232,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            A ticket uses this type or one of its items. Reported as
-            internal_error, not as a conflict.
+            not_found, for an unknown type id.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '409':
+          description: >-
+            type_in_use. A ticket uses this type or one of its items. The message
+            gives the number of tickets.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -7347,8 +7413,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 204 whether or
-        not the assignment existed. Ticket values already stored for the field are not
+        The other ids in the path are not checked against it. Answers 404 not_found when no
+        assignment has that id. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -7366,6 +7432,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/items:
     parameters:
       - name: id
@@ -7415,8 +7483,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates an active item under this type, identified by {typeId}. The name is
-        trimmed and must not be empty. An empty name is refused with 500 internal_error.
-        A type that does not exist is also answered 500 internal_error. The {id}
+        trimmed and must not be empty. An empty name is refused with 400 bad_request.
+        A type that does not exist is answered 404 not_found. The {id}
         segment is not checked. sort_order defaults to 0.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateItem
@@ -7451,10 +7519,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            Returned for an empty name after trimming, and for a type that does
-            not exist. Both are reported as internal_error.
+            not_found, when the type does not exist.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -7488,8 +7555,8 @@ paths:
         and active set to false archives the item. The type of an item cannot be
         changed here, so a type_id in the body is ignored. The {id} and {typeId}
         segments are not checked. The name is stored as sent, not trimmed. An empty or
-        whitespace-only name is refused with 500 internal_error, and an unknown item is
-        also 500 internal_error.
+        whitespace-only name is refused with 400 bad_request, and an unknown item
+        answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateItem
       security:
@@ -7506,7 +7573,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 500.
+                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -7525,10 +7592,9 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            Returned for an unknown item id and for an empty or whitespace-only
-            name. Both are reported as internal_error.
+            not_found, for an unknown item id.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -7538,8 +7604,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Hard delete of the item identified by itemId. Deleting an item that a ticket
-        uses is refused with 500 internal_error, not 409. Custom-field assignments
-        made to the item are not removed. An unknown id answers 204. The {id} and
+        uses is refused with 409 item_in_use. Custom-field assignments
+        made to the item are not removed. An unknown id answers 404 not_found. The {id} and
         {typeId} segments are not checked. To retire an item that is in use, archive it
         instead.
       tags: ['Admin: Catalogue']
@@ -7558,10 +7624,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '500':
+        '404':
           description: >-
-            A ticket uses this item. Reported as internal_error, not as a
-            conflict.
+            not_found, for an unknown item id.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '409':
+          description: >-
+            item_in_use. A ticket uses this item. The message gives the number of
+            tickets.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -7746,8 +7818,8 @@ paths:
       description: >-
         Administrators only (second factor required).
         Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 204 whether or
-        not the assignment existed. Ticket values already stored for the field are not
+        The other ids in the path are not checked against it. Answers 404 not_found when no
+        assignment has that id. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -7765,6 +7837,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/custom-fields:
     get:
       operationId: listFieldDefs
@@ -8075,7 +8149,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Deletes the policy. It is refused with 409 policy_in_use while any ticket's SLA
-        record is measured against it. An unknown id answers 204.
+        record is measured against it. An unknown id answers 404 not_found.
       tags: ['Admin: SLA']
       x-ghd-handler: handleDeleteSLAPolicy
       security:
@@ -8092,6 +8166,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '409':
           description: At least one ticket's SLA record uses this policy. The message gives the number of tickets.
           content:
