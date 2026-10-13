@@ -1804,8 +1804,8 @@ paths:
         A reply to a Resolved ticket inside the reopen window reopens the ticket to the configured reopen
         status. If no valid reopen status is configured, that reply is refused with 400 bad_request. A closed
         ticket answers 404, the same as a bad token. A Resolved ticket past its reopen window answers 409
-        reopen_window_closed. This route is not gated by the guest submission setting, so a
-        conversation already in progress continues when submission is switched off.
+        reopen_window_closed. Answers 404 when guest submission is disabled, revoking all guest links until
+        the setting is enabled again.
       tags: ['Guest']
       x-ghd-handler: handleGuestAddReply
       security:
@@ -1887,6 +1887,8 @@ paths:
         from_you is true for the guest's own replies.
         A closed ticket can still be read. Closing stops links being rotated but does not revoke them, so
         the last link sent reads the archive until that link expires.
+
+        Answers 404 when guest submission is disabled, revoking all guest links until the setting is enabled again.
       tags: ['Guest']
       x-ghd-handler: handleGuestGetTicket
       security:
@@ -4369,8 +4371,8 @@ paths:
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
         and the same 25 MB cap. Two things are specific to guests. Submission
-        being switched off does not stop a guest who already holds a working
-        link. A Closed ticket answers 404 not_found, the same as a bad link, where
+        being switched off revokes guest links and answers 404 until the setting
+        is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
         uploadAttachment answers 409. As there, a Resolved ticket past its reopen
         window answers 409 reopen_window_closed.
         The response is the stored attachment. Its reputation block is null, since

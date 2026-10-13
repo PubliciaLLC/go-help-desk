@@ -1058,7 +1058,7 @@ router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
 in 1.2.0.
 
-- Toggle in admin settings
+- **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, revoking any links already issued until the setting is turned back on (#424).
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
 - Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
 - The tracking number can be referenced when following up with the help desk by phone or email

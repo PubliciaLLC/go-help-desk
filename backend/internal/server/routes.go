@@ -383,9 +383,12 @@ func (s *Server) meRouter() *chi.Mux {
 // guestRouter is the whole surface a per-ticket token reaches.
 //
 // Mounted at /api/v1/guest, outside ticketRouter. Submission and re-request are
-// public and throttled; the other two require a token, which the middleware
+// public and throttled; the token routes require a token, which the middleware
 // resolves to exactly one ticket. There is no id parameter anywhere below, so
 // there is nothing for a guest to change in order to reach a different ticket.
+// All routes, public and token-based, are gated on guest_submission_enabled: when
+// off, the instance answers 404 to all guest routes rather than advertising
+// routes it will not serve, revoking existing links until the setting is on again (#424).
 func (s *Server) guestRouter() *chi.Mux {
 	r := chi.NewRouter()
 

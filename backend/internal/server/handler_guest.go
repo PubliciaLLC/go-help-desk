@@ -152,6 +152,11 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 
 // GET /api/v1/guest/ticket
 func (s *Server) handleGuestGetTicket(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
@@ -224,6 +229,11 @@ func guestWriteError(w http.ResponseWriter, err error) {
 
 // POST /api/v1/guest/replies
 func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")
@@ -241,7 +251,6 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
 	reopenStatusID, err := s.reopenTargetStatusID(ctx)
 	if err != nil {
 		handleError(w, err)
@@ -275,12 +284,14 @@ func (s *Server) handleGuestAddReply(w http.ResponseWriter, r *http.Request) {
 // guestRouter's own comment for why every route here takes its ticket from
 // the token and nothing else.
 //
-// Not gated on guest_submission_enabled. That setting governs whether a NEW
-// guest ticket is accepted — handleGuestCreateTicket and handleGuestResend
-// check it, handleGuestAddReply deliberately does not, and this follows the
-// same rule for the same reason: switching submission off must not sever a
-// conversation somebody already holds a working token for.
+// Gated on guest_submission_enabled. When the setting is off, existing guest
+// links are revoked and cannot upload until the setting is turned back on (#424).
 func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if !s.adminSvc.GuestSubmissionEnabled(ctx) {
+		Error(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	t, ok := s.guestTicketFromRequest(r)
 	if !ok {
 		Error(w, http.StatusNotFound, "not_found", "not found")

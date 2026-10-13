@@ -55,16 +55,19 @@ func nearMiss(token string) string {
 }
 
 // seedGuestTicket files a guest ticket through the service and returns it with
-// the token the creation minted.
+// the token the creation minted. It also enables guest submission, since the
+// token routes check the setting.
 func seedGuestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
 	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
 	email := "guest@test.local"
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
 		Subject: "Printer jammed", Description: "again", CategoryID: h.catID,
 		GuestEmail: &email, GuestName: "Ada",
 	})
 	require.NoError(t, err)
-	token, err := h.ticketSvc.IssueGuestToken(context.Background(), tk.ID)
+	token, err := h.ticketSvc.IssueGuestToken(ctx, tk.ID)
 	require.NoError(t, err)
 	require.NotEmpty(t, token)
 	return tk, token
@@ -729,4 +732,65 @@ func TestGuest_AMissDoesNotSpendTheTicketsBudget(t *testing.T) {
 	defer gone.Body.Close()
 	require.Equal(t, http.StatusNotFound, gone.StatusCode,
 		"misses must not have spent the budget the customer needs")
+}
+
+// When guest submission is switched off, all three token routes answer 404:
+// existing links are revoked and cannot read, reply, or upload until the
+// setting is turned back on.
+func TestGuest_TokenRoutesRefusedWhenSubmissionDisabled(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// Enable submission and seed a guest ticket.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	_, token := seedGuestTicket(t, h)
+
+	// Verify all three token routes work with the setting ON.
+	getRes := h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getRes.Body.Close()
+	require.Equal(t, http.StatusOK, getRes.StatusCode, "GET /guest/ticket should work with setting ON")
+
+	replyRes := h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "test reply"})
+	replyRes.Body.Close()
+	require.Equal(t, http.StatusCreated, replyRes.StatusCode, "POST /guest/replies should work with setting ON")
+
+	attachRes := h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachRes.Body.Close()
+	require.Equal(t, http.StatusBadRequest, attachRes.StatusCode, "POST /guest/attachments needs multipart form; testing that it reaches the handler")
+
+	// Turn submission OFF.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, false))
+
+	// All three token routes should now return 404.
+	getRes = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getRes.Body.Close()
+	require.Equal(t, http.StatusNotFound, getRes.StatusCode, "GET /guest/ticket should be 404 with setting OFF")
+
+	replyRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "test reply"})
+	replyRes.Body.Close()
+	require.Equal(t, http.StatusNotFound, replyRes.StatusCode, "POST /guest/replies should be 404 with setting OFF")
+
+	attachRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachRes.Body.Close()
+	require.Equal(t, http.StatusNotFound, attachRes.StatusCode, "POST /guest/attachments should be 404 with setting OFF")
+
+	// Turn submission back ON.
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+
+	// All three token routes should work again.
+	getRes = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getRes.Body.Close()
+	require.Equal(t, http.StatusOK, getRes.StatusCode, "GET /guest/ticket should work again with setting ON")
+
+	replyRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
+		map[string]any{"body": "test reply"})
+	replyRes.Body.Close()
+	require.Equal(t, http.StatusCreated, replyRes.StatusCode, "POST /guest/replies should work again with setting ON")
+
+	attachRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachRes.Body.Close()
+	require.Equal(t, http.StatusBadRequest, attachRes.StatusCode, "POST /guest/attachments should reach handler with setting ON")
 }
