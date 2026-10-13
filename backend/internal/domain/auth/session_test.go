@@ -9,85 +9,35 @@ import (
 )
 
 func TestSessionData_PendingExpired(t *testing.T) {
-	userId := uuid.New()
+	userID := uuid.New()
 	now := time.Now()
 
 	tests := []struct {
-		name     string
-		session  SessionData
-		checkAt  time.Time
-		expected bool
+		name    string
+		session SessionData
+		want    bool
 	}{
-		{
-			name: "not expired when MFAPassed is true",
-			session: SessionData{
-				UserID:       userId,
-				MFAPassed:    true,
-				PendingSince: now.Add(-10 * time.Minute),
-			},
-			checkAt:  now,
-			expected: false,
-		},
-		{
-			name: "not expired when UserID is nil",
-			session: SessionData{
-				UserID:       uuid.Nil,
-				MFAPassed:    false,
-				PendingSince: now.Add(-10 * time.Minute),
-			},
-			checkAt:  now,
-			expected: false,
-		},
-		{
-			name: "not expired when no PendingSince (test mock or pre-upgrade session)",
-			session: SessionData{
-				UserID:       userId,
-				MFAPassed:    false,
-				PendingSince: time.Time{},
-			},
-			checkAt:  now,
-			expected: false,
-		},
-		{
-			name: "not expired when within deadline",
-			session: SessionData{
-				UserID:       userId,
-				Role:         user.RoleAdmin,
-				MFAPassed:    false,
-				PendingSince: now.Add(-4*time.Minute - 59*time.Second),
-			},
-			checkAt:  now,
-			expected: false,
-		},
-		{
-			name: "expired when past deadline",
-			session: SessionData{
-				UserID:       userId,
-				Role:         user.RoleAdmin,
-				MFAPassed:    false,
-				PendingSince: now.Add(-5*time.Minute - 1*time.Second),
-			},
-			checkAt:  now,
-			expected: true,
-		},
-		{
-			name: "expired at exactly deadline plus epsilon",
-			session: SessionData{
-				UserID:       userId,
-				MFAPassed:    false,
-				PendingSince: now.Add(-5 * time.Minute),
-			},
-			checkAt:  now.Add(1 * time.Microsecond),
-			expected: true,
-		},
+		{"MFA passed is never pending", SessionData{UserID: userID, MFAPassed: true, PendingUntil: now.Add(-time.Hour)}, false},
+		{"no user is the pre-login state, not pending", SessionData{PendingUntil: now.Add(-time.Hour)}, false},
+		{"pre-upgrade session with no deadline is expired", SessionData{UserID: userID}, true},
+		{"before the deadline", SessionData{UserID: userID, Role: user.RoleAdmin, PendingUntil: now.Add(time.Second)}, false},
+		{"after the deadline", SessionData{UserID: userID, Role: user.RoleAdmin, PendingUntil: now.Add(-time.Second)}, true},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.session.PendingExpired(tt.checkAt)
-			if got != tt.expected {
-				t.Errorf("PendingExpired() = %v, want %v", got, tt.expected)
+			if got := tt.session.PendingExpired(now); got != tt.want {
+				t.Errorf("PendingExpired() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPendingDeadline(t *testing.T) {
+	now := time.Now()
+	if got := PendingDeadline(now, false); !got.Equal(now.Add(5 * time.Minute)) {
+		t.Errorf("code entry deadline = %v, want 5 minutes out", got.Sub(now))
+	}
+	if got := PendingDeadline(now, true); !got.Equal(now.Add(15 * time.Minute)) {
+		t.Errorf("enrolment deadline = %v, want 15 minutes out", got.Sub(now))
 	}
 }

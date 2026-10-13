@@ -64,15 +64,15 @@ type SessionData struct {
 	// the authorization request. It is presented at token exchange.
 	OIDCCodeVerifier string
 
-	// PendingSince is set to the current time when a session passes the password
-	// step but not yet MFA (MFAPassed == false && UserID != Nil). It is used to
-	// enforce a deadline on pending MFA sessions: they expire after
-	// MFAPendingMaxAge, forcing the user to sign in again.
+	// PendingUntil is the moment a half-signed-in session stops being usable.
+	// It is a deadline rather than a start time so the limit is decided once,
+	// where the session is born (PendingDeadline), and nothing downstream has to
+	// know which kind of pending session it is looking at.
 	//
-	// Not refreshed on later saves: set once at password step, checked at every
-	// MFA entry point and in middleware. Zero when MFAPassed is true or when the
-	// session is pre-login (UserID is nil).
-	PendingSince time.Time
+	// Not refreshed on later saves. Zero when MFAPassed is true or the session
+	// is pre-login (UserID is nil); zero on a pending session means it was
+	// saved before this field existed, and PendingExpired treats that as expired.
+	PendingUntil time.Time
 }
 
 // SessionName is the session cookie's name.
@@ -102,28 +102,32 @@ const SessionDataKey = "session"
 // value — which is what makes carrying a legacy name here safe.
 const LegacySessionName = "ohd_session"
 
-// MFAPendingMaxAge is the maximum time a session may remain in pending MFA
-// state (password passed, MFA not yet completed) before it is treated as
-// expired and the user must sign in again.
-const MFAPendingMaxAge = 5 * time.Minute
+const (
+	// MFACodeWindow is how long a person has to enter a code from a factor
+	// they already have, after the password step.
+	MFACodeWindow = 5 * time.Minute
+	// MFAEnrolWindow is longer because first-time enrolment means installing
+	// an app and scanning a code.
+	MFAEnrolWindow = 15 * time.Minute
+)
 
-// PendingExpired reports whether this session's MFA pending deadline has passed.
-//
-// A session is treated as pending when MFAPassed is false and the user has
-// authenticated (UserID != Nil). It is treated as expired when PendingSince
-// is set (not zero) and now is more than MFAPendingMaxAge after it.
-//
-// Sessions that have already completed MFA (MFAPassed) are never expired
-// by this check. Sessions without a PendingSince timestamp (either from
-// before this feature or from test mocks) are treated as not expired, since
-// we cannot determine when they were created.
+// PendingDeadline is the PendingUntil for a session created now that has
+// passed the password but owes a second factor. enrolment is true when the
+// factor is yet to be set up rather than entered.
+func PendingDeadline(now time.Time, enrolment bool) time.Time {
+	if enrolment {
+		return now.Add(MFAEnrolWindow)
+	}
+	return now.Add(MFACodeWindow)
+}
+
+// PendingExpired reports whether this is a half-signed-in session (password
+// passed, MFA not) whose deadline has passed. A pending session with no
+// deadline was saved before PendingUntil existed; with no way to tell how old
+// it is, it counts as expired, and its holder signs in again.
 func (s SessionData) PendingExpired(now time.Time) bool {
-	// Only applies to sessions that have a user, haven't passed MFA yet,
-	// and have an explicit PendingSince timestamp.
-	if s.MFAPassed || s.UserID == uuid.Nil || s.PendingSince.IsZero() {
+	if s.MFAPassed || s.UserID == uuid.Nil {
 		return false
 	}
-
-	// Check if the deadline has passed.
-	return now.Sub(s.PendingSince) > MFAPendingMaxAge
+	return s.PendingUntil.IsZero() || now.After(s.PendingUntil)
 }

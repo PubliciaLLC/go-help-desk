@@ -361,8 +361,13 @@ paths:
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
-        role must enrol a second factor before it is fully signed in. When SAML
-        is enabled, only administrators may use this operation.
+        role must enrol a second factor before it is fully signed in. Until that
+        step is done the session is only half signed in, and it expires: after
+        5 minutes when a code or passkey is owed, after 15 minutes when the
+        person must enrol. After that, every route answers 401 as if there were
+        no session (the session is deleted), and the person signs in again with
+        their password. When SAML is enabled, only administrators may use this
+        operation.
       tags: ['Authentication']
       x-ghd-handler: handleLocalLogin
       security: []

@@ -182,9 +182,9 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		Role:      u.Role,
 		MFAPassed: !mfaEnrollmentNeeded,
 	}
-	// Set PendingSince if this session is not yet fully authenticated and needs MFA.
+	// Only enrolment can be owed here: a new account has no factor yet.
 	if mfaEnrollmentNeeded {
-		sd.PendingSince = time.Now()
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
 	}
 
 	if err := s.writeSession(w, r, sd); err != nil {

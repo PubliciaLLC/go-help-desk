@@ -82,11 +82,16 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Check if the pending MFA session has expired.
+			// A half-signed-in session past its deadline is a session that does
+			// not exist: delete the row so the cookie is dead for good, and carry
+			// on without an actor so the route's own 401 answers. Every handler
+			// that serves a pending session starts from the actor, so none of
+			// them sees an expired one.
 			if sd.PendingExpired(time.Now()) {
-				slog.Debug("session auth: pending MFA session expired")
-				// Expired sessions are treated as not logged in. The session row
-				// will be cleaned up by the database's automatic cleanup.
+				session.Options = &sessions.Options{MaxAge: -1}
+				if err := store.Save(r, w, session); err != nil {
+					slog.Warn("session auth: deleting expired pending session", "error", err)
+				}
 				next.ServeHTTP(w, r)
 				return
 			}
