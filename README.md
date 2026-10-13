@@ -134,7 +134,7 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | `ATTACHMENT_DIR` | | `/data/attachments` | Attachment storage path |
 | `CLAMAV_ADDR` | | — | ClamAV daemon address, e.g. `tcp://clamav:3310`. Leave unset to disable scanning (the default, everywhere, including Docker Compose — see below). For bare-metal / Kubernetes installs, set this to your own daemon address. |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | | `10` | Failed password attempts per account per minute before a 429. `0` disables it, and also disables the signup limit. In-process: a restart clears the counters and N replicas multiply the budget by N. |
-| `AUTH_THROTTLE_DELAY` | | `1s` | How long a login waits before the password is checked, for accounts that have spent their failed-attempt budget. Must be a positive duration (e.g. `1s`, `500ms`, `1m`); cannot be zero. |
+| `APP_ENV` | | `production` | Set to `development` for verbose logging |
 | `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, `error` |
 
 > In Docker Compose, the `clamav` service and `CLAMAV_ADDR` are both opt-in —
