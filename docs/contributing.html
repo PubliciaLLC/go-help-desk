@@ -226,7 +226,65 @@ npm run test:e2e  # layout tests (Playwright)</code></pre>
 </ol>
 
 <h2 id="conventions">Code conventions</h2>
-<p>For code conventions, see <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/docs/code-conventions.md">docs/code-conventions.md</a>.</p>
+<p>These are the conventions every change is held to. The full text lives in <a href="https://github.com/PubliciaLLC/go-help-desk/blob/main/docs/code-conventions.md">docs/code-conventions.md</a>.</p>
+
+<h3>Project layout</h3>
+<pre><code>backend/
+  cmd/server/         # main package: wires everything, starts the server
+  internal/
+    config/           # env-var config loading
+    database/         # pgxpool connection, migrations, store implementations
+    dbgen/            # sqlc-generated code (never hand-edit)
+    domain/           # business logic (no HTTP, no DB imports)
+    mcp/              # MCP server layer
+    middleware/       # HTTP middleware (session auth, API key auth)
+    server/           # HTTP handlers and routing
+    testutil/         # shared test helpers
+    ui/               # embedded React SPA (go:embed)
+  queries/            # raw SQL for sqlc</code></pre>
+<p>The <code>domain</code> packages are the heart of the system. They must not import <code>database</code>, <code>server</code>, or any infrastructure package. All dependencies flow inward: domain code calls store interfaces, not store implementations.</p>
+
+<h3>Error handling</h3>
+<ul>
+  <li>Always return errors. Never silently swallow them.</li>
+  <li>Wrap errors with context: <code>fmt.Errorf("creating ticket: %w", err)</code>.</li>
+  <li>Log only at the boundary (HTTP handler or <code>main</code>). Domain code returns errors, it does not log them.</li>
+  <li>Map known domain errors to HTTP status codes in the handler or <code>server/respond.go</code>. Unknown errors become 500.</li>
+</ul>
+
+<h3>No global state</h3>
+<p>No <code>init()</code> functions with side effects. No package-level variables that change at runtime. All dependencies (stores, services, configs) are passed explicitly through constructors and function parameters.</p>
+
+<h3>Testing conventions</h3>
+<ul>
+  <li>Use Go's stdlib <code>testing</code> package, with <code>testify/require</code> for assertions. Plain <code>if got != want</code> is still right for a small check: the point is a readable failure message, not which package produced it.</li>
+  <li>Table-driven tests for domain logic and HTTP handlers.</li>
+  <li>Integration tests use <code>testutil.TxQueries</code>, which is rolled back automatically, so no test depends on pre-existing data.</li>
+  <li><strong>Never mock the database.</strong> Real queries catch real bugs.</li>
+  <li>Test the contract (status codes, JSON shape, domain behavior), not the implementation.</li>
+</ul>
+
+<h3>Naming</h3>
+<ul>
+  <li>Short, precise variable names. A variable that lives for 3 lines doesn't need a paragraph.</li>
+  <li>Exported types are for things that genuinely cross package boundaries. Default to unexported.</li>
+</ul>
+
+<h3>Scope discipline</h3>
+<p>Before adding anything, ask: is it in <code>docs/DESIGN.md</code>? If not, it's out of scope for the current version. Do not implement v2+ features ahead of schedule, even if it "seems easy to add now." The cost is always higher than it looks: it lands in the test suite, the data model, and every future reader's mental model.</p>
+
+<h3>Engineering principles</h3>
+<h4>Data structures first</h4>
+<p>Before writing a function, name the data. What does it hold? Who owns it? Who mutates it? A bad data structure poisons every function that touches it. Get the struct right and the functions write themselves.</p>
+
+<h4>Eliminate special cases, don't patch them</h4>
+<p>If you're writing an <code>if</code> to handle an edge case, ask whether a different data structure makes the edge case impossible. Three conditional branches usually means the wrong abstraction. Redesign before you branch.</p>
+
+<h4>Simplest solution that solves the actual problem</h4>
+<p>Not the cleanest generalization. Not the most extensible framework. The simplest thing that works for the problem we have right now. We will refactor when the next real requirement arrives.</p>
+
+<h4>No breaking changes</h4>
+<p>When extending a feature, existing behavior must not change. Tests that pass before your change must still pass after it. If something must be removed, deprecate with an explicit comment explaining why, then remove in a separate commit.</p>
 
 <h2 id="pr-process">PR process</h2>
 <ol>

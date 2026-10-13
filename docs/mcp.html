@@ -268,6 +268,49 @@
   https://helpdesk.example.com/mcp/sse \
   --header "Authorization: ApiKey GHD_3f8a…"</code></pre>
 
+<h3>VS Code</h3>
+<p>VS Code has native MCP support. Add the server to <code>.vscode/mcp.json</code> in your workspace (or to your user profile's <code>mcp.json</code>):</p>
+<pre><code>{
+  "servers": {
+    "helpdesk": {
+      "type": "sse",
+      "url": "https://helpdesk.example.com/mcp/sse",
+      "headers": {
+        "Authorization": "ApiKey GHD_3f8a…"
+      }
+    }
+  }
+}</code></pre>
+<p>Format taken from VS Code's <a href="https://code.visualstudio.com/docs/copilot/reference/mcp-configuration">MCP configuration reference</a>: top-level <code>servers</code>, <code>type</code> of <code>http</code> or <code>sse</code>, plus <code>url</code> and <code>headers</code>.</p>
+
+<h3>Continue</h3>
+<p>Continue reads MCP servers from YAML files in a <code>.continue/mcpServers/</code> folder at the top of your workspace, for example <code>.continue/mcpServers/helpdesk.yaml</code>:</p>
+<pre><code>name: Go Help Desk
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: helpdesk
+    type: sse
+    url: https://helpdesk.example.com/mcp/sse
+    requestOptions:
+      headers:
+        Authorization: ApiKey GHD_3f8a…</code></pre>
+<p>Format taken from Continue's <a href="https://docs.continue.dev/customize/deep-dives/mcp">MCP deep dive</a> (file location, <code>type: sse</code>, <code>url</code>) and its <a href="https://docs.continue.dev/reference">config reference</a>, which describes <code>requestOptions</code> with <code>headers</code> for <code>sse</code> and <code>streamable-http</code> servers.</p>
+
+<h3>Cursor</h3>
+<p>Add the server to <code>.cursor/mcp.json</code> in your project, or to <code>~/.cursor/mcp.json</code> to make it available everywhere:</p>
+<pre><code>{
+  "mcpServers": {
+    "helpdesk": {
+      "url": "https://helpdesk.example.com/mcp/sse",
+      "headers": {
+        "Authorization": "ApiKey GHD_3f8a…"
+      }
+    }
+  }
+}</code></pre>
+<p>Format taken from Cursor's <a href="https://cursor.com/docs/context/mcp">Model Context Protocol documentation</a>: a remote server entry takes <code>url</code> and optional <code>headers</code>, with no <code>type</code> key.</p>
+
 <h3>Other clients</h3>
 <p>Any MCP client that supports the SSE transport and custom request headers works. Give it the <code>/mcp/sse</code> URL and the <code>Authorization</code> header. A client configured for the newer Streamable HTTP transport against <code>/mcp/</code> will not connect.</p>
 
