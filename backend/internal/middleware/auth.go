@@ -81,6 +81,16 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+
+			// Check if the pending MFA session has expired.
+			if sd.PendingExpired(time.Now()) {
+				slog.Debug("session auth: pending MFA session expired")
+				// Expired sessions are treated as not logged in. The session row
+				// will be cleaned up by the database's automatic cleanup.
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			next.ServeHTTP(w, setActor(r, &Actor{
 				UserID:         sd.UserID,
 				Role:           sd.Role,

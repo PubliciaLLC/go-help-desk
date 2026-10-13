@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -61,6 +63,16 @@ type SessionData struct {
 	// OIDCCodeVerifier is the PKCE code_verifier whose challenge was sent with
 	// the authorization request. It is presented at token exchange.
 	OIDCCodeVerifier string
+
+	// PendingSince is set to the current time when a session passes the password
+	// step but not yet MFA (MFAPassed == false && UserID != Nil). It is used to
+	// enforce a deadline on pending MFA sessions: they expire after
+	// MFAPendingMaxAge, forcing the user to sign in again.
+	//
+	// Not refreshed on later saves: set once at password step, checked at every
+	// MFA entry point and in middleware. Zero when MFAPassed is true or when the
+	// session is pre-login (UserID is nil).
+	PendingSince time.Time
 }
 
 // SessionName is the session cookie's name.
@@ -89,3 +101,29 @@ const SessionDataKey = "session"
 // nothing. ExpireLegacySession only ever deletes — it never reads or trusts the
 // value — which is what makes carrying a legacy name here safe.
 const LegacySessionName = "ohd_session"
+
+// MFAPendingMaxAge is the maximum time a session may remain in pending MFA
+// state (password passed, MFA not yet completed) before it is treated as
+// expired and the user must sign in again.
+const MFAPendingMaxAge = 5 * time.Minute
+
+// PendingExpired reports whether this session's MFA pending deadline has passed.
+//
+// A session is treated as pending when MFAPassed is false and the user has
+// authenticated (UserID != Nil). It is treated as expired when PendingSince
+// is set (not zero) and now is more than MFAPendingMaxAge after it.
+//
+// Sessions that have already completed MFA (MFAPassed) are never expired
+// by this check. Sessions without a PendingSince timestamp (either from
+// before this feature or from test mocks) are treated as not expired, since
+// we cannot determine when they were created.
+func (s SessionData) PendingExpired(now time.Time) bool {
+	// Only applies to sessions that have a user, haven't passed MFA yet,
+	// and have an explicit PendingSince timestamp.
+	if s.MFAPassed || s.UserID == uuid.Nil || s.PendingSince.IsZero() {
+		return false
+	}
+
+	// Check if the deadline has passed.
+	return now.Sub(s.PendingSince) > MFAPendingMaxAge
+}

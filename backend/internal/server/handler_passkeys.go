@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/gorilla/sessions"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
@@ -337,6 +339,24 @@ func (s *Server) handlePasskeyLoginStart(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusUnauthorized, "unauthorized", "sign in with your password first")
 		return
 	}
+
+	// Check for pending MFA expiry.
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData)
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized", "invalid session")
+		return
+	}
+	if sd.PendingExpired(time.Now()) {
+		// Only delete if the session is not new (has been persisted).
+		if !session.IsNew {
+			session.Options = &sessions.Options{MaxAge: -1}
+			_ = session.Save(r, w)
+		}
+		Error(w, http.StatusUnauthorized, "unauthorized", "session expired; sign in again")
+		return
+	}
+
 	acct, err := s.accountFor(r, a.UserID)
 	if err != nil {
 		handleError(w, err)
@@ -361,6 +381,24 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		Error(w, http.StatusUnauthorized, "unauthorized", "sign in with your password first")
 		return
 	}
+
+	// Check for pending MFA expiry before taking the challenge.
+	sessionForCheck, _ := s.sessions.Get(r, auth.SessionName)
+	sdForCheck, ok := sessionForCheck.Values[auth.SessionDataKey].(auth.SessionData)
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized", "invalid session")
+		return
+	}
+	if sdForCheck.PendingExpired(time.Now()) {
+		// Only delete if the session is not new (has been persisted).
+		if !sessionForCheck.IsNew {
+			sessionForCheck.Options = &sessions.Options{MaxAge: -1}
+			_ = sessionForCheck.Save(r, w)
+		}
+		Error(w, http.StatusUnauthorized, "unauthorized", "session expired; sign in again")
+		return
+	}
+
 	staged, sd, err := s.takePasskeyChallenge(w, r)
 	if err != nil {
 		Error(w, http.StatusBadRequest, "no_challenge", err.Error())

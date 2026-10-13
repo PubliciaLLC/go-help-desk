@@ -125,11 +125,17 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: mfaPassed,
-	}); err != nil {
+	}
+	// Set PendingSince if this session is not yet fully authenticated and needs MFA.
+	if !mfaPassed {
+		sd.PendingSince = time.Now()
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -179,11 +185,39 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// checkPendingMFAExpiry checks whether the session's pending MFA deadline has
+// passed. If so, it deletes the session and returns false, with a 401 response
+// already sent. Otherwise it returns true and the request may proceed.
+func (s *Server) checkPendingMFAExpiry(w http.ResponseWriter, r *http.Request, sd auth.SessionData) bool {
+	if sd.PendingExpired(time.Now()) {
+		session, _ := s.sessions.Get(r, auth.SessionName)
+		// Only delete if the session is not new (has been persisted).
+		if !session.IsNew {
+			session.Options = &sessions.Options{MaxAge: -1}
+			_ = session.Save(r, w)
+		}
+		Error(w, http.StatusUnauthorized, "unauthorized", "session expired; sign in again")
+		return false
+	}
+	return true
+}
+
 // POST /api/v1/auth/local/mfa/verify
 func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	if a == nil {
 		Error(w, http.StatusUnauthorized, "unauthorized", "not logged in")
+		return
+	}
+
+	// Get the session data to check for pending MFA expiry.
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData)
+	if !ok {
+		Error(w, http.StatusUnauthorized, "unauthorized", "invalid session")
+		return
+	}
+	if !s.checkPendingMFAExpiry(w, r, sd) {
 		return
 	}
 	var body struct {
