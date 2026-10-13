@@ -11,6 +11,7 @@ import (
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const adminSetPassword = `-- name: AdminSetPassword :execrows
@@ -604,6 +605,49 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 		&i.MfaLockedUntil,
 	)
 	return i, err
+}
+
+const getUsersByIDs = `-- name: GetUsersByIDs :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+`
+
+func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, getUsersByIDs, pq.Array(dollar_1))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.Disabled,
+			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listActiveAdmins = `-- name: ListActiveAdmins :many

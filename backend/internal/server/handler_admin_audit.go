@@ -33,6 +33,10 @@ type adminAuditEntryView struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	Before      map[string]any `json:"before,omitempty"`
 	After       map[string]any `json:"after,omitempty"`
+	// Names resolves the ids in Before/After to what they name now (#422),
+	// keyed by the id as it appears there. An id with no entry no longer
+	// resolves; show the id. Before/After keep the ids exactly as stored.
+	Names map[string]auditName `json:"names,omitempty"`
 }
 
 type adminAuditListResponse struct {
@@ -124,6 +128,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 	maskRequesters := s.masksRequestersIn(ctx, admin.MaskRequesterNamesAdminLog)
 	views := make([]adminAuditEntryView, len(entries))
 	names := make(map[uuid.UUID]auditActor)
+	diffs := make([]map[string]any, 0, 2*len(entries))
 	for i, e := range entries {
 		v := adminAuditEntryView{
 			ID: e.ID, EntityType: e.EntityType, EntityID: e.EntityID,
@@ -131,6 +136,7 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		}
 		if showDiff {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
+			diffs = append(diffs, v.Before, v.After)
 		}
 		if e.ActorID != nil {
 			a, cached := names[*e.ActorID]
@@ -150,6 +156,15 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 			v.ActorMasked = a.masked
 		}
 		views[i] = v
+	}
+
+	// Names come from the diffs as sent, so what the diff gate and audit.Redact
+	// withheld is never resolved. One batch for the page.
+	if showDiff {
+		resolved := s.resolveAuditNames(ctx, maskRequesters, diffs...)
+		for i := range views {
+			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)
+		}
 	}
 
 	JSON(w, http.StatusOK, adminAuditListResponse{

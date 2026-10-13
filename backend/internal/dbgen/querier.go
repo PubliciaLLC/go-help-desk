@@ -465,6 +465,7 @@ type Querier interface {
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
+	GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error)
 	// The assertion arrives carrying a credential id and nothing else, so this is
 	// the lookup sign-in depends on. The unique index on credential_id serves it.
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
