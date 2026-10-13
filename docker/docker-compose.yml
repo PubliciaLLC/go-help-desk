@@ -92,7 +92,9 @@ services:
       # shared secret, and every deployment that forgot to change it would be
       # forgeable by anyone who read this file.
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in docker/.env (min 32 chars) — copy docker/.env.example}
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in docker/.env — copy docker/.env.example}
+      # JWT_SECRET is optional: if unset or under 32 bytes, a key is generated
+      # once and stored in the database. A long env value still wins.
+      JWT_SECRET: ${JWT_SECRET:-}
       HTTP_PORT: 8080
       # ClamAV — opt-in (see #297 and the `clamav` service's own `profiles`
       # above): unset by default, since the `clamav` service does not start

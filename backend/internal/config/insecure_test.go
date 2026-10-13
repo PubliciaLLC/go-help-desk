@@ -53,7 +53,7 @@ func TestInsecureSecret_AcceptsRealSecrets(t *testing.T) {
 func TestConfig_InsecureSecrets_NamesNotValues(t *testing.T) {
 	c := &config.Config{
 		SessionSecret: "change-me-in-production-this-is-really-insecure",
-		JWTSecret:     "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",
+		JWTSecret:     "short", // JWT_SECRET is no longer checked; if short, it's generated from the database
 	}
 	got := c.InsecureSecrets()
 
@@ -65,7 +65,7 @@ func TestConfig_InsecureSecrets_NamesNotValues(t *testing.T) {
 func TestConfig_InsecureSecrets_CleanConfig(t *testing.T) {
 	c := &config.Config{
 		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",
-		JWTSecret:     "aGVsbG8td29ybGQtdGhpcy1pcy1yYW5kb20tZW5vdWdo",
+		JWTSecret:     "", // JWT_SECRET is no longer checked (generated from database if missing)
 	}
 	require.Empty(t, c.InsecureSecrets())
 }

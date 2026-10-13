@@ -530,7 +530,6 @@ jobs:
             -e DATABASE_URL="postgres://helpdesk:helpdesk@ghd-ci-db:5432/helpdesk?sslmode=disable" \
             -e BASE_URL="http://localhost:8099" \
             -e SESSION_SECRET="$(grep '^SESSION_SECRET=' docker/.env | cut -d= -f2-)" \
-            -e JWT_SECRET="$(grep '^JWT_SECRET=' docker/.env | cut -d= -f2-)" \
             ghd:ci
           sleep 10
           logs="$(docker logs ghd-ci-example 2>&1)"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -176,6 +177,21 @@ func run() error {
 	// sqlc requires a database/sql-compatible interface; wrap the pgxpool.
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	q := dbgen.New(sqlDB)
+
+	// ── JWT Secret ─────────────────────────────────────────────────────────────
+	// Resolve the JWT signing key. If cfg.JWTSecret is 32+ bytes, use it as-is.
+	// Otherwise, generate a random 32-byte key, store it in the database
+	// (insert-if-absent), and use that. After resolution, cfg.JWTSecret holds
+	// the effective key.
+	secretStore := database.NewSecretStore(q)
+	jwtSecret, source, err := auth.ResolveJWTSecret(ctx, cfg.JWTSecret, secretStore, rand.Reader)
+	if err != nil {
+		return fmt.Errorf("resolving jwt signing key: %w", err)
+	}
+	cfg.JWTSecret = jwtSecret
+	if source == "database" {
+		slog.Info("jwt signing key: using generated key stored in the database (JWT_SECRET unset or under 32 bytes)")
+	}
 
 	// ── Stores ────────────────────────────────────────────────────────────────
 	uStore := userstore.New(q)

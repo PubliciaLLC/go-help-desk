@@ -56,7 +56,11 @@ type Config struct {
 	AuthThrottleDelay time.Duration `envconfig:"AUTH_THROTTLE_DELAY" default:"1s"`
 
 	SessionSecret string `envconfig:"SESSION_SECRET" required:"true"`
-	JWTSecret     string `envconfig:"JWT_SECRET" required:"true"`
+	// JWTSecret is the JWT signing key. If unset or under 32 bytes, a random
+	// 32-byte key is generated once and stored in the database. A long env
+	// value still wins. After resolution in main.go, this field holds the
+	// effective key from that point on.
+	JWTSecret string `envconfig:"JWT_SECRET"`
 
 	// Email (optional — notifications disabled if not set)
 	SMTPHost     string `envconfig:"SMTP_HOST"`

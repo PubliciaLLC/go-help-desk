@@ -20,7 +20,6 @@ func TestLoad_RequiredFields(t *testing.T) {
 				"DATABASE_URL":   "postgres://user:pass@localhost/db",
 				"BASE_URL":       "https://helpdesk.example.com",
 				"SESSION_SECRET": "supersecret",
-				"JWT_SECRET":     "jwtsecret",
 			},
 			wantErr: false,
 		},
@@ -29,7 +28,6 @@ func TestLoad_RequiredFields(t *testing.T) {
 			env: map[string]string{
 				"BASE_URL":       "https://helpdesk.example.com",
 				"SESSION_SECRET": "supersecret",
-				"JWT_SECRET":     "jwtsecret",
 			},
 			wantErr: true,
 		},
@@ -38,9 +36,17 @@ func TestLoad_RequiredFields(t *testing.T) {
 			env: map[string]string{
 				"DATABASE_URL":   "postgres://user:pass@localhost/db",
 				"SESSION_SECRET": "supersecret",
-				"JWT_SECRET":     "jwtsecret",
 			},
 			wantErr: true,
+		},
+		{
+			name: "JWT_SECRET can be absent (generated from database)",
+			env: map[string]string{
+				"DATABASE_URL":   "postgres://user:pass@localhost/db",
+				"BASE_URL":       "https://helpdesk.example.com",
+				"SESSION_SECRET": "supersecret",
+			},
+			wantErr: false,
 		},
 	}
 
