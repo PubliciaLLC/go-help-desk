@@ -49,8 +49,9 @@ info:
     An operation open to some roles only says so in the first sentence of its
     description.
 
-    The MCP server at /mcp/ (GET /mcp/sse, POST /mcp/message) is JSON-RPC over
-    Server-Sent Events, authenticated by the same chain as /api/; see
+    The MCP server is JSON-RPC authenticated by the same chain as /api/: the
+    Streamable HTTP transport at /mcp (POST; /mcp/ answers the same), and the
+    older HTTP+SSE transport at GET /mcp/sse and POST /mcp/message. See
     docs/DESIGN.md, "MCP Interface". It is not described here.
   license:
     name: GNU Affero General Public License v3.0

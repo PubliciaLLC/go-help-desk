@@ -1894,8 +1894,10 @@ Everything else under `/api/v1` requires a session, API key or OAuth token, and 
 
 ### MCP Interface
 
-Exposes help desk operations as an MCP server for AI tool integration, served
-over SSE at `/mcp/`.
+Exposes help desk operations as an MCP server for AI tool integration, over two transports behind one authentication chain:
+
+- **Streamable HTTP at `/mcp`**, the current MCP transport. `/mcp/` answers the same, because the 1.2 documentation gave that URL. It is **stateless**: no `Mcp-Session-Id` is issued, every POST is one complete JSON-RPC exchange answered with `application/json`, and `GET` answers `405` because the server never sends anything unprompted. Stateless is deliberate. mcp-go's session-issuing mode keeps every initialized session in memory until the client deletes it, and its stateless GET stream shares one session between all callers. Nothing in this tool set needs a session.
+- **HTTP+SSE at `/mcp/sse` (stream) and `/mcp/message` (posts)**, the transport MCP deprecated in its 2025-03-26 revision. It is kept so existing client configurations keep working.
 
 **Tools**
 
@@ -1911,8 +1913,8 @@ over SSE at `/mcp/`.
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
-**Authorization.** `/mcp/` runs behind the same middleware chain as `/api/`, so
-every call is authenticated. Beyond that, the transport does not decide what a
+**Authorization.** `/mcp` and everything under `/mcp/` run behind the same middleware chain as `/api/`, so
+every call is authenticated. On both transports the acting identity is taken from each HTTP request, never from a stream or session: an SSE stream opened by one credential does not make later messages act as it, and a Streamable HTTP request acts as the credential it carries. Beyond that, the transport does not decide what a
 caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
@@ -1928,6 +1930,8 @@ was a breaking change to the REST API's published contract, made deliberately
 in this beta's bug-fix branch rather than deferred to a major version — see
 `ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
 
+**Origin.** The Streamable HTTP endpoint does not check the `Origin` header, which the MCP specification asks servers to do against DNS rebinding. Rebinding defeats servers that trust the network a request comes from. This one authenticates every request, and a rebound page gets no help-desk cookie and has no API key. A cross-site page using a signed-in browser's session is stopped three ways. The session cookie is `SameSite=Lax`. A non-JSON POST is refused before anything runs. A JSON POST needs a CORS preflight that `/mcp` never grants. Tests pin all of these (`TestMCPStreamable_NoCrossSiteSurface`, and the cookie attributes in `sessionstore/cookie_attributes_test.go`). Add an Origin check if any of them stops being true.
+
 ### Authentication Methods
 
 | Consumer | Auth Method | Details |
@@ -1935,7 +1939,7 @@ in this beta's bug-fix branch rather than deferred to a major version — see
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Served at `/mcp/` behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
+| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
