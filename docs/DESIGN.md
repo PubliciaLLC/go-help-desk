@@ -16,8 +16,9 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 Custom fields, CTI-linked group management, canned responses and full-text
 search were built ahead of the original v2 schedule and are shipped; this table
 reflects that, not the order they were planned in. Plugins went the other way:
-the admin API can list and toggle a plugin record (there is no admin page for
-it), but install/uninstall return `501` and no event ever reaches a plugin
+the admin plugin routes exist (there is no admin page for them) but nothing
+registers a plugin, so the list is always empty and enable/disable fails for
+every id; install/uninstall return `501` and no event ever reaches a plugin
 (`plugin.Registry.Dispatch` is built and never called from the notification
 chain). 1.x has no working plugin system; it is a v2 feature. The part of the plugin pitch
 worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
@@ -2114,12 +2115,12 @@ scopes and are therefore denied; they must be re-issued.
 ## Plugin Infrastructure (v2)
 
 Deferred from v1; 1.x has no working plugin system. The data model and an
-admin API shell exist (`internal/domain/plugin/`, `handler_admin_plugins.go`;
-there is no admin page) — a plugin record can be listed, enabled and
-disabled — but none of the capabilities below are wired up:
-install and uninstall return `501 not_implemented`, no WASM runtime is linked
+admin routes exist (`internal/domain/plugin/`, `handler_admin_plugins.go`;
+there is no admin page), but nothing registers a plugin, so the list is always
+empty and enable/disable fails for every id. None of the capabilities below
+are wired up: install and uninstall return `501 not_implemented`, no WASM runtime is linked
 in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
-so an enabled plugin still receives no events. Treat this section as the
+so no plugin receives events. Treat this section as the
 target design for v2, not a description of what ships today.
 
 External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
