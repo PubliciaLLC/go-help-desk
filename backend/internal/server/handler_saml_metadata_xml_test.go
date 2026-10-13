@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -322,4 +323,67 @@ func TestUpdateSettings_SAMLMetadataXMLRequiresASession(t *testing.T) {
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
 	require.Equal(t, "session_required", body.Error.Code)
 	require.Equal(t, "", h.adminSvc.GetSAMLMetadataXML(context.Background()))
+}
+
+// TestSAMLSignIn_EndToEndWithPastedMetadataXML is
+// TestSAMLSignIn_EndToEndWithASignedAssertion with the IdP configured from
+// pasted metadata instead of a URL, and with the IdP's metadata endpoint shut
+// down before SAML loads, so nothing can have been fetched. The signed
+// assertion is still verified for real against the pasted signing certificate.
+func TestSAMLSignIn_EndToEndWithPastedMetadataXML(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
+	b, err := xml.Marshal(idp.idp.Metadata())
+	require.NoError(t, err)
+	idp.srv.Close()
+
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, "", validSAMLCert, validSAMLKey))
+	require.NoError(t, h.adminSvc.SetSAMLMetadataXML(ctx, string(b)))
+	h.srv.InitSAML(ctx)
+
+	res := h.rawGet(t, "/api/v1/auth/saml/login", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusFound, res.StatusCode)
+	var tracking *http.Cookie
+	for _, c := range res.Cookies() {
+		if strings.HasPrefix(c.Name, "saml_") {
+			tracking = c
+		}
+	}
+	require.NotNil(t, tracking)
+
+	form := idp.sign(t, res.Header.Get("Location"), "sso-xml@test.local")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(tracking)
+	rr := httptest.NewRecorder()
+	h.srv.ServeHTTP(rr, req)
+	res = rr.Result()
+	res.Body.Close()
+	require.Equal(t, http.StatusFound, res.StatusCode, "ACS body: %s", rr.Body.String())
+	require.Equal(t, "/api/v1/auth/saml/complete", res.Header.Get("Location"))
+	var token *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == "token" && c.Value != "" {
+			token = c
+		}
+	}
+	require.NotNil(t, token)
+
+	res = h.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{token})
+	res.Body.Close()
+	require.Equal(t, http.StatusSeeOther, res.StatusCode)
+	require.Equal(t, "/", res.Header.Get("Location"))
+	var app *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name != "token" && c.Value != "" {
+			app = c
+		}
+	}
+	require.NotNil(t, app, "an app session cookie is issued")
+	me := h.doUnauthWithCookie(t, http.MethodGet, "/api/v1/me", app)
+	me.Body.Close()
+	require.Equal(t, http.StatusOK, me.StatusCode)
 }
