@@ -11,7 +11,7 @@ SET name = $2, priority = $3, category_id = $4,
     response_target_min = $5, resolution_target_min = $6
 WHERE id = $1;
 
--- name: DeleteSLAPolicy :exec
+-- name: DeleteSLAPolicy :execrows
 DELETE FROM sla_policies WHERE id = $1;
 
 -- name: CountSLARecordsByPolicy :one

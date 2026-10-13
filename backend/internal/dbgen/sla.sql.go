@@ -97,13 +97,16 @@ func (q *Queries) CreateSLARecord(ctx context.Context, arg CreateSLARecordParams
 	return err
 }
 
-const deleteSLAPolicy = `-- name: DeleteSLAPolicy :exec
+const deleteSLAPolicy = `-- name: DeleteSLAPolicy :execrows
 DELETE FROM sla_policies WHERE id = $1
 `
 
-func (q *Queries) DeleteSLAPolicy(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteSLAPolicy, id)
-	return err
+func (q *Queries) DeleteSLAPolicy(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteSLAPolicy, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const findSLAPolicy = `-- name: FindSLAPolicy :one

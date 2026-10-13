@@ -59,7 +59,14 @@ func (s *Store) UpdateLastUsed(ctx context.Context, id uuid.UUID, at time.Time) 
 }
 
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteAPIKey(ctx, id)
+	n, err := s.q.DeleteAPIKey(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting API key %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("API key %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error) {
@@ -112,7 +119,14 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 }
 
 func (s *Store) DeleteOAuthClient(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteOAuthClient(ctx, id)
+	n, err := s.q.DeleteOAuthClient(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting OAuth client %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("OAuth client %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error) {
@@ -225,7 +239,14 @@ func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 }
 
 func (s *Store) DeleteWebhook(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteWebhookConfig(ctx, id)
+	n, err := s.q.DeleteWebhookConfig(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting webhook %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("webhook %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error) {

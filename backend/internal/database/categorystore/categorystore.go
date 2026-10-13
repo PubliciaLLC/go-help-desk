@@ -67,11 +67,15 @@ func (s *Store) DeleteCategory(ctx context.Context, id uuid.UUID) error {
 	if tickets > 0 || records > 0 {
 		return fmt.Errorf("%w: it is used by %d ticket(s) and %d SLA record(s)", category.ErrCategoryInUse, tickets, records)
 	}
-	if err := s.q.DeleteCategory(ctx, id); err != nil {
+	n, err := s.q.DeleteCategory(ctx, id)
+	if err != nil {
 		if isForeignKeyViolation(err) {
 			return fmt.Errorf("%w: a ticket was filed under it while it was being deleted", category.ErrCategoryInUse)
 		}
 		return fmt.Errorf("deleting category %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("category %s: %w", id, category.ErrNotFound)
 	}
 	return nil
 }
@@ -133,11 +137,15 @@ func (s *Store) DeleteType(ctx context.Context, id uuid.UUID) error {
 	if tickets > 0 {
 		return fmt.Errorf("%w: it is used by %d ticket(s)", category.ErrTypeInUse, tickets)
 	}
-	if err := s.q.DeleteType(ctx, id); err != nil {
+	n, err := s.q.DeleteType(ctx, id)
+	if err != nil {
 		if isForeignKeyViolation(err) {
 			return fmt.Errorf("%w: a ticket was filed under it while it was being deleted", category.ErrTypeInUse)
 		}
 		return fmt.Errorf("deleting type %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("type %s: %w", id, category.ErrNotFound)
 	}
 	return nil
 }
@@ -197,11 +205,15 @@ func (s *Store) DeleteItem(ctx context.Context, id uuid.UUID) error {
 	if tickets > 0 {
 		return fmt.Errorf("%w: it is used by %d ticket(s)", category.ErrItemInUse, tickets)
 	}
-	if err := s.q.DeleteItem(ctx, id); err != nil {
+	n, err := s.q.DeleteItem(ctx, id)
+	if err != nil {
 		if isForeignKeyViolation(err) {
 			return fmt.Errorf("%w: a ticket was filed under it while it was being deleted", category.ErrItemInUse)
 		}
 		return fmt.Errorf("deleting item %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("item %s: %w", id, category.ErrNotFound)
 	}
 	return nil
 }

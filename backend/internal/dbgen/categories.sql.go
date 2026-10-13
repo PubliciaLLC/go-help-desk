@@ -115,31 +115,40 @@ func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
 	return err
 }
 
-const deleteCategory = `-- name: DeleteCategory :exec
+const deleteCategory = `-- name: DeleteCategory :execrows
 DELETE FROM categories WHERE id = $1
 `
 
-func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteCategory, id)
-	return err
+func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCategory, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteItem = `-- name: DeleteItem :exec
+const deleteItem = `-- name: DeleteItem :execrows
 DELETE FROM items WHERE id = $1
 `
 
-func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteItem, id)
-	return err
+func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteItem, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteType = `-- name: DeleteType :exec
+const deleteType = `-- name: DeleteType :execrows
 DELETE FROM types WHERE id = $1
 `
 
-func (q *Queries) DeleteType(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteType, id)
-	return err
+func (q *Queries) DeleteType(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteType, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getCategory = `-- name: GetCategory :one

@@ -7,7 +7,7 @@ SELECT * FROM categories WHERE id = $1;
 -- name: UpdateCategory :exec
 UPDATE categories SET name = $2, sort_order = $3, active = $4 WHERE id = $1;
 
--- name: DeleteCategory :exec
+-- name: DeleteCategory :execrows
 DELETE FROM categories WHERE id = $1;
 
 -- name: ListCategories :many
@@ -24,7 +24,7 @@ SELECT * FROM types WHERE id = $1;
 -- name: UpdateType :exec
 UPDATE types SET category_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1;
 
--- name: DeleteType :exec
+-- name: DeleteType :execrows
 DELETE FROM types WHERE id = $1;
 
 -- name: ListTypes :many
@@ -41,7 +41,7 @@ SELECT * FROM items WHERE id = $1;
 -- name: UpdateItem :exec
 UPDATE items SET type_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1;
 
--- name: DeleteItem :exec
+-- name: DeleteItem :execrows
 DELETE FROM items WHERE id = $1;
 
 -- name: ListItems :many

@@ -62,7 +62,14 @@ func (s *Store) Update(ctx context.Context, g group.Group) error {
 }
 
 func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteGroup(ctx, id)
+	n, err := s.q.DeleteGroup(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting group %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("group %s: %w", id, group.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) List(ctx context.Context) ([]group.Group, error) {
@@ -92,7 +99,14 @@ func (s *Store) AddMember(ctx context.Context, groupID, userID uuid.UUID) error 
 }
 
 func (s *Store) RemoveMember(ctx context.Context, groupID, userID uuid.UUID) error {
-	return s.q.RemoveGroupMember(ctx, dbgen.RemoveGroupMemberParams{GroupID: groupID, UserID: userID})
+	n, err := s.q.RemoveGroupMember(ctx, dbgen.RemoveGroupMemberParams{GroupID: groupID, UserID: userID})
+	if err != nil {
+		return fmt.Errorf("removing member %s from group %s: %w", userID, groupID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("user %s is not a member of group %s: %w", userID, groupID, group.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
@@ -130,11 +144,18 @@ func (s *Store) AddScope(ctx context.Context, sc group.GroupScope) error {
 }
 
 func (s *Store) RemoveScope(ctx context.Context, groupID, categoryID uuid.UUID, typeID *uuid.UUID) error {
-	return s.q.RemoveGroupScope(ctx, dbgen.RemoveGroupScopeParams{
+	n, err := s.q.RemoveGroupScope(ctx, dbgen.RemoveGroupScopeParams{
 		GroupID:    groupID,
 		CategoryID: categoryID,
 		TypeID:     database.NullUUID(typeID),
 	})
+	if err != nil {
+		return fmt.Errorf("removing scope from group %s: %w", groupID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("group %s has no such scope: %w", groupID, group.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListScopes(ctx context.Context, groupID uuid.UUID) ([]group.GroupScope, error) {
