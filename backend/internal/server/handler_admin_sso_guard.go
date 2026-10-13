@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -109,8 +110,45 @@ func (s *Server) oidcReachableNow() bool {
 // counterpart — SAML reachability has never depended on one; see
 // buildSAMLMiddleware's own comment on why #304's attempt to give it one was
 // reverted before merge.
-func samlFieldsLookConfigured(metadataURL, certPEM, keyPEM string) bool {
-	return metadataURL != "" && certPEM != "" && keyPEM != ""
+func samlFieldsLookConfigured(c samlSettings) bool {
+	return (c.MetadataURL != "" || c.MetadataXML != "") && c.CertPEM != "" && c.KeyPEM != ""
+}
+
+// samlSettings is a SAML configuration as stored, or as a save would store it:
+// the IdP's metadata from exactly one of a URL or pasted XML, and the SP's
+// certificate and key.
+type samlSettings struct {
+	MetadataURL, MetadataXML, CertPEM, KeyPEM string
+}
+
+// storedSAMLSettings reads the SAML configuration as currently stored.
+func (s *Server) storedSAMLSettings(ctx context.Context) samlSettings {
+	url, cert, key := s.adminSvc.GetSAMLConfig(ctx)
+	return samlSettings{
+		MetadataURL: url,
+		MetadataXML: s.adminSvc.GetSAMLMetadataXML(ctx),
+		CertPEM:     cert,
+		KeyPEM:      key,
+	}
+}
+
+// metadataRefusal is the 400 a save of c gets for its metadata, or code ""
+// when it may go on. Both doors call it (PUT /admin/saml, PATCH /admin/settings).
+func (c samlSettings) metadataRefusal() (code, msg string) {
+	if c.MetadataURL != "" && c.MetadataXML != "" {
+		return "saml_metadata_conflict",
+			"give the IdP metadata as a URL or as XML, not both; send the other as an empty string"
+	}
+	if c.MetadataXML == "" {
+		return "", ""
+	}
+	if _, err := auth.ParseIdPMetadataXML([]byte(c.MetadataXML)); err != nil {
+		if errors.Is(err, auth.ErrIdPMetadataTooLarge) {
+			return "saml_metadata_too_large", err.Error()
+		}
+		return "invalid_saml_metadata", err.Error()
+	}
+	return "", ""
 }
 
 func oidcFieldsLookConfigured(cfg auth.OIDCConfig) bool {
