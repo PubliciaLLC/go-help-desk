@@ -52,9 +52,11 @@ func (c *Config) InsecureSecrets() []string {
 	if InsecureSecret(c.SessionSecret) {
 		names = append(names, "SESSION_SECRET")
 	}
-	// JWT_SECRET is not checked here: if unset or under 32 bytes, it is
-	// generated once and stored in the database, so the effective key is never
-	// an example value. SESSION_SECRET cannot be generated and is the only one
-	// that needs to be checked before the database is opened.
+	// JWT_SECRET: if it's 32+ bytes, it wins over the generated key and must
+	// not be an example value. If unset or short, it's generated from the
+	// database so the effective key is never an example.
+	if len(c.JWTSecret) >= 32 && InsecureSecret(c.JWTSecret) {
+		names = append(names, "JWT_SECRET")
+	}
 	return names
 }

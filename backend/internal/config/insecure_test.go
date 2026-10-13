@@ -53,13 +53,26 @@ func TestInsecureSecret_AcceptsRealSecrets(t *testing.T) {
 func TestConfig_InsecureSecrets_NamesNotValues(t *testing.T) {
 	c := &config.Config{
 		SessionSecret: "change-me-in-production-this-is-really-insecure",
-		JWTSecret:     "short", // JWT_SECRET is no longer checked; if short, it's generated from the database
+		JWTSecret:     "short", // Short JWTSecret is generated, so only SESSION_SECRET is flagged
 	}
 	got := c.InsecureSecrets()
 
 	require.Equal(t, []string{"SESSION_SECRET"}, got,
 		"only the offending secret is named, and only by name")
 	require.NotContains(t, got, c.SessionSecret, "a secret's value must never be returned")
+}
+
+func TestConfig_InsecureSecrets_LongJWTSecretExample(t *testing.T) {
+	// If JWT_SECRET is 32+ bytes AND an example value, it must be flagged
+	// because it will win over the generated key.
+	c := &config.Config{
+		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=", // clean
+		JWTSecret:     "change-me-in-production-this-is-really-insecure", // 50 bytes, example
+	}
+	got := c.InsecureSecrets()
+
+	require.Equal(t, []string{"JWT_SECRET"}, got,
+		"a long JWT_SECRET that is an example value must be flagged")
 }
 
 func TestConfig_InsecureSecrets_CleanConfig(t *testing.T) {
