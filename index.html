@@ -389,14 +389,6 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
 
       <div class="feature-card">
         <div class="feature-icon">
-          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
-        </div>
-        <h3>Plugin System (planned for v2)</h3>
-        <p>A plugin system is planned for v2. Plugins cannot be installed in 1.3.0.</p>
-      </div>
-
-      <div class="feature-card">
-        <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
         </div>
         <h3>Canned Responses</h3>
@@ -506,6 +498,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>✓ Self-service signup</li>
           <li>✓ Linked tickets + follow-ups</li>
           <li>✓ SLA tracking</li>
+          <li>✓ Auto-assignment</li>
           <li>✓ Custom fields</li>
           <li>✓ REST API + MCP</li>
           <li>✓ Email + webhooks</li>
@@ -519,10 +512,29 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
       </div>
 
       <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
-        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v2 · Next</div>
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v1.4 · Next</div>
+        <h4 style="margin-bottom: 0.75rem;">ITSM</h4>
+        <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
+          <li>ITSM ticket types (Incident, Service Request, Problem, Change)</li>
+          <li>Impact × Urgency priority matrix</li>
+          <li>Default ticket type per CTI</li>
+          <li>Incident management</li>
+          <li>Monitoring events</li>
+          <li>Operational reporting</li>
+          <li>Asset reference</li>
+          <li>Continual improvement</li>
+          <li>Suppliers</li>
+          <li>Relationship management</li>
+        </ul>
+      </div>
+
+      <div style="padding: 1.5rem; border: 1px solid var(--border); border-radius: 10px;">
+        <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v2</div>
         <h4 style="margin-bottom: 0.75rem;">Extensibility</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
-          <li>Plugin system (planned; not working yet)</li>
+          <li>Plugin system (first- and third-party, sandboxed, installed from the admin UI; not working yet)</li>
+          <li>Plugin runtime</li>
+          <li>Snipe-IT reference plugin</li>
         </ul>
       </div>
 
@@ -530,7 +542,6 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
         <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v3</div>
         <h4 style="margin-bottom: 0.75rem;">Knowledge</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
-          <li>Reporting</li>
           <li>Knowledge base</li>
           <li>Custom admin-defined roles</li>
         </ul>
@@ -540,11 +551,8 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
         <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.5rem;">v4</div>
         <h4 style="margin-bottom: 0.75rem;">Enterprise</h4>
         <ul style="list-style:none; font-size: 0.875rem; color: var(--ink-2); display: flex; flex-direction: column; gap: 0.3rem;">
-          <li>Multi-tenancy</li>
+          <li>Multi-tenancy / SaaS</li>
           <li>Plugin registry</li>
-          <li>ITSM ticket types</li>
-          <li>Impact × Urgency matrix</li>
-          <li>Default ticket type per CTI</li>
         </ul>
       </div>
 

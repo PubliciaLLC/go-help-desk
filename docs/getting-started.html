@@ -145,7 +145,7 @@
 
 <h2 id="quick-start">Quick start</h2>
 
-<p><strong>Requirements:</strong> Docker Engine 24+ and Docker Compose V2.</p>
+<p><strong>What CI tested:</strong> CI builds the image and runs it with <code>docker run</code> on GitHub's <code>ubuntu-latest</code> runners (Ubuntu 24.04) with Docker Engine 28.0.4, and starts its test database with <code>docker compose</code> (Docker Compose v2.38.2). Those are the versions in the CI run of 13 October 2026. CI does not start <code>docker/docker-compose.yml</code> itself, and no other Docker or Compose version was tested. The commands below use <code>docker compose</code>, not the old <code>docker-compose</code> binary.</p>
 
 <div class="step">
   <div class="step-num">1</div>

@@ -261,10 +261,6 @@ frame-ancestors 'none'; base-uri 'none'; form-action 'self'</code></pre>
 
 <h2 id="steps">Doing the upgrade</h2>
 
-<div class="callout callout-note">
-  <p><strong>Going straight to 1.3.0?</strong> Read this page and <a href="upgrading-1.3.0.html">Upgrading to 1.3.0</a>, then follow the steps there.</p>
-</div>
-
 <ol>
   <li><strong>Take a database backup.</strong> Migrations are forward-only; there is no automatic rollback.</li>
   <li><strong>List your credentials</strong> and note what each integration actually calls, so you can re-issue with the right scopes rather than guessing.</li>

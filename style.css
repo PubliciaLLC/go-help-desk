@@ -228,15 +228,19 @@ section + section { border-top: 1px solid var(--border); }
   gap: 1.5rem;
 }
 
+/* Five milestones: three across, then two wider cards, so no row has a gap. */
 .roadmap-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1rem;
 }
+.roadmap-grid > * { grid-column: span 2; }
+.roadmap-grid > :nth-child(n+4) { grid-column: span 3; }
 
 @media (max-width: 768px) {
   .features-grid { grid-template-columns: 1fr; }
   .roadmap-grid { grid-template-columns: minmax(0, 1fr); }
+  .roadmap-grid > *, .roadmap-grid > :nth-child(n+4) { grid-column: auto; }
   h1 { font-size: 2rem; }
   .hero { padding: 4rem 0 3rem; }
 }
