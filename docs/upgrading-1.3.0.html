@@ -74,6 +74,7 @@
       <li><a href="#compose-database">Postgres is on loopback</a></li>
       <li><a href="#quoted-email">Quoted addresses are refused</a></li>
       <li><a href="#password-length">Passwords up to 72 bytes</a></li>
+      <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
   </div>
@@ -166,7 +167,7 @@
   <li><strong>Provider-wrapped addresses are matched.</strong> On a first OIDC sign-in, the address is matched by its parsed form, so an address sent as <code>&lt;a@example.com&gt;</code> finds the account for <code>a@example.com</code> instead of creating a second one. The sign-in is refused instead when that account is an administrator, or is already linked to SAML or to another OIDC identity.</li>
   <li><strong>Identity-provider lockout guard.</strong> A SAML or OIDC settings change that would leave no administrator able to sign in is refused. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#identity-provider-lockout-guard-300">Design notes</a></li>
   <li><strong>Signup asks later.</strong> The display name and password are chosen when the email is verified. <a href="#signup">Details</a></li>
-  <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply through it. Attaching a file is possible only through the API. The guest page has no upload control, and that is not available in 1.3.0. <!-- ISSUE:05-guest-page-attachment-upload --> <a href="authentication.html#auth-guest">Guest access</a></li>
+  <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply through it. Attaching a file is possible only through the API. The guest page has no upload control, and that is not available in 1.3.0. Tracked in <a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a>. <a href="authentication.html#auth-guest">Guest access</a></li>
   <li><strong>Closed means closed.</strong> A closed ticket is read-only and stays closed by default. The way on is a linked follow-up ticket. An operator can allow admins, or staff and admins, to reopen a closed ticket. <a href="tickets.html#tickets-follow-up">Follow-up tickets</a></li>
   <li><strong>The lifecycle runs itself.</strong> An auto-close sweep runs every five minutes. A reopen window of 0 closes a resolved ticket on the next sweep.</li>
   <li><strong>SLA tracking end to end.</strong> Timers pause while a ticket is Pending, a breach sweep runs, and the indicators are colour-coded. The switch is under <strong>Admin → Settings</strong>.</li>
@@ -295,6 +296,38 @@ COMPOSE_PROFILES=antivirus</code></pre>
 <p><strong>Who notices:</strong> anyone who sets a password, and API clients that set one.</p>
 
 <p>A password must be 8 to 72 bytes. The limit is bcrypt's: bcrypt reads only the first 72 bytes and will not hash more. Bytes are counted, not characters, so an accented letter takes two bytes and most other non-Latin characters take three or four. A longer password is refused with a <code>400</code> that names the limit. Before 1.3.0, most paths that set a password answered with a server error (<code>500</code>). Sign-in applies no maximum.</p>
+
+<h2 id="known-gaps">What is not in 1.3.0</h2>
+
+<p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
+
+<table class="breaks-table">
+  <thead><tr><th>Area</th><th>What is missing</th><th>Issue</th></tr></thead>
+  <tbody>
+  <tr><td>Staff email</td><td>Nobody on the help desk side is emailed about assignment, requester replies or reopening.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/441" target="_blank" rel="noopener">#441</a></td></tr>
+  <tr><td>MCP replies</td><td><code>add_reply</code> does not email the requester.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/442" target="_blank" rel="noopener">#442</a></td></tr>
+  <tr><td>Ticket detail</td><td>Markdown, changing priority, resolving all child tickets and the reopened flag, plus a decision on editing replies.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/443" target="_blank" rel="noopener">#443</a></td></tr>
+  <tr><td>Staff workflow</td><td>No &quot;Assign to me&quot;, no filing on someone's behalf outside MCP, and search covers only your own queue.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/444" target="_blank" rel="noopener">#444</a></td></tr>
+  <tr><td>Guest attachments</td><td>The guest page has no way to attach a file.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/445" target="_blank" rel="noopener">#445</a></td></tr>
+  <tr><td>Archiving</td><td>The admin UI cannot archive a category, type or item.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/446" target="_blank" rel="noopener">#446</a></td></tr>
+  <tr><td>Auto-assignment</td><td>The fallbacks have no admin page and are changed only through the API.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/447" target="_blank" rel="noopener">#447</a></td></tr>
+  <tr><td>Webhooks</td><td>No retry, no delivery id, no history or redelivery, and notes cannot be subscribed apart from replies.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/448" target="_blank" rel="noopener">#448</a></td></tr>
+  <tr><td>Users list</td><td>Admin → Users shows only the first 200 accounts.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/449" target="_blank" rel="noopener">#449</a></td></tr>
+  <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
+  <tr><td>Password reset</td><td>No reset by email.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/451" target="_blank" rel="noopener">#451</a></td></tr>
+  <tr><td>Pending sessions</td><td>A session past the password but not the second factor lives for 7 days.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/452" target="_blank" rel="noopener">#452</a></td></tr>
+  <tr><td>bcrypt cost</td><td>The cost is 10. Earlier security pages said 12.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/453" target="_blank" rel="noopener">#453</a></td></tr>
+  <tr><td>JWT secret</td><td><code>JWT_SECRET</code> has no minimum length.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/454" target="_blank" rel="noopener">#454</a></td></tr>
+  <tr><td>SMTP</td><td>No implicit TLS, STARTTLS is optional and downgradable, and credentials are skipped when AUTH is not offered.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/455" target="_blank" rel="noopener">#455</a></td></tr>
+  <tr><td>Email off</td><td>Email can be disabled without anyone being told.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/456" target="_blank" rel="noopener">#456</a></td></tr>
+  <tr><td>Compose</td><td><code>docker-compose.yml</code> does not pass <code>AUTH_RATE_LIMIT_PER_MINUTE</code>, <code>AUTH_THROTTLE_DELAY</code> or <code>ATTACHMENT_DIR</code> to the app.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/457" target="_blank" rel="noopener">#457</a></td></tr>
+  <tr><td>Startup config</td><td><code>APP_ENV</code> has no effect and <code>ATTACHMENT_DIR</code> is not checked until the first upload.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/458" target="_blank" rel="noopener">#458</a></td></tr>
+  <tr><td>Scanning status</td><td>A Compose upgrade turns attachment scanning off, and no admin screen shows scanning state.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/459" target="_blank" rel="noopener">#459</a></td></tr>
+  <tr><td>MCP transport</td><td>Only the HTTP+SSE transport is served, not Streamable HTTP.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/460" target="_blank" rel="noopener">#460</a></td></tr>
+  <tr><td>SAML</td><td>Pasted IdP metadata XML is not accepted, and the attribute names earlier pages told admins to send are not read.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/461" target="_blank" rel="noopener">#461</a></td></tr>
+  <tr><td>Plugins</td><td>Earlier pages promised a plugin system. It is not in 1.3.0.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/462" target="_blank" rel="noopener">#462</a></td></tr>
+  </tbody>
+</table>
 
 <h2 id="steps">Doing the upgrade</h2>
 
