@@ -144,6 +144,11 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
+	// APP_ENV is set but has no effect; the message helps developers understand that.
+	if msg, shouldLog := appEnvNotice(cfg); shouldLog {
+		slog.Info(msg)
+	}
+
 	// A copied .env.example starts cleanly and is entirely forgeable: the
 	// example SESSION_SECRET is 47 characters, so the 32-character minimum
 	// does not catch it. Refusing to boot would be hostile to anyone kicking
@@ -572,4 +577,19 @@ func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
 			"scanner", addr,
 			"why", "clamav/clamav is published for linux/amd64 only")
 	}
+}
+
+// appEnvNotice returns a message and a flag indicating whether to log it.
+// The message is returned only when APP_ENV is explicitly set to a value
+// other than the default (production or empty). Setting APP_ENV is harmless
+// but has no effect; the message helps developers understand that.
+func appEnvNotice(cfg *config.Config) (string, bool) {
+	// APP_ENV has a default of "production" and is only meaningless when
+	// set to something else. If it is empty (which only happens if the
+	// field was not set by envconfig), or "production" (the intended
+	// default), say nothing.
+	if cfg.AppEnv == "" || cfg.AppEnv == "production" {
+		return "", false
+	}
+	return "APP_ENV is set but has no effect; it is ignored", true
 }

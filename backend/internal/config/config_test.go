@@ -116,3 +116,27 @@ func TestConfig_EmailEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestLoad_WithAPPENV(t *testing.T) {
+	for _, key := range []string{
+		"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET",
+		"HTTP_PORT", "SMTP_PORT", "ATTACHMENT_DIR", "APP_ENV",
+		"SAML_ENABLED", "SLA_ENABLED",
+	} {
+		os.Unsetenv(key)
+	}
+	os.Setenv("DATABASE_URL", "postgres://user:pass@localhost/db")
+	os.Setenv("BASE_URL", "https://helpdesk.example.com")
+	os.Setenv("SESSION_SECRET", "s")
+	os.Setenv("JWT_SECRET", "j")
+	os.Setenv("APP_ENV", "development")
+	t.Cleanup(func() {
+		for _, key := range []string{"DATABASE_URL", "BASE_URL", "SESSION_SECRET", "JWT_SECRET", "APP_ENV"} {
+			os.Unsetenv(key)
+		}
+	})
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	require.Equal(t, "development", cfg.AppEnv)
+}
