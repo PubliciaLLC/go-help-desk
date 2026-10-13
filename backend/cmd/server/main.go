@@ -385,7 +385,14 @@ func run() error {
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
 	// mux sits outside srv's middleware chain. Mounted directly, every MCP tool
 	// was reachable with no credentials.
-	mux.Handle("/mcp/", srv.ProtectMCP(mcpSrv.Handler()))
+	mcpHandler := srv.ProtectMCP(mcpSrv.Handler())
+	// "/mcp" must be registered as well as "/mcp/": the mux answers an exact
+	// "/mcp" with a 307 to "/mcp/" before any handler runs, so without this line
+	// the Streamable HTTP endpoint is redirected ahead of the auth chain, and
+	// clients that do not re-POST across a redirect cannot connect. The CI smoke
+	// check on /mcp reads 307 instead of 401 if it goes missing.
+	mux.Handle("/mcp", mcpHandler)  // Streamable HTTP
+	mux.Handle("/mcp/", mcpHandler) // /mcp/ (Streamable HTTP alias), /mcp/sse, /mcp/message
 	mux.Handle("/api/", srv)
 	mux.Handle("/health", srv)
 	mux.Handle("/", server.NewSPAHandler(ui.FS()))
