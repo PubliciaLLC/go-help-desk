@@ -118,6 +118,13 @@ nav {
 .nav-links a { color: var(--ink-2); }
 .nav-links a:hover { color: var(--blue); text-decoration: none; }
 
+/* On a phone the links wrap onto a second row instead of running off the
+   right edge of the page. */
+@media (max-width: 768px) {
+  .nav-inner { height: auto; flex-wrap: wrap; row-gap: 0.5rem; padding-top: 0.75rem; padding-bottom: 0.75rem; }
+  .nav-links { flex-wrap: wrap; gap: 0.4rem 1.1rem; font-size: 0.85rem; }
+}
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -221,8 +228,15 @@ section + section { border-top: 1px solid var(--border); }
   gap: 1.5rem;
 }
 
+.roadmap-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+
 @media (max-width: 768px) {
   .features-grid { grid-template-columns: 1fr; }
+  .roadmap-grid { grid-template-columns: minmax(0, 1fr); }
   h1 { font-size: 2rem; }
   .hero { padding: 4rem 0 3rem; }
 }
@@ -552,7 +566,21 @@ footer {
 .callout strong { color: inherit; }
 
 @media (max-width: 768px) {
-  .docs-layout { grid-template-columns: 1fr; }
+  .docs-layout { grid-template-columns: minmax(0, 1fr); }
   .docs-sidebar { position: static; height: auto; }
-  .docs-content { padding: 2rem 1rem; }
+  .docs-content { padding: 2rem 1rem; min-width: 0; }
+  /* A wide table scrolls inside its own box rather than widening the page. */
+  .docs-content table { display: block; overflow-x: auto; }
+  /* The parameter tables set nowrap per page so names stay on one line on a
+     desktop. On a phone the cells wrap, so the description stays in the box.
+     Only the name column may break mid-word; the default and description keep
+     whole words, because a column that can break anywhere is squeezed to slivers.
+     !important beats the per-page nowrap (same specificity, and the page's own
+     style block loads after this file). */
+  .docs-content .param-table td { white-space: normal !important; }
+  .docs-content .param-table td:first-child { overflow-wrap: anywhere; }
+  /* Flex children (the numbered steps) and long inline code must be allowed
+     to shrink below their content, or a wide pre inside a step widens the page. */
+  .step-body { min-width: 0; }
+  .docs-content code { overflow-wrap: anywhere; }
 }
