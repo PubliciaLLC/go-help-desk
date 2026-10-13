@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/stretchr/testify/require"
@@ -40,6 +41,26 @@ func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 			name:       "ticket.ErrNotFound (attachment) maps to 404 (#418)",
 			err:        fmt.Errorf("getting attachment abc: %w", ticket.ErrNotFound),
 			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("group abc: %w", group.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group.ErrValidation maps to 400 (#418)",
+			err:        fmt.Errorf("group name: %w", group.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "group.ErrInvalidReference maps to 400 (#418)",
+			err:        fmt.Errorf("scope reference: %w", group.ErrInvalidReference),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "group.ErrNameTaken maps to 409 (#418)",
+			err:        fmt.Errorf("%w: NewName", group.ErrNameTaken),
+			wantStatus: http.StatusConflict,
 		},
 		{
 			name:       "sla.ErrValidation maps to 400 (#276)",

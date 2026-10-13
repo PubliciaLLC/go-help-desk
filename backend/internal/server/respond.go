@@ -11,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -59,7 +60,7 @@ func handleError(w http.ResponseWriter, err error) {
 	// user.ErrNotFound as well as userstore.ErrNotFound: the store sentinel
 	// WRAPS the domain one, so errors.Is does not run the other way, and a
 	// domain method returning the bare sentinel fell through to 500.
-	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) {
+	if errors.Is(err, userstore.ErrNotFound) || errors.Is(err, user.ErrNotFound) || errors.Is(err, ticketstore.ErrNotFound) || errors.Is(err, cannedresponse.ErrNotFound) || errors.Is(err, ticket.ErrStatusNotFound) || errors.Is(err, group.ErrNotFound) {
 		Error(w, http.StatusNotFound, "not_found", err.Error())
 		return
 	}
@@ -140,6 +141,18 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusForbidden, "forbidden", err.Error())
 		return
 	}
+	// 400: group member or scope reference does not exist.
+	if errors.Is(err, group.ErrInvalidReference) {
+		Error(w, http.StatusBadRequest, "invalid_reference", err.Error())
+		return
+	}
+	// 409, not 500: group.name is TEXT NOT NULL UNIQUE, and creating or
+	// renaming a group to a name that already exists is the schema working
+	// as designed, not a server fault.
+	if errors.Is(err, group.ErrNameTaken) {
+		Error(w, http.StatusConflict, "group_name_taken", err.Error())
+		return
+	}
 	// Checked before the general validation arm below, which it is a kind of:
 	// a taken address is a conflict, and saying so lets the admin form tell
 	// the difference between "that is not an address" and "somebody already
@@ -158,7 +171,7 @@ func handleError(w http.ResponseWriter, err error) {
 	// wrong. ticket.ErrValidation is caught by its own arm above.
 	if errors.Is(err, user.ErrValidation) || errors.Is(err, registration.ErrInvalidEmail) ||
 		errors.Is(err, ticket.ErrInvalidLinkType) || errors.Is(err, ticket.ErrInvalidStatusName) ||
-		errors.Is(err, sla.ErrValidation) || errors.Is(err, sla.ErrUnknownCategory) {
+		errors.Is(err, sla.ErrValidation) || errors.Is(err, sla.ErrUnknownCategory) || errors.Is(err, group.ErrValidation) {
 		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
