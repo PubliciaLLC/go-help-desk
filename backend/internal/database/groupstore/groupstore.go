@@ -121,7 +121,7 @@ func (s *Store) AddScope(ctx context.Context, sc group.GroupScope) error {
 		if isGroupScopeGroupFKViolation(err) {
 			return fmt.Errorf("group %s: %w", sc.GroupID, group.ErrNotFound)
 		}
-		if isGroupScopeCategoryFKViolation(err) || isGroupScopeTypeFKViolation(err) {
+		if isGroupScopeCategoryFKViolation(err) || isGroupScopeTypeFKViolation(err) || isGroupScopeTypeCategoryFKViolation(err) {
 			return fmt.Errorf("scope reference: %w", group.ErrInvalidReference)
 		}
 		return fmt.Errorf("adding scope: %w", err)
@@ -211,4 +211,11 @@ func isGroupScopeCategoryFKViolation(err error) bool {
 func isGroupScopeTypeFKViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "group_scopes_type_id_fkey"
+}
+
+// group_scopes_type_category_fk (migration 13) fires when the type exists but
+// belongs to a different category than the one in the request body.
+func isGroupScopeTypeCategoryFKViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503" && pgErr.ConstraintName == "group_scopes_type_category_fk"
 }
