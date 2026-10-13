@@ -185,3 +185,41 @@ func TestAuditMaskRequesterNames(t *testing.T) {
 		}
 	}
 }
+
+// Pasted IdP metadata is stored exactly as given, whitespace included (#461).
+func TestAdminService_SAMLMetadataXML_RoundTrip(t *testing.T) {
+	ctx := context.Background()
+	svc := admin.NewService(newFakeAdminStore())
+	require.Equal(t, "", svc.GetSAMLMetadataXML(ctx))
+
+	const xml = "\n  <?xml version=\"1.0\"?>\r\n<EntityDescriptor a=\"&amp;\">\t</EntityDescriptor>  \n\n"
+	require.NoError(t, svc.SetSAMLMetadataXML(ctx, xml))
+	require.Equal(t, xml, svc.GetSAMLMetadataXML(ctx))
+
+	require.NoError(t, svc.SetSAMLMetadataXML(ctx, ""))
+	require.Equal(t, "", svc.GetSAMLMetadataXML(ctx))
+}
+
+func TestAdminService_SAMLConfigured(t *testing.T) {
+	cases := []struct {
+		name                string
+		url, xml, cert, key string
+		want                bool
+	}{
+		{name: "none"},
+		{name: "url, cert and key", url: "https://idp/m", cert: "c", key: "k", want: true},
+		{name: "xml, cert and key", xml: "<x/>", cert: "c", key: "k", want: true},
+		{name: "xml and cert, no key", xml: "<x/>", cert: "c"},
+		{name: "xml only", xml: "<x/>"},
+		{name: "url, xml, cert and key", url: "https://idp/m", xml: "<x/>", cert: "c", key: "k", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			svc := admin.NewService(newFakeAdminStore())
+			require.NoError(t, svc.SetSAMLConfig(ctx, tc.url, tc.cert, tc.key))
+			require.NoError(t, svc.SetSAMLMetadataXML(ctx, tc.xml))
+			require.Equal(t, tc.want, svc.SAMLConfigured(ctx))
+		})
+	}
+}
