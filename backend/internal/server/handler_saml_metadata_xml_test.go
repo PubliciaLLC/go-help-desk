@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/stretchr/testify/require"
 )
 
@@ -207,4 +208,35 @@ func TestInitSAML_LoadsStoredMetadataXML(t *testing.T) {
 
 	resp := h.rawGet(t, "/api/v1/auth/saml/metadata", nil)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// The lockout guard (#300) counts pasted metadata as a way to sign in: a
+// SAML-only administrator is not stranded by a save that leaves SAML loaded
+// from XML, and is named when that same XML is cleared.
+func TestSaveSAMLConfig_GuardTreatsPastedMetadataAsReachable(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email:       "saml-admin@test.local",
+		DisplayName: "SAML Admin",
+		Role:        user.RoleAdmin,
+		SAMLSubject: "saml-admin-sub",
+	})
+	require.NoError(t, err)
+	sess := signInAsAdmin(t, h)
+
+	res, body := sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
+		"metadata_url": "", "metadata_xml": samlIDPMetadataXML,
+		"cert_pem": validSAMLCert, "key_pem": validSAMLKey,
+	})
+	require.Equal(t, http.StatusNoContent, res.StatusCode,
+		"pasted metadata that loads is reachable, so nobody is stranded; body: %s", body)
+
+	res, body = sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{"metadata_xml": ""})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	require.Contains(t, string(body), "saml-admin@test.local",
+		"the warning must name the administrator who would be stranded")
+	require.Equal(t, "", h.adminSvc.GetSAMLMetadataXML(ctx))
 }
