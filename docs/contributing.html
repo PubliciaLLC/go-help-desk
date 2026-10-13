@@ -257,7 +257,7 @@ npm run test:e2e  # layout tests (Playwright)</code></pre>
 
 <h3>Testing conventions</h3>
 <ul>
-  <li>Use Go's stdlib <code>testing</code> package, with <code>testify/require</code> for assertions. Plain <code>if got != want</code> is still right for a small check: the point is a readable failure message, not which package produced it.</li>
+  <li>Use Go's stdlib <code>testing</code> package, with <code>testify/require</code> for assertions. The rule here used to say no third-party assertion libraries; testify has been a dependency since early on and is used by most of the suite, so the rule was describing a codebase that does not exist. Plain <code>if got != want</code> is still right for a small check: the point is a readable failure message, not which package produced it.</li>
   <li>Table-driven tests for domain logic and HTTP handlers.</li>
   <li>Integration tests use <code>testutil.TxQueries</code>, which is rolled back automatically, so no test depends on pre-existing data.</li>
   <li><strong>Never mock the database.</strong> Real queries catch real bugs.</li>

@@ -295,7 +295,7 @@ mcpServers:
     requestOptions:
       headers:
         Authorization: ApiKey GHD_3f8a…</code></pre>
-<p>Format taken from Continue's <a href="https://docs.continue.dev/customize/deep-dives/mcp">MCP deep dive</a> (file location, <code>type: sse</code>, <code>url</code>) and its <a href="https://docs.continue.dev/reference">config reference</a>, which describes <code>requestOptions</code> with <code>headers</code> for <code>sse</code> and <code>streamable-http</code> servers.</p>
+<p>Format taken from Continue's <a href="https://docs.continue.dev/customize/deep-dives/mcp">MCP deep dive</a> (file location, <code>type: sse</code>, <code>url</code>) and its <a href="https://docs.continue.dev/reference">config reference</a>, which gives MCP servers an optional <code>requestOptions</code> for <code>sse</code> and <code>streamable-http</code> servers, in the same format as a model's <code>requestOptions</code>, where <code>headers</code> sets custom request headers. Neither page shows a remote server with a header, so this snippet puts the two together rather than copying a worked example.</p>
 
 <h3>Cursor</h3>
 <p>Add the server to <code>.cursor/mcp.json</code> in your project, or to <code>~/.cursor/mcp.json</code> to make it available everywhere:</p>
@@ -309,7 +309,7 @@ mcpServers:
     }
   }
 }</code></pre>
-<p>Format taken from Cursor's <a href="https://cursor.com/docs/context/mcp">Model Context Protocol documentation</a>: a remote server entry takes <code>url</code> and optional <code>headers</code>, with no <code>type</code> key.</p>
+<p>Format taken from Cursor's <a href="https://cursor.com/docs/context/mcp">Model Context Protocol documentation</a>: a remote server entry takes <code>url</code> and optional <code>headers</code>, and its remote examples carry no <code>type</code> key.</p>
 
 <h3>Other clients</h3>
 <p>Any MCP client that supports the SSE transport and custom request headers works. Give it the <code>/mcp/sse</code> URL and the <code>Authorization</code> header. A client configured for the newer Streamable HTTP transport against <code>/mcp/</code> will not connect.</p>
