@@ -1,6 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy } from './admin'
+import { AxiosError, AxiosHeaders } from 'axios'
+import {
+  saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy,
+  deleteGroup, deleteOAuthClient, deleteAPIKey, deleteCategory, deleteType, deleteItem,
+  deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment, removeGroupScope,
+} from './admin'
 
 // admin.ts is 557 lines and almost all of it is one-line wrappers, which are
 // deliberately not tested — see the note in tickets.test.ts. Covered here is
@@ -100,4 +105,43 @@ describe('payloads where absent and empty differ', () => {
     const [, body] = post.mock.calls[0]
     expect('priority' in (body as object)).toBe(false)
   })
+})
+
+// Deleting something that is already gone answers 404 (#418). That is the
+// outcome the caller asked for, so these resolve; every other failure still
+// rejects so the page can say what went wrong.
+describe('deletes treat 404 as already gone', () => {
+  function failure(status: number) {
+    const headers = new AxiosHeaders()
+    return new AxiosError('Request failed', 'ERR_BAD_REQUEST', { headers } as never, null, {
+      status, statusText: 'x', headers, config: { headers } as never, data: { error: { code: 'x', message: 'm' } },
+    } as never)
+  }
+
+  const calls: Record<string, () => Promise<void>> = {
+    deleteGroup: () => deleteGroup('g'),
+    deleteOAuthClient: () => deleteOAuthClient('o'),
+    deleteAPIKey: () => deleteAPIKey('k'),
+    deleteCategory: () => deleteCategory('c'),
+    deleteType: () => deleteType('c', 't'),
+    deleteItem: () => deleteItem('c', 't', 'i'),
+    deleteCategoryAssignment: () => deleteCategoryAssignment('c', 'a'),
+    deleteTypeAssignment: () => deleteTypeAssignment('c', 't', 'a'),
+    deleteItemAssignment: () => deleteItemAssignment('c', 't', 'i', 'a'),
+    removeGroupScope: () => removeGroupScope('g', { category_id: 'c' }),
+  }
+
+  for (const [name, call] of Object.entries(calls)) {
+    it(`${name}: resolves on 404, rejects on 409 and 500`, async () => {
+      const del = vi.spyOn(api, 'delete')
+      del.mockRejectedValueOnce(failure(404))
+      await expect(call()).resolves.toBeUndefined()
+
+      del.mockRejectedValueOnce(failure(409))
+      await expect(call()).rejects.toMatchObject({ response: { status: 409 } })
+
+      del.mockRejectedValueOnce(failure(500))
+      await expect(call()).rejects.toMatchObject({ response: { status: 500 } })
+    })
+  }
 })
