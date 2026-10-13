@@ -420,22 +420,7 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nameID := claims.Subject
-	email := firstNonEmpty(
-		claims.Attributes.Get("email"),
-		claims.Attributes.Get("mail"),
-		claims.Attributes.Get("urn:oid:0.9.2342.19200300.100.1.3"),
-		nameID, // fall back to NameID when it is an email address
-	)
-	displayName := firstNonEmpty(
-		claims.Attributes.Get("displayName"),
-		claims.Attributes.Get("cn"),
-		claims.Attributes.Get("name"),
-		strings.Join([]string{
-			claims.Attributes.Get("givenName"),
-			claims.Attributes.Get("sn"),
-		}, " "),
-		email,
-	)
+	email, displayName := samlIdentity(nameID, claims.Attributes)
 
 	allowedDomains := s.adminSvc.AllowedEmailDomains(r.Context())
 	u, err := s.users.UpsertSAMLUser(r.Context(), nameID, email, displayName, allowedDomains)
