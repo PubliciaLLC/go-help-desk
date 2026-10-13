@@ -3,7 +3,23 @@ package server
 import (
 	"context"
 	"errors"
+
+	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 )
+
+// failingGroupLookup makes GetByID fail with something other than "no such
+// row". The embedded Store is left nil: no other call is made on the path it
+// is used for.
+type failingGroupLookup struct{ group.Store }
+
+func (failingGroupLookup) GetByID(context.Context, uuid.UUID) (group.Group, error) {
+	return group.Group{}, errors.New("injected group lookup failure")
+}
+
+// FailGroupLookupForTest makes group lookups fail as a database outage would,
+// injected for the reason given on FailSAMLSpendForTest.
+func (s *Server) FailGroupLookupForTest() { s.groups = group.NewService(failingGroupLookup{}) }
 
 // failingSpend makes the SAML hand-over ledger write fail and leaves every
 // other session call alone.

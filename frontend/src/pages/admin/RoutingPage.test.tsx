@@ -90,11 +90,20 @@ describe('the routing page', () => {
     expect((screen.getByRole('checkbox', { name: 'Ada Admin' }) as HTMLInputElement).checked).toBe(false)
   })
 
-  it('offers only people who can be given work', async () => {
+  it('offers only people who can be given work, unless they are already in the list', async () => {
     mockApi()
     renderWithQuery(<RoutingPage />)
     await screen.findByRole('checkbox', { name: 'Ada Admin' })
-    expect(screen.queryByRole('checkbox', { name: 'Sue Suspended' })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /Sue Suspended/ })).toBeNull()
+  })
+
+  it('shows a suspended person in the list as checked, disabled and labelled', async () => {
+    mockApi({ auto_assign_user_ids: ['s-3'] })
+    renderWithQuery(<RoutingPage />)
+
+    const box = (await screen.findByRole('checkbox', { name: 'Sue Suspended (suspended)' })) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    expect(box.disabled).toBe(true)
   })
 
   it('saves the group and the people, in the order they were ticked', async () => {
@@ -134,19 +143,20 @@ describe('the routing page', () => {
     )
   })
 
-  it('does not send back saved people who can no longer take work, and says so', async () => {
-    // s-3 is suspended and gone-1 no longer exists: the server would refuse
-    // the list if they went back in it.
+  it('sends a suspended person back unchanged, and drops one who no longer exists, saying so', async () => {
+    // s-3 is suspended: the server keeps them in the rotation until they are
+    // re-enabled. gone-1 no longer exists and the server would refuse it.
     const patch = mockApi({ auto_assign_user_ids: ['s-1', 's-3', 'gone-1'] })
     const user = userEvent.setup()
     renderWithQuery(<RoutingPage />)
 
-    expect(await screen.findByText(/2 saved entries can no longer take work/i)).toBeTruthy()
+    expect(await screen.findByText(/1 saved entry no longer exists/i)).toBeTruthy()
+    await user.click(screen.getByRole('checkbox', { name: 'Sam Staff' }))
     await user.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith('/admin/settings', {
         auto_assign_group_id: '',
-        auto_assign_user_ids: ['s-1'],
+        auto_assign_user_ids: ['s-1', 's-3', 's-2'],
       }),
     )
   })

@@ -454,7 +454,12 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// routing time, so a typo saved cleanly and tickets quietly stayed
 	// unassigned. Refused by name instead, before anything is written.
 	if err := s.validateAutoAssign(r.Context(), body); err != nil {
-		Error(w, http.StatusBadRequest, "invalid_auto_assign", err.Error())
+		var refusal autoAssignRefusal
+		if errors.As(err, &refusal) {
+			Error(w, http.StatusBadRequest, "invalid_auto_assign", refusal.Error())
+		} else {
+			handleError(w, err) // a failed lookup is our fault, not a bad id
+		}
 		return
 	}
 
@@ -486,6 +491,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// autoAssignRefusal is a verdict on the request: the id is wrong, or names
+// someone who cannot take work. Any other error from validateAutoAssign is a
+// failed lookup and is not the administrator's mistake.
+type autoAssignRefusal string
+
+func (e autoAssignRefusal) Error() string { return string(e) }
+
+func refusef(format string, a ...any) error { return autoAssignRefusal(fmt.Sprintf(format, a...)) }
+
 // validateAutoAssign checks the two routing fallbacks in a settings body.
 //
 // The group must exist. Each user must exist and be able to hold work, which
@@ -499,16 +513,16 @@ func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.Ra
 	if raw, ok := body[admin.KeyAutoAssignGroupID]; ok && !isJSONNull(raw) {
 		var v string
 		if err := json.Unmarshal(raw, &v); err != nil {
-			return errors.New("auto_assign_group_id must be a group id, or empty to turn it off")
+			return autoAssignRefusal("auto_assign_group_id must be a group id, or empty to turn it off")
 		}
 		if v != "" {
 			id, err := uuid.Parse(v)
 			if err != nil {
-				return fmt.Errorf("auto_assign_group_id %q is not a group id", v)
+				return refusef("auto_assign_group_id %q is not a group id", v)
 			}
 			if _, err := s.groups.GetByID(ctx, id); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("auto_assign_group_id: no group with id %s", id)
+					return refusef("auto_assign_group_id: no group with id %s", id)
 				}
 				return fmt.Errorf("checking auto_assign_group_id: %w", err)
 			}
@@ -518,22 +532,22 @@ func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.Ra
 	if raw, ok := body[admin.KeyAutoAssignUserIDs]; ok && !isJSONNull(raw) {
 		var ids []string
 		if err := json.Unmarshal(raw, &ids); err != nil {
-			return errors.New("auto_assign_user_ids must be a list of user ids")
+			return autoAssignRefusal("auto_assign_user_ids must be a list of user ids")
 		}
 		for _, v := range ids {
 			id, err := uuid.Parse(v)
 			if err != nil {
-				return fmt.Errorf("auto_assign_user_ids: %q is not a user id", v)
+				return refusef("auto_assign_user_ids: %q is not a user id", v)
 			}
 			u, err := s.users.GetByID(ctx, id)
 			if errors.Is(err, user.ErrNotFound) || errors.Is(err, userstore.ErrNotFound) {
-				return fmt.Errorf("auto_assign_user_ids: no user with id %s", id)
+				return refusef("auto_assign_user_ids: no user with id %s", id)
 			}
 			if err != nil {
 				return fmt.Errorf("checking auto_assign_user_ids: %w", err)
 			}
 			if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
-				return fmt.Errorf("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
+				return refusef("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
 			}
 		}
 	}

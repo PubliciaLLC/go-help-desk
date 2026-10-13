@@ -125,3 +125,15 @@ func TestAutoAssign_RefusalWritesNothing(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, status, body)
 	require.Nil(t, h.adminSvc.AutoAssignGroupID(ctx))
 }
+
+// Only "no such group" and "not eligible" are the administrator's mistake. A
+// lookup that fails for any other reason is ours, and must not be reported as
+// a bad id.
+func TestAutoAssign_ALookupFaultIsA500NotA400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	h.srv.FailGroupLookupForTest()
+
+	status, body := patchSettings(t, h, map[string]any{"auto_assign_group_id": uuid.NewString()})
+	require.Equal(t, http.StatusInternalServerError, status, body)
+}

@@ -46,15 +46,21 @@ export function RoutingPage() {
     : []
 
   const groupList = groups.data ?? []
-  const people = (staff.data ?? []).filter((p) => p.assignable)
-  const available = new Set(people.map((p) => p.id))
+  const everyone = staff.data ?? []
+  const exists = new Set(everyone.map((p) => p.id))
 
-  // A saved id that is no longer here (deleted, suspended, moved to a
-  // reporting role) cannot be shown, and the server refuses a list that still
-  // holds one. So it is left out of what is sent, and the admin is told.
-  const unavailable = storedUsers.filter((id) => !available.has(id)).length
+  // A suspended person stays in the rotation on the server (they are skipped
+  // while suspended and take their turn again when re-enabled), so one who is
+  // already saved is shown, checked and locked, and sent back unchanged.
+  // /staff cannot tell "suspended" from "moved to a reporting role"; the
+  // server's refusal names the person if it is the latter.
+  const people = everyone.filter((p) => p.assignable || storedUsers.includes(p.id))
+
+  // A saved id that names nobody (deleted) is refused by the server, so it is
+  // left out of what is sent, and the admin is told.
+  const gone = storedUsers.filter((id) => !exists.has(id)).length
   const group = groupDraft ?? (groupList.some((g) => g.id === storedGroup) ? storedGroup : '')
-  const users = usersDraft ?? storedUsers.filter((id) => available.has(id))
+  const users = usersDraft ?? storedUsers.filter((id) => exists.has(id))
 
   const toggle = (id: string) => {
     setSaved(false)
@@ -108,10 +114,9 @@ export function RoutingPage() {
                 Tickets are dealt out to the people ticked here, in the order they were ticked. The turn order is kept
                 in memory, so it starts again when the server restarts. Someone who is suspended when their turn comes is skipped.
               </p>
-              {unavailable > 0 && (
+              {gone > 0 && (
                 <p className="text-xs text-amber-700">
-                  {unavailable} saved {unavailable === 1 ? 'entry can' : 'entries can'} no longer take work
-                  (deleted, suspended or no longer staff) and will be dropped when you save.
+                  {gone} saved {gone === 1 ? 'entry no longer exists' : 'entries no longer exist'} and will be dropped when you save.
                 </p>
               )}
               {people.length === 0 && <p className="text-sm text-gray-400">No staff to choose from.</p>}
@@ -122,9 +127,10 @@ export function RoutingPage() {
                       <input
                         type="checkbox"
                         checked={users.includes(p.id)}
+                        disabled={!p.assignable}
                         onChange={() => toggle(p.id)}
                       />
-                      {p.display_name}
+                      {p.display_name}{!p.assignable && ' (suspended)'}
                     </label>
                   </li>
                 ))}
