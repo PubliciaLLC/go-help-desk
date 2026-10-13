@@ -630,6 +630,17 @@ type scanStatus struct {
 	// because the combination of policy and reachability is not obvious and
 	// this is the sentence an administrator actually needs.
 	Effect string `json:"effect"`
+
+	// PolicyExplicit reports that an administrator saved a valid policy, as
+	// opposed to the default being derived from whether an address exists.
+	PolicyExplicit bool `json:"policy_explicit"`
+
+	// StaleOff is scanning off by default rather than by choice (#459): no
+	// policy was ever saved, no scanner address is set anywhere, and the
+	// instance already holds attachments. That is the state of a 1.2 install
+	// whose scanner was opt-in under Compose; a deliberate "Do not scan"
+	// makes PolicyExplicit true and clears it.
+	StaleOff bool `json:"stale_off"`
 }
 
 // handleGetSecurityWarnings reports configuration problems that cannot be
@@ -659,6 +670,13 @@ func (s *Server) scanStatus(ctx context.Context) scanStatus {
 		Policy:     string(policy),
 		Configured: configured,
 		Reachable:  reachable,
+
+		PolicyExplicit: s.adminSvc.AttachmentScanPolicyExplicit(ctx),
+	}
+	if policy == antivirus.PolicyOff && !st.PolicyExplicit && !configured {
+		// A failed lookup reads as "no attachments": a banner that cries
+		// wolf on a database hiccup is worse than one that stays quiet.
+		st.StaleOff, _ = s.tickets.AnyAttachmentExists(ctx)
 	}
 	switch {
 	case policy == antivirus.PolicyOff:

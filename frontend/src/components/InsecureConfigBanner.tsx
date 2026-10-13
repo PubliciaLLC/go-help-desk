@@ -46,7 +46,9 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const scanning = data?.attachment_scanning
   const scannerDegraded = !!scanning && scanning.policy !== 'off' && !scanning.reachable
 
-  if (insecure.length === 0 && !scannerDegraded) return null
+  const staleOff = !!scanning?.stale_off
+
+  if (insecure.length === 0 && !scannerDegraded && !staleOff) return null
 
   return (
     <>
@@ -69,6 +71,21 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
         <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
           <p className="text-sm font-semibold">Attachment scanner unreachable</p>
           <p className="mt-1 text-sm">{scanning.effect}</p>
+        </div>
+      )}
+      {staleOff && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">Attachments are not being scanned</p>
+          <p className="mt-1 text-sm">
+            To turn scanning back on, add{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">COMPOSE_PROFILES=antivirus</code>{' '}
+            and{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">CLAMAV_ADDR=tcp://clamav:3310</code>{' '}
+            to <code className="font-mono text-xs">docker/.env</code>, run{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">docker compose up -d</code>, then
+            confirm the scanner address under Settings → Attachments. To keep scanning off, choose
+            &quot;Do not scan&quot; there.
+          </p>
         </div>
       )}
     </>

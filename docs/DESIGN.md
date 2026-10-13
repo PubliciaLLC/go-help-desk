@@ -1182,6 +1182,18 @@ case, where uploads keep being accepted without ever being scanned and
 nothing before this said so. A deliberate `policy: off` is not shown as a
 warning: that is a choice already visible in Settings, not a hidden failure.
 
+**The one exception (#459): a policy nobody chose is warned about.** When no
+policy was ever saved (`policy_explicit` is false), no scanner address is set in
+either the setting or the environment, and the instance already holds at least
+one attachment, the response carries `stale_off: true` and the banner tells the
+administrator how to turn scanning back on. This is the state of an install that
+upgraded from a release whose Compose file ran a scanner by default: "off" there
+is an accident of what was deployed, not a position anyone holds. Explicitly
+saving "Do not scan" makes `policy_explicit` true and clears the banner for good,
+so a deliberate "off" is still never warned about. Settings → Attachments shows
+the same status (policy, configured, reachable, and the `effect` sentence) so an
+administrator can check it without waiting for an upload to fail.
+
 **Attachments are download-only. There is no previewer, and there will not be
 one.**
 
@@ -1943,6 +1955,20 @@ request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
 privilege change. Lifetime is 7 days. SAML's library cookie is not a
 session; it is spent at hand-over (see Authentication → SAML).
+
+**The generated JWT signing key is stored unencrypted in `instance_secrets`,
+on purpose (#454).** When `JWT_SECRET` is unset or under 32 bytes, the server
+generates a random 32-byte key once and keeps it in that table. Do not
+"fix" this by encrypting it:
+
+- It sits in the same database as session tokens, which are more sensitive: a
+  reader of this table could already act as any signed-in user.
+- Encrypting it with `SESSION_SECRET` would lock the key out whenever that secret
+  changed, and the key would silently regenerate. Every OAuth client would then
+  hold a token the server no longer accepts.
+
+A security scanner flagged this once; this note is here so it is not flagged
+again. A long `JWT_SECRET` in the environment still wins over the stored key.
 
 ### Credential Scopes
 

@@ -4052,7 +4052,7 @@ paths:
                       enum: [SESSION_SECRET, JWT_SECRET]
                   attachment_scanning:
                     type: object
-                    required: [policy, configured, reachable, effect]
+                    required: [policy, configured, reachable, effect, policy_explicit, stale_off]
                     properties:
                       policy:
                         type: string
@@ -4070,6 +4070,22 @@ paths:
                       effect:
                         type: string
                         description: One sentence, in plain words, saying what happens to uploads right now.
+                      policy_explicit:
+                        type: boolean
+                        description: |
+                          True when an administrator has saved a valid
+                          attachment_scan_policy. False when the policy shown is
+                          only a default derived from whether a scanner address
+                          is set. Saving "off" explicitly makes this true.
+                      stale_off:
+                        type: boolean
+                        description: |
+                          True when scanning is off by default rather than by
+                          choice: the effective policy is off, policy_explicit is
+                          false, no scanner address is set in the setting or the
+                          environment, and at least one attachment is stored.
+                          The admin UI shows a banner with the fix while this is
+                          true.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

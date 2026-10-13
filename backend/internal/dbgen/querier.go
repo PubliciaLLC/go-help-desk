@@ -38,6 +38,7 @@ type Querier interface {
 	// The Go-side check still runs first, because it is what tells the person
 	// WHICH rule refused them. This one is what binds.
 	AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error)
+	AnyAttachmentExists(ctx context.Context) (bool, error)
 	// Whether a category/type/item triple exists and hangs together: the type
 	// belongs to the category, and the item belongs to the type.
 	//

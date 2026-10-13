@@ -10,6 +10,12 @@ When the attachment scan policy is off and stored attachments carry earlier scan
 2. Run `docker compose up -d`
 3. Set the scanner address in Settings → Attachments
 
+The banner reads:
+
+> Attachments are not being scanned. To turn scanning back on, add `COMPOSE_PROFILES=antivirus` and `CLAMAV_ADDR=tcp://clamav:3310` to `docker/.env`, run `docker compose up -d`, then confirm the scanner address under Settings → Attachments. To keep scanning off, choose "Do not scan" there.
+
+It appears only when no scan policy was ever saved, no scanner address is set (in Settings or in the environment) and at least one attachment exists. Settings → Attachments also shows the scanner's policy, whether an address is configured, whether it answers, and what that means for uploads.
+
 Explicitly choosing "Do not scan" in the policy dropdown clears the banner. The exception is documented in DESIGN.md:1177-1183 — until a policy is explicitly set, the banner warns about unscanned uploads even in "off" mode.
 
 ## New Environment Variables (Compose-Forwarded)

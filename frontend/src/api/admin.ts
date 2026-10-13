@@ -605,6 +605,13 @@ export interface AttachmentScanningWarning {
   reachable: boolean
   /** Plain-English sentence for what is happening to uploads right now. */
   effect: string
+  /** An administrator saved a valid scan policy (as opposed to a derived default). */
+  policy_explicit: boolean
+  /**
+   * Scanning is off by default rather than by choice: no policy saved, no
+   * scanner address anywhere, and attachments already stored (#459).
+   */
+  stale_off: boolean
 }
 
 /** Admin-only. Not on the public /site payload, by design. */
