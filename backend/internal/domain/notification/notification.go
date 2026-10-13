@@ -78,6 +78,20 @@ type Event struct {
 	// instead: readable by a dispatcher, invisible on the wire.
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
+
+	// Attrs is the classification of the ticket this event describes, as it
+	// was when the event was raised, for webhook filters (#413). Excluded from
+	// JSON like Subject: the raw body does not change. Nil means "not known":
+	// an event queued before #413, or one that names no ticket.
+	Attrs *TicketAttrs `json:"-"`
+}
+
+// TicketAttrs is the part of a ticket a webhook filter can test. Priority is
+// ticket.Priority as a string: ticket imports notification, not the reverse.
+type TicketAttrs struct {
+	CategoryID      uuid.UUID  `json:"category_id"`
+	Priority        string     `json:"priority"`
+	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"` // nil = no group
 }
 
 // Dispatcher delivers events to whatever sinks are registered.

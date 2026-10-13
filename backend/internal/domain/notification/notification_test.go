@@ -102,3 +102,28 @@ func TestEvent_GuestFieldsNeverReachTheWebhookBody(t *testing.T) {
 		}
 	}
 }
+
+// Attrs is how the webhook filter (#413) sees a ticket's classification. It is
+// excluded from the wire like Subject, so setting it must not move the raw
+// body by one byte.
+func TestEvent_AttrsStayOutOfTheWebhookPayload(t *testing.T) {
+	ev := Event{
+		Type:       EventTicketCreated,
+		TicketID:   uuid.MustParse("11111111-2222-3333-4444-555555555555"),
+		OccurredAt: time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC),
+		Payload:    map[string]any{"Subject": "Printer jammed"},
+	}
+	before, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	catID := uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001")
+	grpID := uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000002")
+	ev.Attrs = &TicketAttrs{CategoryID: catID, Priority: "critical", AssigneeGroupID: &grpID}
+	after, err := json.Marshal(ev)
+	require.NoError(t, err)
+
+	require.Equal(t, string(before), string(after), "setting Attrs changed the webhook body")
+	require.NotContains(t, string(after), "critical")
+	require.NotContains(t, string(after), catID.String())
+	require.NotContains(t, string(after), grpID.String())
+}

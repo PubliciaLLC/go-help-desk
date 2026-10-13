@@ -832,3 +832,30 @@ func TestVerificationDispatcher(t *testing.T) {
 	require.Error(t, d.Dispatch(context.Background(), notification.Event{Type: notification.EventRegistrationVerify}),
 		"a verification event with no id must fail, not vanish")
 }
+
+// The filter (#413) reads Attrs at fan-out, after the queue. Each shape must
+// come back as it went in: a group set, and no group.
+func TestOutboxRecord_RoundTripsTicketAttrs(t *testing.T) {
+	grp := uuid.New()
+	for _, attrs := range []*notification.TicketAttrs{
+		{CategoryID: uuid.New(), Priority: "critical", AssigneeGroupID: &grp},
+		{CategoryID: uuid.New(), Priority: "low", AssigneeGroupID: nil},
+	} {
+		ev := sampleEvent()
+		ev.Attrs = attrs
+		b, err := encodeEvent(ev)
+		require.NoError(t, err)
+		got, err := decodeEvent(b)
+		require.NoError(t, err)
+		require.Equal(t, attrs, got.Attrs)
+	}
+}
+
+// A row queued before #413 has no attrs. It must still decode, and it must
+// decode to nil, which the filter reads as "not known".
+func TestOutboxRecord_ARowQueuedBeforeAttrsDecodesWithoutThem(t *testing.T) {
+	old := []byte(`{"type":"ticket.created","ticket_id":"11111111-2222-3333-4444-555555555555","occurred_at":"2026-01-01T00:00:00Z"}`)
+	got, err := decodeEvent(old)
+	require.NoError(t, err)
+	require.Nil(t, got.Attrs)
+}
