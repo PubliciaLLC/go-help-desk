@@ -13,11 +13,15 @@ import (
 func TestSecretStore_InsertIfAbsentAndGet(t *testing.T) {
 	db, cleanup := testutil.NewDB(t)
 	defer cleanup()
-	store := database.NewSecretStore(db.Queries)
+	// In a transaction that is rolled back: a committed jwt_signing row would
+	// leak into every test that follows, since the table holds one per name.
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	store := database.NewSecretStore(q)
 	ctx := context.Background()
 
 	// Test: insert a secret and retrieve it
-	secret := []byte("this-is-a-32-byte-secret-ok!")
+	secret := []byte("this-is-exactly-32-bytes-long!!!")
 	err := store.InsertIfAbsent(ctx, "jwt_signing", secret)
 	require.NoError(t, err)
 
@@ -31,6 +35,15 @@ func TestSecretStore_InsertIfAbsentRaceCondition(t *testing.T) {
 	defer cleanup()
 	store := database.NewSecretStore(db.Queries)
 	ctx := context.Background()
+
+	// Needs the real pool (concurrent connections), so it commits; remove the
+	// row before and after so it neither sees nor leaves another test's state.
+	clearSecrets := func() {
+		_, err := db.SQL.ExecContext(ctx, "DELETE FROM instance_secrets")
+		require.NoError(t, err)
+	}
+	clearSecrets()
+	defer clearSecrets()
 
 	// Test: 20 goroutines try to insert different values concurrently
 	// Only one should succeed (INSERT ... ON CONFLICT DO NOTHING)
@@ -95,7 +108,7 @@ func TestSecretStore_UnknownName(t *testing.T) {
 	ctx := context.Background()
 
 	// Test: trying to insert with an unknown name should be rejected by the CHECK constraint
-	secret := []byte("this-is-a-32-byte-secret-ok!")
+	secret := []byte("this-is-exactly-32-bytes-long!!!")
 	err := store.InsertIfAbsent(ctx, "unknown_secret", secret)
 	require.Error(t, err, "expected CHECK constraint to reject unknown name")
 }

@@ -66,7 +66,7 @@ func TestConfig_InsecureSecrets_LongJWTSecretExample(t *testing.T) {
 	// If JWT_SECRET is 32+ bytes AND an example value, it must be flagged
 	// because it will win over the generated key.
 	c := &config.Config{
-		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=", // clean
+		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",    // clean
 		JWTSecret:     "change-me-in-production-this-is-really-insecure", // 50 bytes, example
 	}
 	got := c.InsecureSecrets()
