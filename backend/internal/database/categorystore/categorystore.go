@@ -3,6 +3,8 @@ package categorystore
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -28,6 +30,9 @@ func (s *Store) CreateCategory(ctx context.Context, c category.Category) error {
 func (s *Store) GetCategory(ctx context.Context, id uuid.UUID) (category.Category, error) {
 	r, err := s.q.GetCategory(ctx, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return category.Category{}, fmt.Errorf("category %s: %w", id, category.ErrNotFound)
+		}
 		return category.Category{}, fmt.Errorf("getting category %s: %w", id, err)
 	}
 	return category.Category{ID: r.ID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil
@@ -71,6 +76,9 @@ func (s *Store) CreateType(ctx context.Context, t category.Type) error {
 func (s *Store) GetType(ctx context.Context, id uuid.UUID) (category.Type, error) {
 	r, err := s.q.GetType(ctx, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return category.Type{}, fmt.Errorf("type %s: %w", id, category.ErrNotFound)
+		}
 		return category.Type{}, fmt.Errorf("getting type %s: %w", id, err)
 	}
 	return category.Type{ID: r.ID, CategoryID: r.CategoryID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil
@@ -115,6 +123,9 @@ func (s *Store) CreateItem(ctx context.Context, i category.Item) error {
 func (s *Store) GetItem(ctx context.Context, id uuid.UUID) (category.Item, error) {
 	r, err := s.q.GetItem(ctx, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return category.Item{}, fmt.Errorf("item %s: %w", id, category.ErrNotFound)
+		}
 		return category.Item{}, fmt.Errorf("getting item %s: %w", id, err)
 	}
 	return category.Item{ID: r.ID, TypeID: r.TypeID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil

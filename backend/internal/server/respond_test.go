@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -73,6 +74,31 @@ func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 			name:       "plugin.ErrNotFound maps to 404 (#418)",
 			err:        fmt.Errorf("plugin abc: %w", plugin.ErrNotFound),
 			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "category.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("category abc: %w", category.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "category.ErrValidation maps to 400 (#418)",
+			err:        fmt.Errorf("category name: %w", category.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "category.ErrCategoryInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 2 tickets", category.ErrCategoryInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "category.ErrTypeInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 1 ticket", category.ErrTypeInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "category.ErrItemInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 3 tickets", category.ErrItemInUse),
+			wantStatus: http.StatusConflict,
 		},
 		{
 			name:       "sla.ErrValidation maps to 400 (#276)",
