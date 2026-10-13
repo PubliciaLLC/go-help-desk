@@ -2,7 +2,9 @@ package server
 
 import (
 	"log/slog"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,7 +74,22 @@ func toAdminSummary(u user.User) adminUserSummary {
 	}
 }
 
+// Paged mode of GET /admin/users (#449), switched on by ?page= and by nothing
+// else. The list used to ignore every query parameter and answer with the
+// newest 200 accounts, and the frontend sent limit and offset anyway, so
+// honouring those (or q, or role) for a client that never asked for a page
+// would change what it gets. A new parameter name cannot have been sent by an
+// old client.
+const (
+	usersDefaultPerPage = 50
+	usersMaxPerPage     = 200
+)
+
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Has("page") {
+		s.handleListUsersPaged(w, r)
+		return
+	}
 	users, err := s.users.ListAdmin(r.Context(), 200, 0)
 	if err != nil {
 		handleError(w, err)
@@ -82,6 +99,53 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	for i, u := range users {
 		out[i] = toAdminSummary(u)
 	}
+	JSON(w, http.StatusOK, out)
+}
+
+// handleListUsersPaged answers a bare array, like the unpaged list, with the
+// number of matches in X-Total-Count so a client can show "n of N". A page past
+// the end is an empty array, not an error.
+func (s *Server) handleListUsersPaged(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	page, err := strconv.Atoi(q.Get("page"))
+	if err != nil || page < 1 {
+		Error(w, http.StatusBadRequest, "bad_request", "page must be a whole number, 1 or more")
+		return
+	}
+	perPage := usersDefaultPerPage
+	if v := q.Get("per_page"); v != "" {
+		perPage, err = strconv.Atoi(v)
+		if err != nil || perPage < 1 {
+			Error(w, http.StatusBadRequest, "bad_request", "per_page must be a whole number, 1 or more")
+			return
+		}
+		perPage = min(perPage, usersMaxPerPage)
+	}
+	role := q.Get("role")
+	switch user.Role(role) {
+	case "", user.RoleAdmin, user.RoleStaff, user.RoleUser:
+	default:
+		Error(w, http.StatusBadRequest, "bad_request", "role must be one of: admin, staff, user")
+		return
+	}
+
+	// The store takes an int32. A page number big enough to overflow it is
+	// past the end of any table, so it gets the same empty answer.
+	offset := math.MaxInt32
+	if page-1 <= (math.MaxInt32-perPage)/perPage {
+		offset = (page - 1) * perPage
+	}
+	users, total, err := s.users.SearchAdmin(r.Context(), role, strings.TrimSpace(q.Get("q")), perPage, offset)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]adminUserSummary, len(users))
+	for i, u := range users {
+		out[i] = toAdminSummary(u)
+	}
+	w.Header().Set("X-Total-Count", strconv.FormatInt(total, 10))
 	JSON(w, http.StatusOK, out)
 }
 

@@ -206,6 +206,10 @@ func (f *fakeUserStore) ListAdmin(_ context.Context, _, _ int) ([]user.User, err
 	return out, nil
 }
 
+func (f *fakeUserStore) SearchAdmin(_ context.Context, _, _ string, _, _ int) ([]user.User, int64, error) {
+	return nil, 0, nil
+}
+
 func (f *fakeUserStore) ListActiveAdmins(_ context.Context) ([]user.User, error) {
 	out := make([]user.User, 0, len(f.byID))
 	for _, u := range f.byID {

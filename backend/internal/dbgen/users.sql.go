@@ -262,6 +262,27 @@ func (q *Queries) CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int
 	return count, err
 }
 
+const countSearchUsersAdmin = `-- name: CountSearchUsersAdmin :one
+SELECT count(*) FROM users
+WHERE deleted_at IS NULL
+  AND ($1::text = '' OR role = $1::text)
+  AND ($2::text = ''
+       OR email ILIKE '%' || $2::text || '%'
+       OR display_name ILIKE '%' || $2::text || '%')
+`
+
+type CountSearchUsersAdminParams struct {
+	Role string `json:"role"`
+	Q    string `json:"q"`
+}
+
+func (q *Queries) CountSearchUsersAdmin(ctx context.Context, arg CountSearchUsersAdminParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSearchUsersAdmin, arg.Role, arg.Q)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE
 `
@@ -850,6 +871,73 @@ UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1
 func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.ExecContext(ctx, restoreUser, id)
 	return err
+}
+
+const searchUsersAdmin = `-- name: SearchUsersAdmin :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users
+WHERE deleted_at IS NULL
+  AND ($1::text = '' OR role = $1::text)
+  AND ($2::text = ''
+       OR email ILIKE '%' || $2::text || '%'
+       OR display_name ILIKE '%' || $2::text || '%')
+ORDER BY created_at DESC, id
+LIMIT $4 OFFSET $3
+`
+
+type SearchUsersAdminParams struct {
+	Role       string `json:"role"`
+	Q          string `json:"q"`
+	PageOffset int32  `json:"page_offset"`
+	PageLimit  int32  `json:"page_limit"`
+}
+
+// The paged admin list (#449). role = ” means any role; q is already
+// LIKE-escaped by the caller (backslash is the escape character), and an empty
+// q matches everyone. id breaks created_at ties so a page boundary never
+// repeats or drops an account. ListUsersAdmin, above, is the unpaged list and
+// is left alone.
+func (q *Queries) SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminParams) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, searchUsersAdmin,
+		arg.Role,
+		arg.Q,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.Disabled,
+			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setFirstUserMFA = `-- name: SetFirstUserMFA :execrows

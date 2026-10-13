@@ -24,6 +24,25 @@ export async function listUsers(limit = 200, offset = 0): Promise<AdminUser[]> {
   return res.data
 }
 
+export const USERS_PER_PAGE = 50
+
+/**
+ * One page of the admin user list (#449). Sending `page` is what switches the
+ * server into paged mode; without it the endpoint answers the first 200 and
+ * ignores everything else. The total is in X-Total-Count, not the body.
+ */
+export async function listUsersPage(
+  page: number,
+  filters: { q?: string; role?: Role | '' } = {},
+): Promise<{ users: AdminUser[]; total: number }> {
+  const params: Record<string, string | number> = { page, per_page: USERS_PER_PAGE }
+  if (filters.q) params.q = filters.q
+  if (filters.role) params.role = filters.role
+  const res = await api.get<AdminUser[]>('/admin/users', { params })
+  const total = Number(res.headers?.['x-total-count'])
+  return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }
+}
+
 export async function getUser(id: string): Promise<AdminUser> {
   const res = await api.get<AdminUser>(`/admin/users/${id}`)
   return res.data

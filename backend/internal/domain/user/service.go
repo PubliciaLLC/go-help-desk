@@ -880,6 +880,13 @@ func (s *Service) GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) 
 	return s.store.GetByIDAdmin(ctx, id)
 }
 
+// SearchAdmin returns one page of users, disabled ones included, filtered by
+// role ("" = any) and a case-insensitive substring of email or display name,
+// plus the total number that match. The caller validates role.
+func (s *Service) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]User, int64, error) {
+	return s.store.SearchAdmin(ctx, role, q, limit, offset)
+}
+
 // ListAdmin returns all users including disabled ones.
 func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, error) {
 	return s.store.ListAdmin(ctx, limit, offset)

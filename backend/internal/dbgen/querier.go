@@ -173,6 +173,7 @@ type Querier interface {
 	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
 	// on the policy (#261) -- the same reason CountStatusHistoryByStatus exists.
 	CountSLARecordsByPolicy(ctx context.Context, policyID uuid.UUID) (int64, error)
+	CountSearchUsersAdmin(ctx context.Context, arg CountSearchUsersAdminParams) (int64, error)
 	// Rows in ticket_status_history that reference a status, in either direction.
 	// ticket_status_history has foreign keys to statuses with no ON DELETE action,
 	// so a status with zero CURRENT tickets can still be undeletable because a past
@@ -653,6 +654,12 @@ type Querier interface {
 	// ranking used by the other ticket searches.
 	SearchTicketsVisibleToStaff(ctx context.Context, arg SearchTicketsVisibleToStaffParams) ([]SearchTicketsVisibleToStaffRow, error)
 	SearchUnassignedTickets(ctx context.Context, arg SearchUnassignedTicketsParams) ([]SearchUnassignedTicketsRow, error)
+	// The paged admin list (#449). role = '' means any role; q is already
+	// LIKE-escaped by the caller (backslash is the escape character), and an empty
+	// q matches everyone. id breaks created_at ties so a page boundary never
+	// repeats or drops an account. ListUsersAdmin, above, is the unpaged list and
+	// is left alone.
+	SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminParams) ([]User, error)
 	// First enrolment only: adopts the secret if, and only if, the account still
 	// has no TOTP when the row is written (#338). The handler's "no factor yet"
 	// check and the write used to be two statements, so concurrent first
