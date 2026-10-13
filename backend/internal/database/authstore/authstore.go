@@ -3,6 +3,7 @@ package authstore
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.
@@ -161,6 +163,10 @@ type WebhookConfig struct {
 	// LastDelivery is nil until a delivery has been attempted since the hook
 	// was created or its URL last changed.
 	LastDelivery *WebhookDelivery `json:"last_delivery"`
+
+	// Filter narrows which tickets the hook fires for (#413). The zero value
+	// is no filter, which is what every hook created before #413 has.
+	Filter notification.WebhookFilter `json:"filter"`
 }
 
 // defaultPayloadFormat is "raw": the column is NOT NULL with no useful
@@ -170,20 +176,40 @@ type WebhookConfig struct {
 // tests included) keeps working without having to learn about it.
 const defaultPayloadFormat = "raw"
 
-func webhookFromRow(r dbgen.WebhookConfig) WebhookConfig {
+// webhookFromRow decodes a row. The filter column is a CHECK-constrained
+// object, so an error here means a row written outside this application.
+func webhookFromRow(r dbgen.WebhookConfig) (WebhookConfig, error) {
+	var filter notification.WebhookFilter
+	if err := json.Unmarshal(r.TicketFilter, &filter); err != nil {
+		return WebhookConfig{}, fmt.Errorf("decoding filter of webhook %s: %w", r.ID, err)
+	}
 	wh := WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret,
-		Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
+		Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat,
+		Filter: filter}
 	if r.LastDeliveryAt.Valid {
 		wh.LastDelivery = &WebhookDelivery{At: r.LastDeliveryAt.Time.UTC(),
 			Status: int(r.LastDeliveryStatus), Error: r.LastDeliveryError}
 	}
-	return wh
+	return wh, nil
+}
+
+// encodeFilter is the stored form of a filter: a JSON object, never null.
+func encodeFilter(f notification.WebhookFilter) ([]byte, error) {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil, fmt.Errorf("encoding ticket filter: %w", err)
+	}
+	return b, nil
 }
 
 func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 	format := wh.PayloadFormat
 	if format == "" {
 		format = defaultPayloadFormat
+	}
+	filter, err := encodeFilter(wh.Filter)
+	if err != nil {
+		return err
 	}
 	return s.q.CreateWebhookConfig(ctx, dbgen.CreateWebhookConfigParams{
 		ID:            wh.ID,
@@ -193,6 +219,7 @@ func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 		Enabled:       wh.Enabled,
 		CreatedAt:     wh.CreatedAt,
 		PayloadFormat: format,
+		TicketFilter:  filter,
 	})
 }
 
@@ -201,13 +228,17 @@ func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, er
 	if err != nil {
 		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
 	}
-	return webhookFromRow(r), nil
+	return webhookFromRow(r)
 }
 
 func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 	format := wh.PayloadFormat
 	if format == "" {
 		format = defaultPayloadFormat
+	}
+	filter, err := encodeFilter(wh.Filter)
+	if err != nil {
+		return err
 	}
 	return s.q.UpdateWebhookConfig(ctx, dbgen.UpdateWebhookConfigParams{
 		ID:            wh.ID,
@@ -216,6 +247,7 @@ func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 		Secret:        wh.Secret,
 		Enabled:       wh.Enabled,
 		PayloadFormat: format,
+		TicketFilter:  filter,
 	})
 }
 
@@ -230,7 +262,11 @@ func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = webhookFromRow(r)
+		wh, err := webhookFromRow(r)
+		if err != nil {
+			return nil, fmt.Errorf("listing enabled webhooks: %w", err)
+		}
+		out[i] = wh
 	}
 	return out, nil
 }
@@ -245,7 +281,11 @@ func (s *Store) ListWebhooks(ctx context.Context) ([]WebhookConfig, error) {
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = webhookFromRow(r)
+		wh, err := webhookFromRow(r)
+		if err != nil {
+			return nil, fmt.Errorf("listing webhooks: %w", err)
+		}
+		out[i] = wh
 	}
 	return out, nil
 }
