@@ -4049,7 +4049,7 @@ paths:
                       are none.
                     items:
                       type: string
-                      enum: [SESSION_SECRET]
+                      enum: [SESSION_SECRET, JWT_SECRET]
                   attachment_scanning:
                     type: object
                     required: [policy, configured, reachable, effect, policy_explicit, stale_off]

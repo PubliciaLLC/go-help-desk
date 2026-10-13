@@ -1972,7 +1972,9 @@ one exception: a value that is exactly one of the example secrets this
 repository publishes (`config.IsExampleSecret`) is discarded and treated as
 unset, with one warning logged at startup. Anyone can read the example, so a
 token signed with it would prove nothing. `SESSION_SECRET` has no such fallback
-and is still flagged, not discarded.
+and is still flagged, not discarded. A long `JWT_SECRET` that merely looks like a
+placeholder without being an exact example is used (it is the key), so it is
+flagged in the admin warnings like `SESSION_SECRET`.
 
 **An unwritable `ATTACHMENT_DIR` disables uploads and nothing else (#458).**
 The directory is probed (a scratch file is created and removed) at startup,

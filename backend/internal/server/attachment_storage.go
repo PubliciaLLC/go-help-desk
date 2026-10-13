@@ -15,8 +15,14 @@ import (
 // file, and it means fixing the permissions recovers at once with no restart
 // and no timer to get wrong.
 func CheckAttachmentDir(dir string) error {
+	// Refused outright: os.CreateTemp("") writes to the system temp directory
+	// and would pass, while uploads go to a path relative to the working
+	// directory.
+	if dir == "" {
+		return errors.New("ATTACHMENT_DIR is empty")
+	}
 	f, err := os.CreateTemp(dir, ".write-check-*")
-	if errors.Is(err, fs.ErrNotExist) && dir != "" {
+	if errors.Is(err, fs.ErrNotExist) {
 		if mkErr := os.MkdirAll(dir, 0o700); mkErr != nil {
 			return mkErr
 		}

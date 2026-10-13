@@ -66,8 +66,13 @@ func (c *Config) InsecureSecrets() []string {
 	if InsecureSecret(c.SessionSecret) {
 		names = append(names, "SESSION_SECRET")
 	}
-	// JWT_SECRET is not checked: an example value is discarded at startup in
-	// favour of a generated key (cmd/server resolveJWTSecret), so the key in
-	// use is never an example.
+	// JWT_SECRET: an exact published example is discarded at startup
+	// (cmd/server resolveJWTSecret), and a value under 32 bytes is replaced by
+	// a generated key, so neither is the key in use. What is left is a long
+	// placeholder that is not an exact example: it wins over the generated key,
+	// so it must be flagged.
+	if len(c.JWTSecret) >= 32 && !IsExampleSecret(c.JWTSecret) && InsecureSecret(c.JWTSecret) {
+		names = append(names, "JWT_SECRET")
+	}
 	return names
 }

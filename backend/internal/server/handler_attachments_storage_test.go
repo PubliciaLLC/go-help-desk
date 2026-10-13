@@ -10,7 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/server"
 )
 
 // #458: when ATTACHMENT_DIR cannot be written, uploads answer a clear 503
@@ -127,6 +129,21 @@ func TestAttachmentStorage_RecoversWithoutARestart(t *testing.T) {
 	res := uploadAttachment(t, h, id, "notes.txt", []byte("hello"))
 	defer res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
+}
+
+// An empty ATTACHMENT_DIR must not pass by writing the probe into the system
+// temp directory.
+func TestAttachmentStorage_EmptyDirIsUnwritable(t *testing.T) {
+	require.EqualError(t, server.CheckAttachmentDir(""), "ATTACHMENT_DIR is empty")
+
+	h, cleanup := newHarnessCfg(t, 0, "", func(c *config.Config) { c.AttachmentDir = "" })
+	defer cleanup()
+	id := ticketForUpload(t, h)
+
+	w := attachmentStorageWarning(t, h)
+	require.False(t, w.Writable)
+	require.Equal(t, "ATTACHMENT_DIR is empty", w.Problem)
+	requireUnavailable(t, uploadAttachment(t, h, id, "notes.txt", []byte("hello")))
 }
 
 func TestAttachmentStorage_RestOfTheInstanceKeepsRunning(t *testing.T) {

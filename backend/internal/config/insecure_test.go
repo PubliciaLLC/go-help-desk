@@ -74,6 +74,27 @@ func TestConfig_InsecureSecrets_ExampleJWTSecretIsDiscardedNotFlagged(t *testing
 	require.Empty(t, c.InsecureSecrets())
 }
 
+// A long placeholder that is NOT an exact published example is used as the
+// signing key (it is long enough to win), so it must still be flagged. Only an
+// exact example is thrown away.
+func TestConfig_InsecureSecrets_LongPlaceholderJWTSecretIsFlagged(t *testing.T) {
+	c := &config.Config{
+		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",
+		JWTSecret:     "replace-with-your-own-jwt-secret-changeme",
+	}
+	require.Equal(t, []string{"JWT_SECRET"}, c.InsecureSecrets())
+	require.NotContains(t, c.InsecureSecrets(), c.JWTSecret, "names only, never the value")
+}
+
+func TestConfig_InsecureSecrets_ShortPlaceholderJWTSecretIsNotFlagged(t *testing.T) {
+	// Under 32 bytes it is replaced by a generated key, so it signs nothing.
+	c := &config.Config{
+		SessionSecret: "h8Kq2vZ9mNpR4tXwY6bC1dF3gJ5kL7nQ0sU2wA4eG6i=",
+		JWTSecret:     "changeme",
+	}
+	require.Empty(t, c.InsecureSecrets())
+}
+
 func TestIsExampleSecret(t *testing.T) {
 	require.True(t, config.IsExampleSecret("change-me-in-production"))
 	require.True(t, config.IsExampleSecret("  Change-Me-In-Production-This-Is-Really-Insecure "))
