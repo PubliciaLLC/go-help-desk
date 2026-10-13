@@ -239,9 +239,10 @@ paths:
       summary: Read the SAML sign-in configuration.
       description: >-
         Administrators only (second factor required).
-        Returns the saved SAML settings and the URL of this server's service
-        provider metadata, which is what the administrator gives the identity
-        provider. The private key is never returned. Requires the settings:read
+        Returns the saved SAML settings, including pasted metadata XML, and the
+        URL of this server's service provider metadata, which is what the
+        administrator gives the identity provider. The private key is never
+        returned. Requires the settings:read
         scope for an API key.
       tags: ['Admin: Single sign-on']
       x-ghd-handler: handleGetSAMLConfig
@@ -257,17 +258,23 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, metadata_url, cert_pem, sp_metadata_url]
+                required: [configured, metadata_url, metadata_xml, cert_pem, sp_metadata_url]
                 properties:
                   configured:
                     type: boolean
                     description: >-
-                      True when a metadata URL, a certificate and a private key are all stored.
-                      It does not say whether SAML sign-in is in use or whether the identity
+                      True when IdP metadata (a URL or XML), a certificate and a private key
+                      are all stored. It does not say whether SAML sign-in is in use or whether the identity
                       provider's metadata could be loaded.
                   metadata_url:
                     type: string
                     description: The identity provider's metadata URL. Empty when unset.
+                  metadata_xml:
+                    type: string
+                    description: >-
+                      The identity provider's metadata XML as saved, returned as stored. Empty
+                      when unset or when the metadata is given by URL. It is public data; the
+                      private key is never returned.
                   cert_pem:
                     type: string
                     description: The service provider certificate in PEM form. Empty when unset.
@@ -286,9 +293,16 @@ paths:
         Each field may be omitted, which keeps the stored value, or sent. A field
         sent as an empty string clears it, and null is treated the same as an
         omitted field. The certificate and key are checked as a pair before
-        anything is saved, and a mismatch is refused with invalid_cert_key. The
-        identity provider's metadata is then fetched once, from the candidate
-        settings, before anything is saved. If no active administrator could sign
+        anything is saved, and a mismatch is refused with invalid_cert_key.
+        metadata_url and metadata_xml are alternatives. A save that would leave
+        both non-empty, counting stored values the request does not clear, is
+        refused with saml_metadata_conflict. metadata_xml is parsed before
+        anything is saved, with the same parser a fetched URL goes through. A
+        document that is not SAML metadata or has no IDPSSODescriptor is refused
+        with invalid_saml_metadata, and one over 262144 bytes with
+        saml_metadata_too_large. With metadata_xml nothing is fetched. The
+        identity provider's metadata is then loaded once (fetched, for a URL),
+        from the candidate settings, before anything is saved. If no active administrator could sign
         in afterwards (a failed fetch counts as SAML being unusable), the save is
         refused with 400 bad_request. If only some administrators would be
         stranded, or the fetch failed without stranding everyone, the settings are
@@ -313,6 +327,10 @@ paths:
                 metadata_url:
                   type: [string, 'null']
                   description: The identity provider's metadata URL. Omitted or null keeps the stored value; "" clears it.
+                metadata_xml:
+                  type: [string, 'null']
+                  maxLength: 262144
+                  description: The identity provider's metadata XML. Omitted or null keeps the stored value; "" clears it. Returned by GET.
                 cert_pem:
                   type: [string, 'null']
                   description: The service provider certificate in PEM form. Omitted or null keeps the stored value; "" clears it.
@@ -340,7 +358,11 @@ paths:
           description: >-
             bad_request: the body is not JSON, or the save would leave no active
             administrator able to sign in. invalid_cert_key: the certificate and
-            private key are invalid or do not match.
+            private key are invalid or do not match. saml_metadata_conflict: the
+            save would leave both metadata_url and metadata_xml set.
+            invalid_saml_metadata: metadata_xml does not parse, is not SAML
+            metadata, or has no IDPSSODescriptor. saml_metadata_too_large:
+            metadata_xml is over 262144 bytes.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -4185,11 +4207,14 @@ paths:
           provider the request names (its enabled setting or its key) is checked;
           the stored state of the others is not this request's to judge. CIRCL
           needs no key.
-        - saml_metadata_url, saml_cert_pem, saml_key_pem, oidc_issuer_url,
-          oidc_client_id and oidc_client_secret must be strings and oidc_enabled a
-          boolean; null is refused (bad_request). saml_enabled and
+        - saml_metadata_url, saml_metadata_xml, saml_cert_pem, saml_key_pem,
+          oidc_issuer_url, oidc_client_id and oidc_client_secret must be strings
+          and oidc_enabled a boolean; null is refused (bad_request). saml_enabled and
           oidc_redirect_url are not type-checked. Enabling OIDC needs an issuer
           URL, a client id and a client secret.
+        - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
+          the write, and saml_metadata_xml must be SAML IdP metadata of at most
+          262144 bytes; either refusal is 400 bad_request.
         - If the write leaves some administrators unable to sign in by any method,
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
@@ -4197,8 +4222,8 @@ paths:
         anywhere in the body, is refused with 403 session_required, and nothing is
         written. Every other key is open to a machine credential that has
         settings:write.
-        saml_enabled, saml_metadata_url, saml_cert_pem, saml_key_pem,
-        oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
+        saml_enabled, saml_metadata_url, saml_metadata_xml, saml_cert_pem,
+        saml_key_pem, oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
@@ -9013,6 +9038,9 @@ components:
         saml_metadata_url:
           type: string
           description: SAML identity provider metadata URL. Session only.
+        saml_metadata_xml:
+          type: string
+          description: SAML identity provider metadata XML, as pasted. Readable. Session only.
         saml_cert_pem:
           type: string
           description: SAML certificate, PEM. Session only.
