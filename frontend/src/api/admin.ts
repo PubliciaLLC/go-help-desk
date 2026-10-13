@@ -594,6 +594,12 @@ export interface SecurityWarnings {
    * belief. See handleGetSecurityWarnings / scanStatus on the backend.
    */
   attachment_scanning: AttachmentScanningWarning
+
+  /**
+   * Whether uploads can be stored (#458). Optional only so older fixtures and
+   * a server that predates the field read as healthy.
+   */
+  attachment_storage?: { writable: boolean; problem: string }
 }
 
 export interface AttachmentScanningWarning {

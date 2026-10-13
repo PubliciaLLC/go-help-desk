@@ -151,6 +151,14 @@ func run() error {
 		slog.Info(msg)
 	}
 
+	// Uploads are refused (503) while this directory cannot be written, and
+	// the admin panel says so; everything else runs. The check repeats on
+	// every upload, so fixing the directory needs no restart.
+	if err := server.CheckAttachmentDir(cfg.AttachmentDir); err != nil {
+		slog.Warn("ATTACHMENT_DIR is not writable: attachment uploads are disabled until it is fixed",
+			"dir", cfg.AttachmentDir, "error", err)
+	}
+
 	// A copied .env.example starts cleanly and is entirely forgeable: the
 	// example SESSION_SECRET is 47 characters, so the 32-character minimum
 	// does not catch it. Refusing to boot would be hostile to anyone kicking
@@ -185,9 +193,12 @@ func run() error {
 	// (insert-if-absent), and use that. After resolution, cfg.JWTSecret holds
 	// the effective key.
 	secretStore := database.NewSecretStore(q)
-	jwtSecret, source, err := auth.ResolveJWTSecret(ctx, cfg.JWTSecret, secretStore, rand.Reader)
+	jwtSecret, source, discarded, err := resolveJWTSecret(ctx, cfg.JWTSecret, secretStore, rand.Reader)
 	if err != nil {
 		return fmt.Errorf("resolving jwt signing key: %w", err)
+	}
+	if discarded {
+		slog.Warn("JWT_SECRET is an example value from the repository and was ignored; using a generated key instead")
 	}
 	cfg.JWTSecret = jwtSecret
 	if source == "database" {

@@ -4039,7 +4039,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning]
+                required: [insecure_secrets, attachment_scanning, attachment_storage]
                 properties:
                   insecure_secrets:
                     type: [array, 'null']
@@ -4049,7 +4049,7 @@ paths:
                       are none.
                     items:
                       type: string
-                      enum: [SESSION_SECRET, JWT_SECRET]
+                      enum: [SESSION_SECRET]
                   attachment_scanning:
                     type: object
                     required: [policy, configured, reachable, effect, policy_explicit, stale_off]
@@ -4086,6 +4086,22 @@ paths:
                           environment, and at least one attachment is stored.
                           The admin UI shows a banner with the fix while this is
                           true.
+                  attachment_storage:
+                    type: object
+                    required: [writable, problem]
+                    description: |
+                      Whether uploads can be stored. Probed on every request (a
+                      scratch file is written and removed in ATTACHMENT_DIR), so
+                      it clears as soon as the directory is fixed. While
+                      writable is false, every upload route answers 503
+                      attachments_unavailable; downloads of stored files are not
+                      affected.
+                    properties:
+                      writable:
+                        type: boolean
+                      problem:
+                        type: string
+                        description: The operating system's reason, without the path. Empty when writable.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4463,8 +4479,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '503':
           description: |
-            The scanner is unavailable and the scan policy is required, so the file
-            is refused until the scanner returns (scanner_unavailable).
+            Uploads cannot be taken right now. Either the attachment directory
+            cannot be written to (attachments_unavailable), or the scanner is
+            unavailable and the scan policy is required, so the file is refused
+            until the scanner returns (scanner_unavailable).
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'
@@ -4648,7 +4666,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '503':
-          description: The scanner is unavailable and the scan policy is required (scanner_unavailable).
+          description: |
+            Uploads cannot be taken right now: the attachment directory cannot be written to
+            (attachments_unavailable), or the scanner is unavailable and the scan policy is
+            required (scanner_unavailable).
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'

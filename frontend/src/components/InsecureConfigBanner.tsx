@@ -47,8 +47,10 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const scannerDegraded = !!scanning && scanning.policy !== 'off' && !scanning.reachable
 
   const staleOff = !!scanning?.stale_off
+  const storage = data?.attachment_storage
+  const storageBroken = !!storage && !storage.writable
 
-  if (insecure.length === 0 && !scannerDegraded && !staleOff) return null
+  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken) return null
 
   return (
     <>
@@ -71,6 +73,16 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
         <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
           <p className="text-sm font-semibold">Attachment scanner unreachable</p>
           <p className="mt-1 text-sm">{scanning.effect}</p>
+        </div>
+      )}
+      {storageBroken && (
+        <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
+          <p className="text-sm font-semibold">Attachment uploads are disabled</p>
+          <p className="mt-1 text-sm text-red-50">
+            The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
+            <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
+            server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
+          </p>
         </div>
       )}
       {staleOff && (

@@ -40,6 +40,7 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 
 - If **unset or under 32 bytes**: A random 32-byte key is generated once and stored in the database. All instances in the cluster read the same key from the database.
 - If **32+ bytes**: The environment value is used as-is (the long value wins over the generated key).
+- If it is **exactly one of the example secrets published in this repository** (for example `change-me-in-production-this-is-really-insecure`): it is discarded, a generated key is used, and the server logs one warning. Anyone can read the example, so it must never sign anything. (`SESSION_SECRET` is different: an example value there is still flagged in the admin panel, not discarded.)
 - **Upgrade path**: If you set `JWT_SECRET` to a long value in `.env`, it remains in use and nothing changes. If you unset it or provide a short value, a new key is generated on first boot. **OAuth clients must fetch a new access token once** (sessions are unaffected; they use `SESSION_SECRET`).
 - **Backup implications**: Database backups now contain the JWT signing key. Restoring a backup onto another instance carries the key with it (tokens remain valid there).
 - **Rotation**: To rotate the key, delete the row from `instance_secrets` and restart. All OAuth tokens issued with the old key become invalid.
@@ -47,3 +48,13 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 ## `APP_ENV` Variable (Removed from Documentation)
 
 The `APP_ENV` environment variable no longer has any effect. Setting it is harmless and will not break anything, but it is no longer documented. If you set it in your `.env`, you can safely ignore it or remove it; the server logs a single info message at startup whenever it is set, whatever its value. The log level is controlled by `LOG_LEVEL`.
+
+## Attachment Storage Check (`ATTACHMENT_DIR`)
+
+At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`, fixed to the `attachments` volume under Compose) exists and can be written to. If it cannot:
+
+- the server logs a warning and administrators see a banner, "Attachment uploads are disabled", with the reason;
+- every upload (staff, requester and guest) is refused with `503 attachments_unavailable` until the directory is fixed. Everything else runs, and attachments already stored can still be downloaded while the directory is readable;
+- the check repeats on each upload, so fixing the permissions needs no restart.
+
+Before this, an unwritable directory showed up as a failed upload partway through.

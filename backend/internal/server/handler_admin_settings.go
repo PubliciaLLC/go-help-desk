@@ -614,6 +614,19 @@ type securityWarnings struct {
 	// whose scanner had been dead for a month looked exactly like a healthy
 	// one from the admin UI.
 	AttachmentScanning scanStatus `json:"attachment_scanning"`
+
+	// AttachmentStorage says whether uploads can be stored (#458). Probed on
+	// each read, not remembered from startup, so it clears the moment the
+	// directory is fixed.
+	AttachmentStorage storageStatus `json:"attachment_storage"`
+}
+
+type storageStatus struct {
+	// Writable is false while uploads are being refused with 503.
+	Writable bool `json:"writable"`
+	// Problem is the operating system's reason, without the path. Empty when
+	// Writable.
+	Problem string `json:"problem"`
 }
 
 type scanStatus struct {
@@ -650,9 +663,11 @@ type scanStatus struct {
 // Telling an anonymous visitor that this instance signs sessions with a
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
+	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
 	JSON(w, http.StatusOK, securityWarnings{
 		InsecureSecrets:    s.cfg.InsecureSecrets(),
 		AttachmentScanning: s.scanStatus(r.Context()),
+		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
 	})
 }
 

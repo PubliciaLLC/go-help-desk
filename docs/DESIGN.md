@@ -1967,7 +1967,22 @@ generates a random 32-byte key once and keeps it in that table. Do not
   changed, and the key would silently regenerate. Every OAuth client would then
   hold a token the server no longer accepts.
 
-A long `JWT_SECRET` in the environment still wins over the stored key.
+A long `JWT_SECRET` in the environment still wins over the stored key, with
+one exception: a value that is exactly one of the example secrets this
+repository publishes (`config.IsExampleSecret`) is discarded and treated as
+unset, with one warning logged at startup. Anyone can read the example, so a
+token signed with it would prove nothing. `SESSION_SECRET` has no such fallback
+and is still flagged, not discarded.
+
+**An unwritable `ATTACHMENT_DIR` disables uploads and nothing else (#458).**
+The directory is probed (a scratch file is created and removed) at startup,
+which logs a warning, and again on every upload attempt and every
+`GET /admin/security-warnings` (`attachment_storage`). It is probed rather than
+remembered so that fixing the permissions recovers on the next request with no
+restart and no timer. While it fails, the staff, requester and guest upload
+routes answer 503 `attachments_unavailable` before reading the body, the admin
+banner says why, and downloads of files already stored keep working for as long
+as the directory is readable.
 
 ### Credential Scopes
 
