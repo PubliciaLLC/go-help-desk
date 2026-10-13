@@ -518,7 +518,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
 	touchesSAML := false
 	touchesOIDC := false
-	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
+	for _, k := range []string{admin.KeySAMLMetadataURL, admin.KeySAMLMetadataXML, admin.KeySAMLCertPEM, admin.KeySAMLKeyPEM} {
 		if _, ok := body[k]; ok {
 			touchesSAML = true
 		}
@@ -538,6 +538,11 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 			return "", err
 		}
 	}
+	if raw, ok := body[admin.KeySAMLMetadataXML]; ok {
+		if err := unmarshalSetting(raw, "saml_metadata_xml", &c.MetadataXML); err != nil {
+			return "", err
+		}
+	}
 	if raw, ok := body[admin.KeySAMLCertPEM]; ok {
 		if err := unmarshalSetting(raw, "saml_cert_pem", &c.CertPEM); err != nil {
 			return "", err
@@ -547,6 +552,11 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 		if err := unmarshalSetting(raw, "saml_key_pem", &c.KeyPEM); err != nil {
 			return "", err
 		}
+	}
+	// The same refusals as PUT /admin/saml, reported the way this door reports
+	// every SSO refusal: 400 bad_request with the message.
+	if _, msg := c.metadataRefusal(); msg != "" {
+		return "", fmt.Errorf("%w: %s", user.ErrValidation, msg)
 	}
 
 	cfg := s.adminSvc.GetOIDCConfig(ctx)

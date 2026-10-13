@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/stretchr/testify/require"
@@ -239,4 +240,86 @@ func TestSaveSAMLConfig_GuardTreatsPastedMetadataAsReachable(t *testing.T) {
 	require.Contains(t, string(body), "saml-admin@test.local",
 		"the warning must name the administrator who would be stranded")
 	require.Equal(t, "", h.adminSvc.GetSAMLMetadataXML(ctx))
+}
+
+// The generic settings door refuses the same things PUT /admin/saml does, as
+// 400 bad_request (the way it reports every SSO refusal), and returns the XML
+// in the dump with no "_set" flag: it is public data, not a secret.
+func TestUpdateSettings_SAMLMetadataXML(t *testing.T) {
+	const storedURL = "https://idp.test/metadata"
+	seedURL := func(t *testing.T, h *harness) {
+		require.NoError(t, h.adminSvc.SetSAMLConfig(context.Background(), storedURL, validSAMLCert, validSAMLKey))
+	}
+	cases := []struct {
+		name       string
+		seed       func(*testing.T, *harness)
+		body       map[string]any
+		wantStatus int
+		wantXML    string
+	}{
+		{"valid XML with the URL cleared", seedURL,
+			map[string]any{admin.KeySAMLMetadataURL: "", admin.KeySAMLMetadataXML: samlIDPMetadataXML},
+			http.StatusNoContent, samlIDPMetadataXML},
+		{"conflict with the stored URL", seedURL,
+			map[string]any{admin.KeySAMLMetadataXML: samlIDPMetadataXML},
+			http.StatusBadRequest, ""},
+		{"invalid", nil,
+			map[string]any{admin.KeySAMLMetadataXML: "hello"},
+			http.StatusBadRequest, ""},
+		{"SP metadata pasted", nil,
+			map[string]any{admin.KeySAMLMetadataXML: samlSPMetadataLiteral},
+			http.StatusBadRequest, ""},
+		{"null", nil,
+			map[string]any{admin.KeySAMLMetadataXML: nil},
+			http.StatusBadRequest, ""},
+		{"wrong type", nil,
+			map[string]any{admin.KeySAMLMetadataXML: 5},
+			http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			sess := signInAsAdmin(t, h)
+			if tc.seed != nil {
+				tc.seed(t, h)
+			}
+
+			res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", tc.body)
+			require.Equal(t, tc.wantStatus, res.StatusCode, "body: %s", body)
+			if tc.wantStatus == http.StatusBadRequest {
+				require.Equal(t, "bad_request", samlErrorCode(t, body))
+			}
+			require.Equal(t, tc.wantXML, h.adminSvc.GetSAMLMetadataXML(context.Background()), "stored metadata XML")
+
+			if tc.wantXML != "" {
+				res, body = sess.send(t, http.MethodGet, "/api/v1/admin/settings", nil)
+				require.Equal(t, http.StatusOK, res.StatusCode)
+				var dump map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(body, &dump))
+				var got string
+				require.NoError(t, json.Unmarshal(dump[admin.KeySAMLMetadataXML], &got))
+				require.Equal(t, tc.wantXML, got)
+				require.NotContains(t, dump, admin.KeySAMLMetadataXML+"_set", "public data carries no presence flag")
+			}
+		})
+	}
+}
+
+// An API key is a machine credential: repointing the IdP is a route to a
+// session, so it stays session-only (AuthCriticalKeys).
+func TestUpdateSettings_SAMLMetadataXMLRequiresASession(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings",
+		map[string]any{admin.KeySAMLMetadataXML: samlIDPMetadataXML})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, "session_required", body.Error.Code)
+	require.Equal(t, "", h.adminSvc.GetSAMLMetadataXML(context.Background()))
 }
