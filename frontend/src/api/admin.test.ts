@@ -107,40 +107,52 @@ describe('payloads where absent and empty differ', () => {
   })
 })
 
-// Deleting something that is already gone answers 404 (#418). That is the
-// outcome the caller asked for, so these resolve; every other failure still
+// Deleting something that is already gone answers 404 not_found (#418). That
+// is the outcome the caller asked for, so these resolve; every other failure,
+// including the router's plain-text 404 for a route that does not exist, still
 // rejects so the page can say what went wrong.
-describe('deletes treat 404 as already gone', () => {
-  function failure(status: number) {
+describe('deletes treat a not_found 404 as already gone', () => {
+  function failure(status: number, data: unknown) {
     const headers = new AxiosHeaders()
     return new AxiosError('Request failed', 'ERR_BAD_REQUEST', { headers } as never, null, {
-      status, statusText: 'x', headers, config: { headers } as never, data: { error: { code: 'x', message: 'm' } },
+      status, statusText: 'x', headers, config: { headers } as never, data,
     } as never)
   }
+  const envelope = (code: string) => ({ error: { code, message: 'm' } })
 
-  const calls: Record<string, () => Promise<void>> = {
-    deleteGroup: () => deleteGroup('g'),
-    deleteOAuthClient: () => deleteOAuthClient('o'),
-    deleteAPIKey: () => deleteAPIKey('k'),
-    deleteCategory: () => deleteCategory('c'),
-    deleteType: () => deleteType('c', 't'),
-    deleteItem: () => deleteItem('c', 't', 'i'),
-    deleteCategoryAssignment: () => deleteCategoryAssignment('c', 'a'),
-    deleteTypeAssignment: () => deleteTypeAssignment('c', 't', 'a'),
-    deleteItemAssignment: () => deleteItemAssignment('c', 't', 'i', 'a'),
-    removeGroupScope: () => removeGroupScope('g', { category_id: 'c' }),
+  const calls: Record<string, { url: string; call: () => Promise<void> }> = {
+    deleteGroup: { url: '/admin/groups/g', call: () => deleteGroup('g') },
+    deleteOAuthClient: { url: '/admin/oauth-clients/o', call: () => deleteOAuthClient('o') },
+    deleteAPIKey: { url: '/admin/api-keys/k', call: () => deleteAPIKey('k') },
+    deleteCategory: { url: '/admin/categories/c', call: () => deleteCategory('c') },
+    deleteType: { url: '/admin/categories/c/types/t', call: () => deleteType('c', 't') },
+    deleteItem: { url: '/admin/categories/c/types/t/items/i', call: () => deleteItem('c', 't', 'i') },
+    deleteCategoryAssignment: { url: '/admin/categories/c/fields/a', call: () => deleteCategoryAssignment('c', 'a') },
+    deleteTypeAssignment: { url: '/admin/categories/c/types/t/fields/a', call: () => deleteTypeAssignment('c', 't', 'a') },
+    deleteItemAssignment: { url: '/admin/categories/c/types/t/items/i/fields/a', call: () => deleteItemAssignment('c', 't', 'i', 'a') },
+    removeGroupScope: { url: '/admin/groups/g/scopes', call: () => removeGroupScope('g', { category_id: 'c' }) },
   }
 
-  for (const [name, call] of Object.entries(calls)) {
-    it(`${name}: resolves on 404, rejects on 409 and 500`, async () => {
+  for (const [name, { url, call }] of Object.entries(calls)) {
+    it(`${name}: resolves on 404 not_found, rejects on anything else`, async () => {
       const del = vi.spyOn(api, 'delete')
-      del.mockRejectedValueOnce(failure(404))
-      await expect(call()).resolves.toBeUndefined()
 
-      del.mockRejectedValueOnce(failure(409))
+      del.mockRejectedValueOnce(failure(404, envelope('not_found')))
+      await expect(call()).resolves.toBeUndefined()
+      expect(del.mock.calls[0][0]).toBe(url)
+
+      // The router's answer for a path that is not a route: plain text, no envelope.
+      del.mockRejectedValueOnce(failure(404, '404 page not found\n'))
+      await expect(call()).rejects.toMatchObject({ response: { status: 404 } })
+
+      // A 404 that is not the not_found code is not "already gone" either.
+      del.mockRejectedValueOnce(failure(404, envelope('something_else')))
+      await expect(call()).rejects.toMatchObject({ response: { status: 404 } })
+
+      del.mockRejectedValueOnce(failure(409, envelope('category_in_use')))
       await expect(call()).rejects.toMatchObject({ response: { status: 409 } })
 
-      del.mockRejectedValueOnce(failure(500))
+      del.mockRejectedValueOnce(failure(500, envelope('internal_error')))
       await expect(call()).rejects.toMatchObject({ response: { status: 500 } })
     })
   }

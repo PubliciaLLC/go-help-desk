@@ -1,16 +1,18 @@
 import axios from 'axios'
-import { api } from './client'
+import { api, extractErrorCode } from './client'
 import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
 
-// DELETE where a 404 means the row is already gone (#418). That is the outcome
-// the caller asked for, so it resolves; any other failure still rejects.
+// DELETE where a not_found 404 means the row is already gone (#418). That is the
+// outcome the caller asked for, so it resolves. Any other failure rejects,
+// including the router's plain-text 404 for a path that is not a route, which
+// is a bug rather than a row that is gone.
 async function deleteIfPresent(url: string, config?: { data: unknown }): Promise<void> {
   try {
     if (config) await api.delete(url, config)
     else await api.delete(url)
   } catch (err) {
-    if (axios.isAxiosError(err) && err.response?.status === 404) return
+    if (axios.isAxiosError(err) && err.response?.status === 404 && extractErrorCode(err) === 'not_found') return
     throw err
   }
 }
