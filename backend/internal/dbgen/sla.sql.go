@@ -14,6 +14,22 @@ import (
 	"github.com/lib/pq"
 )
 
+const countSLARecordsByCategory = `-- name: CountSLARecordsByCategory :one
+SELECT COUNT(*) FROM sla_records r
+JOIN sla_policies p ON p.id = r.policy_id
+WHERE p.category_id = $1
+`
+
+// Deleting a category cascades to its SLA policies, and sla_records.policy_id
+// is ON DELETE RESTRICT, so a record left behind by a ticket that has since
+// moved to another category still blocks the delete (#418).
+func (q *Queries) CountSLARecordsByCategory(ctx context.Context, categoryID uuid.NullUUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSLARecordsByCategory, categoryID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countSLARecordsByPolicy = `-- name: CountSLARecordsByPolicy :one
 SELECT COUNT(*) FROM sla_records WHERE policy_id = $1
 `

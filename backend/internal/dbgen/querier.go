@@ -168,6 +168,10 @@ type Querier interface {
 	// and setup does not reopen (HasUsers counts every row, deliberately). The
 	// instance was then left with no way in at all short of editing the database.
 	CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error)
+	// Deleting a category cascades to its SLA policies, and sla_records.policy_id
+	// is ON DELETE RESTRICT, so a record left behind by a ticket that has since
+	// moved to another category still blocks the delete (#418).
+	CountSLARecordsByCategory(ctx context.Context, categoryID uuid.NullUUID) (int64, error)
 	// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
 	// stamps only mean something against the policy that set them. Counting first
 	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
@@ -179,9 +183,16 @@ type Querier interface {
 	// transition mentions it. Counting first turns a raw foreign-key 500 into an
 	// explanation the administrator can act on.
 	CountStatusHistoryByStatus(ctx context.Context, toStatusID uuid.UUID) (int64, error)
+	// tickets.category_id is ON DELETE RESTRICT. Counting first turns the raw
+	// foreign-key 500 into a 409 that says how many tickets are in the way (#418).
+	CountTicketsByCategory(ctx context.Context, categoryID uuid.UUID) (int64, error)
+	CountTicketsByItem(ctx context.Context, itemID uuid.NullUUID) (int64, error)
 	CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error)
 	CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error)
 	CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error)
+	// A ticket that holds an item also holds that item's type, so this covers
+	// the type's items too.
+	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// Whether this account has a passkey at all.
 	//

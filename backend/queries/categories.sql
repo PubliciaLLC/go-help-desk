@@ -48,3 +48,16 @@ DELETE FROM items WHERE id = $1;
 SELECT * FROM items
 WHERE type_id = $1 AND ($2::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name;
+
+-- name: CountTicketsByCategory :one
+-- tickets.category_id is ON DELETE RESTRICT. Counting first turns the raw
+-- foreign-key 500 into a 409 that says how many tickets are in the way (#418).
+SELECT COUNT(*) FROM tickets WHERE category_id = $1;
+
+-- name: CountTicketsByType :one
+-- A ticket that holds an item also holds that item's type, so this covers
+-- the type's items too.
+SELECT COUNT(*) FROM tickets WHERE type_id = $1;
+
+-- name: CountTicketsByItem :one
+SELECT COUNT(*) FROM tickets WHERE item_id = $1;
