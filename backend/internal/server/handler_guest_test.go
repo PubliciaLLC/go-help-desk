@@ -763,19 +763,27 @@ func TestGuest_TokenRoutesRefusedWhenSubmissionDisabled(t *testing.T) {
 	// Turn submission OFF.
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, false))
 
-	// All three token routes should now return 404.
+	// All three token routes should now return 404 with the standard guest not-found body.
+	expectedBody := `{"error":{"code":"not_found","message":"not found"}}` + "\n"
+
 	getRes = h.doGuest(t, http.MethodGet, "/api/v1/guest/ticket", token, nil)
+	getBody, _ := io.ReadAll(getRes.Body)
 	getRes.Body.Close()
 	require.Equal(t, http.StatusNotFound, getRes.StatusCode, "GET /guest/ticket should be 404 with setting OFF")
+	require.Equal(t, expectedBody, string(getBody), "GET /guest/ticket body should match")
 
 	replyRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/replies", token,
 		map[string]any{"body": "test reply"})
+	replyBody, _ := io.ReadAll(replyRes.Body)
 	replyRes.Body.Close()
 	require.Equal(t, http.StatusNotFound, replyRes.StatusCode, "POST /guest/replies should be 404 with setting OFF")
+	require.Equal(t, expectedBody, string(replyBody), "POST /guest/replies body should match")
 
 	attachRes = h.doGuest(t, http.MethodPost, "/api/v1/guest/attachments", token, nil)
+	attachBody, _ := io.ReadAll(attachRes.Body)
 	attachRes.Body.Close()
 	require.Equal(t, http.StatusNotFound, attachRes.StatusCode, "POST /guest/attachments should be 404 with setting OFF")
+	require.Equal(t, expectedBody, string(attachBody), "POST /guest/attachments body should match")
 
 	// Turn submission back ON.
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
