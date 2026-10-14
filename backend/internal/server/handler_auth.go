@@ -77,7 +77,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
 		if !s.loginLimiter.Allow(loginKey) {
-			tooManyAttempts(w, time.Minute)
+			tooManyAttempts(w, s.loginLimiter.Remaining())
 			return
 		}
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")

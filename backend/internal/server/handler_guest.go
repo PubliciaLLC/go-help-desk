@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -61,7 +60,7 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	// Keyed on the source address, like signup, which is the only key there is
 	// when there is no account to key on.
 	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 
@@ -348,7 +347,7 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx),
@@ -383,7 +382,7 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginLimiter.Allow("guest-resend:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 	var body struct {

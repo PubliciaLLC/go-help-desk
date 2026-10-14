@@ -372,7 +372,8 @@ paths:
         count against the per-email-address budget, and a correct password is always
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
-        refused attempt answers 429 with Retry-After: 60. The response says what
+        refused attempt answers 429 with Retry-After set to the seconds left in
+        that minute (at most 60). The response says what
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
@@ -8547,9 +8548,10 @@ components:
   headers:
     RetryAfter:
       description: >-
-        Seconds to wait before trying again. On a 429 rate_limited it is the
-        length of the budget window, an upper bound, since the window can reset
-        sooner. On a 429 checked_recently it is the time until the earliest
+        Seconds to wait before trying again. On a 429 rate_limited from the
+        one-minute budget window it is the time left in that window, rounded up
+        and at least 1 (at most 60); before 1.3.0 it was always 60. The MFA lock
+        keeps its fixed length. On a 429 checked_recently it is the time until the earliest
         provider's seven-day floor clears. On a 503 it is a fixed 60, a
         suggestion rather than a promise.
       schema:

@@ -36,7 +36,7 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	// guessing, and a shared bucket behind a proxy throttles registrations
 	// rather than locking anyone out of their own account.
 	if !s.loginLimiter.Allow("signup:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, time.Minute)
+		tooManyAttempts(w, s.loginLimiter.Remaining())
 		return
 	}
 
