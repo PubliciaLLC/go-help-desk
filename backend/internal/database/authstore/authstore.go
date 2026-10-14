@@ -122,6 +122,30 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 	}, nil
 }
 
+// ListOAuthClientGroups returns the groups of every client's service user,
+// keyed by the client row's id, each list ordered by group name.
+func (s *Store) ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error) {
+	rows, err := s.q.ListOAuthClientGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing OAuth client groups: %w", err)
+	}
+	out := make(map[uuid.UUID][]auth.ClientGroup)
+	for _, r := range rows {
+		out[r.ClientRowID] = append(out[r.ClientRowID], auth.ClientGroup{ID: r.GroupID, Name: r.GroupName})
+	}
+	return out, nil
+}
+
+// ListOAuthClientsWithoutGroups names the clients that are switched on and
+// whose service user is in no group.
+func (s *Store) ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error) {
+	names, err := s.q.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing OAuth clients without groups: %w", err)
+	}
+	return names, nil
+}
+
 // GetWithUser returns the client and the service user it acts as, in one query:
 // it runs on every OAuth-authenticated request. A deleted client has no row, so
 // its outstanding tokens stop working; the user's own state (disabled, deleted)

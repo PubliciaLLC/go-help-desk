@@ -339,6 +339,45 @@ func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfi
 	return items, nil
 }
 
+const listOAuthClientGroups = `-- name: ListOAuthClientGroups :many
+SELECT c.id AS client_row_id, g.id AS group_id, g.name AS group_name
+FROM oauth_clients c
+JOIN group_members gm ON gm.user_id = c.user_id
+JOIN groups g ON g.id = gm.group_id
+ORDER BY g.name
+`
+
+type ListOAuthClientGroupsRow struct {
+	ClientRowID uuid.UUID `json:"client_row_id"`
+	GroupID     uuid.UUID `json:"group_id"`
+	GroupName   string    `json:"group_name"`
+}
+
+// Every client's groups in one query, for the client list: a client's groups
+// are its service user's, and asking per row would be a query per client.
+func (q *Queries) ListOAuthClientGroups(ctx context.Context) ([]ListOAuthClientGroupsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOAuthClientGroups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOAuthClientGroupsRow
+	for rows.Next() {
+		var i ListOAuthClientGroupsRow
+		if err := rows.Scan(&i.ClientRowID, &i.GroupID, &i.GroupName); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOAuthClients = `-- name: ListOAuthClients :many
 SELECT id, client_id, hashed_secret, name, scopes, created_at, user_id FROM oauth_clients ORDER BY name
 `
@@ -364,6 +403,43 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOAuthClientsWithoutGroups = `-- name: ListOAuthClientsWithoutGroups :many
+SELECT c.name
+FROM oauth_clients c
+JOIN users u ON u.id = c.user_id
+WHERE u.deleted_at IS NULL
+  AND u.disabled = FALSE
+  AND NOT EXISTS (SELECT 1 FROM group_members gm WHERE gm.user_id = u.id)
+ORDER BY c.name
+`
+
+// The clients that will act and see nothing once ticket scope is enforced: a
+// staff member's scope is their groups', so a client whose user is in none
+// sees no ticket. A switched-off client is not one of them (it acts as
+// nobody), which is what lets the warning clear by disabling it.
+func (q *Queries) ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, listOAuthClientsWithoutGroups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

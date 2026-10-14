@@ -581,7 +581,15 @@ type Querier interface {
 	ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	ListGroupsInScope(ctx context.Context, arg ListGroupsInScopeParams) ([]Group, error)
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
+	// Every client's groups in one query, for the client list: a client's groups
+	// are its service user's, and asking per row would be a query per client.
+	ListOAuthClientGroups(ctx context.Context) ([]ListOAuthClientGroupsRow, error)
 	ListOAuthClients(ctx context.Context) ([]OauthClient, error)
+	// The clients that will act and see nothing once ticket scope is enforced: a
+	// staff member's scope is their groups', so a client whose user is in none
+	// sees no ticket. A switched-off client is not one of them (it acts as
+	// nobody), which is what lets the warning clear by disabling it.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	// The author's display name comes back with the reply.
 	//

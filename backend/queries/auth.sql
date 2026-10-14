@@ -60,6 +60,28 @@ DELETE FROM oauth_clients WHERE oauth_clients.id = $1;
 -- name: ListOAuthClients :many
 SELECT * FROM oauth_clients ORDER BY name;
 
+-- name: ListOAuthClientGroups :many
+-- Every client's groups in one query, for the client list: a client's groups
+-- are its service user's, and asking per row would be a query per client.
+SELECT c.id AS client_row_id, g.id AS group_id, g.name AS group_name
+FROM oauth_clients c
+JOIN group_members gm ON gm.user_id = c.user_id
+JOIN groups g ON g.id = gm.group_id
+ORDER BY g.name;
+
+-- name: ListOAuthClientsWithoutGroups :many
+-- The clients that will act and see nothing once ticket scope is enforced: a
+-- staff member's scope is their groups', so a client whose user is in none
+-- sees no ticket. A switched-off client is not one of them (it acts as
+-- nobody), which is what lets the warning clear by disabling it.
+SELECT c.name
+FROM oauth_clients c
+JOIN users u ON u.id = c.user_id
+WHERE u.deleted_at IS NULL
+  AND u.disabled = FALSE
+  AND NOT EXISTS (SELECT 1 FROM group_members gm WHERE gm.user_id = u.id)
+ORDER BY c.name;
+
 -- name: CreateWebhookConfig :exec
 INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format)
 VALUES ($1, $2, $3, $4, $5, $6, $7);

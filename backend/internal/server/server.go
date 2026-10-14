@@ -142,6 +142,12 @@ type AuthStoreIface interface {
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
+	// ListOAuthClientGroups is every client's groups (its service user's), keyed
+	// by the client row's id, in one query.
+	ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error)
+	// ListOAuthClientsWithoutGroups names the switched-on clients whose service
+	// user is in no group.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
 	CreateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error

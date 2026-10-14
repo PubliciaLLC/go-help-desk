@@ -163,13 +163,34 @@ func (s *Server) handleListScopes(w http.ResponseWriter, r *http.Request) {
 
 // ── OAuth Clients ────────────────────────────────────────────────────────────
 
+// oauthClientView is a client as the admin page lists it: the client, the id of
+// the service user it acts as (inside OAuthClient), and that user's groups,
+// which are the client's ticket scope.
+type oauthClientView struct {
+	auth.OAuthClient
+	Groups []auth.ClientGroup `json:"groups"`
+}
+
 func (s *Server) handleListOAuthClients(w http.ResponseWriter, r *http.Request) {
 	clients, err := s.authStore.ListOAuthClients(r.Context())
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, clients)
+	// One query for every client's groups, not one per row.
+	groups, err := s.authStore.ListOAuthClientGroups(r.Context())
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	out := make([]oauthClientView, len(clients))
+	for i, c := range clients {
+		out[i] = oauthClientView{OAuthClient: c, Groups: groups[c.ID]}
+		if out[i].Groups == nil {
+			out[i].Groups = []auth.ClientGroup{} // [] and not null: "no groups" is an answer
+		}
+	}
+	JSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +252,9 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 		"client_id":     client.ClientID,
 		"client_secret": raw,
 		"name":          client.Name,
+		// The service user made with it (#420): the identity the client acts
+		// as, listed on Admin -> Users, where it can be given groups.
+		"user_id": client.UserID,
 	})
 }
 
