@@ -26,6 +26,11 @@ type SessionData struct {
 	// factors.
 	FactorVerified bool
 
+	// MustChangePassword mirrors users.must_change_password as of sign-in
+	// (#497). While it is set the session may change the password and do
+	// nothing else; see middleware.RequireMFA.
+	MustChangePassword bool
+
 	// OIDCState stores the temporary OAuth2 state value used during login.
 	// It is cleared after callback validation.
 	OIDCState string

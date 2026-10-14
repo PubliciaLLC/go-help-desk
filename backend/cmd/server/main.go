@@ -71,6 +71,17 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "unlock" {
+		var email string
+		if len(os.Args) > 2 {
+			email = os.Args[2]
+		}
+		if err := unlock(context.Background(), email, os.Stdout); err != nil {
+			slog.Error("unlock", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Not log.Fatalf. run() installs a slog JSON handler as the default,
 		// which also routes the stdlib log package — and Go's stdlib-log

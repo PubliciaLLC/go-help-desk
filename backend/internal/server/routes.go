@@ -348,25 +348,30 @@ func (s *Server) meRouter() *chi.Mux {
 		// reachable by top-level navigation from any site — the session cookie
 		// is SameSite=Lax — so a single link could start enrolment for a
 		// logged-in victim.
-		r.Post("/mfa/enroll", s.handleMFAEnrollStart)
-		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
-
-		// Passkeys sit beside TOTP enrolment and inherit both placements
-		// deliberately: refused to machine credentials, because a key must
-		// not be able to add a way of becoming its owner; and outside
-		// RequireMFA, because somebody compelled to enrol has to be able to
-		// finish. The second is what lets a sole administrator with no
-		// working factor recover alone, pinned by
-		// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
-		r.Get("/passkeys", s.handleListPasskeys)
-		r.Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
-		r.Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
-		r.Delete("/passkeys/{id}", s.handleDeletePasskey)
-
+		//
+		// RequirePasswordCurrent on all of them: a session that owes the
+		// password change the console's unlock command imposed (#497) may do
+		// that and nothing else, enrolment included. The change itself is
+		// reachable without MFA (below), so this cannot strand anyone.
 		r.Group(func(r chi.Router) {
-			r.Use(authmw.RequireMFA)
-			r.Patch("/password", s.handleChangePassword)
+			r.Use(authmw.RequirePasswordCurrent)
+			r.Post("/mfa/enroll", s.handleMFAEnrollStart)
+			r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+
+			// Passkeys sit beside TOTP enrolment and inherit both placements
+			// deliberately: refused to machine credentials, because a key must
+			// not be able to add a way of becoming its owner; and outside
+			// RequireMFA, because somebody compelled to enrol has to be able to
+			// finish. The second is what lets a sole administrator with no
+			// working factor recover alone, pinned by
+			// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
+			r.Get("/passkeys", s.handleListPasskeys)
+			r.Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
+			r.Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
+			r.Delete("/passkeys/{id}", s.handleDeletePasskey)
 		})
+
+		r.With(authmw.RequireMFAOrPasswordChange).Patch("/password", s.handleChangePassword)
 	})
 
 	// Reading your own identity is left to machine credentials: an integration

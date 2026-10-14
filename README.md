@@ -156,6 +156,23 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 > Changing an auth-related setting requires a signed-in administrator — an API
 > key cannot, whatever scopes it holds.
 
+## Locked out?
+
+Lost your authenticator or passkey, disabled the only administrator, or never
+had a working password? Run this on the server. It needs shell access and
+nothing else:
+
+```sh
+docker compose exec app /app/server unlock you@example.com
+```
+
+It clears every second factor, re-enables the account, clears the MFA
+lockout, ends all sessions and prints a new random password **once**. Sign in
+with it; you will be asked to choose your own before anything else. The
+command is recorded in the audit log with the server console as the actor.
+`/app/server reset-factors <email>` does only the factor part and leaves the
+password alone.
+
 ## Upgrading to 1.3.0
 
 **The audit log is now readable, and is still kept forever by default

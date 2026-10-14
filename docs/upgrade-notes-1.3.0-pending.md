@@ -13,6 +13,14 @@ Previously the server let staff and administrators create tickets under, and rec
 
 What to check: scripts or integrations that file or reclassify tickets as staff or admin into an archived node will start getting 400. Unarchive the node (Admin → Categories) or file into an active one.
 
+## New: `unlock <email>` on the Server Console (#497)
+
+`docker compose exec app /app/server unlock <email>` is the way back for a locked-out account, and it works when the web path cannot: a lost authenticator or passkey, a disabled account (the sole administrator included), a spent MFA lockout, or a federated administrator with no usable password. In one transaction it clears every second factor, re-enables the account, clears the MFA lockout, sets a new random password and prints it once, and ends all sessions. The password must be changed at the next sign-in.
+
+- New migration `000045_must_change_password` adds `users.must_change_password` (default false). Nothing changes for existing accounts.
+- `POST /api/v1/auth/local/login` gains `password_change_required` and `User` gains `must_change_password`. A session in that state is answered `403 password_change_required` everywhere except `PATCH /api/v1/me/password`.
+- `reset-factors` is unchanged.
+
 ## Antivirus Scanning: Banner for Offline Policies
 
 Administrators see a banner on the admin panel with the exact fix when any attachment exists, no scan policy was ever saved, and no scanner address is set:

@@ -779,6 +779,9 @@ type Querier interface {
 	//
 	// AdminSetPassword has always been a narrow statement. This is the same thing
 	// for the self-service path, which is the one an attacker can drive.
+	//
+	// Also clears must_change_password (#497): this is the account holder choosing
+	// a password, which is what that flag is waiting for.
 	SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error
 	// The same guard for a role change. See DisableUserUnlessLastAdmin.
 	//
@@ -834,6 +837,12 @@ type Querier interface {
 	// ticket assigned to somebody who has left is history, and history should
 	// record who actually handled it.
 	UnassignTicketsForUser(ctx context.Context, assigneeUserID uuid.NullUUID) ([]uuid.UUID, error)
+	// The account half of go-help-desk unlock (#497), run in the same transaction
+	// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+	// password and require it to be changed. Not for a deleted account. The
+	// in-memory sign-in throttle is another process's memory and only ever delays,
+	// never refuses, so there is nothing of it to clear here.
+	UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error)
 	UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLastUsedParams) error
 	UpdateCannedResponse(ctx context.Context, arg UpdateCannedResponseParams) error
 	UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error

@@ -493,7 +493,7 @@ func (q *Queries) GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, 
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE email = $1 AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE email = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -515,12 +515,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.OidcSubject,
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
+		&i.MustChangePassword,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1 AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -542,12 +543,13 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.OidcSubject,
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
+		&i.MustChangePassword,
 	)
 	return i, err
 }
 
 const getUserByIDAdmin = `-- name: GetUserByIDAdmin :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = $1
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) {
@@ -569,13 +571,14 @@ func (q *Queries) GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, err
 		&i.OidcSubject,
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
+		&i.MustChangePassword,
 	)
 	return i, err
 }
 
 const getUserByOIDCSubject = `-- name: GetUserByOIDCSubject :one
 
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE oidc_subject = $1 AND oidc_subject != '' AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error) {
@@ -597,12 +600,13 @@ func (q *Queries) GetUserByOIDCSubject(ctx context.Context, oidcSubject string) 
 		&i.OidcSubject,
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
+		&i.MustChangePassword,
 	)
 	return i, err
 }
 
 const getUserBySAMLSubject = `-- name: GetUserBySAMLSubject :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE saml_subject = $1 AND saml_subject != '' AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error) {
@@ -624,12 +628,13 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 		&i.OidcSubject,
 		&i.MfaFailedAttempts,
 		&i.MfaLockedUntil,
+		&i.MustChangePassword,
 	)
 	return i, err
 }
 
 const getUsersByIDs = `-- name: GetUsersByIDs :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
 `
 
 func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error) {
@@ -657,6 +662,7 @@ func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]Us
 			&i.OidcSubject,
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
+			&i.MustChangePassword,
 		); err != nil {
 			return nil, err
 		}
@@ -672,7 +678,7 @@ func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]Us
 }
 
 const listActiveAdmins = `-- name: ListActiveAdmins :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users
 WHERE role = 'admin'
   AND deleted_at IS NULL
   AND disabled = FALSE
@@ -706,6 +712,7 @@ func (q *Queries) ListActiveAdmins(ctx context.Context) ([]User, error) {
 			&i.OidcSubject,
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
+			&i.MustChangePassword,
 		); err != nil {
 			return nil, err
 		}
@@ -776,7 +783,7 @@ func (q *Queries) ListAssignableStaff(ctx context.Context) ([]ListAssignableStaf
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersParams struct {
@@ -809,6 +816,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 			&i.OidcSubject,
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
+			&i.MustChangePassword,
 		); err != nil {
 			return nil, err
 		}
@@ -824,7 +832,7 @@ func (q *Queries) ListUsers(ctx context.Context, arg ListUsersParams) ([]User, e
 }
 
 const listUsersAdmin = `-- name: ListUsersAdmin :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersAdminParams struct {
@@ -857,6 +865,7 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 			&i.OidcSubject,
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
+			&i.MustChangePassword,
 		); err != nil {
 			return nil, err
 		}
@@ -943,7 +952,7 @@ func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 }
 
 const searchUsersAdmin = `-- name: SearchUsersAdmin :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, must_change_password FROM users
 WHERE deleted_at IS NULL
   AND ($1::text = '' OR role = $1::text)
   AND ($2::text = ''
@@ -995,6 +1004,7 @@ func (q *Queries) SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminPara
 			&i.OidcSubject,
 			&i.MfaFailedAttempts,
 			&i.MfaLockedUntil,
+			&i.MustChangePassword,
 		); err != nil {
 			return nil, err
 		}
@@ -1058,7 +1068,7 @@ func (q *Queries) SetUserMFA(ctx context.Context, arg SetUserMFAParams) error {
 
 const setUserPasswordHash = `-- name: SetUserPasswordHash :exec
 UPDATE users
-SET password_hash = $2, updated_at = now()
+SET password_hash = $2, must_change_password = false, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
 `
 
@@ -1080,6 +1090,9 @@ type SetUserPasswordHashParams struct {
 //
 // AdminSetPassword has always been a narrow statement. This is the same thing
 // for the self-service path, which is the one an attacker can drive.
+//
+// Also clears must_change_password (#497): this is the account holder choosing
+// a password, which is what that flag is waiting for.
 func (q *Queries) SetUserPasswordHash(ctx context.Context, arg SetUserPasswordHashParams) error {
 	_, err := q.db.ExecContext(ctx, setUserPasswordHash, arg.ID, arg.PasswordHash)
 	return err
@@ -1173,6 +1186,35 @@ type SyncFederatedUserParams struct {
 func (q *Queries) SyncFederatedUser(ctx context.Context, arg SyncFederatedUserParams) error {
 	_, err := q.db.ExecContext(ctx, syncFederatedUser, arg.ID, arg.Email, arg.DisplayName)
 	return err
+}
+
+const unlockUser = `-- name: UnlockUser :execrows
+UPDATE users
+SET disabled = false,
+    mfa_failed_attempts = 0,
+    mfa_locked_until = NULL,
+    password_hash = $2,
+    must_change_password = true,
+    updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+type UnlockUserParams struct {
+	ID           uuid.UUID `json:"id"`
+	PasswordHash string    `json:"password_hash"`
+}
+
+// The account half of go-help-desk unlock (#497), run in the same transaction
+// as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+// password and require it to be changed. Not for a deleted account. The
+// in-memory sign-in throttle is another process's memory and only ever delays,
+// never refuses, so there is nothing of it to clear here.
+func (q *Queries) UnlockUser(ctx context.Context, arg UnlockUserParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, unlockUser, arg.ID, arg.PasswordHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateUser = `-- name: UpdateUser :exec

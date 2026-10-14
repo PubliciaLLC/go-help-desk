@@ -11,6 +11,12 @@ export interface LoginResponse {
    */
   passkey_needed: boolean
   mfa_enrollment_needed: boolean
+  /**
+   * The account was unlocked from the server console and still holds the
+   * password it was handed (#497). The session may only change the password;
+   * every other route answers 403 password_change_required until it has.
+   */
+  password_change_required?: boolean
 }
 
 export async function login(email: string, password: string): Promise<LoginResponse> {

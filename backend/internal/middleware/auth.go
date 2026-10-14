@@ -28,8 +28,12 @@ type Actor struct {
 	// FactorVerified: see auth.SessionData. Never set for machine
 	// credentials, which are refused on the factor routes regardless.
 	FactorVerified bool
-	ClientID       string // non-empty for OAuth2 bearer token requests
-	Scopes         []string
+	// MustChangePassword: the account was unlocked from the server console
+	// and still holds the password it was handed (#497). Set only from a
+	// session; a machine credential is not signed in with a password.
+	MustChangePassword bool
+	ClientID           string // non-empty for OAuth2 bearer token requests
+	Scopes             []string
 	// Machine marks an API key or OAuth client — a credential acting on a
 	// person's behalf rather than the person themselves.
 	//
@@ -101,6 +105,8 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				Role:           sd.Role,
 				MFAPassed:      sd.MFAPassed,
 				FactorVerified: sd.FactorVerified,
+
+				MustChangePassword: sd.MustChangePassword,
 			}))
 		})
 	}
@@ -326,10 +332,52 @@ func RequireRole(roles ...user.Role) func(http.Handler) http.Handler {
 	}
 }
 
-// RequireMFA rejects requests where the actor has not yet passed a TOTP challenge.
+const passwordChangeRequired = `{"error":{"code":"password_change_required","message":"the password must be changed before anything else"}}`
+
+// RequirePasswordCurrent refuses a session that still owes the password change
+// the server console's unlock command imposed (#497). It is for the routes
+// that sit OUTSIDE RequireMFA (enrolment), which would otherwise stay open to
+// such a session; RequireMFA applies the same refusal to everything else.
+func RequirePasswordCurrent(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a := GetActor(r); a != nil && a.MustChangePassword {
+			http.Error(w, passwordChangeRequired, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireMFAOrPasswordChange is RequireMFA for the password-change route
+// alone: it also admits a session that owes that change, whether or not it has
+// passed MFA.
+//
+// Without that, an administrator whose role must enrol MFA is deadlocked:
+// RequireMFA holds them at "enrol first" while the flag holds them at "change
+// the password first", and the account cannot sign in. The flag is only ever
+// set by the console command, which clears every factor first, so there is no
+// second factor here for a password alone to bypass; and the handler still
+// demands the current password.
+func RequireMFAOrPasswordChange(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a := GetActor(r)
+		if a == nil || !(a.MFAPassed || a.MustChangePassword) {
+			http.Error(w, `{"error":{"code":"mfa_required","message":"MFA verification required"}}`, http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireMFA rejects requests where the actor has not yet passed a TOTP
+// challenge, or still owes a password change (#497).
 func RequireMFA(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := GetActor(r)
+		if a != nil && a.MustChangePassword {
+			http.Error(w, passwordChangeRequired, http.StatusForbidden)
+			return
+		}
 		if a == nil || !a.MFAPassed {
 			http.Error(w, `{"error":{"code":"mfa_required","message":"MFA verification required"}}`, http.StatusForbidden)
 			return
