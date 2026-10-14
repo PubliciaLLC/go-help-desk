@@ -50,8 +50,8 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mcp/`) now answers `403 origin_not_allowed` when the request carries an `Origin` header that is not your `BASE_URL`'s origin, before authentication is looked at. Requests with no `Origin` header, which is what SDKs, editors and `curl` send, are unaffected.
 
 - A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
-- 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in staff member's session cookie. Upgrade if you expose MCP over SSE.
-- A `BASE_URL` with a non-ASCII host has no usable origin and refuses everything that sends an `Origin`; write it in punycode.
+- 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
+- A `BASE_URL` with a non-ASCII host stops the server from starting (passkeys refuse it); write it in punycode.
 
 ## JWT Secret (`JWT_SECRET`)
 
