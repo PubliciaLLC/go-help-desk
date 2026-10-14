@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -1957,7 +1957,13 @@ export function SettingsPage() {
       // without this a saved "Do not scan" keeps warning for five minutes.
       qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
-    onError: (err) => setSaveError(extractError(err)),
+    onError: (err) =>
+      setSaveError(
+        // The server's text names the raw setting; say what an admin can do.
+        extractErrorCode(err) === 'email_required'
+          ? 'Email is not set up, so signup and guest submission cannot be turned on: both send an email the person needs. Set SMTP_HOST and SMTP_FROM in docker/.env, restart the server, then try again.'
+          : extractError(err),
+      ),
   })
 
   function bool(key: string) { return Boolean(local[key]) }

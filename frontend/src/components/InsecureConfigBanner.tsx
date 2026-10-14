@@ -50,7 +50,13 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storage = data?.attachment_storage
   const storageBroken = !!storage && !storage.writable
 
-  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken) return null
+  const email = data?.email
+  const emailOff = !!email && !email.enabled
+  const emailFailing = !!email && email.failing
+
+  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !emailOff && !emailFailing) {
+    return null
+  }
 
   return (
     <>
@@ -82,6 +88,27 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
             <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
             server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
+          </p>
+        </div>
+      )}
+      {emailOff && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">Email is not set up</p>
+          <p className="mt-1 text-sm">
+            No email can be sent: {email.missing.join(' and ')} {email.missing.length === 1 ? 'is' : 'are'} not set in{' '}
+            <code className="font-mono text-xs">docker/.env</code>. Set{' '}
+            {email.missing.length === 1 ? 'it' : 'both'}, then restart the server.
+            {email.signup_without_email && ' Self-service signup is on, so nobody can finish signing up.'}
+            {email.guest_submission_without_email && ' Guest submission is on, so guests get no link to their ticket.'}
+          </p>
+        </div>
+      )}
+      {emailFailing && (
+        <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
+          <p className="text-sm font-semibold">Email is not being delivered</p>
+          <p className="mt-1 text-sm text-red-50">
+            {email.failing_count} {email.failing_count === 1 ? 'message has' : 'messages have'} failed or are being
+            retried. Latest error: {email.last_error}
           </p>
         </div>
       )}
