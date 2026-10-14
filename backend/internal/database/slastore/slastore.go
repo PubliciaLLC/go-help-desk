@@ -216,6 +216,7 @@ func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUI
 
 func recordFromRow(r dbgen.SlaRecord) sla.Record {
 	return sla.Record{
+		ID:                            r.ID,
 		TicketID:                      r.TicketID,
 		PolicyID:                      r.PolicyID,
 		FirstResponseAt:               database.TimePtr(r.FirstResponseAt),
@@ -224,6 +225,9 @@ func recordFromRow(r dbgen.SlaRecord) sla.Record {
 		ResolutionBreachedAt:          database.TimePtr(r.ResolutionBreachedAt),
 		ResponseElapsedAtMetSeconds:   database.Int64Ptr(r.ResponseElapsedAtMetSeconds),
 		ResolutionElapsedAtMetSeconds: database.Int64Ptr(r.ResolutionElapsedAtMetSeconds),
+		StartedAt:                     database.TimePtr(r.StartedAt),
+		PausedSecondsAtStart:          r.PausedSecondsAtStart,
+		SupersededAt:                  database.TimePtr(r.SupersededAt),
 	}
 }
 

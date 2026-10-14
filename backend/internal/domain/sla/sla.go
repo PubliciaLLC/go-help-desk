@@ -21,6 +21,10 @@ type Policy struct {
 
 // Record tracks SLA state for a single ticket.
 type Record struct {
+	// ID identifies one record among the several a ticket can have once a
+	// priority change has superseded one (#443b). Zero on a record that has
+	// not been read from the store.
+	ID                   uuid.UUID  `json:"id"`
 	TicketID             uuid.UUID  `json:"ticket_id"`
 	PolicyID             uuid.UUID  `json:"policy_id"`
 	FirstResponseAt      *time.Time `json:"first_response_at,omitempty"`
@@ -62,6 +66,11 @@ type Record struct {
 	// before the restart does not count toward this record. Zero for a record
 	// that starts at ticket creation.
 	PausedSecondsAtStart int64 `json:"-"`
+
+	// SupersededAt is set once, when a re-match replaces this record. The row
+	// is then history: nothing reads it as the ticket's SLA and nothing writes
+	// to it again.
+	SupersededAt *time.Time `json:"superseded_at,omitempty"`
 }
 
 // Elapsed is the time a ticket has spent counting toward its targets as of at:
