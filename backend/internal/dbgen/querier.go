@@ -39,6 +39,16 @@ type Querier interface {
 	// WHICH rule refused them. This one is what binds.
 	AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error)
 	AnyAttachmentExists(ctx context.Context) (bool, error)
+	// Which level of a classification being NEWLY picked is archived: 'category',
+	// 'type', 'item', or '' when none is. Highest level first, so a ticket aimed at
+	// an archived category is told about the category, not the type under it.
+	//
+	// A NULL argument means "not being picked" and is skipped; the caller passes
+	// only the levels that differ from what the ticket already holds, because a
+	// ticket already sitting in an archived node keeps it (#421). An id that does
+	// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+	// those.
+	ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error)
 	// Whether a category/type/item triple exists and hangs together: the type
 	// belongs to the category, and the item belongs to the type.
 	//
@@ -478,6 +488,7 @@ type Querier interface {
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
+	GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error)
 	// The assertion arrives carrying a credential id and nothing else, so this is
 	// the lookup sign-in depends on. The unique index on credential_id serves it.
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)

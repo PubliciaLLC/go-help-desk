@@ -24,6 +24,40 @@ func (q *Queries) AnyAttachmentExists(ctx context.Context) (bool, error) {
 	return exists, err
 }
 
+const archivedCTINode = `-- name: ArchivedCTINode :one
+SELECT (CASE
+    WHEN $1::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM categories WHERE id = $1 AND NOT active) THEN 'category'
+    WHEN $2::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM types WHERE id = $2 AND NOT active) THEN 'type'
+    WHEN $3::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM items WHERE id = $3 AND NOT active) THEN 'item'
+    ELSE ''
+END)::text AS archived_level
+`
+
+type ArchivedCTINodeParams struct {
+	CategoryID uuid.NullUUID `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// Which level of a classification being NEWLY picked is archived: 'category',
+// 'type', 'item', or ” when none is. Highest level first, so a ticket aimed at
+// an archived category is told about the category, not the type under it.
+//
+// A NULL argument means "not being picked" and is skipped; the caller passes
+// only the levels that differ from what the ticket already holds, because a
+// ticket already sitting in an archived node keeps it (#421). An id that does
+// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+// those.
+func (q *Queries) ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, archivedCTINode, arg.CategoryID, arg.TypeID, arg.ItemID)
+	var archived_level string
+	err := row.Scan(&archived_level)
+	return archived_level, err
+}
+
 const cTIIsCoherent = `-- name: CTIIsCoherent :one
 SELECT
     ($1::uuid IS NULL OR EXISTS (
