@@ -9375,13 +9375,15 @@ components:
           $ref: '#/components/schemas/SlaEarlierRecord'
     SlaEarlierRecord:
       description: |
-        The SLA record a priority change replaced, sent on getTicket only (never
-        on a list row) and only when that record's SLA had already been met or
-        breached. It is the record the "SLA restarted" badge on the ticket page
-        links to. Absent when the ticket's SLA record was never replaced, and
-        when the replaced record was still running (it carried on in the new
-        one). The outcome reads the record's stored stamps, so a breach the
-        sweep has not stamped yet is not reported.
+        The SLA record a restart replaced, sent on getTicket only (never on a list
+        row). A restart is a reopen: staff and admin priority changes re-match the
+        SLA and keep its clock, and never produce this. It is the record the "SLA
+        restarted" badge on the ticket page links to. Absent when the clock never
+        restarted, and when the replaced record had nothing met or breached (no
+        outcome to report). Not reachable on this build: the reopen that restarts
+        the clock arrives with #464, so no ticket has one yet. The outcome reads
+        the record's stored stamps, so a breach the sweep has not stamped yet is
+        not reported.
       type: object
       required: [policy_id, policy_name, started_at, superseded_at, outcome]
       properties:
@@ -9396,7 +9398,7 @@ components:
         superseded_at:
           type: string
           format: date-time
-          description: When the priority change replaced it.
+          description: When the restart replaced it.
         outcome:
           type: string
           enum: [met, breached]
@@ -9514,7 +9516,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted (written when a reopen restarts the SLA clocks) or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted (written when a reopen restarts the SLA clocks; nothing writes it until #464) or closed.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:

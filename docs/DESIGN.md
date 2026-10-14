@@ -411,7 +411,7 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written when a reopen starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written when a reopen starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it. Nothing writes it on this build: the reopen that does arrives with #464). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -2888,8 +2888,8 @@ When a ticket is created, the system selects an SLA policy by specificity:
 A ticket can change priority after it is created (staff and admin,
 `PATCH /tickets/{id}`, #443). The SLA policy is then matched again, by the same
 four tiers, against the new priority and the ticket's category, and the change
-is audited. **A staff change never restarts a clock.** Only a reopen does (see
-below).
+is audited. **A staff change never restarts a clock.** Only a reopen does, and nothing
+calls that path yet: see **A reopen restarts both clocks** below.
 
 **Resolved and Closed tickets are refused.** A priority change on either answers
 `409 ticket_closed`, the same refusal every other write to a closed ticket gets,
@@ -2917,9 +2917,13 @@ What a staff change does, decided in this order:
 | Another policy matches | `rematched` | replaces the old record under the new policy, **keeping its clock** (so elapsed time still counts) and **its facts** (so a target already met stays met) |
 | A record exists, no policy matches | `removed` | none; the record is superseded and the ticket shows no SLA |
 
-**A reopen restarts both clocks.** When a requester's reply reopens a ticket
-(#464), the reopen's own transaction calls the same primitive with the reason
-`reopened`. That reason always starts both clocks over from the reopen: the
+**A reopen restarts both clocks.** *Not live on this build.* What exists is the
+service function, `changePriorityInTx` with the reason `reopened`, and its tests;
+the reopen that calls it arrives with the reopen change (#464), so today a
+reopened ticket's SLA is not restarted, no `sla_restarted` entry is written and
+the badge below cannot appear. This is how it will work. When a requester's reply
+reopens a ticket (#464), the reopen's own transaction calls the same primitive
+with the reason `reopened`. That reason always starts both clocks over from the reopen: the
 current record is superseded and kept, and a new one starts at the reopen with
 no facts, so both targets are timed anew. It does so even when the priority does
 not change (a ticket already at the highest priority cannot be raised) and even
@@ -2932,18 +2936,31 @@ outcome) and `sla_restarted`. A record that started over is recognisable as one
 the indicator; the breach stays on the superseded record, and `sla_restarted`
 says when.
 
-**"SLA restarted" badge.** When a priority change replaces an SLA record whose
-SLA had already been met (a target met) or breached (a breach stamped), the
-ticket page shows an **SLA restarted** badge next to the SLA indicator (staff
-and admin; a reporting user sees no SLA). It opens a small panel with the
-earlier record's facts: its policy, when its clock started, when it was
-replaced, and whether it ended met or breached. `GET /tickets/{id}` carries it
-as `sla.earlier`; a list row never does. A record replaced while still running
-carried on in the new one and shows no badge. The outcome reads the record's
-stored stamps, so a breach the sweep has not stamped yet is not reported. Note
-that a *staff* change keeps the clock (above): the badge says a new record
-started, which for a staff change keeps the old start and facts, and for a reopen
-starts over.
+**"SLA restarted" badge.** When the clock really restarted, the ticket page
+shows an **SLA restarted** badge next to the SLA indicator (staff and admin; a
+reporting user sees no SLA). That is a reopen and nothing else: **never after a
+staff or admin priority change**, which re-matches the SLA and keeps its clock,
+whatever the old record had already met or breached. **On this build the badge
+cannot appear**, because the reopen caller arrives with #464 and nothing else
+writes a restarted record; the field and the page are in place and are tested
+with a restarted record. Its tooltip reads "The SLA clock restarted when this
+ticket was reopened. The earlier record is kept; select to see it." Selecting it
+opens a small panel (Escape closes it) with the earlier record's facts: its
+policy, when its clock started, when it was replaced, and whether it ended met or
+breached. `GET /tickets/{id}` carries it as `sla.earlier`; a list row never does.
+
+What tells a restart from a re-match is the clock start, not the stamps: a
+re-match copies the old record's `started_at` and its met and breach stamps onto
+the new record, so the stamps are the same in both and say nothing. Only a
+restart gives a record a `started_at` of its own. The current record's
+`started_at` is the reference: empty means the clock runs from the ticket's
+creation, so it cannot have restarted; otherwise the newest superseded record
+whose clock started somewhere else is the one the restart replaced (a re-match
+after a restart shares the restart's start and is passed over, so the badge stays
+after one, correctly, because the clock did restart). If that record ended with
+nothing met and nothing breached there is no outcome to show and no badge. The
+outcome reads the record's stored stamps, so a breach the sweep has not stamped
+yet is not reported.
 
 **The clock.** A record's clock starts at its `started_at`, or at the ticket's
 creation when that is empty (every record written before this existed, every

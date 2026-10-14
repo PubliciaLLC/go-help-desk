@@ -593,3 +593,44 @@ func TestReopenBump_AuditFailureRollsEverythingBack(t *testing.T) {
 	require.Equal(t, rowsBefore, h.store.slaRows(seeded.ID))
 	require.Empty(t, h.auditStore.entries)
 }
+
+// started_at is what tells a restart from a re-match, which is what the "SLA
+// restarted" badge reads (sla.EarlierRecord, #443, Erik 2026-10-14). The facts
+// are copied by a re-match, so they cannot: only a restart gives a record a
+// started_at of its own. Pinned here, on the writer, so the reader's rule
+// cannot drift from it.
+func TestChangePriority_OnlyARestartGivesARecordItsOwnStartedAt(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
+
+	// A staff re-match of a met, breached record from creation: started_at stays
+	// NULL, though the facts are copied, and again on the way back.
+	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
+	require.NoError(t, err)
+	_, err = h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityMedium, priorityStaff)
+	require.NoError(t, err)
+	rows := h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 3)
+	for i, r := range rows {
+		require.Nil(t, r.startedAt, "record %d: a re-match copies the NULL start and invents none", i)
+		require.Equal(t, metFacts().FirstResponseAt.Unix(), r.facts.FirstResponseAt.Unix(), "record %d: the facts are copied", i)
+	}
+
+	// A reopen: the new record has a started_at of its own and no facts.
+	_, err = h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
+	require.NoError(t, err)
+	rows = h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 4)
+	restarted := rows[3]
+	require.NotNil(t, restarted.startedAt)
+	require.Equal(t, ticket.SLAFacts{}, restarted.facts)
+
+	// A re-match after the restart carries that start over unchanged.
+	_, err = h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityMedium, priorityStaff)
+	require.NoError(t, err)
+	rows = h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 5)
+	require.NotNil(t, rows[4].startedAt)
+	require.True(t, rows[4].startedAt.Equal(*restarted.startedAt), "a re-match keeps the restart's start")
+}

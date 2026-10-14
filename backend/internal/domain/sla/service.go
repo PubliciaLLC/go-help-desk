@@ -288,7 +288,7 @@ func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now 
 	return out, nil
 }
 
-// Earlier is the record t's current one replaced, for the one-ticket read
+// Earlier is the record a restart replaced, for the one-ticket read
 // (see EarlierRecord for what counts). nil, nil when there is none. The history
 // is read for one ticket only: list rows never carry it.
 func (s *Service) Earlier(ctx context.Context, t ticket.Ticket) (*EarlierView, error) {

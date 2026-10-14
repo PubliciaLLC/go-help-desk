@@ -39,9 +39,10 @@ type Status struct {
 	Response   TargetStatus `json:"response"`
 	Resolution TargetStatus `json:"resolution"`
 
-	// Earlier is the record a priority change replaced after the SLA had been
-	// met or breached, on the one-ticket read only (Service.Earlier). Absent
-	// from list rows and from a ticket that never had one.
+	// Earlier is the record a restart (a reopen) replaced, on the one-ticket
+	// read only (Service.Earlier). Never set by a priority change, which keeps
+	// the clock. Absent from list rows and from a ticket whose clock never
+	// restarted; see EarlierRecord.
 	Earlier *EarlierView `json:"earlier,omitempty"`
 }
 
