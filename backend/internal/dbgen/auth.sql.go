@@ -232,6 +232,63 @@ func (q *Queries) ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]Ap
 	return items, nil
 }
 
+const listAPIKeysWithOwner = `-- name: ListAPIKeysWithOwner :many
+SELECT k.id, k.name, k.hashed_token, k.user_id, k.scopes, k.last_used_at, k.expires_at, k.created_at, u.email AS owner_email, u.display_name AS owner_name
+FROM api_keys k
+JOIN users u ON u.id = k.user_id
+WHERE ($1::uuid IS NULL OR k.id = $1::uuid)
+ORDER BY k.created_at DESC
+`
+
+type ListAPIKeysWithOwnerRow struct {
+	ID          uuid.UUID    `json:"id"`
+	Name        string       `json:"name"`
+	HashedToken string       `json:"hashed_token"`
+	UserID      uuid.UUID    `json:"user_id"`
+	Scopes      []string     `json:"scopes"`
+	LastUsedAt  sql.NullTime `json:"last_used_at"`
+	ExpiresAt   sql.NullTime `json:"expires_at"`
+	CreatedAt   time.Time    `json:"created_at"`
+	OwnerEmail  string       `json:"owner_email"`
+	OwnerName   string       `json:"owner_name"`
+}
+
+// key_id NULL lists every key; a value lists that one key. The owner comes
+// from the same row set so the admin page can show whose each key is.
+func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID) ([]ListAPIKeysWithOwnerRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAPIKeysWithOwner, keyID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAPIKeysWithOwnerRow
+	for rows.Next() {
+		var i ListAPIKeysWithOwnerRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.HashedToken,
+			&i.UserID,
+			pq.Array(&i.Scopes),
+			&i.LastUsedAt,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.OwnerEmail,
+			&i.OwnerName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnabledWebhookConfigs = `-- name: ListEnabledWebhookConfigs :many
 SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
 `

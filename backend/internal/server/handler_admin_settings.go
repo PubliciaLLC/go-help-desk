@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
@@ -781,6 +782,10 @@ type securityWarnings struct {
 	// directory is fixed.
 	AttachmentStorage storageStatus `json:"attachment_storage"`
 
+	// ReopenTarget says whether the configured reopen target status has been
+	// deactivated. Reopened tickets go to New meanwhile.
+	ReopenTarget reopenTargetStatus `json:"reopen_target"`
+
 	// Passkeys says whether passkeys can be used on this instance (#494).
 	// They cannot when BASE_URL is an IP address, a single-label host or
 	// non-ASCII, because a passkey is bound to a domain name.
@@ -789,6 +794,40 @@ type securityWarnings struct {
 	// Email says whether mail can be sent and whether it is being delivered
 	// (#455, #456). Additive.
 	Email emailStatus `json:"email"`
+}
+
+type reopenTargetStatus struct {
+	// Inactive is true when the setting names an existing, deactivated status.
+	Inactive bool `json:"inactive"`
+	// Name is the configured status name, set whenever Inactive is.
+	Name string `json:"name,omitempty"`
+}
+
+// reopenTargetInactive reports the configured reopen target when it names a
+// deactivated status. A name that matches nothing is not reported here: it
+// already falls back to New and nobody picked a retired status.
+func (s *Server) reopenTargetInactive(ctx context.Context) (reopenTargetStatus, error) {
+	if s.reopenTargetCheck != nil {
+		return s.reopenTargetCheck(ctx)
+	}
+	statuses, err := s.tickets.ListStatuses(ctx)
+	if err != nil {
+		return reopenTargetStatus{}, err
+	}
+	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	for _, st := range statuses {
+		if st.Name == want && !st.Active {
+			return reopenTargetStatus{Inactive: true, Name: want}, nil
+		}
+	}
+	return reopenTargetStatus{}, nil
+}
+
+// reopenTargetWarning is the sentence for an inactive target, shared by the
+// security warnings banner and the status response.
+func reopenTargetWarning(name string) string {
+	return "The reopen target status \"" + name + "\" is inactive, so reopened tickets are going to \"New\" instead. " +
+		"Pick an active status under Settings, Ticket lifecycle, Reopen target status."
 }
 
 type passkeyStatus struct {
@@ -859,7 +898,15 @@ type scanStatus struct {
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
 	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
+	// An unreadable status list must not hide the other warnings: log it and
+	// report no problem with the reopen target.
+	reopen, err := s.reopenTargetInactive(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "checking the reopen target for the security warnings failed", "error", err)
+		reopen = reopenTargetStatus{}
+	}
 	JSON(w, http.StatusOK, securityWarnings{
+		ReopenTarget:       reopen,
 		InsecureSecrets:    s.cfg.InsecureSecrets(),
 		AttachmentScanning: s.scanStatus(r.Context()),
 		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},

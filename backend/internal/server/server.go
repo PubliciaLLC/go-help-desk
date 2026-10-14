@@ -146,7 +146,7 @@ type OAuthClientLookup interface {
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
 	Delete(ctx context.Context, id uuid.UUID) error
-	ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error)
+	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
@@ -197,6 +197,11 @@ type Server struct {
 	cfg      *config.Config
 	router   *chi.Mux
 	sessions SessionStore
+
+	// reopenTargetCheck replaces reopenTargetInactive. Nil in production; a
+	// test sets it to make the check fail after a status has been saved,
+	// which cannot be done by breaking a table (see export_test.go).
+	reopenTargetCheck func(context.Context) (reopenTargetStatus, error)
 
 	users        *user.Service
 	tickets      *ticket.Service

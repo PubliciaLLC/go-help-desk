@@ -39,6 +39,10 @@ type Actor struct {
 	// none, and those must resolve opposite ways. And the endpoints that change
 	// how an account authenticates are refused to machine credentials outright.
 	Machine bool
+
+	// APIKeyID is the key that authenticated this request. Zero for sessions
+	// and OAuth clients.
+	APIKeyID uuid.UUID
 }
 
 // GetActor retrieves the Actor from the request context. Returns nil if not set.
@@ -160,6 +164,7 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 				MFAPassed: true,
 				Scopes:    key.Scopes,
 				Machine:   true,
+				APIKeyID:  key.ID,
 			}))
 		})
 	}

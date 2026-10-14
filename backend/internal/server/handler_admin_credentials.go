@@ -27,9 +27,20 @@ import (
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
 
+// Who may see and revoke which keys (Erik, 2026-10-13, see #466, and narrowed
+// the same day): an administrator signed in through the browser sees and
+// revokes every key, with its owner shown. An API key sees and revokes only
+// itself: not its owner's other keys, and not anyone else's. The distinction
+// is the credential, not the role: a key held by an administrator is still a
+// key, and a leaked one must not be able to revoke the owner's other keys,
+// which are what would let them recover.
 func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	keys, err := s.authStore.ListByUser(r.Context(), a.UserID)
+	var only *uuid.UUID
+	if a.Machine {
+		only = &a.APIKeyID
+	}
+	keys, err := s.authStore.ListWithOwner(r.Context(), only)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -139,6 +150,12 @@ func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
 		return
 	}
+	// Not found rather than forbidden for a key that is someone else's: the
+	// answer must not say which ids exist.
+	if a := authmw.GetActor(r); a.Machine && id != a.APIKeyID {
+		handleError(w, fmt.Errorf("API key %s: %w", id, auth.ErrNotFound))
+		return
+	}
 	if err := s.authStore.Delete(r.Context(), id); err != nil {
 		handleError(w, err)
 		return
@@ -232,6 +249,7 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	JSON(w, http.StatusCreated, map[string]any{
+		"id":            client.ID,
 		"client_id":     client.ClientID,
 		"client_secret": raw,
 		"name":          client.Name,
@@ -508,7 +526,15 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// Re-read rather than echo the edited copy: a changed URL clears the last
+	// delivery in the database, and the copy still carries the old receiver's
+	// result.
+	saved, err := s.authStore.GetWebhook(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
