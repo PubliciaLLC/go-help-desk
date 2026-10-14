@@ -16,6 +16,8 @@ import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
 
+type Show = 'all' | 'people' | 'service'
+
 function roleBadge(role: Role) {
   if (role === 'admin') return 'destructive'
   if (role === 'staff') return 'default'
@@ -31,11 +33,19 @@ export function UsersPage() {
   const [role, setRole] = useState<Role>('user')
   const [password, setPassword] = useState('')
   const [formError, setFormError] = useState('')
+  const [show, setShow] = useState<Show>('all')
 
   const { data: users = [], isLoading } = useQuery({
     queryKey: ['admin', 'users'],
     queryFn: () => listUsers(),
   })
+
+  // Client-side: GET /admin/users takes limit/offset only, so this filters the
+  // page that was loaded. When paging (#467) lands this needs a server-side
+  // parameter, or a service user past the first page is invisible to it.
+  const shown = users.filter((u) =>
+    show === 'all' ? true : show === 'service' ? !!u.service_account : !u.service_account,
+  )
 
   const createMutation = useMutation({
     mutationFn: () => createUser({ email, display_name: displayName, role, password }),
@@ -59,10 +69,22 @@ export function UsersPage() {
             <h1 className="text-2xl font-bold text-gray-900">Users</h1>
             <p className="mt-1 text-sm text-gray-500">Click a user to edit their profile, groups, and account settings.</p>
           </div>
-          <Button onClick={() => setShowCreate(!showCreate)}>
-            <PlusIcon className="mr-2 h-4 w-4" />
-            Add User
-          </Button>
+          <div className="flex items-center gap-3">
+            <Select
+              aria-label="Show"
+              value={show}
+              onChange={(e) => setShow(e.target.value as Show)}
+              className="w-44"
+            >
+              <option value="all">All accounts</option>
+              <option value="people">People</option>
+              <option value="service">Service accounts</option>
+            </Select>
+            <Button onClick={() => setShowCreate(!showCreate)}>
+              <PlusIcon className="mr-2 h-4 w-4" />
+              Add User
+            </Button>
+          </div>
         </div>
 
         {showCreate && (
@@ -117,7 +139,7 @@ export function UsersPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {users.map((u) => (
+                {shown.map((u) => (
                   <tr
                     key={u.id}
                     className={`cursor-pointer hover:bg-blue-50 transition-colors ${u.disabled ? 'opacity-60' : ''}`}
@@ -125,6 +147,9 @@ export function UsersPage() {
                   >
                     <td className="px-4 py-3">
                       <span className="font-medium text-gray-900">{u.display_name}</span>
+                      {u.service_account && (
+                        <Badge variant="secondary" className="ml-2 text-[10px]">Service</Badge>
+                      )}
                       {u.disabled && (
                         <Badge variant="secondary" className="ml-2 text-[10px]">Disabled</Badge>
                       )}
@@ -134,12 +159,14 @@ export function UsersPage() {
                       <Badge variant={roleBadge(u.role) as never}>{u.role}</Badge>
                     </td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
-                      {u.auth_type === 'saml' ? 'SSO' : u.auth_type === 'both' ? 'Local + SSO' : 'Local'}
+                      {u.service_account
+                        ? 'Never signs in'
+                        : u.auth_type === 'saml' ? 'SSO' : u.auth_type === 'both' ? 'Local + SSO' : 'Local'}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                   </tr>
                 ))}
-                {users.length === 0 && (
+                {shown.length === 0 && (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No users found.</td></tr>
                 )}
               </tbody>

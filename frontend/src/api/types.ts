@@ -12,7 +12,7 @@ export interface User {
   updated_at: string
 }
 
-export type AuthType = 'local' | 'saml' | 'both'
+export type AuthType = 'local' | 'saml' | 'both' | 'service'
 
 export interface AdminUser {
   id: string
@@ -21,6 +21,10 @@ export interface AdminUser {
   role: Role
   disabled: boolean
   auth_type: AuthType
+  // The identity an OAuth client acts as (#420). Never signs in, so it has no
+  // password, second factor or admin role. Optional so older fixtures read as
+  // an ordinary account.
+  service_account?: boolean
   has_password: boolean
   mfa_enabled: boolean
   // Registered passkeys. Sent on the detail response only; mfa_enabled is the
@@ -450,6 +454,11 @@ export interface OAuthClient {
   name: string
   scopes: string[]
   created_at: string
+  // The client's service user (#420) and the groups it is in, which are the
+  // client's ticket scope. Optional so a server that predates them reads as
+  // "unknown" rather than "none".
+  user_id?: string
+  groups?: { id: string; name: string }[]
 }
 
 // payload_format reshapes the same lifecycle event for a chat/ITSM service's

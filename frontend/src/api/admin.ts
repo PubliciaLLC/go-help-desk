@@ -290,8 +290,14 @@ export async function getSettings(): Promise<Record<string, unknown>> {
   return res.data
 }
 
-export async function updateSettings(patch: Record<string, unknown>): Promise<void> {
-  await api.patch('/admin/settings', patch)
+/**
+ * A save can succeed with something the administrator should read: the server
+ * answers 200 {"warning"} instead of 204 (an SSO setting that locks people out,
+ * or ticket scope turned on while an OAuth client has no group, #420).
+ */
+export async function updateSettings(patch: Record<string, unknown>): Promise<{ warning?: string }> {
+  const res = await api.patch<{ warning?: string } | undefined>('/admin/settings', patch)
+  return { warning: res.data?.warning }
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
@@ -615,6 +621,13 @@ export interface SecurityWarnings {
    * a server that predates the field read as healthy.
    */
   attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * Names of OAuth clients that see no tickets because ticket scope is on and
+   * their service user is in no group (#420). Optional so a server that
+   * predates it reads as none.
+   */
+  oauth_clients_without_groups?: string[]
 }
 
 export interface AttachmentScanningWarning {
