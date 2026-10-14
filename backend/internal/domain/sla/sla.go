@@ -49,6 +49,19 @@ type Record struct {
 	// fresh RecordFirstResponse/RecordResolved.
 	ResponseElapsedAtMetSeconds   *int64 `json:"response_elapsed_at_met_seconds,omitempty"`
 	ResolutionElapsedAtMetSeconds *int64 `json:"resolution_elapsed_at_met_seconds,omitempty"`
+
+	// StartedAt is where this record's clock starts. nil means the ticket's
+	// creation, which is every record written before migration 000039 and
+	// every record AttachPolicy writes. It is set only by a priority re-match
+	// (#443b), which supersedes a record and starts a new one rather than
+	// rewriting the old.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+
+	// PausedSecondsAtStart is the ticket's pause total, plus the part of an
+	// open Pending interval already elapsed, as of StartedAt. Pause time
+	// before the restart does not count toward this record. Zero for a record
+	// that starts at ticket creation.
+	PausedSecondsAtStart int64 `json:"-"`
 }
 
 // Elapsed is the time a ticket has spent counting toward its targets as of at:
@@ -64,11 +77,38 @@ type Record struct {
 // elapsed (for example, if business hours are added later), so the query
 // remains a superset of what EvaluateBreaches would stamp.
 func Elapsed(t ticket.Ticket, at time.Time) time.Duration {
-	e := at.Sub(t.CreatedAt) - time.Duration(t.SLAPausedSeconds)*time.Second
+	return ElapsedFrom(t.CreatedAt, 0, t, at)
+}
+
+// ElapsedFrom is Elapsed with the clock starting at start and the ticket's
+// pause total counted from pausedBase: at - start - (t.SLAPausedSeconds -
+// pausedBase), less the open Pending interval. Elapsed(t, at) is
+// ElapsedFrom(t.CreatedAt, 0, t, at).
+//
+// pausedBase includes the part of a Pending interval that was open at start.
+// When that interval closes, SLAPausedSeconds grows by its whole length, so
+// the subtraction comes out exactly right; while it is still open, the open
+// interval (taken from its own start) cancels the base and the reading stays
+// at zero.
+//
+// Like Elapsed, this is mirrored in SQL by ListSLABreachCandidates.
+func ElapsedFrom(start time.Time, pausedBase int64, t ticket.Ticket, at time.Time) time.Duration {
+	e := at.Sub(start) - time.Duration(t.SLAPausedSeconds-pausedBase)*time.Second
 	if t.PendingSince != nil && at.After(*t.PendingSince) {
 		e -= at.Sub(*t.PendingSince)
 	}
 	return e
+}
+
+// Elapsed is the record's own elapsed time: from StartedAt (or the ticket's
+// creation when nil) and PausedSecondsAtStart. A record with no StartedAt
+// reads exactly as the package-level Elapsed does.
+func (r Record) Elapsed(t ticket.Ticket, at time.Time) time.Duration {
+	start := t.CreatedAt
+	if r.StartedAt != nil {
+		start = *r.StartedAt
+	}
+	return ElapsedFrom(start, r.PausedSecondsAtStart, t, at)
 }
 
 // IsResponseBreached returns true when the response target has elapsed and no
