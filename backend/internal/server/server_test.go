@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -339,6 +340,7 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 		registrationSvc,
 		cannedResponseSvc,
 		server.WithAuditStore(auStore),
+		server.WithEmailHealth(outboxstore.New(q)),
 	)
 
 	dispatcher.prepare = srv.PrepareGuestLink
