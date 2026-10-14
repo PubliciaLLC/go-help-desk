@@ -781,9 +781,20 @@ type securityWarnings struct {
 	// directory is fixed.
 	AttachmentStorage storageStatus `json:"attachment_storage"`
 
+	// Passkeys says whether passkeys can be used on this instance (#494).
+	// They cannot when BASE_URL is an IP address, a single-label host or
+	// non-ASCII, because a passkey is bound to a domain name.
+	Passkeys passkeyStatus `json:"passkeys"`
+
 	// Email says whether mail can be sent and whether it is being delivered
 	// (#455, #456). Additive.
 	Email emailStatus `json:"email"`
+}
+
+type passkeyStatus struct {
+	Available bool `json:"available"`
+	// Reason is why not, in the library's words. Empty when Available.
+	Reason string `json:"reason"`
 }
 
 // emailStatus never carries a credential or an address: names of unset
@@ -852,8 +863,20 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		InsecureSecrets:    s.cfg.InsecureSecrets(),
 		AttachmentScanning: s.scanStatus(r.Context()),
 		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
+		Passkeys:           s.passkeyStatus(),
 		Email:              s.emailStatus(r.Context()),
 	})
+}
+
+func (s *Server) passkeyStatus() passkeyStatus {
+	if s.passkeysAvailable() {
+		return passkeyStatus{Available: true}
+	}
+	reason := s.passkeysReason
+	if reason == "" {
+		reason = "BASE_URL cannot be used as a passkey domain"
+	}
+	return passkeyStatus{Reason: reason}
 }
 
 func (s *Server) emailStatus(ctx context.Context) emailStatus {

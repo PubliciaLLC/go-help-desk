@@ -50,6 +50,10 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storage = data?.attachment_storage
   const storageBroken = !!storage && !storage.writable
 
+  // An absent field is a server that predates it, which had no way to be off.
+  const passkeys = data?.passkeys
+  const passkeysOff = !!passkeys && !passkeys.available
+
   const email = data?.email
   // Email off is a choice for an install that uses nothing which sends mail,
   // so it is only a warning once signup or guest submission is on. Settings
@@ -57,7 +61,9 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const emailOff = !!email && !email.enabled && (email.signup_without_email || email.guest_submission_without_email)
   const emailFailing = !!email && email.failing
 
-  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !emailOff && !emailFailing) {
+  if (
+    insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !passkeysOff && !emailOff && !emailFailing
+  ) {
     return null
   }
 
@@ -91,6 +97,23 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
             <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
             server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
+          </p>
+        </div>
+      )}
+      {passkeysOff && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">Passkeys are unavailable</p>
+          <p className="mt-1 text-sm">
+            A passkey is tied to a domain name, so{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">BASE_URL</code> must be a domain
+            name (or <code className="font-mono text-xs">localhost</code>) to use them; an IP address or a single-word
+            host will not work. Everything else runs normally, but anyone whose only second factor is a passkey cannot
+            sign in while sign-in MFA is on, until an administrator resets their sign-in factors. If that is the last
+            administrator, run{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">
+              docker compose exec app /app/server reset-factors &lt;email&gt;
+            </code>{' '}
+            on the server. Reason: {passkeys.reason}
           </p>
         </div>
       )}

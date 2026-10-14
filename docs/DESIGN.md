@@ -751,10 +751,48 @@ is half an answer without "and here is how you recover when it happens anyway".
 **`BASE_URL` is security-relevant.** A WebAuthn credential is bound to its
 origin and the relying party is derived from `BASE_URL`, so the setting stops
 being only about links in emails. An instance that changes domain invalidates
-every registered credential and every user re-registers. The server refuses to
-start when `BASE_URL` has no host rather than defaulting, because a default
-would produce passkeys that silently never verify. (`README.md` and
-`docker/.env.example` describe `BASE_URL` without this warning.)
+every registered credential and every user re-registers. A `BASE_URL` that
+cannot be a relying-party id is never defaulted, because a default would produce
+passkeys that silently never verify.
+
+**An unusable `BASE_URL` turns passkeys off; it does not stop the server** (#494).
+go-webauthn accepts a domain name and `localhost`, and rejects an IP address
+(`127.0.0.1`, `192.168.1.10`, `[::1]`), a single-label host (`helpdesk`) and a
+non-ASCII host (pinned by `TestNewService_WhichHostsTheLibraryAccepts`). Many
+1.2.x instances run on exactly such a LAN URL, and a second factor they never
+used must not take the whole help desk down. So startup logs once (`passkeys
+unavailable: ...` with the reason) and carries on with no passkey service, and:
+
+- `GET /admin/security-warnings` gains `passkeys: {available, reason}` and the
+  admin banner (`InsecureConfigBanner`) says `BASE_URL` must be a domain name or
+  `localhost`.
+- `GET /auth/providers` gains `passkeys` (boolean, public, no reason), so the
+  UI offers no key it cannot check. The account page hides enrolment when its
+  list request answers `503 passkeys_unavailable`.
+- `GET /me/passkeys`, `POST /me/passkeys/register/start|finish` and
+  `POST /auth/local/passkey/start|finish` answer `503 passkeys_unavailable`
+  (the `requirePasskeys` middleware, so no handler can reach the nil service).
+  `DELETE /me/passkeys/{id}` still works: it never uses the service.
+- **A passkey-only account is refused, not let in on its password alone.** A
+  passkey is only ever a second step after the password (there is no
+  passwordless sign-in). While passkeys are off, a key cannot be checked, and
+  accepting the password alone would let a stolen password take over exactly
+  the accounts that chose a stronger factor. So when the instance's MFA is on
+  and an account's only second factor is a passkey, `POST /auth/local/login`
+  answers `403 passkey_unavailable` ("Your passkey can't be used on this server
+  right now. Ask an administrator to reset your sign-in factors."), creates no
+  session and does not count as a failed attempt. An administrator's **Reset
+  MFA** (which clears the passkeys too, see above) unblocks the account; it
+  then signs in and enrols TOTP as usual. An account with a passkey **and**
+  TOTP uses TOTP as always. `passkey_needed` is never sent while passkeys are
+  off.
+- **There is no exception for the last administrator.** They are refused too,
+  and `alreadyProtected` still counts passkeys, so a password alone cannot
+  enrol TOTP on any passkey-only account. Recovery is on the server:
+  `docker compose exec app /app/server reset-factors <email>` (from the `docker/` directory; clears every
+  factor, including passkeys), or an administrator's Reset MFA for anyone else.
+  Fixing `BASE_URL` also brings old keys back, provided the domain is the one
+  they were registered on.
 
 **Not built**, written down so it is not rediscovered as a gap: passwordless
 sign-in; attestation verification against a metadata service; a per-role

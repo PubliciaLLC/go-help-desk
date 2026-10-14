@@ -120,6 +120,21 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// authenticator they already have. The passkey route is still reachable
 	// directly for anyone who prefers it.
 	mfaNeeded := mfaEnabled && u.MFAEnabled
+	//
+	// Passkeys unavailable (#494): a key the server cannot check is not a
+	// factor, so it is never asked for. An account whose ONLY second factor is
+	// such a key is refused rather than let in on its password alone, or a
+	// stolen password would take over exactly the accounts that chose a
+	// stronger factor. That includes the last administrator: the way back is
+	// an administrator's MFA reset, or reset-factors on the server. The
+	// refusal comes after loginLimiter.Reset, so it never counts as a failed
+	// attempt, and before any session is written.
+	stranded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !s.passkeysAvailable()
+	if stranded {
+		Error(w, http.StatusForbidden, "passkey_unavailable",
+			"Your passkey can't be used on this server right now. Ask an administrator to reset your sign-in factors.")
+		return
+	}
 	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
 	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
 		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
@@ -566,6 +581,10 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, struct {
 		Providers      []Provider `json:"providers"`
 		LocalAdminOnly bool       `json:"local_admin_only"`
+		// Passkeys is false when BASE_URL cannot be a relying-party id
+		// (#494), so the page does not offer a key it cannot check. Public
+		// on purpose: the reason is not, and only goes to administrators.
+		Passkeys bool `json:"passkeys"`
 	}{
 		Providers: []Provider{
 			{Name: "local", Enabled: true},
@@ -573,6 +592,7 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 			{Name: "oidc", Enabled: s.oidcReachableNow()},
 		},
 		LocalAdminOnly: s.adminSvc.SAMLEnabled(r.Context()),
+		Passkeys:       s.passkeysAvailable(),
 	})
 }
 
