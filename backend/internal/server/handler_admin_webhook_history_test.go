@@ -212,6 +212,54 @@ func TestWebhookRedeliver_RechecksTheFilterAgainstTheTicket(t *testing.T) {
 	}
 }
 
+// A hook with a filter cannot be checked against a ticket that no longer
+// exists, so the replay is refused with its own code and nothing is queued
+// (#499). The same delivery to a hook with no filter is still replayed.
+func TestWebhookRedeliver_FilteredHookWithDeletedTicketIs409(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	gone := uuid.New() // a ticket id nothing has
+
+	for _, tc := range []struct {
+		name   string
+		filter notification.WebhookFilter
+		want   int
+		code   string
+	}{
+		{"filter", notification.WebhookFilter{Priorities: []string{"low"}}, http.StatusConflict, "webhook_filter_unverifiable"},
+		{"inverted filter", notification.WebhookFilter{Priorities: []string{"low"}, Invert: true}, http.StatusConflict, "webhook_filter_unverifiable"},
+		{"no filter", notification.WebhookFilter{}, http.StatusAccepted, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := historyHook(t, h, true)
+			hook.Filter = tc.filter
+			require.NoError(t, h.authStore.UpdateWebhook(context.Background(), hook))
+			id := uuid.New()
+			require.NoError(t, h.authStore.RecordWebhookAttempt(context.Background(), authstore.WebhookAttempt{
+				DeliveryID: id, HookID: hook.ID, EventType: "ticket.replied",
+				Event:  []byte(`{"type":"ticket.replied","ticket_id":"` + gone.String() + `","webhook_id":"` + hook.ID.String() + `"}`),
+				Result: authstore.WebhookDelivery{At: time.Now().UTC(), Status: 200},
+			}))
+			before := queuedWebhookRows(t, h)
+
+			res := h.doAsAdmin(t, http.MethodPost,
+				"/api/v1/admin/webhooks/"+hook.ID.String()+"/deliveries/"+id.String()+"/redeliver", nil)
+			defer res.Body.Close()
+			require.Equal(t, tc.want, res.StatusCode)
+			if tc.code == "" {
+				require.Equal(t, before+1, queuedWebhookRows(t, h))
+				return
+			}
+			var body struct {
+				Error struct{ Code string } `json:"error"`
+			}
+			require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+			require.Equal(t, tc.code, body.Error.Code)
+			require.Equal(t, before, queuedWebhookRows(t, h))
+		})
+	}
+}
+
 func TestWebhookRedeliver_Refusals(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

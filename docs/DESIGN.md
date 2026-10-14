@@ -2358,7 +2358,9 @@ on the existing webhook feature instead of as plugins.
   `409 webhook_disabled` for a disabled hook,
   `409 webhook_not_subscribed` when the hook no longer lists that event, and
   `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
-  does not admit the ticket (see the filter, below).
+  does not admit the ticket, and `409 webhook_filter_unverifiable` when the
+  hook has a filter and the ticket no longer exists, so the filter cannot be
+  checked (see the filter, below).
   Changing a hook's URL clears its history, and deleting the hook deletes it.
   (`GET /admin/webhooks/{id}/deliveries`,
   `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
@@ -2401,9 +2403,17 @@ on the existing webhook feature instead of as plugins.
   **Redeliver** has no stored classification to test (the kept copy has none,
   by design), so it reads it from the ticket as it is now, the way a chat
   message's content is rebuilt. If the filter does not admit that ticket it is
-  refused with `409 webhook_filter_excludes` and nothing is queued; if the
-  ticket cannot be read (gone, or no source) it is sent and a warning is
-  logged. A raw hook with no filter reads no ticket. The replay's row carries
+  refused with `409 webhook_filter_excludes` and nothing is queued. If the hook
+  has a filter and the ticket cannot be read (deleted, or no source wired) the
+  filter cannot be checked, and it is refused with
+  `409 webhook_filter_unverifiable` and nothing is queued ([#499](https://github.com/PubliciaLLC/go-help-desk/issues/499)):
+  Redeliver is something an administrator asked for just now, so it is told
+  why rather than a message being sent that the filter might have stopped. An
+  inverted filter is a filter; a hook with no conditions is not, and is
+  replayed whether or not the ticket exists. A raw hook with no filter reads no
+  ticket. Only a queued row with no stored classification (queued before
+  #413, sent by the worker with nobody to tell) still fails open, with a
+  warning logged. The replay's row carries
   the ticket's classification, so it is tested again at its own send. Refusal
   codes are in the API reference. (An earlier version of this section had the
   filter evaluated once, at the fan-out; that rule was reversed on #290.)

@@ -307,38 +307,84 @@ func TestQueueFilter_RedeliverRechecksTheFilterAgainstTheTicketNow(t *testing.T)
 	}
 }
 
-// With no ticket to read (it is gone, or no source is wired) a replay has no
-// attributes to judge. Like a row without them, it is sent and the fact logged.
+// A ticket that is found but carries no attributes (a source that cannot say)
+// leaves the filter nothing to judge. Like a queued row without attributes, the
+// replay is sent and the fact logged. The production source always fills them,
+// so this is the same fail-open as deliverQueued's, kept for that seam only.
 func TestQueueFilter_RedeliverWithoutTicketAttrsFailsOpen(t *testing.T) {
+	rc := newReceiver(t, 200)
+	hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+	rig := newQueueRig(t, rc.srv.Client(), hook)
+	require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
+	rig.drain(t)
+	original := firstDelivery(t, rig, hook.ID)
+	setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
+	src := newFakeSource()
+	src.facts[fixtureTicketID] = TicketFacts{Subject: "now"}
+	rig.disp.queue.Source = src
+	var buf bytes.Buffer
+	rig.disp.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, original))
+	rig.drain(t)
+
+	require.Equal(t, 2, rc.count(), "an extra message beats a missed one")
+	require.Contains(t, buf.String(), "not evaluated")
+}
+
+// A hook with a filter cannot be checked against a ticket that cannot be read
+// (#499): the ticket is gone, or no source is wired. The replay is refused with
+// a reason and nothing is queued, whatever the payload format. An inverted
+// filter is a filter too. A hook with no filter has nothing to check and is
+// replayed as before.
+func TestQueueFilter_RedeliverWithTicketGone(t *testing.T) {
+	low := notification.WebhookFilter{Priorities: []string{"low"}}
 	for _, tc := range []struct {
-		name string
-		src  func() EventSource
+		name       string
+		format     string
+		filter     notification.WebhookFilter
+		noSource   bool
+		unverified bool
 	}{
-		{"ticket gone", func() EventSource { return newFakeSource() }},
-		{"no source", func() EventSource { return nil }},
-		{"ticket without attrs", func() EventSource {
-			s := newFakeSource()
-			s.facts[fixtureTicketID] = TicketFacts{Subject: "now"}
-			return s
-		}},
+		{"raw, filter", "raw", low, false, true},
+		{"slack, filter", "slack", low, false, true},
+		{"raw, inverted filter", "raw", notification.WebhookFilter{Priorities: []string{"critical"}, Invert: true}, false, true},
+		{"raw, category-only filter", "raw", notification.WebhookFilter{CategoryIDs: []uuid.UUID{uuid.New()}}, false, true},
+		{"raw, filter, no source wired", "raw", low, true, true},
+		{"slack, filter, no source wired", "slack", low, true, true},
+		{"raw, no filter", "raw", notification.WebhookFilter{}, false, false},
+		{"slack, no filter", "slack", notification.WebhookFilter{}, false, false},
+		{"raw, no filter, no source wired", "raw", notification.WebhookFilter{}, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := newReceiver(t, 200)
-			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+			hook := hookFor(rc.srv.URL)
+			hook.PayloadFormat = tc.format
 			rig := newQueueRig(t, rc.srv.Client(), hook)
 			require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
 			rig.drain(t)
+			require.Equal(t, 1, rc.count())
 			original := firstDelivery(t, rig, hook.ID)
-			setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
-			rig.disp.queue.Source = tc.src()
-			var buf bytes.Buffer
-			rig.disp.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			setFilter(rig.hooks, hook.ID, tc.filter)
+			if !tc.noSource {
+				rig.disp.queue.Source = newFakeSource() // knows no ticket: it is gone
+			} else {
+				rig.disp.queue.Source = nil
+			}
+			before := len(rig.store.order)
 
-			require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, original))
+			err := rig.disp.Redeliver(context.Background(), hook.ID, original)
 			rig.drain(t)
 
-			require.Equal(t, 2, rc.count(), "an extra message beats a missed one")
-			require.Contains(t, buf.String(), "not evaluated")
+			if tc.unverified {
+				require.ErrorIs(t, err, ErrWebhookFilterUnverifiable)
+				require.NotErrorIs(t, err, ErrWebhookFilterExcludes)
+				require.Equal(t, before, len(rig.store.order), "nothing is queued")
+				require.Equal(t, 1, rc.count())
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, 2, rc.count(), "a hook with no filter is still replayed")
 		})
 	}
 }
