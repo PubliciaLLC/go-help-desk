@@ -606,6 +606,11 @@ type Querier interface {
 	ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	ListAuditByEntity(ctx context.Context, arg ListAuditByEntityParams) ([]AuditLog, error)
+	// ListAuditByEntity narrowed by action: only_actions keeps just those actions,
+	// exclude_actions drops them. Either may be NULL for "no narrowing". It is how
+	// a ticket's feed keeps follow and unfollow entries (#441) from counting
+	// toward its cap, so a flood of them cannot push real history off the feed.
+	ListAuditByEntityActions(ctx context.Context, arg ListAuditByEntityActionsParams) ([]AuditLog, error)
 	ListCannedResponses(ctx context.Context) ([]CannedResponse, error)
 	ListCategories(ctx context.Context, dollar_1 bool) ([]Category, error)
 	ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error)

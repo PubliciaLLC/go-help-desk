@@ -419,19 +419,30 @@ func TestStaffFanout_OneEmailPerPersonAcrossAssigneeGroupAndFollower(t *testing.
 	require.Equal(t, notification.SwitchFollow, reasons[plain.ID])
 }
 
-// Turning one reason off does not lose the person's other reason.
-func TestStaffFanout_AFollowerWhoTurnedOffTheirGroupSwitchIsStillMailedAsAFollower(t *testing.T) {
-	m := staffUser("m")
-	m.EmailNotifyGroup = false
+// Erik, 2026-10-14: the assignee and the assigned group "follow" the ticket
+// from a practical point of view, so they get no follower mail. Their own
+// switches decide, and turning one off does not bring the follower mail back.
+func TestStaffFanout_TheAssigneeAndTheGroupNeverGetFollowerMail(t *testing.T) {
+	assignee, member := staffUser("assignee"), staffUser("member")
+	assignee.EmailNotifyAssigned, assignee.EmailNotifyActivity = false, false
+	member.EmailNotifyGroup = false
 	g := uuid.New()
-	ev := requesterReply(nil, &g)
-	next := &recorder{}
-	f := fanoutWithFollowers(next, newFakeStaffUsers(m), fakeStaffGroups{g: {m.ID}}, fakeStaffFollowers{ev.TicketID: {m.ID}})
+	for name, ev := range map[string]notification.Event{
+		"assignment":                assignedEvent(nil, &assignee.ID, &g),
+		"reply on a held ticket":    requesterReply(&assignee.ID, &g),
+		"reply on a group's ticket": requesterReply(nil, &g),
+		"assignment to the group":   assignedEvent(nil, nil, &g),
+	} {
+		t.Run(name, func(t *testing.T) {
+			next := &recorder{}
+			f := fanoutWithFollowers(next, newFakeStaffUsers(assignee, member), fakeStaffGroups{g: {member.ID}},
+				fakeStaffFollowers{ev.TicketID: {assignee.ID, member.ID}})
 
-	require.NoError(t, f.Dispatch(context.Background(), ev))
+			require.NoError(t, f.Dispatch(context.Background(), ev))
 
-	require.Equal(t, []uuid.UUID{m.ID}, recipientsOf(next))
-	require.Equal(t, notification.SwitchFollow, next.got[1].StaffReason)
+			require.Empty(t, recipientsOf(next))
+		})
+	}
 }
 
 // Never mail the person who made the change, even though they follow.

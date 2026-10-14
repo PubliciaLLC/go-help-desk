@@ -393,7 +393,8 @@ Staff and administrators can **follow** a ticket to hear about its activity with
 - **A follower must be able to see the ticket** when following: the routes sit behind `requireTicketAccess` like everything under `/tickets/{id}`, so a ticket out of scope (#391) is a 404, and a tracking number works as well as a UUID. At send time the person is checked again (`Server.StillEntitled`, `CanViewTicket`): mail for a ticket they can no longer see is skipped, and **the row is kept**, so following works again if their scope returns. A deleted or disabled account, a service account and a requester are never mailed (`ListMailableTicketFollowers`).
 - **API.** `PUT` and `DELETE /api/v1/tickets/{id}/follow` follow and unfollow for the caller; both are idempotent and answer 204. `GET /api/v1/tickets/{id}/followers` lists them, oldest first, for staff and administrators (a machine credential with `tickets:read` may read it).
 - **Staff always see the current list of followers** on the ticket page, with a Follow / Unfollow button. No setting hides it.
-- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry with the person as actor, in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. The per-ticket feed drops them in Go; the admin-wide view leaves them out in the query (`audit.Filter.ExcludeActions`, in the page and the total alike), so asking for them by `action` returns nothing for staff.
+- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry with the person as actor, in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. Both views leave them out in the query (`audit.Filter.ExcludeActions` for the admin-wide view, in the page and the total alike; `audit.ActionFilter` for the per-ticket feed), and the per-ticket feed keeps them out of its 500-entry cap: they are fetched on their own, with a cap of their own, only for viewers who may see them, and merged by time, so toggling follow can never push a ticket's real history off its feed, so asking for them by `action` returns nothing for staff.
+- **Reassigning takes the old assignee's follow with it** (Erik, 2026-10-14: the assignee follows the ticket by being assigned, so a follow on top is dropped when they lose it). When a ticket is assigned away from someone, or unassigned, or its assignee's account is deleted, their follow row is removed in the same transaction (`dropAssigneeFollow`, from `Service.Assign` and `Service.UnassignForUser`, which every route reaches: PATCH, auto-assign, MCP `assign_ticket`, account deletion; there is no bulk assign). It writes an `unfollowed` entry with the reassigning actor as the actor; its before and after carry `assignee_user_id` (whose follow went, and who holds it now). No follow row, no entry. The same person again changes nothing. Only the assignee loses a follow: moving the ticket between groups, with the assignee kept or not, leaves group members' follows alone. They click Follow again to keep the mail. A per-user preference for this is not built.
 - **Data.** `ticket_followers (ticket_id, user_id, created_at)`, primary key `(ticket_id, user_id)`, both columns cascading on a hard delete (users are soft-deleted, so the send-time check does the real work), migration `000046`.
 
 ### Ticket Activity Feed
@@ -2408,11 +2409,13 @@ on the existing webhook feature instead of as plugins.
   reply on work a colleague already holds. Assignment mails both. Group
   members are told it is their group's ticket ("assigned to your group"), not
   that it is theirs. **Followers** (Ticket Followers, above) are mailed for both
-  events, whoever holds the ticket or whether anyone does, under the second
-  switch and its override, and are told it is a ticket they follow. A person
-  who is the assignee or in the group *and* a follower gets one email, under the
-  first of their reasons whose switch lets it through: turning off the group
-  switch does not silence the follower mail.
+  events under the second switch and its override, and are told it is a ticket
+  they follow. **The assignee and the members of the assigned group never get
+  follower mail** (Erik, 2026-10-14: they follow the ticket from a practical
+  point of view): their own switches ("Tickets assigned to me", the group
+  switch) decide, and following on top does not bring back mail they turned
+  off. This holds when the mail is queued and again when it is sent. Unfollowing
+  stops mail already queued: the follow row is checked at send time.
 
   An administrator can **override each switch for everyone**
   (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
@@ -2426,9 +2429,9 @@ on the existing webhook feature instead of as plugins.
   The rules that hold whatever the switches say:
   - **Nobody is mailed about their own action.** The person who made the
     assignment is skipped even when an override forces the switch on.
-  - **One email per person per event.** Someone who is the assignee, a member
-    of the assigned group and a follower gets one, if any of their switches
-    lets it through.
+  - **One email per person per event.** Someone who is both the assignee and
+    a member of the assigned group gets one, if either switch lets it through.
+    A follower who is neither is mailed as a follower.
   - **Only people who can receive it**: an active staff member or
     administrator with an address. A requester account is never sent staff
     mail. Service accounts (the identity an OAuth client acts as, #490) never

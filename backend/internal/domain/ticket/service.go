@@ -890,12 +890,20 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		}
 
 		before := ticketMap(t)
+		previous := t.AssigneeUserID
 		t.AssigneeUserID = assigneeUserID
 		t.AssigneeGroupID = assigneeGroupID
 		t.UpdatedAt = now
 
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("assigning ticket: %w", err)
+		}
+		// Reassigned away from somebody: their follow goes with the
+		// assignment (#441). The same person again changes nothing.
+		if previous != nil && (assigneeUserID == nil || *assigneeUserID != *previous) {
+			if err := dropAssigneeFollow(ctx, st, au, t.ID, *previous, actor.UserID, assigneeUserID); err != nil {
+				return err
+			}
 		}
 		// "unassigned" when the new assignee is nobody, "assigned" otherwise
 		// — mirroring how UnassignForUser already distinguishes the two.
@@ -2326,6 +2334,9 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 			after := map[string]any{"assignee_user_id": nil}
 			if err := au.Create(ctx, auditEntry(&actorID, "ticket", id, "unassigned", before, after)); err != nil {
 				return fmt.Errorf("auditing unassignment: %w", err)
+			}
+			if err := dropAssigneeFollow(ctx, st, au, id, userID, &actorID, nil); err != nil {
+				return err
 			}
 		}
 		moved = len(ids)

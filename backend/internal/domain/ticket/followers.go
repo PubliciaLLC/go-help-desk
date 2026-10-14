@@ -3,6 +3,8 @@ package ticket
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -103,6 +105,60 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 		}
 		return nil
 	})
+}
+
+// dropAssigneeFollow removes the follow of the person a ticket was just taken
+// from, in the reassignment's own transaction, and audits it as unfollowed
+// with the reassigning actor as the actor (Erik, 2026-10-14: they click Follow
+// again to keep the mail). No follow row, no entry. The entry names whose
+// follow went, and who holds the ticket now, in the keys the audit view
+// already allow-lists and resolves to names.
+func dropAssigneeFollow(ctx context.Context, st Store, au audit.Store, ticketID, previous uuid.UUID, actorID, now *uuid.UUID) error {
+	changed, err := st.RemoveFollower(ctx, ticketID, previous)
+	if err != nil {
+		return fmt.Errorf("removing the old assignee's follow: %w", err)
+	}
+	if !changed {
+		return nil
+	}
+	before := map[string]any{"following": true, "assignee_user_id": previous.String()}
+	after := map[string]any{"following": false, "assignee_user_id": nil}
+	if now != nil {
+		after["assignee_user_id"] = now.String()
+	}
+	if err := au.Create(ctx, auditEntry(actorID, "ticket", ticketID, AuditActionUnfollowed, before, after)); err != nil {
+		return fmt.Errorf("auditing the old assignee's unfollow: %w", err)
+	}
+	return nil
+}
+
+// ListAuditFeed is a ticket's activity feed, oldest first, with follow and
+// unfollow entries (includeFollow) or without.
+//
+// The feed is capped at the newest ticketAuditCap entries. Follow entries are
+// kept out of that count in the query, and fetched on their own with a cap of
+// their own when the viewer may see them, then merged by time: otherwise a few
+// hundred toggles would push the ticket's real history off its feed.
+func (s *Service) ListAuditFeed(ctx context.Context, ticketID uuid.UUID, includeFollow bool) ([]audit.Entry, error) {
+	real, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
+		audit.ActionFilter{Exclude: FollowAuditActions()}, ticketAuditCap, 0)
+	if err != nil {
+		return nil, fmt.Errorf("listing audit entries: %w", err)
+	}
+	entries := real
+	if includeFollow {
+		follows, err := s.auditStore.ListByEntityActions(ctx, "ticket", ticketID,
+			audit.ActionFilter{Only: FollowAuditActions()}, ticketAuditCap, 0)
+		if err != nil {
+			return nil, fmt.Errorf("listing follow entries: %w", err)
+		}
+		entries = append(entries, follows...)
+	}
+	// Both lists are newest first; one stable sort puts the whole feed oldest
+	// first, ties staying in the order the store gave them.
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].CreatedAt.After(entries[j].CreatedAt) })
+	slices.Reverse(entries)
+	return entries, nil
 }
 
 // ListFollowers returns who follows the ticket, oldest first.

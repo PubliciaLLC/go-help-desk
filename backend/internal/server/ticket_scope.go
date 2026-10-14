@@ -144,6 +144,29 @@ func (s *Server) StillEntitled(ctx context.Context, u user.User, ticketID uuid.U
 		}
 		return slices.Contains(members, u.ID), nil
 	case notification.SwitchFollow:
+		// Unfollowing after the mail was queued stops it: the row must still be
+		// there.
+		ids, err := s.tickets.ListMailableFollowerIDs(ctx, ticketID)
+		if err != nil {
+			return false, fmt.Errorf("listing followers: %w", err)
+		}
+		if !slices.Contains(ids, u.ID) {
+			return false, nil
+		}
+		// And somebody who has become the assignee, or joined the assigned
+		// group, since is mailed by their own switches, not as a follower.
+		if t.AssigneeUserID != nil && *t.AssigneeUserID == u.ID {
+			return false, nil
+		}
+		if t.AssigneeGroupID != nil {
+			members, err := s.groups.ListMembers(ctx, *t.AssigneeGroupID)
+			if err != nil {
+				return false, fmt.Errorf("listing group members: %w", err)
+			}
+			if slices.Contains(members, u.ID) {
+				return false, nil
+			}
+		}
 		return s.CanViewTicket(ctx, &authmw.Actor{UserID: u.ID, Role: u.Role}, t)
 	}
 	return false, nil

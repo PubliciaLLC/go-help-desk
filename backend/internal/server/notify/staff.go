@@ -136,11 +136,12 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (no
 	return "", nil, false
 }
 
-// followerCandidates are the ticket's followers, last in line: a person who is
-// also the assignee or in the group is mailed under that reason (one email,
-// StaffRecipients dedupes) and is a follower only if the earlier reason's
-// switch is off. A lookup that fails costs the followers their mail and
-// nothing else: the people already found are still mailed.
+// followerCandidates are the ticket's followers, except the assignee and the
+// members of the assigned group. Those people "follow" the ticket from a
+// practical point of view (Erik, 2026-10-14): their own switches decide
+// whether they hear about it, and following on top must not bring the mail
+// back after they turned it off. A lookup that fails costs the followers their
+// mail and nothing else: the people already found are still mailed.
 func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event) []candidate {
 	ids, err := f.followers.ListMailableFollowerIDs(ctx, ev.TicketID)
 	if err != nil {
@@ -148,9 +149,20 @@ func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Ev
 			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)
 		return nil
 	}
-	out := make([]candidate, len(ids))
-	for i, id := range ids {
-		out[i] = candidate{id, notification.SwitchFollow}
+	holders := map[uuid.UUID]bool{}
+	if ev.AssigneeUserID != nil {
+		holders[*ev.AssigneeUserID] = true
+	}
+	// Read the group again even where the reply path did not need it (a held
+	// ticket does not mail its group): a member is a holder either way.
+	for _, m := range f.groupMembers(ctx, ev, notification.SwitchGroup) {
+		holders[m.id] = true
+	}
+	out := make([]candidate, 0, len(ids))
+	for _, id := range ids {
+		if !holders[id] {
+			out = append(out, candidate{id, notification.SwitchFollow})
+		}
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package ticket_test
 import (
 	"context"
 	"slices"
+	"sort"
 	"time"
 
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -52,6 +54,33 @@ func (f *fakeStore) ListMailableFollowerIDs(_ context.Context, ticketID uuid.UUI
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// ListByEntityActions mirrors the real query: narrowed by action before the
+// limit applies, newest first.
+func (f *fakeAuditStore) ListByEntityActions(_ context.Context, entityType string, entityID uuid.UUID, flt audit.ActionFilter, limit, offset int) ([]audit.Entry, error) {
+	var matched []audit.Entry
+	for _, e := range f.entries {
+		if e.EntityType != entityType || e.EntityID != entityID {
+			continue
+		}
+		if len(flt.Only) > 0 && !slices.Contains(flt.Only, e.Action) {
+			continue
+		}
+		if slices.Contains(flt.Exclude, e.Action) {
+			continue
+		}
+		matched = append(matched, e)
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	if offset >= len(matched) {
+		return nil, nil
+	}
+	matched = matched[offset:]
+	if limit > 0 && limit < len(matched) {
+		matched = matched[:limit]
+	}
+	return matched, nil
 }
 
 // ── Follow and Unfollow ──────────────────────────────────────────────────────
@@ -132,6 +161,38 @@ func TestFollow_AnUnknownTicketIsNotFound(t *testing.T) {
 	me := uuid.New()
 	err := h.svc.Follow(context.Background(), uuid.New(), ticket.Actor{UserID: &me, Role: user.RoleStaff})
 	require.ErrorIs(t, err, errNotFound)
+}
+
+// The feed's cap counts real history only: follow entries are narrowed out in
+// the query, so any number of them cannot push "created" off the feed.
+func TestListAuditFeed_FollowEntriesNeverCountTowardTheCap(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	id := uuid.New()
+	base := time.Now().Add(-24 * time.Hour)
+	h.auditStore.entries = append(h.auditStore.entries,
+		audit.Entry{ID: uuid.New(), EntityType: "ticket", EntityID: id, Action: "created", CreatedAt: base},
+		audit.Entry{ID: uuid.New(), EntityType: "ticket", EntityID: id, Action: "resolved", CreatedAt: base.Add(time.Hour)})
+	for i := 0; i < 700; i++ {
+		a := "followed"
+		if i%2 == 1 {
+			a = "unfollowed"
+		}
+		h.auditStore.entries = append(h.auditStore.entries,
+			audit.Entry{ID: uuid.New(), EntityType: "ticket", EntityID: id, Action: a, CreatedAt: base.Add(2*time.Hour + time.Duration(i)*time.Second)})
+	}
+
+	without, err := h.svc.ListAuditFeed(ctx, id, false)
+	require.NoError(t, err)
+	require.Len(t, without, 2)
+	require.Equal(t, "created", without[0].Action)
+
+	with, err := h.svc.ListAuditFeed(ctx, id, true)
+	require.NoError(t, err)
+	require.Equal(t, "created", with[0].Action, "oldest first")
+	require.Equal(t, "resolved", with[1].Action)
+	require.Len(t, with, 2+500, "follow entries are capped on their own, newest kept")
+	require.True(t, sort.SliceIsSorted(with, func(i, j int) bool { return with[i].CreatedAt.Before(with[j].CreatedAt) }))
 }
 
 func TestFollowAuditActions_AreExactlyTheTwoWeWrite(t *testing.T) {

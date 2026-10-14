@@ -1014,23 +1014,20 @@ type ticketAuditEntryView struct {
 // sensitive here as there.
 func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	id := ticketIDFrom(r)
-	entries, err := s.tickets.ListAuditEntries(r.Context(), id)
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-
 	role := authmw.GetActor(r).Role
 	showDiff := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(r.Context()))
 
 	// Follow and unfollow entries (#441): administrators always, staff only
-	// when the administrator allows it, a requester never. Dropped here, in a
-	// feed that is not paged, so there is no count to disagree with.
+	// when the administrator allows it, a requester never. Left out by the
+	// query rather than dropped afterwards, so they never count toward the
+	// feed's cap and cannot push the ticket's real history off it.
 	showFollow := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewFollowAudit(r.Context()))
-	if !showFollow {
-		entries = slices.DeleteFunc(entries, func(e audit.Entry) bool { return ticket.IsFollowAuditAction(e.Action) })
+	entries, err := s.tickets.ListAuditFeed(r.Context(), id, showFollow)
+	if err != nil {
+		handleError(w, err)
+		return
 	}
 
 	views := make([]ticketAuditEntryView, len(entries))
