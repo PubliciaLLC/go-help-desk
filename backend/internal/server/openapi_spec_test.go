@@ -26,6 +26,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -167,7 +168,13 @@ func (probeSessionStore) Get(r *http.Request, name string) (*sessions.Session, e
 		return s, nil // IsNew: no session
 	}
 	s.IsNew = false
-	s.Values[auth.SessionDataKey] = auth.SessionData{UserID: uuid.New(), Role: user.Role(role), MFAPassed: mfa == "mfa"}
+	// A half-signed-in session needs a live deadline: without one it counts as
+	// saved before the upgrade and is expired (#452), which would turn every
+	// "nomfa" probe into "no session".
+	s.Values[auth.SessionDataKey] = auth.SessionData{
+		UserID: uuid.New(), Role: user.Role(role), MFAPassed: mfa == "mfa",
+		PendingUntil: time.Now().Add(time.Hour),
+	}
 	return s, nil
 }
 

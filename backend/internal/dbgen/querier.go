@@ -38,6 +38,7 @@ type Querier interface {
 	// The Go-side check still runs first, because it is what tells the person
 	// WHICH rule refused them. This one is what binds.
 	AdoptUserByOIDCSubject(ctx context.Context, arg AdoptUserByOIDCSubjectParams) (uuid.UUID, error)
+	AnyAttachmentExists(ctx context.Context) (bool, error)
 	// Whether a category/type/item triple exists and hangs together: the type
 	// belongs to the category, and the item belongs to the type.
 	//
@@ -168,6 +169,10 @@ type Querier interface {
 	// and setup does not reopen (HasUsers counts every row, deliberately). The
 	// instance was then left with no way in at all short of editing the database.
 	CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int64, error)
+	// Deleting a category cascades to its SLA policies, and sla_records.policy_id
+	// is ON DELETE RESTRICT, so a record left behind by a ticket that has since
+	// moved to another category still blocks the delete (#418).
+	CountSLARecordsByCategory(ctx context.Context, categoryID uuid.NullUUID) (int64, error)
 	// sla_records.policy_id is ON DELETE RESTRICT: a record's targets and breach
 	// stamps only mean something against the policy that set them. Counting first
 	// turns the raw foreign-key 500 into a refusal naming how many tickets depend
@@ -179,9 +184,16 @@ type Querier interface {
 	// transition mentions it. Counting first turns a raw foreign-key 500 into an
 	// explanation the administrator can act on.
 	CountStatusHistoryByStatus(ctx context.Context, toStatusID uuid.UUID) (int64, error)
+	// tickets.category_id is ON DELETE RESTRICT. Counting first turns the raw
+	// foreign-key 500 into a 409 that says how many tickets are in the way (#418).
+	CountTicketsByCategory(ctx context.Context, categoryID uuid.UUID) (int64, error)
+	CountTicketsByItem(ctx context.Context, itemID uuid.NullUUID) (int64, error)
 	CountTicketsByStatus(ctx context.Context, statusID uuid.UUID) (int64, error)
 	CountTicketsByStatusForAssignee(ctx context.Context, arg CountTicketsByStatusForAssigneeParams) (int64, error)
 	CountTicketsByStatusForReporter(ctx context.Context, arg CountTicketsByStatusForReporterParams) (int64, error)
+	// A ticket that holds an item also holds that item's type, so this covers
+	// the type's items too.
+	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// Whether this account has a passkey at all.
 	//
@@ -223,28 +235,28 @@ type Querier interface {
 	// ConfirmMFAEnrollmentWith in place of the older EnrollMFA.
 	CreateWebAuthnCredential(ctx context.Context, arg CreateWebAuthnCredentialParams) error
 	CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error
-	DeleteAPIKey(ctx context.Context, id uuid.UUID) error
+	DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
 	// The retention sweep's hard delete. No archive table — see audit.Store's
 	// own comment on DeleteOlderThan for why.
 	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) error
-	DeleteCategory(ctx context.Context, id uuid.UUID) error
-	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error
+	DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteFailedNotificationsBefore(ctx context.Context, failedAt sql.NullTime) (int64, error)
-	DeleteGroup(ctx context.Context, id uuid.UUID) error
+	DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error)
 	// Rotation: remove what the ticket has, then insert a replacement in the same
 	// transaction. Used only for a ticket that is not Closed — closing no longer
 	// revokes (#349), and a Closed ticket's links are added to, never replaced.
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
-	DeleteItem(ctx context.Context, id uuid.UUID) error
+	DeleteItem(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
-	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
+	DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
 	DeletePlugin(ctx context.Context, id string) error
-	DeleteSLAPolicy(ctx context.Context, id uuid.UUID) error
+	DeleteSLAPolicy(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteSession(ctx context.Context, id string) error
 	// Every session a user holds. Used for disable, role change, password change
 	// and MFA reset — the events after which a cookie minted under the old state
@@ -257,7 +269,7 @@ type Querier interface {
 	DeleteStaleSAMLHandovers(ctx context.Context) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
-	DeleteType(ctx context.Context, id uuid.UUID) error
+	DeleteType(ctx context.Context, id uuid.UUID) (int64, error)
 	// Removes one credential, and reports whether it was this user's to remove.
 	//
 	// Scoped by user_id as well as id, in the statement rather than by a check in
@@ -265,7 +277,7 @@ type Querier interface {
 	// moment ago is the read-then-write shape the rest of this codebase has spent
 	// several rounds removing.
 	DeleteWebAuthnCredential(ctx context.Context, arg DeleteWebAuthnCredentialParams) (uuid.UUID, error)
-	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error
+	DeleteWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error)
 	DisableUser(ctx context.Context, id uuid.UUID) error
 	// Disables a user, refusing if that would leave the instance with no active
 	// administrator. Returns the id when it applied, nothing when it did not.
@@ -371,6 +383,7 @@ type Querier interface {
 	GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error)
 	GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error)
 	GetGroup(ctx context.Context, id uuid.UUID) (Group, error)
+	GetInstanceSecret(ctx context.Context, name string) ([]byte, error)
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
@@ -465,10 +478,12 @@ type Querier interface {
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
 	GetUserBySAMLSubject(ctx context.Context, samlSubject string) (User, error)
+	GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error)
 	// The assertion arrives carrying a credential id and nothing else, so this is
 	// the lookup sign-in depends on. The unique index on credential_id serves it.
 	GetWebAuthnCredentialByCredentialID(ctx context.Context, credentialID []byte) (WebauthnCredential, error)
 	GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error)
+	InsertInstanceSecretIfAbsent(ctx context.Context, arg InsertInstanceSecretIfAbsentParams) error
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.
 	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
@@ -627,8 +642,14 @@ type Querier interface {
 	// newer success. Matching on url drops a result for a URL the hook no longer
 	// has. A deleted hook matches nothing, which is fine.
 	RecordWebhookDelivery(ctx context.Context, arg RecordWebhookDeliveryParams) error
-	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error
-	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error
+	// Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
+	// was computed from the old one's password, so it is written only while the
+	// row still holds that old hash: a password changed during the ~250 ms of
+	// hashing wins, and zero rows means exactly that. updated_at is left alone;
+	// the account did not change.
+	RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error)
+	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
+	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketTag(ctx context.Context, arg RemoveTicketTagParams) error
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error

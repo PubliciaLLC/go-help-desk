@@ -23,7 +23,7 @@ func (s *Service) CreateCategory(ctx context.Context, name string, sortOrder int
 		Active:    true,
 	}
 	if c.Name == "" {
-		return Category{}, fmt.Errorf("category name is required")
+		return Category{}, fmt.Errorf("category name: %w", ErrValidation)
 	}
 	if err := s.store.CreateCategory(ctx, c); err != nil {
 		return Category{}, fmt.Errorf("creating category: %w", err)
@@ -33,7 +33,7 @@ func (s *Service) CreateCategory(ctx context.Context, name string, sortOrder int
 
 func (s *Service) UpdateCategory(ctx context.Context, c Category) error {
 	if strings.TrimSpace(c.Name) == "" {
-		return fmt.Errorf("category name is required")
+		return fmt.Errorf("category name: %w", ErrValidation)
 	}
 	return s.store.UpdateCategory(ctx, c)
 }
@@ -63,7 +63,7 @@ func (s *Service) CreateType(ctx context.Context, categoryID uuid.UUID, name str
 		Active:     true,
 	}
 	if tp.Name == "" {
-		return Type{}, fmt.Errorf("type name is required")
+		return Type{}, fmt.Errorf("type name: %w", ErrValidation)
 	}
 	if err := s.store.CreateType(ctx, tp); err != nil {
 		return Type{}, fmt.Errorf("creating type: %w", err)
@@ -73,7 +73,7 @@ func (s *Service) CreateType(ctx context.Context, categoryID uuid.UUID, name str
 
 func (s *Service) UpdateType(ctx context.Context, tp Type) error {
 	if strings.TrimSpace(tp.Name) == "" {
-		return fmt.Errorf("type name is required")
+		return fmt.Errorf("type name: %w", ErrValidation)
 	}
 	return s.store.UpdateType(ctx, tp)
 }
@@ -102,7 +102,7 @@ func (s *Service) CreateItem(ctx context.Context, typeID uuid.UUID, name string,
 		Active:    true,
 	}
 	if it.Name == "" {
-		return Item{}, fmt.Errorf("item name is required")
+		return Item{}, fmt.Errorf("item name: %w", ErrValidation)
 	}
 	if err := s.store.CreateItem(ctx, it); err != nil {
 		return Item{}, fmt.Errorf("creating item: %w", err)
@@ -112,7 +112,7 @@ func (s *Service) CreateItem(ctx context.Context, typeID uuid.UUID, name string,
 
 func (s *Service) UpdateItem(ctx context.Context, it Item) error {
 	if strings.TrimSpace(it.Name) == "" {
-		return fmt.Errorf("item name is required")
+		return fmt.Errorf("item name: %w", ErrValidation)
 	}
 	return s.store.UpdateItem(ctx, it)
 }

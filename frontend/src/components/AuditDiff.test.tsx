@@ -68,4 +68,51 @@ describe('AuditDiff', () => {
 
     expect(screen.getByText(/\["a"\] → \["a","b"\]/)).toBeTruthy()
   })
+
+  // #422: names arrive beside the ids. The id stays as the tooltip.
+  it('shows a resolved name with the raw id as its tooltip', () => {
+    render(
+      <AuditDiff
+        before={{ status_id: 'id-new' }}
+        after={{ status_id: 'id-prog' }}
+        names={{ 'id-new': { name: 'New' }, 'id-prog': { name: 'In Progress' } }}
+      />,
+    )
+
+    expect(screen.getByText('New').getAttribute('title')).toBe('id-new')
+    expect(screen.getByText('In Progress').getAttribute('title')).toBe('id-prog')
+    expect(screen.queryByText(/id-new/)).toBeNull()
+  })
+
+  it('falls back to the raw id for an id that has no name (the row is gone)', () => {
+    render(
+      <AuditDiff
+        before={{ status_id: 'id-gone' }}
+        after={{ status_id: 'id-prog' }}
+        names={{ 'id-prog': { name: 'In Progress' } }}
+      />,
+    )
+
+    expect(screen.getByText(/id-gone/)).toBeTruthy()
+    expect(screen.getByText('In Progress')).toBeTruthy()
+  })
+
+  it('shows a masked user as the mask label, never a name', () => {
+    render(
+      <AuditDiff
+        before={{ assignee_user_id: 'u-1' }}
+        after={{ assignee_user_id: null }}
+        names={{ 'u-1': { name: 'Requester', masked: true } }}
+      />,
+    )
+
+    const label = screen.getByText('Requester (name hidden)')
+    expect(label.getAttribute('title')).toBe('u-1')
+    expect(label.querySelector('svg')).toBeTruthy()
+  })
+
+  it('renders as before when no names are sent (an older server)', () => {
+    render(<AuditDiff before={{ status_id: 'a' }} after={{ status_id: 'b' }} />)
+    expect(screen.getByText(/a → b/)).toBeTruthy()
+  })
 })
