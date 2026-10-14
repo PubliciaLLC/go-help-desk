@@ -40,7 +40,7 @@ function mockWarnings(email?: unknown) {
 
 describe('the email warning', () => {
   it('says email is not set up and which variable is missing', async () => {
-    mockWarnings({ ...healthy, enabled: false, missing: ['SMTP_FROM'] })
+    mockWarnings({ ...healthy, enabled: false, missing: ['SMTP_FROM'], guest_submission_without_email: true })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     const alert = await screen.findByRole('alert')
@@ -51,7 +51,7 @@ describe('the email warning', () => {
   })
 
   it('names both variables when neither is set', async () => {
-    mockWarnings({ ...healthy, enabled: false, missing: ['SMTP_HOST', 'SMTP_FROM'] })
+    mockWarnings({ ...healthy, enabled: false, missing: ['SMTP_HOST', 'SMTP_FROM'], signup_without_email: true })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
     const text = (await screen.findByRole('alert')).textContent ?? ''
     expect(text).toContain('SMTP_HOST')
@@ -74,11 +74,18 @@ describe('the email warning', () => {
     expect(text).toMatch(/no email can be sent/i)
   })
 
-  it('does not mention signup or guest submission when they are off', async () => {
+  it('stays quiet when email is off on purpose: nothing is on that needs it', async () => {
     mockWarnings({ ...healthy, enabled: false, missing: ['SMTP_HOST', 'SMTP_FROM'] })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('names only the feature that is on', async () => {
+    mockWarnings({ ...healthy, enabled: false, missing: ['SMTP_HOST', 'SMTP_FROM'], signup_without_email: true })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
     const text = (await screen.findByRole('alert')).textContent ?? ''
-    expect(text).not.toMatch(/signup is on/i)
+    expect(text).toMatch(/self-service signup is on/i)
     expect(text).not.toMatch(/guest submission is on/i)
   })
 

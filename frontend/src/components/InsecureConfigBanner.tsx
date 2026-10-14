@@ -51,7 +51,10 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storageBroken = !!storage && !storage.writable
 
   const email = data?.email
-  const emailOff = !!email && !email.enabled
+  // Email off is a choice for an install that uses nothing which sends mail,
+  // so it is only a warning once signup or guest submission is on. Settings
+  // shows the plain status either way.
+  const emailOff = !!email && !email.enabled && (email.signup_without_email || email.guest_submission_without_email)
   const emailFailing = !!email && email.failing
 
   if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !emailOff && !emailFailing) {

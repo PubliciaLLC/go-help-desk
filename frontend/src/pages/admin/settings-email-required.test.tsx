@@ -112,3 +112,36 @@ describe('turning on a feature that needs email', () => {
     expect(await screen.findByText('prefix is bad')).toBeTruthy()
   })
 })
+
+// The banner stays quiet for an install that runs without email on purpose, so
+// the status lives here, next to the two toggles that need it.
+describe('the email status note', () => {
+  function withEmail(email: unknown) {
+    vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === '/admin/settings') return Promise.resolve({ data: {} })
+      if (url === '/admin/security-warnings') return Promise.resolve({ data: { insecure_secrets: [], email } })
+      if (url === '/site') return Promise.resolve({ data: {} })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+  }
+
+  it('says email is not set up, and what is missing, next to the guest toggle', async () => {
+    withEmail({ enabled: false, missing: ['SMTP_HOST', 'SMTP_FROM'] })
+    renderWithQuery(<SettingsPage />)
+    await screen.findByRole('heading', { name: 'Settings' })
+
+    const note = await screen.findByText(/email is not set up/i)
+    expect(note.textContent).toContain('SMTP_HOST')
+    expect(note.textContent).toContain('SMTP_FROM')
+    expect(note.textContent).toMatch(/cannot be turned on/i)
+  })
+
+  it('is absent when email is set up', async () => {
+    withEmail({ enabled: true, missing: [] })
+    renderWithQuery(<SettingsPage />)
+    await screen.findByRole('heading', { name: 'Settings' })
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/admin/security-warnings'))
+    expect(screen.queryByText(/email is not set up/i)).toBeNull()
+  })
+})
