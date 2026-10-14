@@ -78,6 +78,19 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return rl.counts[key] <= rl.limit
 }
 
+// Remaining is the time until the current window ends, which is when every
+// counter is cleared. It is what a 429's Retry-After should say: the window is
+// shared by all keys and fixed, so a caller refused 40 seconds in can retry in
+// 20, not 60. Zero for a disabled limiter, and never negative.
+func (rl *RateLimiter) Remaining() time.Duration {
+	if rl.limit <= 0 {
+		return 0
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return max(0, time.Until(rl.resetAt))
+}
+
 // Exceeded reports whether a key has already spent its budget, WITHOUT
 // counting an attempt against it.
 //

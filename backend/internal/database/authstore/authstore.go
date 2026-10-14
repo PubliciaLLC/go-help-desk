@@ -228,14 +228,31 @@ func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 	if format == "" {
 		format = defaultPayloadFormat
 	}
-	return s.q.UpdateWebhookConfig(ctx, dbgen.UpdateWebhookConfigParams{
+	// Delivery history describes a target, like the latest result the update
+	// query already clears when the URL changes (#448).
+	before, err := s.q.GetWebhookConfig(ctx, wh.ID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("webhook %s: %w", wh.ID, auth.ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("getting webhook %s: %w", wh.ID, err)
+	}
+	if err := s.q.UpdateWebhookConfig(ctx, dbgen.UpdateWebhookConfigParams{
 		ID:            wh.ID,
 		Url:           wh.URL,
 		Events:        wh.Events,
 		Secret:        wh.Secret,
 		Enabled:       wh.Enabled,
 		PayloadFormat: format,
-	})
+	}); err != nil {
+		return err
+	}
+	if before.Url != wh.URL {
+		if err := s.q.DeleteWebhookDeliveries(ctx, wh.ID); err != nil {
+			return fmt.Errorf("clearing webhook %s history: %w", wh.ID, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) DeleteWebhook(ctx context.Context, id uuid.UUID) error {
@@ -285,4 +302,80 @@ func (s *Store) RecordWebhookDelivery(ctx context.Context, id uuid.UUID, url str
 		return fmt.Errorf("recording webhook delivery %s: %w", id, err)
 	}
 	return nil
+}
+
+// ── Delivery history (#448) ──────────────────────────────────────────────────
+
+// WebhookHistoryLimit is how many deliveries are kept per hook.
+const WebhookHistoryLimit = 25
+
+// WebhookAttempt is one try at a delivery. The delivery is identified by
+// DeliveryID, which is the X-GHD-Delivery the receiver saw; a retry is the
+// same DeliveryID again.
+type WebhookAttempt struct {
+	DeliveryID uuid.UUID
+	HookID     uuid.UUID
+	EventType  string
+	Event      []byte // the queued event, kept only so Redeliver can send it again
+	Result     WebhookDelivery
+	Retrying   bool // a failure the worker will try again
+}
+
+// WebhookDeliveryRecord is one row of a hook's history. There is no event and
+// no error text: see migration 000037.
+type WebhookDeliveryRecord struct {
+	ID            uuid.UUID `json:"id"`
+	Event         string    `json:"event"`
+	StartedAt     time.Time `json:"started_at"`      // the first attempt
+	LastAttemptAt time.Time `json:"last_attempt_at"` // the latest
+	Status        int       `json:"status"`          // HTTP status; 0 when no response came back
+	Result        string    `json:"result"`          // "ok", or one of notify.DeliveryErrors
+	Attempts      int       `json:"attempts"`
+	Retrying      bool      `json:"retrying"`
+}
+
+// RecordWebhookAttempt stores an attempt on its delivery's row and trims the
+// hook's history to WebhookHistoryLimit.
+func (s *Store) RecordWebhookAttempt(ctx context.Context, a WebhookAttempt) error {
+	result := a.Result.Error
+	if result == "" {
+		result = "ok"
+	}
+	if err := s.q.UpsertWebhookDelivery(ctx, dbgen.UpsertWebhookDeliveryParams{
+		ID: a.DeliveryID, WebhookID: a.HookID, EventType: a.EventType, Event: a.Event,
+		At: a.Result.At, Status: int32(a.Result.Status), Result: result, Retrying: a.Retrying,
+	}); err != nil {
+		return fmt.Errorf("recording webhook delivery attempt %s: %w", a.DeliveryID, err)
+	}
+	if err := s.q.PruneWebhookDeliveries(ctx, dbgen.PruneWebhookDeliveriesParams{
+		HookID: a.HookID, KeepN: WebhookHistoryLimit,
+	}); err != nil {
+		return fmt.Errorf("trimming webhook %s history: %w", a.HookID, err)
+	}
+	return nil
+}
+
+// ListWebhookDeliveries returns a hook's history, newest first.
+func (s *Store) ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]WebhookDeliveryRecord, error) {
+	rows, err := s.q.ListWebhookDeliveries(ctx, hookID)
+	if err != nil {
+		return nil, fmt.Errorf("listing webhook %s deliveries: %w", hookID, err)
+	}
+	out := make([]WebhookDeliveryRecord, len(rows))
+	for i, r := range rows {
+		out[i] = WebhookDeliveryRecord{ID: r.ID, Event: r.EventType,
+			StartedAt: r.CreatedAt.UTC(), LastAttemptAt: r.LastAttemptAt.UTC(),
+			Status: int(r.Status), Result: r.Result, Attempts: int(r.Attempts), Retrying: r.Retrying}
+	}
+	return out, nil
+}
+
+// GetWebhookDeliveryEvent returns the stored event of one delivery of one
+// hook. The error wraps sql.ErrNoRows when there is no such delivery.
+func (s *Store) GetWebhookDeliveryEvent(ctx context.Context, hookID, deliveryID uuid.UUID) ([]byte, error) {
+	ev, err := s.q.GetWebhookDeliveryEvent(ctx, dbgen.GetWebhookDeliveryEventParams{ID: deliveryID, WebhookID: hookID})
+	if err != nil {
+		return nil, fmt.Errorf("getting webhook delivery %s: %w", deliveryID, err)
+	}
+	return ev, nil
 }

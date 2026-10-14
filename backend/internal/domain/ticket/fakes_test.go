@@ -229,6 +229,12 @@ func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.
 	return true, nil
 }
 
+// ArchivedCTINode: this fake has no catalogue, so nothing is archived. The real
+// rule lives in SQL and is exercised against a real database.
+func (f *fakeStore) ArchivedCTINode(context.Context, *uuid.UUID, *uuid.UUID, *uuid.UUID) (string, error) {
+	return "", nil
+}
+
 func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
 	return true, nil
 }

@@ -12,9 +12,10 @@ import (
 // Who sees an archived category, type or item.
 //
 // DESIGN.md's "Ticket Submission by Role" table: Guest and User get active
-// only; Staff and Admin get All. Staff need the archived ones because filing
-// or reclassifying an old ticket under the classification it actually belongs
-// to is ordinary work, and that classification may well have been retired.
+// only; Staff and Admin get All. Staff see the archived ones to read the
+// classification of tickets already filed under it (shown greyed out); they
+// can no longer PICK one (#421, archived_cti_rule_test.go), so visibility is
+// no longer "so they can file under it".
 //
 // The defect this pins: the new-ticket form asked /admin/categories for staff,
 // which is wrapped in RequireRole(admin). Staff got 403, the query failed, the
@@ -64,7 +65,7 @@ func TestCatalogue_ArchivedRowsAreStaffOnly(t *testing.T) {
 
 	t.Run("staff see the whole tree", func(t *testing.T) {
 		require.Contains(t, names(t, h.do(t, http.MethodGet, "/api/v1/categories", nil)),
-			"Retired Kit", "a staff member cannot see the archived category, so they cannot file under it")
+			"Retired Kit", "a staff member cannot see the archived category on tickets already filed under it")
 		require.Contains(t, names(t, h.do(t, http.MethodGet, typesPath, nil)), "Old Printer")
 		require.Contains(t, names(t, h.do(t, http.MethodGet, itemsPath, nil)), "Drum Unit")
 	})

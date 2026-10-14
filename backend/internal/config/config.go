@@ -109,3 +109,18 @@ func (c *Config) IsDevelopment() bool {
 func (c *Config) EmailEnabled() bool {
 	return c.SMTPHost != "" && c.SMTPFrom != ""
 }
+
+// EmailStatus says in one line whether email is on and, if not, what is
+// missing. misconfigured is true when exactly one of SMTP_HOST and SMTP_FROM is
+// set: that is a mistake, where neither set is a choice.
+func (c *Config) EmailStatus() (msg string, misconfigured bool) {
+	switch {
+	case c.EmailEnabled():
+		return "email enabled", false
+	case c.SMTPHost != "":
+		return "email disabled: SMTP_HOST is set but SMTP_FROM is not", true
+	case c.SMTPFrom != "":
+		return "email disabled: SMTP_FROM is set but SMTP_HOST is not", true
+	}
+	return "email disabled: SMTP_HOST and SMTP_FROM are not set", false
+}
