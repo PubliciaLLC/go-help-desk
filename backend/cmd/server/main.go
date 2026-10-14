@@ -291,6 +291,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
+	// Said once at startup so "why did nobody get an email" has an answer in
+	// the log (#456). Half a configuration is a warning, not a quiet off.
+	if msg, misconfigured := cfg.EmailStatus(); misconfigured {
+		slog.Warn(msg)
+	} else {
+		slog.Info(msg)
+	}
 	// Requests queue notifications in the outbox and return; outboxWorker,
 	// started once the server exists, sends them (#164). The worker needs the
 	// server for the send-time guest-link step, and the ticket service needs a
@@ -415,6 +422,7 @@ func run() error {
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
 		server.WithAuditStore(auStore),
+		server.WithEmailHealth(outboxStore),
 		server.WithWebhookRedeliverer(webhookDisp),
 	)
 
