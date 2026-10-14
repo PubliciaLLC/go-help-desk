@@ -394,7 +394,7 @@ jobs:
           # the mux answers 307 here, ahead of the auth chain.
           check /mcp             401 "Streamable HTTP MCP must reject unauthenticated callers"
 
-          # The Origin check on /mcp, against the BASE_URL this container was
+          # The Origin check on every MCP route, against the BASE_URL this container was
           # given: Go tests build their own Config, so this is the only place
           # the shipped binary's BASE_URL meets the check. Its own origin gets
           # as far as authentication (401); another page's is refused (403)
@@ -411,6 +411,11 @@ jobs:
           check_origin /mcp  "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication"
           check_origin /mcp  "https://evil.example"  403 "a foreign Origin is refused on /mcp"
           check_origin /mcp/ "https://evil.example"  403 "a foreign Origin is refused on /mcp/"
+          # The legacy SSE transport is covered too (#460): the check has no path
+          # condition, so a route added behind ProtectMCP is covered with it.
+          check_origin /mcp/sse "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication on /mcp/sse"
+          check_origin /mcp/sse "https://evil.example"  403 "a foreign Origin is refused on /mcp/sse"
+          check_origin /mcp/message "https://evil.example" 403 "a foreign Origin is refused on /mcp/message"
 
           # The embedded SPA must be the real build, not the placeholder that
           # exists so //go:embed resolves in a fresh checkout.
