@@ -45,6 +45,14 @@ type outboxRecord struct {
 	// TargetWebhook is set on the per-hook rows the webhook fan-out queues (#448).
 	TargetWebhook uuid.UUID `json:"webhook_id,omitzero"`
 	TargetURLHash string    `json:"webhook_url_sha256,omitempty"`
+
+	// Staff mail (#441). StaffUserID is the one person a staff.* row is for;
+	// their address is read when it is sent, never stored here.
+	StaffUserID     *uuid.UUID               `json:"staff_user_id,omitempty"`
+	AssigneeUserID  *uuid.UUID               `json:"assignee_user_id,omitempty"`
+	AssigneeGroupID *uuid.UUID               `json:"assignee_group_id,omitempty"`
+	FromRequester   bool                     `json:"from_requester,omitempty"`
+	StaffReason     notification.StaffSwitch `json:"staff_reason,omitempty"`
 }
 
 func encodeEvent(ev notification.Event) ([]byte, error) {
@@ -58,6 +66,9 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 		Attrs:         ev.Attrs,
 		TargetWebhook: ev.TargetWebhook,
 		TargetURLHash: ev.TargetURLHash,
+		StaffUserID:   ev.StaffUserID, AssigneeUserID: ev.AssigneeUserID,
+		AssigneeGroupID: ev.AssigneeGroupID, FromRequester: ev.FromRequester,
+		StaffReason: ev.StaffReason,
 	})
 }
 
@@ -73,6 +84,9 @@ func decodeEvent(b []byte) (notification.Event, error) {
 		Attrs:         r.Attrs,
 		TargetWebhook: r.TargetWebhook,
 		TargetURLHash: r.TargetURLHash,
+		StaffUserID:   r.StaffUserID, AssigneeUserID: r.AssigneeUserID,
+		AssigneeGroupID: r.AssigneeGroupID, FromRequester: r.FromRequester,
+		StaffReason: r.StaffReason,
 	}, nil
 }
 
@@ -138,7 +152,8 @@ func carries(channel string, ev notification.Event) bool {
 	case "email":
 		// An account holder's status change has nobody to mail. A guest-link
 		// event may have no recipient yet: the send-time step fills it in.
-		return ev.Recipient != "" || ev.GuestLink
+		// So does a staff event, whose address is read when it is sent.
+		return ev.Recipient != "" || ev.GuestLink || ev.StaffUserID != nil
 	case "verification":
 		return ev.Type == notification.EventRegistrationVerify
 	}

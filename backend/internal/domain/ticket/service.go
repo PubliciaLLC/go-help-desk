@@ -921,7 +921,11 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
-		Attrs:          attrsOf(t),
+		// Who holds it now, for staff mail (#441). Both nil when the ticket
+		// was unassigned, which leaves nobody to mail.
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
+		Attrs:           attrsOf(t),
 	})
 
 	return t, nil
@@ -1243,6 +1247,15 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 		Recipient:      reporterEmail,
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		// A public reply by the requester is what staff mail is for (#441).
+		// The requester is whoever filed the ticket, not whoever holds the
+		// user role: a staff member replying on a ticket they filed is the
+		// requester replying, and one replying on somebody else's is not. A
+		// guest has no account and no id, and is always the requester.
+		// An internal note is staff talking to staff.
+		FromRequester:   !internal && isRequester(t, actor),
+		AssigneeUserID:  t.AssigneeUserID,
+		AssigneeGroupID: t.AssigneeGroupID,
 		Payload: func() map[string]any {
 			p := map[string]any{
 				"reporter_email": reporterEmail, // used by dispatcher to set To address
@@ -1272,6 +1285,15 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	})
 
 	return reply, nil
+}
+
+// isRequester reports whether actor is the person who filed t: its reporter,
+// or the guest (no id, user role) the ticket was filed for.
+func isRequester(t Ticket, actor Actor) bool {
+	if actor.UserID == nil {
+		return actor.Role == user.RoleUser
+	}
+	return t.ReporterUserID != nil && *t.ReporterUserID == *actor.UserID
 }
 
 // resolutionNotesMatch reports whether notes is exactly what a ticket already

@@ -71,6 +71,14 @@ const (
 	// other.
 	KeyAttachmentMismatchHandling = "attachment_mismatch_handling" // refuse | wrap
 
+	// An administrator's override of each per-user staff-email switch (#441):
+	// user (leave it to each person, the default) | on | off, for everyone.
+	// The switches themselves are columns on users; see
+	// notification.StaffOverrides for how an override applies.
+	KeyStaffEmailAssignedOverride = "staff_email_assigned_override"
+	KeyStaffEmailActivityOverride = "staff_email_activity_override"
+	KeyStaffEmailGroupOverride    = "staff_email_group_override"
+
 	// Deprecated: replaced by the per-provider settings below, and read by
 	// nothing.
 	//
@@ -328,6 +336,7 @@ func KnownKeys() []string {
 		KeyTicketPrefix, KeyTicketScopeEnforced,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays,
+		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
 	}
 }
 

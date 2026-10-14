@@ -50,6 +50,11 @@ func (s *Service) RemoveMember(ctx context.Context, groupID, userID uuid.UUID) e
 	return s.store.RemoveMember(ctx, groupID, userID)
 }
 
+// ListMailableMembers returns the members staff email can go to (#441).
+func (s *Service) ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	return s.store.ListMailableMembers(ctx, groupID)
+}
+
 func (s *Service) ListMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
 	return s.store.ListMembers(ctx, groupID)
 }
