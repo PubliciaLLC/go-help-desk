@@ -349,3 +349,29 @@ func TestTicket_JSONContract_SLAPauseFields(t *testing.T) {
 			"seconds as a plain number the frontend can read, not a nanosecond duration")
 	})
 }
+
+// CanChangePriority is the one rule behind every 403 a priority change answers
+// (#443): staff and admin only. ChangePriority applies it itself and the PATCH
+// handler asks it before saving anything else in the request.
+func TestCanChangePriority(t *testing.T) {
+	cases := []struct {
+		name    string
+		role    user.Role
+		wantErr bool
+	}{
+		{name: "admin may", role: user.RoleAdmin},
+		{name: "staff may", role: user.RoleStaff},
+		{name: "reporting user may not", role: user.RoleUser, wantErr: true},
+		{name: "no role may not", role: user.Role(""), wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ticket.CanChangePriority(tc.role)
+			if tc.wantErr {
+				require.ErrorIs(t, err, ticket.ErrForbidden)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

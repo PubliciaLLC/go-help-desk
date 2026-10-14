@@ -187,6 +187,16 @@ func (f *fakeSLAStore) ListRecordsByTicketIDs(_ context.Context, ticketIDs []uui
 	return out, nil
 }
 
+// ListRecordsForTicket: this fake keeps one record per ticket, so the history
+// is that record. The superseded-record cases are tested on EarlierRecord and
+// against the real store.
+func (f *fakeSLAStore) ListRecordsForTicket(_ context.Context, ticketID uuid.UUID) ([]sla.Record, error) {
+	if r, ok := f.records[ticketID]; ok {
+		return []sla.Record{r}, nil
+	}
+	return nil, nil
+}
+
 // StampBreaches applies the same COALESCE semantics the real query does:
 // only a currently-nil column is set, and nothing else on the record changes.
 func (f *fakeSLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
@@ -767,6 +777,9 @@ func (f *swallowProbeStore) ListBreachCandidates(context.Context, time.Time) ([]
 func (f *swallowProbeStore) ListRecordsByTicketIDs(context.Context, []uuid.UUID) ([]sla.Record, error) {
 	return nil, nil
 }
+func (f *swallowProbeStore) ListRecordsForTicket(context.Context, uuid.UUID) ([]sla.Record, error) {
+	return nil, nil
+}
 func (f *swallowProbeStore) StampBreaches(_ context.Context, _ uuid.UUID, response, resolution *time.Time) error {
 	f.updates++
 	if f.record.ResponseBreachedAt == nil {
@@ -1318,3 +1331,38 @@ func TestSLAService_StatusesFor(t *testing.T) {
 }
 
 func prio(p ticket.Priority) *ticket.Priority { return &p }
+
+// A restarted record freezes the time since its own start, not since the
+// ticket's creation (#443b).
+func TestRecord_RestartedRecordFreezesFromItsOwnStart(t *testing.T) {
+	now := time.Date(2026, 9, 13, 20, 0, 0, 0, time.UTC)
+	start := now.Add(-1 * time.Minute)
+	tk := ticket.Ticket{CreatedAt: now.Add(-10 * time.Hour)}
+
+	setup := func() (*fakeSLAStore, *sla.Service) {
+		store := newFakeSLAStore()
+		policyID, ticketID := uuid.New(), uuid.New()
+		store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 5, ResolutionTargetMin: 5}
+		store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID, StartedAt: &start}
+		tk.ID = ticketID
+		return store, sla.NewService(store)
+	}
+
+	t.Run("first response", func(t *testing.T) {
+		store, svc := setup()
+		require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, now))
+		rec := store.records[tk.ID]
+		require.Equal(t, int64(60), *rec.ResponseElapsedAtMetSeconds)
+		require.Nil(t, rec.ResponseBreachedAt, "one minute into a five-minute target is not late")
+	})
+
+	t.Run("resolved", func(t *testing.T) {
+		store, svc := setup()
+		require.NoError(t, svc.RecordResolved(context.Background(), tk, now))
+		rec := store.records[tk.ID]
+		require.Equal(t, int64(60), *rec.ResolutionElapsedAtMetSeconds)
+		require.Equal(t, int64(60), *rec.ResponseElapsedAtMetSeconds)
+		require.Nil(t, rec.ResolutionBreachedAt)
+		require.Nil(t, rec.ResponseBreachedAt)
+	})
+}

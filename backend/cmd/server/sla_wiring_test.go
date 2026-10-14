@@ -425,6 +425,9 @@ func (s *tinySLAStore) SetResolvedAndFirstResponse(_ context.Context, ticketID u
 func (s *tinySLAStore) ListRecordsByTicketIDs(context.Context, []uuid.UUID) ([]sla.Record, error) {
 	return nil, nil
 }
+func (s *tinySLAStore) ListRecordsForTicket(context.Context, uuid.UUID) ([]sla.Record, error) {
+	return nil, nil
+}
 func (s *tinySLAStore) ListBreachCandidates(context.Context, time.Time) ([]uuid.UUID, error) {
 	return nil, nil
 }

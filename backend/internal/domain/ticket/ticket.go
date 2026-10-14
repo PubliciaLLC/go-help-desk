@@ -748,6 +748,18 @@ func CanAssign(role user.Role) error {
 	return nil
 }
 
+// CanChangePriority returns nil if the actor with the given role may change a
+// ticket's priority: staff and admin (#443). A predicate, because two callers
+// need the answer at different moments: ChangePriority applies it under the row
+// lock, and the PATCH handler asks it before saving anything else in the same
+// request, so a refused request changes nothing.
+func CanChangePriority(role user.Role) error {
+	if role != user.RoleStaff && role != user.RoleAdmin {
+		return ErrForbidden
+	}
+	return nil
+}
+
 // CanTransitionStatus returns nil if the actor with the given role may move
 // a ticket from one status to another.
 // Rules:

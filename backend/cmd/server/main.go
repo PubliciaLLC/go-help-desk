@@ -338,6 +338,9 @@ func run() error {
 	// above has no use for it and keeps the plain dispatcher.
 	ticketDispatcher := notify.NewStaffFanout(dispatcher, userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default())
 	ticketSvc := ticket.NewService(tStore, tStore, ticketDispatcher, auStore, txRunner, slaSvc)
+	// The SLA re-match a priority change makes is gated on the same live
+	// toggle as AttachPolicy (#443).
+	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
 	// The ticket service needs the dispatcher and the dispatcher's redelivery
 	// needs the ticket service: this closes the loop.
 	webhookDisp.SetSource(server.NewWebhookEventSource(ticketSvc))
