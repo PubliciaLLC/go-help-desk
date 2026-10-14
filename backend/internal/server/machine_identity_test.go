@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -64,31 +65,54 @@ func TestOAuthClient_ActsAsItsServiceUser(t *testing.T) {
 	})
 
 	// Every other route that records who acted used to answer 403 for a client.
-	// They now run as the client's user, under the role and scopes it has. None
-	// may answer 403 user_identity_required, and none may answer 500: the
-	// foreign-key failures that refusal replaced must not come back.
-	t.Run("the rest of the write routes", func(t *testing.T) {
+	// They now run as the client's user, so each must SUCCEED, with the code a
+	// staff member would get. Each gets a ticket in the state it needs, so the
+	// success code is the route's own and not a refusal that happens to be a 4xx.
+	t.Run("the rest of the write routes succeed", func(t *testing.T) {
+		fresh := func(t *testing.T) ticket.Ticket {
+			t.Helper()
+			tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+				Subject: "Fresh", Description: "x", CategoryID: h.catID, ReporterUserID: &h.staffID,
+			})
+			require.NoError(t, err)
+			return tk
+		}
+		// A ticket the client itself reported, then closed by an administrator.
+		closedClientTicket := func(t *testing.T) ticket.Ticket {
+			t.Helper()
+			res := postBearer(t, h, c.Token, "/api/v1/tickets", map[string]any{
+				"subject": "Mine", "description": "x", "category_id": h.catID.String(),
+			})
+			var tk ticket.Ticket
+			require.NoError(t, json.NewDecoder(res.Body).Decode(&tk))
+			res.Body.Close()
+			res = h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets/"+tk.ID.String()+"/close", map[string]any{})
+			res.Body.Close()
+			require.Equal(t, http.StatusOK, res.StatusCode)
+			return tk
+		}
+		// Reopening a Closed ticket is off by default (closed_reopen_policy);
+		// allowing staff is how a client that is staff is permitted to.
+		require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyClosedReopenPolicy, string(ticket.ReopenPolicyStaffAdmin)))
+
 		cases := []struct {
-			name, method, path string
-			body               any
+			name, method, suffix string
+			body                 any
+			setup                func(*testing.T) ticket.Ticket
+			want                 int
 		}{
-			{"assigning", http.MethodPatch, "/api/v1/tickets/" + tk.ID.String(),
-				map[string]any{"assignee_user_id": h.staffID.String()}},
-			{"changing the status", http.MethodPatch, "/api/v1/tickets/" + tk.ID.String(),
-				map[string]any{"status_id": h.resolvedStatusID(t).String()}},
-			{"resolving", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/resolve", map[string]any{}},
-			{"reopening", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/reopen", map[string]any{}},
-			{"opening a follow-up", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/follow-up", map[string]any{}},
+			{"assigning", http.MethodPatch, "", map[string]any{"assignee_user_id": h.staffID.String()}, fresh, http.StatusOK},
+			{"changing the status", http.MethodPatch, "", map[string]any{"status_id": h.resolvedStatusID(t).String()}, fresh, http.StatusOK},
+			{"resolving", http.MethodPost, "/resolve", map[string]any{}, fresh, http.StatusOK},
+			{"reopening", http.MethodPost, "/reopen", map[string]any{}, closedClientTicket, http.StatusOK},
+			{"opening a follow-up", http.MethodPost, "/follow-up", map[string]any{}, closedClientTicket, http.StatusCreated},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				res := bearerRequest(t, h, c.Token, tc.method, tc.path, tc.body)
+				tk := tc.setup(t)
+				res := bearerRequest(t, h, c.Token, tc.method, "/api/v1/tickets/"+tk.ID.String()+tc.suffix, tc.body)
 				defer res.Body.Close()
-				require.Less(t, res.StatusCode, 500, "an internal error is never the right answer")
-				if res.StatusCode == http.StatusForbidden {
-					require.NotEqual(t, "user_identity_required", errorCode(t, res),
-						"a client has a user identity now")
-				}
+				require.Equal(t, tc.want, res.StatusCode)
 			})
 		}
 	})

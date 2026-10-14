@@ -135,9 +135,16 @@ WHERE id = $1 AND deleted_at IS NULL;
 --
 -- A rename should rename. Everything else has its own path, and the role has
 -- a guarded one.
+--
+-- Renaming a service user (#420) renames its OAuth client in the same
+-- statement, so the two names cannot drift. For anyone else no client has
+-- user_id = $1 and the first part touches nothing.
+WITH renamed AS (
+    UPDATE oauth_clients SET name = $3 WHERE user_id = $1
+)
 UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL;
+WHERE users.id = $1 AND users.deleted_at IS NULL;
 
 -- name: ListAssignableStaff :many
 -- The people work can be given to: active staff and administrators, name and
@@ -231,6 +238,9 @@ RETURNING t.id;
 
 -- name: SoftDeleteUserUnlessLastAdmin :one
 -- The same guard for deletion. See DisableUserUnlessLastAdmin.
+--
+-- Never a service user (#420): it goes when its OAuth client does, in
+-- DeleteOAuthClient. Deleting it alone would leave the client listed and dead.
 WITH admins AS (
     SELECT u.id AS admin_id FROM users u
     WHERE u.role = 'admin' AND u.deleted_at IS NULL AND u.disabled = FALSE
@@ -241,6 +251,7 @@ UPDATE users AS t
 SET deleted_at = now(), updated_at = now()
 WHERE t.id = $1
   AND t.deleted_at IS NULL
+  AND NOT t.service_account
   AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
 RETURNING t.id;
 

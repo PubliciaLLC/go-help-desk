@@ -272,6 +272,11 @@ func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
 	if u.DeletedAt != nil {
 		return ErrNotFound
 	}
+	// SoftDelete refuses a service user (it goes with its OAuth client), and
+	// "this is the only administrator" would be a lie about it.
+	if u.ServiceAccount {
+		return ErrServiceAccount
+	}
 	return ErrLastAdmin
 }
 

@@ -433,6 +433,16 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
 		return
 	}
+	// A service user is deleted by deleting its OAuth client. Deleting it alone
+	// would leave the client listed and permanently dead, so say so, naming it.
+	if u, err := s.users.GetByIDAdmin(r.Context(), id); err == nil && u.ServiceAccount {
+		msg := "This is the service account for an OAuth client. Delete the client instead."
+		if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
+			msg = "This is the service account for OAuth client " + name + ". Delete the client instead."
+		}
+		Error(w, http.StatusConflict, "service_account", msg)
+		return
+	}
 	// SoftDelete refuses the last active administrator itself: setup does not
 	// reopen, so the instance would be left with no way in at all.
 	if err := s.users.SoftDelete(r.Context(), id); err != nil {

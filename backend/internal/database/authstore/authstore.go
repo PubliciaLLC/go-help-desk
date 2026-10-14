@@ -122,6 +122,19 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 	}, nil
 }
 
+// OAuthClientNameForUser returns the name of the client a service user belongs
+// to, or auth.ErrNotFound when no client holds it.
+func (s *Store) OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error) {
+	name, err := s.q.GetOAuthClientNameByUser(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("no OAuth client for user %s: %w", userID, auth.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting OAuth client for user %s: %w", userID, err)
+	}
+	return name, nil
+}
+
 // ListOAuthClientGroups returns the groups of every client's service user,
 // keyed by the client row's id, each list ordered by group name.
 func (s *Store) ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error) {

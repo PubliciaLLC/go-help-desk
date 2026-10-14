@@ -399,6 +399,9 @@ type Querier interface {
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
+	// The client a service user belongs to, for the message that says to delete
+	// the client instead.
+	GetOAuthClientNameByUser(ctx context.Context, userID uuid.UUID) (string, error)
 	// The client and the service user it acts as, in one round trip: BearerAuth
 	// runs this on every request. A deleted client matches nothing, which is what
 	// revokes its outstanding tokens; the user's own state (disabled, deleted)
@@ -815,6 +818,9 @@ type Querier interface {
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
+	//
+	// Never a service user (#420): it goes when its OAuth client does, in
+	// DeleteOAuthClient. Deleting it alone would leave the client listed and dead.
 	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// One row affected: this is the cookie's first use. Zero: it was spent before.
 	// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
@@ -886,6 +892,10 @@ type Querier interface {
 	//
 	// A rename should rename. Everything else has its own path, and the role has
 	// a guarded one.
+	//
+	// Renaming a service user (#420) renames its OAuth client in the same
+	// statement, so the two names cannot drift. For anyone else no client has
+	// user_id = $1 and the first part touches nothing.
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 	// A new URL clears the last delivery result: it described a different target.
 	// (On the right-hand side of SET, "url" is the OLD value.)

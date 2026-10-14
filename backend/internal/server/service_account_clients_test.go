@@ -115,6 +115,56 @@ func TestOAuthClients_DeleteSoftDeletesTheUserAndKeepsWhatItWrote(t *testing.T) 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// Erik's Q6: a service user is renamed, regrouped and disabled from the Users
+// page, but it is deleted only by deleting its client.
+func TestServiceAccount_RenameRenamesTheClient(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	c := h.newServiceClient(t, "Nagios", "tickets:read")
+	other := h.newServiceClient(t, "Zapier", "tickets:read")
+
+	resp := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/users/"+c.UserID.String(),
+		map[string]any{"display_name": "Nagios (prod)"})
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/oauth-clients", nil)
+	var rows []struct {
+		ID   uuid.UUID `json:"id"`
+		Name string    `json:"name"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&rows))
+	names := map[uuid.UUID]string{}
+	for _, r := range rows {
+		names[r.ID] = r.Name
+	}
+	require.Equal(t, "Nagios (prod)", names[c.ID], "the client takes the new name")
+	require.Equal(t, "Zapier", names[other.ID], "and only that client")
+}
+
+func TestServiceAccount_CannotBeDeletedExceptThroughItsClient(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	c := h.newServiceClient(t, "Nagios", "tickets:read")
+
+	resp := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/users/"+c.UserID.String(), nil)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+	var e struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&e))
+	require.Equal(t, "service_account", e.Error.Code)
+	require.Equal(t, "This is the service account for OAuth client Nagios. Delete the client instead.", e.Error.Message)
+
+	// Nothing happened: the user is live and the client still works.
+	u, err := h.userSvc.GetByID(context.Background(), c.UserID)
+	require.NoError(t, err)
+	require.Nil(t, u.DeletedAt)
+	require.Equal(t, http.StatusOK, h.doWithBearer(t, c.Token, "/api/v1/me").StatusCode)
+}
+
 // Disabling the service user from the Users page stops the client. Enabling it
 // starts it again.
 func TestOAuthClients_DisablingTheUserStopsTheClient(t *testing.T) {

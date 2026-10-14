@@ -60,6 +60,11 @@ DELETE FROM oauth_clients WHERE oauth_clients.id = $1;
 -- name: ListOAuthClients :many
 SELECT * FROM oauth_clients ORDER BY name;
 
+-- name: GetOAuthClientNameByUser :one
+-- The client a service user belongs to, for the message that says to delete
+-- the client instead.
+SELECT name FROM oauth_clients WHERE user_id = $1;
+
 -- name: ListOAuthClientGroups :many
 -- Every client's groups in one query, for the client list: a client's groups
 -- are its service user's, and asking per row would be a query per client.

@@ -196,6 +196,19 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 	return i, err
 }
 
+const getOAuthClientNameByUser = `-- name: GetOAuthClientNameByUser :one
+SELECT name FROM oauth_clients WHERE user_id = $1
+`
+
+// The client a service user belongs to, for the message that says to delete
+// the client instead.
+func (q *Queries) GetOAuthClientNameByUser(ctx context.Context, userID uuid.UUID) (string, error) {
+	row := q.db.QueryRowContext(ctx, getOAuthClientNameByUser, userID)
+	var name string
+	err := row.Scan(&name)
+	return name, err
+}
+
 const getOAuthClientWithUser = `-- name: GetOAuthClientWithUser :one
 SELECT oauth_clients.id, oauth_clients.client_id, oauth_clients.hashed_secret, oauth_clients.name, oauth_clients.scopes, oauth_clients.created_at, oauth_clients.user_id, users.id, users.email, users.display_name, users.role, users.password_hash, users.mfa_secret, users.mfa_enabled, users.saml_subject, users.created_at, users.updated_at, users.deleted_at, users.disabled, users.oidc_subject, users.mfa_failed_attempts, users.mfa_locked_until, users.service_account
 FROM oauth_clients

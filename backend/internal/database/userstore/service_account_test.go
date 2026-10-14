@@ -116,6 +116,28 @@ func TestServiceUser_WritesThatGiveAWayInAreRefused(t *testing.T) {
 	}
 }
 
+// A service user is deleted by deleting its client, never on its own: the
+// guarded delete does not apply to it, whoever calls.
+func TestServiceUser_CannotBeSoftDeletedDirectly(t *testing.T) {
+	store, svc, person := newServiceUserFixture(t)
+	ctx := context.Background()
+	applied, err := store.SetRoleUnlessLastAdmin(ctx, person(t).ID, "admin")
+	require.NoError(t, err)
+	require.True(t, applied)
+
+	applied, err = store.SoftDeleteUnlessLastAdmin(ctx, svc.ID)
+	require.NoError(t, err)
+	require.False(t, applied)
+
+	got, err := store.GetByID(ctx, svc.ID)
+	require.NoError(t, err)
+	require.Nil(t, got.DeletedAt)
+
+	// And the service says why, not "this is the only administrator".
+	err = user.NewService(store).SoftDelete(ctx, svc.ID)
+	require.ErrorIs(t, err, user.ErrServiceAccount)
+}
+
 func TestServiceUser_MayBeRenamedAndMovedBetweenStaffAndUser(t *testing.T) {
 	store, svc, person := newServiceUserFixture(t)
 	ctx := context.Background()

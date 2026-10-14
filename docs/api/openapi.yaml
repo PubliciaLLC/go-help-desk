@@ -6407,7 +6407,8 @@ paths:
             included. service_account, when the account is a service account and the
             change would give it a way to sign in: reset_mfa, or a role of admin. A
             service account can be renamed, set to staff or user, given groups, and
-            disabled.
+            disabled. Renaming it (display_name) also renames its OAuth client, in
+            the same statement. It cannot be deleted here (DELETE answers 409).
           content:
             application/json:
               schema:
@@ -6461,6 +6462,18 @@ paths:
         '404':
           description: >-
             not_found, when no live account has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            service_account, when the account is a service account (the identity
+            an OAuth client acts as). It is deleted only by deleting its client
+            (DELETE /api/v1/admin/oauth-clients/{id}). The message is exactly
+            "This is the service account for OAuth client <name>. Delete the
+            client instead." and an interface should show it as written. Nothing
+            is changed.
           content:
             application/json:
               schema:

@@ -142,6 +142,8 @@ type AuthStoreIface interface {
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
+	// OAuthClientNameForUser is the client a service user belongs to.
+	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)
 	// ListOAuthClientGroups is every client's groups (its service user's), keyed
 	// by the client row's id, in one query.
 	ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error)

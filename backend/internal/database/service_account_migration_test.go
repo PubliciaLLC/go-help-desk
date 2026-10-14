@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
@@ -90,6 +91,16 @@ func TestMigration000041_BackfillsAServiceUserPerClient(t *testing.T) {
 	require.Equal(t, before, countServiceUsers())
 }
 
+// requireInertViolation asserts the write was refused by the CHECK this
+// migration adds, and not by some other constraint that happens to fire.
+func requireInertViolation(t *testing.T, err error) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr)
+	require.Equal(t, "23514", pgErr.Code, "a check violation")
+	require.Equal(t, "users_service_account_inert", pgErr.ConstraintName)
+}
+
 // The down migration removes the service users and the columns, and leaves the
 // clients themselves in place.
 func TestMigration000041_DownRemovesTheUsersAndColumns(t *testing.T) {
@@ -161,7 +172,7 @@ func TestUsersServiceAccountInert_RefusesAWayInOrAdmin(t *testing.T) {
 			_, err = tx.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, service_account)
 				VALUES ($1, $2, 'svc', $3, TRUE)`, id, "svc-"+id.String()+"@service-account.invalid", tc.role)
 			if tc.role == "admin" {
-				require.Error(t, err, "insert as admin must be refused")
+				requireInertViolation(t, err)
 				return
 			}
 			require.NoError(t, err)
@@ -173,7 +184,7 @@ func TestUsersServiceAccountInert_RefusesAWayInOrAdmin(t *testing.T) {
 			if tc.ok {
 				require.NoError(t, err)
 			} else {
-				require.Error(t, err, "%s must be refused on a service user", tc.name)
+				requireInertViolation(t, err)
 			}
 		})
 	}
@@ -187,6 +198,6 @@ func TestUsersServiceAccountInert_RefusesAWayInOrAdmin(t *testing.T) {
 			VALUES ($1, $2, 'svc', 'staff', TRUE)`, id, "svc-"+id.String()+"@service-account.invalid")
 		require.NoError(t, err)
 		_, err = tx.ExecContext(ctx, `UPDATE users SET role = 'admin' WHERE id = $1`, id)
-		require.Error(t, err)
+		requireInertViolation(t, err)
 	})
 }

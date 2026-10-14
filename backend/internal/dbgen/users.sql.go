@@ -1072,11 +1072,15 @@ UPDATE users AS t
 SET deleted_at = now(), updated_at = now()
 WHERE t.id = $1
   AND t.deleted_at IS NULL
+  AND NOT t.service_account
   AND (SELECT count(*) FROM admins WHERE admins.admin_id <> $1) > 0
 RETURNING t.id
 `
 
 // The same guard for deletion. See DisableUserUnlessLastAdmin.
+//
+// Never a service user (#420): it goes when its OAuth client does, in
+// DeleteOAuthClient. Deleting it alone would leave the client listed and dead.
 func (q *Queries) SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, softDeleteUserUnlessLastAdmin, id)
 	var id_2 uuid.UUID
@@ -1150,9 +1154,12 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 }
 
 const updateUserProfile = `-- name: UpdateUserProfile :exec
+WITH renamed AS (
+    UPDATE oauth_clients SET name = $3 WHERE user_id = $1
+)
 UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
-WHERE id = $1 AND deleted_at IS NULL
+WHERE users.id = $1 AND users.deleted_at IS NULL
 `
 
 type UpdateUserProfileParams struct {
@@ -1173,6 +1180,10 @@ type UpdateUserProfileParams struct {
 //
 // A rename should rename. Everything else has its own path, and the role has
 // a guarded one.
+//
+// Renaming a service user (#420) renames its OAuth client in the same
+// statement, so the two names cannot drift. For anyone else no client has
+// user_id = $1 and the first part touches nothing.
 func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
 	_, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
 	return err
