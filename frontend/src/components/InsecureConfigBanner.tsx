@@ -108,7 +108,12 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">BASE_URL</code> must be a domain
             name (or <code className="font-mono text-xs">localhost</code>) to use them; an IP address or a single-word
             host will not work. Everything else runs normally, but anyone whose only second factor is a passkey cannot
-            sign in until an administrator resets their sign-in factors. Reason: {passkeys.reason}
+            sign in while sign-in MFA is on, until an administrator resets their sign-in factors. If that is the last
+            administrator, run{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">
+              docker compose exec app /app/server reset-factors &lt;email&gt;
+            </code>{' '}
+            on the server. Reason: {passkeys.reason}
           </p>
         </div>
       )}

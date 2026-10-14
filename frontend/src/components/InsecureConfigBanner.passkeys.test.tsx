@@ -37,6 +37,22 @@ describe('the passkeys warning', () => {
     expect(text).toContain('must be a domain and not an IP address')
   })
 
+  // The consequence people most need to know: a passkey-only account is
+  // refused, not let in on its password. The sentence says when it applies and
+  // how the last administrator, who cannot ask another one, gets back in.
+  it('says who cannot sign in, when, and how to recover', async () => {
+    mockWarnings({ available: false, reason: 'must be a domain and not an IP address' })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('alert')).textContent ?? ''
+    expect(text).toContain('anyone whose only second factor is a passkey cannot sign in')
+    expect(text).toContain('while sign-in MFA is on')
+    expect(text).toContain('until an administrator resets their sign-in factors')
+    expect(text).toContain('docker compose exec app /app/server reset-factors <email>')
+    // The wording this replaced promised a fallback that no longer exists.
+    expect(text).not.toContain('sign in with their password and an authenticator app')
+  })
+
   it('says nothing when passkeys work', async () => {
     mockWarnings({ available: true, reason: '' })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
