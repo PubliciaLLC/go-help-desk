@@ -221,6 +221,43 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The two refusals that depend on what the database holds, asked now for
+	// the same reason: an MFA reset followed by a refused demotion had already
+	// cleared the factors, and a disable followed by a taken address had
+	// already disabled the account. These are checks, not locks, so a request
+	// that loses a race still reaches the guarded statements below, which
+	// refuse on their own; this only closes the ordinary case.
+	if target.Role == user.RoleAdmin && !target.Disabled &&
+		((body.Disabled != nil && *body.Disabled) || (body.Role != nil && user.Role(*body.Role) != user.RoleAdmin)) {
+		admins, err := s.users.ListActiveAdmins(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if len(admins) <= 1 {
+			handleError(w, user.ErrLastAdmin)
+			return
+		}
+	}
+	if body.Email != nil {
+		addr, err := user.ValidateEmail(*body.Email)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if addr != strings.ToLower(target.Email) {
+			taken, err := s.users.EmailIsTaken(r.Context(), addr)
+			if err != nil {
+				handleError(w, err)
+				return
+			}
+			if taken {
+				handleError(w, user.ErrEmailTaken)
+				return
+			}
+		}
+	}
+
 	// Disable/enable toggle (processed before any profile update).
 	if body.Disabled != nil {
 		if *body.Disabled {

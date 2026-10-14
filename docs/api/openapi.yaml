@@ -6288,11 +6288,16 @@ paths:
         one is written, in this order: the body (an invalid role, an invalid email
         or a blank display name answers 400), then the caller (see 403), then the
         account (an unknown or soft-deleted id answers 404, for every body, an empty
-        one included). A refused request changes nothing: disabled true with an
-        invalid email leaves the account enabled. The writes themselves are still
-        separate steps, so a failure of the database partway through can leave the
+        one included). Two refusals that depend on the database are also checked
+        first: a disable or demotion that would leave no active administrator
+        answers 400, and an email address another account holds answers 409
+        email_taken. A refused request changes nothing: disabled true with an
+        invalid or taken email leaves the account enabled, and reset_mfa with a
+        refused demotion leaves the factors in place. The writes themselves are
+        still separate steps, so a request that loses a race with another
+        administrator, or a failure of the database partway through, can leave the
         earlier ones applied. The last
-        active administrator cannot be disabled or demoted, and that answers 400. An
+        active administrator cannot be disabled or demoted. An
         API key cannot change an administrator's account or promote a user to
         administrator; that answers 403 session_required, after the body checks. The
         response always carries passkey_count as 0, so read GET for the real count.

@@ -788,7 +788,9 @@ func TestGroupStore(t *testing.T) {
 	require.Empty(t, scopes)
 
 	// Delete.
-	require.NoError(t, gs.Delete(ctx, g.ID))
+	// Groups are deleted through the ticket store, which unassigns their tickets
+	// in the same transaction (#419); the group store has no delete of its own.
+	require.NoError(t, ticketstore.New(q).DeleteGroup(ctx, g.ID))
 	_, err = gs.GetByID(ctx, g.ID)
 	require.Error(t, err)
 }

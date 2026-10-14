@@ -40,10 +40,6 @@ func (f *fakeGroupStore) Update(_ context.Context, g group.Group) error {
 	f.groups[g.ID] = g
 	return nil
 }
-func (f *fakeGroupStore) Delete(_ context.Context, id uuid.UUID) error {
-	delete(f.groups, id)
-	return nil
-}
 func (f *fakeGroupStore) List(_ context.Context) ([]group.Group, error) {
 	out := make([]group.Group, 0, len(f.groups))
 	for _, g := range f.groups {

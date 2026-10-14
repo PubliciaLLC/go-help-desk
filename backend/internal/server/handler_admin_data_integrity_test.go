@@ -198,6 +198,58 @@ func TestPatchUser_RefusedRequestChangesNothing(t *testing.T) {
 	}
 }
 
+// Refusals that depend on the database's state, not the body, are also found
+// before the first write (#419): a last-administrator guard and a taken email.
+func TestPatchUser_LastAdminRefusalClearsNothingFirst(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	requireSoleAdministrator(t, h)
+	s := loggedInAdmin(t, h)
+	enrollMFA(t, ctx, h.userSvc, h.adminID)
+
+	for _, body := range []map[string]any{
+		{"reset_mfa": true, "role": "user"},
+		{"reset_mfa": true, "disabled": true},
+	} {
+		res, out := s.send(t, http.MethodPatch, adminAPI+"/users/"+h.adminID.String(), body)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", out)
+
+		after, err := h.userSvc.GetByIDAdmin(ctx, h.adminID)
+		require.NoError(t, err)
+		require.True(t, after.MFAEnabled, "%v: MFA was cleared by a refused request", body)
+		require.Equal(t, user.RoleAdmin, after.Role)
+		require.False(t, after.Disabled)
+	}
+}
+
+func TestPatchUser_TakenEmailIsRefusedBeforeAnyWrite(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	s := loggedInAdmin(t, h)
+	enrollMFA(t, ctx, h.userSvc, h.staffID)
+	holder, err := h.userSvc.GetByIDAdmin(ctx, h.userID)
+	require.NoError(t, err)
+
+	res, out := s.send(t, http.MethodPatch, adminAPI+"/users/"+h.staffID.String(),
+		map[string]any{"disabled": true, "reset_mfa": true, "email": holder.Email})
+	res.Body.Close()
+	require.Equal(t, http.StatusConflict, res.StatusCode, "body: %s", out)
+
+	after, err := h.userSvc.GetByIDAdmin(ctx, h.staffID)
+	require.NoError(t, err)
+	require.False(t, after.Disabled, "the account was disabled by a refused request")
+	require.True(t, after.MFAEnabled, "MFA was cleared by a refused request")
+
+	// Their own current address is not "taken".
+	res, out = s.send(t, http.MethodPatch, adminAPI+"/users/"+h.staffID.String(),
+		map[string]any{"email": after.Email, "display_name": "Same Address"})
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", out)
+}
+
 // ── Deleted accounts ─────────────────────────────────────────────────────────
 
 func deletedStaff(t *testing.T, h *harness) uuid.UUID {
