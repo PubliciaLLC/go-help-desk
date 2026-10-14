@@ -1500,6 +1500,22 @@ func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedT
 	return items, nil
 }
 
+const lockGroup = `-- name: LockGroup :one
+SELECT id FROM groups WHERE id = $1 FOR UPDATE
+`
+
+// Locks the group row so nothing can be assigned to it until the transaction
+// ends. A ticket's assignee_group_id takes a share lock on the group it names,
+// and this conflicts with that. Without it a ticket assigned between
+// UnassignTicketsForGroup and the delete would lose its group silently, which
+// is the gap this exists to close.
+func (q *Queries) LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, lockGroup, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const nextTicketSeq = `-- name: NextTicketSeq :one
 SELECT nextval('ticket_seq')::bigint
 `
@@ -2098,6 +2114,39 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unassignTicketsForGroup = `-- name: UnassignTicketsForGroup :many
+UPDATE tickets
+SET assignee_group_id = NULL, updated_at = now()
+WHERE assignee_group_id = $1
+RETURNING id
+`
+
+// Takes every ticket off a group that is about to be deleted, and says which.
+// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+// would clear those anyway, and the audit trail should record it.
+func (q *Queries) UnassignTicketsForGroup(ctx context.Context, assigneeGroupID uuid.NullUUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, unassignTicketsForGroup, assigneeGroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

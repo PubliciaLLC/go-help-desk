@@ -277,9 +277,7 @@ func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
-	switch role {
-	case RoleAdmin, RoleStaff, RoleUser:
-	default:
+	if !role.Valid() {
 		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	applied, err := s.store.SetRoleUnlessLastAdmin(ctx, id, string(role))
@@ -319,11 +317,22 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 	if err != nil {
 		return err
 	}
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		return fmt.Errorf("%w: display name is required", ErrValidation)
+	name, err := ValidateDisplayName(displayName)
+	if err != nil {
+		return err
 	}
 	return s.store.UpdateProfile(ctx, id, addr, name)
+}
+
+// ValidateDisplayName is the display-name rule UpdateProfile applies, for a
+// caller that has to know the answer before it writes anything else (#419).
+// It returns the name as it would be stored.
+func ValidateDisplayName(displayName string) (string, error) {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return "", fmt.Errorf("%w: display name is required", ErrValidation)
+	}
+	return name, nil
 }
 
 // ListAssignableStaff returns the people work can be given to.
@@ -1061,13 +1070,8 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	// 500. Validation and hashing below don't touch I/O, so detaching this
 	// early costs nothing.
 	ctx = context.WithoutCancel(ctx)
-	if strings.TrimSpace(plain) == "" {
-		return fmt.Errorf("%w: password is required", ErrValidation)
-	}
-	// Reset was the loosest of the four paths: it refused only a blank
-	// password, so an administrator could reset an account to "b".
-	if err := ValidatePassword(plain); err != nil {
-		return fmt.Errorf("%w: %w", ErrValidation, err)
+	if err := CheckNewPassword(plain); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -1125,6 +1129,22 @@ var (
 	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
 	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes; accented and non-Latin characters count as 2 to 4 bytes each", MaxPasswordLength)
 )
+
+// CheckNewPassword is what an administrator's password reset requires of the
+// new password, as an error handleError answers 400 to. AdminSetPassword
+// applies it, and the handler asks it first so a bad body is refused before
+// anything else about the request is looked at (#419).
+func CheckNewPassword(plain string) error {
+	if strings.TrimSpace(plain) == "" {
+		return fmt.Errorf("%w: password is required", ErrValidation)
+	}
+	// Reset was the loosest of the four paths: it refused only a blank
+	// password, so an administrator could reset an account to "b".
+	if err := ValidatePassword(plain); err != nil {
+		return fmt.Errorf("%w: %w", ErrValidation, err)
+	}
+	return nil
+}
 
 // ValidatePassword is the length rule every path that sets a password applies.
 // One function, because the minimum alone was once four different rules.

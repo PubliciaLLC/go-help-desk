@@ -58,7 +58,7 @@ UPDATE users SET deleted_at = now() WHERE id = $1;
 UPDATE users SET disabled = TRUE, updated_at = now() WHERE id = $1;
 
 -- name: EnableUser :exec
-UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1;
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ListUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2;
@@ -115,7 +115,7 @@ UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
--- name: UpdateUserProfile :exec
+-- name: UpdateUserProfile :execrows
 -- The parts of a user an administrator edits: the address and the name.
 --
 -- Its own statement because UpdateUser writes the WHOLE row from a struct
@@ -384,7 +384,7 @@ SELECT
 -- name: AdminSetPassword :execrows
 -- :execrows, for the same reason as ClearMFA above: a nonexistent id
 -- reported success (204, no error) and still wrote an audit entry.
-UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ClaimMFAAttempt :one
 -- Takes one attempt off the account's TOTP budget, and reports what is left.

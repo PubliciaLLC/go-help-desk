@@ -72,12 +72,12 @@ func TestRedact_MatchesRegardlessOfCaseAndSeparators(t *testing.T) {
 }
 
 // The keys real writers put in Before/After that are safe to show: ids,
-// statuses, flags and counts from ticketMap, UnassignForUser, ResetMFA and
+// statuses, flags and counts from ticketMap, UnassignForUser, DeleteGroup, ResetMFA and
 // cmd/server/resetfactors.go. They are shown as written.
 func TestRedact_ShowsTheAllowListedFields(t *testing.T) {
 	m := map[string]any{
 		"id": "1", "status_id": "2", "priority": "low",
-		"assignee_user_id": "u", "follow_up_of": "t",
+		"assignee_user_id": "u", "assignee_group_id": "g", "follow_up_of": "t",
 		"forced_reopen": true, "closed_reopen_policy": "staff_only",
 		"os_user": "bob", "host": "h", "source": "cli",
 		"passkeys_removed": 2, "totp_cleared": true, "sessions_revoked": true,

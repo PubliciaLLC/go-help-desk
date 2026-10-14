@@ -2305,6 +2305,44 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 	return moved, err
 }
 
+// DeleteGroup deletes a group and returns every ticket it held to the queue,
+// reporting how many moved. actorID is nil when no person is behind the call.
+//
+// All of it in one transaction with the audit entries (#419). The database
+// clears assignee_group_id by itself when the group row goes, so the tickets
+// used to lose their group with nothing in the trail to say so: the same gap
+// UnassignForUser closed for a deleted user.
+//
+// This is the one place the ticket service deletes something that is not a
+// ticket. Atomic hands out only the ticket and audit stores, and the audit
+// entries must commit with the unassignment they describe, so the delete rides
+// along rather than running in a second transaction.
+//
+// Every ticket, not only open ones: the foreign key would clear a closed
+// ticket's group as well, and the trail should say what actually happened.
+func (s *Service) DeleteGroup(ctx context.Context, actorID *uuid.UUID, groupID uuid.UUID) (int, error) {
+	var moved int
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		ids, err := st.UnassignForGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			before := map[string]any{"assignee_group_id": groupID.String()}
+			after := map[string]any{"assignee_group_id": nil}
+			if err := au.Create(ctx, auditEntry(actorID, "ticket", id, "unassigned", before, after)); err != nil {
+				return fmt.Errorf("auditing unassignment: %w", err)
+			}
+		}
+		if err := st.DeleteGroup(ctx, groupID); err != nil {
+			return err
+		}
+		moved = len(ids)
+		return nil
+	})
+	return moved, err
+}
+
 // ErrValidation wraps input-validation failures, so callers — the HTTP
 // handler — can map them to 400 rather than the 500 handleError falls back to
 // for an error it does not recognise.

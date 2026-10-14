@@ -252,6 +252,11 @@ type Querier interface {
 	// own comment on DeleteOlderThan for why.
 	DeleteAuditLogBefore(ctx context.Context, createdAt time.Time) (int64, error)
 	DeleteCannedResponse(ctx context.Context, id uuid.UUID) error
+	// Takes the custom-field assignments of the category, of its types and of
+	// their items with it (#419). custom_field_assignments.scope_id has no foreign
+	// key, so they were left pointing at nothing. One statement, so the assignments
+	// and the node go together or not at all: if the delete is refused (a ticket
+	// arrived meanwhile), the assignments stay.
 	DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFieldValueParams) error
@@ -262,6 +267,7 @@ type Querier interface {
 	// transaction. Used only for a ticket that is not Closed — closing no longer
 	// revokes (#349), and a Closed ticket's links are added to, never replaced.
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
+	// As DeleteCategory: the item's field assignments go in the same statement.
 	DeleteItem(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error)
@@ -280,6 +286,8 @@ type Querier interface {
 	DeleteStaleSAMLHandovers(ctx context.Context) error
 	DeleteStatus(ctx context.Context, id uuid.UUID) error
 	DeleteTicketLink(ctx context.Context, arg DeleteTicketLinkParams) error
+	// As DeleteCategory: the type's own and its items' field assignments go in the
+	// same statement.
 	DeleteType(ctx context.Context, id uuid.UUID) (int64, error)
 	// Removes one credential, and reports whether it was this user's to remove.
 	//
@@ -652,6 +660,12 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Locks the group row so nothing can be assigned to it until the transaction
+	// ends. A ticket's assignee_group_id takes a share lock on the group it names,
+	// and this conflicts with that. Without it a ticket assigned between
+	// UnassignTicketsForGroup and the delete would lose its group silently, which
+	// is the gap this exists to close.
+	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	NextTicketSeq(ctx context.Context) (int64, error)
 	// Keeps the newest keep_n deliveries of one hook (#448).
 	PruneWebhookDeliveries(ctx context.Context, arg PruneWebhookDeliveriesParams) error
@@ -839,6 +853,10 @@ type Querier interface {
 	// for nothing, and why a previously-non-zero counter going backwards is worth
 	// logging and worth refusing nothing over.
 	TouchWebAuthnCredential(ctx context.Context, arg TouchWebAuthnCredentialParams) error
+	// Takes every ticket off a group that is about to be deleted, and says which.
+	// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+	// would clear those anyway, and the audit trail should record it.
+	UnassignTicketsForGroup(ctx context.Context, assigneeGroupID uuid.NullUUID) ([]uuid.UUID, error)
 	// Takes a departing user off every ticket still assigned to them, and says
 	// which ones.
 	//
@@ -879,7 +897,7 @@ type Querier interface {
 	//
 	// A rename should rename. Everything else has its own path, and the role has
 	// a guarded one.
-	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (int64, error)
 	// A new URL clears the last delivery result: it described a different target.
 	// (On the right-hand side of SET, "url" is the OLD value.)
 	UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConfigParams) error

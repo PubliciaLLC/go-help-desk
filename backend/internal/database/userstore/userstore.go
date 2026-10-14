@@ -448,7 +448,7 @@ func (s *Store) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (boo
 
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
-	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
+	n, err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
 		ID: id, Email: email, DisplayName: displayName,
 	})
 	if err != nil {
@@ -457,6 +457,11 @@ func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayN
 			return user.ErrEmailTaken
 		}
 		return fmt.Errorf("updating profile: %w", err)
+	}
+	// The statement skips deleted accounts, so no row means the account is
+	// gone or never existed, not that the write succeeded (#419).
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return nil
 }
