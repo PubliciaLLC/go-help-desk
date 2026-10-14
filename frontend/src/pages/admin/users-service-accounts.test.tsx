@@ -1,14 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
 // Service users (#420): the identity an OAuth client acts as. They are listed
-// on Admin -> Users, badged, and can be filtered. The filter is client-side on
-// service_account; GET /admin/users is still limit/offset with a 200 default,
-// so it filters the page that was loaded until paging (#467) lands.
+// on Admin -> Users, badged, and can be filtered. The filter is the server's
+// service_account parameter on the paged list, so the count and the pages follow it.
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/users' } }),
@@ -41,12 +40,30 @@ const SERVICE = row({
   service_account: true,
 })
 
-function mockUsers(users: unknown[]) {
-  vi.spyOn(api, 'get').mockImplementation(((url: string) => {
-    if (url === '/admin/users') return Promise.resolve({ data: users })
+// A server that filters like GET /admin/users does: service_account=true keeps
+// service accounts, false keeps people, absent keeps everyone, and
+// X-Total-Count counts the filtered list. Pages hold 50.
+function mockUsers(users: Array<Record<string, unknown>>) {
+  return vi.spyOn(api, 'get').mockImplementation(((url: string, config?: { params?: Record<string, unknown> }) => {
+    if (url === '/admin/users') {
+      const p = config?.params ?? {}
+      const kept = users.filter((u) =>
+        p.service_account === undefined ? true : u.service_account === p.service_account,
+      )
+      const from = (Number(p.page) - 1) * Number(p.per_page)
+      return Promise.resolve({
+        data: kept.slice(from, from + Number(p.per_page)),
+        headers: { 'x-total-count': String(kept.length) },
+      })
+    }
     return Promise.resolve({ data: {} })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
+}
+
+function usersParams(get: ReturnType<typeof mockUsers>) {
+  const calls = get.mock.calls.filter((c) => c[0] === '/admin/users')
+  return calls[calls.length - 1][1]?.params as Record<string, unknown>
 }
 
 beforeEach(() => {
@@ -75,24 +92,65 @@ describe('service users on Admin -> Users', () => {
     expect(within(svcRow).queryByText('Local')).toBeNull()
   })
 
-  it('shows everyone by default, people only, or service accounts only', async () => {
+  it('asks the server for everyone, people only, or service accounts only', async () => {
     const user = userEvent.setup()
+    const get = mockUsers([PERSON, SERVICE])
     renderWithQuery(<UsersPage />)
     await screen.findByText('JIRA sync')
+    expect(usersParams(get)).not.toHaveProperty('service_account')
     const filter = screen.getByRole('combobox', { name: 'Show' })
-    expect(screen.getByText('Ann Person')).toBeTruthy()
 
     await user.selectOptions(filter, 'people')
+    await waitFor(() => expect(usersParams(get).service_account).toBe(false))
+    await waitFor(() => expect(screen.queryByText('JIRA sync')).toBeNull())
     expect(screen.getByText('Ann Person')).toBeTruthy()
-    expect(screen.queryByText('JIRA sync')).toBeNull()
 
     await user.selectOptions(filter, 'service')
-    expect(screen.queryByText('Ann Person')).toBeNull()
+    await waitFor(() => expect(usersParams(get).service_account).toBe(true))
+    await waitFor(() => expect(screen.queryByText('Ann Person')).toBeNull())
     expect(screen.getByText('JIRA sync')).toBeTruthy()
 
     await user.selectOptions(filter, 'all')
-    expect(screen.getByText('Ann Person')).toBeTruthy()
-    expect(screen.getByText('JIRA sync')).toBeTruthy()
+    await waitFor(() => expect(usersParams(get)).not.toHaveProperty('service_account'))
+    expect(await screen.findByText('Ann Person')).toBeTruthy()
+  })
+
+  it('goes back to page 1 when the filter changes', async () => {
+    const user = userEvent.setup()
+    const many = Array.from({ length: 120 }, (_, i) =>
+      row({ id: `p-${i}`, email: `p${i}@example.com`, display_name: `Person ${i}` }),
+    )
+    const get = mockUsers([...many, SERVICE])
+    renderWithQuery(<UsersPage />)
+    await screen.findByText('Person 0')
+    await user.click(screen.getByRole('button', { name: 'Next' }))
+    await waitFor(() => expect(usersParams(get).page).toBe(2))
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
+    await waitFor(() => expect(usersParams(get)).toMatchObject({ page: 1, service_account: true }))
+  })
+
+  it('counts and pages by the filtered list', async () => {
+    const user = userEvent.setup()
+    const many = Array.from({ length: 120 }, (_, i) =>
+      row({ id: `p-${i}`, email: `p${i}@example.com`, display_name: `Person ${i}` }),
+    )
+    mockUsers([...many, SERVICE])
+    renderWithQuery(<UsersPage />)
+    expect(await screen.findByText('Showing 1-50 of 121')).toBeTruthy()
+
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
+    expect(await screen.findByText('Showing 1-1 of 1')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('has no "this page only" caveat any more', async () => {
+    const user = userEvent.setup()
+    mockUsers([PERSON, SERVICE])
+    renderWithQuery(<UsersPage />)
+    await screen.findByText('JIRA sync')
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
+    expect(screen.queryByText(/this page only/i)).toBeNull()
   })
 
   it('says so when the filter matches nobody', async () => {
@@ -101,18 +159,6 @@ describe('service users on Admin -> Users', () => {
     renderWithQuery(<UsersPage />)
     await screen.findByText('Ann Person')
     await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
-    expect(screen.getByText('No users found.')).toBeTruthy()
-  })
-
-  // Users are paged on the server and it has no service-account filter, so the
-  // filter only sees the loaded page. The page must say so.
-  it('warns that the filter covers only the current page when there are more', async () => {
-    const user = userEvent.setup()
-    vi.spyOn(api, 'get').mockResolvedValue({ data: [PERSON, SERVICE], headers: { 'x-total-count': '120' } })
-    renderWithQuery(<UsersPage />)
-    await screen.findByText('JIRA sync')
-    expect(screen.queryByText(/this page only/i)).toBeNull()
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
-    expect(screen.getByText(/2 accounts on this page only/i)).toBeTruthy()
+    expect(await screen.findByText('No users found.')).toBeTruthy()
   })
 })

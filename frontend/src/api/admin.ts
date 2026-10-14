@@ -48,11 +48,13 @@ export const USERS_PER_PAGE = 50
  */
 export async function listUsersPage(
   page: number,
-  filters: { q?: string; role?: Role | '' } = {},
+  filters: { q?: string; role?: Role | ''; serviceAccount?: boolean } = {},
 ): Promise<{ users: AdminUser[]; total: number }> {
-  const params: Record<string, string | number> = { page, per_page: USERS_PER_PAGE }
+  const params: Record<string, string | number | boolean> = { page, per_page: USERS_PER_PAGE }
   if (filters.q) params.q = filters.q
   if (filters.role) params.role = filters.role
+  // true is only service accounts, false only people; absent is everyone (#420).
+  if (filters.serviceAccount !== undefined) params.service_account = filters.serviceAccount
   const res = await api.get<AdminUser[]>('/admin/users', { params })
   const total = Number(res.headers?.['x-total-count'])
   return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }

@@ -43,8 +43,12 @@ export function UsersPage() {
   const [page, setPage] = useState(1)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['admin', 'users', { page, search, roleFilter }],
-    queryFn: () => listUsersPage(page, { q: search, role: roleFilter }),
+    queryKey: ['admin', 'users', { page, search, roleFilter, show }],
+    queryFn: () => listUsersPage(page, {
+      q: search,
+      role: roleFilter,
+      serviceAccount: show === 'all' ? undefined : show === 'service',
+    }),
     // Keep the old rows on screen while the next page loads rather than
     // flashing a spinner between every click.
     placeholderData: keepPreviousData,
@@ -53,13 +57,6 @@ export function UsersPage() {
   const total = data?.total ?? 0
   const firstShown = (page - 1) * USERS_PER_PAGE + 1
   const lastShown = (page - 1) * USERS_PER_PAGE + users.length
-
-  // Client-side: GET /admin/users pages on the server (q and role are its only
-  // filters; there is none for service accounts), so this filters the page that
-  // was loaded. The hint below says so; a server-side parameter would fix it.
-  const shown = users.filter((u) =>
-    show === 'all' ? true : show === 'service' ? !!u.service_account : !u.service_account,
-  )
 
   const createMutation = useMutation({
     mutationFn: () => createUser({ email, display_name: displayName, role, password }),
@@ -87,7 +84,10 @@ export function UsersPage() {
             <Select
               aria-label="Show"
               value={show}
-              onChange={(e) => setShow(e.target.value as Show)}
+              onChange={(e) => {
+                setShow(e.target.value as Show)
+                setPage(1)
+              }}
               className="w-44"
             >
               <option value="all">All accounts</option>
@@ -188,7 +188,7 @@ export function UsersPage() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {shown.map((u) => (
+                {users.map((u) => (
                   <tr
                     key={u.id}
                     className={`cursor-pointer hover:bg-blue-50 transition-colors ${u.disabled ? 'opacity-60' : ''}`}
@@ -213,18 +213,12 @@ export function UsersPage() {
                     <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                   </tr>
                 ))}
-                {shown.length === 0 && (
+                {users.length === 0 && (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No users found.</td></tr>
                 )}
               </tbody>
             </table>
           </div>
-        )}
-
-        {show !== 'all' && total > users.length && (
-          <p className="text-xs text-amber-700">
-            This filter applies to the {users.length} accounts on this page only; use Next to look further.
-          </p>
         )}
 
         {total > 0 && (
