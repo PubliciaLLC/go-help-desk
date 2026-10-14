@@ -2804,9 +2804,9 @@ paths:
       operationId: getTicket
       summary: Get one ticket.
       description: |
-        Returns one ticket as a TicketView. This is the only route under
-        /tickets/{id} that accepts a tracking number as well as a UUID (matched
-        case-insensitively). Every other route in this subtree takes a UUID only.
+        Returns one ticket as a TicketView. {id} is a UUID or a
+        tracking number (matched case-insensitively), as on every route under
+        /tickets/{id}.
         A ticket the caller may not see answers 404 not_found, exactly as a
         ticket that does not exist does. It is never 403, so tracking numbers
         cannot be probed. A reporting user sees only the tickets they
@@ -2839,8 +2839,7 @@ paths:
         Applies whichever of status_id, clear_assignee, assignee_user_id,
         assignee_group_id and category_id are sent, and answers 200 with the bare
         Ticket. An empty body is the same as {}: no change, and the response is
-        the Ticket. Malformed JSON answers 400 bad_request. The path id must be a UUID. A tracking number
-        that the caller can see answers 400 bad_request, "invalid ticket ID".
+        the Ticket. Malformed JSON answers 400 bad_request. The path id is a UUID or a tracking number.
         The changes run in this order: status, then assignment, then
         classification. Each is saved on its own, with no transaction around the
         three. If a later one is refused, the earlier ones have already been
@@ -2917,8 +2916,7 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`: invalid JSON; invalid ticket ID (the path id is the
-            tracking number of a ticket you can see; send its UUID); an assignee that is not a user on this
+            `bad_request`: invalid JSON; an assignee that is not a user on this
             help desk, deleted, disabled or a reporting user; or a classification
             the domain refuses (category_id is not a category on this help desk,
             or type_id and item_id do not belong to the category and to each
@@ -2973,7 +2971,7 @@ paths:
           applies, a requester is the label Requester there too.
         - Where requester-name masking applies, actor_name is the label
           Requester and actor_masked is true.
-        The id must be a UUID.
+        The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -2997,12 +2995,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketAuditEntry'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3020,7 +3012,7 @@ paths:
         The reply-composer picker. Returns the canned responses that apply to the
         ticket's category and type, in sort order and then by name. Staff and
         administrators only. A reporting user gets 403 forbidden for a ticket they
-        can see, and 404 for one they cannot. The id must be a UUID.
+        can see, and 404 for one they cannot. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3045,12 +3037,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/CannedResponse'
-        '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3076,7 +3062,7 @@ paths:
         follow-up is the way forward (see the follow-up route).
         Anyone who is not an administrator is refused with 403 forbidden, "only
         admins can close tickets", on a ticket they can see. An OAuth client acting without a person behind it
-        is refused with 403 user_identity_required. The path id must be a UUID.
+        is refused with 403 user_identity_required. The path id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3098,12 +3084,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ticket'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3129,7 +3109,7 @@ paths:
       summary: List the custom field values on a ticket.
       description: |
         The custom field values stored on the ticket, as a bare array (empty when
-        none are set). The id must be a UUID.
+        none are set). The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3153,12 +3133,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketsFieldValue'
-        '400':
-          description: "`bad_request`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3172,7 +3146,7 @@ paths:
         The body maps custom field definition ids to values. Each key must be a
         field this ticket has through its classification, and a select field's
         value must be one of its options. An empty string clears that value.
-        Answers 204 with no body. The id must be a UUID.
+        Answers 204 with no body. The id is a UUID or a tracking number.
         The entries are written one at a time, in no particular order, with no
         transaction around them. If one entry is refused, the entries written
         before it stay saved, and the response is 400.
@@ -3246,8 +3220,8 @@ paths:
           hand, so such a link also uses up the reporter's one follow-up. The
           follow-up keeps the original
           category and type, which must both still be active (400 otherwise).
-        The ticket must be Closed (409 ticket_not_closed otherwise). The path id
-        must be a UUID. An OAuth client acting without a person behind it is
+        The ticket must be Closed (409 ticket_not_closed otherwise). The path id is a UUID
+        or a tracking number. An OAuth client acting without a person behind it is
         refused with 403 user_identity_required.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -3272,7 +3246,7 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID), or, for a
+            `bad_request`: for a
             reporting user, the original's category or type is no longer active
             (category_id is not an active category; type_id is not an active type).
           content:
@@ -3312,7 +3286,7 @@ paths:
       description: |
         Every status transition on the ticket, oldest first. Status names and
         colours are read from the statuses table when the request is served. The
-        id must be a UUID.
+        id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3336,12 +3310,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/StatusHistoryEntry'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3357,7 +3325,7 @@ paths:
       description: |
         Every link in which this ticket is the source or the target, in no
         guaranteed order. A link is directional: source_id is the ticket it starts
-        from and target_id the ticket it points to. The id must be a UUID.
+        from and target_id the ticket it points to. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3381,12 +3349,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketLink'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3414,7 +3376,7 @@ paths:
         time is 409 link_already_exists. A reporting user cannot link a Closed
         ticket in either direction (409 ticket_closed). An OAuth client acting
         without a person behind it is refused with 403 user_identity_required.
-        The path id must be a UUID. target_id is required. Absent, it is the nil
+        The path id is a UUID or a tracking number. target_id is required. Absent, it is the nil
         UUID, which answers 404 not_found.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -3462,8 +3424,7 @@ paths:
           $ref: '#/components/responses/NoContent'
         '400':
           description: |
-            `bad_request`: invalid JSON; invalid ticket ID (the path id is the
-            tracking number of a ticket you can see; send its UUID); resolve_as_duplicate with a link type other than duplicate_of;
+            `bad_request`: invalid JSON; resolve_as_duplicate with a link type other than duplicate_of;
             or an unknown link type (invalid link type). `cannot_link_self`: the
             target is this ticket.
           content:
@@ -3541,8 +3502,7 @@ paths:
           $ref: '#/components/responses/NoContent'
         '400':
           description: |
-            `bad_request`: invalid ticket ID (the path id is the tracking number of
-            a ticket you can see; send its UUID); invalid target ID (targetId is not a
+            `bad_request`: invalid target ID (targetId is not a
             UUID); or invalid link type (linkType is not one of the four types).
           content:
             application/json:
@@ -3577,7 +3537,7 @@ paths:
         caller gets 409 ticket_closed, with the reason in the message. The setting
         can allow administrators only, or staff and administrators. A reporting
         user is always refused with 403 forbidden. The ticket must be Closed,
-        otherwise the answer is 409 ticket_not_closed. The path id must be a UUID.
+        otherwise the answer is 409 ticket_not_closed. The path id is a UUID or a tracking number.
         An OAuth client acting without a person behind it is refused with 403
         user_identity_required.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3602,7 +3562,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Ticket'
         '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID), or no valid reopen target status is configured."
+          description: "`bad_request`: no valid reopen target status is configured."
           content:
             application/json:
               schema:
@@ -3642,7 +3602,7 @@ paths:
       description: |
         The reply thread, oldest first. Internal notes are left out for a
         reporting user, and staff and administrators see them. A reply written by
-        a guest has no author_id. The id must be a UUID.
+        a guest has no author_id. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3666,12 +3626,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Reply'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3694,7 +3648,7 @@ paths:
         reply to a Closed ticket (409 ticket_closed), or to a Resolved ticket
         after the reopen window (409 reopen_window_closed). Staff and
         administrators can still post to a Closed ticket.
-        The path id must be a UUID. An OAuth client acting without a person behind
+        The path id is a UUID or a tracking number. An OAuth client acting without a person behind
         it is refused with 403 user_identity_required.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -3736,8 +3690,7 @@ paths:
                 $ref: '#/components/schemas/Reply'
         '400':
           description: |
-            `bad_request`: invalid JSON; body is required; invalid ticket ID (the
-            path id is the tracking number of a ticket you can see; send its UUID); or no valid reopen target status is configured
+            `bad_request`: invalid JSON; body is required; or no valid reopen target status is configured
             (on the reopen path).
           content:
             application/json:
@@ -3781,7 +3734,7 @@ paths:
         The body is optional. A body that is not valid JSON is not refused: it is
         ignored, and the notes are empty. Resolving a Closed ticket is a way out
         of Closed, so it answers 409 ticket_closed unless closed_reopen_policy
-        allows the caller's role. The path id must be a UUID. An OAuth client
+        allows the caller's role. The path id is a UUID or a tracking number. An OAuth client
         acting without a person behind it is refused with 403
         user_identity_required.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3815,12 +3768,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ticket'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3855,7 +3802,7 @@ paths:
         A reporting user gets 403 forbidden on a
         ticket they can see, and 404 on one they cannot. Tags come back ordered by
         name. A tag that has since been deactivated still appears, with deleted_at
-        set. The id must be a UUID.
+        set. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3880,12 +3827,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Tag'
-        '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3911,7 +3852,7 @@ paths:
         included. The answer is 403 tag_deleted; an administrator must restore
         the tag first. An empty name
         is refused by the domain but answers 500 add_failed in this route, not
-        400. The path id must be a UUID.
+        400. The path id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3946,7 +3887,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Tag'
         '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID). `invalid_body`: the body is not valid JSON."
+          description: "`invalid_body`: the body is not valid JSON."
           content:
             application/json:
               schema:
@@ -4007,7 +3948,7 @@ paths:
         '204':
           $ref: '#/components/responses/NoContent'
         '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID), or invalid tag id (tagId is not a UUID)."
+          description: "`invalid_id`: invalid tag id (tagId is not a UUID)."
           content:
             application/json:
               schema:
@@ -4523,9 +4464,7 @@ paths:
         never causes a lookup. The lookup shares a five-second budget across the
         request, and a provider that did not answer shows as unavailable rather than
         failing the response.
-        Takes the ticket UUID. As on every ticket route except GET /tickets/{id},
-        the tracking number of a ticket the caller can see is refused with 400
-        invalid_id.
+        The path id is a UUID or a tracking number.
       tags: ['Attachments']
       x-ghd-handler: handleListAttachments
       security:
@@ -4543,12 +4482,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Attachment'
-        '400':
-          description: The path id is the tracking number of a ticket you can see; send its UUID (invalid_id).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4596,8 +4529,7 @@ paths:
         only listAttachments and the re-check fill it in.
         The ticket checks run before the body is read, so a 409 is answered before
         any 400, 413 or 415 about the file.
-        Takes the ticket UUID. The tracking number of a ticket the caller can see
-        is refused with 400 invalid_id.
+        The path id is a UUID or a tracking number.
       tags: ['Attachments']
       x-ghd-handler: handleUploadAttachment
       security:
@@ -4627,9 +4559,8 @@ paths:
                 $ref: '#/components/schemas/Attachment'
         '400':
           description: |
-            No file field, or a body that is not multipart (bad_request), a filename
-            refused by the name checks (invalid_filename), or a path id that is the
-            tracking number of a ticket you can see; send its UUID (invalid_id).
+            No file field, or a body that is not multipart (bad_request), or a filename
+            refused by the name checks (invalid_filename).
           content:
             application/json:
               schema:
@@ -4728,8 +4659,7 @@ paths:
         header: control characters and path separators are removed, it is cut to
         200 bytes keeping the extension, and the plain form replaces every
         non-ASCII character with an underscore.
-        Takes the ticket UUID. The tracking number of a ticket the caller can see
-        is refused with 400 invalid_id.
+        The path id is a UUID or a tracking number.
       tags: ['Attachments']
       x-ghd-handler: handleDownloadAttachment
       security:
@@ -4826,7 +4756,7 @@ paths:
         '304':
           description: The client's copy is current. No body.
         '400':
-          description: The path id is the tracking number of a ticket you can see (send its UUID), or attachId is not a UUID (invalid_id).
+          description: attachId is not a UUID (invalid_id).
           content:
             application/json:
               schema:
@@ -4891,8 +4821,7 @@ paths:
         A file with no hash cannot be checked, and is refused with 409 no_verdict.
         The file need not be quarantined, but only a quarantined file is looked up
         automatically, so any other file normally answers 409 no_verdict.
-        Takes the ticket UUID. The tracking number of a ticket the caller can see
-        is refused with 400 invalid_id. An attachment that belongs to another
+        The path id is a UUID or a tracking number. An attachment that belongs to another
         ticket is 404 not_found ("attachment not found on this ticket"). An
         attachId that names no attachment at all is 404 not_found.
       tags: ['Attachments']
@@ -4920,8 +4849,7 @@ paths:
                 $ref: '#/components/schemas/Attachment'
         '400':
           description: |
-            The path id is the tracking number of a ticket you can see (send its
-            UUID), or attachId is not a UUID (invalid_id), or the provider
+            attachId is not a UUID (invalid_id), or the provider
             named is not enabled (invalid_provider).
           content:
             application/json:
@@ -8477,13 +8405,10 @@ components:
       in: path
       required: true
       description: >-
-        The ticket's UUID. Only GET /tickets/{id} also accepts the tracking number
-        (case-insensitive, for example GHD-2026-000001). On every other route, the
-        tracking number of a ticket the caller can see answers 400 (bad_request,
-        or invalid_id on the attachments, tags and canned-responses routes). Any
-        other value that is not a UUID is looked up as a tracking number, so one
-        that names no ticket, or a ticket the caller cannot see, answers 404
-        not_found.
+        The ticket's UUID or its tracking number (case-insensitive, for example
+        GHD-2026-000001), on every route under /tickets/{id}. A value that is not a
+        UUID is looked up as a tracking number, so one that names no ticket, or a
+        ticket the caller cannot see, answers 404 not_found.
       schema:
         type: string
     Limit:

@@ -221,11 +221,7 @@ func (s *Server) handleResolveFieldsForCTI(w http.ResponseWriter, r *http.Reques
 // ── Ticket: custom field values ───────────────────────────────────────────────
 
 func (s *Server) handleListTicketCustomFields(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	values, err := s.customFields.ListValuesForTicket(r.Context(), ticketID)
 	if err != nil {
 		handleError(w, err)
@@ -238,11 +234,7 @@ func (s *Server) handleListTicketCustomFields(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	// Body: map of fieldDefId (string) → value (string)
 	var body map[string]string
 	if err := DecodeJSON(r, &body); err != nil {

@@ -511,11 +511,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 // PATCH /api/v1/tickets/{id}
 func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 
 	var body struct {
 		StatusID        *uuid.UUID `json:"status_id"`
@@ -611,11 +607,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/replies
 func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 
 	var body struct {
 		Body           string `json:"body"`
@@ -690,11 +682,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/replies
 func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	replies, err := s.tickets.ListReplies(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -709,11 +697,7 @@ func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/resolve
 func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	var body struct {
 		Notes string `json:"notes"`
 	}
@@ -744,11 +728,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "users cannot directly reopen tickets")
 		return
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	targetID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
@@ -778,11 +758,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 // a ticket that is not closed, ErrFollowUpExists for a requester's second.
 func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	if !s.requireUserIdentity(w, r) {
 		return
 	}
@@ -791,7 +767,10 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	// could set on a normal create; staff and admin copy more. Which rule is the
 	// service's (the role decides which method will accept the actor); the one
 	// thing decided here is the active-classification check it cannot make.
-	var t ticket.Ticket
+	var (
+		t   ticket.Ticket
+		err error
+	)
 	if a.Role == user.RoleUser {
 		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
 			s.requesterClassificationOpen)
@@ -821,11 +800,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "only admins can close tickets")
 		return
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	// The admin who pressed the button, not SystemActor: the authorisation
 	// check above is this handler's job, and the actor is for attribution.
 	if !s.requireUserIdentity(w, r) {
@@ -846,11 +821,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/links
 func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	sourceID := ticketIDFrom(r)
 	var body struct {
 		TargetID           uuid.UUID `json:"target_id"`
 		LinkType           string    `json:"link_type"`
@@ -908,11 +879,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/tickets/{id}/links/{targetId}/{linkType}
 func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
-	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	sourceID := ticketIDFrom(r)
 	targetID, err := uuid.Parse(chi.URLParam(r, "targetId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid target ID")
@@ -962,11 +929,7 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/history
 func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	// Status history is ticket content: gate it on the same rule as the ticket.
 	{
 		t, err := s.tickets.GetByID(r.Context(), id)
@@ -1034,11 +997,7 @@ type ticketAuditEntryView struct {
 // audit.Redact — because a sensitive field name would be exactly as
 // sensitive here as there.
 func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	entries, err := s.tickets.ListAuditEntries(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -1101,11 +1060,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/links
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	links, err := s.tickets.ListLinks(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
