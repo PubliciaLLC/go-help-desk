@@ -2838,8 +2838,8 @@ paths:
       description: |
         Applies whichever of status_id, clear_assignee, assignee_user_id,
         assignee_group_id and category_id are sent, and answers 200 with the bare
-        Ticket. The body is required: send {} for no change, since an empty body
-        is refused as invalid JSON. The path id must be a UUID. A tracking number
+        Ticket. An empty body is the same as {}: no change, and the response is
+        the Ticket. Malformed JSON answers 400 bad_request. The path id must be a UUID. A tracking number
         that the caller can see answers 400 bad_request, "invalid ticket ID".
         The changes run in this order: status, then assignment, then
         classification. Each is saved on its own, with no transaction around the
@@ -2881,7 +2881,7 @@ paths:
       x-ghd-roles: [admin, staff, user]
       x-ghd-mfa: true
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:

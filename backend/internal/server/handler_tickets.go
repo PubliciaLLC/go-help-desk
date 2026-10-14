@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -530,7 +531,9 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		TypeID        *uuid.UUID `json:"type_id"`
 		ItemID        *uuid.UUID `json:"item_id"`
 	}
-	if err := DecodeJSON(r, &body); err != nil {
+	// No body at all is {}: nothing to change. Only here, not in DecodeJSON,
+	// which every other route relies on to refuse an empty body.
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
