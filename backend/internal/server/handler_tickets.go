@@ -992,6 +992,8 @@ type ticketAuditEntryView struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	Before      map[string]any `json:"before,omitempty"`
 	After       map[string]any `json:"after,omitempty"`
+	// Names: see adminAuditEntryView.Names.
+	Names map[string]auditName `json:"names,omitempty"`
 }
 
 // GET /api/v1/tickets/{id}/audit
@@ -1040,10 +1042,12 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	// GetByID rather than one per entry.
 	maskRequesters := s.masksRequestersIn(r.Context(), admin.MaskRequesterNamesTicketLog)
 	names := make(map[uuid.UUID]auditActor)
+	diffs := make([]map[string]any, 0, 2*len(entries))
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
 		if showDiff {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
+			diffs = append(diffs, v.Before, v.After)
 		}
 		if role == user.RoleUser && (e.Action == "assigned" || e.Action == "unassigned") {
 			v.ActorID = nil
@@ -1070,6 +1074,13 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 			v.ActorMasked = a.masked
 		}
 		views[i] = v
+	}
+	// See handleListAdminAudit: resolved from the diffs as sent, in one batch.
+	if showDiff {
+		resolved := s.resolveAuditNames(r.Context(), maskRequesters, diffs...)
+		for i := range views {
+			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)
+		}
 	}
 	JSON(w, http.StatusOK, views)
 }

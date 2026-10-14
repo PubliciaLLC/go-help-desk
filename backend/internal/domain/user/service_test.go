@@ -96,6 +96,16 @@ func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (user.User, err
 	return u, nil
 }
 
+func (f *fakeUserStore) GetByIDs(_ context.Context, ids []uuid.UUID) ([]user.User, error) {
+	var out []user.User
+	for _, id := range ids {
+		if u, ok := f.byID[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeUserStore) GetByEmail(_ context.Context, email string) (user.User, error) {
 	if f.errGetByEmail != nil {
 		return user.User{}, f.errGetByEmail
@@ -934,4 +944,21 @@ func TestVerifyPassword_DoesNotApplyTheMaximum(t *testing.T) {
 		"a wrong long password must not be refused with ErrPasswordTooLong")
 	require.NotErrorIs(t, err, user.ErrValidation,
 		"a wrong long password is not a validation error; it is an authentication failure")
+}
+
+// GetByIDs returns the accounts that exist and leaves out the rest, and an
+// empty request does not reach the store.
+func TestService_GetByIDs(t *testing.T) {
+	store := newFakeUserStore()
+	a := user.User{ID: uuid.New(), DisplayName: "A"}
+	store.byID[a.ID] = a
+	svc := user.NewService(store)
+
+	got, err := svc.GetByIDs(context.Background(), []uuid.UUID{a.ID, uuid.New()})
+	require.NoError(t, err)
+	require.Equal(t, []user.User{a}, got)
+
+	got, err = svc.GetByIDs(context.Background(), nil)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }

@@ -2472,6 +2472,9 @@ paths:
         always, and to staff only when the staff change-history setting is on.
         It is redacted by the same rule as the per-ticket feed. Every other
         caller gets no before or after.
+        With the diff comes names, which gives the current name of each status
+        and assignee id in it (see AuditNames); before and after still hold the
+        ids exactly as stored.
         total counts the matching entries the caller may see, up to 10,000.
         When more match, total_capped is true and total is 10000, which means
         at least that many.
@@ -2965,6 +2968,9 @@ paths:
         - before and after (the field-level diff, redacted) go only to
           administrators, and to staff when the staff change-history setting is
           on. Everyone else gets neither.
+        - names, sent with the diff, gives the name of each status and
+          assignee id in it (see AuditNames). Where requester-name masking
+          applies, a requester is the label Requester there too.
         - Where requester-name masking applies, actor_name is the label
           Requester and actor_masked is true.
         The id must be a UUID.
@@ -8934,6 +8940,32 @@ components:
           type: object
           additionalProperties: true
           description: The redacted field values after the change. Absent unless the caller may see the diff.
+        names:
+          $ref: '#/components/schemas/AuditNames'
+    AuditNames:
+      description: |
+        What the ids in an entry's before and after name now, keyed by the id
+        exactly as it appears there. Only the fields status_id (a status) and
+        assignee_user_id (a user) are resolved. Resolved when the entry is
+        viewed; the stored entry keeps the ids and is not changed.
+        An id that is missing from this object no longer resolves (a deleted
+        status or account): show the id. Present only when the caller is shown
+        the diff, and only for ids in that shown diff, so the staff
+        change-history setting, the diff allow-list and staff ticket scope
+        apply to it as they do to before and after. A user the viewer may not
+        see by name is masked in the same views, by the same
+        audit_mask_requester_names setting and the same current-role rule, as
+        actor_name: the name is Requester and masked is true.
+      type: object
+      additionalProperties:
+        type: object
+        required: [name]
+        properties:
+          name:
+            type: string
+          masked:
+            type: boolean
+            description: True when name is the masking label Requester. Absent when false.
     AdminAuditEntry:
       description: |
         One row of
@@ -8973,6 +9005,8 @@ components:
           type: object
           additionalProperties: true
           description: The redacted field values after the change. Absent unless the caller may see the diff.
+        names:
+          $ref: '#/components/schemas/AuditNames'
     AdminAuditPage:
       description: |
         One page of the admin-wide audit view.

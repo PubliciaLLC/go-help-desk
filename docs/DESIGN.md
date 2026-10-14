@@ -17,10 +17,11 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 Custom fields, CTI-linked group management, canned responses and full-text
 search were built ahead of the original v2 schedule and are shipped; this table
 reflects that, not the order they were planned in. Plugins went the other way:
-the admin UI lists and toggles a plugin record, but install/uninstall return
-`501` and no event ever reaches a plugin (`plugin.Registry.Dispatch` is built
-and never called from the notification chain). There is no working plugin
-system, so it sits at v2 rather than claiming v1. The part of the plugin pitch
+the admin plugin routes exist (there is no admin page for them) but nothing
+registers a plugin, so the list is always empty and enable/disable fails for
+every id; install/uninstall return `501` and no event ever reaches a plugin
+(`plugin.Registry.Dispatch` is built and never called from the notification
+chain). 1.x has no working plugin system; it is a v2 feature. The part of the plugin pitch
 worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
 webhook feature; see Notifications.
 
@@ -30,7 +31,7 @@ webhook feature; see Notifications.
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| Backend | **Go** | Single binary, small Docker image, strong concurrency, good plugin/WASM story |
+| Backend | **Go** | Single binary, small Docker image, strong concurrency, good WASM story for the planned v2 plugin system |
 | Frontend | **React (Vite SPA)** | Large ecosystem, good theming via CSS variables, Shadcn/ui component library |
 | Database | **PostgreSQL** | Row-level security for future multi-tenancy, JSONB for custom fields, native FTS, best managed hosting options |
 | Deployment | **Docker** (`docker-compose`) | Go app + Postgres. Upgrade path to Kubernetes for v4 |
@@ -96,7 +97,7 @@ Three roles: **Admin**, **Staff**, **User**
 
 | Role | Capabilities |
 |------|-------------|
-| **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
+| **Admin** | Full system access. Manage settings, users, groups, categories, tags. (Plugins are not manageable in 1.x; the plugin system is planned for v2.) Can always log in with local auth even when SAML is enabled (failsafe). |
 | **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
 
@@ -391,6 +392,8 @@ The field-level before/after diff is a second, independent gate on top of the fe
 `GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. Staff and admin only; a reporting user has no route here. A signed-in session needs no scope. An API key or OAuth client needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
 
 **The audit view is built not to display protected or sensitive data**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)), with one configurable exception, requester names, where `audit_mask_requester_names` leaves them shown (Actor names, below). This governs what the view displays, not what its viewer can find out: an entry's ids still lead to the records they name, under those records' own access rules. The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts (and, on a factor reset run from the command line, the operating-system user, host and `source: cli` it records), and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
+
+**Names in the diff** (#422). A diff holds ids, and an id says nothing to a reader (and a deleted status leaves one that names nothing). Each entry in both views therefore carries an optional `names` object beside `before` and `after`: it maps an id, exactly as it appears in the diff, to what it names **now**: `{"name": "In Progress"}`. The stored entry and the `before`/`after` values are unchanged, so the trail stays exact, and the response only gains a key. An id with no entry in `names` no longer resolves (a deleted status, a deleted account); the UI then shows the id, and otherwise shows the name with the id as its tooltip. Only `status_id` (a status) and `assignee_user_id` (a user) are resolved, because they are the only id fields the allow-list lets through. Category, type, item and assignee-group ids are neither written to audit entries nor allow-listed; whoever allow-lists one adds it to the resolver (`auditNameFields`, `internal/server/audit_names.go`) in the same change. The names are built from the diffs **as they are about to be sent**, after `audit.Redact`, which is what keeps every existing rule in force: a viewer who is not shown the diff (staff with the change-history setting off, a reporting user) gets no `names`; only entries on the page are looked at, so a staff member's ticket scope is untouched and no name arrives through an entry outside it; a field that is not allow-listed is not resolved. A user who would be masked as an actor is masked here: `{"name": "Requester", "masked": true}`, by the same `audit_mask_requester_names` setting for the view (`admin_log` or `ticket_log`), the same current-role rule, and the same `masked` flag, so the setting cannot be bypassed by reading an assignee out of a diff. The lookup is one batch per page: one read of the (small) statuses table and one `id = ANY(...)` query for the users, never one per entry. A lookup that fails costs the names, not the page, and is logged.
 
 **Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → General → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`, and the settings dump reports a stored value it does not recognise as `everywhere` too (see REST API → Settings dump and choice-list settings; [#366](https://github.com/PubliciaLLC/go-help-desk/issues/366)). A masked entry keeps its `actor_id`, so it stays attributable for an investigation, and carries `actor_masked: true` beside `actor_name: "Requester"`, so an account whose display name is "Requester" is not mistaken for a masked requester; the UI shows a masked actor as *Requester (name hidden)* with an eye-off icon, which a display name cannot reproduce. Whether an actor is a requester is read from their role **when the entry is viewed**, not when it was written: a staff member later changed to the user role has their earlier entries shown as "Requester", and a requester promoted to staff has theirs shown by name. **The mask is display-only.** It keeps requester names off the audit list and whatever is copied or captured from it; it does not stop identification. Anyone who can see an entry may still be able to find out who the requester is. When the masked actor is the ticket's own requester, the usual case, the ticket its `entity_id` names shows them on its page. An administrator can look up any masked actor from its `actor_id` (`GET /admin/users/{id}`). It is not an access control. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
 
@@ -2157,12 +2160,13 @@ scopes and are therefore denied; they must be re-issued.
 
 ## Plugin Infrastructure (v2)
 
-Deferred from v1. The data model and an admin CRUD shell exist
-(`internal/domain/plugin/`, `handler_admin_plugins.go`) — a plugin record can be
-listed, enabled and disabled — but none of the capabilities below are wired up:
-install and uninstall return `501 not_implemented`, no WASM runtime is linked
+Deferred from v1; 1.x has no working plugin system. The data model and an
+admin routes exist (`internal/domain/plugin/`, `handler_admin_plugins.go`;
+there is no admin page), but nothing registers a plugin, so the list is always
+empty and enable/disable fails for every id. None of the capabilities below
+are wired up: install and uninstall return `501 not_implemented`, no WASM runtime is linked
 in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
-so an enabled plugin still receives no events. Treat this section as the
+so no plugin receives events. Treat this section as the
 target design for v2, not a description of what ships today.
 
 External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
