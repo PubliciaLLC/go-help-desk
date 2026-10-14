@@ -57,6 +57,10 @@ type Service struct {
 	// off. The domain does not import the settings package; the server wires
 	// this (see SetClosedReopenPolicy).
 	closedReopenPolicy func(context.Context) string
+
+	// slaEnabled reads the SLA feature toggle. A function, read inside the
+	// priority change's transaction, like closedReopenPolicy. Nil reads as off.
+	slaEnabled func(context.Context) bool
 }
 
 // SetClosedReopenPolicy wires the source of the closed_reopen_policy setting
@@ -64,6 +68,15 @@ type Service struct {
 // it Closed is terminal for every role, which is the default setting.
 func (s *Service) SetClosedReopenPolicy(read func(context.Context) string) {
 	s.closedReopenPolicy = read
+}
+
+// SetSLAEnabled wires the source of the SLA feature toggle for the priority
+// re-match (#443b). Called once at start-up, before the service takes requests;
+// without it a priority change never touches the SLA. Like AttachPolicy, a
+// re-match creates records, so it is gated on the toggle; writing facts onto an
+// existing record (RecordFirstResponse, RecordResolved) is not.
+func (s *Service) SetSLAEnabled(read func(context.Context) bool) {
+	s.slaEnabled = read
 }
 
 // forceReopenGate is asked by every route that would move a ticket OUT of
@@ -865,6 +878,114 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		Subject:        t.Subject,
 	})
 
+	return t, nil
+}
+
+// ChangePriority sets a ticket's priority and re-matches its SLA from the
+// moment of the change (#443). Staff and admin only: anyone else gets
+// ErrForbidden, decided here so that a caller added later cannot forget it.
+// Whether the caller may see the ticket at all is the route's question.
+//
+// Everything happens in one transaction: the priority, the SLA rows and the
+// audit entries commit together or not at all. See changePriorityInTx.
+func (s *Service) ChangePriority(ctx context.Context, ticketID uuid.UUID, p Priority, actor Actor) (Ticket, error) {
+	var out Ticket
+	now := time.Now()
+
+	if err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		t, err := st.GetByIDForUpdate(ctx, ticketID)
+		if err != nil {
+			return err
+		}
+		if actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin {
+			return ErrForbidden
+		}
+		out, err = s.changePriorityInTx(ctx, st, au, t, p, PriorityChangeManual, actor, now)
+		return err
+	}); err != nil {
+		return Ticket{}, err
+	}
+	return out, nil
+}
+
+// changePriorityInTx is ChangePriority's body for a caller that already holds
+// the ticket's row lock in its own transaction and has written its own changes
+// to t (#464's reopen bump, from inside addReply). It checks no role: the
+// caller decided this change is allowed. Unexported because those are its only
+// callers.
+//
+// The same priority is a no-op: no write, no audit entry, no re-match, so a
+// double-submit is harmless and a reopen of a ticket that is already critical
+// restarts nothing.
+//
+// A ticket that is Resolved or Closed changes priority but keeps its SLA
+// untouched (planSLARematch): restarting a clock on a ticket nobody is working
+// would breach it while it sits there.
+func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Store, t Ticket,
+	p Priority, reason PriorityChangeReason, actor Actor, now time.Time) (Ticket, error) {
+	if !p.Valid() {
+		return Ticket{}, fmt.Errorf("%w: priority must be one of critical, high, medium, low", ErrValidation)
+	}
+	if p == t.Priority {
+		return t, nil
+	}
+
+	before := ticketMap(t)
+	t.Priority = p
+	t.UpdatedAt = now
+	if err := st.Update(ctx, t); err != nil {
+		return Ticket{}, fmt.Errorf("changing priority: %w", err)
+	}
+
+	cur, err := st.CurrentSLARecordForUpdate(ctx, t.ID)
+	if err != nil {
+		return Ticket{}, fmt.Errorf("reading SLA record: %w", err)
+	}
+	matched, err := st.MatchSLAPolicy(ctx, p, t.CategoryID)
+	if err != nil {
+		return Ticket{}, fmt.Errorf("matching SLA policy: %w", err)
+	}
+	open := t.StatusID != s.sys.resolvedID && t.StatusID != s.sys.closedID
+	outcome, start := planSLARematch(s.slaEnabled != nil && s.slaEnabled(ctx), open, cur, matched, t, now)
+
+	// The old record first: a ticket has one current record at most.
+	switch outcome {
+	case SLARematched, SLARestarted, SLARemoved:
+		if err := st.SupersedeSLARecord(ctx, cur.ID, now); err != nil {
+			return Ticket{}, fmt.Errorf("superseding SLA record: %w", err)
+		}
+	}
+	if start != nil {
+		if err := st.StartSLARecord(ctx, *start); err != nil {
+			return Ticket{}, fmt.Errorf("starting SLA record: %w", err)
+		}
+	}
+
+	if cur != nil {
+		before["sla_policy_id"] = cur.PolicyID
+		before["sla_record_id"] = cur.ID
+	}
+	after := ticketMap(t)
+	after["priority_change_reason"] = reason
+	after["sla_outcome"] = outcome
+	if start != nil {
+		after["sla_policy_id"] = start.PolicyID
+		after["sla_record_id"] = start.ID
+	}
+	if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "priority_changed", before, after)); err != nil {
+		return Ticket{}, fmt.Errorf("auditing priority change: %w", err)
+	}
+
+	// A restart is its own entry as well, so the audit view's action filter
+	// finds the moments a clock was started over.
+	if outcome == SLARestarted {
+		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, "sla_restarted",
+			map[string]any{"sla_record_id": cur.ID, "sla_policy_id": cur.PolicyID},
+			map[string]any{"sla_record_id": start.ID, "sla_policy_id": start.PolicyID, "previous_sla_record_id": cur.ID},
+		)); err != nil {
+			return Ticket{}, fmt.Errorf("auditing SLA restart: %w", err)
+		}
+	}
 	return t, nil
 }
 
