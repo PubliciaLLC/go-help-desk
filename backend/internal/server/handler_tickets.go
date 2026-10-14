@@ -676,6 +676,12 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// The list names the author; so does the reply it was just created as.
+	// A failed lookup leaves the name empty rather than failing a reply that
+	// is already stored.
+	if u, err := s.users.GetByID(r.Context(), a.UserID); err == nil {
+		reply.AuthorName = u.DisplayName
+	}
 	JSON(w, http.StatusCreated, reply)
 }
 

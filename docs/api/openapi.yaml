@@ -3682,8 +3682,8 @@ paths:
       operationId: addReply
       summary: Post a reply to a ticket.
       description: |
-        Adds a reply and answers 201 with the Reply. The response carries no
-        author_name; listReplies does. body is required after
+        Adds a reply and answers 201 with the Reply, including author_name
+        as listReplies sends it. body is required after
         trimming. notify_customer defaults to true, and is forced to false for an
         internal note. Internal notes are for staff and administrators only.
         When notify_customer is true and the reporter has an address, the reporter
@@ -8791,7 +8791,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         author_name:
           type: string
-          description: The author's display name, as listReplies sends it. Absent for a guest reply, and absent on the reply addReply returns.
+          description: The author's display name, as listReplies sends it. Absent for a guest reply.
         body:
           type: string
         internal:
