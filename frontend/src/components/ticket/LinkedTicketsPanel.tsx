@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { listLinks, addLink, removeLink, listTickets, getTicket, duplicateResolutionNotes, addDuplicateLinkAndResolve } from '@/api/tickets'
+import { listLinks, addLink, removeLink, listTickets, getTicket, resolveTicket, duplicateResolutionNotes, addDuplicateLinkAndResolve } from '@/api/tickets'
+import { listStatuses } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -36,6 +37,14 @@ function getLabel(link: TicketLink, viewedTicketId: string): string {
   return LABELS[link.link_type][isSource ? 'asSource' : 'asTarget']
 }
 
+// What one pass of "Resolve all children" did, for the report under the list.
+interface ResolveChildrenReport {
+  total: number
+  resolved: number
+  already: number
+  refused: { id: string; label: string; reason: string }[]
+}
+
 export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
   const qc = useQueryClient()
   const [showForm, setShowForm] = useState(false)
@@ -47,6 +56,9 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [resolveAsResolve, setResolveAsResolve] = useState(false)
   const [resolutionNotes, setResolutionNotes] = useState<string | null>(null)
+  const [showResolveChildren, setShowResolveChildren] = useState(false)
+  const [childNotes, setChildNotes] = useState('')
+  const [childReport, setChildReport] = useState<ResolveChildrenReport | null>(null)
 
   // Fetch existing links
   const { data: links = [] } = useQuery({
@@ -143,6 +155,59 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
     onError: (err) => setError(extractError(err)),
   })
 
+  // The children are the targets of the parent_child links this ticket is the
+  // SOURCE of; on the other end of the same link type it is the child.
+  const childIds = links
+    .filter(l => l.link_type === 'parent_child' && l.source_id === ticketId)
+    .map(l => l.target_id)
+
+  // One child at a time through the ordinary Resolve, so the closed-ticket
+  // rules, the per-ticket audit, notifications and SLA all apply; there is no
+  // bulk endpoint. Each child is read fresh first: a child that is already
+  // Resolved or Closed is skipped, because a second Resolve with different
+  // notes overwrites the notes it has (#225). A refusal does not stop the loop
+  // (the bulk status change on the ticket list reports the same way).
+  const resolveChildrenMutation = useMutation({
+    mutationFn: async (notes: string): Promise<ResolveChildrenReport> => {
+      const statuses = await qc.fetchQuery({ queryKey: ['statuses'], queryFn: listStatuses })
+      const done = new Set(statuses.filter(s => s.name === 'Resolved' || s.name === 'Closed').map(s => s.id))
+      const report: ResolveChildrenReport = { total: childIds.length, resolved: 0, already: 0, refused: [] }
+      for (const id of childIds) {
+        let label = id
+        try {
+          const child = await getTicket(id)
+          label = child.tracking_number
+          if (done.has(child.status_id)) {
+            report.already++
+            continue
+          }
+          await resolveTicket(id, notes)
+          report.resolved++
+        } catch (err) {
+          report.refused.push({ id, label, reason: extractError(err) })
+        }
+      }
+      return report
+    },
+    onSuccess: (report) => {
+      setChildReport(report)
+      if (report.refused.length === 0) {
+        setShowResolveChildren(false)
+        setChildNotes('')
+      }
+      qc.invalidateQueries({ queryKey: ['tickets'] })
+      for (const id of childIds) {
+        qc.invalidateQueries({ queryKey: ['ticket', id] })
+        qc.invalidateQueries({ queryKey: ['statusHistory', id] })
+        qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
+      }
+    },
+    onError: (err) => {
+      setChildReport(null)
+      setError(extractError(err))
+    },
+  })
+
   const removeMutation = useMutation({
     mutationFn: (link: TicketLink) => removeLink(link.source_id, link.target_id, link.link_type),
     onSuccess: (_, link) => {
@@ -202,14 +267,24 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
           <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
             Linked Tickets
           </CardTitle>
-          {!showForm && (
-            <button
-              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
-              onClick={() => setShowForm(true)}
-            >
-              Add link
-            </button>
-          )}
+          <div className="flex flex-wrap items-center justify-end gap-x-1">
+            {childIds.length > 0 && !showResolveChildren && (
+              <button
+                className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+                onClick={() => { setShowResolveChildren(true); setChildReport(null); setError('') }}
+              >
+                Resolve all children
+              </button>
+            )}
+            {!showForm && (
+              <button
+                className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+                onClick={() => setShowForm(true)}
+              >
+                Add link
+              </button>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -261,6 +336,65 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
         {/* Errors from removing a link surface here even when the add form is
             closed, since removal is available whenever a link is listed. */}
         {error && <p className="text-xs text-red-600">{error}</p>}
+
+        {/* Resolve all children: the notes are asked for once and every child
+            gets the same ones. */}
+        {showResolveChildren && (
+          <div className="space-y-2 pt-2 border-t">
+            <label htmlFor="child-resolution-notes" className="text-xs text-gray-500 block">
+              Resolution notes for all children
+            </label>
+            <textarea
+              id="child-resolution-notes"
+              value={childNotes}
+              onChange={(e) => setChildNotes(e.target.value)}
+              rows={3}
+              placeholder="Notes recorded on every child that is not already resolved"
+              className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => resolveChildrenMutation.mutate(childNotes.trim())}
+                disabled={!childNotes.trim() || resolveChildrenMutation.isPending}
+              >
+                {resolveChildrenMutation.isPending
+                  ? 'Resolving…'
+                  : `Resolve ${childIds.length} ${childIds.length === 1 ? 'child' : 'children'}`}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                disabled={resolveChildrenMutation.isPending}
+                onClick={() => { setShowResolveChildren(false); setChildNotes(''); setChildReport(null) }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {childReport && (
+          <div
+            role={childReport.refused.length > 0 ? 'alert' : 'status'}
+            className={`text-xs ${childReport.refused.length > 0 ? 'text-red-600' : 'text-green-700'}`}
+          >
+            <p>
+              {`${childReport.resolved} of ${childReport.total} resolved`}
+              {childReport.already > 0 && `, ${childReport.already} already resolved`}
+              {childReport.refused.length > 0 && `, ${childReport.refused.length} refused:`}
+            </p>
+            {childReport.refused.length > 0 && (
+              <ul className="list-disc pl-4">
+                {childReport.refused.map(r => (
+                  <li key={r.id}>{r.label}: {r.reason}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* Add form */}
         {showForm && (
