@@ -475,7 +475,7 @@ function GeneralPanel({
       <Section title="Submissions">
         <SettingRow
           label="Guest submission"
-          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account."
+          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account. Switching this off also suspends all active guest links until the setting is enabled again."
         >
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
