@@ -97,13 +97,27 @@ describe('the routing page', () => {
     expect(screen.queryByRole('checkbox', { name: /Sue Suspended/ })).toBeNull()
   })
 
-  it('shows a suspended person in the list as checked, disabled and labelled', async () => {
-    mockApi({ auto_assign_user_ids: ['s-3'] })
+  it('shows a saved person who cannot take work as ticked and labelled, and lets the admin untick them', async () => {
+    // /staff cannot say whether they are suspended or were demoted, so the box
+    // must stay usable: a demoted person who could not be removed would make
+    // every save fail.
+    const patch = mockApi({ auto_assign_user_ids: ['s-1', 's-3'] })
+    const user = userEvent.setup()
     renderWithQuery(<RoutingPage />)
 
-    const box = (await screen.findByRole('checkbox', { name: 'Sue Suspended (suspended)' })) as HTMLInputElement
+    const box = (await screen.findByRole('checkbox', { name: "Sue Suspended (can't take work right now)" })) as HTMLInputElement
     expect(box.checked).toBe(true)
-    expect(box.disabled).toBe(true)
+    expect(box.disabled).toBe(false)
+
+    await user.click(box)
+    expect(box.checked).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('/admin/settings', {
+        auto_assign_group_id: '',
+        auto_assign_user_ids: ['s-1'],
+      }),
+    )
   })
 
   it('saves the group and the people, in the order they were ticked', async () => {

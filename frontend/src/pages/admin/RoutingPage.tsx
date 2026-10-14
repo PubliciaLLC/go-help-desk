@@ -51,9 +51,10 @@ export function RoutingPage() {
 
   // A suspended person stays in the rotation on the server (they are skipped
   // while suspended and take their turn again when re-enabled), so one who is
-  // already saved is shown, checked and locked, and sent back unchanged.
-  // /staff cannot tell "suspended" from "moved to a reporting role"; the
-  // server's refusal names the person if it is the latter.
+  // already saved is shown, ticked and labelled, and sent back unchanged
+  // unless the admin unticks them. /staff cannot tell "suspended" from "moved
+  // to a reporting role" (the server refuses the latter, naming the person),
+  // so the box must stay usable or that person could never be removed.
   const people = everyone.filter((p) => p.assignable || storedUsers.includes(p.id))
 
   // A saved id that names nobody (deleted) is refused by the server, so it is
@@ -127,10 +128,9 @@ export function RoutingPage() {
                       <input
                         type="checkbox"
                         checked={users.includes(p.id)}
-                        disabled={!p.assignable}
                         onChange={() => toggle(p.id)}
                       />
-                      {p.display_name}{!p.assignable && ' (suspended)'}
+                      {p.display_name}{!p.assignable && " (can't take work right now)"}
                     </label>
                   </li>
                 ))}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // failingGroupLookup makes GetByID fail with something other than "no such
@@ -16,6 +17,16 @@ type failingGroupLookup struct{ group.Store }
 func (failingGroupLookup) GetByID(context.Context, uuid.UUID) (group.Group, error) {
 	return group.Group{}, errors.New("injected group lookup failure")
 }
+
+// failingUserLookup is the same for user lookups.
+type failingUserLookup struct{ user.Store }
+
+func (failingUserLookup) GetByID(context.Context, uuid.UUID) (user.User, error) {
+	return user.User{}, errors.New("injected user lookup failure")
+}
+
+// FailUserLookupForTest makes user lookups fail as a database outage would.
+func (s *Server) FailUserLookupForTest() { s.users = user.NewService(failingUserLookup{}) }
 
 // FailGroupLookupForTest makes group lookups fail as a database outage would,
 // injected for the reason given on FailSAMLSpendForTest.

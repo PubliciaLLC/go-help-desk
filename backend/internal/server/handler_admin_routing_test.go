@@ -137,3 +137,12 @@ func TestAutoAssign_ALookupFaultIsA500NotA400(t *testing.T) {
 	status, body := patchSettings(t, h, map[string]any{"auto_assign_group_id": uuid.NewString()})
 	require.Equal(t, http.StatusInternalServerError, status, body)
 }
+
+func TestAutoAssign_AUserLookupFaultIsA500NotA400(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	h.srv.FailUserLookupForTest()
+
+	status, body := patchSettings(t, h, map[string]any{"auto_assign_user_ids": []string{uuid.NewString()}})
+	require.Equal(t, http.StatusInternalServerError, status, body)
+}
