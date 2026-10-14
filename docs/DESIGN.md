@@ -1111,11 +1111,32 @@ Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipp
 | Field | Guest | User (logged in) | Staff / Admin |
 |-------|-------|-----------------|---------------|
 | Name, email, phone | Required / optional | — (uses account) | — |
-| Category | Active only | Active only | All |
-| Type | — (not shown) | Active only | All |
-| Item | — | — (not shown) | All |
+| Category | Active only | Active only | Active selectable; archived shown greyed |
+| Type | — (not shown) | Active only | Active selectable; archived shown greyed |
+| Item | — | — (not shown) | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
+
+**Nobody newly picks an archived category, type or item (#421).** Staff and
+administrators see archived rows (in the picker and in the catalogue API) so they
+can read the classification of tickets already filed under them, but cannot
+choose one: creating a ticket under an archived node, or reclassifying a ticket
+into one, answers `400` naming the field (`category_id`, `type_id` or `item_id`
+`is not an active ...`), for every role and every credential (session, API key).
+This replaces the earlier staff exception. The rule is enforced once, in the
+ticket service (`refuseArchivedPick`, called by `Create` and `UpdateCTI`), so the
+REST API, the MCP `create_ticket` tool and the guest form all obey it. Items are
+included; they were checked for nobody before.
+
+Only a **new pick** is refused. A ticket already in an archived node keeps it: a
+PATCH that leaves a level unchanged (including one that repeats the existing
+classification) is not checked at that level, so an unrelated edit still works,
+and a staff follow-up of a closed ticket copies its classification as before. A
+reclassify is checked level by level against the ticket's current classification,
+so keeping an archived type while choosing a new active item under it is allowed.
+A requester's follow-up is unchanged and still needs an active category and type
+(#349). OAuth clients cannot create or reclassify tickets yet (they carry no user
+identity; see #434), so the rule is not exercised for them until they can.
 
 Attachment upload is available to every authenticated non-guest user on the
 API, and the reply composer offers the same control to every role that can

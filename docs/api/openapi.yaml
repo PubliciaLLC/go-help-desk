@@ -2705,6 +2705,11 @@ paths:
         - A reporting user has item_id and priority ignored (priority becomes
           medium), must file into an active category, and must use an active
           type when type_id is sent.
+        - Nobody, staff and administrators included, may file into an archived
+          category, type or item (400 bad_request, for example "item_id is not
+          an active item"). Staff could before; that exception is gone. A
+          reporting user's item_id is dropped before this check, so the item
+          refusal is only ever seen by staff and administrators.
         subject is required after trimming. description is optional. subject is
         limited to 500 bytes and description to 50,000 bytes. type_id must belong
         to category_id, and for staff an item_id must belong to type_id.
@@ -2762,9 +2767,11 @@ paths:
         '400':
           description: |
             `bad_request`, with a message naming the field. Covers invalid JSON,
-            subject is required, category_id is required, a category or type
-            that is not active for a reporting user (category_id is not an active
-            category; type_id is not an active type), type_id does not belong to
+            subject is required, category_id is required, a category, type or
+            item that is archived, for staff, administrators and reporting users
+            alike (category_id is not an active category; type_id is not an active
+            type; item_id is not an active item, which a reporting user never
+            sees because their item_id is dropped first), type_id does not belong to
             category_id, and the domain's own checks (for example priority must
             be one of critical, high, medium, low, or subject is too long).
           content:
@@ -2909,6 +2916,14 @@ paths:
         category_id replaces the whole classification: type_id and item_id are
         written as sent, so an absent one clears that level. type_id and item_id
         have no effect unless category_id is sent too.
+        Reclassifying never moves a ticket INTO an archived category, type or item:
+        a level that is archived and different from the ticket's current one answers
+        400 bad_request ("type_id is not an active type"), for staff and
+        administrators too. A level that is unchanged is not checked, so a ticket
+        already in an archived node keeps it through any edit that repeats or leaves
+        alone that level. The classification is validated before anything else in
+        the request is applied, so a refused classification (400) leaves the status
+        and the assignee unchanged too.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -2964,8 +2979,9 @@ paths:
             tracking number of a ticket you can see; send its UUID); an assignee that is not a user on this
             help desk, deleted, disabled or a reporting user; or a classification
             the domain refuses (category_id is not a category on this help desk,
-            or type_id and item_id do not belong to the category and to each
-            other).
+            type_id and item_id do not belong to the category and to each
+            other, or a newly chosen category_id, type_id or item_id is archived:
+            "... is not an active ...").
           content:
             application/json:
               schema:

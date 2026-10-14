@@ -529,9 +529,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 //
 // DESIGN.md's "Ticket Submission by Role" table: a guest and a reporting user
 // get active categories and types only; staff and administrators get All.
-// Staff need the archived ones because filing or reclassifying an old ticket
-// under the classification it actually belongs to is ordinary work, and that
-// classification may well have been retired since.
+// Staff need the archived ones to read the classification of tickets already
+// filed under it, and to filter and report on it; the UI shows them greyed out.
+// They are NOT for picking: nobody, staff and administrators included, may newly
+// file or reclassify into an archived node (#421; the ticket service enforces it).
 //
 // The form used to ask a different endpoint for staff — /admin/categories —
 // which is wrapped in RequireRole(admin). Staff got 403, the query failed,
