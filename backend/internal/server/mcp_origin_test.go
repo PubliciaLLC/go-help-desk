@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -126,6 +127,62 @@ func TestOriginPolicy_Allows(t *testing.T) {
 			}
 			if got := newOriginPolicy(tc.baseURL).allows(h); got != tc.want {
 				t.Errorf("BASE_URL %q, Origin %q: allows = %v, want %v", tc.baseURL, tc.origin, got, tc.want)
+			}
+		})
+	}
+}
+
+// The only thing the check compares an Origin with is BASE_URL. Not the Host
+// header, and not X-Forwarded-*: a DNS-rebound page reaches the server under
+// the attacker's name, so its Host and its Origin agree with each other, and
+// "Origin matches Host" is the very check rebinding defeats. The same rule is
+// what makes a TLS-terminating proxy work: the browser's https Origin meets an
+// app that sees plain http on an internal address, and still matches.
+func TestRequireMCPOrigin_ComparesWithBaseURLNotTheRequest(t *testing.T) {
+	const baseURL = "https://helpdesk.example.com"
+
+	cases := []struct {
+		name   string
+		host   string
+		origin string
+		fwd    map[string]string
+		want   int
+	}{
+		{
+			name:   "rebinding: Origin agrees with Host, not with BASE_URL",
+			host:   "evil.example:8080",
+			origin: "http://evil.example:8080",
+			want:   http.StatusForbidden,
+		},
+		{
+			name:   "rebinding with forwarded headers that agree too",
+			host:   "evil.example",
+			origin: "https://evil.example",
+			fwd:    map[string]string{"X-Forwarded-Host": "evil.example", "X-Forwarded-Proto": "https", "Forwarded": "host=evil.example;proto=https"},
+			want:   http.StatusForbidden,
+		},
+		{
+			name:   "behind a TLS-terminating proxy: plain http on an internal address",
+			host:   "10.0.0.5:8080",
+			origin: "https://helpdesk.example.com",
+			fwd:    map[string]string{"X-Forwarded-Proto": "http", "X-Forwarded-Host": "10.0.0.5:8080"},
+			want:   http.StatusTeapot,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := requireMCPOrigin(baseURL, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTeapot) // reached the next handler
+			}))
+			req := httptest.NewRequest(http.MethodPost, "http://"+tc.host+"/mcp", nil)
+			req.Header.Set("Origin", tc.origin)
+			for k, v := range tc.fwd {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("Host %q, Origin %q: status %d, want %d", tc.host, tc.origin, rec.Code, tc.want)
 			}
 		})
 	}
