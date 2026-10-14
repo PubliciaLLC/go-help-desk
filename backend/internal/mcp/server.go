@@ -327,7 +327,7 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"add_reply",
-		mcpgo.WithDescription("Add a reply to a ticket"),
+		mcpgo.WithDescription("Add a reply to a ticket. A public reply emails the requester; an internal note does not."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
@@ -555,13 +555,14 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	isInternal, _ := args["internal"].(bool)
 
-	const (
-		reporterEmail    = "" // no address looked up here, so no mail is sent
-		reopenWindowDays = 7
-	)
+	const reopenWindowDays = 7
 	// An internal note is a note to colleagues, so it never notifies the
-	// reporter; a public reply does.
+	// reporter; a public reply does, to the same address the REST reply uses.
 	notifyRequester := !isInternal
+	var reporterEmail string
+	if notifyRequester {
+		reporterEmail = s.tickets.ReplyRecipient(ctx, t)
+	}
 
 	// reopenTargetStatusID is only consulted when a RoleUser replies to a
 	// Resolved ticket, and add_reply is staff-and-admin only — so the

@@ -335,6 +335,15 @@ func New(
 	// because the server already holds both halves and every ticket route — REST
 	// and MCP, which shares this service — reaches the service through it.
 	tickets.SetClosedReopenPolicy(adminSvc.ClosedReopenPolicy)
+	// Same reasoning: REST and MCP both ask the ticket service who a reply is
+	// mailed to (#442), and it needs the user lookup the server already holds.
+	tickets.SetUserEmailLookup(func(ctx context.Context, id uuid.UUID) (string, error) {
+		u, err := users.GetByID(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		return u.Email, nil
+	})
 	for _, opt := range opts {
 		opt(s)
 	}

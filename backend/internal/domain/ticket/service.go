@@ -57,6 +57,38 @@ type Service struct {
 	// off. The domain does not import the settings package; the server wires
 	// this (see SetClosedReopenPolicy).
 	closedReopenPolicy func(context.Context) string
+
+	// userEmail finds an account holder's address. A function because the
+	// domain does not import the user package's store; the server wires it.
+	// Nil means no account address can be found.
+	userEmail func(context.Context, uuid.UUID) (string, error)
+}
+
+// SetUserEmailLookup wires the lookup ReplyRecipient uses for tickets filed by
+// an account. Called once at start-up, before the service takes requests.
+func (s *Service) SetUserEmailLookup(find func(context.Context, uuid.UUID) (string, error)) {
+	s.userEmail = find
+}
+
+// ReplyRecipient is the address a public reply on t is mailed to: the guest's
+// address, else the reporting account's. Empty means the requester cannot be
+// emailed (no address on record, or the account is gone or unreadable), and the
+// caller then sends the reply without mail rather than rejecting it.
+//
+// One rule for every door that accepts a reply. The REST handler had it inline
+// and MCP passed "", so a reply an AI agent wrote never reached the customer
+// (#442). The person replying is not excluded: REST never did, and changing
+// who gets mail from it is not part of making MCP match it.
+func (s *Service) ReplyRecipient(ctx context.Context, t Ticket) string {
+	if t.GuestEmail != nil {
+		return *t.GuestEmail
+	}
+	if t.ReporterUserID != nil && s.userEmail != nil {
+		if email, err := s.userEmail(ctx, *t.ReporterUserID); err == nil {
+			return email
+		}
+	}
+	return ""
 }
 
 // SetClosedReopenPolicy wires the source of the closed_reopen_policy setting

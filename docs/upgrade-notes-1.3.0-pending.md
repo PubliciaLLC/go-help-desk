@@ -58,3 +58,12 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 - the check repeats on each upload, so fixing the permissions needs no restart.
 
 Before this, an unwritable directory showed up as a failed upload partway through.
+
+## MCP `add_reply`: Public Replies Now Email the Requester
+
+**Behaviour change.** Until now a public reply posted through the MCP `add_reply` tool was saved but never emailed to the requester, although DESIGN.md says it is and the REST reply does it. From 1.3.0 it is: the guest's address (with a guest link) or the reporting account's address, the same as a REST reply.
+
+- Anything you have connected over MCP, including AI agents, can now send mail to your customers. Review which credentials have `tickets:write` before upgrading.
+- Internal notes (`internal: true`) still send nothing.
+- MCP has no `notify_customer` switch; a public reply always notifies. Use an internal note for anything that should not reach the requester.
+- Nothing changes for REST replies.
