@@ -126,3 +126,29 @@ func TestRedact_AnAllowListedKeyWithANestedValueIsLeftOut(t *testing.T) {
 	_, shown := got["priority"]
 	require.False(t, shown, "a nested value under an allowed name was shown")
 }
+
+// The priority change (#443b) writes five keys the view may show: why the
+// priority changed, what happened to the SLA, and the ids of the policy and
+// record before and after. Each is an id or a fixed enum; none can carry
+// requester text. The subject written beside them is still dropped.
+func TestRedact_ShowsThePriorityChangeKeys(t *testing.T) {
+	shown := map[string]any{
+		"priority_change_reason": "reopened",
+		"sla_outcome":            "restarted",
+		"sla_policy_id":          "11111111-1111-1111-1111-111111111111",
+		"sla_record_id":          "22222222-2222-2222-2222-222222222222",
+		"previous_sla_record_id": "33333333-3333-3333-3333-333333333333",
+	}
+	in := map[string]any{"subject": "Printer on fire", "priority": "high"}
+	for k, v := range shown {
+		in[k] = v
+	}
+
+	_, got := audit.Redact(nil, in)
+
+	for k, v := range shown {
+		require.Equal(t, v, got[k], "%s must be shown", k)
+	}
+	require.Equal(t, "high", got["priority"])
+	require.NotContains(t, got, "subject", "free text is still left out")
+}
