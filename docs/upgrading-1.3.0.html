@@ -163,9 +163,9 @@
     <tr><td>A half-signed-in session expires after 5 minutes</td><td>Users who take longer at the second-factor step, and API clients that sign in in two requests</td></tr>
     <tr><td>Passwords are hashed at bcrypt cost 12</td><td>Everyone who signs in; servers that take many sign-ins at once</td></tr>
     <tr><td><code>JWT_SECRET</code> is optional</td><td>Operators; OAuth clients, once, if the signing key changes</td></tr>
-    <tr><td>Compose passes <code>AUTH_RATE_LIMIT_PER_MINUTE</code> and <code>AUTH_THROTTLE_DELAY</code>, and <code>AUTH_THROTTLE_DELAY=0</code> is refused</td><td>Installs that set either in <code>.env</code> or set the delay to 0</td></tr>
+    <tr><td>Compose passes the sign-in limits; a delay of 0 is refused</td><td>Installs that set <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>AUTH_THROTTLE_DELAY</code> in <code>.env</code>, or set the delay to 0</td></tr>
     <tr><td><code>ATTACHMENT_DIR</code> is checked at startup</td><td>Installs whose attachment directory cannot be written</td></tr>
-    <tr><td>Client mistakes answer 4xx, and DELETE of an unknown id answers 404</td><td>API clients and scripts that call admin routes</td></tr>
+    <tr><td>Client mistakes get 4xx; DELETE of an unknown id is 404</td><td>API clients and scripts that call admin routes</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
