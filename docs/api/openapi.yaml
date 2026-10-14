@@ -28,7 +28,9 @@ info:
       that the enclosing group of routes admits. Under /api/v1/admin,
       /api/v1/tickets, /api/v1/me and /api/v1/groups the group's own checks
       run first, so a caller it does not admit gets that group's 401 or 403
-      instead.
+      instead. A 405 names the methods the path does offer in its Allow header,
+      one line per method (a client must read every Allow line, not just the
+      first: DELETE /api/v1/tickets answers two lines, GET and POST).
     - Paths are documented without a trailing slash. Routes mounted at a
       sub-router root (for example /api/v1/tickets) also answer with one.
 

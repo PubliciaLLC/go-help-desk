@@ -55,7 +55,9 @@ func pageParams(r *http.Request) (limit, offset int) {
 		// and Postgres answered "OFFSET must not be negative" as a 500, and
 		// 4294967296 wrapped to 0 and quietly returned page one.
 		//
-		// A negative offset is refused for the same reason it used to 500.
+		// A zero, negative or unparseable offset is not refused: it is
+		// ignored and the first page comes back. A bad limit likewise falls
+		// back to the default.
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			offset = min(n, math.MaxInt32)
 		}
