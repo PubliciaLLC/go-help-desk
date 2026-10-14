@@ -374,9 +374,23 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 // step, so the missing work is 2^d - 1 more comparisons of the same hash,
 // where d is the cost difference. Comparing the stored hash again needs no
 // dummy hash per stored cost, and is exact by construction.
+//
+// A hash bcrypt cannot read (an SSO-only account's empty hash, or a malformed
+// one) is refused before any hashing. Without a comparison here, a wrong
+// password for an SSO-only address answered in microseconds while an unknown
+// address took a full one, which said which addresses sign in only through
+// SSO (#476). Nothing was spent, so the whole comparison is owed.
 func (s *Service) burnCostDifference(stored, plain string) {
 	c, err := bcrypt.Cost([]byte(stored))
-	if err != nil || c >= s.hashCost {
+	if err != nil {
+		// The result is discarded and must stay discarded: the dummy
+		// password is a literal in a public repository, so honouring this
+		// comparison would sign anyone in as an account that has no password.
+		// This path only spends time; it never succeeds.
+		s.compareAgainstDummyHash(plain)
+		return
+	}
+	if c >= s.hashCost {
 		return
 	}
 	for i := 1<<(s.hashCost-c) - 1; i > 0; i-- {
