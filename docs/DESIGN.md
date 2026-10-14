@@ -8,7 +8,7 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
+| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
 | **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
 | **v3** | Knowledge base, custom admin-defined roles |
@@ -2327,7 +2327,7 @@ on the existing webhook feature instead of as plugins.
   text (never a note's text, and never an address), including for
   `ticket.note_added`.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
-  events, enabled — also when creating — edit, delete). A secret is write-only:
+  events, ticket filter, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
   leaving the field empty on edit keeps the stored one. The list shows each
   hook's most recent delivery: when it started, the HTTP status, and on failure
@@ -2355,11 +2355,58 @@ on the existing webhook feature instead of as plugins.
   gone the message is its headline only. So a replayed message can differ from
   the original, and a status-change message names the status the ticket has
   now. Redeliver is refused with
-  `409 webhook_disabled` for a disabled hook and
-  `409 webhook_not_subscribed` when the hook no longer lists that event.
+  `409 webhook_disabled` for a disabled hook,
+  `409 webhook_not_subscribed` when the hook no longer lists that event, and
+  `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
+  does not admit the ticket (see the filter, below).
   Changing a hook's URL clears its history, and deleting the hook deletes it.
   (`GET /admin/webhooks/{id}/deliveries`,
   `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
+- **Webhook ticket filter** ([#413](https://github.com/PubliciaLLC/go-help-desk/issues/413)).
+  A hook can carry one optional filter: sets of categories, priorities and
+  assignee groups. A ticket matches a set when its value is any entry, and
+  every non-empty set must match. `invert` sends for the tickets that do not
+  match, which is how one hook takes "critical Network tickets" and another
+  "everything else". No filter (the default, stored as `{}`) means every
+  ticket, as before. A filter changes when a hook fires, never what it sends:
+  the raw body is unchanged, and the classification travels on the event as
+  fields excluded from JSON, the same way `Subject` and `StatusName` do. The
+  filter is tested against the ticket's classification **as it was when the
+  event was raised**, not when the outbox delivers, so a ticket reclassified
+  in between is judged by its old values. Consequences worth knowing:
+  `ticket.created` is raised before auto-assignment, so a group condition never
+  matches it; to hear about tickets landing in a group, subscribe to
+  `ticket.assigned`. Category covers the category's types and items. There are
+  no type or item conditions yet. A filter naming a deleted group or category
+  matches no ticket (inverted: every ticket). If a classification is not known
+  (an event or a queued row made before this existed), the hook is sent to and
+  a warning is logged: an extra message beats a missed one. A filtered-out
+  event is not a delivery: it gets no per-hook outbox row, so no delivery id,
+  no retry, no history entry and no result on the hook.
+
+  **The hook's filter is read as it is now, at every step, not once.** It is
+  tested when the event is fanned out to the hooks (above), again at **every
+  attempt** of a queued delivery, retries included, and again at **Redeliver**.
+  An administrator who tightens a filter therefore stops the deliveries
+  already queued that it no longer admits: at their next attempt such a row
+  is dropped and settled, with no send, no history entry and no failure, the
+  same as a hook that was disabled, unsubscribed from the event or given a new
+  URL. Widening a filter lets them go out. What is tested on a retry is the
+  classification the row took when the event was raised: each per-hook row
+  keeps it as internal data (ids and a priority, no text), which no body is
+  built from. The raw body is still ids only, the chat and ITSM messages never
+  show it, and neither the history copy nor the scrubbed row kept for 30 days
+  after a final failure holds it. A row with no classification (queued before
+  #413) is sent whatever the filter says, and a warning is logged.
+  **Redeliver** has no stored classification to test (the kept copy has none,
+  by design), so it reads it from the ticket as it is now, the way a chat
+  message's content is rebuilt. If the filter does not admit that ticket it is
+  refused with `409 webhook_filter_excludes` and nothing is queued; if the
+  ticket cannot be read (gone, or no source) it is sent and a warning is
+  logged. A raw hook with no filter reads no ticket. The replay's row carries
+  the ticket's classification, so it is tested again at its own send. Refusal
+  codes are in the API reference. (An earlier version of this section had the
+  filter evaluated once, at the fan-out; that rule was reversed on #290.)
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per

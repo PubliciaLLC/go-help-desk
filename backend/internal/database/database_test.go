@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -1968,6 +1970,137 @@ func TestMigration_WebhookPayloadFormatDefaultsToRawAndChecksValue(t *testing.T)
 		uuid.New(), "https://example.com/hook2", "xml")
 	require.Error(t, err,
 		"the CHECK constraint must refuse a value outside raw|slack|teams|discord|jira")
+}
+
+// #413: a hook's ticket filter. '{}' is "no filter", so a hook inserted
+// without one, as every hook before #413 was, keeps firing for every ticket.
+// The CHECK refuses anything that is not an object.
+func TestMigration_WebhookTicketFilterDefaultsToEmptyAndMustBeAnObject(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+
+	ctx := context.Background()
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+
+	id := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO webhook_configs (id, url) VALUES ($1, $2)`,
+		id, "https://example.com/hook")
+	require.NoError(t, err)
+
+	var filter string
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT ticket_filter::text FROM webhook_configs WHERE id = $1`, id).Scan(&filter))
+	require.JSONEq(t, `{}`, filter,
+		"a row inserted without ticket_filter must read as no filter, not NULL or an array")
+
+	// Each refusal runs in a savepoint: after one failed statement Postgres
+	// aborts the whole transaction, so the second insert would fail for that
+	// reason alone and the test would prove nothing about the second value.
+	for _, bad := range []string{`'[]'::jsonb`, `'"critical"'::jsonb`} {
+		_, err = tx.ExecContext(ctx, `SAVEPOINT bad_filter`)
+		require.NoError(t, err)
+		_, err = tx.ExecContext(ctx,
+			`INSERT INTO webhook_configs (id, url, ticket_filter) VALUES ($1, $2, `+bad+`)`,
+			uuid.New(), "https://example.com/bad")
+		require.ErrorContains(t, err, "violates check constraint",
+			"the CHECK must refuse %s", bad)
+		_, err = tx.ExecContext(ctx, `ROLLBACK TO SAVEPOINT bad_filter`)
+		require.NoError(t, err)
+	}
+}
+
+// fullFilter is a filter with every kind of condition set and invert on, so a
+// round trip that drops any part of it shows.
+func fullFilter() notification.WebhookFilter {
+	return notification.WebhookFilter{
+		CategoryIDs: []uuid.UUID{uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000001"), uuid.MustParse("aaaaaaaa-0000-0000-0000-000000000002")},
+		Priorities:  []string{"critical"},
+		GroupIDs:    []uuid.UUID{uuid.MustParse("bbbbbbbb-0000-0000-0000-000000000001")},
+		Invert:      true,
+	}
+}
+
+// Every read path returns the filter a create stored, and an update that sends
+// the empty filter clears it.
+func TestAuthStore_WebhookFilter_RoundTrips(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+		Filter:    fullFilter(),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.Equal(t, wh.Filter, got.Filter)
+
+	list, err := as.ListWebhooks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, wh.Filter, findWebhook(t, list, wh.ID).Filter)
+
+	enabled, err := as.ListEnabledWebhooks(ctx)
+	require.NoError(t, err)
+	require.Equal(t, wh.Filter, findWebhook(t, enabled, wh.ID).Filter)
+
+	wh.Filter = notification.WebhookFilter{}
+	require.NoError(t, as.UpdateWebhook(ctx, wh))
+	got, err = as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.True(t, got.Filter.IsEmpty(), "an update with the empty filter must clear the stored one")
+}
+
+// A hook created with no filter reads back with none, and its JSON carries the
+// empty filter with arrays, as the API promises.
+func TestAuthStore_WebhookWithoutAFilterReadsBackEmpty(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ctx := context.Background()
+	as := authstore.New(q)
+
+	wh := authstore.WebhookConfig{
+		ID:        uuid.New(),
+		URL:       "https://example.com/hook",
+		Events:    []string{"ticket.created"},
+		Enabled:   true,
+		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
+	}
+	require.NoError(t, as.CreateWebhook(ctx, wh))
+
+	got, err := as.GetWebhook(ctx, wh.ID)
+	require.NoError(t, err)
+	require.True(t, got.Filter.IsEmpty())
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.Contains(t, string(raw), `"filter":{"category_ids":[],"priorities":[],"group_ids":[],"invert":false}`)
+}
+
+// findWebhook returns the hook with id from list, failing the test if absent.
+func findWebhook(t *testing.T, list []authstore.WebhookConfig, id uuid.UUID) authstore.WebhookConfig {
+	t.Helper()
+	for _, w := range list {
+		if w.ID == id {
+			return w
+		}
+	}
+	require.FailNow(t, "webhook not in list", "id %s", id)
+	return authstore.WebhookConfig{}
 }
 
 // ── Audit store ──────────────────────────────────────────────────────────────

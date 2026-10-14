@@ -602,6 +602,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		Recipient:      emailRecipient,
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	// Announced like any other link (AddLink), for whoever follows
 	// ticket.linked: the original is the source, the follow-up its child.
@@ -614,6 +615,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			OccurredAt:     now,
 			TrackingNumber: string(followUpOf.TrackingNumber),
 			Subject:        followUpOf.Subject,
+			Attrs:          attrsOf(*followUpOf),
 		})
 	}
 
@@ -831,6 +833,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
 		StatusName:     newStatus.Name,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -911,6 +914,7 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1188,6 +1192,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			OccurredAt:     time.Now(),
 			TrackingNumber: string(t.TrackingNumber),
 			Subject:        t.Subject,
+			Attrs:          attrsOf(t),
 		})
 	}
 
@@ -1256,6 +1261,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			return p
 		}(),
 		OccurredAt: time.Now(),
+		Attrs:      attrsOf(t),
 	})
 
 	return reply, nil
@@ -1397,6 +1403,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1533,6 +1540,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 			OccurredAt:     now,
 			TrackingNumber: string(t.TrackingNumber),
 			Subject:        t.Subject,
+			Attrs:          attrsOf(t),
 		})
 	}
 
@@ -1560,6 +1568,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1704,6 +1713,7 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		OccurredAt:     now,
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	return closed, nil
 }
@@ -1798,6 +1808,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	return t, nil
 }
@@ -1852,6 +1863,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	}
 
 	var subject, tracking string
+	var attrs *notification.TicketAttrs
 	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
 		// Lock both ticket rows FOR UPDATE up front, in the same fixed order
 		// (lexicographically smaller id first) ResolveAsDuplicate uses, before
@@ -1885,6 +1897,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		}
 		subject = source.Subject
 		tracking = string(source.TrackingNumber)
+		attrs = attrsOf(source)
 
 		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 		if err := st.CreateLink(ctx, link); err != nil {
@@ -1903,6 +1916,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		OccurredAt:     time.Now(),
 		TrackingNumber: tracking,
 		Subject:        subject,
+		Attrs:          attrs,
 	})
 	return nil
 }
@@ -2213,6 +2227,16 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 		}
 	}
 	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
+}
+
+// attrsOf is the classification a webhook filter tests, for the ticket an
+// event describes (#413). Read at the moment the event is raised.
+func attrsOf(t Ticket) *notification.TicketAttrs {
+	return &notification.TicketAttrs{
+		CategoryID:      t.CategoryID,
+		Priority:        string(t.Priority),
+		AssigneeGroupID: t.AssigneeGroupID,
+	}
 }
 
 // auditEntry builds an audit row. Callers write it through the transaction's

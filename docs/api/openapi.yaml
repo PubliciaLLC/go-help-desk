@@ -6709,7 +6709,7 @@ paths:
         WebhookEvent schema, and "*" subscribes to every ticket event. The checks run
         in this order: the body, then events, then the url, which must use http or
         https, name a host, and resolve to an address that is not internal, then
-        payload_format. A failed delivery is retried: connection errors, DNS, TLS,
+        payload_format, then filter. A failed delivery is retried: connection errors, DNS, TLS,
         timeouts, 5xx and 429 are tried again, 30 seconds doubling to an hour, 8 attempts
         in all (a Retry-After from the receiver delays the next one, up to an hour), so a
         receiver can see the same event more than once. A refused internal address and any
@@ -6755,6 +6755,11 @@ paths:
                 enabled:
                   type: boolean
                   description: Defaults to true. A hook can be saved disabled before its receiver is ready.
+                filter:
+                  description: Optional. Absent, null or {} means every ticket.
+                  anyOf:
+                    - $ref: '#/components/schemas/WebhookFilter'
+                    - type: 'null'
       responses:
         '201':
           description: The created subscription. last_delivery is null, and the secret is not returned.
@@ -6770,7 +6775,11 @@ paths:
             list of valid names in the message. invalid_url when the scheme is not http or
             https, the host is missing, or the host does not resolve or resolves to an
             internal address. invalid_payload_format when payload_format is not one of the
-            five.
+            five. invalid_filter when filter is not an object of those four keys or an id is not
+            a UUID. invalid_filter_priority for a priority that is not critical, high, medium or
+            low. unknown_filter_category or unknown_filter_group for an id that names no category
+            (inactive ones are accepted) or no group. empty_inverted_filter when invert is true
+            with no condition, which would match no ticket.
           content:
             application/json:
               schema:
@@ -6794,7 +6803,7 @@ paths:
       description: >-
         Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their stored value. url,
-        events and payload_format are validated only when sent, so a request that sets
+        events, payload_format and filter are validated only when sent, so a request that sets
         only enabled is never refused for a field it does not touch. A changed url clears
         last_delivery in the database, because the old result described a different
         target. events, when sent, must be non-empty and valid. secret: absent or null keeps
@@ -6834,6 +6843,13 @@ paths:
                   description: Omit to keep the current state.
                 payload_format:
                   $ref: '#/components/schemas/WebhookPayloadFormat'
+                filter:
+                  description: >-
+                    Replaces the whole filter. null or {} removes it. Omit to keep the current one.
+                    Validated only when sent.
+                  anyOf:
+                    - $ref: '#/components/schemas/WebhookFilter'
+                    - type: 'null'
       responses:
         '200':
           description: >-
@@ -6848,7 +6864,8 @@ paths:
             Refused by the handler, as application/json. bad_request with message "invalid
             ID" for a path id that is not a UUID, or "invalid JSON" for a body that does not
             decode. missing_events, invalid_event_name, invalid_url and
-            invalid_payload_format are as for create, and apply only when the field is sent.
+            invalid_payload_format are as for create, and apply only when the field is sent. The
+            filter codes, as for create, apply only when filter is sent.
           content:
             application/json:
               schema:
@@ -6963,7 +6980,11 @@ paths:
         the original. A Slack, Teams, Discord or JIRA hook gets its message rebuilt from
         the ticket as it is now: current subject, tracking number and status name, and a
         reply's text only if that reply still exists and is public (never a note's). If
-        the ticket is gone, the headline only.
+        the ticket is gone, the headline only. The hook's ticket filter is evaluated as it
+        is now, against the ticket's current category, priority and assigned group (the
+        history keeps none). If the filter does not admit the ticket the request is refused
+        with 409 webhook_filter_excludes and nothing is queued. If the ticket cannot be read
+        the event is sent anyway.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleRedeliverWebhook
       security:
@@ -7007,7 +7028,9 @@ paths:
           description: >-
             webhook_disabled, when the webhook is disabled (enable it first); or
             webhook_not_subscribed, when the webhook no longer lists the delivery's event
-            (add it to the webhook's events first).
+            (add it to the webhook's events first); or webhook_filter_excludes, when the
+            webhook's ticket filter, as it is now, does not admit the ticket the delivery was
+            about (change the filter first).
           content:
             application/json:
               schema:
@@ -9665,12 +9688,44 @@ components:
         payload_format is stored as raw.
       type: string
       enum: [raw, slack, teams, discord, jira]
+    WebhookFilter:
+      description: >-
+        Which tickets the hook fires for. Each list is one condition, and an empty or absent
+        list is no condition. A ticket matches a list when its value is any entry. All
+        conditions must match. invert fires for the tickets that do not match. A queued
+        delivery is tested against the ticket as it was when the event happened; a Redeliver,
+        which has no stored classification, against the ticket as it is now. category matches
+        the ticket's category, so all its types and items are included. group is the group the
+        ticket is assigned to; an unassigned ticket never matches it. Responses always carry
+        all four keys.
+        The filter is read as it is now, not once: when the event is fanned out to the hooks,
+        at every attempt of a queued delivery (retries included) and at Redeliver. An event
+        it filters out at the fan-out creates no delivery: no X-GHD-Delivery, no retry and no
+        history entry. If an administrator tightens it, deliveries already queued that it no
+        longer admits are dropped at their next attempt, with no send and no history entry,
+        as for a disabled, unsubscribed or re-addressed hook; Redeliver of such an entry is
+        refused with 409 webhook_filter_excludes. A queued delivery with no stored
+        classification (queued before the filter existed) is sent.
+      type: object
+      additionalProperties: false
+      properties:
+        category_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Uuid'}
+        priorities:
+          type: array
+          items: {$ref: '#/components/schemas/Priority'}
+        group_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Uuid'}
+        invert:
+          type: boolean
     Webhook:
       description: >-
         An outbound webhook subscription. The secret is write-only and is never
         returned.
       type: object
-      required: [id, url, events, enabled, created_at, payload_format, last_delivery]
+      required: [id, url, events, enabled, created_at, payload_format, last_delivery, filter]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         url: {type: string}
@@ -9693,6 +9748,7 @@ components:
           anyOf:
             - $ref: '#/components/schemas/WebhookDelivery'
             - type: 'null'
+        filter: {$ref: '#/components/schemas/WebhookFilter'}
     WebhookDelivery:
       description: >-
         The result of one delivery attempt. No message or response body is stored. Error text goes to the server log only, because a
