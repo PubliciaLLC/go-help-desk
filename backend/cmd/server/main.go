@@ -318,6 +318,9 @@ func run() error {
 	// history, its audit entry — into a single transaction.
 	txRunner := txrunner.New(sqlDB)
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// The SLA re-match a priority change makes is gated on the same live
+	// toggle as AttachPolicy (#443).
+	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
 	if err := ticketSvc.LoadSystemStatuses(ctx); err != nil {
 		return fmt.Errorf("loading system statuses: %w", err)
 	}
