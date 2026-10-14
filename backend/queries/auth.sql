@@ -15,14 +15,47 @@ DELETE FROM api_keys WHERE id = $1;
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;
 
 -- name: CreateOAuthClient :exec
-INSERT INTO oauth_clients (id, client_id, hashed_secret, name, scopes, created_at)
-VALUES ($1, $2, $3, $4, $5, $6);
+-- Creates the client AND its service user (#420) as one statement, so a
+-- failure on either leaves neither: a client with no user cannot act, and a
+-- user with no client is an orphan nobody can see the reason for.
+--
+-- The user is named after the client, staff, with no password, no factor and
+-- no SSO identity (the users_service_account_inert constraint insists). Its
+-- address is made from the client's id: it only has to be unique, and
+-- ".invalid" (RFC 2606) can never receive mail. The oauth_clients foreign key
+-- is checked at the end of the statement, so inserting both here is fine.
+WITH u AS (
+    INSERT INTO users (id, email, display_name, role, service_account, created_at, updated_at)
+    VALUES (sqlc.arg(user_id), 'oauth-' || sqlc.arg(id)::uuid || '@service-account.invalid',
+            sqlc.arg(name), 'staff', TRUE, sqlc.arg(created_at), sqlc.arg(created_at))
+)
+INSERT INTO oauth_clients (id, client_id, hashed_secret, name, scopes, created_at, user_id)
+VALUES (sqlc.arg(id), sqlc.arg(client_id), sqlc.arg(hashed_secret), sqlc.arg(name), sqlc.arg(scopes),
+        sqlc.arg(created_at), sqlc.arg(user_id));
 
 -- name: GetOAuthClientByClientID :one
 SELECT * FROM oauth_clients WHERE client_id = $1;
 
+-- name: GetOAuthClientWithUser :one
+-- The client and the service user it acts as, in one round trip: BearerAuth
+-- runs this on every request. A deleted client matches nothing, which is what
+-- revokes its outstanding tokens; the user's own state (disabled, deleted)
+-- comes back for the caller to judge.
+SELECT sqlc.embed(oauth_clients), sqlc.embed(users)
+FROM oauth_clients
+JOIN users ON users.id = oauth_clients.user_id
+WHERE oauth_clients.client_id = $1;
+
 -- name: DeleteOAuthClient :execrows
-DELETE FROM oauth_clients WHERE id = $1;
+-- Deletes the client and soft-deletes its service user in one statement, still
+-- reporting rows affected so an unknown id stays a 404 (#431). The user is
+-- kept, not removed: tickets and replies it wrote keep their author's name.
+WITH soft AS (
+    UPDATE users SET deleted_at = now(), updated_at = now()
+    WHERE users.id = (SELECT user_id FROM oauth_clients WHERE oauth_clients.id = $1)
+      AND deleted_at IS NULL
+)
+DELETE FROM oauth_clients WHERE oauth_clients.id = $1;
 
 -- name: ListOAuthClients :many
 SELECT * FROM oauth_clients ORDER BY name;

@@ -100,6 +100,7 @@ func (s *Store) CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 		Name:         c.Name,
 		Scopes:       c.Scopes,
 		CreatedAt:    c.CreatedAt,
+		UserID:       c.UserID,
 	})
 }
 
@@ -115,6 +116,7 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 		Name:         r.Name,
 		Scopes:       r.Scopes,
 		CreatedAt:    r.CreatedAt,
+		UserID:       r.UserID,
 	}, nil
 }
 
@@ -143,6 +145,7 @@ func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error
 			Name:         r.Name,
 			Scopes:       r.Scopes,
 			CreatedAt:    r.CreatedAt,
+			UserID:       r.UserID,
 		}
 	}
 	return out, nil

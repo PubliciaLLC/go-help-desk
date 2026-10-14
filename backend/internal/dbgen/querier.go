@@ -213,6 +213,15 @@ type Querier interface {
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateGuestAccessToken(ctx context.Context, arg CreateGuestAccessTokenParams) error
 	CreateItem(ctx context.Context, arg CreateItemParams) error
+	// Creates the client AND its service user (#420) as one statement, so a
+	// failure on either leaves neither: a client with no user cannot act, and a
+	// user with no client is an orphan nobody can see the reason for.
+	//
+	// The user is named after the client, staff, with no password, no factor and
+	// no SSO identity (the users_service_account_inert constraint insists). Its
+	// address is made from the client's id: it only has to be unique, and
+	// ".invalid" (RFC 2606) can never receive mail. The oauth_clients foreign key
+	// is checked at the end of the statement, so inserting both here is fine.
 	CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
 	// author_id is NULL for a reply written by a guest, who has no account. That is
@@ -253,6 +262,9 @@ type Querier interface {
 	DeleteGuestAccessTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	DeleteItem(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
+	// Deletes the client and soft-deletes its service user in one statement, still
+	// reporting rows affected so an unknown id stays a 404 (#431). The user is
+	// kept, not removed: tickets and replies it wrote keep their author's name.
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
 	DeletePlugin(ctx context.Context, id string) error
@@ -387,6 +399,11 @@ type Querier interface {
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
+	// The client and the service user it acts as, in one round trip: BearerAuth
+	// runs this on every request. A deleted client matches nothing, which is what
+	// revokes its outstanding tokens; the user's own state (disabled, deleted)
+	// comes back for the caller to judge.
+	GetOAuthClientWithUser(ctx context.Context, clientID string) (GetOAuthClientWithUserRow, error)
 	// The send-time read for a queued verification email (#348): the row is read
 	// when the mail goes out, so the token and address are the current ones and
 	// the token is never copied into the outbox.

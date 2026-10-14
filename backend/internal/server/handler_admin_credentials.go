@@ -221,6 +221,7 @@ func (s *Server) handleCreateOAuthClient(w http.ResponseWriter, r *http.Request)
 		Name:         body.Name,
 		Scopes:       body.Scopes,
 		CreatedAt:    time.Now(),
+		UserID:       uuid.New(), // its service user, created in the same statement
 	}
 	if err := s.authStore.CreateOAuthClient(r.Context(), client); err != nil {
 		handleError(w, err)

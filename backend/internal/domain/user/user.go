@@ -29,19 +29,23 @@ const (
 // It is auth-method-agnostic: PasswordHash is empty for SAML-only accounts;
 // SAMLSubject is empty for local-only accounts.
 type User struct {
-	ID           uuid.UUID  `json:"id"`
-	Email        string     `json:"email"`
-	DisplayName  string     `json:"display_name"`
-	Role         Role       `json:"role"`
-	PasswordHash string     `json:"-"`
-	MFASecret    string     `json:"-"`
-	MFAEnabled   bool       `json:"mfa_enabled"`
-	SAMLSubject  string     `json:"-"`
-	OIDCSubject  string     `json:"-"`
-	Disabled     bool       `json:"disabled"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	DeletedAt    *time.Time `json:"-"`
+	ID           uuid.UUID `json:"id"`
+	Email        string    `json:"email"`
+	DisplayName  string    `json:"display_name"`
+	Role         Role      `json:"role"`
+	PasswordHash string    `json:"-"`
+	MFASecret    string    `json:"-"`
+	MFAEnabled   bool      `json:"mfa_enabled"`
+	SAMLSubject  string    `json:"-"`
+	OIDCSubject  string    `json:"-"`
+	Disabled     bool      `json:"disabled"`
+	// ServiceAccount marks the identity an OAuth client acts as. It can never
+	// sign in: the database refuses a password, a second factor, an SSO
+	// identity or the admin role on such a row.
+	ServiceAccount bool       `json:"service_account"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	DeletedAt      *time.Time `json:"-"`
 }
 
 // IsActive returns true when the user is neither disabled nor soft-deleted.

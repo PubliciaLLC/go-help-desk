@@ -456,19 +456,20 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 // fromRow converts a dbgen.User to domain user.User.
 func fromRow(r dbgen.User) user.User {
 	return user.User{
-		ID:           r.ID,
-		Email:        r.Email,
-		DisplayName:  r.DisplayName,
-		Role:         user.Role(r.Role),
-		PasswordHash: r.PasswordHash,
-		MFASecret:    r.MfaSecret,
-		MFAEnabled:   r.MfaEnabled,
-		SAMLSubject:  r.SamlSubject,
-		OIDCSubject:  r.OidcSubject,
-		Disabled:     r.Disabled,
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
-		DeletedAt:    database.TimePtr(r.DeletedAt),
+		ID:             r.ID,
+		Email:          r.Email,
+		DisplayName:    r.DisplayName,
+		Role:           user.Role(r.Role),
+		PasswordHash:   r.PasswordHash,
+		MFASecret:      r.MfaSecret,
+		MFAEnabled:     r.MfaEnabled,
+		SAMLSubject:    r.SamlSubject,
+		OIDCSubject:    r.OidcSubject,
+		Disabled:       r.Disabled,
+		ServiceAccount: r.ServiceAccount,
+		CreatedAt:      r.CreatedAt,
+		UpdatedAt:      r.UpdatedAt,
+		DeletedAt:      database.TimePtr(r.DeletedAt),
 	}
 }
 

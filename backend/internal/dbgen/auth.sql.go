@@ -43,8 +43,14 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) erro
 }
 
 const createOAuthClient = `-- name: CreateOAuthClient :exec
-INSERT INTO oauth_clients (id, client_id, hashed_secret, name, scopes, created_at)
-VALUES ($1, $2, $3, $4, $5, $6)
+WITH u AS (
+    INSERT INTO users (id, email, display_name, role, service_account, created_at, updated_at)
+    VALUES ($7, 'oauth-' || $1::uuid || '@service-account.invalid',
+            $4, 'staff', TRUE, $6, $6)
+)
+INSERT INTO oauth_clients (id, client_id, hashed_secret, name, scopes, created_at, user_id)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7)
 `
 
 type CreateOAuthClientParams struct {
@@ -54,8 +60,18 @@ type CreateOAuthClientParams struct {
 	Name         string    `json:"name"`
 	Scopes       []string  `json:"scopes"`
 	CreatedAt    time.Time `json:"created_at"`
+	UserID       uuid.UUID `json:"user_id"`
 }
 
+// Creates the client AND its service user (#420) as one statement, so a
+// failure on either leaves neither: a client with no user cannot act, and a
+// user with no client is an orphan nobody can see the reason for.
+//
+// The user is named after the client, staff, with no password, no factor and
+// no SSO identity (the users_service_account_inert constraint insists). Its
+// address is made from the client's id: it only has to be unique, and
+// ".invalid" (RFC 2606) can never receive mail. The oauth_clients foreign key
+// is checked at the end of the statement, so inserting both here is fine.
 func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error {
 	_, err := q.db.ExecContext(ctx, createOAuthClient,
 		arg.ID,
@@ -64,6 +80,7 @@ func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientPa
 		arg.Name,
 		pq.Array(arg.Scopes),
 		arg.CreatedAt,
+		arg.UserID,
 	)
 	return err
 }
@@ -109,9 +126,17 @@ func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error)
 }
 
 const deleteOAuthClient = `-- name: DeleteOAuthClient :execrows
-DELETE FROM oauth_clients WHERE id = $1
+WITH soft AS (
+    UPDATE users SET deleted_at = now(), updated_at = now()
+    WHERE users.id = (SELECT user_id FROM oauth_clients WHERE oauth_clients.id = $1)
+      AND deleted_at IS NULL
+)
+DELETE FROM oauth_clients WHERE oauth_clients.id = $1
 `
 
+// Deletes the client and soft-deletes its service user in one statement, still
+// reporting rows affected so an unknown id stays a 404 (#431). The user is
+// kept, not removed: tickets and replies it wrote keep their author's name.
 func (q *Queries) DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteOAuthClient, id)
 	if err != nil {
@@ -153,7 +178,7 @@ func (q *Queries) GetAPIKeyByHash(ctx context.Context, hashedToken string) (ApiK
 }
 
 const getOAuthClientByClientID = `-- name: GetOAuthClientByClientID :one
-SELECT id, client_id, hashed_secret, name, scopes, created_at FROM oauth_clients WHERE client_id = $1
+SELECT id, client_id, hashed_secret, name, scopes, created_at, user_id FROM oauth_clients WHERE client_id = $1
 `
 
 func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error) {
@@ -166,6 +191,54 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 		&i.Name,
 		pq.Array(&i.Scopes),
 		&i.CreatedAt,
+		&i.UserID,
+	)
+	return i, err
+}
+
+const getOAuthClientWithUser = `-- name: GetOAuthClientWithUser :one
+SELECT oauth_clients.id, oauth_clients.client_id, oauth_clients.hashed_secret, oauth_clients.name, oauth_clients.scopes, oauth_clients.created_at, oauth_clients.user_id, users.id, users.email, users.display_name, users.role, users.password_hash, users.mfa_secret, users.mfa_enabled, users.saml_subject, users.created_at, users.updated_at, users.deleted_at, users.disabled, users.oidc_subject, users.mfa_failed_attempts, users.mfa_locked_until, users.service_account
+FROM oauth_clients
+JOIN users ON users.id = oauth_clients.user_id
+WHERE oauth_clients.client_id = $1
+`
+
+type GetOAuthClientWithUserRow struct {
+	OauthClient OauthClient `json:"oauth_client"`
+	User        User        `json:"user"`
+}
+
+// The client and the service user it acts as, in one round trip: BearerAuth
+// runs this on every request. A deleted client matches nothing, which is what
+// revokes its outstanding tokens; the user's own state (disabled, deleted)
+// comes back for the caller to judge.
+func (q *Queries) GetOAuthClientWithUser(ctx context.Context, clientID string) (GetOAuthClientWithUserRow, error) {
+	row := q.db.QueryRowContext(ctx, getOAuthClientWithUser, clientID)
+	var i GetOAuthClientWithUserRow
+	err := row.Scan(
+		&i.OauthClient.ID,
+		&i.OauthClient.ClientID,
+		&i.OauthClient.HashedSecret,
+		&i.OauthClient.Name,
+		pq.Array(&i.OauthClient.Scopes),
+		&i.OauthClient.CreatedAt,
+		&i.OauthClient.UserID,
+		&i.User.ID,
+		&i.User.Email,
+		&i.User.DisplayName,
+		&i.User.Role,
+		&i.User.PasswordHash,
+		&i.User.MfaSecret,
+		&i.User.MfaEnabled,
+		&i.User.SamlSubject,
+		&i.User.CreatedAt,
+		&i.User.UpdatedAt,
+		&i.User.DeletedAt,
+		&i.User.Disabled,
+		&i.User.OidcSubject,
+		&i.User.MfaFailedAttempts,
+		&i.User.MfaLockedUntil,
+		&i.User.ServiceAccount,
 	)
 	return i, err
 }
@@ -267,7 +340,7 @@ func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfi
 }
 
 const listOAuthClients = `-- name: ListOAuthClients :many
-SELECT id, client_id, hashed_secret, name, scopes, created_at FROM oauth_clients ORDER BY name
+SELECT id, client_id, hashed_secret, name, scopes, created_at, user_id FROM oauth_clients ORDER BY name
 `
 
 func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
@@ -286,6 +359,7 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 			&i.Name,
 			pq.Array(&i.Scopes),
 			&i.CreatedAt,
+			&i.UserID,
 		); err != nil {
 			return nil, err
 		}

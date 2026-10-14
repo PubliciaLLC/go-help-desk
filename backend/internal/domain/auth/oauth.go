@@ -19,6 +19,9 @@ type OAuthClient struct {
 	Name         string    `json:"name"`
 	Scopes       []string  `json:"scopes"`
 	CreatedAt    time.Time `json:"created_at"`
+	// UserID is the client's service user: the identity it acts as. One per
+	// client, made with it, never shared and never a person's account.
+	UserID uuid.UUID `json:"user_id"`
 }
 
 // Claims is the JWT payload issued for client credentials tokens.

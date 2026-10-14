@@ -1597,6 +1597,7 @@ func TestAuthStore_OAuthClients(t *testing.T) {
 		Name:         "Test App",
 		Scopes:       []string{"tickets:read"},
 		CreatedAt:    time.Now().UTC().Truncate(time.Millisecond),
+		UserID:       uuid.New(), // every client acts through a service user (#420)
 	}
 	require.NoError(t, as.CreateOAuthClient(ctx, c))
 
