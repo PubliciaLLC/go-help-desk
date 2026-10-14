@@ -333,6 +333,7 @@ type User struct {
 	EmailNotifyAssigned bool         `json:"email_notify_assigned"`
 	EmailNotifyActivity bool         `json:"email_notify_activity"`
 	EmailNotifyGroup    bool         `json:"email_notify_group"`
+	MustChangePassword  bool         `json:"must_change_password"`
 }
 
 type WebauthnCredential struct {

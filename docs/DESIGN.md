@@ -793,7 +793,7 @@ re-enrolment for a TOTP-protected account since the re-enrolment fix.
 a second factor required up front:
 
 ```
-go-help-desk reset-factors <email>
+/app/server reset-factors <email>
 ```
 
 It clears the account's TOTP enrolment, removes its registered passkeys and ends
@@ -801,13 +801,62 @@ its sessions (one statement), so the next sign-in reaches enrolment and the
 person starts again. It is the answer for every cause of lockout, and for the
 sole administrator the only one, since the web path must keep refusing (a
 password alone being enough to replace somebody's second factor is the bypass
-the guards exist to prevent). It takes an email address only and cannot set a
-password (see the identity provider guard below). It grants nothing new: anyone
+the guards exist to prevent). It takes an email address only and does not touch
+the password (`unlock`, below, does). It grants nothing new: anyone
 able to run it already has the filesystem and the database credentials, so it
 widens no web-facing surface, which a recovery code (another secret at rest,
 worth stealing, the property passkeys exist to remove) would.
 
-**It writes an audit entry** naming the account and the operating-system user
+**`unlock` is the complete version** (#497):
+
+```
+/app/server unlock <email>
+```
+
+(In the published image the binary is `/app/server`:
+`docker compose exec app /app/server unlock <email>`.) In ONE transaction it
+does what `reset-factors` does (`ClearFactors`: every second factor and every
+session), and also re-enables the account if it was disabled, clears the TOTP
+failure count and lock, and sets a **new random password** (24 characters from
+`crypto/rand`, hashed at the current bcrypt cost) that it prints **once** to
+standard output after the commit, never to the log and never into the audit
+entry. It refuses an unknown or deleted address, and if any step fails
+(the audit write included) nothing changes and nothing is printed. It does not
+touch the in-memory sign-in throttle, which lives in the server process and
+only delays a login, never refuses the right password.
+It refuses an OAuth client's service account (#490), which has no password to unlock, naming the client.
+
+**The password it prints must be changed at the next sign-in.** It sets
+`users.must_change_password` (migration 000045). While the flag is set the
+session a correct password opens may do exactly one thing, change the password
+(`PATCH /me/password`, which asks for the current password as ever); the
+login answer carries `password_change_required` and the login page shows the
+change step first. Every other route answers `403 password_change_required`:
+`RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
+for the enrolment routes outside it, the way the MFA-pending gate holds a
+half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
+flag. **The flag must never stop an account signing in**, which is the
+last-administrator rule applied to a new gate: it gates nothing at login, and
+the password change is reachable without having passed MFA. Otherwise an
+administrator whose role must enrol MFA would be held at "enrol first" by
+`RequireMFA` and at "change the password first" by the flag, with a way out of
+neither. That exemption is for a session that owed no factor when the password was
+checked (the login decides, into `PasswordChangeNeedsNoFactor`), never for the raw
+flag: the flag outlives the cleared factors, and a single sign-on session, which
+ignores it, can enrol a new one, after which a password alone must not be enough
+to change the password (`TestMustChangePassword_DoesNotLetAPasswordOnlySessionSkipAnEnrolledFactor`).
+An account with a factor verifies it first and then changes the password
+(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment` covers the
+other case).
+Single sign-on and passkey sign-ins do not read the flag; it is about the
+password, and a federated administrator who never uses it simply keeps it set.
+
+**Its audit entry** (`action: "account_unlock"`, `actor: "server console"`, with
+the operating-system user and host and no actor id) is written in the same
+transaction, unlike `reset-factors`' best-effort write below: this command
+hands out a credential, so an unlock with no record is refused.
+
+**`reset-factors` writes an audit entry** naming the account and the operating-system user
 and host that ran it, with no actor id: nobody signed in, and inventing one
 would record a claim rather than a fact. The shape (`entity_type: "user"`,
 `action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
@@ -1055,10 +1104,10 @@ infrequent action from the settings page, not a path an unauthenticated attacker
 can drive, and closing it would need a transaction spanning the users and
 settings tables.
 
-**Not built:** extending `reset-factors` to also set a password, so a locked-out
-federated administrator has a complete way back and not just a warning that
-would have stopped them getting here (#300's option 4). `reset-factors` exists
-(see Passkeys) and clears factors only.
+**The complete way back is `/app/server unlock <email>`** (#497, #300's option
+4), so a locked-out federated administrator has more than a warning that would
+have stopped them getting here: it sets a password. See Passkeys, "The way back
+in", for what it does. `reset-factors` remains and clears factors only.
 
 ---
 

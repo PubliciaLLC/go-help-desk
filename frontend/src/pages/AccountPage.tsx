@@ -523,7 +523,7 @@ function AuthenticatorSection() {
           {/* There is deliberately no button here. Nothing in the API removes
               an authenticator, because an account's second factor should not
               be strippable by whoever is holding the session. An
-              administrator resets it with `go-help-desk reset-factors`. */}
+              administrator resets it with `/app/server reset-factors`. */}
           <p className="text-xs text-gray-500">
             To replace it, ask an administrator to reset your second factor.
           </p>

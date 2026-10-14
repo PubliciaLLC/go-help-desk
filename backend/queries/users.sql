@@ -20,6 +20,12 @@ SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 -- name: GetUsersByIDs :many
 SELECT * FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL;
 
+-- name: GetServiceAccountNameByEmail :one
+-- Only for go-help-desk unlock (#497), which must say WHY it refuses a service
+-- account rather than report "no such account" (GetUserByEmail below hides
+-- them on purpose). Returns the display name, which is the OAuth client's.
+SELECT display_name FROM users WHERE email = $1 AND deleted_at IS NULL AND service_account;
+
 -- name: GetUserByEmail :one
 -- This is the lookup behind password login, OIDC adoption by address and
 -- password reset, so it is where a service account (an OAuth client's
@@ -87,8 +93,26 @@ SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT
 --
 -- AdminSetPassword has always been a narrow statement. This is the same thing
 -- for the self-service path, which is the one an attacker can drive.
+--
+-- Also clears must_change_password (#497): this is the account holder choosing
+-- a password, which is what that flag is waiting for.
 UPDATE users
-SET password_hash = $2, updated_at = now()
+SET password_hash = $2, must_change_password = false, updated_at = now()
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: UnlockUser :execrows
+-- The account half of /app/server unlock (#497), run in the same transaction
+-- as ClearFactors: re-enable, clear the TOTP lockout, install the generated
+-- password and require it to be changed. Not for a deleted account. The
+-- in-memory sign-in throttle is another process's memory and only ever delays,
+-- never refuses, so there is nothing of it to clear here.
+UPDATE users
+SET disabled = false,
+    mfa_failed_attempts = 0,
+    mfa_locked_until = NULL,
+    password_hash = $2,
+    must_change_password = true,
+    updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: RehashUserPassword :execrows
