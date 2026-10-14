@@ -25,8 +25,8 @@ func (s *Server) authRouter() *chi.Mux {
 	r.With(authmw.DenyMachineCredentials).Post("/local/mfa/verify", s.handleMFAVerify)
 	// The passkey half of the same gate. Both re-issue the session with
 	// MFAPassed true on success, so nothing downstream learns a new idea.
-	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/start", s.handlePasskeyLoginStart)
-	r.With(authmw.DenyMachineCredentials).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
+	r.With(authmw.DenyMachineCredentials, s.requirePasskeys).Post("/local/passkey/start", s.handlePasskeyLoginStart)
+	r.With(authmw.DenyMachineCredentials, s.requirePasskeys).Post("/local/passkey/finish", s.handlePasskeyLoginFinish)
 
 	r.Post("/oauth/token", s.handleOAuthToken)
 	r.Get("/providers", s.handleAuthProviders)
@@ -294,6 +294,8 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Post("/", s.handleCreateWebhook)
 		r.Patch("/{id}", s.handleUpdateWebhook)
 		r.Delete("/{id}", s.handleDeleteWebhook)
+		r.Get("/{id}/deliveries", s.handleListWebhookDeliveries)
+		r.Post("/{id}/deliveries/{delivery}/redeliver", s.handleRedeliverWebhook)
 	})
 
 	r.Route("/tags", func(r chi.Router) {
@@ -358,9 +360,13 @@ func (s *Server) meRouter() *chi.Mux {
 		// finish. The second is what lets a sole administrator with no
 		// working factor recover alone, pinned by
 		// TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor.
-		r.Get("/passkeys", s.handleListPasskeys)
-		r.Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
-		r.Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
+		//
+		// All but delete answer 503 while passkeys are unavailable (#494).
+		// Delete never touches the ceremony service, and a person should be
+		// able to remove a key from an account whatever BASE_URL is.
+		r.With(s.requirePasskeys).Get("/passkeys", s.handleListPasskeys)
+		r.With(s.requirePasskeys).Post("/passkeys/register/start", s.handlePasskeyRegisterStart)
+		r.With(s.requirePasskeys).Post("/passkeys/register/finish", s.handlePasskeyRegisterFinish)
 		r.Delete("/passkeys/{id}", s.handleDeletePasskey)
 
 		r.Group(func(r chi.Router) {

@@ -39,7 +39,8 @@ info:
 
     - x-ghd-roles: the roles a signed-in session may have (admin, staff,
       user). A machine credential acts at a role too: an API key at its
-      owner's, an OAuth client as staff. A role outside the list is refused
+      owner's, an OAuth client at its service user's (staff or user, never
+      admin). A role outside the list is refused
       with 403 forbidden. Absent on public and guest-token operations.
     - x-ghd-mfa: true when a session must have passed its second factor;
       one that has not is refused with 403 mfa_required. API keys and OAuth
@@ -51,9 +52,14 @@ info:
     An operation open to some roles only says so in the first sentence of its
     description.
 
-    The MCP server at /mcp/ (GET /mcp/sse, POST /mcp/message) is JSON-RPC over
-    Server-Sent Events, authenticated by the same chain as /api/; see
-    docs/DESIGN.md, "MCP Interface". It is not described here.
+    The MCP server is JSON-RPC authenticated by the same chain as /api/: the
+    Streamable HTTP transport at /mcp (POST; /mcp/ answers the same), and the
+    older HTTP+SSE transport at GET /mcp/sse and POST /mcp/message. Every
+    MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message and any unknown path
+    under /mcp/) answers 403 (code origin_not_allowed) to a request whose
+    Origin header is present and is not the origin of BASE_URL; a request
+    with no Origin header is not affected. See docs/DESIGN.md, "MCP
+    Interface". It is not described here.
   license:
     name: GNU Affero General Public License v3.0
     url: https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE
@@ -432,14 +438,18 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
         '403':
           description: >-
-            Either local sign-in is disabled for this account because SAML is
-            enabled (saml_required, checked first), or the password was right but is still stored
-            in the older, weaker form (cost below 12) after the grace period
-            (password_reset_required). In the second case no session is started
-            and the hash is left as it is; the person must reset their password.
-            The answer is only given for a correct password, so a wrong one still
-            answers 401 invalid_credentials and takes as long to refuse. Administrators
-            are exempt. Sent as application/json.
+            Local sign-in is disabled for this account because SAML is enabled
+            (saml_required, checked first), or the account's only second factor
+            is a passkey and passkeys are unavailable on this instance
+            (passkey_unavailable; an administrator's MFA reset clears it), or
+            the password was right but is still stored in the older, weaker form
+            (cost below 12) after the grace period (password_reset_required).
+            No session is created and none of these counts as a failed attempt.
+            passkey_unavailable applies to every such account, administrators
+            included. password_reset_required is only given for a correct
+            password (a wrong one still answers 401 invalid_credentials and takes
+            as long to refuse), leaves the hash as it is, and does not apply to
+            administrators. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -539,6 +549,11 @@ paths:
               type: object
               description: The W3C PublicKeyCredential JSON for an assertion, with binary members base64url-encoded. Not modelled field by field.
       responses:
+        '503':
+          description: Passkeys are unavailable on this instance (passkeys_unavailable), because BASE_URL cannot be a passkey domain. Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '204':
           $ref: '#/components/responses/NoContent'
         '400':
@@ -582,6 +597,11 @@ paths:
       x-ghd-roles: [admin, staff, user]
       x-ghd-mfa: false
       responses:
+        '503':
+          description: Passkeys are unavailable on this instance (passkeys_unavailable), because BASE_URL cannot be a passkey domain. Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '200':
           description: The WebAuthn assertion options to pass to navigator.credentials.get.
           content:
@@ -606,9 +626,11 @@ paths:
         Issues a JWT access token for an OAuth client using the client_credentials
         grant. The body must be JSON: the form encoding that RFC 6749 specifies is
         refused with 400 bad_request. The token lasts one hour and cannot be
-        refreshed. The client acts as staff, so it never reaches an
-        administrator-only operation. A wrong secret and an unknown client get the
-        same 401 invalid_client.
+        refreshed. The client acts through its service user, at that user's role
+        (staff or user, never admin), so it never reaches an administrator-only
+        operation. A wrong secret and an unknown client get the same 401
+        invalid_client. The token stops working when the client is deleted or its
+        service user is disabled or deleted.
       tags: ['Authentication']
       x-ghd-handler: handleOAuthToken
       security: []
@@ -764,8 +786,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [providers, local_admin_only]
+                required: [providers, local_admin_only, passkeys]
                 properties:
+                  passkeys:
+                    type: boolean
+                    description: >-
+                      False when passkeys are unavailable because BASE_URL cannot
+                      be a passkey domain (an IP address, a single-label host or
+                      a non-ASCII host; localhost works). The /auth/local/passkey/*
+                      and /me/passkeys routes then answer 503 passkeys_unavailable.
+                      Added in 1.3.0; absent from older servers, which had passkeys
+                      on or did not start.
                   providers:
                     type: array
                     items:
@@ -2179,6 +2210,11 @@ paths:
       x-ghd-roles: [admin, staff, user]
       x-ghd-mfa: false
       responses:
+        '503':
+          description: Passkeys are unavailable on this instance (passkeys_unavailable), because BASE_URL cannot be a passkey domain. Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '200':
           description: The account's passkeys. An empty array when there are none.
           content:
@@ -2230,6 +2266,11 @@ paths:
                 The W3C PublicKeyCredential attestation JSON, with binary members base64url-encoded. Not
                 modelled field by field.
       responses:
+        '503':
+          description: Passkeys are unavailable on this instance (passkeys_unavailable), because BASE_URL cannot be a passkey domain. Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '204':
           $ref: '#/components/responses/NoContent'
         '400':
@@ -2279,6 +2320,11 @@ paths:
       x-ghd-roles: [admin, staff, user]
       x-ghd-mfa: false
       responses:
+        '503':
+          description: Passkeys are unavailable on this instance (passkeys_unavailable), because BASE_URL cannot be a passkey domain. Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '200':
           description: The creation options to pass to navigator.credentials.create.
           content:
@@ -2442,8 +2488,10 @@ paths:
       description: |
         Returns every status, active and inactive, ordered by sort order and then name. ticket_count depends on
         who asks. An administrator sees every ticket. Staff see tickets assigned to them or to one of their
-        groups. A reporting user sees tickets they reported. An OAuth client counts as staff with no account
-        and no groups, so its counts are 0. A count that cannot be computed is reported as 0.
+        groups. A reporting user sees tickets they reported. An OAuth client is counted as its service user:
+        as staff, the tickets assigned to that user or to one of that user's groups (0 until the user is in a
+        group). A count that cannot be computed fails the
+        request (500 internal_error); it is never reported as 0.
       tags: ['Reference data']
       x-ghd-handler: handleListStatuses
       security:
@@ -2613,9 +2661,13 @@ paths:
           assigned to them or to any of their groups. With ticket scope
           enforcement on, staff get every ticket their scope admits instead,
           including unassigned tickets in a category their groups cover.
-        - An OAuth client acts as staff but has no user identity, so its default
-          listing is always empty. It can list a group's tickets with
-          assignee_group_id only while ticket scope enforcement is off.
+        - An OAuth client is listed as its service user. It is staff (or a
+          reporting user), so its default listing is the tickets assigned to that
+          user or to one of that user's groups, or, with ticket scope enforcement
+          on, every ticket its groups' scope admits. A client whose user is in no
+          group sees nothing then. It can list a group's tickets with
+          assignee_group_id only for a group its user belongs to while
+          enforcement is on, and for any group while it is off.
         Four parameters can change the listing. reporter_id (admin only) is
         checked first, then assignee_group_id, then scope=unassigned or
         scope=all (admin only). The first one present wins. Any other scope
@@ -2726,8 +2778,9 @@ paths:
         are not fields of this ticket's classification, are skipped without an
         error. They are written after the ticket exists, so a failure there does
         not fail the request.
-        An OAuth client acts with no person behind it, and a ticket needs a
-        reporter, so such a credential is refused with 403 user_identity_required.
+        An OAuth client creates the ticket as its service user, which becomes
+        the reporter, and needs the tickets:write scope. Nobody is mailed for a
+        service user.
       tags: ['Tickets']
       x-ghd-handler: handleCreateTicket
       security:
@@ -2792,8 +2845,9 @@ paths:
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
-            (application/json): `user_identity_required`, for an OAuth client
-            acting without a person behind it.
+            (application/json): `user_identity_required`, for a credential
+            that arrives with no user behind it. An OAuth client always has one,
+            its service user, so it is not refused this way.
           content:
             text/plain:
               schema:
@@ -2863,9 +2917,9 @@ paths:
       operationId: getTicket
       summary: Get one ticket.
       description: |
-        Returns one ticket as a TicketView. This is the only route under
-        /tickets/{id} that accepts a tracking number as well as a UUID (matched
-        case-insensitively). Every other route in this subtree takes a UUID only.
+        Returns one ticket as a TicketView. {id} is a UUID or a
+        tracking number (matched case-insensitively), as on every route under
+        /tickets/{id}.
         A ticket the caller may not see answers 404 not_found, exactly as a
         ticket that does not exist does. It is never 403, so tracking numbers
         cannot be probed. A reporting user sees only the tickets they
@@ -2897,9 +2951,8 @@ paths:
       description: |
         Applies whichever of status_id, clear_assignee, assignee_user_id,
         assignee_group_id and category_id are sent, and answers 200 with the bare
-        Ticket. The body is required: send {} for no change, since an empty body
-        is refused as invalid JSON. The path id must be a UUID. A tracking number
-        that the caller can see answers 400 bad_request, "invalid ticket ID".
+        Ticket. An empty body is the same as {}: no change, and the response is
+        the Ticket. Malformed JSON answers 400 bad_request. The path id is a UUID or a tracking number.
         The changes run in this order: status, then assignment, then
         classification. Each is saved on its own, with no transaction around the
         three. If a later one is refused, the earlier ones have already been
@@ -2917,8 +2970,12 @@ paths:
           must exist (400 bad_request).
         - An unknown status_id answers 404 not_found, "status not found". This is
           not the ticket 404 documented here.
-        - An OAuth client acting without a person behind it is refused with 403
-          user_identity_required.
+        - A status_id that names an inactive status answers 409 status_inactive,
+          for every role: inactive statuses are retired. A ticket already in an
+          inactive status can be moved out of it, and sending it the status it
+          already holds is not a move.
+        - An OAuth client acts as its service user, which is recorded as the
+          actor of the change. It needs the tickets:write scope.
         For status_id, assignee_user_id, assignee_group_id, category_id, type_id
         and item_id, an absent key and a null mean the same thing. clear_assignee
         true unassigns the ticket, and wins over the two assignee fields. Sending
@@ -2948,7 +3005,7 @@ paths:
       x-ghd-roles: [admin, staff, user]
       x-ghd-mfa: true
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
@@ -2984,8 +3041,7 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`: invalid JSON; invalid ticket ID (the path id is the
-            tracking number of a ticket you can see; send its UUID); an assignee that is not a user on this
+            `bad_request`: invalid JSON; an assignee that is not a user on this
             help desk, deleted, disabled or a reporting user; or a classification
             the domain refuses (category_id is not a category on this help desk,
             type_id and item_id do not belong to the category and to each
@@ -3003,7 +3059,8 @@ paths:
             (application/json): `forbidden` for a reporting user changing the
             status, assigning, or reclassifying, and for anyone but an
             administrator setting the status to Closed; `user_identity_required`
-            for an OAuth client.
+            for a credential with no user behind it (not an OAuth client, which
+            acts as its service user).
           content:
             text/plain:
               schema:
@@ -3014,7 +3071,9 @@ paths:
         '404':
           $ref: '#/components/responses/TicketNotFound'
         '409':
-          description: "`ticket_closed`: the ticket is Closed and the caller's role may not move it out of Closed."
+          description: >-
+            `ticket_closed`: the ticket is Closed and the caller's role may not move it
+            out of Closed. `status_inactive`: status_id names an inactive status.
           content:
             application/json:
               schema:
@@ -3041,7 +3100,7 @@ paths:
           applies, a requester is the label Requester there too.
         - Where requester-name masking applies, actor_name is the label
           Requester and actor_masked is true.
-        The id must be a UUID.
+        The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3065,12 +3124,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketAuditEntry'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3088,7 +3141,7 @@ paths:
         The reply-composer picker. Returns the canned responses that apply to the
         ticket's category and type, in sort order and then by name. Staff and
         administrators only. A reporting user gets 403 forbidden for a ticket they
-        can see, and 404 for one they cannot. The id must be a UUID.
+        can see, and 404 for one they cannot. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3113,12 +3166,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/CannedResponse'
-        '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3143,8 +3190,8 @@ paths:
         nothing. A closed ticket is read-only to its reporter, and a reporter's
         follow-up is the way forward (see the follow-up route).
         Anyone who is not an administrator is refused with 403 forbidden, "only
-        admins can close tickets", on a ticket they can see. An OAuth client acting without a person behind it
-        is refused with 403 user_identity_required. The path id must be a UUID.
+        admins can close tickets", on a ticket they can see. An OAuth client acts as its service user
+        (staff or user, never admin), so it is refused with that 403 forbidden. The path id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3166,20 +3213,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ticket'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden`, "only admins can close tickets", for
-            anyone who is not an administrator; `user_identity_required` for an
-            OAuth client.
+            anyone who is not an administrator, an OAuth client included;
+            `user_identity_required` for a credential with no user behind it.
           content:
             text/plain:
               schema:
@@ -3197,7 +3238,7 @@ paths:
       summary: List the custom field values on a ticket.
       description: |
         The custom field values stored on the ticket, as a bare array (empty when
-        none are set). The id must be a UUID.
+        none are set). The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3221,12 +3262,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketsFieldValue'
-        '400':
-          description: "`bad_request`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3240,7 +3275,7 @@ paths:
         The body maps custom field definition ids to values. Each key must be a
         field this ticket has through its classification, and a select field's
         value must be one of its options. An empty string clears that value.
-        Answers 204 with no body. The id must be a UUID.
+        Answers 204 with no body. The id is a UUID or a tracking number.
         The entries are written one at a time, in no particular order, with no
         transaction around them. If one entry is refused, the entries written
         before it stay saved, and the response is 400.
@@ -3314,9 +3349,9 @@ paths:
           hand, so such a link also uses up the reporter's one follow-up. The
           follow-up keeps the original
           category and type, which must both still be active (400 otherwise).
-        The ticket must be Closed (409 ticket_not_closed otherwise). The path id
-        must be a UUID. An OAuth client acting without a person behind it is
-        refused with 403 user_identity_required.
+        The ticket must be Closed (409 ticket_not_closed otherwise). The path id is a UUID
+        or a tracking number. An OAuth client opens the follow-up as its service user,
+        and needs the tickets:write scope.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3340,7 +3375,7 @@ paths:
                 $ref: '#/components/schemas/Ticket'
         '400':
           description: |
-            `bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID), or, for a
+            `bad_request`: for a
             reporting user, the original's category or type is no longer active
             (category_id is not an active category; type_id is not an active type).
           content:
@@ -3352,8 +3387,9 @@ paths:
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
-            (application/json): `user_identity_required` for an OAuth client; or
-            `forbidden` for a reporting user who did not report the ticket.
+            (application/json): `user_identity_required` for a credential with no
+            user behind it; or `forbidden` for a reporting user who did not report
+            the ticket.
           content:
             text/plain:
               schema:
@@ -3380,7 +3416,7 @@ paths:
       description: |
         Every status transition on the ticket, oldest first. Status names and
         colours are read from the statuses table when the request is served. The
-        id must be a UUID.
+        id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3404,12 +3440,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/StatusHistoryEntry'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3425,7 +3455,7 @@ paths:
       description: |
         Every link in which this ticket is the source or the target, in no
         guaranteed order. A link is directional: source_id is the ticket it starts
-        from and target_id the ticket it points to. The id must be a UUID.
+        from and target_id the ticket it points to. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3449,12 +3479,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketLink'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3480,9 +3504,9 @@ paths:
         the message, the same as a missing ticket. A ticket cannot link to
         itself (400 cannot_link_self). The same source, target and type a second
         time is 409 link_already_exists. A reporting user cannot link a Closed
-        ticket in either direction (409 ticket_closed). An OAuth client acting
-        without a person behind it is refused with 403 user_identity_required.
-        The path id must be a UUID. target_id is required. Absent, it is the nil
+        ticket in either direction (409 ticket_closed). An OAuth client links as its
+        service user, and needs the tickets:write scope.
+        The path id is a UUID or a tracking number. target_id is required. Absent, it is the nil
         UUID, which answers 404 not_found.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -3530,8 +3554,7 @@ paths:
           $ref: '#/components/responses/NoContent'
         '400':
           description: |
-            `bad_request`: invalid JSON; invalid ticket ID (the path id is the
-            tracking number of a ticket you can see; send its UUID); resolve_as_duplicate with a link type other than duplicate_of;
+            `bad_request`: invalid JSON; resolve_as_duplicate with a link type other than duplicate_of;
             or an unknown link type (invalid link type). `cannot_link_self`: the
             target is this ticket.
           content:
@@ -3543,8 +3566,9 @@ paths:
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
-            (application/json): `user_identity_required` for an OAuth client, or
-            `forbidden` for a reporting user using resolve_as_duplicate.
+            (application/json): `user_identity_required` for a credential with no
+            user behind it, or `forbidden` for a reporting user using
+            resolve_as_duplicate.
           content:
             text/plain:
               schema:
@@ -3609,8 +3633,7 @@ paths:
           $ref: '#/components/responses/NoContent'
         '400':
           description: |
-            `bad_request`: invalid ticket ID (the path id is the tracking number of
-            a ticket you can see; send its UUID); invalid target ID (targetId is not a
+            `bad_request`: invalid target ID (targetId is not a
             UUID); or invalid link type (linkType is not one of the four types).
           content:
             application/json:
@@ -3639,15 +3662,16 @@ paths:
       summary: Force-reopen a Closed ticket.
       description: |
         Moves a Closed ticket back to the reopen target status. That is the
-        configured status, falling back to New when it does not resolve. Answers
+        configured status, falling back to New when it does not resolve or is
+        inactive. Answers
         200 with the bare Ticket.
         This is off by default. Under the default closed_reopen_policy every
         caller gets 409 ticket_closed, with the reason in the message. The setting
         can allow administrators only, or staff and administrators. A reporting
         user is always refused with 403 forbidden. The ticket must be Closed,
-        otherwise the answer is 409 ticket_not_closed. The path id must be a UUID.
-        An OAuth client acting without a person behind it is refused with 403
-        user_identity_required.
+        otherwise the answer is 409 ticket_not_closed. The path id is a UUID or a tracking number.
+        An OAuth client reopens as its service user, which needs the role this
+        route allows.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3670,7 +3694,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Ticket'
         '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID), or no valid reopen target status is configured."
+          description: "`bad_request`: no valid reopen target status is configured."
           content:
             application/json:
               schema:
@@ -3681,8 +3705,8 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden`, "users cannot directly reopen
-            tickets", for a reporting user; `user_identity_required` for an OAuth
-            client.
+            tickets", for a reporting user; `user_identity_required` for a
+            credential with no user behind it.
           content:
             text/plain:
               schema:
@@ -3710,7 +3734,7 @@ paths:
       description: |
         The reply thread, oldest first. Internal notes are left out for a
         reporting user, and staff and administrators see them. A reply written by
-        a guest has no author_id. The id must be a UUID.
+        a guest has no author_id. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3734,12 +3758,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Reply'
-        '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3750,20 +3768,26 @@ paths:
       operationId: addReply
       summary: Post a reply to a ticket.
       description: |
-        Adds a reply and answers 201 with the Reply. The response carries no
-        author_name; listReplies does. body is required after
+        Adds a reply and answers 201 with the Reply, including author_name
+        as listReplies sends it. body is required after
         trimming. notify_customer defaults to true, and is forced to false for an
         internal note. Internal notes are for staff and administrators only.
         When notify_customer is true and the reporter has an address, the reporter
-        is sent the update. A failure to look up that address does not fail the
-        reply.
+        is sent the update, except when the author is a staff member or
+        administrator replying on a ticket they filed themselves: they are not
+        sent a copy of their own reply. A reporting user replying on their own
+        ticket is still sent one. A failure to look up that address does not fail
+        the reply.
         A reporting user's reply to a Resolved ticket inside the reopen window
-        reopens the ticket to the reopen target status. A reporting user cannot
+        reopens the ticket to the reopen target status (New when that status is
+        inactive). A reporting user cannot
         reply to a Closed ticket (409 ticket_closed), or to a Resolved ticket
         after the reopen window (409 reopen_window_closed). Staff and
         administrators can still post to a Closed ticket.
-        The path id must be a UUID. An OAuth client acting without a person behind
-        it is refused with 403 user_identity_required.
+        The path id is a UUID or a tracking number. An OAuth client posts as its service user, so
+        the reply's author is the client's user, which carries the client's name.
+        It needs the tickets:write scope. A service user is never mailed, so
+        notify_customer on a ticket it reported queues no email.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3804,8 +3828,7 @@ paths:
                 $ref: '#/components/schemas/Reply'
         '400':
           description: |
-            `bad_request`: invalid JSON; body is required; invalid ticket ID (the
-            path id is the tracking number of a ticket you can see; send its UUID); or no valid reopen target status is configured
+            `bad_request`: invalid JSON; body is required; or no valid reopen target status is configured
             (on the reopen path).
           content:
             application/json:
@@ -3817,7 +3840,8 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden`, "only staff can post internal notes",
-            for a reporting user; `user_identity_required` for an OAuth client.
+            for a reporting user; `user_identity_required` for a credential with
+            no user behind it.
           content:
             text/plain:
               schema:
@@ -3850,9 +3874,8 @@ paths:
         present but not valid JSON is refused with 400 bad_request and the ticket
         is left as it was. Resolving a Closed ticket is a way out
         of Closed, so it answers 409 ticket_closed unless closed_reopen_policy
-        allows the caller's role. The path id must be a UUID. An OAuth client
-        acting without a person behind it is refused with 403
-        user_identity_required.
+        allows the caller's role. The path id is a UUID or a tracking number. An OAuth client
+        acts as its service user.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3885,7 +3908,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Ticket'
         '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID), or the body is present but not valid JSON."
+          description: "`bad_request`: the body is present but is not valid JSON."
           content:
             application/json:
               schema:
@@ -3897,7 +3920,7 @@ paths:
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden` for a reporting user (message "you do
             not have permission to perform this action"); `user_identity_required`
-            for an OAuth client.
+            for a credential with no user behind it.
           content:
             text/plain:
               schema:
@@ -3924,7 +3947,7 @@ paths:
         A reporting user gets 403 forbidden on a
         ticket they can see, and 404 on one they cannot. Tags come back ordered by
         name. A tag that has since been deactivated still appears, with deleted_at
-        set. The id must be a UUID.
+        set. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3949,12 +3972,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Tag'
-        '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID)."
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -3980,7 +3997,7 @@ paths:
         included. The answer is 403 tag_deleted; an administrator must restore
         the tag first. An empty name
         is refused by the domain but answers 500 add_failed in this route, not
-        400. The path id must be a UUID.
+        400. The path id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -4015,7 +4032,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Tag'
         '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID). `invalid_body`: the body is not valid JSON."
+          description: "`invalid_body`: the body is not valid JSON."
           content:
             application/json:
               schema:
@@ -4076,7 +4093,7 @@ paths:
         '204':
           $ref: '#/components/responses/NoContent'
         '400':
-          description: "`invalid_id`: invalid ticket id (the path id is the tracking number of a ticket you can see; send its UUID), or invalid tag id (tagId is not a UUID)."
+          description: "`invalid_id`: invalid tag id (tagId is not a UUID)."
           content:
             application/json:
               schema:
@@ -4121,8 +4138,48 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning, attachment_storage]
+                required: [insecure_secrets, attachment_scanning, attachment_storage, oauth_clients_without_groups, passkeys, email, reopen_target]
                 properties:
+                  oauth_clients_without_groups:
+                    type: array
+                    items: {type: string}
+                    description: |
+                      Names of the switched-on OAuth clients that see no tickets
+                      because ticket scope enforcement is on and the client's
+                      service user is in no group. Always an array, and empty
+                      while enforcement is off. It stays until each client has
+                      a group or is disabled.
+                  passkeys:
+                    type: object
+                    required: [available, reason]
+                    description: |
+                      Whether passkeys can be used. They cannot when BASE_URL is
+                      an IP address, a single-label host or a non-ASCII host,
+                      because a passkey is bound to a domain name (localhost is
+                      accepted). The server starts anyway, with passkeys off.
+                      The admin UI shows a banner while available is false.
+                    properties:
+                      available:
+                        type: boolean
+                      reason:
+                        type: string
+                        description: Why not, as the passkey library words it. Empty when available.
+                  reopen_target:
+                    type: object
+                    required: [inactive]
+                    description: |
+                      Whether the configured reopen target status has been
+                      deactivated. While it is, every reopen (a forced reopen, and
+                      a requester's or guest's reply to a Resolved ticket) goes to
+                      New instead. The admin UI shows a banner asking for an
+                      active status.
+                    properties:
+                      inactive:
+                        type: boolean
+                        description: True when the setting names an existing status that is inactive.
+                      name:
+                        type: string
+                        description: The configured status name. Present only when inactive is true.
                   insecure_secrets:
                     type: [array, 'null']
                     description: |
@@ -4184,6 +4241,50 @@ paths:
                       problem:
                         type: string
                         description: The operating system's reason, without the path. Empty when writable.
+                  email:
+                    type: object
+                    required: [enabled, missing, signup_without_email, guest_submission_without_email, failing, failing_count, last_error]
+                    description: |
+                      Whether email can be sent and whether it is being
+                      delivered. Never carries a credential or an address.
+                    properties:
+                      enabled:
+                        type: boolean
+                        description: False until both SMTP_HOST and SMTP_FROM are set.
+                      missing:
+                        type: array
+                        description: The unset variables, SMTP_HOST and SMTP_FROM, while enabled is false. Empty otherwise.
+                        items:
+                          type: string
+                          enum: [SMTP_HOST, SMTP_FROM]
+                      signup_without_email:
+                        type: boolean
+                        description: |
+                          True when self_signup_enabled is on although email is not
+                          configured. Turning it on in that state is refused
+                          (email_required); an install that already had it on is
+                          reported here and left as it was.
+                      guest_submission_without_email:
+                        type: boolean
+                        description: The same, for guest_submission_enabled.
+                      failing:
+                        type: boolean
+                        description: |
+                          True while email rows (including signup verification mail) in the notification outbox are
+                          retrying after an error, or gave up within the last 24
+                          hours. A row is delivered and removed, so a working
+                          mailer reports false.
+                      failing_count:
+                        type: integer
+                        description: How many such rows there are. Zero when failing is false.
+                      last_error:
+                        type: string
+                        description: |
+                          The newest error text, with email addresses replaced by
+                          [address]. For example "SMTP server does not offer AUTH
+                          but SMTP_USER is set" or "SMTP server does not offer
+                          STARTTLS, and SMTP_PASSWORD is set: refusing to send
+                          the password unencrypted". Empty when failing is false.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4277,12 +4378,13 @@ paths:
         stored as sent, without a type check:
         - closed_reopen_policy, audit_mask_requester_names, attachment_scan_policy,
           attachment_infected_handling, attachment_mismatch_handling and
-          attachment_reputation_refresh take only the listed values. A string
-          outside the list is refused with the setting's own code
-          (invalid_closed_reopen_policy and so on). For closed_reopen_policy and
-          audit_mask_requester_names, null and a non-string are refused with
-          bad_request. For the other four, a non-string is refused with
-          bad_request and null with the setting's own code.
+          attachment_reputation_refresh take only the listed values. Every
+          refusal (null, a non-string, an empty string, or a string outside the
+          list) carries the setting's own code (invalid_closed_reopen_policy,
+          invalid_audit_mask_requester_names, invalid_scan_policy,
+          invalid_infected_handling, invalid_mismatch_handling,
+          invalid_reputation_refresh). Before v1.3.0, null and a non-string were
+          refused with bad_request for some of these.
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
@@ -4292,20 +4394,33 @@ paths:
           runs and is refused with 400 readonly_setting; it is left out of GET.
         - guest_submission_enabled and staff_can_view_ticket_change_history must be
           JSON booleans. null is refused.
+        - guest_submission_enabled and self_signup_enabled cannot be turned from
+          off to on while email is not configured (SMTP_HOST and SMTP_FROM): 400
+          email_required, and nothing in the body is stored. Both send an email
+          the person needs (the guest's ticket link, the signup verification
+          link). Only a change from off to on is refused, judged against the
+          stored value, so a settings page that sends the whole object back with
+          one of them already on is not refused. An install that already has
+          either on with email off keeps it and is warned in
+          getSecurityWarnings. Turning either off is always allowed.
         - attachment_scan_address is empty, tcp://host:port or unix:///path
-          (invalid_scanner_address). null is accepted and stored, and reads as
-          unset, so the address from the environment applies.
+          (invalid_scanner_address). null is refused (bad_request). An empty string leaves it unset.
         - attachment_allowed_types is an array of extensions that each match the
           pattern. An empty array is valid and means the instance takes no
-          attachments (invalid_allowed_types). null is accepted, stored, and read
-          as unset, which restores the default list.
-        - Each reputation provider's enabled setting must be a boolean or null;
-          null is stored and read as false. Enabling
+          attachments (invalid_allowed_types). null is refused (bad_request).
+        - Each reputation provider's enabled setting must be a boolean; null is
+          refused (invalid_reputation_config). Enabling
           VirusTotal, MetaDefender or PolySwarm needs a key, either stored already
           or sent in the same request (invalid_reputation_config). Only a
           provider the request names (its enabled setting or its key) is checked;
           the stored state of the others is not this request's to judge. CIRCL
           needs no key.
+        - auto_assign_group_id is the id of an existing group, or empty or null to
+          turn the catch-all off. auto_assign_user_ids is an array of ids of
+          existing staff or administrator accounts, or empty or null to turn the
+          round-robin off. Anything else is refused with 400 invalid_auto_assign.
+          Before this check an id that did not parse, or named nobody, was saved
+          and then skipped when a ticket was routed.
         - saml_metadata_url, saml_cert_pem, saml_key_pem, oidc_issuer_url,
           oidc_client_id and oidc_client_secret must be strings and oidc_enabled a
           boolean; null is refused (bad_request). saml_enabled and
@@ -4349,8 +4464,11 @@ paths:
       responses:
         '200':
           description: |
-            The write was applied, but it leaves some administrators unable to sign
-            in. The warning names them.
+            The write was applied, with a warning. It is one or both of: the write
+            leaves some administrators unable to sign in (the warning names them),
+            or it turned ticket_scope_enforced from off to on while some
+            OAuth clients have a service user in no group (the warning names the
+            clients, which will see no tickets). Nothing is refused for either.
           content:
             application/json:
               schema:
@@ -4601,9 +4719,7 @@ paths:
         never causes a lookup. The lookup shares a five-second budget across the
         request, and a provider that did not answer shows as unavailable rather than
         failing the response.
-        Takes the ticket UUID. As on every ticket route except GET /tickets/{id},
-        the tracking number of a ticket the caller can see is refused with 400
-        invalid_id.
+        The path id is a UUID or a tracking number.
       tags: ['Attachments']
       x-ghd-handler: handleListAttachments
       security:
@@ -4621,12 +4737,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Attachment'
-        '400':
-          description: The path id is the tracking number of a ticket you can see; send its UUID (invalid_id).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4674,8 +4784,7 @@ paths:
         only listAttachments and the re-check fill it in.
         The ticket checks run before the body is read, so a 409 is answered before
         any 400, 413 or 415 about the file.
-        Takes the ticket UUID. The tracking number of a ticket the caller can see
-        is refused with 400 invalid_id.
+        The path id is a UUID or a tracking number.
       tags: ['Attachments']
       x-ghd-handler: handleUploadAttachment
       security:
@@ -4705,9 +4814,8 @@ paths:
                 $ref: '#/components/schemas/Attachment'
         '400':
           description: |
-            No file field, or a body that is not multipart (bad_request), a filename
-            refused by the name checks (invalid_filename), or a path id that is the
-            tracking number of a ticket you can see; send its UUID (invalid_id).
+            No file field, or a body that is not multipart (bad_request), or a filename
+            refused by the name checks (invalid_filename).
           content:
             application/json:
               schema:
@@ -4806,8 +4914,7 @@ paths:
         header: control characters and path separators are removed, it is cut to
         200 bytes keeping the extension, and the plain form replaces every
         non-ASCII character with an underscore.
-        Takes the ticket UUID. The tracking number of a ticket the caller can see
-        is refused with 400 invalid_id.
+        The path id is a UUID or a tracking number.
       tags: ['Attachments']
       x-ghd-handler: handleDownloadAttachment
       security:
@@ -4904,7 +5011,7 @@ paths:
         '304':
           description: The client's copy is current. No body.
         '400':
-          description: The path id is the tracking number of a ticket you can see (send its UUID), or attachId is not a UUID (invalid_id).
+          description: attachId is not a UUID (invalid_id).
           content:
             application/json:
               schema:
@@ -4969,8 +5076,7 @@ paths:
         A file with no hash cannot be checked, and is refused with 409 no_verdict.
         The file need not be quarantined, but only a quarantined file is looked up
         automatically, so any other file normally answers 409 no_verdict.
-        Takes the ticket UUID. The tracking number of a ticket the caller can see
-        is refused with 400 invalid_id. An attachment that belongs to another
+        The path id is a UUID or a tracking number. An attachment that belongs to another
         ticket is 404 not_found ("attachment not found on this ticket"). An
         attachId that names no attachment at all is 404 not_found.
       tags: ['Attachments']
@@ -4998,8 +5104,7 @@ paths:
                 $ref: '#/components/schemas/Attachment'
         '400':
           description: |
-            The path id is the tracking number of a ticket you can see (send its
-            UUID), or attachId is not a UUID (invalid_id), or the provider
+            attachId is not a UUID (invalid_id), or the provider
             named is not enabled (invalid_provider).
           content:
             application/json:
@@ -5040,14 +5145,14 @@ paths:
   /api/v1/admin/api-keys:
     get:
       operationId: listAPIKeys
-      summary: List the caller's API keys.
+      summary: List API keys.
       description: >-
         Administrators only (second factor required).
-        Returns the API keys owned by the caller, newest first. The caller is the
-        signed-in administrator or, for an API key, the administrator who owns that
-        key. Keys owned by other administrators are not listed. The token and its
-        hash are never returned, so a key's secret cannot be read back after
-        creation.
+        An administrator signed in through the browser gets every API key, newest
+        first, each with its owner (owner_name, owner_email). An API key gets only
+        itself: not its owner's other keys, and not anyone else's. The token and its hash are never returned, so a key's
+        secret cannot be read back after creation. Before 1.3 a signed-in administrator
+        was shown only their own keys.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleListAPIKeys
       security:
@@ -5057,7 +5162,7 @@ paths:
       x-ghd-mfa: true
       responses:
         '200':
-          description: The caller's keys, newest first. An empty array when there are none.
+          description: The keys the caller may see, newest first. An empty array when there are none.
           content:
             application/json:
               schema:
@@ -5175,8 +5280,11 @@ paths:
       summary: Delete an API key.
       description: >-
         Administrators only (second factor required).
-        Deletes the key with this id, whoever owns it, so the key stops working on
-        the next request. An unknown id answers 404 not_found.
+        An administrator signed in through the browser deletes any key, whoever owns
+        it. An API key can delete only itself; any other id, its owner's other keys
+        included, answers 404 not_found, the same as an id that does not exist.
+        Either way the deleted key stops working on the next request. Before 1.3 an
+        API key could delete another administrator's key if it knew the id.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteAPIKey
       security:
@@ -5200,7 +5308,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           description: >-
-            not_found, for an id that names no API key.
+            not_found, for an id that names no API key the caller may delete (an API key may delete only itself).
           content:
             application/json:
               schema:
@@ -5503,10 +5611,11 @@ paths:
       summary: Delete a group.
       description: >-
         Administrators only (second factor required).
-        Deletes the group together with its memberships and scopes. Tickets
-        assigned to the group lose that group assignment (their assigned user, if
-        any, is kept), and no audit entry records the change on those tickets. An
-        unknown id answers 404 not_found.
+        Deletes the group together with its memberships and scopes. Every ticket
+        assigned to the group, open or not, is taken off it (their assigned user, if
+        any, is kept) and gets an "unassigned" audit entry naming the administrator.
+        The unassignments, their audit entries and the delete are one transaction:
+        if any part fails, none is applied. An unknown id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleDeleteGroup
       security:
@@ -5858,7 +5967,10 @@ paths:
         Administrators only (second factor required).
         Returns every OAuth client, ordered by name. The client secret is kept only
         as a hash and is never returned. Use id to delete a client, and client_id
-        as the value a caller presents to the token endpoint.
+        as the value a caller presents to the token endpoint. user_id is the
+        client's service user, the identity it acts as, and groups are that
+        user's groups (an empty array when it has none), which are the client's
+        ticket scope.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleListOAuthClients
       security:
@@ -5885,12 +5997,18 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates a client that can obtain bearer tokens from POST
-        /api/v1/auth/oauth/token. The client acts as staff, so it never reaches an
-        administrator-only route. The client_secret is returned once. The response
-        carries client_id and the secret but not the record id, so read the id from
-        the list when you need to delete the client. scopes is required and must be
-        a non-empty list of valid resource:action values. An API key can grant
-        only scopes it holds itself.
+        /api/v1/auth/oauth/token. Creating the client also creates its service
+        user, in the same statement, named after the client: staff role, no
+        password, no second factor, no SSO identity, never able to sign in. The
+        client acts as that user, so it never reaches an administrator-only
+        route. The user is listed on GET /api/v1/admin/users with service_account
+        true, where an administrator can rename it, change its role between
+        staff and user, give it groups, and disable it (which stops the client).
+        The client_secret is returned once. The response carries the record id
+        (the one DELETE uses), client_id, the secret and the service user's
+        user_id. scopes is required
+        and must be a non-empty list of valid resource:action values. An API key
+        can grant only scopes it holds itself.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleCreateOAuthClient
       security:
@@ -5924,8 +6042,13 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [client_id, client_secret, name]
+                required: [id, client_id, client_secret, name, user_id]
                 properties:
+                  user_id:
+                    $ref: '#/components/schemas/Uuid'
+                  id:
+                    $ref: '#/components/schemas/Uuid'
+                    description: The record id, as the list and DELETE use it.
                   client_id:
                     type: string
                     description: 16 lowercase hexadecimal characters.
@@ -5972,8 +6095,10 @@ paths:
       summary: Delete an OAuth client.
       description: >-
         Administrators only (second factor required).
-        Deletes the client. Its tokens stop being accepted on the next request,
-        because the client is looked up again on every request. An unknown id
+        Deletes the client and soft-deletes its service user in the same
+        statement. Its tokens stop being accepted on the next request, because
+        the client is looked up again on every request. The user row is kept, so
+        tickets and replies it wrote keep their author's name. An unknown id
         answers 404 not_found.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteOAuthClient
@@ -6195,11 +6320,25 @@ paths:
       summary: List users.
       description: >-
         Administrators only (second factor required).
-        Returns up to 200 accounts, newest first. Disabled accounts are included and
-        soft-deleted accounts are left out. There are no paging parameters, so an
-        instance with more than 200 accounts shows only the first 200 here, as the
-        admin page does. auth_type says how an account signs in. An account that
-        signs in only through OIDC is reported as local.
+        Disabled accounts are included and soft-deleted accounts are left out.
+        auth_type says how an account signs in, read off the credentials it
+        holds (see AdminUserSummary).
+
+        Without page, the answer is the newest 200 accounts, newest first, and
+        nothing else changes it. limit, offset, q, role and service_account are ignored in that
+        mode, as they always were, so an instance with more than 200 accounts
+        shows only the first 200.
+
+        With page (1-based) the list is paged: per_page accounts (default 50, at
+        most 200; a larger value is clamped), newest first. q keeps accounts
+        whose email or display name contains it, ignoring case; % and _ match
+        themselves. role keeps one role. service_account=true keeps only service
+        accounts and service_account=false only people. The body is still a bare
+        array, and X-Total-Count holds the number of accounts that match q, role
+        and service_account, so a client can show how many pages there are. A page
+        past the end is an empty array. A page or per_page that is not a whole
+        number of 1 or more, a role that is not admin, staff or user, or a
+        service_account that is not true or false, is refused with 400 bad_request.
       tags: ['Admin: Users']
       x-ghd-handler: handleListUsers
       security:
@@ -6207,9 +6346,59 @@ paths:
         - apiKey: ['users:read']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Turns paging on. 1-based.
+          schema:
+            type: integer
+            minimum: 1
+        - name: per_page
+          in: query
+          required: false
+          description: Accounts per page. Only read when page is sent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: q
+          in: query
+          required: false
+          description: Substring of email or display name. Only read when page is sent.
+          schema:
+            type: string
+        - name: role
+          in: query
+          required: false
+          description: Only this role. Only read when page is sent.
+          schema:
+            type: string
+            enum: [admin, staff, user]
+        - name: service_account
+          in: query
+          required: false
+          description: >-
+            true keeps only service accounts (the identities OAuth clients act as),
+            false keeps only people, absent or empty keeps everyone. X-Total-Count
+            counts the filtered list. Any other value is refused with 400
+            bad_request. Only read when page is sent.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
-          description: Up to 200 accounts. An empty array when there are none.
+          description: >-
+            Up to 200 accounts (unpaged) or one page. An empty array when there
+            are none.
+          headers:
+            X-Total-Count:
+              description: >-
+                Paged mode only. How many accounts match q and role, across all
+                pages.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -6217,6 +6406,8 @@ paths:
                 maxItems: 200
                 items:
                   $ref: '#/components/schemas/AdminUserSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -6360,13 +6551,23 @@ paths:
         Applies the fields that are sent, in this order: disabled (disabling also
         ends the account's sessions), reset_mfa (clears the authenticator and every
         passkey, and ends sessions), role (ends sessions), then display_name and
-        email. Absent fields are unchanged. The steps are not one transaction. When a
-        later field is refused, the earlier ones are already written: disabled true
-        with an invalid email leaves the account disabled and answers 400. The last
-        active administrator cannot be disabled or demoted, and that answers 400. An
+        email. Absent fields are unchanged. Every field is checked before the first
+        one is written, in this order: the body (an invalid role, an invalid email
+        or a blank display name answers 400), then the caller (see 403), then the
+        account (an unknown or soft-deleted id answers 404, for every body, an empty
+        one included). Two refusals that depend on the database are also checked
+        first: a disable or demotion that would leave no active administrator
+        answers 400, and an email address another account holds answers 409
+        email_taken. A refused request changes nothing: disabled true with an
+        invalid or taken email leaves the account enabled, and reset_mfa with a
+        refused demotion leaves the factors in place. The writes themselves are
+        still separate steps, so a request that loses a race with another
+        administrator, or a failure of the database partway through, can leave the
+        earlier ones applied. The last
+        active administrator cannot be disabled or demoted. An
         API key cannot change an administrator's account or promote a user to
-        administrator; that answers 403 session_required. The response always
-        carries passkey_count as 0, so read GET for the real count.
+        administrator; that answers 403 session_required, after the body checks. The
+        response is the same detail view GET returns, passkey_count included.
       tags: ['Admin: Users']
       x-ghd-handler: handleUpdateUser
       security:
@@ -6431,9 +6632,9 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: >-
-            not_found, when no account has this id. Every change that needs the account
-            either looks it up first or finds no row to write, so an unknown id answers 404
-            for any body that decodes.
+            not_found, when no account has this id or the account is soft-deleted. A
+            body that fails validation answers 400 first, to a session and to an API key
+            alike.
           content:
             application/json:
               schema:
@@ -6441,7 +6642,11 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included.
+            included. service_account, when the account is a service account and the
+            change would give it a way to sign in: reset_mfa, or a role of admin. A
+            service account can be renamed, set to staff or user, given groups, and
+            disabled. Renaming it (display_name) also renames its OAuth client, in
+            the same statement. It cannot be deleted here (DELETE answers 409).
           content:
             application/json:
               schema:
@@ -6499,6 +6704,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            service_account, when the account is a service account (the identity
+            an OAuth client acts as). It is deleted only by deleting its client
+            (DELETE /api/v1/admin/oauth-clients/{id}). The message is exactly
+            "This is the service account for OAuth client <name>. Delete the
+            client instead." and an interface should show it as written. Nothing
+            is changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/admin/users/{id}/password:
     parameters:
       - name: id
@@ -6514,14 +6731,12 @@ paths:
       description: >-
         Administrators only (second factor required).
         Sets a new local password without asking for the old one, and ends all of the
-        account's sessions, since a reset usually answers a compromise. The order of
-        the checks depends on the caller. For a signed-in session the password is
-        checked before the account is looked up, so an unknown id with a short
-        password answers 400, not 404, and a soft-deleted account's password is set
-        (204). For an API key the account is looked up first, before the body is
-        read: an unknown or soft-deleted id answers 404 whatever the body holds, and
-        an administrator's account answers 403 session_required. The reset is
-        recorded in the audit log on a best-effort basis.
+        account's sessions, since a reset usually answers a compromise. The checks run
+        in the same order for a signed-in session and for an API key: the body and
+        the password first (400), then, for an API key only, whether the account is an
+        administrator (403 session_required), then the account itself. An unknown
+        or soft-deleted id answers 404; a soft-deleted account's password is not
+        set. The reset is recorded in the audit log on a best-effort basis.
       tags: ['Admin: Users']
       x-ghd-handler: handleAdminResetPassword
       security:
@@ -6570,10 +6785,16 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: >-
-            not_found, when no account has this id. For a signed-in session this is
-            reached only after the password has passed validation. For an API key it is
-            checked first, before the body is read, and also covers a soft-deleted
-            account.
+            not_found, when no account has this id, or the account is soft-deleted.
+            Reached only after the password has passed validation, whoever the caller is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            service_account, when the account is a service account (the identity
+            an OAuth client acts as). It never has a password.
           content:
             application/json:
               schema:
@@ -6617,8 +6838,18 @@ paths:
         WebhookEvent schema, and "*" subscribes to every ticket event. The checks run
         in this order: the body, then events, then the url, which must use http or
         https, name a host, and resolve to an address that is not internal, then
-        payload_format. Deliveries are not retried. A failed attempt is recorded on the
-        hook and not repeated. The secret is write-only. When it is set, each delivery
+        payload_format, then filter. A failed delivery is retried: connection errors, DNS, TLS,
+        timeouts, 5xx and 429 are tried again, 30 seconds doubling to an hour, 8 attempts
+        in all (a Retry-After from the receiver delays the next one, up to an hour), so a
+        receiver can see the same event more than once. A refused internal address and any
+        other status are never retried. Each result is recorded on the hook
+        (last_delivery) and in its history
+        (GET /api/v1/admin/webhooks/{id}/deliveries). Every request a receiver gets carries
+        X-GHD-Delivery, a UUID that is the same on every retry of one delivery, so it can
+        drop a repeat, and X-GHD-Event, the event name (for example ticket.replied). The
+        raw body is ids only: Type (the event name), TicketID, ActorID, OccurredAt and,
+        where the event has them, a Payload of new_status_id and target_id, and nothing
+        else The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
         same value in X-OHD-Signature for older consumers. An empty secret means deliveries
         are not signed. enabled defaults to true.
@@ -6653,6 +6884,11 @@ paths:
                 enabled:
                   type: boolean
                   description: Defaults to true. A hook can be saved disabled before its receiver is ready.
+                filter:
+                  description: Optional. Absent, null or {} means every ticket.
+                  anyOf:
+                    - $ref: '#/components/schemas/WebhookFilter'
+                    - type: 'null'
       responses:
         '201':
           description: The created subscription. last_delivery is null, and the secret is not returned.
@@ -6668,7 +6904,11 @@ paths:
             list of valid names in the message. invalid_url when the scheme is not http or
             https, the host is missing, or the host does not resolve or resolves to an
             internal address. invalid_payload_format when payload_format is not one of the
-            five.
+            five. invalid_filter when filter is not an object of those four keys or an id is not
+            a UUID. invalid_filter_priority for a priority that is not critical, high, medium or
+            low. unknown_filter_category or unknown_filter_group for an id that names no category
+            (inactive ones are accepted) or no group. empty_inverted_filter when invert is true
+            with no condition, which would match no ticket.
           content:
             application/json:
               schema:
@@ -6692,14 +6932,17 @@ paths:
       description: >-
         Administrators only (second factor required).
         Changes the fields that are sent. Absent fields keep their stored value. url,
-        events and payload_format are validated only when sent, so a request that sets
+        events, payload_format and filter are validated only when sent, so a request that sets
         only enabled is never refused for a field it does not touch. A changed url clears
         last_delivery in the database, because the old result described a different
         target. events, when sent, must be non-empty and valid. secret: absent or null keeps
         the stored secret, but an empty string clears it, and deliveries then stop being
-        signed. payload_format: an empty string means raw. The response is built from the
-        record read before the update, so its last_delivery can still show the result for
-        the previous url. An unknown id answers 404 not_found.
+        signed. Clearing the secret this way is a deliberate choice, not an oversight:
+        the route is administrator-only (the administrator role and a second factor are
+        required, and an OAuth client carries the staff role, so it cannot reach it).
+        payload_format: an empty string means raw. The response is the record read back
+        after the update, so after a url change last_delivery is null. An unknown id
+        answers 404 not_found.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleUpdateWebhook
       security:
@@ -6726,17 +6969,25 @@ paths:
                   type: [string, 'null']
                   description: >-
                     Write-only. Absent or null keeps the stored secret. An empty string
-                    clears it.
+                    clears it, and deliveries then stop being signed. Deliberate, and
+                    administrator-only.
                 enabled:
                   type: boolean
                   description: Omit to keep the current state.
                 payload_format:
                   $ref: '#/components/schemas/WebhookPayloadFormat'
+                filter:
+                  description: >-
+                    Replaces the whole filter. null or {} removes it. Omit to keep the current one.
+                    Validated only when sent.
+                  anyOf:
+                    - $ref: '#/components/schemas/WebhookFilter'
+                    - type: 'null'
       responses:
         '200':
           description: >-
-            The subscription after the change. last_delivery here is the value read before
-            the update, even when the url changed and the stored result was cleared.
+            The subscription as stored after the change. When the url changed,
+            last_delivery is null: the old result described a different target.
           content:
             application/json:
               schema:
@@ -6746,7 +6997,8 @@ paths:
             Refused by the handler, as application/json. bad_request with message "invalid
             ID" for a path id that is not a UUID, or "invalid JSON" for a body that does not
             decode. missing_events, invalid_event_name, invalid_url and
-            invalid_payload_format are as for create, and apply only when the field is sent.
+            invalid_payload_format are as for create, and apply only when the field is sent. The
+            filter codes, as for create, apply only when filter is sent.
           content:
             application/json:
               schema:
@@ -6768,7 +7020,7 @@ paths:
       summary: Delete a webhook.
       description: >-
         Administrators only (second factor required).
-        Deletes the subscription and its last_delivery. A delivery already in flight
+        Deletes the subscription, its last_delivery and its delivery history. A delivery already in flight
         finishes, but its result is discarded because the record is gone. An unknown id
         answers 404 not_found.
       tags: ['Admin: Webhooks']
@@ -6795,6 +7047,133 @@ paths:
         '404':
           description: >-
             not_found, for an id that names no webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/webhooks/{id}/deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: List a webhook's recent deliveries.
+      description: >-
+        Administrators only (second factor required).
+        Returns the last 25 deliveries to this hook, newest first. A delivery is one
+        event sent to one hook; its retries update the same entry. Each entry has the
+        outcome only: no payload, no response body and no error text, because a URL can
+        carry a token. Changing the hook's url clears the history.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleListWebhookDeliveries
+      security:
+        - sessionCookie: []
+        - apiKey: ['webhooks:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The deliveries, newest first. An empty array when there are none.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 25
+                items:
+                  $ref: '#/components/schemas/WebhookDeliveryRecord'
+        '400':
+          description: bad_request, message "invalid ID", when the path id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: not_found, when no webhook has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/webhooks/{id}/deliveries/{delivery}/redeliver:
+    post:
+      operationId: redeliverWebhook
+      summary: Send an earlier delivery's event to the hook again.
+      description: >-
+        Administrators only (second factor required).
+        Queues the stored event of one of the hook's recent deliveries as a new delivery,
+        with a new X-GHD-Delivery id, so a receiver that de-duplicates by id does not
+        drop it. It is sent by the background worker, not during this request, and
+        retried like any delivery. It appears in the history once it has been
+        attempted. Only ids are kept from the original, so a raw hook gets the same body as
+        the original. A Slack, Teams, Discord or JIRA hook gets its message rebuilt from
+        the ticket as it is now: current subject, tracking number and status name, and a
+        reply's text only if that reply still exists and is public (never a note's). If
+        the ticket is gone, the headline only. The hook's ticket filter is evaluated as it
+        is now, against the ticket's current category, priority and assigned group (the
+        history keeps none). If the filter does not admit the ticket the request is refused
+        with 409 webhook_filter_excludes and nothing is queued. If the hook has a filter and
+        the ticket cannot be read (it was deleted) the filter cannot be checked and the request is
+        refused with 409 webhook_filter_unverifiable, with nothing queued. A hook with no
+        filter is sent whether or not the ticket exists.
+      tags: ['Admin: Webhooks']
+      x-ghd-handler: handleRedeliverWebhook
+      security:
+        - sessionCookie: []
+        - apiKey: ['webhooks:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+        - name: delivery
+          in: path
+          required: true
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '202':
+          description: Queued. No body.
+        '400':
+          description: >-
+            bad_request, message "invalid ID" or "invalid delivery ID", when a path id is
+            not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: >-
+            not_found, when the webhook does not exist, or has no such delivery in its
+            history (a delivery of another hook counts as not found).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            webhook_disabled, when the webhook is disabled (enable it first); or
+            webhook_not_subscribed, when the webhook no longer lists the delivery's event
+            (add it to the webhook's events first); or webhook_filter_excludes, when the
+            webhook's ticket filter, as it is now, does not admit the ticket the delivery was
+            about (change the filter first); or webhook_filter_unverifiable, when the webhook has a
+            ticket filter and the ticket the delivery was about no longer exists, so the filter
+            cannot be checked (a webhook with no filter is not refused for this).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: unavailable, when the server was started without a delivery queue.
           content:
             application/json:
               schema:
@@ -6917,8 +7296,9 @@ paths:
         Partial update. An absent field is unchanged. Setting active to false
         archives the category: the catalogue that guests and reporting users see
         stops listing it, and tickets that already use it keep it. The name is
-        stored as sent, not trimmed. An empty or whitespace-only name is refused with
-        400 bad_request, and an unknown id with 404 not_found.
+        trimmed, as on create, and the response is the saved row. An empty or
+        whitespace-only name is refused with 400 bad_request, and an unknown id with
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateCategory
       security:
@@ -6935,7 +7315,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                  description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -6970,8 +7350,9 @@ paths:
         name it and the canned responses scoped to it. A category that a ticket uses,
         or whose type or item a ticket uses, is refused with 409 category_in_use. So is a category with an SLA policy
         that a ticket's SLA record uses. The message gives the counts.
-        Custom-field assignments made to the category or its descendants are not
-        removed, and keep pointing at the deleted record. An unknown id answers 404 not_found.
+        Custom-field assignments made to the category, its types or their items are
+        removed in the same statement, so a refused delete leaves them in place. An
+        unknown id answers 404 not_found.
         To retire a category that is in use, archive
         it with active set to false instead.
       tags: ['Admin: Catalogue']
@@ -7020,8 +7401,8 @@ paths:
         Lists the custom-field assignments whose scope is this category, identified
         by {id}. Each entry carries its field definition under field_def, filled
         with id, name, field_type, options and active only. In that embedded copy
-        sort_order is 0 and created_at is the zero time. An unknown category returns
-        an empty array.
+        sort_order is 0 and created_at is the zero time. An unknown category answers
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListAssignments
       security:
@@ -7043,17 +7424,21 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createCategoryFieldAssignment
       summary: Assign a custom field to a category.
       description: >-
         Administrators only (second factor required).
         Assigns the field definition field_def_id to this category, identified by
-        {id}, and answers 201 with the new assignment. The category is not confirmed
-        to exist. visible_on_new and required_on_new default to false when omitted.
-        The field definition must exist, and the same field cannot be
-        assigned to the same category twice. Either refusal is 400 bad_request, with
-        the database message as the text.
+        {id}, and answers 201 with the new assignment. A category that does not exist
+        answers 404 not_found. visible_on_new and required_on_new default to false when omitted.
+        The field definition must exist (400 invalid_reference otherwise), and the same
+        field cannot be assigned to the same category twice (409 conflict). The messages
+        are written for the caller and never carry database text. visible_on_new is
+        decoded as an optional boolean, so absent and false are the same, and the
+        database column defaults to false to match (migration 000040).
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -7092,18 +7477,25 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: this field is already assigned to this category."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/fields/{assignmentId}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the assignment.
+        description: Category UUID. Must exist; otherwise 404 not_found.
         schema:
           type: string
       - name: assignmentId
         in: path
         required: true
-        description: Field assignment UUID. A malformed value is 400 bad_request. It identifies the assignment on its own.
+        description: Field assignment UUID. A malformed value is 400 bad_request. It must be attached to the scope the path ends at; otherwise 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7114,8 +7506,9 @@ paths:
         Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
-        assignment cannot be changed here. Only assignmentId is read; the other ids in
-        the path are not checked against it. An unknown assignment is 404 not_found.
+        assignment cannot be changed here. The ids in the path must name a real chain
+        and the assignment must belong to the scope the path ends at; an unknown
+        assignment, or one attached to a different scope, is 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateAssignment
       security:
@@ -7158,9 +7551,10 @@ paths:
       summary: Remove a custom-field assignment from a category.
       description: >-
         Administrators only (second factor required).
-        Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 404 not_found when no
-        assignment has that id. Ticket values already stored for the field are not
+        Removes one assignment, identified by assignmentId. The ids in the path must
+        name a real chain and the assignment must belong to the scope the path ends
+        at. Answers 404 not_found when no assignment has that id, or it is attached to
+        a different scope. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -7270,13 +7664,13 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so the type is reached through any category id in the path.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Parsed; a malformed value is 400 bad_request. It identifies the type on its own.
+        description: Type UUID. A malformed value is 400 bad_request. An unknown id is 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7287,8 +7681,9 @@ paths:
         Administrators only (second factor required).
         Partial update of the type identified by typeId. An absent field is unchanged,
         and active set to false archives the type. The category of a type cannot be
-        changed here, so a category_id in the body is ignored. The {id} segment is not
-        checked. The name is stored as sent, not trimmed. An empty or whitespace-only
+        changed here, so a category_id in the body is ignored. A type that is not in
+        the category named by {id} answers 404 not_found. The name is trimmed, as on
+        create, and the response is the saved row. An empty or whitespace-only
         name is refused with 400 bad_request, and an unknown type answers 404
         not_found.
       tags: ['Admin: Catalogue']
@@ -7307,7 +7702,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                  description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -7341,8 +7736,9 @@ paths:
         responses and the group scope entries scoped to the type. Deleting a type that
         a ticket uses, or whose item a ticket uses, is refused with 409
         type_in_use. Custom-field assignments made to the type or its
-        items are not removed. An unknown id answers 404 not_found. The {id} segment is not
-        checked. To retire a type that is in use, archive it instead.
+        items are removed in the same statement, so a refused delete leaves them in
+        place. An unknown id answers 404 not_found, and so does a type that is not in
+        the category named by {id}. To retire a type that is in use, archive it instead.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteType
       security:
@@ -7377,7 +7773,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the type.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
@@ -7393,10 +7789,10 @@ paths:
       description: >-
         Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this type, identified by
-        {typeId}. The {id} segment is not checked against it. Each entry carries its field definition under field_def,
+        {typeId}. Each entry carries its field definition under field_def,
         filled with id, name, field_type, options and active only. In that embedded
-        copy sort_order is 0 and created_at is the zero time. An unknown type returns
-        an empty array.
+        copy sort_order is 0 and created_at is the zero time. An unknown type, or a
+        type that is not in the category named by {id}, answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListAssignments
       security:
@@ -7418,17 +7814,19 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createTypeFieldAssignment
       summary: Assign a custom field to a type.
       description: >-
         Administrators only (second factor required).
         Assigns the field definition field_def_id to this type, identified by {typeId},
-        and answers 201 with the new assignment. The {id} segment is not checked, and
-        the type is not confirmed to exist. visible_on_new and required_on_new default
-        to false when omitted. The field definition must exist, and the same field cannot be assigned
-        to the same type twice. Either refusal is 400 bad_request, with the database
-        message as the text.
+        and answers 201 with the new assignment. A type that does not exist, or is not
+        in the category named by {id}, answers 404 not_found. visible_on_new and required_on_new default
+        to false when omitted. The field definition must exist (400 invalid_reference otherwise), and the same
+        field cannot be assigned to the same type twice (409 conflict). The messages are
+        written for the caller and never carry database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -7467,24 +7865,31 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: this field is already assigned to this type."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/fields/{assignmentId}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Category UUID. The path must name a real chain; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Type UUID. It must belong to the category; otherwise 404 not_found.
         schema:
           type: string
       - name: assignmentId
         in: path
         required: true
-        description: Field assignment UUID. A malformed value is 400 bad_request. It identifies the assignment on its own.
+        description: Field assignment UUID. A malformed value is 400 bad_request. It must be attached to the scope the path ends at; otherwise 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7495,8 +7900,9 @@ paths:
         Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
-        assignment cannot be changed here. Only assignmentId is read; the other ids in
-        the path are not checked against it. An unknown assignment is 404 not_found.
+        assignment cannot be changed here. The ids in the path must name a real chain
+        and the assignment must belong to the scope the path ends at; an unknown
+        assignment, or one attached to a different scope, is 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateAssignment
       security:
@@ -7539,9 +7945,10 @@ paths:
       summary: Remove a custom-field assignment from a type.
       description: >-
         Administrators only (second factor required).
-        Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 404 not_found when no
-        assignment has that id. Ticket values already stored for the field are not
+        Removes one assignment, identified by assignmentId. The ids in the path must
+        name a real chain and the assignment must belong to the scope the path ends
+        at. Answers 404 not_found when no assignment has that id, or it is attached to
+        a different scope. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -7566,7 +7973,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the type.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
@@ -7581,8 +7988,9 @@ paths:
       summary: List the items of a type.
       description: >-
         Administrators only (second factor required).
-        Lists the items of this type, active and archived, as a bare array. Only
-        {typeId} is read. An unknown type returns an empty array rather than 404.
+        Lists the items of this type, active and archived, as a bare array. An
+        unknown type, or a type that is not in the category named by {id}, answers
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListItems
       security:
@@ -7604,6 +8012,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createItem
       summary: Create an item under a type.
@@ -7611,8 +8021,8 @@ paths:
         Administrators only (second factor required).
         Creates an active item under this type, identified by {typeId}. The name is
         trimmed and must not be empty. An empty name is refused with 400 bad_request.
-        A type that does not exist is answered 404 not_found. The {id}
-        segment is not checked. sort_order defaults to 0.
+        A type that does not exist, or is not in the category named by {id}, is
+        answered 404 not_found. sort_order defaults to 0.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateItem
       security:
@@ -7657,19 +8067,19 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so the item is reached through any category id in the path.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations, so the item is reached through any type id in the path.
+        description: Type UUID. The item must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: itemId
         in: path
         required: true
-        description: Item UUID. Parsed; a malformed value is 400 bad_request. It identifies the item on its own.
+        description: Item UUID. A malformed value is 400 bad_request. An unknown id is 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7680,10 +8090,11 @@ paths:
         Administrators only (second factor required).
         Partial update of the item identified by itemId. An absent field is unchanged,
         and active set to false archives the item. The type of an item cannot be
-        changed here, so a type_id in the body is ignored. The {id} and {typeId}
-        segments are not checked. The name is stored as sent, not trimmed. An empty or
-        whitespace-only name is refused with 400 bad_request, and an unknown item
-        answers 404 not_found.
+        changed here, so a type_id in the body is ignored. An item that is not in the
+        type named by {typeId}, or a type that is not in the category named by {id},
+        answers 404 not_found. The name is trimmed, as on create, and the response is
+        the saved row. An empty or whitespace-only name is refused with 400
+        bad_request, and an unknown item answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateItem
       security:
@@ -7700,7 +8111,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                  description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -7732,9 +8143,10 @@ paths:
         Administrators only (second factor required).
         Hard delete of the item identified by itemId. Deleting an item that a ticket
         uses is refused with 409 item_in_use. Custom-field assignments
-        made to the item are not removed. An unknown id answers 404 not_found. The {id} and
-        {typeId} segments are not checked. To retire an item that is in use, archive it
-        instead.
+        made to the item are removed in the same statement, so a refused delete leaves
+        them in place. An unknown id answers 404 not_found, and so does an item that is
+        not in the type named by {typeId}, or a type that is not in the category named
+        by {id}. To retire an item that is in use, archive it instead.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteItem
       security:
@@ -7769,13 +8181,13 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the item.
+        description: Category UUID. The path must name a real chain; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations, so it is not checked against the item.
+        description: Type UUID. The item must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: itemId
@@ -7791,11 +8203,11 @@ paths:
       description: >-
         Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this item, identified by
-        {itemId}. The {id} and {typeId} segments are not checked against it. Each
+        {itemId}. Each
         entry carries its field definition under field_def,
         filled with id, name, field_type, options and active only. In that embedded
-        copy sort_order is 0 and created_at is the zero time. An unknown item returns
-        an empty array.
+        copy sort_order is 0 and created_at is the zero time. An unknown item, or one
+        whose type or category does not match the path, answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListAssignments
       security:
@@ -7817,17 +8229,19 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createItemFieldAssignment
       summary: Assign a custom field to an item.
       description: >-
         Administrators only (second factor required).
         Assigns the field definition field_def_id to this item, identified by {itemId},
-        and answers 201 with the new assignment. The {id} and {typeId} segments are
-        not checked, and the item is not confirmed to exist. visible_on_new and
-        required_on_new default to false when omitted. The field definition must exist, and the same field cannot be assigned
-        to the same item twice. Either refusal is 400 bad_request, with the database
-        message as the text.
+        and answers 201 with the new assignment. An item that does not exist, or whose
+        type or category does not match the path, answers 404 not_found. visible_on_new and
+        required_on_new default to false when omitted. The field definition must exist (400 invalid_reference otherwise), and the same
+        field cannot be assigned to the same item twice (409 conflict). The messages are
+        written for the caller and never carry database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -7866,30 +8280,37 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: this field is already assigned to this item."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Category UUID. The path must name a real chain; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Type UUID. It must belong to the category; otherwise 404 not_found.
         schema:
           type: string
       - name: itemId
         in: path
         required: true
-        description: Item UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Item UUID. It must belong to the type; otherwise 404 not_found.
         schema:
           type: string
       - name: assignmentId
         in: path
         required: true
-        description: Field assignment UUID. A malformed value is 400 bad_request. It identifies the assignment on its own.
+        description: Field assignment UUID. A malformed value is 400 bad_request. It must be attached to the scope the path ends at; otherwise 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7900,8 +8321,9 @@ paths:
         Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
-        assignment cannot be changed here. Only assignmentId is read; the other ids in
-        the path are not checked against it. An unknown assignment is 404 not_found.
+        assignment cannot be changed here. The ids in the path must name a real chain
+        and the assignment must belong to the scope the path ends at; an unknown
+        assignment, or one attached to a different scope, is 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateAssignment
       security:
@@ -7944,9 +8366,10 @@ paths:
       summary: Remove a custom-field assignment from an item.
       description: >-
         Administrators only (second factor required).
-        Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 404 not_found when no
-        assignment has that id. Ticket values already stored for the field are not
+        Removes one assignment, identified by assignmentId. The ids in the path must
+        name a real chain and the assignment must belong to the scope the path ends
+        at. Answers 404 not_found when no assignment has that id, or it is attached to
+        a different scope. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -8003,9 +8426,9 @@ paths:
         must be unique across definitions. field_type is one of text, textarea, number
         or select. A select field needs at least one option. options are stored as
         sent for any field type, and only select fields use them. sort_order defaults
-        to 0. Every refusal, whether from the validation or from the database, is
-        400 bad_request, with the error text as the message. A duplicate name is
-        therefore a 400, not a 409.
+        to 0. A value the validation refuses is 400 bad_request, with the reason as the
+        message. A name already in use is 409 conflict. Any other failure is a 500
+        internal_error. No message carries database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateFieldDef
       security:
@@ -8046,6 +8469,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: a field with this name already exists."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/admin/custom-fields/{id}:
     parameters:
       - name: id
@@ -8064,7 +8492,8 @@ paths:
         whole list, and an empty list is refused for a select field. Setting active to
         false deactivates the definition. It is never deleted, and its existing ticket
         values are kept. A refused value is 400 bad_request with the reason as the
-        message. An unknown id is 404 not_found.
+        message, a name already in use is 409 conflict, and an unknown id is 404
+        not_found. The response is the saved row.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateFieldDef
       security:
@@ -8099,8 +8528,8 @@ paths:
       responses:
         '200':
           description: >-
-            The definition after the update. name is echoed as sent; it is stored
-            trimmed, so a padded name reads back trimmed from the list.
+            The definition as stored after the update, so name is the trimmed value
+            and created_at is the original.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CustomFieldDef'}
@@ -8110,6 +8539,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: another field already has this name."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/admin/sla/policies:
@@ -8118,9 +8552,8 @@ paths:
       summary: List SLA policies.
       description: >-
         Administrators only (second factor required).
-        Lists every SLA policy as a bare array, ordered by priority compared as text
-        (critical, high, low, medium), with policies that have no priority last,
-        then by name.
+        Lists every SLA policy as a bare array, ordered by severity (critical, high,
+        medium, low), with policies that have no priority last, then by name.
       tags: ['Admin: SLA']
       x-ghd-handler: handleListSLAPolicies
       security:
@@ -8308,8 +8741,8 @@ paths:
         Administrators only (second factor required).
         Lists every ticket status, system and custom, as a bare array. ticket_count is
         the number of tickets in each status across all tickets, because the caller is
-        an administrator. A count that cannot be read is reported as 0 rather than
-        failing the request. Staff and reporting users get the same list through
+        an administrator. A count that cannot be read fails the request (500
+        internal_error); it is never reported as 0. Staff and reporting users get the same list through
         GET /api/v1/statuses, with counts scoped to what they can see.
       tags: ['Admin: Statuses']
       x-ghd-handler: handleListStatuses
@@ -8338,8 +8771,8 @@ paths:
         Creates an active custom status. The name is trimmed and must not be empty, and
         it must be unique: a name already in use is 409 status_name_taken. color is free
         text, stored as sent, and the server does not check that it is a colour.
-        sort_order defaults to 0. The response carries ticket_count 0, because counts
-        are computed only when statuses are listed.
+        sort_order defaults to 0. The response carries ticket_count, which is 0 for a
+        status that was just created.
       tags: ['Admin: Statuses']
       x-ghd-handler: handleCreateStatus
       security:
@@ -8402,8 +8835,8 @@ paths:
         status its current name is not a rename and is allowed. The name is trimmed. An
         empty name is 400 bad_request, and a name in use is 409 status_name_taken. An
         unknown id is 404 not_found. color and sort_order are stored as sent. The
-        response carries ticket_count 0, because counts are computed only when
-        statuses are listed.
+        response carries the status's ticket_count, computed for the caller as in the
+        list.
       tags: ['Admin: Statuses']
       x-ghd-handler: handleUpdateStatus
       security:
@@ -8430,13 +8863,18 @@ paths:
                 active:
                   type: boolean
                   description: >-
-                    Stored flag. The server does not act on it: an inactive status is
-                    still listed by GET /api/v1/statuses and is still accepted when a
-                    ticket's status is changed. Refused for a system status when
-                    sent as true or false; null is treated as absent.
+                    False retires the status for every role: it is still listed by
+                    GET /api/v1/statuses (with active false), but the server refuses
+                    a move of a ticket into it (409 status_inactive), and the ticket
+                    status picker does not offer it. Tickets already in it stay and can
+                    be moved out. Refused for a system status when sent as true or
+                    false; null is treated as absent.
       responses:
         '200':
-          description: The status as stored after the update.
+          description: >-
+            The status as stored after the update. When the status is inactive and is the
+            configured reopen target, the body also carries warning, a sentence saying
+            reopened tickets are going to New until an active status is picked.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Status'}
@@ -8537,8 +8975,8 @@ components:
         POST /api/v1/auth/oauth/token. Declared as http bearer rather than an
         oauth2 clientCredentials flow because that endpoint takes a JSON body,
         not the form encoding RFC 6749 section 4.4 specifies, so a generic
-        OAuth client would be refused. The client acts as staff, so it never
-        reaches an admin-only operation. Deleting the client revokes its
+        OAuth client would be refused. The client acts as its service user (staff
+        or user, never admin), so it never reaches an admin-only operation. Deleting the client revokes its
         tokens on the next request. Scope values as for apiKey.
     guestToken:
       type: apiKey
@@ -8555,13 +8993,10 @@ components:
       in: path
       required: true
       description: >-
-        The ticket's UUID. Only GET /tickets/{id} also accepts the tracking number
-        (case-insensitive, for example GHD-2026-000001). On every other route, the
-        tracking number of a ticket the caller can see answers 400 (bad_request,
-        or invalid_id on the attachments, tags and canned-responses routes). Any
-        other value that is not a UUID is looked up as a tracking number, so one
-        that names no ticket, or a ticket the caller cannot see, answers 404
-        not_found.
+        The ticket's UUID or its tracking number (case-insensitive, for example
+        GHD-2026-000001), on every route under /tickets/{id}. A value that is not a
+        UUID is looked up as a tracking number, so one that names no ticket, or a
+        ticket the caller cannot see, answers 404 not_found.
       schema:
         type: string
     Limit:
@@ -8662,7 +9097,7 @@ components:
         sort_order: {type: integer}
         active: {type: boolean}
     Status:
-      description: A ticket status. kind system marks the built-in statuses, custom the ones an administrator added. ticket_count is computed only by the two status list operations and is 0 in create and update responses.
+      description: A ticket status. kind system marks the built-in statuses, custom the ones an administrator added. ticket_count is computed for the caller by the two status list operations and by the create and update responses.
       type: object
       required: [id, name, kind, sort_order, color, active, ticket_count]
       properties:
@@ -8869,7 +9304,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         author_name:
           type: string
-          description: The author's display name, as listReplies sends it. Absent for a guest reply, and absent on the reply addReply returns.
+          description: The author's display name, as listReplies sends it. Absent for a guest reply.
         body:
           type: string
         internal:
@@ -9275,7 +9710,7 @@ components:
           description: Days after resolution during which a reporter may still reply to a Resolved ticket.
         reopen_target_status_name:
           type: string
-          description: Name of the status a reopened ticket is moved to.
+          description: Name of the status a reopened ticket is moved to. If that status is inactive, reopened tickets go to New instead and GET /admin/security-warnings says so.
         closed_reopen_policy:
           type: string
           enum: [off, admin, staff_admin]
@@ -9335,12 +9770,12 @@ components:
           description: Whether staff visibility is limited to the tickets their groups cover.
         auto_assign_group_id:
           type: string
-          description: UUID of the group that new tickets are assigned to. A value that does not parse is ignored.
+          description: UUID of the group that new tickets are assigned to. Must name an existing group; empty or null turns it off.
         auto_assign_user_ids:
           type: array
           items:
             type: string
-          description: UUIDs of the users to assign new tickets to, in turn. Not checked on write.
+          description: UUIDs of the staff or administrators to assign new tickets to, in turn. Each must name an existing staff or administrator account; an empty list or null turns it off.
         allowed_email_domains:
           type: array
           items:
@@ -9398,13 +9833,19 @@ components:
         key that has never been used omits last_used_at, and a key with no expiry omits
         expires_at.
       type: object
-      required: [id, name, user_id, scopes, created_at]
+      required: [id, name, user_id, owner_name, owner_email, scopes, created_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
         user_id:
           $ref: '#/components/schemas/Uuid'
           description: The owning administrator.
+        owner_name:
+          type: string
+          description: The owner's display name.
+        owner_email:
+          type: string
+          description: The owner's email address.
         scopes:
           type: array
           items:
@@ -9423,12 +9864,26 @@ components:
           format: date-time
     OAuthClient:
       description: >-
-        An OAuth client. The secret hash is never returned,
+        An OAuth client as the list returns it. The secret hash is never returned,
         and the record id is not returned by create.
       type: object
-      required: [id, client_id, name, scopes, created_at]
+      required: [id, client_id, name, scopes, created_at, user_id, groups]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
+        user_id:
+          $ref: '#/components/schemas/Uuid'
+        groups:
+          type: array
+          description: >-
+            The groups the client's service user belongs to, by name. They are the
+            client's ticket scope once ticket scope enforcement is on. An empty
+            array when there are none.
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: {$ref: '#/components/schemas/Uuid'}
+              name: {type: string}
         client_id:
           type: string
           description: 16 lowercase hexadecimal characters. Sent as client_id to the token endpoint.
@@ -9444,22 +9899,57 @@ components:
     WebhookEvent:
       description: >-
         An event name a webhook can subscribe to. The wildcard "*" subscribes to all
-        eight. guest.link_resent is never sent to a webhook.
+        nine. guest.link_resent is never sent to a webhook.
+        ticket.replied is a customer-visible reply only; a staff-only note is ticket.note_added.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.
-        raw sends the event as JSON. The other four are chat or ITSM shapes. An omitted or
-        empty payload_format is stored as raw.
+        raw sends the event as ids-only JSON (no subject, tracking number, address or
+        text; see createWebhook). The other four are chat or ITSM shapes and keep their
+        subject, tracking number, status and public reply text. An omitted or empty
+        payload_format is stored as raw.
       type: string
       enum: [raw, slack, teams, discord, jira]
+    WebhookFilter:
+      description: >-
+        Which tickets the hook fires for. Each list is one condition, and an empty or absent
+        list is no condition. A ticket matches a list when its value is any entry. All
+        conditions must match. invert fires for the tickets that do not match. A queued
+        delivery is tested against the ticket as it was when the event happened; a Redeliver,
+        which has no stored classification, against the ticket as it is now. category matches
+        the ticket's category, so all its types and items are included. group is the group the
+        ticket is assigned to; an unassigned ticket never matches it. Responses always carry
+        all four keys.
+        The filter is read as it is now, not once: when the event is fanned out to the hooks,
+        at every attempt of a queued delivery (retries included) and at Redeliver. An event
+        it filters out at the fan-out creates no delivery: no X-GHD-Delivery, no retry and no
+        history entry. If an administrator tightens it, deliveries already queued that it no
+        longer admits are dropped at their next attempt, with no send and no history entry,
+        as for a disabled, unsubscribed or re-addressed hook; Redeliver of such an entry is
+        refused with 409 webhook_filter_excludes. A queued delivery with no stored
+        classification (queued before the filter existed) is sent.
+      type: object
+      additionalProperties: false
+      properties:
+        category_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Uuid'}
+        priorities:
+          type: array
+          items: {$ref: '#/components/schemas/Priority'}
+        group_ids:
+          type: array
+          items: {$ref: '#/components/schemas/Uuid'}
+        invert:
+          type: boolean
     Webhook:
       description: >-
         An outbound webhook subscription. The secret is write-only and is never
         returned.
       type: object
-      required: [id, url, events, enabled, created_at, payload_format, last_delivery]
+      required: [id, url, events, enabled, created_at, payload_format, last_delivery, filter]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         url: {type: string}
@@ -9477,10 +9967,12 @@ components:
           description: >-
             The latest delivery attempt, identified by when it started. Null until a
             delivery has been attempted since the hook was created or its url last
-            changed. Only the latest attempt is kept, and there is no history.
+            changed. Only the latest attempt is kept here; the last 25 deliveries are at
+            GET /api/v1/admin/webhooks/{id}/deliveries.
           anyOf:
             - $ref: '#/components/schemas/WebhookDelivery'
             - type: 'null'
+        filter: {$ref: '#/components/schemas/WebhookFilter'}
     WebhookDelivery:
       description: >-
         The result of one delivery attempt. No message or response body is stored. Error text goes to the server log only, because a
@@ -9508,6 +10000,48 @@ components:
             failed. blocked_address: the target is an internal address, refused by the
             guarded dialer. connection: refused, reset, or closed without a response. other:
             anything else.
+    WebhookDeliveryRecord:
+      description: >-
+        One delivery of one event to one hook, as the history shows it. The id is the
+        X-GHD-Delivery header the receiver saw, and is the same on every retry. No
+        payload, response body or error text is stored.
+      type: object
+      required: [id, event, started_at, last_attempt_at, status, result, attempts, retrying]
+      properties:
+        id: {$ref: '#/components/schemas/Uuid'}
+        event:
+          type: string
+          description: The event name, as sent in X-GHD-Event.
+        started_at:
+          type: string
+          format: date-time
+          description: When the first attempt started, in UTC.
+        last_attempt_at:
+          type: string
+          format: date-time
+          description: When the latest attempt started, in UTC.
+        status:
+          type: integer
+          minimum: 0
+          maximum: 999
+          description: The HTTP status of the latest attempt. 0 when no response came back.
+        result:
+          type: string
+          enum: [ok, http_status, timeout, dns, tls, blocked_address, connection, other]
+          description: >-
+            The latest attempt's outcome: ok, or a failure class as in WebhookDelivery.error.
+        attempts:
+          type: integer
+          minimum: 1
+          description: How many attempts have been made. At most 8.
+        retrying:
+          type: boolean
+          description: >-
+            True while the latest attempt failed in a way that will be tried again.
+            Connection errors, DNS, TLS, timeouts, 5xx and 429 are retried, 30 seconds
+            doubling to an hour, 8 attempts in all; a Retry-After from the receiver
+            delays the next attempt, up to an hour. blocked_address and other statuses
+            are never retried.
     Plugin:
       description: >-
         An installed plugin. The WASM file path is never returned. In v1 no plugin is registered, so no instance of this schema is
@@ -9544,21 +10078,35 @@ components:
         An account as the administrator list shows it. Password hash, MFA
         secret, SSO subjects and deletion time are never returned.
       type: object
-      required: [id, email, display_name, role, disabled, auth_type, mfa_enabled, created_at, updated_at]
+      required: [id, email, display_name, role, disabled, auth_type, service_account, mfa_enabled, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
         display_name: {type: string}
         role: {$ref: '#/components/schemas/Role'}
         disabled: {type: boolean}
+        service_account:
+          type: boolean
+          description: >-
+            True for the identity an OAuth client acts as. It is made with the
+            client, named after it, and can be renamed, given groups, set to staff
+            or user, and disabled (which stops the client). It can never be an
+            administrator and can never sign in: no password, second factor,
+            passkey or SSO identity. It is not counted as an administrator by the
+            last-administrator guard, and it is left out of assignee pickers and
+            round-robin. It is never mailed.
         auth_type:
           type: string
-          enum: [local, saml, both]
+          enum: [local, saml, oidc, both, local+oidc, saml+oidc, local+saml+oidc, service]
           description: >-
-            How the account signs in. local means the account has no SAML subject: a
-            password account, an account that signs in only through OIDC, and an account
-            with no credential yet (has_password false) all read local. saml is SAML
-            only. both is a password plus SAML.
+            How the account signs in, derived from what it holds: a password, a SAML
+            subject, an OIDC subject. local is a password and nothing else; an account
+            with no credential yet (has_password false) also reads local. saml and oidc
+            are that subject alone. both is a password plus SAML, and keeps that
+            meaning. The other combinations are joined with +, always in the order
+            local, saml, oidc. Before 1.3 an account that signed in only through OIDC,
+            or a password plus OIDC, read local. service is a service account (the
+            identity an OAuth client acts as), which never signs in.
         mfa_enabled:
           type: boolean
           description: The TOTP flag only. A passkey-only account reads false here.
@@ -9583,7 +10131,7 @@ components:
             passkey_count:
               type: integer
               minimum: 0
-              description: The number of registered passkeys. PATCH /api/v1/admin/users/{id} always answers 0 here.
+              description: The number of registered passkeys. The same on GET and PATCH.
             groups:
               type: array
               items:

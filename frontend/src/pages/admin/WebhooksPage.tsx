@@ -1,6 +1,6 @@
-import { useId, useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listWebhooks, createWebhook, updateWebhook, deleteWebhook } from '@/api/admin'
+import { listWebhooks, createWebhook, updateWebhook, deleteWebhook, listWebhookDeliveries, redeliverWebhook, listCategories, listGroups } from '@/api/admin'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react'
-import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery } from '@/api/types'
+import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery, WebhookDeliveryRecord, WebhookFilter, Priority, Category, Group } from '@/api/types'
 
 // What the server accepts, in the order it lists them (notify.WebhookEvents).
 // "*" is sent for "all events"; the server refuses an empty list.
@@ -20,6 +20,7 @@ const EVENTS = [
   'ticket.assigned',
   'ticket.status_changed',
   'ticket.replied',
+  'ticket.note_added',
   'ticket.resolved',
   'ticket.closed',
   'ticket.reopened',
@@ -37,6 +38,9 @@ const FORMATS: { value: WebhookPayloadFormat; label: string }[] = [
 ]
 
 const formatLabel = (f: string) => FORMATS.find((x) => x.value === f)?.label ?? f
+
+// The priorities a filter can name, in the order the other lists show them.
+const PRIORITIES: Priority[] = ['critical', 'high', 'medium', 'low']
 
 const FAILURE_LABEL: Record<string, string> = {
   timeout: 'timed out', dns: 'host not found', tls: 'TLS error',
@@ -71,22 +75,96 @@ interface FormState {
   format: WebhookPayloadFormat
   all: boolean
   events: string[]
+  // The ticket filter (#413), as the form holds it.
+  categoryIds: string[]
+  priorities: Priority[]
+  groupIds: string[]
+  invert: boolean
+  // Whether the hook had a filter when the form opened. An edit that clears
+  // every condition must still send the empty filter, or the stored one stays.
+  hadFilter: boolean
 }
 
-const emptyForm: FormState = { url: '', secret: '', format: 'raw', all: false, events: [] }
+const emptyForm: FormState = {
+  url: '', secret: '', format: 'raw', all: false, events: [],
+  categoryIds: [], priorities: [], groupIds: [], invert: false, hadFilter: false,
+}
 
 function fromHook(h: WebhookConfig): FormState {
   // An empty list is how a subscription from before events were required is
   // stored, and delivery treats it as "everything". Show it as that, so
   // saving it does not send the empty list the server now refuses.
   const all = h.events.length === 0 || h.events.includes('*')
+  const filter = h.filter ?? NO_FILTER
   return {
     url: h.url,
     secret: '',
     format: h.payload_format ?? 'raw',
     all,
     events: all ? [] : h.events,
+    categoryIds: filter.category_ids,
+    priorities: filter.priorities,
+    groupIds: filter.group_ids,
+    invert: filter.invert,
+    hadFilter: apiHasConditions(filter),
   }
+}
+
+// ── Ticket filter (#413) ──────────────────────────────────────────────────────
+
+const NO_FILTER: WebhookFilter = { category_ids: [], priorities: [], group_ids: [], invert: false }
+
+// A filter has conditions when any list is non-empty. invert is not one.
+const apiHasConditions = (f: WebhookFilter) =>
+  f.category_ids.length + f.priorities.length + f.group_ids.length > 0
+const hasConditions = (f: FormState) =>
+  f.categoryIds.length + f.priorities.length + f.groupIds.length > 0
+
+// The filter as the API takes it. invert goes only with a condition to invert:
+// the server refuses an inverted empty filter, and with no conditions "send
+// for" means every ticket.
+function filterOf(f: FormState): WebhookFilter {
+  return {
+    category_ids: f.categoryIds,
+    priorities: f.priorities,
+    group_ids: f.groupIds,
+    invert: f.invert && hasConditions(f),
+  }
+}
+
+// The list with value added (last, in the order ticked) or removed.
+function withToggled<T extends string>(list: T[], value: T, on: boolean): T[] {
+  const rest = list.filter((v) => v !== value)
+  return on ? [...rest, value] : rest
+}
+
+// The chips the list shows for a hook's filter: "All tickets" for none,
+// otherwise "All except" when inverted, then one chip per kind of condition,
+// its values joined by "or". An id that names nothing reads as deleted.
+function filterSummary(
+  f: WebhookFilter | undefined,
+  categories: Category[] | undefined,
+  groups: Group[] | undefined,
+): string[] {
+  const filter = f ?? NO_FILTER
+  if (!apiHasConditions(filter)) return ['All tickets']
+  const chips: string[] = []
+  if (filter.invert) chips.push('All except')
+  if (filter.category_ids.length > 0) {
+    chips.push(`Category: ${filter.category_ids.map((id) => nameOf(categories, id, 'Deleted category')).join(' or ')}`)
+  }
+  if (filter.priorities.length > 0) chips.push(`Priority: ${filter.priorities.join(' or ')}`)
+  if (filter.group_ids.length > 0) {
+    chips.push(`Group: ${filter.group_ids.map((id) => nameOf(groups, id, 'Deleted group')).join(' or ')}`)
+  }
+  return chips
+}
+
+// nameOf is the name of the category or group with id. While the list is still
+// loading it shows a placeholder, not "deleted".
+function nameOf(list: { id: string; name: string }[] | undefined, id: string, gone: string): string {
+  if (list === undefined) return '…'
+  return list.find((x) => x.id === id)?.name ?? gone
 }
 
 function eventsOf(f: FormState): string[] {
@@ -97,13 +175,15 @@ const canSubmit = (f: FormState) => f.url.trim() !== '' && eventsOf(f).length > 
 
 // A blank secret means "none given" on create and "leave it alone" on edit —
 // the API never sends the stored one back, so there is nothing to prefill and
-// nothing to compare against.
+// nothing to compare against. The filter is sent when there is one to send, or
+// when an edit has cleared one; an unfiltered hook sends no filter key at all.
 function toInput(f: FormState) {
   return {
     url: f.url.trim(),
     payload_format: f.format,
     events: eventsOf(f),
     ...(f.secret !== '' ? { secret: f.secret } : {}),
+    ...(hasConditions(f) || f.hadFilter ? { filter: filterOf(f) } : {}),
   }
 }
 
@@ -117,16 +197,67 @@ function describe(err: unknown): string {
   return message
 }
 
+// CheckGroup is one kind of condition: a legend and a checkbox per value.
+function CheckGroup({
+  legend,
+  options,
+  selected,
+  onToggle,
+}: {
+  legend: string
+  options: { value: string; label: string }[]
+  selected: string[]
+  onToggle: (value: string, on: boolean) => void
+}) {
+  return (
+    <fieldset className="space-y-1">
+      <legend className="text-xs font-medium text-gray-700">{legend}</legend>
+      <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+        {options.map((o) => (
+          <label key={o.value} className="flex min-h-[24px] items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={selected.includes(o.value)}
+              onChange={(e) => onToggle(o.value, e.target.checked)}
+            />
+            <span>{o.label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  )
+}
+
 function WebhookFields({
   form,
   onChange,
   secretHint,
+  categories,
+  groups,
 }: {
   form: FormState
   onChange: (f: FormState) => void
   secretHint: string
+  categories: Category[] | undefined
+  groups: Group[] | undefined
 }) {
   const id = useId()
+
+  // A condition naming a category or group that is no longer in the list is
+  // still shown, ticked, so it can be seen and unticked. Nothing is shown for
+  // it while the list is loading, which would read as deleted.
+  const categoryOptions = [
+    ...(categories ?? []).map((c) => ({ value: c.id, label: c.active ? c.name : `${c.name} (inactive)` })),
+    ...(categories === undefined ? [] : form.categoryIds
+      .filter((cid) => !categories.some((c) => c.id === cid))
+      .map((cid) => ({ value: cid, label: 'Deleted category' }))),
+  ]
+  const groupOptions = [
+    ...(groups ?? []).map((g) => ({ value: g.id, label: g.name })),
+    ...(groups === undefined ? [] : form.groupIds
+      .filter((gid) => !groups.some((g) => g.id === gid))
+      .map((gid) => ({ value: gid, label: 'Deleted group' }))),
+  ]
 
   function toggle(event: string, on: boolean) {
     onChange({
@@ -161,7 +292,7 @@ function WebhookFields({
             ))}
           </Select>
           <p className="text-xs text-gray-500">
-            Raw sends the full event. The others reshape it for that service&apos;s incoming
+            Raw sends ids only: the event name, ticket id and timestamp, no text or addresses. The others build a message for that service&apos;s incoming
             webhook.
           </p>
         </div>
@@ -202,13 +333,63 @@ function WebhookFields({
           ))}
         </div>
       </fieldset>
+
+      <fieldset className="space-y-3">
+        <legend className="text-xs font-medium text-gray-700">Tickets</legend>
+        <p className="text-xs text-gray-500">
+          Leave everything unticked to send for every ticket. Within a list any ticked value
+          matches; every list with a tick must match. Group is the group the ticket is assigned to.
+        </p>
+        <CheckGroup
+          legend="Category"
+          options={categoryOptions}
+          selected={form.categoryIds}
+          onToggle={(v, on) => onChange({ ...form, categoryIds: withToggled(form.categoryIds, v, on) })}
+        />
+        <CheckGroup
+          legend="Priority"
+          options={PRIORITIES.map((p) => ({ value: p, label: p }))}
+          selected={form.priorities}
+          onToggle={(v, on) => onChange({ ...form, priorities: withToggled(form.priorities, v as Priority, on) })}
+        />
+        <CheckGroup
+          legend="Group"
+          options={groupOptions}
+          selected={form.groupIds}
+          onToggle={(v, on) => onChange({ ...form, groupIds: withToggled(form.groupIds, v, on) })}
+        />
+        <div className="space-y-1">
+          <Label htmlFor={`${id}-send-for`} className="text-xs">Send for</Label>
+          <Select
+            id={`${id}-send-for`}
+            // With nothing ticked the hook sends for every ticket, whatever was
+            // picked before (filterOf drops invert), so show that.
+            value={String(form.invert && hasConditions(form))}
+            disabled={!hasConditions(form)}
+            onChange={(e) => onChange({ ...form, invert: e.target.value === 'true' })}
+          >
+            <option value="false">Tickets that match</option>
+            <option value="true">All other tickets</option>
+          </Select>
+        </div>
+      </fieldset>
     </div>
   )
 }
 
 // ── Edit row ──────────────────────────────────────────────────────────────────
 
-function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }) {
+function EditRow({
+  hook,
+  onClose,
+  categories,
+  groups,
+}: {
+  hook: WebhookConfig
+  onClose: () => void
+  categories: Category[] | undefined
+  groups: Group[] | undefined
+}) {
   const qc = useQueryClient()
   const [form, setForm] = useState<FormState>(() => fromHook(hook))
   const [error, setError] = useState('')
@@ -224,7 +405,7 @@ function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }
 
   return (
     <tr>
-      <td colSpan={6} className="bg-gray-50 px-4 py-4">
+      <td colSpan={7} className="bg-gray-50 px-4 py-4">
         <form
           aria-label="Edit webhook"
           className="space-y-3"
@@ -240,6 +421,8 @@ function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }
               setError('')
             }}
             secretHint="Leave empty to keep the current secret. Typing here replaces it."
+            categories={categories}
+            groups={groups}
           />
           {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
           <div className="flex gap-2">
@@ -256,6 +439,91 @@ function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }
   )
 }
 
+// ── Delivery history ──────────────────────────────────────────────────────────
+
+// What a delivery's outcome is called: "ok" or a failure class, nothing more.
+// The server keeps no error text (#448).
+function outcome(d: WebhookDeliveryRecord): string {
+  if (d.result === 'ok') return `Delivered · ${d.status}`
+  const what = d.result === 'http_status' ? String(d.status) : (FAILURE_LABEL[d.result] ?? 'error')
+  return d.retrying ? `Retrying · ${what}` : `Failed · ${what}`
+}
+
+function HistoryRow({ hook }: { hook: WebhookConfig }) {
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const { data: deliveries, isLoading } = useQuery({
+    queryKey: ['admin', 'webhooks', hook.id, 'deliveries'],
+    queryFn: () => listWebhookDeliveries(hook.id),
+  })
+
+  const redeliver = useMutation({
+    mutationFn: (deliveryId: string) => redeliverWebhook(hook.id, deliveryId),
+    onSuccess: () => {
+      setError('')
+      setNotice('Queued for redelivery. It appears here once it has been sent.')
+    },
+    onError: (err) => {
+      setNotice('')
+      setError(describe(err))
+    },
+  })
+
+  return (
+    <tr>
+      <td colSpan={6} className="bg-gray-50 px-4 py-4">
+        <section aria-label="Delivery history" className="space-y-2">
+          <p className="text-xs text-gray-500">
+            The last 25 deliveries. Outcomes only: no payloads and no error text are kept.
+            Redeliver sends the event again as a new delivery; a chat message is rebuilt from the ticket as it is now.
+          </p>
+          {notice && <p role="status" className="text-sm text-green-700">{notice}</p>}
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+          {isLoading ? (
+            <Spinner />
+          ) : (deliveries ?? []).length === 0 ? (
+            <p className="text-sm text-gray-400">No deliveries yet.</p>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="text-left uppercase text-gray-500">
+                <tr>
+                  <th className="py-1 pr-3">Event</th>
+                  <th className="py-1 pr-3">Result</th>
+                  <th className="py-1 pr-3">Attempts</th>
+                  <th className="py-1 pr-3">Last attempt</th>
+                  <th className="py-1 text-right"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {(deliveries ?? []).map((d) => (
+                  <tr key={d.id}>
+                    <td className="py-1 pr-3 font-mono">{d.event}</td>
+                    <td className="py-1 pr-3">{outcome(d)}</td>
+                    <td className="py-1 pr-3">{d.attempts}</td>
+                    <td className="py-1 pr-3">
+                      <time dateTime={d.last_attempt_at}>{new Date(d.last_attempt_at).toLocaleString()}</time>
+                    </td>
+                    <td className="py-1 text-right">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={redeliver.isPending}
+                        onClick={() => redeliver.mutate(d.id)}
+                      >
+                        Redeliver
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </td>
+    </tr>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function WebhooksPage() {
@@ -265,12 +533,15 @@ export function WebhooksPage() {
   const [createError, setCreateError] = useState('')
   const [rowError, setRowError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [historyId, setHistoryId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<WebhookConfig | null>(null)
 
   const { data: hooks = [], isLoading } = useQuery({
     queryKey: ['admin', 'webhooks'],
     queryFn: listWebhooks,
   })
+  const { data: categories } = useQuery({ queryKey: ['admin', 'categories'], queryFn: listCategories })
+  const { data: groups } = useQuery({ queryKey: ['admin', 'groups'], queryFn: listGroups })
 
   const refresh = () => qc.invalidateQueries({ queryKey: ['admin', 'webhooks'] })
 
@@ -317,7 +588,8 @@ export function WebhooksPage() {
             Send ticket events to another system as an HTTP POST. Targets must be public
             addresses. When a secret is set, each delivery is signed with it in the{' '}
             <code className="font-mono text-xs">X-GHD-Signature</code> header. A secret is never
-            shown again once saved. The list shows each hook&apos;s most recent delivery. Failed deliveries are not retried.
+            shown again once saved. The list shows each hook&apos;s most recent delivery; History shows the last 25. Failed deliveries are retried for about an hour, so a receiver may see the same event more than once: use the <code className="font-mono text-xs">X-GHD-Delivery</code> header to spot a repeat.
+            A hook can be limited to tickets in chosen categories, priorities or assigned groups. An event it filters out is not a delivery, so it gets no History entry. The filter is checked again at every retry and at Redeliver, so tightening it also stops what is still waiting to be sent.
           </p>
         </div>
 
@@ -341,6 +613,8 @@ export function WebhooksPage() {
                   setCreateError('')
                 }}
                 secretHint="Optional. Used to sign deliveries; it cannot be read back afterwards."
+                categories={categories}
+                groups={groups}
               />
               <div className="space-y-1">
                 <label className="flex min-h-[24px] items-center gap-2 text-sm text-gray-900">
@@ -380,6 +654,7 @@ export function WebhooksPage() {
                   <th className="px-4 py-3 text-left">URL</th>
                   <th className="px-4 py-3 text-left">Format</th>
                   <th className="px-4 py-3 text-left">Events</th>
+                  <th className="px-4 py-3 text-left">Tickets</th>
                   <th className="px-4 py-3 text-left">Status</th>
                   <th className="px-4 py-3 text-left">Last delivery</th>
                   <th className="px-4 py-3 text-right">Actions</th>
@@ -388,9 +663,16 @@ export function WebhooksPage() {
               <tbody className="divide-y">
                 {hooks.map((h) =>
                   editingId === h.id ? (
-                    <EditRow key={h.id} hook={h} onClose={() => setEditingId(null)} />
+                    <EditRow
+                      key={h.id}
+                      hook={h}
+                      onClose={() => setEditingId(null)}
+                      categories={categories}
+                      groups={groups}
+                    />
                   ) : (
-                    <tr key={h.id}>
+                    <Fragment key={h.id}>
+                    <tr>
                       <td className="px-4 py-3 font-mono text-xs text-gray-900 break-all">{h.url}</td>
                       <td className="px-4 py-3 text-gray-700">{formatLabel(h.payload_format)}</td>
                       <td className="px-4 py-3">
@@ -409,6 +691,15 @@ export function WebhooksPage() {
                               </span>
                             ))
                           )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {filterSummary(h.filter, categories, groups).map((chip) => (
+                            <span key={chip} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                              {chip}
+                            </span>
+                          ))}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -433,6 +724,14 @@ export function WebhooksPage() {
                           >
                             {h.enabled ? 'Disable' : 'Enable'}
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-expanded={historyId === h.id}
+                            onClick={() => setHistoryId(historyId === h.id ? null : h.id)}
+                          >
+                            History
+                          </Button>
                           <Button size="sm" variant="outline" onClick={() => setEditingId(h.id)}>
                             <PencilIcon className="mr-1 h-3.5 w-3.5" />
                             Edit
@@ -449,11 +748,13 @@ export function WebhooksPage() {
                         </div>
                       </td>
                     </tr>
+                    {historyId === h.id && <HistoryRow hook={h} />}
+                    </Fragment>
                   )
                 )}
                 {hooks.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
                       No webhooks yet.
                     </td>
                   </tr>

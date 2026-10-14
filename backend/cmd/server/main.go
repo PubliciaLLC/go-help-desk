@@ -48,7 +48,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
@@ -293,13 +292,30 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("initialising email dispatcher: %w", err)
 	}
-	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default())
+	// Said once at startup so "why did nobody get an email" has an answer in
+	// the log (#456). Half a configuration is a warning, not a quiet off.
+	if msg, misconfigured := cfg.EmailStatus(); misconfigured {
+		slog.Warn(msg)
+	} else {
+		slog.Info(msg)
+	}
 	// Requests queue notifications in the outbox and return; outboxWorker,
 	// started once the server exists, sends them (#164). The worker needs the
 	// server for the send-time guest-link step, and the ticket service needs a
 	// dispatcher before the server can be built, hence the late assignment.
 	outboxStore := outboxstore.New(q)
 	var outboxWorker *notify.Worker
+	// Each subscribed hook gets its own queued, retried delivery (#448); the
+	// worker below sends them.
+	webhookDisp := notify.NewWebhookDispatcher(authStore, cfg.BaseURL, slog.Default()).
+		WithQueue(notify.WebhookQueue{
+			Outbox: outboxStore, Hooks: authStore, History: authStore,
+			Wake: func() {
+				if outboxWorker != nil {
+					outboxWorker.Wake()
+				}
+			},
+		})
 	dispatcher := notify.NewOutboxDispatcher(outboxStore, outboxChannels(), func() {
 		if outboxWorker != nil {
 			outboxWorker.Wake()
@@ -320,6 +336,9 @@ func run() error {
 	// history, its audit entry — into a single transaction.
 	txRunner := txrunner.New(sqlDB)
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// The ticket service needs the dispatcher and the dispatcher's redelivery
+	// needs the ticket service: this closes the loop.
+	webhookDisp.SetSource(server.NewWebhookEventSource(ticketSvc))
 	if err := ticketSvc.LoadSystemStatuses(ctx); err != nil {
 		return fmt.Errorf("loading system statuses: %w", err)
 	}
@@ -370,13 +389,10 @@ func run() error {
 	// Passkeys. The relying party is derived from BASE_URL: a credential is
 	// bound to its origin, so that setting decides whether passkey
 	// authentication works at all rather than only how links are built. An
-	// unusable value is refused here rather than defaulted, because a default
-	// would produce an instance whose passkeys silently never verify.
+	// unusable value turns passkeys off with a warning instead of stopping
+	// startup (#494); see configurePasskeys.
 	passkeyStore := webauthnstore.New(q)
-	passkeySvc, err := webauthn.NewService(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
-	if err != nil {
-		return fmt.Errorf("configuring passkeys: %w", err)
-	}
+	passkeySvc, passkeyReason := configurePasskeys(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
 
 	srv := server.New(
 		cfg,
@@ -404,6 +420,9 @@ func run() error {
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
 		server.WithAuditStore(auStore),
+		server.WithPasskeysUnavailable(passkeyReason),
+		server.WithEmailHealth(outboxStore),
+		server.WithWebhookRedeliverer(webhookDisp),
 	)
 
 	srv.InitSAML(ctx)
@@ -420,7 +439,14 @@ func run() error {
 	// Wrapped, never bare: Handler() authenticates nothing on its own, and this
 	// mux sits outside srv's middleware chain. Mounted directly, every MCP tool
 	// was reachable with no credentials.
-	mux.Handle("/mcp/", srv.ProtectMCP(mcpSrv.Handler()))
+	mcpHandler := srv.ProtectMCP(mcpSrv.Handler())
+	// "/mcp" must be registered as well as "/mcp/": the mux answers an exact
+	// "/mcp" with a 307 to "/mcp/" before any handler runs, so without this line
+	// the Streamable HTTP endpoint is redirected ahead of the auth chain, and
+	// clients that do not re-POST across a redirect cannot connect. The CI smoke
+	// check on /mcp reads 307 instead of 401 if it goes missing.
+	mux.Handle("/mcp", mcpHandler)  // Streamable HTTP
+	mux.Handle("/mcp/", mcpHandler) // /mcp/ (Streamable HTTP alias), /mcp/sse, /mcp/message
 	mux.Handle("/api/", srv)
 	mux.Handle("/health", srv)
 	mux.Handle("/", server.NewSPAHandler(ui.FS()))

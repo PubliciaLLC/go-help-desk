@@ -3,9 +3,45 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 
+	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
+
+// failingGroupLookup makes GetByID fail with something other than "no such
+// row". The embedded Store is left nil: no other call is made on the path it
+// is used for.
+type failingGroupLookup struct{ group.Store }
+
+func (failingGroupLookup) GetByID(context.Context, uuid.UUID) (group.Group, error) {
+	return group.Group{}, errors.New("injected group lookup failure")
+}
+
+// failingUserLookup is the same for user lookups.
+type failingUserLookup struct{ user.Store }
+
+func (failingUserLookup) GetByID(context.Context, uuid.UUID) (user.User, error) {
+	return user.User{}, errors.New("injected user lookup failure")
+}
+
+// PasskeyStartHandlersForTest returns the two passkey handlers that look the
+// account up before doing anything else, so a test can drive them with an
+// actor the router never produces (a service user, whose session cannot load).
+func (s *Server) PasskeyStartHandlersForTest() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"login start":    s.handlePasskeyLoginStart,
+		"register start": s.handlePasskeyRegisterStart,
+	}
+}
+
+// FailUserLookupForTest makes user lookups fail as a database outage would.
+func (s *Server) FailUserLookupForTest() { s.users = user.NewService(failingUserLookup{}) }
+
+// FailGroupLookupForTest makes group lookups fail as a database outage would,
+// injected for the reason given on FailSAMLSpendForTest.
+func (s *Server) FailGroupLookupForTest() { s.groups = group.NewService(failingGroupLookup{}) }
 
 // failingSpend makes the SAML hand-over ledger write fail and leaves every
 // other session call alone.
@@ -38,3 +74,12 @@ func (s *Server) FailSessionWritesForTest() { s.sessions = failingDelete{s.sessi
 // shared transaction, so every later query would fail too and a handler that
 // wrongly ignored the error would still end in a 500.
 func (s *Server) FailSAMLSpendForTest() { s.sessions = failingSpend{s.sessions} }
+
+// FailReopenTargetCheckForTest makes the reopen-target check fail, as a status
+// list that cannot be read would. Injected, not provoked: breaking the table
+// aborts the harness's shared transaction and the status save before it.
+func (s *Server) FailReopenTargetCheckForTest() {
+	s.reopenTargetCheck = func(context.Context) (reopenTargetStatus, error) {
+		return reopenTargetStatus{}, errors.New("injected status list failure")
+	}
+}

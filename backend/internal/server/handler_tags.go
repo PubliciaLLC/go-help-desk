@@ -93,11 +93,7 @@ func (s *Server) handleListActiveTags(w http.ResponseWriter, r *http.Request) {
 
 // handleListTicketTags returns the tags on a ticket.
 func (s *Server) handleListTicketTags(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	tags, err := s.tags.ListForTicket(r.Context(), ticketID)
 	if err != nil {
 		Error(w, http.StatusInternalServerError, "list_failed", err.Error())
@@ -108,11 +104,7 @@ func (s *Server) handleListTicketTags(w http.ResponseWriter, r *http.Request) {
 
 // handleAddTicketTag adds a tag to a ticket by name, creating the tag if new.
 func (s *Server) handleAddTicketTag(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 
 	var body struct {
 		Name string `json:"name"`
@@ -136,11 +128,7 @@ func (s *Server) handleAddTicketTag(w http.ResponseWriter, r *http.Request) {
 
 // handleRemoveTicketTag removes a tag from a ticket.
 func (s *Server) handleRemoveTicketTag(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	tagID, err := uuid.Parse(chi.URLParam(r, "tagId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid tag id")

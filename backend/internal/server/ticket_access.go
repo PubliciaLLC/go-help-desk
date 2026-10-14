@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -11,8 +12,30 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
+// ticketIDKey is the request-context key under which requireTicketAccess
+// leaves the UUID of the ticket it resolved.
+type ticketIDKey struct{}
+
+// ticketIDFrom is the ticket a /tickets/{id} request is about, as resolved by
+// requireTicketAccess from either spelling of {id}.
+//
+// Handlers read it instead of parsing the path themselves: parsing {id} as a
+// UUID is what made every route but GET answer 400 to a tracking number. It is
+// only valid behind requireTicketAccess, so a handler registered anywhere else
+// would get nothing; that is a programming error, so it panics (the recover
+// middleware answers 500) rather than quietly acting on uuid.Nil.
+// TestTicketRoutes_AreAllBehindTheAccessGate keeps the routes honest.
+func ticketIDFrom(r *http.Request) uuid.UUID {
+	id, ok := r.Context().Value(ticketIDKey{}).(uuid.UUID)
+	if !ok {
+		panic("ticketIDFrom: route is not behind requireTicketAccess")
+	}
+	return id
+}
+
 // requireTicketAccess resolves the {id} path parameter and refuses the request
-// unless the caller may see that ticket.
+// unless the caller may see that ticket. For a request it lets through, the
+// resolved ticket's UUID is available from ticketIDFrom.
 //
 // It is middleware on the whole /tickets/{id} subtree rather than a call inside
 // each handler, because the per-handler version is what failed: at 1.1.1 the
@@ -58,7 +81,7 @@ func (s *Server) requireTicketAccess(next http.Handler) http.Handler {
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ticketIDKey{}, t.ID)))
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 
@@ -179,4 +180,19 @@ func TestVerifyPasswordForSignIn_RefusalSpendsTheSameWorkAsAWrongPassword(t *tes
 	require.Equal(t, 1<<target, wrong)
 	require.Equal(t, wrong, unknown)
 	require.Equal(t, wrong, work, "the refusal must cost what a wrong password costs")
+}
+
+// A service account (#490) holds no password, so it can never meet the
+// refusal; whatever is typed at it is plain invalid credentials, and the
+// forced reset neither affects it nor opens a way in.
+func TestVerifyPasswordForSignIn_ServiceAccountIsNeverAffected(t *testing.T) {
+	store := newFakeUserStore()
+	store.seed(user.User{ID: uuid.New(), Email: "oauth-1@service-account.invalid", DisplayName: "svc", Role: user.RoleStaff, ServiceAccount: true})
+	svc := user.NewService(store, user.WithBcryptCost(6), user.WithPasswordExpiry(pastDeadline()))
+
+	for _, pw := range []string{"anything", user.DummyPassword, ""} {
+		_, err := svc.VerifyPasswordForSignIn(context.Background(), "oauth-1@service-account.invalid", pw)
+		require.Error(t, err)
+		require.NotErrorIs(t, err, user.ErrPasswordResetRequired)
+	}
 }

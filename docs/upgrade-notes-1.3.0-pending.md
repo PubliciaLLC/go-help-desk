@@ -13,6 +13,16 @@ Previously the server let staff and administrators create tickets under, and rec
 
 What to check: scripts or integrations that file or reclassify tickets as staff or admin into an archived node will start getting 400. Unarchive the node (Admin → Categories) or file into an active one.
 
+## An IP or Single-Label `BASE_URL` Disables Passkeys (#494)
+
+Passkeys are bound to a domain name, so they work only when the host in `BASE_URL` is a domain name (`help.example.com`) or `localhost`. **If `BASE_URL` is an IP address (`http://192.168.1.10:8080`, `http://[::1]:8080`), a single-label host (`http://helpdesk:8080`) or contains non-ASCII characters, passkeys are disabled.** The server still starts. It logs `passkeys unavailable` once at startup, and administrators see a warning banner explaining that `BASE_URL` must be a domain name.
+
+- `GET /api/v1/me/passkeys`, `POST /api/v1/me/passkeys/register/*` and `POST /api/v1/auth/local/passkey/*` answer `503 passkeys_unavailable`.
+- `GET /api/v1/auth/providers` gains `passkeys` (`false` here) and `GET /api/v1/admin/security-warnings` gains `passkeys: {available, reason}`.
+- An account whose only second factor is a passkey **cannot sign in** while passkeys are off: sign-in answers `403 passkey_unavailable` and tells the person to ask an administrator to reset their sign-in factors. An administrator's Reset MFA clears the passkey, after which the person signs in and enrols an authenticator app (TOTP). Accounts with TOTP are unaffected. This includes the last administrator: run `docker compose exec app /app/server reset-factors <email>` (from the `docker/` directory) on the server to clear their factors. Passkeys registered under a domain `BASE_URL` that is later fixed work again if the domain matches.
+
+What to check: if your instance is on an IP or single-word host and you want passkeys, give it a DNS name and set `BASE_URL` to it. Changing the domain invalidates passkeys registered under the old one.
+
 ## Antivirus Scanning: Banner for Offline Policies
 
 Administrators see a banner on the admin panel with the exact fix when any attachment exists, no scan policy was ever saved, and no scanner address is set:
@@ -45,6 +55,14 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 - **Description**: How long a login waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
 - **Impact**: A legitimate user who exhausts the budget still succeeds — their correct password is always honoured, just after the delay.
 
+## MCP: Requests From Another Origin Are Refused (#460)
+
+Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mcp/`) now answers `403 origin_not_allowed` when the request carries an `Origin` header that is not your `BASE_URL`'s origin, before authentication is looked at. Requests with no `Origin` header, which is what SDKs, editors and `curl` send, are unaffected.
+
+- A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
+- 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
+- A `BASE_URL` with a non-ASCII host stops the server from starting (passkeys refuse it); write it in punycode.
+
 ## JWT Secret (`JWT_SECRET`)
 
 `JWT_SECRET` is now **optional**:
@@ -55,6 +73,22 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 - **Upgrade path**: If you set `JWT_SECRET` to a long value in `.env`, it remains in use and nothing changes. If you unset it or provide a short value, a new key is generated on first boot. **OAuth clients must fetch a new access token once** (sessions are unaffected; they use `SESSION_SECRET`).
 - **Backup implications**: Database backups now contain the JWT signing key. Restoring a backup onto another instance carries the key with it (tokens remain valid there).
 - **Rotation**: To rotate the key, delete the row from `instance_secrets` and restart. All OAuth tokens issued with the old key become invalid.
+
+## OAuth Clients Now Act Through a Service User
+
+Every OAuth client now has a **service user**: an account made with the client, named after it, that the client acts as. Upgrading creates one for each existing client (migration `000041`), named after the client, with the staff role and no groups.
+
+What changes:
+
+- **Clients can now write.** A client holding `tickets:write` creates tickets and replies as its service user, and the audit trail shows the client's name. Before, those calls were refused with `403 user_identity_required`. Nothing else about the scopes changed; a client with only `tickets:read` is still refused.
+- **Service users are listed on Admin → Users**, with `service_account: true` and `auth_type: "service"` in the API. They can be renamed (which renames the client too), set to staff or user (never admin), given groups, and disabled. **Disabling the user stops the client**; enabling it restores it. A service user cannot be deleted on its own: `DELETE /admin/users/{id}` answers `409 service_account` and says to delete the client instead. Deleting the client soft-deletes its user; tickets it wrote keep its name.
+- **They never sign in.** No password, no MFA, no passkey, no SSO, no admin role. The database enforces it, and the API answers `409 service_account` to an attempt.
+- **They are hidden from assignee pickers and round-robin, do not count as administrators, and are never mailed.** A ticket a client opens sends no requester email.
+- **`POST /admin/oauth-clients` returns `user_id`**; `GET /admin/oauth-clients` returns `user_id` and `groups` for each client.
+- **With ticket scope enforcement off, clients behave as before.** Turning it on now tells you, on save, which clients have a service user in no group (they will see no tickets), and **Security warnings** (`oauth_clients_without_groups`) keeps listing them until each has a group or is disabled. Add the groups before you turn enforcement on.
+- `GET /me` for a client keeps its shape, and a client still cannot reach the password, MFA and passkey routes.
+
+If you downgrade, the `down` migration deletes the service users. Tickets they wrote stay, with no author link.
 
 ## `APP_ENV` Variable (Removed from Documentation)
 
@@ -69,6 +103,17 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 - the check repeats on each upload, so fixing the permissions needs no restart.
 
 Before this, an unwritable directory showed up as a failed upload partway through.
+
+## Admin API: data left behind, half-applied edits and path checks (#419)
+
+Scripts and API keys that call the admin API can see these changes. Nothing needs doing in the admin UI.
+
+- **Deleting a category, type or item also deletes its custom-field assignments** (a category's include those of its types and items). They used to be left behind, pointing at a record that no longer existed. Assignments left over from deletes made on earlier versions are removed once by migration 000039 (those whose category, type or item no longer exists); it cannot be undone, and the rows it removes pointed at nothing.
+- **Deleting a group now writes an `unassigned` audit entry for every ticket it held**, open or not, in the same transaction as the delete. Before, the tickets silently lost their group with no entry. The entry's before and after values name `assignee_group_id`, which the audit view now shows.
+- **`PATCH /admin/users/{id}` checks every field before it writes any.** `{"disabled": true, "email": "bad"}` answers 400 and leaves the account enabled; it used to disable the account, end its sessions and then answer 400. The same goes for an email another account holds (409) and a change that would remove the last active administrator (400): both are refused before anything is written, where `{"reset_mfa": true, "role": "user"}` on the only administrator used to clear their factors and then answer 400.
+- **Soft-deleted accounts answer 404** to `PATCH /admin/users/{id}` (for any body, `{}` included, which used to answer 200 with the deleted record) and to `POST /admin/users/{id}/password` (which used to set the deleted account's password and answer 204).
+- **Same order of checks for a session and an API key** on the password reset and on PATCH: the body is checked first (400), then the caller (403), then the account (404). Before, an API key aimed at an administrator or a deleted account got 403 or 404 before its body was looked at.
+- **Mismatched ids in a URL answer 404.** `/categories/{id}/types/{typeId}` (PATCH, DELETE), the item routes under it, and all nine custom-field assignment routes now require every id to exist and to belong to the one before it, and an assignment to belong to the scope in the path. Before, only the deepest id was read, so a wrong parent id was ignored. Creating an assignment for a category, type or item that does not exist answers 404 (it used to store an assignment for nothing), and listing the items of an unknown type, or the assignments of an unknown category, type or item, answers 404 (it used to answer an empty list).
 
 ## API Behaviour Changes (#421)
 
@@ -91,6 +136,111 @@ These affect scripts and integrations that call the API. Three can make a reques
 - **`POST /api/v1/me/mfa/enroll/confirm`** answers `500` when the server cannot save the factor (it said `400 invalid_code`). A wrong code and an enrolment that was never started are still `400 invalid_code`.
 - **`POST /api/v1/guest/resend`** accepts an empty body (it was `400`). Malformed JSON is still `400`.
 - **`DELETE /api/v1/tickets`** is `405` as before. Its `Allow` header carries `GET` and `POST` as two header lines, which is what the server always sent; clients that read only the first line saw `GET`.
+
+## Ticket and Settings API Responses (#420)
+
+Changes a script or integration may notice:
+
+- `POST /tickets` now answers with the ticket after routing, so `assignee_user_id` / `assignee_group_id` are filled in when a routing rule or the auto-assign setting applied. Before, they were absent until the ticket was fetched again.
+- `POST /tickets/{id}/replies` now includes `author_name` in the reply, as the reply list does.
+- `PATCH /tickets/{id}` with no body at all is now the same as `{}`: nothing changes, and the answer is `200` with the ticket. Before, it was `400`. Malformed JSON is still `400`.
+- `PATCH /admin/settings` now refuses JSON `null` (`400`) for `attachment_scan_address`, `attachment_allowed_types` and the four `attachment_reputation_*_enabled` toggles. Before, `null` was stored and read as "unset" or "off". To clear the scanner address, send an empty string. To restore the default allowed types, send the list you want.
+- The six choice settings in `PATCH /admin/settings` (`closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling`, `attachment_reputation_refresh`) now answer their own error code for every refusal: `invalid_closed_reopen_policy`, `invalid_audit_mask_requester_names`, `invalid_scan_policy`, `invalid_infected_handling`, `invalid_mismatch_handling`, `invalid_reputation_refresh`. Before, `null` and a value of the wrong type (a number, a boolean) answered `bad_request` for most of them. The status is still `400`, and the messages are unchanged. A script that matched on `bad_request` for these needs to match the specific code instead.
+- Every route under `/tickets/{id}` now accepts a tracking number (for example `GHD-2026-000001`) as well as a UUID. Before, only `GET /tickets/{id}` did; the others answered `400` with `bad_request` or `invalid_id` ("invalid ticket ID"). Those two `400`s no longer exist. A UUID works exactly as before.
+
+## Webhooks: retries, delivery ids, history and notes (#448)
+
+Several changes for anyone who receives webhooks. Two of them can break a receiver.
+
+### Breaking: the raw payload is now ids only
+
+A hook with payload format **Raw JSON** is sent only the event name (`Type`), `TicketID`, `ActorID`, `OccurredAt` and, where the event has them, a `Payload` with `new_status_id` or `target_id`. These are gone from the payload: `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `reporter_email`, `ReplyBody`, and the `internal` and `link_type` fields. A receiver that reads any of them must fetch the ticket through the REST API using `TicketID`. Whether something is a reply or a note is now the event name (below).
+
+Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.
+
+### Breaking: internal notes are their own event
+
+`ticket.replied` is now sent for customer-visible replies only. Internal notes are sent as the new `ticket.note_added`. A hook subscribed to `ticket.replied` stops receiving notes; add `ticket.note_added` (or choose all events) to keep them.
+
+### Failed deliveries are retried, so a receiver may see an event twice
+
+A delivery that fails with a connection error, DNS or TLS failure, timeout, 5xx or 429 is tried again, 30 seconds doubling to an hour, 8 attempts in all. A `Retry-After` header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.
+
+Every delivery now carries two headers: `X-GHD-Delivery`, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and `X-GHD-Event`, the event name. The signature headers are unchanged.
+
+### New: delivery history and Redeliver
+
+Admin, Webhooks has a History button per hook: its last 25 deliveries with the outcome, status, attempts and time. No payloads and no error text are kept. Redeliver sends a delivery's event again as a new delivery. A Slack, Teams, Discord or Jira message is rebuilt from the ticket as it is now, so it can differ from the original; a reply's text is sent only if the reply still exists and is public. Raw hooks get the same ids-only body again.
+
+This adds a database table through a migration that runs at start-up.
+
+## Email: SMTP Encryption and Honesty (Breaking, Read First)
+
+Email (SMTP) now fails loudly instead of quietly. Several setups that used to "work" now fail, and the failure shows in the admin panel. Check these before upgrading. Nothing needs changing if your mail server offers STARTTLS (or you use port 465) and, when `SMTP_USER` is set, offers AUTH.
+
+There is no new setting. The rule depends on the port and on whether `SMTP_PASSWORD` is set:
+
+- **Password set:** TLS is required. Port 465 uses TLS from the first byte; every other port must offer STARTTLS. A password is never sent unencrypted, even to a private address.
+- **No password:** plain SMTP is allowed only when the server's address is loopback, private (10/8, 172.16/12, 192.168/16) or IPv6 fc00::/7. A public address still needs TLS.
+
+### What breaks
+
+1. **A localhost relay that took a password without TLS now fails.** Before, the password went out in the clear to localhost when the relay did not offer STARTTLS (Go already refused to send a password in the clear to any other non-localhost relay). Now the send fails with `SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing to send the password unencrypted`. Fix: turn on STARTTLS (or TLS on port 465) on the relay, or drop the password if the relay does not need one for this network.
+2. **Unauthenticated mail to a public server without STARTTLS now fails.** Before, mail went out in the clear. Now: `SMTP server does not offer STARTTLS and is not on a private address: refusing to send mail unencrypted`. Fix: use a server that offers STARTTLS or port 465.
+3. **`SMTP_USER` set but the server offers no AUTH now fails the send.** Before, the server was used anonymously and the mail went out (or was rejected later). Now: `SMTP server does not offer AUTH but SMTP_USER is set`. Fix: point at a server that offers AUTH, or remove `SMTP_USER` and `SMTP_PASSWORD` if the relay accepts your mail without a login.
+4. **Turning on signup or guest submission is refused while email is off.** `PATCH /admin/settings` answers `400 email_required` when `self_signup_enabled` or `guest_submission_enabled` goes from off to on and `SMTP_HOST` or `SMTP_FROM` is unset. Installs that already have either on are not switched off and are not refused when they save other settings; they get a warning in the admin panel instead.
+5. **A broken email template now fails the message at once.** Before, the message was dropped and nothing said so. Now the row is marked failed with no retries and the error appears in the admin email warning. (The shipped templates render; this only matters for a damaged build.)
+
+Port 465 now connects with TLS from the first byte. Before, it hung until the timeout, so no working setup changes.
+
+### How you will see it
+
+Failed sends are retried for about an hour (a template error is not retried) and then marked failed. While any email message is retrying or failed within the last day, `GET /api/v1/admin/security-warnings` returns `email.failing: true` with the newest error text (addresses replaced by `[address]`). It also lists which of `SMTP_HOST` and `SMTP_FROM` is unset, and whether signup or guest submission is on with email off. The server log says once at startup whether email is enabled, and warns when only one of `SMTP_HOST` and `SMTP_FROM` is set.
+
+## MCP `add_reply`: Public Replies Now Email the Requester
+
+**Behaviour change.** Until now a public reply posted through the MCP `add_reply` tool was saved but never emailed to the requester, although DESIGN.md says it is and the REST reply does it. From 1.3.0 it is: the guest's address (with a guest link) or the reporting account's address, the same as a REST reply.
+
+- Anything you have connected over MCP, including AI agents, can now send mail to your customers. Review which credentials have `tickets:write` before upgrading.
+- Internal notes (`internal: true`) still send nothing.
+- MCP has no `notify_customer` switch; a public reply always notifies. Use an internal note for anything that should not reach the requester.
+- **REST change, staff and administrators only:** a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply. Before, they were. This applies over REST and MCP. Webhook subscribers see it too: the reply event's `reporter_email` is empty in that case.
+- **Unchanged for requesters:** an ordinary user replying on their own ticket still gets the email copy, as before. Replies on other people's tickets are unchanged.
+
+## Webhooks: a ticket filter (#413)
+
+A hook can now be limited to tickets in chosen categories, priorities or assigned groups (Admin, Webhooks, Ticket filter), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves exactly as before. The raw payload is not changed by a filter.
+
+It works together with the retries and history above, as follows. An event a hook's filter turns away is not a delivery for that hook: no `X-GHD-Delivery`, no retry, no History entry. The filter is read as it is now, not once. It is tested when an event is fanned out to the hooks, again at every attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, without a send or a History entry, the same way a retry is dropped when the hook is disabled, unsubscribed from the event or given a new URL. If you widen it, they still go out. A retry is tested against the ticket as it was when the event happened; a delivery queued before this upgrade has no ticket to test and is sent whatever the filter says. Redeliver tests the ticket as it is now, and is refused with `409 webhook_filter_excludes` when the filter does not admit it (if the hook has a filter and the ticket is gone, the filter cannot be checked and it is refused with `409 webhook_filter_unverifiable`; a hook with no filter is still sent). Nothing about this changes what a hook is sent: the raw payload and the chat messages are the same, and the ticket details used for the test are never put in a body or kept in the History.
+
+`ticket.created` is raised before auto-assignment, so a group condition never matches it; subscribe to `ticket.assigned` to hear about tickets landing in a group.
+
+This adds a column to `webhook_configs` through a migration that runs at start-up.
+
+## Admin API: wrong or stale response bodies, and three decided rules (#419, response half)
+
+Scripts and API keys that call the admin API can see these changes. Migration 000040 is new.
+
+**Breaking**
+
+- **Inactive statuses are retired for everyone.** `PATCH /tickets/{id}` with a `status_id` that names an inactive status now answers `409 status_inactive`, for staff, administrators and API keys alike; before, the move was accepted. Tickets already in an inactive status stay there and can move out, and sending a ticket the status it already holds is not a move. The ticket status picker no longer lists inactive statuses (the ticket's own status stays listed). If you deactivated `Pending` expecting SLA pausing to carry on, it now stops for new tickets; see the SLA section of DESIGN.md. If the configured reopen target status is inactive, every reopen (forced reopen, a requester's or guest's reply on a Resolved ticket) goes to New instead, administrators see a banner (`reopen_target` in `GET /admin/security-warnings`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target returns a `warning`.
+- **API keys: who lists and revokes which.** (Security: goes in the release notes under Security, PR 8.) An API key could delete another administrator's key if it knew the id; that has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected) and is revoke-only. Now an API key lists and revokes **only itself**: not its owner's other keys and not anyone else's (any other id answers `404`). An administrator signed in through the browser lists and revokes **every** key, so `GET /admin/api-keys` for a browser session now returns all keys instead of the caller's own, and each entry carries `owner_name` and `owner_email`. A script that used one key to list or revoke the others now needs a browser session.
+- **Custom-field errors have their own codes.** A name already in use (create or PATCH of a definition) and a field assigned twice to one place now answer `409 conflict` (they were `400 bad_request` with the database's own text). A `field_def_id` that names no field answers `400 invalid_reference`. A database failure on these routes is a `500 internal_error`, not a `400`. Validation errors stay `400 bad_request` with the same messages. No response carries database text any more.
+- **A failed ticket count fails the request.** `GET /admin/statuses` and `GET /statuses` answer `500` when a count cannot be read; before, the status was reported with `ticket_count: 0`, and the admin page treats 0 as safe to hard-delete.
+- **Category, type and item names are trimmed on `PATCH`**, as they are on create. A name sent with spaces around it is stored without them, and the response is the saved row. Names already stored are not changed.
+
+**Additive or corrected**
+
+- **`auth_type` reports OIDC.** New values: `oidc`, `local+oidc`, `saml+oidc` and `local+saml+oidc`. `local`, `saml` and `both` (password plus SAML) keep their meaning for accounts without OIDC. Accounts that change value: an account that signs in only through OIDC, or has a password and OIDC, used to read `local`; an account with SAML and OIDC used to read `saml`; and one with a password, SAML and OIDC used to read `both`. A client that switches on `auth_type` with a fixed list of values needs to handle the new ones.
+- **`visible_on_new` on a new field assignment:** the API default is still false when omitted. The database column default (it was true) is now false too (migration 000040); existing rows are untouched.
+- **`GET /admin/sla/policies` is ordered by severity** (critical, high, medium, low, then policies with no priority), then by name. It was ordered by the priority text, which put `low` before `medium`.
+- **`POST /admin/oauth-clients` returns `id`** (the record id that `DELETE` takes), beside `client_id` and `client_secret`.
+- **`PATCH /admin/users/{id}` returns the real `passkey_count`**; it always said 0.
+- **`PATCH /admin/webhooks/{id}` returns the saved row.** After a URL change `last_delivery` is `null`; it showed the old receiver's result.
+- **`PATCH /admin/custom-fields/{id}` returns the saved, trimmed row.** `POST` and `PATCH /admin/statuses` return the status's real `ticket_count`; they said 0.
+- **A blank webhook `secret` on `PATCH` still clears it**, by design and for administrators only; now documented in the API spec and DESIGN.md.
+
+**Ordering.** This change adds migration **000040**, which follows 000039 (#432).
 
 ## Old Password Hashes Must Be Reset After 30 Days (#453)
 

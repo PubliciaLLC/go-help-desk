@@ -63,7 +63,7 @@ SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at, u.role
 LEFT JOIN users u ON u.id = s.user_id
 WHERE s.id = $1
   AND s.expires_at > clock_timestamp()
-  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL))
+  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL AND u.service_account = FALSE))
 `
 
 type GetSessionRow struct {
@@ -81,6 +81,10 @@ type GetSessionRow struct {
 // it here instead means there is no window to lose — the row simply does not
 // load. This costs no extra round trip, since the session lookup already
 // queries the database on every authenticated request.
+//
+// A service user (an OAuth client's identity, #420) never signs in, so no
+// session for one loads either. Nothing writes such a session; this keeps the
+// guarantee from depending on that.
 //
 // LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 // PKCE verifier) into a session before anybody has authenticated, and an inner

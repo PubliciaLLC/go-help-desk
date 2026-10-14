@@ -113,8 +113,10 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		// the caller's groups — and this branch handed the same tickets over to
 		// anyone who named the group. Group ids are listed to every staff
 		// member by GET /groups, so it was a filter, not a boundary. An OAuth
-		// client acts as staff and belongs to no group at all, which made it
-		// every ticket assigned to any group.
+		// client acts as staff through its service user, and that user is in
+		// whatever groups an administrator gave it (none, until they do),
+		// which used to make a group-less client every ticket assigned to any
+		// group.
 		if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
 			scope, err := s.staffScopeFor(ctx, a)
 			if err != nil {
@@ -460,6 +462,11 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Read back, so the response carries whoever the routing assigned, as
+	// handleCreateFollowUp does. A failed read keeps the ticket as created.
+	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
+		t = fresh
+	}
 	JSON(w, http.StatusCreated, t)
 }
 
@@ -507,11 +514,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 // PATCH /api/v1/tickets/{id}
 func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 
 	var body struct {
 		StatusID        *uuid.UUID `json:"status_id"`
@@ -527,7 +530,9 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		TypeID        *uuid.UUID `json:"type_id"`
 		ItemID        *uuid.UUID `json:"item_id"`
 	}
-	if err := DecodeJSON(r, &body); err != nil {
+	// No body at all is {}: nothing to change. Only here, not in DecodeJSON,
+	// which every other route relies on to refuse an empty body.
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
@@ -619,11 +624,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/replies
 func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 
 	var body struct {
 		Body           string `json:"body"`
@@ -662,13 +663,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	var reporterEmail string
 	if notifyCustomer {
 		if t, err := s.tickets.GetByID(r.Context(), id); err == nil {
-			if t.GuestEmail != nil {
-				reporterEmail = *t.GuestEmail
-			} else if t.ReporterUserID != nil {
-				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil {
-					reporterEmail = u.Email
-				}
-			}
+			reporterEmail = s.tickets.ReplyRecipient(r.Context(), t, ticket.Actor{UserID: &a.UserID, Role: a.Role})
 		}
 	}
 
@@ -687,16 +682,18 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// The list names the author; so does the reply it was just created as.
+	// A failed lookup leaves the name empty rather than failing a reply that
+	// is already stored.
+	if u, err := s.users.GetByID(r.Context(), a.UserID); err == nil {
+		reply.AuthorName = u.DisplayName
+	}
 	JSON(w, http.StatusCreated, reply)
 }
 
 // GET /api/v1/tickets/{id}/replies
 func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	replies, err := s.tickets.ListReplies(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -711,11 +708,7 @@ func (s *Server) handleListReplies(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/resolve
 func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	var body struct {
 		Notes string `json:"notes"`
 	}
@@ -751,11 +744,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "users cannot directly reopen tickets")
 		return
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	targetID, err := s.reopenTargetStatusID(r.Context())
 	if err != nil {
 		handleError(w, err)
@@ -785,11 +774,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 // a ticket that is not closed, ErrFollowUpExists for a requester's second.
 func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	if !s.requireUserIdentity(w, r) {
 		return
 	}
@@ -798,7 +783,10 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	// could set on a normal create; staff and admin copy more. Which rule is the
 	// service's (the role decides which method will accept the actor); the one
 	// thing decided here is the active-classification check it cannot make.
-	var t ticket.Ticket
+	var (
+		t   ticket.Ticket
+		err error
+	)
 	if a.Role == user.RoleUser {
 		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), actor,
 			s.requesterClassificationOpen)
@@ -828,11 +816,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "only admins can close tickets")
 		return
 	}
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	// The admin who pressed the button, not SystemActor: the authorisation
 	// check above is this handler's job, and the actor is for attribution.
 	if !s.requireUserIdentity(w, r) {
@@ -853,11 +837,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/tickets/{id}/links
 func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	sourceID := ticketIDFrom(r)
 	var body struct {
 		TargetID           uuid.UUID `json:"target_id"`
 		LinkType           string    `json:"link_type"`
@@ -915,11 +895,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /api/v1/tickets/{id}/links/{targetId}/{linkType}
 func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
-	sourceID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	sourceID := ticketIDFrom(r)
 	targetID, err := uuid.Parse(chi.URLParam(r, "targetId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid target ID")
@@ -969,11 +945,7 @@ func (s *Server) handleRemoveLink(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/history
 func (s *Server) handleListStatusHistory(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	// Status history is ticket content: gate it on the same rule as the ticket.
 	{
 		t, err := s.tickets.GetByID(r.Context(), id)
@@ -1041,11 +1013,7 @@ type ticketAuditEntryView struct {
 // audit.Redact — because a sensitive field name would be exactly as
 // sensitive here as there.
 func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	entries, err := s.tickets.ListAuditEntries(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -1108,11 +1076,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/v1/tickets/{id}/links
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid ticket ID")
-		return
-	}
+	id := ticketIDFrom(r)
 	links, err := s.tickets.ListLinks(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
@@ -1174,15 +1138,32 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	inactive := false
 	for _, st := range statuses {
-		if st.Name == want {
-			return st.ID, nil
+		if st.Name != want {
+			continue
 		}
+		// A deactivated status is retired for everyone, so nothing is reopened
+		// into it. The target is chosen by name from active statuses and can
+		// be deactivated afterwards; reopening then goes to New, like an
+		// unresolvable name, until an administrator picks another. The admin
+		// security warnings say so.
+		if !st.Active {
+			inactive = true
+			break
+		}
+		return st.ID, nil
 	}
 	for _, st := range statuses {
 		if st.Name == ticket.StatusNameNew {
-			slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
-				"configured", want)
+			// One message, for the one condition that applies.
+			if inactive {
+				slog.WarnContext(ctx, "configured reopen target status is inactive; falling back to New",
+					"configured", want)
+			} else {
+				slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
+					"configured", want)
+			}
 			return st.ID, nil
 		}
 	}
