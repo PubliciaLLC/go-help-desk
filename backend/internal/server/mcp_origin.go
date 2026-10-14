@@ -89,3 +89,24 @@ func canonicalOrigin(raw string) (string, bool) {
 	}
 	return scheme + "://" + net.JoinHostPort(host, port), true
 }
+
+// requireMCPOrigin refuses a request to the Streamable HTTP endpoint whose
+// Origin header is present and is not this instance's. Every other path passes
+// through untouched, including /mcp/sse and /mcp/message: see docs/DESIGN.md,
+// "MCP Interface" -> Origin, for why the legacy SSE transport is left alone.
+//
+// It wraps the authentication chain rather than sitting inside it, so the
+// refusal is the same for every caller. Inside, a foreign Origin would get 401
+// without a valid credential and 403 with one, which is a way to test keys.
+// A caller with no Origin never meets this check, so it still sees exactly the
+// responses it saw before.
+func requireMCPOrigin(baseURL string, next http.Handler) http.Handler {
+	policy := newOriginPolicy(baseURL)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.URL.Path == "/mcp" || r.URL.Path == "/mcp/") && !policy.allows(r.Header) {
+			Error(w, http.StatusForbidden, "origin_not_allowed", "Origin not allowed")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
