@@ -516,7 +516,9 @@ type Querier interface {
 	// foreign key and answer 500 for what is a caller's typo.
 	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
 	// Whether a user can be given a ticket: the account exists, is not deleted,
-	// is not disabled, and is staff. A reporting user is not a queue.
+	// is not disabled, and is staff. A reporting user is not a queue, and neither
+	// is a service user (#420): an OAuth client's identity cannot work a ticket,
+	// which also keeps it out of round-robin without a check of its own.
 	//
 	// Asked inside the assignment transaction rather than by the caller, because
 	// the caller is not the only caller. The REST handler checked this and MCP
@@ -555,6 +557,10 @@ type Querier interface {
 	// one moved to a reporting role, render as "Former staff member" — which is a
 	// statement about somebody having left, and it was not true. Re-enabling them
 	// would have made the name reappear.
+	//
+	// Not the service users (#420): an OAuth client's identity is not a colleague
+	// and cannot be given work. Nothing can be assigned to one, so there is no
+	// assigned ticket whose name this list would have to resolve.
 	//
 	// Deliberately narrow: an id, a display name and that flag. No email, no
 	// role, no login state — that is the administrator's view.

@@ -471,11 +471,14 @@ WHERE id = $1
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role IN ('staff', 'admin')
+  AND NOT service_account
 FOR SHARE
 `
 
 // Whether a user can be given a ticket: the account exists, is not deleted,
-// is not disabled, and is staff. A reporting user is not a queue.
+// is not disabled, and is staff. A reporting user is not a queue, and neither
+// is a service user (#420): an OAuth client's identity cannot work a ticket,
+// which also keeps it out of round-robin without a check of its own.
 //
 // Asked inside the assignment transaction rather than by the caller, because
 // the caller is not the only caller. The REST handler checked this and MCP

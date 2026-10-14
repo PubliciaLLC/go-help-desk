@@ -649,7 +649,9 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 			if t.GuestEmail != nil {
 				reporterEmail = *t.GuestEmail
 			} else if t.ReporterUserID != nil {
-				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil {
+				// A service user (an OAuth client's identity) is never
+				// mailed: its address is made up and cannot receive mail.
+				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil && !u.ServiceAccount {
 					reporterEmail = u.Email
 				}
 			}

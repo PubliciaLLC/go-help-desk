@@ -74,6 +74,21 @@ func (h *harness) sessionCookieFor(t *testing.T, sd auth.SessionData) string {
 	return cookie
 }
 
+// createTicketID files a ticket as the seeded administrator over HTTP, so
+// routing runs, and returns its id.
+func createTicketID(t *testing.T, h *harness, subject string) uuid.UUID {
+	t.Helper()
+	resp := h.doAsAdmin(t, http.MethodPost, "/api/v1/tickets", map[string]any{
+		"subject": subject, "description": "x", "category_id": h.catID.String(), "priority": "low",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	var created struct {
+		ID uuid.UUID `json:"id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&created))
+	return created.ID
+}
+
 // doBearer sends a request carrying an OAuth access token, with a body if one
 // is given. (doWithBearer is GET-only.)
 func (h *harness) doBearer(t *testing.T, token, method, path string, body any) *http.Response {

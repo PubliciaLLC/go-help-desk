@@ -265,7 +265,7 @@ func (q *Queries) CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int
 }
 
 const countUsers = `-- name: CountUsers :one
-SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE
+SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account
 `
 
 func (q *Queries) CountUsers(ctx context.Context) (int64, error) {
@@ -719,6 +719,7 @@ SELECT id, display_name,
        (disabled = FALSE AND role IN ('staff', 'admin')) AS assignable
 FROM users
 WHERE deleted_at IS NULL
+  AND NOT service_account
 ORDER BY display_name
 `
 
@@ -743,6 +744,10 @@ type ListAssignableStaffRow struct {
 // one moved to a reporting role, render as "Former staff member" — which is a
 // statement about somebody having left, and it was not true. Re-enabling them
 // would have made the name reappear.
+//
+// Not the service users (#420): an OAuth client's identity is not a colleague
+// and cannot be given work. Nothing can be assigned to one, so there is no
+// assigned ticket whose name this list would have to resolve.
 //
 // Deliberately narrow: an id, a display name and that flag. No email, no
 // role, no login state — that is the administrator's view.
@@ -770,7 +775,7 @@ func (q *Queries) ListAssignableStaff(ctx context.Context) ([]ListAssignableStaf
 }
 
 const listUsers = `-- name: ListUsers :many
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account ORDER BY created_at DESC LIMIT $1 OFFSET $2
 `
 
 type ListUsersParams struct {

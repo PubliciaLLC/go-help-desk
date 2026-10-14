@@ -173,3 +173,39 @@ func TestServiceUser_IsNotAnAdministratorForTheLastAdminGuard(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, before, after, "disabling a service user changes no administrator count")
 }
+
+// Everything that is a list of colleagues leaves the service user out; the
+// administrator's list (ListAdmin) keeps it, so it can be edited.
+func TestServiceUser_ListedForAdministratorsOnly(t *testing.T) {
+	store, svc, person := newServiceUserFixture(t)
+	ctx := context.Background()
+	p := person(t)
+
+	staff, err := store.ListAssignableStaff(ctx)
+	require.NoError(t, err)
+	ids := func() (out []uuid.UUID) {
+		for _, s := range staff {
+			out = append(out, s.ID)
+		}
+		return out
+	}()
+	require.Contains(t, ids, p.ID)
+	require.NotContains(t, ids, svc.ID)
+
+	plain, err := store.List(ctx, 1000, 0)
+	require.NoError(t, err)
+	var plainIDs []uuid.UUID
+	for _, u := range plain {
+		plainIDs = append(plainIDs, u.ID)
+	}
+	require.Contains(t, plainIDs, p.ID)
+	require.NotContains(t, plainIDs, svc.ID)
+
+	admin, err := store.ListAdmin(ctx, 1000, 0)
+	require.NoError(t, err)
+	var adminIDs []uuid.UUID
+	for _, u := range admin {
+		adminIDs = append(adminIDs, u.ID)
+	}
+	require.Contains(t, adminIDs, svc.ID)
+}

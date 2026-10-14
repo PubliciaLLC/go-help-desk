@@ -28,10 +28,14 @@ type adminUserSummary struct {
 	DisplayName string    `json:"display_name"`
 	Role        user.Role `json:"role"`
 	Disabled    bool      `json:"disabled"`
-	AuthType    string    `json:"auth_type"` // "local", "saml", "both"
-	MFAEnabled  bool      `json:"mfa_enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	AuthType    string    `json:"auth_type"` // "local", "saml", "both", "service"
+	// ServiceAccount: the identity an OAuth client acts as. Listed here so an
+	// administrator can rename it, give it groups and switch it off, and
+	// badged "Service" because it can never sign in.
+	ServiceAccount bool      `json:"service_account"`
+	MFAEnabled     bool      `json:"mfa_enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // adminUserDetail extends the summary with group memberships.
@@ -49,6 +53,8 @@ func authTypeOf(u user.User) string {
 	hasLocal := u.PasswordHash != ""
 	hasSAML := u.SAMLSubject != ""
 	switch {
+	case u.ServiceAccount:
+		return "service"
 	case hasLocal && hasSAML:
 		return "both"
 	case hasSAML:
@@ -60,15 +66,16 @@ func authTypeOf(u user.User) string {
 
 func toAdminSummary(u user.User) adminUserSummary {
 	return adminUserSummary{
-		ID:          u.ID,
-		Email:       u.Email,
-		DisplayName: u.DisplayName,
-		Role:        u.Role,
-		Disabled:    u.Disabled,
-		AuthType:    authTypeOf(u),
-		MFAEnabled:  u.MFAEnabled,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:             u.ID,
+		Email:          u.Email,
+		DisplayName:    u.DisplayName,
+		Role:           u.Role,
+		Disabled:       u.Disabled,
+		AuthType:       authTypeOf(u),
+		ServiceAccount: u.ServiceAccount,
+		MFAEnabled:     u.MFAEnabled,
+		CreatedAt:      u.CreatedAt,
+		UpdatedAt:      u.UpdatedAt,
 	}
 }
 

@@ -68,10 +68,10 @@ UPDATE users SET disabled = TRUE, updated_at = now() WHERE id = $1;
 UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1;
 
 -- name: ListUsers :many
-SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account ORDER BY created_at DESC LIMIT $1 OFFSET $2;
 
 -- name: CountUsers :one
-SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE;
+SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account;
 
 -- name: SetUserPasswordHash :exec
 -- Writes only the password hash.
@@ -156,12 +156,17 @@ WHERE id = $1 AND deleted_at IS NULL;
 -- statement about somebody having left, and it was not true. Re-enabling them
 -- would have made the name reappear.
 --
+-- Not the service users (#420): an OAuth client's identity is not a colleague
+-- and cannot be given work. Nothing can be assigned to one, so there is no
+-- assigned ticket whose name this list would have to resolve.
+--
 -- Deliberately narrow: an id, a display name and that flag. No email, no
 -- role, no login state — that is the administrator's view.
 SELECT id, display_name,
        (disabled = FALSE AND role IN ('staff', 'admin')) AS assignable
 FROM users
 WHERE deleted_at IS NULL
+  AND NOT service_account
 ORDER BY display_name;
 
 -- name: DisableUserUnlessLastAdmin :one
