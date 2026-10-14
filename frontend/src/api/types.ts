@@ -68,6 +68,11 @@ export interface StatusHistoryEntry {
   created_at: string
 }
 
+// #422: what the ids in a diff's before/after name now, keyed by the id as it
+// appears there. An id with no entry no longer resolves (the row is gone) and
+// is shown as the id. `masked` is true when name is the "Requester" mask.
+export type AuditNames = Record<string, { name: string; masked?: boolean }>
+
 // The admin-wide audit view (#129) — see handleListAdminAudit. Same shape as
 // TicketAuditEntry plus the entity a per-ticket feed doesn't need to say.
 export interface AdminAuditEntry {
@@ -83,6 +88,7 @@ export interface AdminAuditEntry {
   created_at: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 export interface AdminAuditListResponse {
@@ -123,6 +129,7 @@ export interface TicketAuditEntry {
   // recorded"; this type cannot tell them apart.
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 export interface Status {
