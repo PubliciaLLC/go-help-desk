@@ -13,10 +13,11 @@ import (
 
 func TestNewService_BindsToTheInstancesOwnOrigin(t *testing.T) {
 	// A credential is bound to an origin, so BASE_URL decides whether
-	// authentication works at all — not just how links are built. A value
-	// that cannot be bound to is refused here rather than defaulted, because
+	// passkeys can work at all — not just how links are built. A value that
+	// cannot be bound to is refused here rather than defaulted, because
 	// defaulting it would produce an instance whose passkeys silently never
-	// verify.
+	// verify. The caller (cmd/server) turns the refusal into "passkeys are
+	// off", not into a failed startup (#494).
 	cases := []struct {
 		name, baseURL string
 		wantErr       bool
@@ -32,6 +33,34 @@ func TestNewService_BindsToTheInstancesOwnOrigin(t *testing.T) {
 			_, err := NewService(tc.baseURL, "Help Desk", nil)
 			if tc.wantErr {
 				require.Error(t, err, "an unusable BASE_URL was accepted")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+// Which hosts go-webauthn accepts as a relying-party id, measured against the
+// real library (#494). main.go degrades to "passkeys unavailable" on exactly
+// the rows marked wantErr, so this pins the boundary rather than assuming it.
+func TestNewService_WhichHostsTheLibraryAccepts(t *testing.T) {
+	cases := []struct {
+		baseURL string
+		wantErr bool
+	}{
+		{"https://help.example.com", false},
+		{"http://localhost:8080", false},
+		{"http://127.0.0.1:8080", true},
+		{"http://192.168.1.10:8080", true},
+		{"http://[::1]:8080", true},
+		{"http://helpdesk:8080", true},
+		{"https://h\u00e9lp.example.com", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.baseURL, func(t *testing.T) {
+			_, err := NewService(tc.baseURL, "Help Desk", nil)
+			if tc.wantErr {
+				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)

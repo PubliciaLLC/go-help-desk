@@ -663,7 +663,8 @@ no route learned a new idea.
 **The password step answers with three booleans:** `mfa_needed` (a TOTP
 enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
 passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
-role is enforced). All false means no factor is owed. Each is also conditional
+role is enforced; also an account whose only factor is a passkey while passkeys
+are unavailable, see above). All false means no factor is owed. Each is also conditional
 on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
 passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
 `u.MFAEnabled`, which is the TOTP column and not "this account has a second
@@ -751,10 +752,40 @@ is half an answer without "and here is how you recover when it happens anyway".
 **`BASE_URL` is security-relevant.** A WebAuthn credential is bound to its
 origin and the relying party is derived from `BASE_URL`, so the setting stops
 being only about links in emails. An instance that changes domain invalidates
-every registered credential and every user re-registers. The server refuses to
-start when `BASE_URL` has no host rather than defaulting, because a default
-would produce passkeys that silently never verify. (`README.md` and
-`docker/.env.example` describe `BASE_URL` without this warning.)
+every registered credential and every user re-registers. A `BASE_URL` that
+cannot be a relying-party id is never defaulted, because a default would produce
+passkeys that silently never verify.
+
+**An unusable `BASE_URL` turns passkeys off; it does not stop the server** (#494).
+go-webauthn accepts a domain name and `localhost`, and rejects an IP address
+(`127.0.0.1`, `192.168.1.10`, `[::1]`), a single-label host (`helpdesk`) and a
+non-ASCII host (pinned by `TestNewService_WhichHostsTheLibraryAccepts`). Many
+1.2.x instances run on exactly such a LAN URL, and a second factor they never
+used must not take the whole help desk down. So startup logs once (`passkeys
+unavailable: ...` with the reason) and carries on with no passkey service, and:
+
+- `GET /admin/security-warnings` gains `passkeys: {available, reason}` and the
+  admin banner (`InsecureConfigBanner`) says `BASE_URL` must be a domain name or
+  `localhost`.
+- `GET /auth/providers` gains `passkeys` (boolean, public, no reason), so the
+  UI offers no key it cannot check. The account page hides enrolment when its
+  list request answers `503 passkeys_unavailable`.
+- `GET /me/passkeys`, `POST /me/passkeys/register/start|finish` and
+  `POST /auth/local/passkey/start|finish` answer `503 passkeys_unavailable`
+  (the `requirePasskeys` middleware, so no handler can reach the nil service).
+  `DELETE /me/passkeys/{id}` still works: it never uses the service.
+- **Nobody is locked out.** A passkey is only ever a second step after the
+  password (there is no passwordless sign-in), so the password stays a way in.
+  An unusable key is not counted as a factor: sign-in does not ask for it
+  (`passkey_needed` false), and an account whose only second factor was a
+  passkey gets `mfa_enrollment_needed` true, enforced role or not, so it ends
+  up with password plus TOTP instead of silently dropping to the password
+  alone. The "already has a factor" guard on TOTP enrolment
+  (`alreadyProtected`) ignores passkeys for the same reason, or that account
+  would be told to enrol and refused. Consequence to know: while passkeys are
+  off, a password alone can enrol TOTP on a passkey-only account, because the
+  passkey cannot be checked. Fixing `BASE_URL` brings the old keys back,
+  provided the domain is the one they were registered on.
 
 **Not built**, written down so it is not rediscovered as a gap: passwordless
 sign-in; attestation verification against a metadata service; a per-role

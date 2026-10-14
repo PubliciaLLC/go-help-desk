@@ -137,6 +137,18 @@ func newHarnessWith(t *testing.T, authRateLimit int, clamAVAddr string) (*harnes
 // server is built, for tests about what the configuration itself produces.
 func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config)) (*harness, func()) {
 	t.Helper()
+	return newHarnessPasskeys(t, authRateLimit, clamAVAddr, mutate, true)
+}
+
+// newHarnessPasskeysOff is a harness started as main.go starts when BASE_URL
+// cannot be a relying-party id (#494): no passkey service at all.
+func newHarnessPasskeysOff(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessPasskeys(t, 0, "", nil, false)
+}
+
+func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
+	t.Helper()
 	db, closeDB := testutil.NewDB(t)
 	q, tx, rollback := testutil.TxQueriesTx(t, db)
 
@@ -312,6 +324,11 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 	})
 
 	passkeySvc, passkeyStore := testPasskeys(q)
+	srvOpts := []server.Option{server.WithAuditStore(auStore)}
+	if !passkeysOn {
+		passkeySvc = nil
+		srvOpts = append(srvOpts, server.WithPasskeysUnavailable(passkeysOffReason))
+	}
 	verifyMail := &verifyMailbox{}
 	// Verification email is sent at once, through the same channel the outbox
 	// worker uses, so a test can follow the link straight after signing up.
@@ -338,7 +355,7 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 		authSt,
 		registrationSvc,
 		cannedResponseSvc,
-		server.WithAuditStore(auStore),
+		srvOpts...,
 	)
 
 	dispatcher.prepare = srv.PrepareGuestLink

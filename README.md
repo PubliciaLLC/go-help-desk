@@ -122,7 +122,7 @@ Environment variables control infrastructure; feature flags (SAML, MFA, SLA, gue
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DATABASE_URL` | yes | — | `postgres://user:pass@host/db?sslmode=disable` |
-| `BASE_URL` | yes | — | Public URL (e.g. `https://helpdesk.example.com`) |
+| `BASE_URL` | yes | — | Public URL (e.g. `https://helpdesk.example.com`). Passkeys need its host to be a domain name or `localhost`; with an IP address or a single-word host the server still starts, with passkeys off |
 | `SESSION_SECRET` | yes | — | Random secret ≥ 32 chars |
 | `JWT_SECRET` | yes | — | Random secret. No minimum is enforced; 32+ characters is the sensible choice |
 | `HTTP_PORT` | | `8080` | Listen port |

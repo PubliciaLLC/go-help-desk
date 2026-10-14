@@ -50,7 +50,11 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storage = data?.attachment_storage
   const storageBroken = !!storage && !storage.writable
 
-  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken) return null
+  // An absent field is a server that predates it, which had no way to be off.
+  const passkeys = data?.passkeys
+  const passkeysOff = !!passkeys && !passkeys.available
+
+  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !passkeysOff) return null
 
   return (
     <>
@@ -82,6 +86,18 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
             <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
             server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
+          </p>
+        </div>
+      )}
+      {passkeysOff && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">Passkeys are unavailable</p>
+          <p className="mt-1 text-sm">
+            A passkey is tied to a domain name, so{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">BASE_URL</code> must be a domain
+            name (or <code className="font-mono text-xs">localhost</code>) to use them; an IP address or a single-word
+            host will not work. Everything else runs normally, and people who already have a passkey sign in with their
+            password and an authenticator app instead. Reason: {passkeys.reason}
           </p>
         </div>
       )}

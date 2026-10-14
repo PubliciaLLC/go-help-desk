@@ -28,6 +28,25 @@ import (
 // enrolment sits there, and the mechanism
 // TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor pins.
 
+// passkeysAvailable reports whether the ceremony service exists. It is nil
+// when BASE_URL cannot be a relying-party id (#494).
+func (s *Server) passkeysAvailable() bool { return s.passkeys != nil }
+
+// requirePasskeys answers 503 on every route that would use the ceremony
+// service while passkeys are unavailable, so none of them can dereference the
+// nil service. It runs before the handler's own checks on purpose: nothing
+// about the request changes what is true of the instance.
+func (s *Server) requirePasskeys(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.passkeysAvailable() {
+			Error(w, http.StatusServiceUnavailable, "passkeys_unavailable",
+				"passkeys are not available on this instance: BASE_URL must be a domain name (or localhost)")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // accountFor assembles what the ceremonies need to know about a person.
 func (s *Server) accountFor(r *http.Request, id uuid.UUID) (webauthn.Account, error) {
 	u, err := s.users.GetByID(r.Context(), id)
@@ -142,6 +161,12 @@ func (s *Server) alreadyProtected(r *http.Request, id uuid.UUID) (bool, error) {
 	}
 	if u.MFAEnabled {
 		return true, nil
+	}
+	// A passkey the server cannot check protects nothing, and counting it
+	// would refuse TOTP enrolment to the very account that sign-in is
+	// telling to enrol, leaving it unable to get in (#494).
+	if !s.passkeysAvailable() {
+		return false, nil
 	}
 	n, err := s.passkeyStore.CountForUser(r.Context(), id)
 	if err != nil {

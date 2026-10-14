@@ -904,6 +904,9 @@ type routeAuth struct {
 var probeIgnored = []string{
 	"chi/v5/middleware.RequestID", "server.jsonRecoverer",
 	"server.requestLogger", "server.securityHeaders", "server.reputationDeadline",
+	// Answers 503 when the instance has no passkey service (#494); says
+	// nothing about who may call the route.
+	"Server).requirePasskeys",
 }
 
 // minimalScopes shrinks all to a smallest set that admits still accepts,

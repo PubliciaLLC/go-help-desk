@@ -48,7 +48,6 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
@@ -368,13 +367,10 @@ func run() error {
 	// Passkeys. The relying party is derived from BASE_URL: a credential is
 	// bound to its origin, so that setting decides whether passkey
 	// authentication works at all rather than only how links are built. An
-	// unusable value is refused here rather than defaulted, because a default
-	// would produce an instance whose passkeys silently never verify.
+	// unusable value turns passkeys off with a warning instead of stopping
+	// startup (#494); see configurePasskeys.
 	passkeyStore := webauthnstore.New(q)
-	passkeySvc, err := webauthn.NewService(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
-	if err != nil {
-		return fmt.Errorf("configuring passkeys: %w", err)
-	}
+	passkeySvc, passkeyReason := configurePasskeys(cfg.BaseURL, adminSvc.SiteName(ctx), slog.Default())
 
 	srv := server.New(
 		cfg,
@@ -402,6 +398,7 @@ func run() error {
 		// that must not be per request.
 		server.WithReputationLookup(repStore),
 		server.WithAuditStore(auStore),
+		server.WithPasskeysUnavailable(passkeyReason),
 	)
 
 	srv.InitSAML(ctx)

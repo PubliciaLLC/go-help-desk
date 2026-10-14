@@ -120,9 +120,17 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// authenticator they already have. The passkey route is still reachable
 	// directly for anyone who prefers it.
 	mfaNeeded := mfaEnabled && u.MFAEnabled
-	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
-	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
-		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
+	//
+	// Passkeys unavailable (#494): a key the server cannot check is not a
+	// factor, so it is neither asked for nor counted. An account whose only
+	// factor was a key is told to enrol TOTP, whether or not its role is
+	// enforced: it chose a second factor, and dropping to the password alone
+	// would quietly remove that. The password is still a way in (a passkey is
+	// only ever a second step here), so nobody is locked out.
+	stranded := passkeys > 0 && !s.passkeysAvailable()
+	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !stranded
+	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled &&
+		((passkeys == 0 && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))) || stranded)
 	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
 	sd := auth.SessionData{
@@ -566,6 +574,10 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 	JSON(w, http.StatusOK, struct {
 		Providers      []Provider `json:"providers"`
 		LocalAdminOnly bool       `json:"local_admin_only"`
+		// Passkeys is false when BASE_URL cannot be a relying-party id
+		// (#494), so the page does not offer a key it cannot check. Public
+		// on purpose: the reason is not, and only goes to administrators.
+		Passkeys bool `json:"passkeys"`
 	}{
 		Providers: []Provider{
 			{Name: "local", Enabled: true},
@@ -573,6 +585,7 @@ func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
 			{Name: "oidc", Enabled: s.oidcReachableNow()},
 		},
 		LocalAdminOnly: s.adminSvc.SAMLEnabled(r.Context()),
+		Passkeys:       s.passkeysAvailable(),
 	})
 }
 
