@@ -19,8 +19,8 @@ import (
 // Interface" -> Origin). The MCP specification requires servers to validate
 // Origin against DNS rebinding; mcp-go does not, so ProtectMCP does:
 //
-//   - on /mcp and /mcp/ only. /mcp/sse and /mcp/message are not checked (see
-//     TestMCPOrigin_SSEIsNotChecked);
+//   - on every route behind ProtectMCP: /mcp, /mcp/, /mcp/sse and
+//     /mcp/message (see TestMCPOrigin_SSEIsChecked);
 //   - a request with no Origin passes, because non-browser clients send none;
 //   - an Origin must be the one origin of BASE_URL, or the request is 403
 //     origin_not_allowed;
@@ -323,56 +323,132 @@ func TestMCPOrigin_OtherMethods(t *testing.T) {
 	})
 }
 
-// The decision, pinned: the SSE transport (/mcp/sse, /mcp/message) is NOT
-// subject to the Origin check. docs/DESIGN.md says why. If this test is
-// changed to expect 403, that is a decision to apply the check to SSE, not a
-// fix.
-func TestMCPOrigin_SSEIsNotChecked(t *testing.T) {
+// The decision, pinned: the Origin check covers every route ProtectMCP guards,
+// the legacy SSE transport (/mcp/sse, /mcp/message) included. docs/DESIGN.md
+// says why. If this test is changed to let a foreign Origin through on SSE,
+// that is a decision to leave a route open, not a fix.
+func TestMCPOrigin_SSEIsChecked(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	base := serveMCP(t, h)
 
-	mk := func() *streamConn {
-		c := withOrigin(&streamConn{base: base, header: http.Header{}}, foreignOrigin)
-		c.header.Set("Authorization", "ApiKey "+h.apiKey)
+	mk := func(origin, auth string) *streamConn {
+		c := &streamConn{base: base, header: http.Header{}}
+		if origin != "" {
+			withOrigin(c, origin)
+		}
+		if auth != "" {
+			c.header.Set("Authorization", auth)
+		}
 		return c
 	}
+	good := "ApiKey " + h.apiKey
 
-	t.Run("the stream opens", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// refused sends one request and asserts the origin refusal, returning its
+	// body. A route that wrongly lets the request through can hold the
+	// response open (the SSE stream does), so the status is checked before
+	// the body is read and the whole call is bounded: a regression fails here
+	// instead of hanging the suite.
+	refused := func(t *testing.T, c *streamConn, method, path string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mcp/sse", nil)
+		req, err := http.NewRequestWithContext(ctx, method, base+path, strings.NewReader(`{}`))
 		require.NoError(t, err)
-		req.Header.Set("Authorization", "ApiKey "+h.apiKey)
-		req.Header.Set("Origin", foreignOrigin)
+		for k, vs := range c.header {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
+		}
+		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
+		require.Equal(t, http.StatusForbidden, resp.StatusCode, "%s %s was not refused for its Origin", method, path)
+		return requireOriginRefused(t, resp)
+	}
+
+	// What /mcp says to a foreign Origin is the reference: the other routes
+	// must say exactly that, to every caller.
+	want := requireOriginRefused(t, mk(foreignOrigin, good).send(t, http.MethodPost, base+"/mcp", "application/json", []byte(`{}`)))
+
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/mcp/sse"},
+		{http.MethodPost, "/mcp/message?sessionId=nope"},
+		{http.MethodGet, "/mcp/nope"},
+	}
+	for _, rt := range routes {
+		for _, who := range []struct{ name, auth string }{
+			{"a valid key", good},
+			{"a bad key", "ApiKey ghd_not_a_key"},
+			{"no credentials", ""},
+		} {
+			t.Run(rt.method+" "+rt.path+" with a foreign Origin and "+who.name, func(t *testing.T) {
+				require.Equal(t, want, refused(t, mk(foreignOrigin, who.auth), rt.method, rt.path))
+			})
+		}
+		t.Run(rt.method+" "+rt.path+" with a repeated or null Origin", func(t *testing.T) {
+			c := mk("", good)
+			withOrigin(c, baseOrigin, baseOrigin)
+			refused(t, c, rt.method, rt.path)
+			refused(t, mk("null", good), rt.method, rt.path)
+		})
+	}
+
+	// openSSE opens the stream with this Origin (none when "") and returns the
+	// message endpoint the server announces, with the stream closed on cleanup.
+	openSSE := func(t *testing.T, origin string) string {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		t.Cleanup(cancel)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mcp/sse", nil)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", good)
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = resp.Body.Close() })
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		require.Contains(t, resp.Header.Get("Content-Type"), "text/event-stream")
-		line, err := bufio.NewReader(resp.Body).ReadString('\n')
-		require.NoError(t, err)
-		require.True(t, strings.HasPrefix(line, "event:"), line)
-	})
+		br := bufio.NewReader(resp.Body)
+		for i := 0; i < 10; i++ {
+			line, err := br.ReadString('\n')
+			require.NoError(t, err)
+			if strings.HasPrefix(line, "data: ") {
+				return strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+			}
+		}
+		t.Fatal("no endpoint event")
+		return ""
+	}
 
-	t.Run("a message is not refused for its Origin", func(t *testing.T) {
-		// No such session, so the transport itself says no, and says it in its
-		// own words rather than ours.
-		resp := mk().send(t, http.MethodPost, base+"/mcp/message?sessionId=nope", "application/json", []byte(`{}`))
-		body := readBody(t, resp)
-		require.NotContains(t, body, "origin_not_allowed")
-		require.NotEqual(t, http.StatusForbidden, resp.StatusCode, body)
-	})
+	for _, origin := range []string{"", baseOrigin} {
+		name := "no Origin"
+		if origin != "" {
+			name = "the right Origin"
+		}
+		t.Run("with "+name+" the stream opens and a message posts", func(t *testing.T) {
+			endpoint := openSSE(t, origin)
+			c := mk(origin, good)
+			resp := c.send(t, http.MethodPost, base+endpoint, "application/json",
+				[]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+			body := readBody(t, resp)
+			require.Equal(t, http.StatusAccepted, resp.StatusCode, body)
+		})
+	}
 
-	t.Run("an unknown path under /mcp/ is the transport's 404", func(t *testing.T) {
-		resp := mk().send(t, http.MethodGet, base+"/mcp/nope", "", nil)
+	t.Run("with no Origin, an unknown path is the transport's 404", func(t *testing.T) {
+		resp := mk("", good).send(t, http.MethodGet, base+"/mcp/nope", "", nil)
 		require.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
-	t.Run("an anonymous caller is still 401", func(t *testing.T) {
-		c := withOrigin(&streamConn{base: base, header: http.Header{}}, foreignOrigin)
-		resp := c.send(t, http.MethodGet, base+"/mcp/sse", "", nil)
-		require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	t.Run("an anonymous caller without an Origin is still 401", func(t *testing.T) {
+		for _, rt := range routes[:2] {
+			resp := mk("", "").send(t, rt.method, base+rt.path, "application/json", []byte(`{}`))
+			require.Equal(t, http.StatusUnauthorized, resp.StatusCode, rt.path)
+		}
 	})
 }
 

@@ -32,7 +32,7 @@ func newOriginPolicy(baseURL string) originPolicy {
 	return originPolicy{want: want}
 }
 
-// allows reports whether a request with these headers may reach /mcp.
+// allows reports whether a request with these headers may reach an MCP route.
 //
 // No Origin header passes: only browsers send one on every cross-origin request,
 // and a non-browser client has no reason to. A header that is present must be
@@ -101,10 +101,11 @@ func canonicalOrigin(raw string) (string, bool) {
 	return scheme + "://" + net.JoinHostPort(host, port), true
 }
 
-// requireMCPOrigin refuses a request to the Streamable HTTP endpoint whose
-// Origin header is present and is not this instance's. Every other path passes
-// through untouched, including /mcp/sse and /mcp/message: see docs/DESIGN.md,
-// "MCP Interface" -> Origin, for why the legacy SSE transport is left alone.
+// requireMCPOrigin refuses a request whose Origin header is present and is not
+// this instance's. It covers every route that reaches ProtectMCP: /mcp, /mcp/,
+// and the legacy SSE transport at /mcp/sse and /mcp/message. There is no path
+// test on purpose, so a route added behind ProtectMCP is covered without
+// anyone remembering to list it. See docs/DESIGN.md, "MCP Interface" -> Origin.
 //
 // It wraps the authentication chain rather than sitting inside it, so the
 // refusal is the same for every caller. Inside, a foreign Origin would get 401
@@ -114,7 +115,7 @@ func canonicalOrigin(raw string) (string, bool) {
 func requireMCPOrigin(baseURL string, next http.Handler) http.Handler {
 	policy := newOriginPolicy(baseURL)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.URL.Path == "/mcp" || r.URL.Path == "/mcp/") && !policy.allows(r.Header) {
+		if !policy.allows(r.Header) {
 			Error(w, http.StatusForbidden, "origin_not_allowed", "Origin not allowed")
 			return
 		}

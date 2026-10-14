@@ -77,8 +77,8 @@ import (
 // author. The package comment claimed it "uses the same auth methods (API key,
 // bearer token) as the REST API", which is presumably why nobody checked.
 //
-// On the Streamable HTTP endpoint (/mcp and /mcp/) it first refuses any request
-// whose Origin header is present and is not this instance's: see
+// On every MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message) it first refuses any
+// request whose Origin header is present and is not this instance's: see
 // requireMCPOrigin.
 //
 // It authenticates; it does not authorise. Every signed-in role is admitted,
