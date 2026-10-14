@@ -4,7 +4,7 @@ import { AxiosError, AxiosHeaders } from 'axios'
 import {
   saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy,
   deleteGroup, deleteOAuthClient, deleteAPIKey, deleteCategory, deleteType, deleteItem,
-  deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment, removeGroupScope,
+  deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment, removeGroupScope, updateSettings,
 } from './admin'
 
 // admin.ts is 557 lines and almost all of it is one-line wrappers, which are
@@ -15,6 +15,18 @@ import {
 
 beforeEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('updateSettings', () => {
+  // PATCH /admin/settings answers 204 with no body, or 200 {"warning"} (#420).
+  it('hands back the warning when there is one, and nothing when the body is empty', async () => {
+    const patch = vi.spyOn(api, 'patch')
+    patch.mockResolvedValueOnce({ data: { warning: 'JIRA sync will see no tickets.' } })
+    expect(await updateSettings({ ticket_scope_enforced: true })).toEqual({ warning: 'JIRA sync will see no tickets.' })
+
+    patch.mockResolvedValueOnce({ data: undefined })
+    expect((await updateSettings({ site_name: 'x' })).warning).toBeUndefined()
+  })
 })
 
 describe('saveSAMLConfig', () => {
