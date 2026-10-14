@@ -345,14 +345,28 @@ type WebauthnCredential struct {
 }
 
 type WebhookConfig struct {
-	ID                 uuid.UUID    `json:"id"`
-	Url                string       `json:"url"`
-	Events             []string     `json:"events"`
-	Secret             string       `json:"secret"`
-	Enabled            bool         `json:"enabled"`
-	CreatedAt          time.Time    `json:"created_at"`
-	PayloadFormat      string       `json:"payload_format"`
-	LastDeliveryAt     sql.NullTime `json:"last_delivery_at"`
-	LastDeliveryStatus int32        `json:"last_delivery_status"`
-	LastDeliveryError  string       `json:"last_delivery_error"`
+	ID                 uuid.UUID       `json:"id"`
+	Url                string          `json:"url"`
+	Events             []string        `json:"events"`
+	Secret             string          `json:"secret"`
+	Enabled            bool            `json:"enabled"`
+	CreatedAt          time.Time       `json:"created_at"`
+	PayloadFormat      string          `json:"payload_format"`
+	LastDeliveryAt     sql.NullTime    `json:"last_delivery_at"`
+	LastDeliveryStatus int32           `json:"last_delivery_status"`
+	LastDeliveryError  string          `json:"last_delivery_error"`
+	TicketFilter       json.RawMessage `json:"ticket_filter"`
+}
+
+type WebhookDelivery struct {
+	ID            uuid.UUID       `json:"id"`
+	WebhookID     uuid.UUID       `json:"webhook_id"`
+	EventType     string          `json:"event_type"`
+	Event         json.RawMessage `json:"event"`
+	CreatedAt     time.Time       `json:"created_at"`
+	LastAttemptAt time.Time       `json:"last_attempt_at"`
+	Status        int32           `json:"status"`
+	Result        string          `json:"result"`
+	Attempts      int32           `json:"attempts"`
+	Retrying      bool            `json:"retrying"`
 }

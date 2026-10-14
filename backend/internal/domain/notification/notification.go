@@ -14,11 +14,15 @@ const (
 	EventTicketCreated       EventType = "ticket.created"
 	EventTicketAssigned      EventType = "ticket.assigned"
 	EventTicketStatusChanged EventType = "ticket.status_changed"
-	EventTicketReplied       EventType = "ticket.replied"
-	EventTicketResolved      EventType = "ticket.resolved"
-	EventTicketClosed        EventType = "ticket.closed"
-	EventTicketReopened      EventType = "ticket.reopened"
-	EventTicketLinked        EventType = "ticket.linked"
+	// EventTicketReplied is a customer-visible reply only. A staff-only note
+	// is EventTicketNoteAdded, so a subscriber can ask for one without the
+	// other (#448).
+	EventTicketReplied   EventType = "ticket.replied"
+	EventTicketNoteAdded EventType = "ticket.note_added"
+	EventTicketResolved  EventType = "ticket.resolved"
+	EventTicketClosed    EventType = "ticket.closed"
+	EventTicketReopened  EventType = "ticket.reopened"
+	EventTicketLinked    EventType = "ticket.linked"
 
 	// EventGuestLinkResent is a guest asking for a fresh access link, which is
 	// not a change to the ticket. It exists so the mail goes out through the
@@ -110,7 +114,44 @@ type Event struct {
 	// instead: readable by a dispatcher, invisible on the wire.
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
+
+	// Attrs is the classification of the ticket this event describes, as it
+	// was when the event was raised, for webhook filters (#413). Excluded from
+	// JSON like Subject: the raw body does not change. Nil means "not known":
+	// an event queued before #413, or one that names no ticket.
+	Attrs *TicketAttrs `json:"-"`
+
+	// TargetWebhook, when set, makes the event a delivery to that one hook
+	// instead of an announcement to all of them: the webhook channel's queued
+	// row is first fanned out into one row per subscribed hook, so each hook
+	// is retried on its own (#448). Never part of the wire body.
+	TargetWebhook uuid.UUID `json:"-"`
+
+	// TargetURLHash is the SHA-256 (hex) of the hook's URL when the per-hook row
+	// was queued. A URL can carry a token, so the outbox holds a fingerprint of
+	// it and never the URL; at send time a row whose hash no longer matches the
+	// hook's URL is dropped (#448). Never part of the wire body.
+	TargetURLHash string `json:"-"`
 }
+
+// TicketAttrs is the part of a ticket a webhook filter can test. Priority is
+// ticket.Priority as a string: ticket imports notification, not the reverse.
+type TicketAttrs struct {
+	CategoryID      uuid.UUID  `json:"category_id"`
+	Priority        string     `json:"priority"`
+	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"` // nil = no group
+}
+
+// RetryAfterError asks the outbox worker to wait at least After before the
+// next attempt, because the receiver said so (a Retry-After header). The
+// worker never waits longer than its longest backoff.
+type RetryAfterError struct {
+	Err   error
+	After time.Duration
+}
+
+func (e *RetryAfterError) Error() string { return e.Err.Error() }
+func (e *RetryAfterError) Unwrap() error { return e.Err }
 
 // Dispatcher delivers events to whatever sinks are registered.
 // Callers fire and forget — the dispatcher is responsible for retry/durability.

@@ -92,6 +92,10 @@ type Store interface {
 	Enable(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, limit, offset int) ([]User, error)
 	ListAdmin(ctx context.Context, limit, offset int) ([]User, error)
+	// SearchAdmin is the paged admin list: one page of the accounts matching
+	// role ("" = any) and q (a substring of email or display name, "" = all),
+	// and how many match in total.
+	SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]User, int64, error)
 	// ListActiveAdmins returns every administrator who is neither disabled nor
 	// soft-deleted, in full — not a count, unlike CountOtherActiveAdmins. The
 	// SSO-settings guard (#300) has to know WHICH administrators would still

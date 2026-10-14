@@ -376,6 +376,24 @@ function PasskeySection() {
     },
   })
 
+  // The server has passkeys off (#494). The list request is what says so, in
+  // the same breath as every other passkey route, rather than a second
+  // request that could disagree with it.
+  if (extractErrorCode(passkeys.error) === 'passkeys_unavailable') {
+    return (
+      <Section
+        icon={<KeyRoundIcon className="h-4 w-4" />}
+        title="Passkeys"
+        description="Sign in with your fingerprint, face, screen lock or a security key."
+      >
+        <p className="text-sm text-gray-500">
+          Passkeys are not available on this instance. Ask an administrator, who can see why under the
+          security warnings.
+        </p>
+      </Section>
+    )
+  }
+
   if (!supported) {
     return (
       <Section

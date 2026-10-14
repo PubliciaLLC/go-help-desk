@@ -62,6 +62,11 @@ func NewService(store Store, opts ...Option) *Service {
 	return s
 }
 
+// dummyPassword is the plaintext behind the dummy hash. It is a literal in a
+// public repository, so no code path may let a comparison against the dummy
+// hash decide a sign-in.
+const dummyPassword = "dummy password for constant-time misses"
+
 // compareAgainstDummyHash burns the same work a real password check would.
 //
 // Without it, VerifyPassword returns in microseconds for an address with no
@@ -74,7 +79,7 @@ func (s *Service) compareAgainstDummyHash(plain string) {
 	// configurable and a constant from another cost would time differently,
 	// which is the whole thing being avoided.
 	s.dummyOnce.Do(func() {
-		if h, err := bcrypt.GenerateFromPassword([]byte("dummy password for constant-time misses"), s.hashCost); err == nil {
+		if h, err := bcrypt.GenerateFromPassword([]byte(dummyPassword), s.hashCost); err == nil {
 			s.dummyHash = h
 		}
 	})
@@ -272,9 +277,7 @@ func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
 }
 
 func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
-	switch role {
-	case RoleAdmin, RoleStaff, RoleUser:
-	default:
+	if !role.Valid() {
 		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	applied, err := s.store.SetRoleUnlessLastAdmin(ctx, id, string(role))
@@ -314,9 +317,9 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 	if err != nil {
 		return err
 	}
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		return fmt.Errorf("%w: display name is required", ErrValidation)
+	name, err := ValidateDisplayName(displayName)
+	if err != nil {
+		return err
 	}
 	return s.store.UpdateProfile(ctx, id, addr, name)
 }
@@ -324,6 +327,17 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 // SetEmailPreferences changes the caller's own staff-email switches (#441).
 func (s *Service) SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error {
 	return s.store.SetEmailPreferences(ctx, id, p)
+}
+
+// ValidateDisplayName is the display-name rule UpdateProfile applies, for a
+// caller that has to know the answer before it writes anything else (#419).
+// It returns the name as it would be stored.
+func ValidateDisplayName(displayName string) (string, error) {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return "", fmt.Errorf("%w: display name is required", ErrValidation)
+	}
+	return name, nil
 }
 
 // ListAssignableStaff returns the people work can be given to.
@@ -379,9 +393,23 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 // step, so the missing work is 2^d - 1 more comparisons of the same hash,
 // where d is the cost difference. Comparing the stored hash again needs no
 // dummy hash per stored cost, and is exact by construction.
+//
+// A hash bcrypt cannot read (an SSO-only account's empty hash, or a malformed
+// one) is refused before any hashing. Without a comparison here, a wrong
+// password for an SSO-only address answered in microseconds while an unknown
+// address took a full one, which said which addresses sign in only through
+// SSO (#476). Nothing was spent, so the whole comparison is owed.
 func (s *Service) burnCostDifference(stored, plain string) {
 	c, err := bcrypt.Cost([]byte(stored))
-	if err != nil || c >= s.hashCost {
+	if err != nil {
+		// The result is discarded and must stay discarded: the dummy
+		// password is a literal in a public repository, so honouring this
+		// comparison would sign anyone in as an account that has no password.
+		// This path only spends time; it never succeeds.
+		s.compareAgainstDummyHash(plain)
+		return
+	}
+	if c >= s.hashCost {
 		return
 	}
 	for i := 1<<(s.hashCost-c) - 1; i > 0; i-- {
@@ -430,6 +458,16 @@ func (s *Service) rehashIfBelowTarget(ctx context.Context, u User, plain string)
 // be enforced.
 var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account")
 
+// The two things a person can get wrong when confirming an enrolment (#421).
+// Anything else ConfirmMFAEnrollmentWith returns is a fault, not a mistake.
+// The message text is what the API has always sent in the 400.
+var (
+	// ErrMFANotStarted: no secret was staged, so there is nothing to confirm.
+	ErrMFANotStarted = errors.New("MFA enrollment not started")
+	// ErrMFAInvalidCode: the code does not match the staged secret.
+	ErrMFAInvalidCode = errors.New("invalid TOTP code")
+)
+
 // EnrollMFA generates a new TOTP secret for a user and stores it.
 //
 // allowReenroll must be true to re-enrol an account that already has MFA
@@ -460,10 +498,10 @@ var ErrMFAAlreadyEnrolled = errors.New("MFA is already enabled for this account"
 // rotation and overwrite the winner.
 func (s *Service) ConfirmMFAEnrollmentWith(ctx context.Context, userID uuid.UUID, pendingSecret, code string, allowReplace bool) error {
 	if pendingSecret == "" {
-		return fmt.Errorf("MFA enrollment not started")
+		return ErrMFANotStarted
 	}
 	if !totp.Validate(code, pendingSecret) {
-		return fmt.Errorf("invalid TOTP code")
+		return ErrMFAInvalidCode
 	}
 	if _, err := s.store.GetByID(ctx, userID); err != nil {
 		return err
@@ -957,6 +995,13 @@ func (s *Service) GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) 
 	return s.store.GetByIDAdmin(ctx, id)
 }
 
+// SearchAdmin returns one page of users, disabled ones included, filtered by
+// role ("" = any) and a case-insensitive substring of email or display name,
+// plus the total number that match. The caller validates role.
+func (s *Service) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]User, int64, error) {
+	return s.store.SearchAdmin(ctx, role, q, limit, offset)
+}
+
 // ListAdmin returns all users including disabled ones.
 func (s *Service) ListAdmin(ctx context.Context, limit, offset int) ([]User, error) {
 	return s.store.ListAdmin(ctx, limit, offset)
@@ -1030,13 +1075,8 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	// 500. Validation and hashing below don't touch I/O, so detaching this
 	// early costs nothing.
 	ctx = context.WithoutCancel(ctx)
-	if strings.TrimSpace(plain) == "" {
-		return fmt.Errorf("%w: password is required", ErrValidation)
-	}
-	// Reset was the loosest of the four paths: it refused only a blank
-	// password, so an administrator could reset an account to "b".
-	if err := ValidatePassword(plain); err != nil {
-		return fmt.Errorf("%w: %w", ErrValidation, err)
+	if err := CheckNewPassword(plain); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -1094,6 +1134,22 @@ var (
 	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
 	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes; accented and non-Latin characters count as 2 to 4 bytes each", MaxPasswordLength)
 )
+
+// CheckNewPassword is what an administrator's password reset requires of the
+// new password, as an error handleError answers 400 to. AdminSetPassword
+// applies it, and the handler asks it first so a bad body is refused before
+// anything else about the request is looked at (#419).
+func CheckNewPassword(plain string) error {
+	if strings.TrimSpace(plain) == "" {
+		return fmt.Errorf("%w: password is required", ErrValidation)
+	}
+	// Reset was the loosest of the four paths: it refused only a blank
+	// password, so an administrator could reset an account to "b".
+	if err := ValidatePassword(plain); err != nil {
+		return fmt.Errorf("%w: %w", ErrValidation, err)
+	}
+	return nil
+}
 
 // ValidatePassword is the length rule every path that sets a password applies.
 // One function, because the minimum alone was once four different rules.

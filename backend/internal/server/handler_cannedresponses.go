@@ -100,11 +100,7 @@ func (s *Server) handleAdminDeleteCannedResponse(w http.ResponseWriter, r *http.
 // handleListTicketCannedResponses returns the canned responses available for
 // the ticket's category and type — the reply-composer picker.
 func (s *Server) handleListTicketCannedResponses(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	t, err := s.tickets.GetByID(r.Context(), ticketID)
 	if err != nil {
 		handleError(w, err)

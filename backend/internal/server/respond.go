@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -110,6 +111,20 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusConflict, "reopen_window_closed", ticket.ErrReopenWindowClosed.Error())
 		return
 	}
+	// Custom fields (#419). The messages on these were written for the
+	// caller by the service and the store, never taken from the database.
+	if errors.Is(err, customfield.ErrValidation) {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if errors.Is(err, customfield.ErrConflict) {
+		Error(w, http.StatusConflict, "conflict", err.Error())
+		return
+	}
+	if errors.Is(err, customfield.ErrInvalidReference) {
+		Error(w, http.StatusBadRequest, "invalid_reference", err.Error())
+		return
+	}
 	// 409 Conflict: link already exists
 	if errors.Is(err, ticket.ErrLinkAlreadyExists) {
 		Error(w, http.StatusConflict, "link_already_exists", "this link already exists")
@@ -128,6 +143,13 @@ func handleError(w http.ResponseWriter, err error) {
 	// and the message carries the ticket or transition count (#275).
 	if errors.Is(err, ticket.ErrStatusInUse) {
 		Error(w, http.StatusConflict, "status_in_use", err.Error())
+		return
+	}
+	// 409: the status has been retired. Hidden from the picker, and refused
+	// here for every role so an old tab or an API client cannot walk around
+	// the picker.
+	if errors.Is(err, ticket.ErrStatusInactive) {
+		Error(w, http.StatusConflict, "status_inactive", err.Error())
 		return
 	}
 	// 409, not 500: statuses.name is TEXT NOT NULL UNIQUE, and creating or
@@ -215,10 +237,13 @@ func handleError(w http.ResponseWriter, err error) {
 // budget was spent, or how much remains, tells an attacker whether an account
 // exists and how close they are.
 func tooManyAttempts(w http.ResponseWriter, retryAfter time.Duration) {
-	// The header has to match the limit that actually refused: the login
-	// budget is a minute, the MFA lock is fifteen, and telling a locked-out
-	// user to come back in sixty seconds is simply wrong.
-	w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())))
+	// The header has to match the limit that actually refused: for the shared
+	// window it is the time left in it (RateLimiter.Remaining), for the MFA
+	// lock the lock's length, and telling a locked-out user to come back in
+	// sixty seconds is simply wrong. Whole seconds, rounded up so waiting that
+	// long is enough, and never 0, which a client reads as "retry now".
+	secs := max(1, int(math.Ceil(retryAfter.Seconds())))
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
 	Error(w, http.StatusTooManyRequests, "rate_limited",
 		"too many attempts; please wait and try again")
 }
