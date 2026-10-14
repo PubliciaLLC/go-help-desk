@@ -88,7 +88,7 @@ SET password_hash = $2, must_change_password = false, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: UnlockUser :execrows
--- The account half of go-help-desk unlock (#497), run in the same transaction
+-- The account half of /app/server unlock (#497), run in the same transaction
 -- as ClearFactors: re-enable, clear the TOTP lockout, install the generated
 -- password and require it to be changed. Not for a deleted account. The
 -- in-memory sign-in throttle is another process's memory and only ever delays,

@@ -483,7 +483,7 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 // fromRow converts a dbgen.User to domain user.User.
 // Unlock re-enables the account, clears its MFA lockout and installs hash as
 // its password, marked to be changed at the next sign-in. It is the account
-// half of go-help-desk unlock (#497); factors and sessions are ClearFactors'.
+// half of /app/server unlock (#497); factors and sessions are ClearFactors'.
 // Deliberately not on user.Store: only the console command calls it.
 func (s *Store) Unlock(ctx context.Context, id uuid.UUID, hash string) error {
 	n, err := s.q.UnlockUser(ctx, dbgen.UnlockUserParams{ID: id, PasswordHash: hash})
