@@ -17,9 +17,9 @@ import type { Category, TicketType, TicketItem } from '@/api/types'
 // the classification it already has" is a different question, and the answer
 // has to be yes — otherwise a ticket filed under a category that was retired
 // afterwards could be moved OUT of it but never left where it was, and
-// editing its Type alone would quietly strip its Category. The server allows
-// staff to reclassify into an archived classification for the same reason:
-// filing an old ticket where it actually belongs is ordinary work.
+// editing its Type alone would quietly strip its Category. Only the row the
+// ticket already carries is kept: the server refuses to move ANY ticket into an
+// archived node (#421), but a level that is unchanged is not re-checked.
 function selectable<T extends { id: string; active: boolean }>(rows: T[], current?: string | null): T[] {
   return rows.filter((r) => r.active || r.id === current)
 }

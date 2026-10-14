@@ -23,6 +23,14 @@ import type { Assignment } from '@/api/types'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
 
+// Staff and administrators are sent archived rows too, so they can recognise a
+// classification they know from older tickets. Nobody may newly pick one (the
+// server answers 400, #421), so they are listed but disabled, with the reason in
+// the label rather than leaving a greyed row unexplained.
+function optionLabel(row: { name: string; active: boolean }): string {
+  return row.active ? row.name : `${row.name} (archived)`
+}
+
 function CustomFieldInput({
   field,
   value,
@@ -254,7 +262,7 @@ export function NewTicketPage() {
                   >
                     <option value="">Select…</option>
                     {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                      <option key={c.id} value={c.id} disabled={!c.active}>{optionLabel(c)}</option>
                     ))}
                   </Select>
                 </div>
@@ -273,7 +281,7 @@ export function NewTicketPage() {
                   >
                     <option value="">Select…</option>
                     {types.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
+                      <option key={t.id} value={t.id} disabled={!t.active}>{optionLabel(t)}</option>
                     ))}
                   </Select>
                 </div>
@@ -289,7 +297,7 @@ export function NewTicketPage() {
                     >
                       <option value="">Select…</option>
                       {items.map((i) => (
-                        <option key={i.id} value={i.id}>{i.name}</option>
+                        <option key={i.id} value={i.id} disabled={!i.active}>{optionLabel(i)}</option>
                       ))}
                     </Select>
                   </div>

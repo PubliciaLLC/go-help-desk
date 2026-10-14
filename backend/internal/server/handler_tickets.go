@@ -382,10 +382,9 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		// states for them. The picker they are shown only lists active types,
 		// so an archived one means the id came from somewhere else.
 		//
-		// Staff and administrators are not held to this, for the same reason
-		// they are not held to it on the category: filing or reclassifying an
-		// old ticket under the classification it actually belongs to is
-		// ordinary work, and that classification may well be archived.
+		// Staff and administrators are held to it too, but by the ticket
+		// service (refuseArchivedPick) rather than here, so that MCP and every
+		// other caller get the same rule from one place (#421).
 		if !isStaffOrAdmin && !ty.Active {
 			Error(w, http.StatusBadRequest, "bad_request",
 				"type_id is not an active type")
@@ -1175,9 +1174,9 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 // does not contain it — so filing into one means the id came from somewhere
 // else, which is not a thing to accept silently.
 //
-// Staff are not held to this: reclassifying an old ticket into the category
-// it actually belongs to is ordinary work, and that category may well be
-// archived.
+// Staff are held to the same rule by the ticket service (refuseArchivedPick,
+// #421); this is the reporter's check, made ahead of it for the reporter's
+// own wording and so the guest form can use it before anything is written.
 func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 	cats, err := s.categories.ListCategories(ctx, true)
 	if err != nil {
@@ -1193,9 +1192,9 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 
 // requesterClassificationOpen is the creation rule a requester is held to for a
 // ticket's classification, as handleCreateTicket applies it: the category must
-// be active, and the type, when there is one, active too. Staff are not held to
-// it (an old ticket is filed under the classification it belongs to, and that
-// may be archived); a requester's follow-up is a new ticket and is (#349).
+// be active, and the type, when there is one, active too. A requester's
+// follow-up is a new ticket and is held to it (#349); a staff follow-up copies
+// the closed ticket's classification and is not.
 func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error {
 	if err := s.categoryIsOpen(ctx, categoryID); err != nil {
 		return err
