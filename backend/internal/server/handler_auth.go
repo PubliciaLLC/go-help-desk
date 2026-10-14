@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/crewjam/saml/samlsp"
+	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
@@ -125,11 +127,18 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: mfaPassed,
-	}); err != nil {
+	}
+	// The limit is chosen here, where we know which factor is owed: five
+	// minutes to type a code, fifteen to install an app and enrol.
+	if !mfaPassed {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), mfaEnrollmentNeeded)
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -513,6 +522,16 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	}
 
 	session.Values[auth.SessionDataKey] = sd
+
+	// A half-signed-in session's row and cookie die with its deadline, so an
+	// abandoned one does not sit for the full seven days. The deadline in the
+	// payload is what is enforced; this is housekeeping. Rounded up and kept
+	// above zero, because MaxAge 0 means "use the default" and below 0 deletes.
+	if !sd.MFAPassed && sd.UserID != uuid.Nil && !sd.PendingUntil.IsZero() {
+		opts := *session.Options
+		opts.MaxAge = max(1, int(math.Ceil(time.Until(sd.PendingUntil).Seconds())))
+		session.Options = &opts
+	}
 	return session.Save(r, w)
 }
 

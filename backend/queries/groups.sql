@@ -7,7 +7,7 @@ SELECT * FROM groups WHERE id = $1;
 -- name: UpdateGroup :exec
 UPDATE groups SET name = $2, description = $3 WHERE id = $1;
 
--- name: DeleteGroup :exec
+-- name: DeleteGroup :execrows
 DELETE FROM groups WHERE id = $1;
 
 -- name: ListGroups :many
@@ -16,7 +16,7 @@ SELECT * FROM groups ORDER BY name;
 -- name: AddGroupMember :exec
 INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING;
 
--- name: RemoveGroupMember :exec
+-- name: RemoveGroupMember :execrows
 DELETE FROM group_members WHERE group_id = $1 AND user_id = $2;
 
 -- name: ListGroupMembers :many
@@ -32,7 +32,7 @@ ORDER BY g.name;
 INSERT INTO group_scopes (group_id, category_id, type_id) VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING;
 
--- name: RemoveGroupScope :exec
+-- name: RemoveGroupScope :execrows
 DELETE FROM group_scopes
 WHERE group_id = $1 AND category_id = $2
 AND (type_id = $3 OR (type_id IS NULL AND $3::uuid IS NULL));

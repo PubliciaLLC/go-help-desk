@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
+import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
@@ -529,7 +529,7 @@ function GeneralPanel({
       <Section title="Submissions">
         <SettingRow
           label="Guest submission"
-          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account."
+          description="Allow unauthenticated users to submit a ticket using only their email address. They receive a tracking number to follow up without creating an account. Switching this off also suspends all active guest links until the setting is enabled again."
         >
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
@@ -1698,6 +1698,16 @@ function AttachmentsPanel({
     (typesSet ? strArr('attachment_allowed_types') : DEFAULT_ALLOWED_TYPES).join('\n'),
   )
 
+  // Same query and key as InsecureConfigBanner, so the page costs no extra
+  // request; absent while loading or if the call fails, and the section simply
+  // omits the status block.
+  const { data: warnings } = useQuery({
+    queryKey: ['security-warnings'],
+    queryFn: getSecurityWarnings,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  })
+  const scanning = warnings?.attachment_scanning
   const scanPolicy = str('attachment_scan_policy')
   const scanAddress = str('attachment_scan_address')
   const handling = str('attachment_infected_handling') || 'refuse'
@@ -1775,6 +1785,24 @@ function AttachmentsPanel({
       </Section>
 
       <Section title="Malware scanning">
+        {scanning && (
+          <div
+            role="group"
+            aria-label="Scanner status"
+            className="mb-3 rounded border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-900"
+          >
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+              <dt className="text-gray-600">Policy</dt>
+              <dd className="font-mono">{scanning.policy}</dd>
+              <dt className="text-gray-600">Configured</dt>
+              <dd>{scanning.configured ? 'Yes' : 'No'}</dd>
+              <dt className="text-gray-600">Reachable</dt>
+              <dd>{scanning.reachable ? 'Yes' : 'No'}</dd>
+            </dl>
+            <p className="mt-2">{scanning.effect}</p>
+          </div>
+        )}
+
         <SettingRow
           label="Scanner address"
           description={`Overrides CLAMAV_ADDR, the environment variable this instance starts with. Accepts "tcp://host:port" or "unix:///path/to/socket". Leave blank to use the environment variable instead.`}
@@ -1979,6 +2007,9 @@ export function SettingsPage() {
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
       qc.invalidateQueries({ queryKey: ['site-config'] })
+      // The scan policy and address feed the banner and the scanner status;
+      // without this a saved "Do not scan" keeps warning for five minutes.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
     onError: (err) => setSaveError(extractError(err)),
   })

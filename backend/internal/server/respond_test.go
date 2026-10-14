@@ -7,6 +7,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/stretchr/testify/require"
@@ -35,6 +39,66 @@ func TestHandleError_MapsSentinelsToStatus(t *testing.T) {
 			name:       "wrapped ticket.ErrValidation maps to 400",
 			err:        fmt.Errorf("no valid reopen target status is configured: %w", ticket.ErrValidation),
 			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "ticket.ErrNotFound (attachment) maps to 404 (#418)",
+			err:        fmt.Errorf("getting attachment abc: %w", ticket.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("group abc: %w", group.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "group.ErrValidation maps to 400 (#418)",
+			err:        fmt.Errorf("group name: %w", group.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "group.ErrInvalidReference maps to 400 (#418)",
+			err:        fmt.Errorf("scope reference: %w", group.ErrInvalidReference),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "group.ErrNameTaken maps to 409 (#418)",
+			err:        fmt.Errorf("%w: NewName", group.ErrNameTaken),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "auth.ErrNotFound (webhook/API key) maps to 404 (#418)",
+			err:        fmt.Errorf("webhook abc: %w", auth.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "plugin.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("plugin abc: %w", plugin.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "category.ErrNotFound maps to 404 (#418)",
+			err:        fmt.Errorf("category abc: %w", category.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "category.ErrValidation maps to 400 (#418)",
+			err:        fmt.Errorf("category name: %w", category.ErrValidation),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "category.ErrCategoryInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 2 tickets", category.ErrCategoryInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "category.ErrTypeInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 1 ticket", category.ErrTypeInUse),
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name:       "category.ErrItemInUse maps to 409 (#418)",
+			err:        fmt.Errorf("%w: attached to 3 tickets", category.ErrItemInUse),
+			wantStatus: http.StatusConflict,
 		},
 		{
 			name:       "sla.ErrValidation maps to 400 (#276)",

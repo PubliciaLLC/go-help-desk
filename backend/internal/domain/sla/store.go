@@ -31,6 +31,9 @@ var ErrPolicyInUse = errors.New("SLA policy is in use and cannot be deleted")
 // Postgres text under a 400 (#276).
 var ErrUnknownCategory = errors.New("SLA policy category does not exist")
 
+// ErrNotFound is returned when an SLA policy is not found.
+var ErrNotFound = errors.New("not found")
+
 // Store is the persistence interface for SLA policies and records.
 type Store interface {
 	// Policies

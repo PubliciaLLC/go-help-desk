@@ -493,6 +493,14 @@ func (s *Service) AttachmentScanPolicy(ctx context.Context, addrConfigured bool)
 	return antivirus.PolicyOff
 }
 
+// AttachmentScanPolicyExplicit reports whether an administrator has saved a
+// scan policy. Absent and invalid values both mean no: neither is a choice,
+// and AttachmentScanPolicy derives a default for each.
+func (s *Service) AttachmentScanPolicyExplicit(ctx context.Context) bool {
+	v, _ := s.GetString(ctx, KeyAttachmentScanPolicy)
+	return antivirus.ValidPolicy(v)
+}
+
 // AttachmentScanAddress is the operator's override for where the scanner
 // lives, empty when the environment value should stand.
 //

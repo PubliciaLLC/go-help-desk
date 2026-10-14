@@ -257,6 +257,9 @@ SELECT * FROM attachments WHERE id = $1;
 -- name: ListAttachments :many
 SELECT * FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC;
 
+-- name: AnyAttachmentExists :one
+SELECT EXISTS (SELECT 1 FROM attachments);
+
 -- name: DeleteAttachment :exec
 DELETE FROM attachments WHERE id = $1;
 

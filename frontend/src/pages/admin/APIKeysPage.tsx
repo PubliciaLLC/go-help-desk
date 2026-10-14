@@ -197,7 +197,8 @@ export function APIKeysPage() {
 
       <ConfirmDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        onOpenChange={(open) => { if (!open) { setPendingDelete(null); deleteMutation.reset() } }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Revoke key "${pendingDelete?.name ?? ''}"?`}
         description="Any service using this key will immediately lose access. This cannot be undone."
         confirmLabel="Revoke"

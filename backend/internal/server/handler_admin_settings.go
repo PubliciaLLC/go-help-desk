@@ -624,6 +624,19 @@ type securityWarnings struct {
 	// whose scanner had been dead for a month looked exactly like a healthy
 	// one from the admin UI.
 	AttachmentScanning scanStatus `json:"attachment_scanning"`
+
+	// AttachmentStorage says whether uploads can be stored (#458). Probed on
+	// each read, not remembered from startup, so it clears the moment the
+	// directory is fixed.
+	AttachmentStorage storageStatus `json:"attachment_storage"`
+}
+
+type storageStatus struct {
+	// Writable is false while uploads are being refused with 503.
+	Writable bool `json:"writable"`
+	// Problem is the operating system's reason, without the path. Empty when
+	// Writable.
+	Problem string `json:"problem"`
 }
 
 type scanStatus struct {
@@ -640,6 +653,17 @@ type scanStatus struct {
 	// because the combination of policy and reachability is not obvious and
 	// this is the sentence an administrator actually needs.
 	Effect string `json:"effect"`
+
+	// PolicyExplicit reports that an administrator saved a valid policy, as
+	// opposed to the default being derived from whether an address exists.
+	PolicyExplicit bool `json:"policy_explicit"`
+
+	// StaleOff is scanning off by default rather than by choice (#459): no
+	// policy was ever saved, no scanner address is set anywhere, and the
+	// instance already holds attachments. That is the state of a 1.2 install
+	// whose scanner was opt-in under Compose; a deliberate "Do not scan"
+	// makes PolicyExplicit true and clears it.
+	StaleOff bool `json:"stale_off"`
 }
 
 // handleGetSecurityWarnings reports configuration problems that cannot be
@@ -649,9 +673,11 @@ type scanStatus struct {
 // Telling an anonymous visitor that this instance signs sessions with a
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
+	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
 	JSON(w, http.StatusOK, securityWarnings{
 		InsecureSecrets:    s.cfg.InsecureSecrets(),
 		AttachmentScanning: s.scanStatus(r.Context()),
+		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
 	})
 }
 
@@ -669,6 +695,13 @@ func (s *Server) scanStatus(ctx context.Context) scanStatus {
 		Policy:     string(policy),
 		Configured: configured,
 		Reachable:  reachable,
+
+		PolicyExplicit: s.adminSvc.AttachmentScanPolicyExplicit(ctx),
+	}
+	if policy == antivirus.PolicyOff && !st.PolicyExplicit && !configured {
+		// A failed lookup reads as "no attachments": a banner that cries
+		// wolf on a database hiccup is worse than one that stays quiet.
+		st.StaleOff, _ = s.tickets.AnyAttachmentExists(ctx)
 	}
 	switch {
 	case policy == antivirus.PolicyOff:

@@ -115,6 +115,10 @@ func (s *Server) handleAddGroupMember(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
+	if body.UserID == uuid.Nil {
+		Error(w, http.StatusBadRequest, "bad_request", "user_id is required")
+		return
+	}
 	if err := s.groups.AddMember(r.Context(), groupID, body.UserID); err != nil {
 		handleError(w, err)
 		return
@@ -126,6 +130,11 @@ func (s *Server) handleListGroupMembers(w http.ResponseWriter, r *http.Request) 
 	groupID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
+		return
+	}
+	// An unknown group is a 404, not an empty list (#418).
+	if _, err := s.groups.GetByID(r.Context(), groupID); err != nil {
+		handleError(w, err)
 		return
 	}
 	memberIDs, err := s.groups.ListMembers(r.Context(), groupID)
@@ -168,6 +177,10 @@ func (s *Server) handleListGroupScopes(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid group ID")
 		return
 	}
+	if _, err := s.groups.GetByID(r.Context(), groupID); err != nil {
+		handleError(w, err)
+		return
+	}
 	scopes, err := s.groups.ListScopes(r.Context(), groupID)
 	if err != nil {
 		handleError(w, err)
@@ -188,6 +201,10 @@ func (s *Server) handleAddGroupScope(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	if body.CategoryID == uuid.Nil {
+		Error(w, http.StatusBadRequest, "bad_request", "category_id is required")
 		return
 	}
 	if err := s.groups.AddScope(r.Context(), group.GroupScope{

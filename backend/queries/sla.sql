@@ -11,7 +11,7 @@ SET name = $2, priority = $3, category_id = $4,
     response_target_min = $5, resolution_target_min = $6
 WHERE id = $1;
 
--- name: DeleteSLAPolicy :exec
+-- name: DeleteSLAPolicy :execrows
 DELETE FROM sla_policies WHERE id = $1;
 
 -- name: CountSLARecordsByPolicy :one
@@ -211,3 +211,11 @@ UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   sqlc.narg(response_breached_at)::timestamptz),
     resolution_breached_at = COALESCE(resolution_breached_at, sqlc.narg(resolution_breached_at)::timestamptz)
 WHERE ticket_id = $1;
+
+-- name: CountSLARecordsByCategory :one
+-- Deleting a category cascades to its SLA policies, and sla_records.policy_id
+-- is ON DELETE RESTRICT, so a record left behind by a ticket that has since
+-- moved to another category still blocks the delete (#418).
+SELECT COUNT(*) FROM sla_records r
+JOIN sla_policies p ON p.id = r.policy_id
+WHERE p.category_id = $1;
