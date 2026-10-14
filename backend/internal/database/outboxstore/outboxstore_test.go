@@ -234,3 +234,44 @@ func TestEmailHealth_LastErrorIsTheNewest(t *testing.T) {
 	require.Equal(t, 2, h.Failing)
 	require.Equal(t, "second problem", h.LastError)
 }
+
+// A failed webhook row is scrubbed in place: the event changes, the row, its
+// state and its error do not.
+func TestRewriteEvent_ReplacesOnlyTheEvent(t *testing.T) {
+	s, db, done := newStore(t)
+	defer done()
+	ctx := context.Background()
+	id, other := uuid.New(), uuid.New()
+	require.NoError(t, s.Enqueue(ctx, id, "webhook", []byte(`{"subject":"SECRET"}`)))
+	require.NoError(t, s.Enqueue(ctx, other, "webhook", []byte(`{"subject":"KEEP"}`)))
+	require.NoError(t, s.Fail(ctx, id, "gave up"))
+
+	require.NoError(t, s.RewriteEvent(ctx, id, []byte(`{"type":"ticket.replied"}`)))
+
+	var ev, lastErr string
+	var failed bool
+	require.NoError(t, db.SQL.QueryRow(
+		`SELECT event::text, last_error, failed_at IS NOT NULL FROM notification_outbox WHERE id = $1`, id).Scan(&ev, &lastErr, &failed))
+	require.JSONEq(t, `{"type":"ticket.replied"}`, ev)
+	require.Equal(t, "gave up", lastErr)
+	require.True(t, failed)
+
+	require.NoError(t, db.SQL.QueryRow(`SELECT event::text FROM notification_outbox WHERE id = $1`, other).Scan(&ev))
+	require.JSONEq(t, `{"subject":"KEEP"}`, ev, "another row was touched")
+}
+
+// The fan-out relies on a repeated id being ignored.
+func TestEnqueue_ARepeatedIDIsIgnored(t *testing.T) {
+	s, db, done := newStore(t)
+	defer done()
+	ctx := context.Background()
+	id := uuid.New()
+	require.NoError(t, s.Enqueue(ctx, id, "webhook", []byte(`{"n":1}`)))
+	require.NoError(t, s.Enqueue(ctx, id, "webhook", []byte(`{"n":2}`)))
+
+	var n int
+	var ev string
+	require.NoError(t, db.SQL.QueryRow(`SELECT count(*), min(event::text) FROM notification_outbox WHERE id = $1`, id).Scan(&n, &ev))
+	require.Equal(t, 1, n)
+	require.JSONEq(t, `{"n":1}`, ev, "the first row stands")
+}

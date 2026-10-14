@@ -155,6 +155,42 @@ func TestVerifyEmailLookup(t *testing.T) {
 	require.Equal(t, "token_expired", body["error"].(map[string]any)["code"])
 }
 
+// #421: a link mailed before the address had an account still looked up as
+// fine, and the form then failed at the POST. The lookup now says so first.
+func TestVerifyEmailLookup_AddressThatNowHasAnAccountIs422(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeySelfSignupEnabled, true))
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyOpenRegistrationEnabled, true))
+
+	res := h.doUnauth(t, http.MethodPost, "/api/v1/auth/signup", map[string]any{"email": "dana@signup.test"})
+	res.Body.Close()
+	require.Equal(t, http.StatusAccepted, res.StatusCode)
+	link := h.verifyMail.latest(t)
+
+	res = h.doUnauth(t, http.MethodGet, "/api/v1/auth/verify-email?token="+link, nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "before the account exists the link is good")
+
+	// The account appears by another route after the link was mailed.
+	_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email: "dana@signup.test", DisplayName: "Dana", Role: user.RoleUser, Password: "dana-has-a-password",
+	})
+	require.NoError(t, err)
+
+	res = h.doUnauth(t, http.MethodGet, "/api/v1/auth/verify-email?token="+link, nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode)
+	var e struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeJSON(t, res, &e)
+	require.Equal(t, "token_invalid", e.Error.Code, "the same answer the POST gives")
+}
+
 // #369: with MFA required for requesters, verifying a signup gives a session
 // that owes enrolment, and says so. That session can reach enrolment and
 // finish it; until then everything behind the MFA gate is refused. The server

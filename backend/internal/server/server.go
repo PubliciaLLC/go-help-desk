@@ -125,7 +125,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	// outside the chi chain, so nothing else was setting them. DESIGN.md says
 	// "security headers on every response", and /mcp/ was one of the two
 	// places that was not true.
-	return securityHeaders(chimw.RequestID(chimw.Recoverer(requestLogger(chain))))
+	return securityHeaders(chimw.RequestID(jsonRecoverer(requestLogger(chain))))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -147,6 +147,7 @@ type AuthStoreIface interface {
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]authstore.WebhookDeliveryRecord, error)
 }
 
 // Server is the top-level HTTP handler.
@@ -238,6 +239,10 @@ type Server struct {
 	// emailHealth backs the email entry in the admin security warnings
 	// (#456). Nil reports configuration only. See WithEmailHealth.
 	emailHealth notification.HealthReader
+
+	// webhookRedeliverer queues a past webhook delivery again (#448). See
+	// WithWebhookRedeliverer.
+	webhookRedeliverer WebhookRedeliverer
 }
 
 // Option adjusts a Server after its collaborators are in place.
@@ -448,7 +453,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// back with a trusted-proxy setting attached, so that getting it wrong
 	// costs a log field rather than a security control.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.Recoverer)
+	r.Use(jsonRecoverer)
 	r.Use(requestLogger)
 	r.Use(securityHeaders)
 	// Stamps the request with the instant after which no attachment
@@ -542,9 +547,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 //
 // DESIGN.md's "Ticket Submission by Role" table: a guest and a reporting user
 // get active categories and types only; staff and administrators get All.
-// Staff need the archived ones because filing or reclassifying an old ticket
-// under the classification it actually belongs to is ordinary work, and that
-// classification may well have been retired since.
+// Staff need the archived ones to read the classification of tickets already
+// filed under it, and to filter and report on it; the UI shows them greyed out.
+// They are NOT for picking: nobody, staff and administrators included, may newly
+// file or reclassify into an archived node (#421; the ticket service enforces it).
 //
 // The form used to ask a different endpoint for staff — /admin/categories —
 // which is wrapped in RequireRole(admin). Staff got 403, the query failed,

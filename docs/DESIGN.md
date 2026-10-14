@@ -101,13 +101,13 @@ Three roles: **Admin**, **Staff**, **User**
 | **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
 
-**Admin → Roles** is a read-mostly page: it shows the three roles with a one-line description each and, under each, the users who hold it, with a dropdown that changes a user's role (`PATCH /admin/users/{id}`, the same call the user page makes). It does not define permissions; the roles are fixed. The dropdown is disabled on administrator rows (demote an administrator from their user page) and, like the user list, it shows the first 200 accounts only: `GET /admin/users` returns at most 200 and takes no paging parameters.
+**Admin → Roles** is a read-mostly page: it shows the three roles with a one-line description each and, under each, the users who hold it, with a dropdown that changes a user's role (`PATCH /admin/users/{id}`, the same call the user page makes). It does not define permissions; the roles are fixed. The dropdown is disabled on administrator rows (demote an administrator from their user page) and it shows the first 200 accounts only: it calls `GET /admin/users` without `page`, which returns at most 200 (the paged mode below is what lifts that cap, and this page does not use it yet).
 
 **Custom admin-defined roles (v3):** admins will be able to define additional roles and grant a curated set of permissions (e.g., "Tier 1 Agent" with ticket read/reply but no assignment rights). The three built-in roles remain as defaults and cannot be removed. Permissions are stored as discrete capability flags rather than hardcoded in code, with the built-in roles expressed as preset bundles so existing behavior is preserved.
 
 ### User Management (Admin)
 
-Admins manage accounts from **Admin → Users**. The user list is clickable — clicking a user opens a detail page with:
+Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page, with a search box (a substring of the name or email, ignoring case) and a role filter, and shows "Showing 1-50 of N" with Previous and Next. `GET /admin/users?page=N` is what asks for that: it also takes `per_page` (default 50, maximum 200), `q` and `role`, answers a bare array, and puts the number of matches in `X-Total-Count`; a bad `page`, `per_page` or `role` is a 400. **Without `page` the endpoint is unchanged** — the newest 200 accounts, with `limit`, `offset`, `q` and `role` ignored, as before — so an existing client sees no difference, and the 200 cap lifts only for a client that asks for later pages. The list is clickable — clicking a user opens a detail page with:
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
 - **Account info** — member since date, login type (Local / SSO (SAML) / Local + SSO), MFA enrollment status. The login type looks at the SAML subject only: an account bound to an OIDC identity is reported as Local.
@@ -515,7 +515,7 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort: a failure to assign leaves the ticket unassigned and does not fail the creation. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) have no admin page; they are set through `PATCH /admin/settings`, and an id that does not parse is ignored.
+Routing is best-effort: a failure to assign leaves the ticket unassigned and does not fail the creation. It runs for tickets created through `POST /tickets` and for follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`). It does **not** run for MCP `create_ticket` and `create_follow_up`, and a new guest submission (`POST /guest/tickets`) does not call it either. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
@@ -531,7 +531,7 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 ### Local Auth (Default)
 
-- Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
+- Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
@@ -764,9 +764,9 @@ refuses that and will keep refusing it).
 
 ### SAML (Optional, Off by Default)
 
-- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (switched on and configured) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393)).
+- Configured under **Admin → Settings → Authentication** with the IdP's metadata URL and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
 - **SAML runs whenever the metadata URL, certificate and key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
-- **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` reports SAML as enabled only when it is on and SAML is configured.
+- **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421).
 - **Admin failsafe**: administrators can still sign in with a local password.
 - **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail` or the LDAP `mail` OID, falling back to the NameID; the name from `displayName`, `cn`, `name` or given name plus surname, falling back to the email. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
 
@@ -827,7 +827,7 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 ### OIDC (Optional, Off by Default)
 
 - Configured under **Admin → Settings → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`. `PUT /admin/oidc` takes no redirect URL: the stored value is kept, or `{BASE_URL}/api/v1/auth/oidc/callback` is filled in when there is none, and that is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
-- Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A refused callback redirects to `/login?error=<code>`, as SAML does, so the login page can say why. A missing or mismatched `state` is `invalid_state`, and a missing session is `invalid_session`. The routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled.
+- Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A refused callback redirects to `/login?error=<code>`, as SAML does, so the login page can say why. A missing or mismatched `state` is `invalid_state`, and a missing session is `invalid_session`. The routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled, which means the provider is loaded. `GET /admin/oidc` and `GET /admin/saml` carry two facts: `configured` (the saved settings are complete) and `live` (the provider is loaded now), so "saved, not working" is `configured: true, live: false` (#421).
 - **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`email_not_verified`), and one whose address needs quotation marks with `invalid_email` (see Guest Submission).
 - **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
 - **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it (matched on the parsed address, so `<a@x>` or `"a"@x` from the provider finds `a@x`), but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`account_disabled`), an address held by another account is `email_taken` and a missing subject is `invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
@@ -838,10 +838,10 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 A visitor creates a `User`-role account for themselves and proves they own the address before it exists.
 
 - Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
-- `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, saml_enabled}`; the login page offers "Create one" from it.
+- `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, restricted_by_domain_list, saml_enabled}`; the login page offers "Create one" from it. `open_registration` is what is in force: the setting **and** no domain list, because a non-empty list overrides open registration. `restricted_by_domain_list` is true when such a list limits signup, which is why `open_registration` can be false while its setting is on (#421). Who may sign up is unchanged.
 - `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`), and not one whose local part needs quotation marks (#389, see Guest Submission). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email; turning `self_signup_enabled` on in that state is refused (`400 email_required`, see Notifications), and an instance that already has it on is warned in the admin security warnings.
 - **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
-- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`); a link that passes the lookup can still fail at the POST, for instance when the address has since gained an account. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
+- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`), and so an address that has gained an account since the link was mailed (`422 token_invalid`, #421; before that the lookup answered 200 and only the POST refused). This reopens nothing from #348: `POST /auth/signup` is untouched, and a token for a taken address was never mailed, so its only holder is the inbox owner who received the link before the account existed. A link can still fail at the POST if the account appears between the two calls. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
 
 ### Identity provider lockout guard (#300)
 
@@ -1111,11 +1111,32 @@ Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipp
 | Field | Guest | User (logged in) | Staff / Admin |
 |-------|-------|-----------------|---------------|
 | Name, email, phone | Required / optional | — (uses account) | — |
-| Category | Active only | Active only | All |
-| Type | — (not shown) | Active only | All |
-| Item | — | — (not shown) | All |
+| Category | Active only | Active only | Active selectable; archived shown greyed |
+| Type | — (not shown) | Active only | Active selectable; archived shown greyed |
+| Item | — | — (not shown) | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Attachments | — | Yes | Yes |
+
+**Nobody newly picks an archived category, type or item (#421).** Staff and
+administrators see archived rows (in the picker and in the catalogue API) so they
+can read the classification of tickets already filed under them, but cannot
+choose one: creating a ticket under an archived node, or reclassifying a ticket
+into one, answers `400` naming the field (`category_id`, `type_id` or `item_id`
+`is not an active ...`), for every role and every credential (session, API key).
+This replaces the earlier staff exception. The rule is enforced once, in the
+ticket service (`refuseArchivedPick`, called by `Create` and `UpdateCTI`), so the
+REST API, the MCP `create_ticket` tool and the guest form all obey it. Items are
+included; they were checked for nobody before.
+
+Only a **new pick** is refused. A ticket already in an archived node keeps it: a
+PATCH that leaves a level unchanged (including one that repeats the existing
+classification) is not checked at that level, so an unrelated edit still works,
+and a staff follow-up of a closed ticket copies its classification as before. A
+reclassify is checked level by level against the ticket's current classification,
+so keeping an archived type while choosing a new active item under it is allowed.
+A requester's follow-up is unchanged and still needs an active category and type
+(#349). OAuth clients cannot create or reclassify tickets yet (they carry no user
+identity; see #434), so the rule is not exercised for them until they can.
 
 Attachment upload is available to every authenticated non-guest user on the
 API, and the reply composer offers the same control to every role that can
@@ -1906,6 +1927,10 @@ Serves both the frontend SPA and external integrations.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
+**Unknown settings keys.** `PATCH /admin/settings` accepts only the keys declared as `Key*` constants in `internal/domain/admin/settings.go` (`admin.KnownKeys()`, held equal to the constants by a test, with further tests that every key the Settings page sends and every key a migration seeds is in it). A body with any other key is refused whole with `400 unknown_setting` naming the first such key (sorted), and nothing is written, the valid keys beside it included. A key ending in `_set` keeps its own `400 readonly_setting`. Before 1.3.0 any key was stored, so a typo answered 204 and changed nothing (#421).
+
+**Errors and limits worth knowing.** A handler panic answers the standard `500 internal_error` JSON envelope (logged with the request id and stack, never echoed), not an empty body. A `429 rate_limited` from the shared sixty-second window carries `Retry-After` as the whole seconds *left in that window* (rounded up, at least 1, at most 60); the per-account MFA lock keeps its fixed length. `POST /tickets/{id}/resolve` takes an optional body: empty resolves with no notes, malformed JSON is `400`. `POST /guest/resend` accepts an empty body as `{}`. The passkey finish routes read at most 64 KiB (`413 too_large`) and answer a fault writing the session as `500`, not `400 no_challenge`. `POST /me/mfa/enroll/confirm` answers a wrong code or an unstarted enrolment as `400 invalid_code` and a storage fault as `500` (`user.ErrMFAInvalidCode`, `user.ErrMFANotStarted`). A 405 on `/tickets` names its methods in `Allow` as one line per method (chi's behaviour); read every line (#421).
+
 **Settings dump and choice-list settings.** Six settings take one value from a fixed list: `closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling` and `attachment_reputation_refresh`. `PATCH /admin/settings` refuses any other value, `null` and a non-string included. `GET /admin/settings` reports each one as the value in force, not the stored bytes. A stored value the `PATCH` would refuse (only a direct database edit can put one there) is reported as what the server does with it instead: `off`, `everywhere`, `refuse`, `refuse` and `biweekly` respectively. The exception is `attachment_scan_policy`, which is reported as unset, because an unrecognised scan policy follows the scanner address exactly as an unset one does. Echoing the stored value made every save on every tab fail until someone changed that one dropdown, because the settings page sent every setting on each save ([#383](https://github.com/PubliciaLLC/go-help-desk/issues/383)). The page now sends only the settings the operator changed ([#394](https://github.com/PubliciaLLC/go-help-desk/issues/394)), so a damaged value of any kind blocks only a save that changes it. The dump still reports the value in force, for clients that send it back whole. An unset setting stays absent from the dump.
 
 ### MCP Interface
@@ -2139,10 +2164,12 @@ so they are not removed as dead weight:
   deliberately *not* address-checked — a self-hosted identity provider on a
   private network is a normal topology — and are restricted by who may set them
   instead.
-- **Webhook payloads omit the body of an internal note** and carry an
-  `internal` flag, so a subscriber can tell a staff-only note from a public
-  reply. Before, it received the text of every internal note and could not tell
-  them apart.
+- **Webhook payloads never carry the text of an internal note.** A staff-only
+  note is its own event, `ticket.note_added`
+  ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)), so a hook
+  subscribed to `ticket.replied` is never sent one and the event name says
+  which it is. Before, it received the text of every internal note and could
+  not tell them apart.
 - **Chat/ITSM payload formats escape mentions and never carry an internal
   note body.** Slack escapes `&`, `<` and `>` in user-chosen text, so a
   subject of `<!channel>` cannot page a channel; Discord always sends
@@ -2216,9 +2243,28 @@ on the existing webhook feature instead of as plugins.
 
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
-- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
-  do carry the full event payload, subject and reply body included: a webhook
-  target is registered by an administrator, not chosen by a reporter.
+- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
+  `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
+  `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
+  staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` and
+  `ticket.linked`.
+  **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
+  (null for a system event), `OccurredAt` and a `Payload` holding only the ids
+  `new_status_id` (status changed) and `target_id` (linked), where the event
+  has them. Every other event has no payload. Whether an event is a reply or a
+  note is its name, so there is no `internal` flag, and no link type is sent.
+  No address, subject, tracking number, priority, status name or reply text is
+  sent, and none is stored with it. The keys are an allow list, so a key added
+  to an event later stays off the wire until someone decides a receiver should
+  have it. A receiver that needs the ticket reads it through the REST API using
+  `TicketID`. **This changed from earlier 1.3 betas**, which also sent
+  `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `ReplyBody` and
+  `reporter_email` in `Payload`. The Slack, Teams, Discord and JIRA formats are
+  not affected: they are built from the event as the server holds it, not from
+  the raw body, and keep their subject, tracking number, status and reply
+  text (never a note's text, and never an address), including for
+  `ticket.note_added`.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
   events, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
@@ -2228,7 +2274,31 @@ on the existing webhook feature instead of as plugins.
   `connection`, `other`). No error text is stored, because a URL can carry a
   token and a response body can carry anything; the details are in the server
   log. The latest-started attempt wins, and changing a hook's URL clears its
-  result. There is no delivery history.
+  result.
+  **Headers.** Every delivery carries `X-GHD-Delivery`, a UUID that is the same
+  on every retry of that delivery, and `X-GHD-Event`, the event name. Receivers
+  can see an event more than once (below), and de-duplicate on the first.
+  **History and Redeliver.** Each hook keeps its last 25 deliveries: the event
+  name, when the first and latest attempts started, the HTTP status, a result
+  (`ok` or a class), the number of attempts and whether another is pending.
+  No payload and no error text is shown or returned. The event is kept beside
+  each entry only so **Redeliver** can queue it again, as a new delivery with a
+  new `X-GHD-Delivery`. What is kept is ids only: the ids of a raw body plus
+  the link type and the id of the reply the event announced. No address,
+  subject, tracking number or text. For a raw hook the replay is identical to
+  the original. For a Slack, Teams, Discord or JIRA hook the message is
+  **rebuilt from the ticket as it is now**: its current subject, tracking
+  number and status name, and, for a reply, the reply text only if that reply
+  still exists and is public (visibility is read at that moment; an internal or
+  deleted reply is never sent, and a note never has text). If the ticket is
+  gone the message is its headline only. So a replayed message can differ from
+  the original, and a status-change message names the status the ticket has
+  now. Redeliver is refused with
+  `409 webhook_disabled` for a disabled hook and
+  `409 webhook_not_subscribed` when the hook no longer lists that event.
+  Changing a hook's URL clears its history, and deleting the hook deletes it.
+  (`GET /admin/webhooks/{id}/deliveries`,
+  `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
@@ -2256,10 +2326,35 @@ on the existing webhook feature instead of as plugins.
   about three times that on a slower server, per attempt; that is accepted
   (#389). Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
-  Webhooks are not retried on any failure. The webhook row covers every
-  subscribed hook and is settled as soon as each delivery has started. Each
-  delivery runs in the background and records its result on the hook (above),
-  not on the outbox row.
+  **Webhooks are retried per hook** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The `webhook` row an event queues is a fan-out: the worker turns it into one
+  row per subscribed hook and settles it. The row ids derive from the fan-out
+  row, so a repeat after a crash reuses the same delivery ids: a row still
+  waiting is not queued twice, and one already sent and deleted is queued again
+  with the same `X-GHD-Delivery`, which a receiver can drop. A row holds no
+  address; a raw hook's holds ids only, and a chat hook's keeps the text its
+  message is built from until it is sent. When a chat hook's delivery finally
+  fails (the eighth attempt) the worker keeps the failed row for the usual
+  thirty days, but its event is first rewritten to ids only, so no subject or
+  text lingers; a delivery that fails for good on the first try is deleted like
+  any settled row. It holds a SHA-256 of the hook's URL,
+  never the URL, which can carry a token. Each per-hook row
+  is then delivered and retried on its own, on the schedule above: 30 seconds
+  doubling to an hour, eight attempts in all, so a failing hook never causes
+  another to be sent twice. The row's id is the `X-GHD-Delivery`. Connection
+  errors, DNS and TLS failures, timeouts, 5xx and 429 are retried; a
+  `Retry-After` from the receiver (seconds or a date) postpones the next attempt
+  when it is longer than the schedule, to at most an hour. A refused address
+  (`blocked_address`), any other status and a request that cannot be built are
+  final: asking again gets the same answer. A hook disabled or deleted between
+  queueing and sending is skipped, not failed, and so is one that no longer
+  lists the event or whose URL no longer matches the stored hash (a queued
+  retry for the old address is dropped rather than sent to the new one). This
+  is checked on every attempt, so it also stops retries already waiting. The
+  secret is read at send time, so a rotated secret signs the retry. Each attempt updates the hook's
+  latest result and its history (above), not the outbox row, whose `last_error`
+  holds only a class and a status. Delivery is at least once, so a receiver can
+  see the same event twice.
 - **Email is on only with both `SMTP_HOST` and `SMTP_FROM`**
   ([#456](https://github.com/PubliciaLLC/go-help-desk/issues/456)). The server
   says which at startup: `email enabled`, `email disabled: SMTP_HOST and
@@ -2398,6 +2493,8 @@ Guests are shown no custom fields at all. The guest endpoint accepts none — a 
 ## CTI-Linked Group Management
 
 Admins can manage which groups handle each CTI node directly from the CTI editor (**Admin → Categories**), without navigating to the Groups page.
+
+The same editor archives and restores a category, type or item (#446): an archive button on each row sends `active: false`, after a confirmation that says requesters will no longer see it or be able to file new tickets under it; a restore button sends `active: true` with no confirmation. Archived rows are greyed and labelled **Archived**. Deleting an entry that tickets use is refused with `409` (`category_in_use`, `type_in_use`, `item_in_use`), and the dialog then suggests archiving instead.
 
 - Each expanded **Category** row shows a **Groups** subsection listing groups assigned at the category level (type_id = NULL in `group_scopes`).
 - Each expanded **Type** row shows a **Groups** subsection listing groups assigned to that specific category + type pair.

@@ -575,11 +575,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 
 	// The same ownership-and-lifecycle rule a reply is authorised by (#315: a
 	// reporter could previously attach to their own Closed ticket, because
@@ -1034,11 +1030,7 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 // GET /api/v1/tickets/{id}/attachments
 func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 
 	t, err := s.tickets.GetByID(r.Context(), ticketID)
 	if err != nil {
@@ -1086,11 +1078,7 @@ func (s *Server) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 // reputation.Service, which is where the same rules already govern the
 // automatic half.
 func (s *Server) handleRecheckAttachmentReputation(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	attID, err := uuid.Parse(chi.URLParam(r, "attachId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid attachment id")
@@ -1290,11 +1278,7 @@ func reputationUnavailable(w http.ResponseWriter, message string) {
 // Streams the file with the original filename in Content-Disposition.
 func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
-	ticketID, err := uuid.Parse(chi.URLParam(r, "id"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "invalid_id", "invalid ticket id")
-		return
-	}
+	ticketID := ticketIDFrom(r)
 	attID, err := uuid.Parse(chi.URLParam(r, "attachId"))
 	if err != nil {
 		Error(w, http.StatusBadRequest, "invalid_id", "invalid attachment id")

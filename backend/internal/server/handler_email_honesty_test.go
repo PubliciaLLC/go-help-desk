@@ -33,7 +33,7 @@ type apiError struct {
 	} `json:"error"`
 }
 
-func patchSettings(t *testing.T, h *harness, body map[string]any) (int, apiError) {
+func patchEmailSettings(t *testing.T, h *harness, body map[string]any) (int, apiError) {
 	t.Helper()
 	sess := signInAsAdmin(t, h)
 	res, raw := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", body)
@@ -48,7 +48,7 @@ func TestUpdateSettings_EmailOff_RefusesTurningSignupOrGuestOn(t *testing.T) {
 			h, cleanup := newHarness(t) // no SMTP: email is off
 			defer cleanup()
 
-			status, e := patchSettings(t, h, map[string]any{key: true})
+			status, e := patchEmailSettings(t, h, map[string]any{key: true})
 			require.Equal(t, http.StatusBadRequest, status)
 			require.Equal(t, "email_required", e.Error.Code)
 
@@ -66,7 +66,7 @@ func TestUpdateSettings_EmailOff_RefusalWritesNothing(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 
-	status, e := patchSettings(t, h, map[string]any{"site_name": "Renamed", admin.KeyGuestSubmissionEnabled: true})
+	status, e := patchEmailSettings(t, h, map[string]any{"site_name": "Renamed", admin.KeyGuestSubmissionEnabled: true})
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, "email_required", e.Error.Code)
 
@@ -86,11 +86,11 @@ func TestUpdateSettings_EmailOff_AlreadyOnIsNotRefused(t *testing.T) {
 			ctx := context.Background()
 			require.NoError(t, h.adminSvc.SetBool(ctx, key, true))
 
-			status, _ := patchSettings(t, h, map[string]any{key: true, "site_name": "Renamed"})
+			status, _ := patchEmailSettings(t, h, map[string]any{key: true, "site_name": "Renamed"})
 			require.Equal(t, http.StatusNoContent, status, "an unrelated save was refused because the toggle was already on")
 
 			// Turning it off is always allowed.
-			status, _ = patchSettings(t, h, map[string]any{key: false})
+			status, _ = patchEmailSettings(t, h, map[string]any{key: false})
 			require.Equal(t, http.StatusNoContent, status)
 			on, err := h.adminSvc.GetBool(ctx, key)
 			require.NoError(t, err)
@@ -103,9 +103,9 @@ func TestUpdateSettings_EmailOff_OffToOffAndOmittedAreFine(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	status, _ := patchSettings(t, h, map[string]any{admin.KeySelfSignupEnabled: false, admin.KeyGuestSubmissionEnabled: false})
+	status, _ := patchEmailSettings(t, h, map[string]any{admin.KeySelfSignupEnabled: false, admin.KeyGuestSubmissionEnabled: false})
 	require.Equal(t, http.StatusNoContent, status)
-	status, _ = patchSettings(t, h, map[string]any{"site_name": "Renamed"})
+	status, _ = patchEmailSettings(t, h, map[string]any{"site_name": "Renamed"})
 	require.Equal(t, http.StatusNoContent, status)
 }
 
@@ -115,7 +115,7 @@ func TestUpdateSettings_EmailOn_AllowsTurningSignupOrGuestOn(t *testing.T) {
 			h, cleanup := newHarnessCfg(t, 0, "", emailOn)
 			defer cleanup()
 
-			status, _ := patchSettings(t, h, map[string]any{key: true})
+			status, _ := patchEmailSettings(t, h, map[string]any{key: true})
 			require.Equal(t, http.StatusNoContent, status)
 			on, err := h.adminSvc.GetBool(context.Background(), key)
 			require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestUpdateSettings_EmailOn_AllowsTurningSignupOrGuestOn(t *testing.T) {
 func TestUpdateSettings_HostWithoutSenderCountsAsEmailOff(t *testing.T) {
 	h, cleanup := newHarnessCfg(t, 0, "", func(c *config.Config) { c.SMTPHost = "smtp.example.test" })
 	defer cleanup()
-	status, e := patchSettings(t, h, map[string]any{admin.KeyGuestSubmissionEnabled: true})
+	status, e := patchEmailSettings(t, h, map[string]any{admin.KeyGuestSubmissionEnabled: true})
 	require.Equal(t, http.StatusBadRequest, status)
 	require.Equal(t, "email_required", e.Error.Code)
 }

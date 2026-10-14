@@ -2,6 +2,17 @@
 
 These notes document configuration and environment changes in v1.3.0. They will be folded into the release notes by PR #438.
 
+## Breaking: Staff and Administrators Can No Longer File Into an Archived Category, Type or Item (#421)
+
+Previously the server let staff and administrators create tickets under, and reclassify tickets into, categories and types an administrator had archived, and never checked items for anybody. That is reversed: **nobody, staff and administrators included, can newly pick an archived category, type or item.**
+
+- `POST /api/v1/tickets`, `PATCH /api/v1/tickets/{id}` (with `category_id`/`type_id`/`item_id`) and the MCP `create_ticket` tool answer **400** (`bad_request`, for example `type_id is not an active type`) when the classification includes an archived node. This applies to sessions and API keys alike.
+- A ticket **already** in an archived node keeps it. Unrelated edits, a PATCH that repeats the existing classification, and staff follow-ups of a closed ticket still work.
+- Staff and administrators still see archived rows, now greyed out, labelled "(archived)" and not selectable in the new-ticket and reclassify pickers. A ticket's own current archived node stays selected so it can keep it.
+- A PATCH that carries a refused classification now changes nothing: the status and assignee in the same request are no longer applied before the 400.
+
+What to check: scripts or integrations that file or reclassify tickets as staff or admin into an archived node will start getting 400. Unarchive the node (Admin → Categories) or file into an active one.
+
 ## Antivirus Scanning: Banner for Offline Policies
 
 Administrators see a banner on the admin panel with the exact fix when any attachment exists, no scan policy was ever saved, and no scanner address is set:
@@ -58,6 +69,65 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 - the check repeats on each upload, so fixing the permissions needs no restart.
 
 Before this, an unwritable directory showed up as a failed upload partway through.
+
+## API Behaviour Changes (#421)
+
+These affect scripts and integrations that call the API. Three can make a request that used to succeed now fail; the rest change what an answer says.
+
+### Requests that now fail
+
+- **Unknown settings keys are refused.** `PATCH /api/v1/admin/settings` with a key that is not a real setting now answers `400 unknown_setting`, names the key, and writes nothing (not even the valid keys in the same request). Before, any key was stored, so a typo such as `mfa_enabld` answered 204 and changed nothing. Fix: use the exact setting names from `GET /api/v1/admin/settings` (the `_set` presence flags are still refused with `readonly_setting`).
+- **`POST /api/v1/tickets/{id}/resolve` with a body that is not valid JSON is `400`.** Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.
+- **`GET /api/v1/auth/verify-email?token=` is `422 token_invalid` for an address that has since gained an account.** Before, it answered 200 and only the POST refused.
+
+### Answers that now say something different
+
+- **`GET /api/v1/auth/providers`** is served as `application/json` (it had no content type). `oidc` and `saml` now mean "loaded and working", not "switched on": an identity provider that did not answer shows `false`, and SAML shows `true` whenever it is loaded, whatever `saml_enabled` says. `local` is still always `true`; the new `local_admin_only` is `true` when `saml_enabled` limits password sign-in to administrators.
+- **`GET /api/v1/admin/oidc` and `/admin/saml`** gain `live`. `configured: true, live: false` means "saved, not working". `configured` is unchanged.
+- **`GET /api/v1/auth/signup/status`**: `open_registration` is now what is in force, so it reads `false` when an allowed-domains list limits signup, even with the open-registration setting on. The new `restricted_by_domain_list` says why. Who can sign up is unchanged.
+- **`Retry-After` on a `429`** from the sixty-second login, signup and guest limits is now the seconds left in the window (1 to 60) instead of always 60. The 15-minute MFA lock still says 900.
+- **A server crash inside a request** answers the JSON `500 internal_error` body instead of an empty body.
+- **Passkey sign-in and registration (`.../passkey/finish`, `.../register/finish`)** answer `500` when the server cannot write the session (they said `400 no_challenge`), and refuse a body over 64 KiB with `413 too_large`.
+- **`POST /api/v1/me/mfa/enroll/confirm`** answers `500` when the server cannot save the factor (it said `400 invalid_code`). A wrong code and an enrolment that was never started are still `400 invalid_code`.
+- **`POST /api/v1/guest/resend`** accepts an empty body (it was `400`). Malformed JSON is still `400`.
+- **`DELETE /api/v1/tickets`** is `405` as before. Its `Allow` header carries `GET` and `POST` as two header lines, which is what the server always sent; clients that read only the first line saw `GET`.
+
+## Ticket and Settings API Responses (#420)
+
+Changes a script or integration may notice:
+
+- `POST /tickets` now answers with the ticket after routing, so `assignee_user_id` / `assignee_group_id` are filled in when a routing rule or the auto-assign setting applied. Before, they were absent until the ticket was fetched again.
+- `POST /tickets/{id}/replies` now includes `author_name` in the reply, as the reply list does.
+- `PATCH /tickets/{id}` with no body at all is now the same as `{}`: nothing changes, and the answer is `200` with the ticket. Before, it was `400`. Malformed JSON is still `400`.
+- `PATCH /admin/settings` now refuses JSON `null` (`400`) for `attachment_scan_address`, `attachment_allowed_types` and the four `attachment_reputation_*_enabled` toggles. Before, `null` was stored and read as "unset" or "off". To clear the scanner address, send an empty string. To restore the default allowed types, send the list you want.
+- The six choice settings in `PATCH /admin/settings` (`closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling`, `attachment_reputation_refresh`) now answer their own error code for every refusal: `invalid_closed_reopen_policy`, `invalid_audit_mask_requester_names`, `invalid_scan_policy`, `invalid_infected_handling`, `invalid_mismatch_handling`, `invalid_reputation_refresh`. Before, `null` and a value of the wrong type (a number, a boolean) answered `bad_request` for most of them. The status is still `400`, and the messages are unchanged. A script that matched on `bad_request` for these needs to match the specific code instead.
+- Every route under `/tickets/{id}` now accepts a tracking number (for example `GHD-2026-000001`) as well as a UUID. Before, only `GET /tickets/{id}` did; the others answered `400` with `bad_request` or `invalid_id` ("invalid ticket ID"). Those two `400`s no longer exist. A UUID works exactly as before.
+
+## Webhooks: retries, delivery ids, history and notes (#448)
+
+Several changes for anyone who receives webhooks. Two of them can break a receiver.
+
+### Breaking: the raw payload is now ids only
+
+A hook with payload format **Raw JSON** is sent only the event name (`Type`), `TicketID`, `ActorID`, `OccurredAt` and, where the event has them, a `Payload` with `new_status_id` or `target_id`. These are gone from the payload: `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `reporter_email`, `ReplyBody`, and the `internal` and `link_type` fields. A receiver that reads any of them must fetch the ticket through the REST API using `TicketID`. Whether something is a reply or a note is now the event name (below).
+
+Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.
+
+### Breaking: internal notes are their own event
+
+`ticket.replied` is now sent for customer-visible replies only. Internal notes are sent as the new `ticket.note_added`. A hook subscribed to `ticket.replied` stops receiving notes; add `ticket.note_added` (or choose all events) to keep them.
+
+### Failed deliveries are retried, so a receiver may see an event twice
+
+A delivery that fails with a connection error, DNS or TLS failure, timeout, 5xx or 429 is tried again, 30 seconds doubling to an hour, 8 attempts in all. A `Retry-After` header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.
+
+Every delivery now carries two headers: `X-GHD-Delivery`, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and `X-GHD-Event`, the event name. The signature headers are unchanged.
+
+### New: delivery history and Redeliver
+
+Admin, Webhooks has a History button per hook: its last 25 deliveries with the outcome, status, attempts and time. No payloads and no error text are kept. Redeliver sends a delivery's event again as a new delivery. A Slack, Teams, Discord or Jira message is rebuilt from the ticket as it is now, so it can differ from the original; a reply's text is sent only if the reply still exists and is public. Raw hooks get the same ids-only body again.
+
+This adds a database table through a migration that runs at start-up.
 
 ## Email: SMTP Encryption and Honesty (Breaking, Read First)
 
