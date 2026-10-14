@@ -107,13 +107,13 @@ func TestReplyRecipient_MCPQueuesWhatRESTQueues(t *testing.T) {
 			wantTo: "",
 		},
 		{
-			// Characterisation, not a policy statement: REST has always mailed
-			// the replier when they are also the requester. MCP now matches.
-			name: "staff replying on a ticket they filed is mailed, as REST always did",
+			// Changed by Erik's decision: REST used to mail the replier when
+			// they were also the requester. Nobody is mailed about their own reply.
+			name: "staff replying on a ticket they filed is not mailed about it",
 			seed: func(t *testing.T, h *harness) ticket.Ticket {
 				return newTicket(t, h, ticket.CreateInput{ReporterUserID: &h.staffID})
 			},
-			wantTo: "staff@test.local",
+			wantTo: "",
 		},
 	}
 	for _, tc := range cases {

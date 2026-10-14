@@ -77,13 +77,13 @@ func (s *Service) SetUserEmailLookup(find func(context.Context, uuid.UUID) (stri
 //
 // One rule for every door that accepts a reply. The REST handler had it inline
 // and MCP passed "", so a reply an AI agent wrote never reached the customer
-// (#442). The person replying is not excluded: REST never did, and changing
-// who gets mail from it is not part of making MCP match it.
-func (s *Service) ReplyRecipient(ctx context.Context, t Ticket) string {
+// (#442). The author is never mailed about their own reply, even when they are
+// the ticket's requester (Erik's decision; REST used to mail them).
+func (s *Service) ReplyRecipient(ctx context.Context, t Ticket, author uuid.UUID) string {
 	if t.GuestEmail != nil {
 		return *t.GuestEmail
 	}
-	if t.ReporterUserID != nil && s.userEmail != nil {
+	if t.ReporterUserID != nil && *t.ReporterUserID != author && s.userEmail != nil {
 		if email, err := s.userEmail(ctx, *t.ReporterUserID); err == nil {
 			return email
 		}
