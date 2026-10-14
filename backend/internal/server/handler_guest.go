@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -389,7 +390,9 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		TrackingNumber string `json:"tracking_number"`
 		Email          string `json:"email"`
 	}
-	if err := DecodeJSON(r, &body); err != nil {
+	// No body is the same as {}: this route answers 202 whatever it is asked,
+	// so an empty request is not a malformed one (#421).
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}

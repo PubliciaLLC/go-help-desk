@@ -1847,7 +1847,7 @@ paths:
       summary: Ask for a fresh guest link by email.
       description: |
         Asks for a new link to a ticket, given its tracking number and the address it was submitted with.
-        While guest submission is on, any JSON body within the request budget answers 202 with an empty body,
+        While guest submission is on, an empty body or any JSON body within the request budget answers 202 with an empty body,
         whether or not anything matched, so the answer does not reveal whether a tracking number or an address exists. Matching
         happens later, when the email is prepared. Both fields are needed for any work to be queued.
         On an open ticket the new link replaces the previous one. On a closed ticket it is added beside the
@@ -1857,8 +1857,8 @@ paths:
       x-ghd-handler: handleGuestResend
       security: []
       requestBody:
-        required: true
-        description: A JSON object. An empty body is refused with 400 bad_request; send {} at least.
+        required: false
+        description: A JSON object, or no body at all, which counts as {}. Text that is not JSON is refused with 400 bad_request.
         content:
           application/json:
             schema:
@@ -3778,8 +3778,9 @@ paths:
         Sets the ticket to Resolved, stores the optional notes as its resolution
         notes, and answers 200 with the bare Ticket. Staff and administrators
         only: a reporting user gets 403 forbidden.
-        The body is optional. A body that is not valid JSON is not refused: it is
-        ignored, and the notes are empty. Resolving a Closed ticket is a way out
+        The body is optional: an empty body resolves with no notes. A body that is
+        present but not valid JSON is refused with 400 bad_request and the ticket
+        is left as it was. Resolving a Closed ticket is a way out
         of Closed, so it answers 409 ticket_closed unless closed_reopen_policy
         allows the caller's role. The path id must be a UUID. An OAuth client
         acting without a person behind it is refused with 403
@@ -3816,7 +3817,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Ticket'
         '400':
-          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID)."
+          description: "`bad_request`: invalid ticket ID (the path id is the tracking number of a ticket you can see; send its UUID), or the body is present but not valid JSON."
           content:
             application/json:
               schema:
