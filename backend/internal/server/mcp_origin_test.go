@@ -42,6 +42,7 @@ func TestOriginPolicy_Allows(t *testing.T) {
 		{"same port, matching", "http://localhost:8080", []string{"http://localhost:8080"}, true},
 		{"different port", "http://localhost:8080", []string{"http://localhost:8081"}, false},
 		{"empty port after the colon", "http://localhost:8080", []string{"http://localhost:"}, false},
+		{"empty port where the default would match", https, []string{"https://helpdesk.example.com:"}, false},
 		{"port out of range", "http://localhost:8080", []string{"http://localhost:65536"}, false},
 
 		// Scheme.
@@ -66,6 +67,15 @@ func TestOriginPolicy_Allows(t *testing.T) {
 		{"right host as userinfo of another", https, []string{"https://helpdesk.example.com@evil.example"}, false},
 		{"backslash trick", https, []string{`https://helpdesk.example.com\@evil.example`}, false},
 		{"percent-encoded host", https, []string{"https://helpdesk%2eexample.com"}, false},
+		{"percent-encoded non-ASCII host", "https://ihelp.example", []string{"https://%C4%B0help.example"}, false},
+
+		// A browser sends the host in ASCII (punycode), so a non-ASCII byte is
+		// not an origin. Lower-casing it would be worse than refusing it:
+		// Unicode case mapping sends the Kelvin sign to "k" and the dotted
+		// capital I to "i", so two different hosts would compare equal.
+		{"Kelvin sign for k", "https://kiosk.example", []string{"https://Kiosk.example"}, false},
+		{"dotted capital I for i", "https://ihelp.example", []string{"https://İhelp.example"}, false},
+		{"punycode is just ASCII", "https://xn--bcher-kva.example", []string{"https://xn--bcher-kva.example"}, true},
 
 		// Other hosts that look close.
 		{"foreign host", https, []string{"https://evil.example"}, false},
@@ -116,6 +126,7 @@ func TestOriginPolicy_Allows(t *testing.T) {
 		{"BASE_URL without a host, an Origin", "https://", []string{"https://"}, false},
 		{"unparsable BASE_URL, an Origin", "https://%zz", []string{"https://%zz"}, false},
 		{"BASE_URL not http(s), an Origin", "ftp://helpdesk.example.com", []string{"ftp://helpdesk.example.com"}, false},
+		{"BASE_URL not http(s) with a port, an Origin", "ws://localhost:8080", []string{"ws://localhost:8080"}, false},
 		{"unusable BASE_URL, no Origin", "not a url", nil, true},
 	}
 

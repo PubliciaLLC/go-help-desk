@@ -53,13 +53,23 @@ func (p originPolicy) allows(h http.Header) bool {
 // present. It accepts what a browser sends (scheme://host[:port]) and nothing
 // else, so "null", a trailing slash, a path, userinfo and a percent-encoded
 // host are all refused rather than interpreted.
+//
+// A browser writes the host in ASCII (punycode), so a byte outside printable
+// ASCII is refused too. Letting one through would be worse than odd:
+// strings.ToLower maps the Kelvin sign to "k" and the dotted capital I to "i",
+// so two different hosts would compare equal.
 func canonicalOrigin(raw string) (string, bool) {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] <= ' ' || raw[i] >= 0x7f {
+			return "", false
+		}
+	}
 	scheme, authority, found := strings.Cut(raw, "://")
 	scheme = strings.ToLower(scheme)
 	if !found || (scheme != "http" && scheme != "https") {
 		return "", false
 	}
-	if authority == "" || strings.ContainsAny(authority, "/?#@%\\ \t") || strings.HasSuffix(authority, ":") {
+	if authority == "" || strings.ContainsAny(authority, "/?#@%\\") || strings.HasSuffix(authority, ":") {
 		return "", false
 	}
 	u, err := url.Parse(scheme + "://" + authority)
