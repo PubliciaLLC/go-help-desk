@@ -4217,14 +4217,12 @@ paths:
         - guest_submission_enabled and staff_can_view_ticket_change_history must be
           JSON booleans. null is refused.
         - attachment_scan_address is empty, tcp://host:port or unix:///path
-          (invalid_scanner_address). null is accepted and stored, and reads as
-          unset, so the address from the environment applies.
+          (invalid_scanner_address). null is refused (bad_request). An empty string leaves it unset.
         - attachment_allowed_types is an array of extensions that each match the
           pattern. An empty array is valid and means the instance takes no
-          attachments (invalid_allowed_types). null is accepted, stored, and read
-          as unset, which restores the default list.
-        - Each reputation provider's enabled setting must be a boolean or null;
-          null is stored and read as false. Enabling
+          attachments (invalid_allowed_types). null is refused (bad_request).
+        - Each reputation provider's enabled setting must be a boolean; null is
+          refused (invalid_reputation_config). Enabling
           VirusTotal, MetaDefender or PolySwarm needs a key, either stored already
           or sent in the same request (invalid_reputation_config). Only a
           provider the request names (its enabled setting or its key) is checked;

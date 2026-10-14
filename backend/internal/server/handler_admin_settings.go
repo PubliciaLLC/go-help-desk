@@ -365,6 +365,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// What is checked is that it is a well-formed address of a scheme we can
 	// dial, so a typo fails at save time rather than at the first upload.
 	if raw, ok := body[admin.KeyAttachmentScanAddress]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentScanAddress); err != nil {
+			handleError(w, err)
+			return
+		}
 		var addr string
 		if err := json.Unmarshal(raw, &addr); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", "scanner address must be a string")
@@ -429,6 +433,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// list silently missing one of its entries is the same lie in a quieter
 	// form.
 	if raw, ok := body[admin.KeyAttachmentAllowedTypes]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentAllowedTypes); err != nil {
+			handleError(w, err)
+			return
+		}
 		var types []string
 		if err := json.Unmarshal(raw, &types); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request",
@@ -583,14 +591,23 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
 }
 
+// refuseNullSetting is unmarshalSetting's null half, for the settings whose
+// wrong-type refusal already has wording clients see and which must keep it.
+func refuseNullSetting(raw json.RawMessage, name string) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	}
+	return nil
+}
+
 // unmarshalSetting decodes a PATCH /admin/settings field into dst, refusing
 // both a JSON type mismatch and the literal null — see ssoSettingsWarning's
 // own comment for why null needs its own check: encoding/json's Unmarshal
 // treats null into a non-pointer destination as a silent no-op rather than
 // an error, so a type check alone does not catch it.
 func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	if err := refuseNullSetting(raw, name); err != nil {
+		return err
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
 		return fmt.Errorf("%w: %s has the wrong type", user.ErrValidation, name)
@@ -788,6 +805,9 @@ func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body
 
 		enabled := adminSvc.ReputationEnabled(ctx, p)
 		if raw, present := body[enabledKey]; present {
+			if err := refuseNullSetting(raw, enabledKey); err != nil {
+				return err
+			}
 			if err := json.Unmarshal(raw, &enabled); err != nil {
 				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
 			}
