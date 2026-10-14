@@ -357,12 +357,12 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <p><code>JWT_SECRET</code> signs the OAuth2 access tokens. It no longer has to be set, and Docker Compose no longer refuses to start without it.</p>
 
 <ul>
-  <li>If it is unset, or shorter than 32 bytes, the server generates a random 32-byte key the first time it needs one, stores it in the database, logs one line (<code>jwt signing key: using generated key stored in the database</code>) and uses it. Every instance that shares the database uses the same key.</li>
+  <li>If it is unset, or shorter than 32 bytes, the server generates a random 32-byte key at its first start, stores it in the database and uses it from then on. Each start logs a line beginning <code>jwt signing key: using generated key stored in the database</code>. Every instance that shares the database uses the same key.</li>
   <li>If it is 32 bytes or more, your value is used, exactly as before.</li>
-  <li>If it is exactly one of the example secrets this project has published (for example <code>change-me-in-production</code> or <code>dev-jwt-secret-change-me</code>), it is ignored, a generated key is used, and the server logs a warning. A longer value that merely looks like a placeholder is still used, and administrators see the red insecure-configuration banner for it.</li>
+  <li>If it is exactly one of the example secrets this project has published (for example <code>change-me-in-production</code> or <code>dev-jwt-secret-change-me</code>), it is ignored, a generated key is used, and the server logs a warning. A value of 32 bytes or more that only looks like a placeholder, because it contains a word such as <code>change-me</code> or <code>example</code>, is still used; the server logs an error at startup and administrators see the red insecure-configuration banner for it.</li>
 </ul>
 
-<p><strong>Upgrade effect.</strong> If your <code>JWT_SECRET</code> is 32 bytes or more, nothing changes. If it was unset or short, the key in use changes at the first start, and every OAuth client fetches a new access token once. Nobody is signed out: sessions use <code>SESSION_SECRET</code>, not this key.</p>
+<p><strong>Upgrade effect.</strong> If your <code>JWT_SECRET</code> is 32 bytes or more and is not a published example, nothing changes. If it was short or a published example, the key in use changes at the first start, and every OAuth client fetches a new access token once. Nobody is signed out: sessions use <code>SESSION_SECRET</code>, not this key.</p>
 
 <p>The generated key is stored in the database without encryption, so a database backup contains the key that signs OAuth2 tokens, and a restore onto another instance carries it along. To rotate it, delete the <code>jwt_signing</code> row from the <code>instance_secrets</code> table and restart; every OAuth2 access token issued before that stops working.</p>
 
