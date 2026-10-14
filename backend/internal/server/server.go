@@ -26,6 +26,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -77,6 +78,10 @@ import (
 // author. The package comment claimed it "uses the same auth methods (API key,
 // bearer token) as the REST API", which is presumably why nobody checked.
 //
+// On every MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message) it first refuses any
+// request whose Origin header is present and is not this instance's: see
+// requireMCPOrigin.
+//
 // It authenticates; it does not authorise. Every signed-in role is admitted,
 // including RoleUser, and what a caller may then DO is decided per tool in
 // internal/mcp: write tools require staff, and reads are filtered through the
@@ -124,7 +129,12 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	// outside the chi chain, so nothing else was setting them. DESIGN.md says
 	// "security headers on every response", and /mcp/ was one of the two
 	// places that was not true.
-	return securityHeaders(chimw.RequestID(jsonRecoverer(requestLogger(chain))))
+	//
+	// The Origin check goes outside the auth chain and inside the logger, so a
+	// refusal is logged and carries the security headers, and says the same
+	// thing whatever credential came with it. See requireMCPOrigin.
+	return securityHeaders(chimw.RequestID(jsonRecoverer(requestLogger(
+		requireMCPOrigin(s.cfg.BaseURL, chain)))))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -235,6 +245,10 @@ type Server struct {
 	// auditStore backs the admin-wide audit view (#129). See WithAuditStore.
 	auditStore audit.Store
 
+	// emailHealth backs the email entry in the admin security warnings
+	// (#456). Nil reports configuration only. See WithEmailHealth.
+	emailHealth notification.HealthReader
+
 	// webhookRedeliverer queues a past webhook delivery again (#448). See
 	// WithWebhookRedeliverer.
 	webhookRedeliverer WebhookRedeliverer
@@ -276,6 +290,14 @@ func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Opt
 func WithAuditStore(store audit.Store) Option {
 	return func(s *Server) {
 		s.auditStore = store
+	}
+}
+
+// WithEmailHealth lets the admin security warnings say whether email is being
+// delivered (#456). Without it the warning reports configuration only.
+func WithEmailHealth(r notification.HealthReader) Option {
+	return func(s *Server) {
+		s.emailHealth = r
 	}
 }
 

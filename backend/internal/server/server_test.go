@@ -345,6 +345,7 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 		cannedResponseSvc,
 		server.WithWebhookRedeliverer(webhookDisp),
 		server.WithAuditStore(auStore),
+		server.WithEmailHealth(outboxstore.New(q)),
 	)
 
 	dispatcher.prepare = srv.PrepareGuestLink
