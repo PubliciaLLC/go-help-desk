@@ -376,10 +376,10 @@ func TestMCPOrigin_SSEIsNotChecked(t *testing.T) {
 	})
 }
 
-// A hand-built Config with no BASE_URL has no origin to compare with. Production
-// cannot get here (it refuses to start on such a BASE_URL), so this pins the
-// choice rather than a reachable state: a request that carries an Origin is
-// refused, and one that does not goes on to authentication as usual.
+// A Config with no BASE_URL has no origin to compare with. Startup refuses an
+// empty one, but not every unusable one (TestOriginPolicy_Allows has those), so
+// this pins the choice: a request that carries an Origin is refused, and one
+// that does not goes on to authentication as usual.
 func TestMCPOrigin_NoBaseURLFailsClosed(t *testing.T) {
 	h, cleanup := newBareHarness(t)
 	defer cleanup()

@@ -115,10 +115,10 @@ func TestOriginPolicy_Allows(t *testing.T) {
 		{"ipv6 without brackets", "http://[::1]:8080", []string{"http://::1:8080"}, false},
 		{"ipv6 zone", "http://[::1]:8080", []string{"http://[::1%25eth0]:8080"}, false},
 
-		// A BASE_URL with nothing usable in it. Production refuses to start
-		// on such a value (webauthn.NewService), so this is only reachable
-		// from a hand-built Config; the check fails closed rather than
-		// guessing. No Origin still passes: non-browser clients send none.
+		// A BASE_URL with no usable origin. Startup refuses one with no host
+		// (webauthn.NewService), but a non-http scheme or an out-of-range
+		// port starts; the check fails closed rather than guessing. No
+		// Origin still passes: non-browser clients send none.
 		{"empty BASE_URL, no Origin", "", nil, true},
 		{"empty BASE_URL, an Origin", "", []string{"https://helpdesk.example.com"}, false},
 		{"empty BASE_URL, null", "", []string{"null"}, false},

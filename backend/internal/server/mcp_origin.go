@@ -15,8 +15,9 @@ import (
 // always written), or "" when BASE_URL has no usable origin. In that case every
 // request that carries an Origin is refused: the check fails closed, as
 // webauthn.NewService does at startup for the same setting, rather than
-// guessing what the operator meant. Production never gets there, because it
-// refuses to start on such a BASE_URL; only a hand-built Config does.
+// guessing what the operator meant. Startup refuses a BASE_URL with no host
+// (webauthn.NewService), but not every unusable one: "ftp://host" and
+// "http://host:99999" both start, and this is what they get.
 type originPolicy struct{ want string }
 
 func newOriginPolicy(baseURL string) originPolicy {
