@@ -994,7 +994,8 @@ func TestDispatch_FilteredHooksReceiveOnlyMatchingTickets(t *testing.T) {
 }
 
 // A filter changes whether a hook fires, never what it is sent: the body a
-// filtered hook receives is the same bytes an unfiltered one does.
+// filtered hook receives is the same bytes an unfiltered one does, and both
+// are the bytes of the same event without attrs.
 func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	srv, deliveries := newDeliveryRecorder(t)
 	store := fakeWebhookStore{
@@ -1005,10 +1006,12 @@ func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
+	// want is the body of the event as it was before #413, with no attrs: the
+	// bytes every receiver got before filters existed.
 	ev := fixtureReplyEvent(false)
-	ev.Attrs = &notification.TicketAttrs{Priority: "critical", CategoryID: uuid.New()}
 	want, err := json.Marshal(ev)
 	require.NoError(t, err)
+	ev.Attrs = &notification.TicketAttrs{Priority: "critical", CategoryID: uuid.New()}
 	require.NoError(t, disp.Dispatch(context.Background(), ev))
 
 	got := map[string][]byte{}

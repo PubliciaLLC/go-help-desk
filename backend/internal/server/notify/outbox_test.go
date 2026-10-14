@@ -896,11 +896,13 @@ func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
 	require.Equal(t, 1, n, "the queued event should have been claimed once")
 
 	got := map[string]bool{}
+	var body []byte
 	window := time.After(300 * time.Millisecond)
 	for collecting := true; collecting; {
 		select {
 		case d := <-deliveries:
 			got[d.path] = true
+			body = d.body
 		case <-window:
 			collecting = false
 		}
@@ -908,4 +910,11 @@ func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
 	require.Equal(t, map[string]bool{"/match": true}, got)
 	require.NotContains(t, buf.String(), "not evaluated",
 		"the queued event lost its attrs: the filter fell open")
+
+	// The queue carries the attrs, the receiver never sees them: the body is
+	// the bytes of the same event without attrs, as before #413.
+	ev.Attrs = nil
+	want, err := json.Marshal(ev)
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(body))
 }

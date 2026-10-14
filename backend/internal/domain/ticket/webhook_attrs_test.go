@@ -174,10 +174,18 @@ func TestWebhookEvents_CarryTheTicketAttrs(t *testing.T) {
 func TestWebhookEvents_FollowUpCarriesEachTicketsOwnAttrs(t *testing.T) {
 	h := newHarness(t)
 	orig := closedWithEverything(t, h)
+	// A follow-up does not inherit the assignee group, so giving the original
+	// one makes the two tickets' attrs differ: an event that described the
+	// wrong ticket of the pair would then show.
+	grp := uuid.New()
+	orig.AssigneeGroupID = &grp
+	h.store.seed(orig)
 	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
 
 	got, err := h.svc.CreateFollowUp(context.Background(), orig.ID, "GHD", staff)
 	require.NoError(t, err)
+	require.NotEqual(t, classificationOf(orig), classificationOf(got),
+		"the two tickets must differ, or the test cannot tell their events apart")
 
 	var sawLinked, sawCreated bool
 	for _, e := range h.dispatcher.events {
