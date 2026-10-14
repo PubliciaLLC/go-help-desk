@@ -268,18 +268,20 @@ const countSearchUsersAdmin = `-- name: CountSearchUsersAdmin :one
 SELECT count(*) FROM users
 WHERE deleted_at IS NULL
   AND ($1::text = '' OR role = $1::text)
-  AND ($2::text = ''
-       OR email ILIKE '%' || $2::text || '%'
-       OR display_name ILIKE '%' || $2::text || '%')
+  AND ($2::boolean IS NULL OR service_account = $2::boolean)
+  AND ($3::text = ''
+       OR email ILIKE '%' || $3::text || '%'
+       OR display_name ILIKE '%' || $3::text || '%')
 `
 
 type CountSearchUsersAdminParams struct {
-	Role string `json:"role"`
-	Q    string `json:"q"`
+	Role           string       `json:"role"`
+	ServiceAccount sql.NullBool `json:"service_account"`
+	Q              string       `json:"q"`
 }
 
 func (q *Queries) CountSearchUsersAdmin(ctx context.Context, arg CountSearchUsersAdminParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, countSearchUsersAdmin, arg.Role, arg.Q)
+	row := q.db.QueryRowContext(ctx, countSearchUsersAdmin, arg.Role, arg.ServiceAccount, arg.Q)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -968,18 +970,20 @@ const searchUsersAdmin = `-- name: SearchUsersAdmin :many
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users
 WHERE deleted_at IS NULL
   AND ($1::text = '' OR role = $1::text)
-  AND ($2::text = ''
-       OR email ILIKE '%' || $2::text || '%'
-       OR display_name ILIKE '%' || $2::text || '%')
+  AND ($2::boolean IS NULL OR service_account = $2::boolean)
+  AND ($3::text = ''
+       OR email ILIKE '%' || $3::text || '%'
+       OR display_name ILIKE '%' || $3::text || '%')
 ORDER BY created_at DESC, id
-LIMIT $4 OFFSET $3
+LIMIT $5 OFFSET $4
 `
 
 type SearchUsersAdminParams struct {
-	Role       string `json:"role"`
-	Q          string `json:"q"`
-	PageOffset int32  `json:"page_offset"`
-	PageLimit  int32  `json:"page_limit"`
+	Role           string       `json:"role"`
+	ServiceAccount sql.NullBool `json:"service_account"`
+	Q              string       `json:"q"`
+	PageOffset     int32        `json:"page_offset"`
+	PageLimit      int32        `json:"page_limit"`
 }
 
 // The paged admin list (#449). role = ” means any role; q is already
@@ -990,6 +994,7 @@ type SearchUsersAdminParams struct {
 func (q *Queries) SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminParams) ([]User, error) {
 	rows, err := q.db.QueryContext(ctx, searchUsersAdmin,
 		arg.Role,
+		arg.ServiceAccount,
 		arg.Q,
 		arg.PageOffset,
 		arg.PageLimit,

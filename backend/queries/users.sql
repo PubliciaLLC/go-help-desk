@@ -328,6 +328,7 @@ SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 O
 SELECT * FROM users
 WHERE deleted_at IS NULL
   AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
+  AND (sqlc.narg(service_account)::boolean IS NULL OR service_account = sqlc.narg(service_account)::boolean)
   AND (sqlc.arg(q)::text = ''
        OR email ILIKE '%' || sqlc.arg(q)::text || '%'
        OR display_name ILIKE '%' || sqlc.arg(q)::text || '%')
@@ -338,6 +339,7 @@ LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
 SELECT count(*) FROM users
 WHERE deleted_at IS NULL
   AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
+  AND (sqlc.narg(service_account)::boolean IS NULL OR service_account = sqlc.narg(service_account)::boolean)
   AND (sqlc.arg(q)::text = ''
        OR email ILIKE '%' || sqlc.arg(q)::text || '%'
        OR display_name ILIKE '%' || sqlc.arg(q)::text || '%');

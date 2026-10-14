@@ -1012,9 +1012,10 @@ func (s *Service) GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) 
 
 // SearchAdmin returns one page of users, disabled ones included, filtered by
 // role ("" = any) and a case-insensitive substring of email or display name,
-// plus the total number that match. The caller validates role.
-func (s *Service) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]User, int64, error) {
-	return s.store.SearchAdmin(ctx, role, q, limit, offset)
+// plus the total number that match. serviceAccount nil means both. The caller
+// validates role.
+func (s *Service) SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]User, int64, error) {
+	return s.store.SearchAdmin(ctx, role, q, serviceAccount, limit, offset)
 }
 
 // ListAdmin returns all users including disabled ones.

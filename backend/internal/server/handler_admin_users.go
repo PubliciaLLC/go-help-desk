@@ -155,13 +155,26 @@ func (s *Server) handleListUsersPaged(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// service_account=true is only service users, false only people, absent (or
+	// empty) everyone. Paged mode only, like q and role.
+	var serviceAccount *bool
+	switch v := q.Get("service_account"); v {
+	case "":
+	case "true", "false":
+		b := v == "true"
+		serviceAccount = &b
+	default:
+		Error(w, http.StatusBadRequest, "bad_request", "service_account must be true or false")
+		return
+	}
+
 	// The store takes an int32. A page number big enough to overflow it is
 	// past the end of any table, so it gets the same empty answer.
 	offset := math.MaxInt32
 	if page-1 <= (math.MaxInt32-perPage)/perPage {
 		offset = (page - 1) * perPage
 	}
-	users, total, err := s.users.SearchAdmin(r.Context(), role, strings.TrimSpace(q.Get("q")), perPage, offset)
+	users, total, err := s.users.SearchAdmin(r.Context(), role, strings.TrimSpace(q.Get("q")), serviceAccount, perPage, offset)
 	if err != nil {
 		handleError(w, err)
 		return
