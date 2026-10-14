@@ -379,7 +379,10 @@ paths:
         accepted, even when the budget is spent. The budget is one minute: when it
         is spent, the request is delayed before the password is checked and a
         refused attempt answers 429 with Retry-After set to the seconds left in
-        that minute (at most 60). The response says what
+        that minute (at most 60). A correct password on a hash made below cost 12
+        is upgraded at this sign-in. From password_rehash_grace_days after 1.3.0
+        first ran, it is refused instead (403 password_reset_required).
+        The response says what
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
@@ -436,11 +439,17 @@ paths:
         '403':
           description: >-
             Local sign-in is disabled for this account because SAML is enabled
-            (saml_required), or the account's only second factor is a passkey
-            and passkeys are unavailable on this instance (passkey_unavailable;
-            an administrator's MFA reset clears it). No session is created and
-            the refusal does not count as a failed attempt. Applies to every
-            such account, administrators included. Sent as application/json.
+            (saml_required, checked first), or the account's only second factor
+            is a passkey and passkeys are unavailable on this instance
+            (passkey_unavailable; an administrator's MFA reset clears it), or
+            the password was right but is still stored in the older, weaker form
+            (cost below 12) after the grace period (password_reset_required).
+            No session is created and none of these counts as a failed attempt.
+            passkey_unavailable applies to every such account, administrators
+            included. password_reset_required is only given for a correct
+            password (a wrong one still answers 401 invalid_credentials and takes
+            as long to refuse), leaves the hash as it is, and does not apply to
+            administrators. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -4478,6 +4487,10 @@ paths:
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
+        - password_rehash_grace_days must be an integer from 1 to 365 (default 30).
+          Zero, negative, larger, null and non-integers are refused with bad_request.
+          password_rehash_started_at is recorded by the server when 1.3.0 first
+          runs and is refused with 400 readonly_setting; it is left out of GET.
         - guest_submission_enabled and staff_can_view_ticket_change_history must be
           JSON booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
@@ -4527,6 +4540,7 @@ paths:
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
+        password_rehash_grace_days, password_rehash_started_at,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
@@ -9898,6 +9912,14 @@ components:
         staff_can_view_ticket_change_history:
           type: boolean
           description: Whether staff may see the field-level change history of tickets. Session only.
+        password_rehash_grace_days:
+          type: integer
+          minimum: 1
+          maximum: 365
+          description: >-
+            Days after 1.3.0 first ran before an account still on a password hash
+            made below bcrypt cost 12 must reset its password to sign in. Unset reads
+            as 30. Administrators are exempt. Session only.
         site_name:
           type: string
           description: The site name shown in the interface.

@@ -221,11 +221,13 @@ func run() error {
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
 
-	userSvc := user.NewService(uStore, user.WithAuditStore(auStore))
+	// adminSvc supplies the deadline after which an old password hash is
+	// refused at sign-in (#453).
+	adminSvc := admin.NewService(aStore)
+	userSvc := user.NewService(uStore, user.WithAuditStore(auStore), user.WithPasswordExpiry(adminSvc))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
-	adminSvc := admin.NewService(aStore)
 
 	// Say so when attachments are not being scanned.
 	//
