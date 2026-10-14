@@ -71,13 +71,13 @@ func (r *queueRig) setHook(id uuid.UUID, edit func(*authstore.WebhookConfig)) {
 func capture(rc *receiver) func() []string {
 	var mu sync.Mutex
 	var bodies []string
-	rc.hook = func(_ http.ResponseWriter, r *http.Request) bool {
+	rc.onRequest(func(_ http.ResponseWriter, r *http.Request) bool {
 		b, _ := io.ReadAll(r.Body)
 		mu.Lock()
 		bodies = append(bodies, string(b))
 		mu.Unlock()
 		return false
-	}
+	})
 	return func() []string {
 		mu.Lock()
 		defer mu.Unlock()

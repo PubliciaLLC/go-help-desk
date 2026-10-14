@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,7 +99,15 @@ type receiver struct {
 	codes []int // status per request; the last repeats
 	reqs  []http.Header
 	n     int
-	hook  func(w http.ResponseWriter, r *http.Request) bool // true: handled
+	hook  func(w http.ResponseWriter, r *http.Request) bool // true: handled; set with onRequest
+}
+
+// onRequest sets the hook under the receiver's lock: the handler runs on the
+// server's goroutines, and -race rejects an unsynchronised write here.
+func (rc *receiver) onRequest(f func(w http.ResponseWriter, r *http.Request) bool) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.hook = f
 }
 
 func newReceiver(t *testing.T, codes ...int) *receiver {
@@ -110,8 +119,9 @@ func newReceiver(t *testing.T, codes ...int) *receiver {
 		rc.n++
 		rc.reqs = append(rc.reqs, r.Header.Clone())
 		code := rc.codes[i]
+		hook := rc.hook
 		rc.mu.Unlock()
-		if rc.hook != nil && rc.hook(w, r) {
+		if hook != nil && hook(w, r) {
 			return
 		}
 		w.WriteHeader(code)
@@ -263,18 +273,18 @@ func TestQueue_RetryDecisions(t *testing.T) {
 
 func TestQueue_ConnectionErrorsAreRetried(t *testing.T) {
 	rc := newReceiver(t, 200)
-	first := true
-	rc.hook = func(w http.ResponseWriter, _ *http.Request) bool {
-		if !first {
+	var first atomic.Bool
+	first.Store(true)
+	rc.onRequest(func(w http.ResponseWriter, _ *http.Request) bool {
+		if !first.CompareAndSwap(true, false) {
 			return false
 		}
-		first = false
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
 			conn.Close() // closed without a response
 		}
 		return true
-	}
+	})
 	rig := newQueueRig(t, rc.srv.Client(), hookFor(rc.srv.URL))
 
 	require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false)))
@@ -286,12 +296,12 @@ func TestQueue_ConnectionErrorsAreRetried(t *testing.T) {
 
 func TestQueue_TimeoutsAreRetried(t *testing.T) {
 	rc := newReceiver(t, 200)
-	first := true
-	rc.hook = func(w http.ResponseWriter, r *http.Request) bool {
-		if !first {
+	var first atomic.Bool
+	first.Store(true)
+	rc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+		if !first.CompareAndSwap(true, false) {
 			return false
 		}
-		first = false
 		// Hold the request until the client gives up. The body is read first:
 		// the server only notices a closed connection once it has.
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -300,7 +310,7 @@ func TestQueue_TimeoutsAreRetried(t *testing.T) {
 		case <-time.After(5 * time.Second):
 		}
 		return true
-	}
+	})
 	rig := newQueueRig(t, &http.Client{Timeout: 100 * time.Millisecond}, hookFor(rc.srv.URL))
 
 	require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false)))
@@ -407,12 +417,12 @@ func TestRetryAfterHeader_IsReadAsSecondsOrADate(t *testing.T) {
 
 func TestQueue_429RetryAfterReachesTheWorker(t *testing.T) {
 	rc := newReceiver(t, 429, 200)
-	rc.hook = func(w http.ResponseWriter, _ *http.Request) bool {
+	rc.onRequest(func(w http.ResponseWriter, _ *http.Request) bool {
 		if rc.count() == 1 {
 			w.Header().Set("Retry-After", "120")
 		}
 		return false
-	}
+	})
 	rig := newQueueRig(t, rc.srv.Client(), hookFor(rc.srv.URL))
 
 	require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false)))
@@ -550,14 +560,14 @@ func TestQueue_ChatFormatsStillGetTheirOwnBody(t *testing.T) {
 	var bodies []string
 	var mu sync.Mutex
 	rc := newReceiver(t, 200)
-	rc.hook = func(w http.ResponseWriter, r *http.Request) bool {
+	rc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
 		b := make([]byte, 4096)
 		n, _ := r.Body.Read(b)
 		mu.Lock()
 		bodies = append(bodies, string(b[:n]))
 		mu.Unlock()
 		return false
-	}
+	})
 	var hooks []authstore.WebhookConfig
 	for _, f := range Formats {
 		h := hookFor(rc.srv.URL + "/" + string(f))
