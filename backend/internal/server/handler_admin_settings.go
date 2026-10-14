@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,10 +13,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -70,6 +74,8 @@ type choiceSetting struct {
 	fallback string
 
 	// code and message are the 400 a PATCH gets for a value valid refuses.
+	// code is also what null and a wrong type answer; message is only for a
+	// string valid refuses.
 	code, message string
 
 	// strict means decode with unmarshalSetting (rejects null as an error);
@@ -120,7 +126,8 @@ var choiceSettings = map[string]choiceSetting{
 }
 
 // refuseChoice writes the 400 for a choice-list key in body that the setting
-// refuses, and reports whether it did. It is called at the position each
+// refuses, and reports whether it did. Whatever is wrong with the value (null,
+// a wrong type, empty, unknown) the code is the setting's own. It is called at the position each
 // check always had in handleUpdateSettings, not in a loop over the table: a
 // request with two bad values names whichever is checked first, and that
 // order is part of what clients see.
@@ -132,14 +139,16 @@ func refuseChoice(w http.ResponseWriter, body map[string]json.RawMessage, key st
 	c := choiceSettings[key]
 	var v string
 	if c.strict {
+		// Null and a wrong type are refused under the setting's own code, like
+		// every other refusal of it (#420); only the message differs.
 		if err := unmarshalSetting(raw, key, &v); err != nil {
-			handleError(w, err)
+			Error(w, http.StatusBadRequest, c.code, err.Error())
 			return true
 		}
 	} else if err := json.Unmarshal(raw, &v); err != nil {
 		// Bare Unmarshal: null is no error here, it decodes to "" and gets
 		// the setting's own refusal below.
-		Error(w, http.StatusBadRequest, "bad_request", c.wrongType)
+		Error(w, http.StatusBadRequest, c.code, c.wrongType)
 		return true
 	}
 	if !c.valid(v) {
@@ -387,6 +396,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// What is checked is that it is a well-formed address of a scheme we can
 	// dial, so a typo fails at save time rather than at the first upload.
 	if raw, ok := body[admin.KeyAttachmentScanAddress]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentScanAddress); err != nil {
+			handleError(w, err)
+			return
+		}
 		var addr string
 		if err := json.Unmarshal(raw, &addr); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", "scanner address must be a string")
@@ -451,6 +464,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// list silently missing one of its entries is the same lie in a quieter
 	// form.
 	if raw, ok := body[admin.KeyAttachmentAllowedTypes]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentAllowedTypes); err != nil {
+			handleError(w, err)
+			return
+		}
 		var types []string
 		if err := json.Unmarshal(raw, &types); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request",
@@ -465,6 +482,20 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+
+	// Routing fallbacks (#447). These used to be saved as given and read back
+	// leniently: an id that did not parse, or named nobody, was skipped at
+	// routing time, so a typo saved cleanly and tickets quietly stayed
+	// unassigned. Refused by name instead, before anything is written.
+	if err := s.validateAutoAssign(r.Context(), body); err != nil {
+		var refusal autoAssignRefusal
+		if errors.As(err, &refusal) {
+			Error(w, http.StatusBadRequest, "invalid_auto_assign", refusal.Error())
+		} else {
+			handleError(w, err) // a failed lookup is our fault, not a bad id
+		}
+		return
 	}
 
 	// #300's guard, and the reason it lives here too rather than only on the
@@ -493,6 +524,73 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// autoAssignRefusal is a verdict on the request: the id is wrong, or names
+// someone who cannot take work. Any other error from validateAutoAssign is a
+// failed lookup and is not the administrator's mistake.
+type autoAssignRefusal string
+
+func (e autoAssignRefusal) Error() string { return string(e) }
+
+func refusef(format string, a ...any) error { return autoAssignRefusal(fmt.Sprintf(format, a...)) }
+
+// validateAutoAssign checks the two routing fallbacks in a settings body.
+//
+// The group must exist. Each user must exist and be able to hold work, which
+// is staff or admin; a reporting user is refused because the assignment would
+// refuse them at routing time and the round-robin would skip them forever. A
+// disabled account is accepted: it is skipped while disabled and takes its
+// turn again when re-enabled, which is what an administrator suspending
+// someone for a week expects. Empty string, empty list and null clear a
+// setting; clearing is how an administrator turns the fallback off.
+func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.RawMessage) error {
+	if raw, ok := body[admin.KeyAutoAssignGroupID]; ok && !isJSONNull(raw) {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return autoAssignRefusal("auto_assign_group_id must be a group id, or empty to turn it off")
+		}
+		if v != "" {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_group_id %q is not a group id", v)
+			}
+			if _, err := s.groups.GetByID(ctx, id); err != nil {
+				if errors.Is(err, group.ErrNotFound) {
+					return refusef("auto_assign_group_id: no group with id %s", id)
+				}
+				return fmt.Errorf("checking auto_assign_group_id: %w", err)
+			}
+		}
+	}
+
+	if raw, ok := body[admin.KeyAutoAssignUserIDs]; ok && !isJSONNull(raw) {
+		var ids []string
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			return autoAssignRefusal("auto_assign_user_ids must be a list of user ids")
+		}
+		for _, v := range ids {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_user_ids: %q is not a user id", v)
+			}
+			u, err := s.users.GetByID(ctx, id)
+			if errors.Is(err, user.ErrNotFound) || errors.Is(err, userstore.ErrNotFound) {
+				return refusef("auto_assign_user_ids: no user with id %s", id)
+			}
+			if err != nil {
+				return fmt.Errorf("checking auto_assign_user_ids: %w", err)
+			}
+			if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
+				return refusef("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // ssoSettingsWarning runs #300's stranding guard against a generic
@@ -605,14 +703,23 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
 }
 
+// refuseNullSetting is unmarshalSetting's null half, for the settings whose
+// wrong-type refusal already has wording clients see and which must keep it.
+func refuseNullSetting(raw json.RawMessage, name string) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	}
+	return nil
+}
+
 // unmarshalSetting decodes a PATCH /admin/settings field into dst, refusing
 // both a JSON type mismatch and the literal null — see ssoSettingsWarning's
 // own comment for why null needs its own check: encoding/json's Unmarshal
 // treats null into a non-pointer destination as a silent no-op rather than
 // an error, so a type check alone does not catch it.
 func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	if err := refuseNullSetting(raw, name); err != nil {
+		return err
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
 		return fmt.Errorf("%w: %s has the wrong type", user.ErrValidation, name)
@@ -810,6 +917,9 @@ func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body
 
 		enabled := adminSvc.ReputationEnabled(ctx, p)
 		if raw, present := body[enabledKey]; present {
+			if err := refuseNullSetting(raw, enabledKey); err != nil {
+				return err
+			}
 			if err := json.Unmarshal(raw, &enabled); err != nil {
 				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
 			}
