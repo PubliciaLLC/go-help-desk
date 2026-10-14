@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +18,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -521,7 +521,7 @@ func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.Ra
 				return refusef("auto_assign_group_id %q is not a group id", v)
 			}
 			if _, err := s.groups.GetByID(ctx, id); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
+				if errors.Is(err, group.ErrNotFound) {
 					return refusef("auto_assign_group_id: no group with id %s", id)
 				}
 				return fmt.Errorf("checking auto_assign_group_id: %w", err)
