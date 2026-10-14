@@ -540,6 +540,14 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
+	// A value that is not a priority is a malformed request, answered before
+	// anything else in it is saved. (ChangePriority checks it too, for every
+	// other caller.)
+	if body.Priority != nil && !ticket.Priority(*body.Priority).Valid() {
+		Error(w, http.StatusBadRequest, "bad_request", "priority must be one of critical, high, medium, low")
+		return
+	}
+
 	if body.StatusID != nil {
 		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
 			handleError(w, err)

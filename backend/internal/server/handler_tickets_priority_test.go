@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -159,4 +163,82 @@ func TestUpdateTicket_Priority_HTTP(t *testing.T) {
 			require.Equal(t, ticket.PriorityMedium, got.Priority, "%s: nothing is written", name)
 		}
 	})
+}
+
+// A priority that is not a priority is a malformed request: it answers 400
+// before anything else in the same PATCH is written, rather than after the
+// status change ahead of it has already been saved.
+func TestUpdateTicket_InvalidPriorityWritesNothing_HTTP(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+	inProgress, err := h.ticketStore.GetStatusByName(ctx, "In Progress")
+	require.NoError(t, err)
+
+	res := h.do(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(),
+		map[string]any{"status_id": inProgress.ID, "priority": "urgent"})
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", b)
+
+	got, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Equal(t, tk.StatusID, got.StatusID, "the status ahead of the bad priority is not saved")
+	require.Equal(t, ticket.PriorityMedium, got.Priority)
+}
+
+// A machine credential needs the tickets write scope to change a priority, like
+// any other PATCH; with it, a staff member's key acts as that staff member.
+func TestUpdateTicket_Priority_APIKeyScopes_HTTP(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Printer", CategoryID: h.catID, Priority: ticket.PriorityMedium, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	key := func(scopes ...auth.Scope) string {
+		raw, hashed, err := auth.GenerateToken()
+		require.NoError(t, err)
+		names := make([]string, len(scopes))
+		for i, s := range scopes {
+			names[i] = s.String()
+		}
+		require.NoError(t, h.authStore.CreateAPIKey(ctx, auth.APIKey{
+			ID: uuid.New(), Name: "priority", HashedToken: hashed, UserID: h.staffID,
+			Scopes: names, CreatedAt: time.Now(),
+		}))
+		return raw
+	}
+	patch := func(k string) *http.Response {
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), strings.NewReader(`{"priority":"high"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "ApiKey "+k)
+		rr := httptest.NewRecorder()
+		h.srv.ServeHTTP(rr, req)
+		return rr.Result()
+	}
+	priority := func() ticket.Priority {
+		got, err := h.ticketSvc.GetByID(ctx, tk.ID)
+		require.NoError(t, err)
+		return got.Priority
+	}
+
+	res := patch(key(auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionRead}))
+	res.Body.Close()
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "a read-only key cannot change the priority")
+	require.Equal(t, ticket.PriorityMedium, priority())
+
+	res = patch(key(auth.Scope{Resource: auth.ResourceTickets, Action: auth.ActionWrite}))
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", b)
+	require.Equal(t, ticket.PriorityHigh, priority())
 }
