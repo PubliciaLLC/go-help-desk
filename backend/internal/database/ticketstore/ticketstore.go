@@ -556,6 +556,14 @@ func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Att
 	}, nil
 }
 
+func (s *Store) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	ok, err := s.q.AnyAttachmentExists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("checking for attachments: %w", err)
+	}
+	return ok, nil
+}
+
 func (s *Store) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]ticket.Attachment, error) {
 	rows, err := s.q.ListAttachments(ctx, ticketID)
 	if err != nil {
