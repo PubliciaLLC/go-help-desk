@@ -105,6 +105,25 @@ describe('SAML IdP metadata', () => {
     expect(Object.keys(put.mock.calls[0][1] as object)).not.toContain('key_pem')
   })
 
+  it('clears a saved URL when switching to XML', async () => {
+    samlConfig = { ...samlConfig, metadata_url: 'https://idp/meta', metadata_xml: '' }
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
+    const user = await openSAML()
+    await waitFor(() => expect((screen.getByRole('radio', { name: 'URL' }) as HTMLInputElement).checked).toBe(true))
+
+    await user.click(screen.getByRole('radio', { name: 'XML' }))
+    await user.upload(
+      screen.getByLabelText('IdP metadata XML file'),
+      new File([XML2], 'metadata.xml', { type: 'text/xml' }),
+    )
+    await waitFor(() => expect((screen.getByLabelText('IdP metadata XML') as HTMLTextAreaElement).value).toBe(XML2))
+    await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    // Left out or sent as the saved URL, the server would refuse the save
+    // with saml_metadata_conflict.
+    expect(put).toHaveBeenCalledWith('/admin/saml', { metadata_url: '', metadata_xml: XML2, cert_pem: CERT })
+  })
+
   it('sends the URL and clears the XML when saving in URL mode', async () => {
     const put = vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
     const user = await openSAML()
