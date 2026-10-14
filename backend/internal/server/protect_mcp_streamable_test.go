@@ -341,7 +341,7 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 
 // Pins the cross-site surface of /mcp (docs/DESIGN.md, "MCP Interface" ->
 // Origin). The MCP specification asks servers to validate Origin against DNS
-// rebinding, and ProtectMCP does: a request to /mcp or /mcp/ whose Origin is
+// rebinding, and ProtectMCP does, on every MCP route: a request whose Origin is
 // not BASE_URL's gets 403 before authentication (protect_mcp_origin_test.go
 // tests that check in full).
 //
@@ -359,7 +359,9 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 //   - GET is 405, so there is no stream a navigation could hold open.
 //
 // If one of these stops being true, the Origin check is what is left; do not
-// remove it.
+// remove it. They are properties of /mcp alone: on /mcp/message a text/plain
+// POST runs, so there the Origin check is the only barrier
+// (TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt).
 func TestMCPStreamable_NoCrossSiteSurface(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

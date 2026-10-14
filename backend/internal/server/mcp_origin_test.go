@@ -6,9 +6,10 @@ import (
 	"testing"
 )
 
-// The comparison behind the Origin check on /mcp (docs/DESIGN.md, "MCP
-// Interface" -> Origin). A request with no Origin header passes; one with an
-// Origin must carry exactly one value, and it must be the origin of BASE_URL.
+// The comparison behind the Origin check on every MCP route (docs/DESIGN.md,
+// "MCP Interface" -> Origin). A request with no Origin header passes; one with
+// an Origin must carry exactly one value, and it must be the origin of
+// BASE_URL.
 //
 // The cases are the ways a hostile or sloppy value can look like the right one.
 // "origin" here means what a browser sends: scheme://host[:port], nothing else.

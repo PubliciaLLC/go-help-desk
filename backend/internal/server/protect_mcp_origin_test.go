@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The Origin check on the Streamable HTTP endpoint (docs/DESIGN.md, "MCP
-// Interface" -> Origin). The MCP specification requires servers to validate
-// Origin against DNS rebinding; mcp-go does not, so ProtectMCP does:
+// The Origin check on every MCP route (docs/DESIGN.md, "MCP Interface" ->
+// Origin). The MCP specification requires servers to validate Origin against
+// DNS rebinding; mcp-go does not, so ProtectMCP does:
 //
 //   - on every route behind ProtectMCP: /mcp, /mcp/, /mcp/sse and
 //     /mcp/message (see TestMCPOrigin_SSEIsChecked);
