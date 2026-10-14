@@ -628,6 +628,44 @@ describe('ticket filters', () => {
     ])
   })
 
+  it('Send for shows what will be sent once every condition is unticked', async () => {
+    await renderPage(HOOKS, LISTS)
+    const form = within(createForm())
+    const send = form.getByLabelText('Send for') as HTMLSelectElement
+
+    await userEvent.click(form.getByRole('checkbox', { name: 'critical' }))
+    await userEvent.selectOptions(send, 'All other tickets')
+    await userEvent.click(form.getByRole('checkbox', { name: 'critical' }))
+
+    // Nothing is ticked, so the hook sends for every ticket: the disabled
+    // select must not still read "All other tickets".
+    expect(send.disabled).toBe(true)
+    expect(send.value).toBe('false')
+  })
+
+  it('shows a deleted category or group in the edit form, ticked, so it can be unticked', async () => {
+    const { patch } = await renderPage([{
+      ...HOOKS[0],
+      filter: { category_ids: ['c-gone'], priorities: ['critical'], group_ids: ['g-gone'], invert: false },
+    }], LISTS)
+    const r = await row(HOOKS[0].url)
+    await userEvent.click(within(r).getByRole('button', { name: 'Edit' }))
+    const form = within(screen.getByRole('form', { name: 'Edit webhook' }))
+
+    const cat = form.getByRole('checkbox', { name: 'Deleted category' }) as HTMLInputElement
+    const grp = form.getByRole('checkbox', { name: 'Deleted group' }) as HTMLInputElement
+    expect(cat.checked).toBe(true)
+    expect(grp.checked).toBe(true)
+    await userEvent.click(cat)
+    await userEvent.click(grp)
+    await userEvent.click(form.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch.mock.calls[0][1]).toMatchObject({
+      filter: { category_ids: [], priorities: ['critical'], group_ids: [], invert: false },
+    })
+  })
+
   it('offers inactive categories, marked inactive', async () => {
     await renderPage(HOOKS, LISTS)
     expect(await within(createForm()).findByRole('checkbox', { name: 'Legacy (inactive)' })).toBeTruthy()

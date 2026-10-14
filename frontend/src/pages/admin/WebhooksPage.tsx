@@ -361,7 +361,9 @@ function WebhookFields({
           <Label htmlFor={`${id}-send-for`} className="text-xs">Send for</Label>
           <Select
             id={`${id}-send-for`}
-            value={String(form.invert)}
+            // With nothing ticked the hook sends for every ticket, whatever was
+            // picked before (filterOf drops invert), so show that.
+            value={String(form.invert && hasConditions(form))}
             disabled={!hasConditions(form)}
             onChange={(e) => onChange({ ...form, invert: e.target.value === 'true' })}
           >
