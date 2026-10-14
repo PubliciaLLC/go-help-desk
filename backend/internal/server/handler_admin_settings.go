@@ -459,6 +459,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Turning ticket scope on shows what it will do to OAuth clients (#420).
+	// A client sees what its service user's groups cover, so one whose user is
+	// in no group goes from seeing what it saw before to seeing nothing, and
+	// nothing else would say so. It warns and does not refuse: the setting is
+	// the administrator's to turn on. The Security warnings banner keeps
+	// saying it until every client has a group or is switched off.
+	scopeWarning, err := s.scopeEnforcementWarning(r.Context(), body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	warning = joinWarnings(warning, scopeWarning)
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
@@ -471,6 +484,47 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// scopeEnforcementWarning names the OAuth clients that will see no tickets once
+// this PATCH has turned ticket scope enforcement on. Empty unless the body
+// switches it from off to on: turning it on again repeats nothing, and turning
+// it off warns of nothing.
+func (s *Server) scopeEnforcementWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
+	raw, ok := body[admin.KeyTicketScopeEnforced]
+	if !ok {
+		return "", nil
+	}
+	var on bool
+	if err := json.Unmarshal(raw, &on); err != nil || !on || s.adminSvc.TicketScopeEnforced(ctx) {
+		return "", nil
+	}
+	names, err := s.authStore.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return "", err
+	}
+	return scopeWarningFor(names), nil
+}
+
+// scopeWarningFor is the sentence for a list of client names; empty for none.
+// Shared with the Security warnings banner's wording so they cannot drift.
+func scopeWarningFor(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return "Ticket scope is now enforced. These OAuth clients will see no tickets until their " +
+		"service user is added to a group: " + strings.Join(names, ", ") + "."
+}
+
+// joinWarnings puts two warnings in one message; either may be empty.
+func joinWarnings(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + " " + b
 }
 
 // ssoSettingsWarning runs #300's stranding guard against a generic
@@ -619,6 +673,13 @@ type securityWarnings struct {
 	// each read, not remembered from startup, so it clears the moment the
 	// directory is fixed.
 	AttachmentStorage storageStatus `json:"attachment_storage"`
+
+	// OAuthClientsWithoutGroups names the switched-on OAuth clients that see no
+	// tickets because ticket scope is enforced and their service user is in no
+	// group (#420). Always an array, empty when scope is not enforced. It stays
+	// until every such client has a group or is disabled, which is why it is a
+	// banner and not only the sentence on the save that turned scope on.
+	OAuthClientsWithoutGroups []string `json:"oauth_clients_without_groups"`
 }
 
 type storageStatus struct {
@@ -664,10 +725,22 @@ type scanStatus struct {
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
 	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
+	unscoped := []string{}
+	if s.adminSvc.TicketScopeEnforced(r.Context()) {
+		names, err := s.authStore.ListOAuthClientsWithoutGroups(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if names != nil {
+			unscoped = names
+		}
+	}
 	JSON(w, http.StatusOK, securityWarnings{
-		InsecureSecrets:    s.cfg.InsecureSecrets(),
-		AttachmentScanning: s.scanStatus(r.Context()),
-		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
+		InsecureSecrets:           s.cfg.InsecureSecrets(),
+		AttachmentScanning:        s.scanStatus(r.Context()),
+		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
+		OAuthClientsWithoutGroups: unscoped,
 	})
 }
 

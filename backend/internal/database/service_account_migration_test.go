@@ -90,6 +90,45 @@ func TestMigration000041_BackfillsAServiceUserPerClient(t *testing.T) {
 	require.Equal(t, before, countServiceUsers())
 }
 
+// The down migration removes the service users and the columns, and leaves the
+// clients themselves in place.
+func TestMigration000041_DownRemovesTheUsersAndColumns(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	ctx := context.Background()
+
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+
+	userID, clientID := uuid.New(), uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, service_account)
+		VALUES ($1, $2, 'Nagios', 'staff', TRUE)`, userID, "oauth-"+clientID.String()+"@service-account.invalid")
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO oauth_clients (id, client_id, hashed_secret, name, scopes, user_id)
+		VALUES ($1, $2, 'x', 'Nagios', '{tickets:read}', $3)`, clientID, "c-"+clientID.String(), userID)
+	require.NoError(t, err)
+	g := uuid.New()
+	_, err = tx.ExecContext(ctx, `INSERT INTO groups (id, name, description) VALUES ($1, $2, '')`, g, "down-"+g.String())
+	require.NoError(t, err)
+	_, err = tx.ExecContext(ctx, `INSERT INTO group_members (group_id, user_id) VALUES ($1, $2)`, g, userID)
+	require.NoError(t, err)
+
+	execMigrationFile(t, ctx, tx, "migrations/000041_oauth_client_service_users.down.sql", nil)
+
+	var users, clients int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE id = $1`, userID).Scan(&users))
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM oauth_clients WHERE id = $1`, clientID).Scan(&clients))
+	require.Zero(t, users, "the service user is gone")
+	require.Equal(t, 1, clients, "the client stays")
+
+	var cols int
+	require.NoError(t, tx.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.columns
+		WHERE (table_name = 'users' AND column_name = 'service_account')
+		   OR (table_name = 'oauth_clients' AND column_name = 'user_id')`).Scan(&cols))
+	require.Zero(t, cols, "both columns are dropped")
+}
+
 // The inertness rule lives in the database, so no code path can give a service
 // user a way to sign in, whatever it forgets to check.
 func TestUsersServiceAccountInert_RefusesAWayInOrAdmin(t *testing.T) {

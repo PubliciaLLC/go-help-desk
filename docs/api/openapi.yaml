@@ -4067,8 +4067,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning, attachment_storage]
+                required: [insecure_secrets, attachment_scanning, attachment_storage, oauth_clients_without_groups]
                 properties:
+                  oauth_clients_without_groups:
+                    type: array
+                    items: {type: string}
+                    description: |
+                      Names of the switched-on OAuth clients that see no tickets
+                      because ticket scope enforcement is on and the client's
+                      service user is in no group. Always an array, and empty
+                      while enforcement is off. It stays until each client has
+                      a group or is disabled.
                   insecure_secrets:
                     type: [array, 'null']
                     description: |
@@ -4287,8 +4296,11 @@ paths:
       responses:
         '200':
           description: |
-            The write was applied, but it leaves some administrators unable to sign
-            in. The warning names them.
+            The write was applied, with a warning. It is one or both of: the write
+            leaves some administrators unable to sign in (the warning names them),
+            or it turned ticket_scope_enforced from off to on while some
+            OAuth clients have a service user in no group (the warning names the
+            clients, which will see no tickets). Nothing is refused for either.
           content:
             application/json:
               schema:
