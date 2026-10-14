@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,10 +13,13 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -467,6 +471,20 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Routing fallbacks (#447). These used to be saved as given and read back
+	// leniently: an id that did not parse, or named nobody, was skipped at
+	// routing time, so a typo saved cleanly and tickets quietly stayed
+	// unassigned. Refused by name instead, before anything is written.
+	if err := s.validateAutoAssign(r.Context(), body); err != nil {
+		var refusal autoAssignRefusal
+		if errors.As(err, &refusal) {
+			Error(w, http.StatusBadRequest, "invalid_auto_assign", refusal.Error())
+		} else {
+			handleError(w, err) // a failed lookup is our fault, not a bad id
+		}
+		return
+	}
+
 	// #300's guard, and the reason it lives here too rather than only on the
 	// two dedicated PUT endpoints: this generic PATCH can set oidc_enabled or
 	// blank a SAML field exactly as they would, since AuthCriticalKeys() only
@@ -493,6 +511,73 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// autoAssignRefusal is a verdict on the request: the id is wrong, or names
+// someone who cannot take work. Any other error from validateAutoAssign is a
+// failed lookup and is not the administrator's mistake.
+type autoAssignRefusal string
+
+func (e autoAssignRefusal) Error() string { return string(e) }
+
+func refusef(format string, a ...any) error { return autoAssignRefusal(fmt.Sprintf(format, a...)) }
+
+// validateAutoAssign checks the two routing fallbacks in a settings body.
+//
+// The group must exist. Each user must exist and be able to hold work, which
+// is staff or admin; a reporting user is refused because the assignment would
+// refuse them at routing time and the round-robin would skip them forever. A
+// disabled account is accepted: it is skipped while disabled and takes its
+// turn again when re-enabled, which is what an administrator suspending
+// someone for a week expects. Empty string, empty list and null clear a
+// setting; clearing is how an administrator turns the fallback off.
+func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.RawMessage) error {
+	if raw, ok := body[admin.KeyAutoAssignGroupID]; ok && !isJSONNull(raw) {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return autoAssignRefusal("auto_assign_group_id must be a group id, or empty to turn it off")
+		}
+		if v != "" {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_group_id %q is not a group id", v)
+			}
+			if _, err := s.groups.GetByID(ctx, id); err != nil {
+				if errors.Is(err, group.ErrNotFound) {
+					return refusef("auto_assign_group_id: no group with id %s", id)
+				}
+				return fmt.Errorf("checking auto_assign_group_id: %w", err)
+			}
+		}
+	}
+
+	if raw, ok := body[admin.KeyAutoAssignUserIDs]; ok && !isJSONNull(raw) {
+		var ids []string
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			return autoAssignRefusal("auto_assign_user_ids must be a list of user ids")
+		}
+		for _, v := range ids {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_user_ids: %q is not a user id", v)
+			}
+			u, err := s.users.GetByID(ctx, id)
+			if errors.Is(err, user.ErrNotFound) || errors.Is(err, userstore.ErrNotFound) {
+				return refusef("auto_assign_user_ids: no user with id %s", id)
+			}
+			if err != nil {
+				return fmt.Errorf("checking auto_assign_user_ids: %w", err)
+			}
+			if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
+				return refusef("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // ssoSettingsWarning runs #300's stranding guard against a generic

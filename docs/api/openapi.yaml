@@ -4293,6 +4293,12 @@ paths:
           provider the request names (its enabled setting or its key) is checked;
           the stored state of the others is not this request's to judge. CIRCL
           needs no key.
+        - auto_assign_group_id is the id of an existing group, or empty or null to
+          turn the catch-all off. auto_assign_user_ids is an array of ids of
+          existing staff or administrator accounts, or empty or null to turn the
+          round-robin off. Anything else is refused with 400 invalid_auto_assign.
+          Before this check an id that did not parse, or named nobody, was saved
+          and then skipped when a ticket was routed.
         - saml_metadata_url, saml_cert_pem, saml_key_pem, oidc_issuer_url,
           oidc_client_id and oidc_client_secret must be strings and oidc_enabled a
           boolean; null is refused (bad_request). saml_enabled and
@@ -6181,11 +6187,23 @@ paths:
       summary: List users.
       description: >-
         Administrators only (second factor required).
-        Returns up to 200 accounts, newest first. Disabled accounts are included and
-        soft-deleted accounts are left out. There are no paging parameters, so an
-        instance with more than 200 accounts shows only the first 200 here, as the
-        admin page does. auth_type says how an account signs in. An account that
-        signs in only through OIDC is reported as local.
+        Disabled accounts are included and soft-deleted accounts are left out.
+        auth_type says how an account signs in. An account that signs in only
+        through OIDC is reported as local.
+
+        Without page, the answer is the newest 200 accounts, newest first, and
+        nothing else changes it. limit, offset, q and role are ignored in that
+        mode, as they always were, so an instance with more than 200 accounts
+        shows only the first 200.
+
+        With page (1-based) the list is paged: per_page accounts (default 50, at
+        most 200; a larger value is clamped), newest first. q keeps accounts
+        whose email or display name contains it, ignoring case; % and _ match
+        themselves. role keeps one role. The body is still a bare array, and
+        X-Total-Count holds the number of accounts that match q and role, so a
+        client can show how many pages there are. A page past the end is an empty
+        array. A page or per_page that is not a whole number of 1 or more, or a
+        role that is not admin, staff or user, is refused with 400 bad_request.
       tags: ['Admin: Users']
       x-ghd-handler: handleListUsers
       security:
@@ -6193,9 +6211,48 @@ paths:
         - apiKey: ['users:read']
       x-ghd-roles: [admin]
       x-ghd-mfa: true
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Turns paging on. 1-based.
+          schema:
+            type: integer
+            minimum: 1
+        - name: per_page
+          in: query
+          required: false
+          description: Accounts per page. Only read when page is sent.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: q
+          in: query
+          required: false
+          description: Substring of email or display name. Only read when page is sent.
+          schema:
+            type: string
+        - name: role
+          in: query
+          required: false
+          description: Only this role. Only read when page is sent.
+          schema:
+            type: string
+            enum: [admin, staff, user]
       responses:
         '200':
-          description: Up to 200 accounts. An empty array when there are none.
+          description: >-
+            Up to 200 accounts (unpaged) or one page. An empty array when there
+            are none.
+          headers:
+            X-Total-Count:
+              description: >-
+                Paged mode only. How many accounts match q and role, across all
+                pages.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -6203,6 +6260,8 @@ paths:
                 maxItems: 200
                 items:
                   $ref: '#/components/schemas/AdminUserSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -9313,12 +9372,12 @@ components:
           description: Whether staff visibility is limited to the tickets their groups cover.
         auto_assign_group_id:
           type: string
-          description: UUID of the group that new tickets are assigned to. A value that does not parse is ignored.
+          description: UUID of the group that new tickets are assigned to. Must name an existing group; empty or null turns it off.
         auto_assign_user_ids:
           type: array
           items:
             type: string
-          description: UUIDs of the users to assign new tickets to, in turn. Not checked on write.
+          description: UUIDs of the staff or administrators to assign new tickets to, in turn. Each must name an existing staff or administrator account; an empty list or null turns it off.
         allowed_email_domains:
           type: array
           items:
