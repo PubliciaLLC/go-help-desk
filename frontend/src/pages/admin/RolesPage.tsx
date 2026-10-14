@@ -12,7 +12,7 @@ const ROLES: { role: Role; label: string; description: string }[] = [
     role: 'admin',
     label: 'Admin',
     description:
-      'Full system access. Manage settings, users, groups, categories, and plugins. Can always log in with local auth even when SAML is enabled.',
+      'Full system access. Manage settings, users, groups, categories, and tags. Can always log in with local auth even when SAML is enabled.',
   },
   {
     role: 'staff',

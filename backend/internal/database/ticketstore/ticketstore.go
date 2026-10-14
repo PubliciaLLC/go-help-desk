@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -497,6 +498,36 @@ func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.U
 	return ids, nil
 }
 
+// UnassignForGroup takes every ticket off a group, and returns their ids.
+// The group row is locked first (LockGroup), so the unassign and the delete
+// that follows in the same transaction see the same set of tickets.
+func (s *Store) UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	if _, err := s.q.LockGroup(ctx, groupID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("group %s: %w", groupID, group.ErrNotFound)
+		}
+		return nil, fmt.Errorf("locking group %s: %w", groupID, err)
+	}
+	ids, err := s.q.UnassignTicketsForGroup(ctx, database.NullUUID(&groupID))
+	if err != nil {
+		return nil, fmt.Errorf("unassigning tickets from group %s: %w", groupID, err)
+	}
+	return ids, nil
+}
+
+// DeleteGroup removes the group row. See ticket.Service.DeleteGroup for why a
+// group is deleted from the ticket store.
+func (s *Store) DeleteGroup(ctx context.Context, groupID uuid.UUID) error {
+	n, err := s.q.DeleteGroup(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("deleting group %s: %w", groupID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("group %s: %w", groupID, group.ErrNotFound)
+	}
+	return nil
+}
+
 func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.Reply, error) {
 	rows, err := s.q.ListReplies(ctx, ticketID)
 	if err != nil {
@@ -538,7 +569,7 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Attachment, error) {
 	r, err := s.q.GetAttachmentByID(ctx, id)
 	if err != nil {
-		return ticket.Attachment{}, fmt.Errorf("getting attachment %s: %w", id, err)
+		return ticket.Attachment{}, wrapNotFound(err, "attachment", id.String())
 	}
 	return ticket.Attachment{
 		ID:          r.ID,
@@ -554,6 +585,14 @@ func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Att
 		VirusName:       database.StringPtr(r.VirusName),
 		ContentMismatch: database.BoolPtr(r.ContentMismatch),
 	}, nil
+}
+
+func (s *Store) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	ok, err := s.q.AnyAttachmentExists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("checking for attachments: %w", err)
+	}
+	return ok, nil
 }
 
 func (s *Store) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]ticket.Attachment, error) {

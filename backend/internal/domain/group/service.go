@@ -17,7 +17,7 @@ func NewService(store Store) *Service { return &Service{store: store} }
 func (s *Service) Create(ctx context.Context, name, description string) (Group, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return Group{}, fmt.Errorf("group name is required")
+		return Group{}, fmt.Errorf("group name: %w", ErrValidation)
 	}
 	g := Group{ID: uuid.New(), Name: name, Description: description}
 	if err := s.store.Create(ctx, g); err != nil {
@@ -31,14 +31,11 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Group, error) {
 }
 
 func (s *Service) Update(ctx context.Context, g Group) error {
-	if strings.TrimSpace(g.Name) == "" {
-		return fmt.Errorf("group name is required")
+	g.Name = strings.TrimSpace(g.Name)
+	if g.Name == "" {
+		return fmt.Errorf("group name: %w", ErrValidation)
 	}
 	return s.store.Update(ctx, g)
-}
-
-func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.store.Delete(ctx, id)
 }
 
 func (s *Service) List(ctx context.Context) ([]Group, error) {

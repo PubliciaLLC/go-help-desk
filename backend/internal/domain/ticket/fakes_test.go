@@ -57,6 +57,7 @@ type fakeStore struct {
 
 	// Injectable failures.
 	errUpdate        error
+	errDeleteGroup   error
 	errCreate        error
 	errCreateReply   error
 	errGetByID       error
@@ -257,6 +258,26 @@ func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid
 	return moved, nil
 }
 
+// UnassignForGroup clears the group on every ticket held by it, whatever
+// state the ticket is in: the foreign key would clear them anyway.
+func (f *fakeStore) UnassignForGroup(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
+	for id, t := range f.tickets {
+		if t.AssigneeGroupID == nil || *t.AssigneeGroupID != groupID {
+			continue
+		}
+		t.AssigneeGroupID = nil
+		f.tickets[id] = t
+		moved = append(moved, id)
+	}
+	return moved, nil
+}
+
+// DeleteGroup is where a test makes the last step of a group delete fail.
+func (f *fakeStore) DeleteGroup(_ context.Context, _ uuid.UUID) error {
+	return f.errDeleteGroup
+}
+
 func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {
 	// Filter: ResolvedAt != nil && ResolvedAt < before && StatusID == resolvedStatusID && ClosedAt == nil
 	// Sort by ResolvedAt ascending, apply limit.
@@ -325,6 +346,7 @@ func (f *fakeStore) ListAttachments(context.Context, uuid.UUID) ([]ticket.Attach
 	return nil, nil
 }
 func (f *fakeStore) DeleteAttachment(context.Context, uuid.UUID) error { return nil }
+func (f *fakeStore) AnyAttachmentExists(context.Context) (bool, error) { return false, nil }
 
 // ── status store ─────────────────────────────────────────────────────────────
 

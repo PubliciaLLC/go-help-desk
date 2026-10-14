@@ -46,6 +46,18 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (user.User, error) {
 	return fromRow(row), nil
 }
 
+func (s *Store) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]user.User, error) {
+	rows, err := s.q.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting users by id: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
 func (s *Store) GetByEmail(ctx context.Context, email string) (user.User, error) {
 	row, err := s.q.GetUserByEmail(ctx, email)
 	if err != nil {
@@ -330,6 +342,16 @@ func (s *Store) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) 
 	return nil
 }
 
+// RehashPassword swaps oldHash for newHash only while oldHash is still stored,
+// and reports whether it did. See the RehashUserPassword query.
+func (s *Store) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {
+	n, err := s.q.RehashUserPassword(ctx, dbgen.RehashUserPasswordParams{ID: id, PasswordHash: oldHash, PasswordHash_2: newHash})
+	if err != nil {
+		return false, fmt.Errorf("rehashing password: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
 	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
 		return fmt.Errorf("setting MFA: %w", err)
@@ -399,7 +421,7 @@ func (s *Store) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (boo
 
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
-	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
+	n, err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
 		ID: id, Email: email, DisplayName: displayName,
 	})
 	if err != nil {
@@ -408,6 +430,11 @@ func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayN
 			return user.ErrEmailTaken
 		}
 		return fmt.Errorf("updating profile: %w", err)
+	}
+	// The statement skips deleted accounts, so no row means the account is
+	// gone or never existed, not that the write succeeded (#419).
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return nil
 }

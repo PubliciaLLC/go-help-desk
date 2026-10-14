@@ -56,13 +56,16 @@ func (q *Queries) CreateGroup(ctx context.Context, arg CreateGroupParams) error 
 	return err
 }
 
-const deleteGroup = `-- name: DeleteGroup :exec
+const deleteGroup = `-- name: DeleteGroup :execrows
 DELETE FROM groups WHERE id = $1
 `
 
-func (q *Queries) DeleteGroup(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteGroup, id)
-	return err
+func (q *Queries) DeleteGroup(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteGroup, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getGroup = `-- name: GetGroup :one
@@ -260,7 +263,7 @@ func (q *Queries) ListGroupsInScope(ctx context.Context, arg ListGroupsInScopePa
 	return items, nil
 }
 
-const removeGroupMember = `-- name: RemoveGroupMember :exec
+const removeGroupMember = `-- name: RemoveGroupMember :execrows
 DELETE FROM group_members WHERE group_id = $1 AND user_id = $2
 `
 
@@ -269,12 +272,15 @@ type RemoveGroupMemberParams struct {
 	UserID  uuid.UUID `json:"user_id"`
 }
 
-func (q *Queries) RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) error {
-	_, err := q.db.ExecContext(ctx, removeGroupMember, arg.GroupID, arg.UserID)
-	return err
+func (q *Queries) RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, removeGroupMember, arg.GroupID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const removeGroupScope = `-- name: RemoveGroupScope :exec
+const removeGroupScope = `-- name: RemoveGroupScope :execrows
 DELETE FROM group_scopes
 WHERE group_id = $1 AND category_id = $2
 AND (type_id = $3 OR (type_id IS NULL AND $3::uuid IS NULL))
@@ -286,9 +292,12 @@ type RemoveGroupScopeParams struct {
 	TypeID     uuid.NullUUID `json:"type_id"`
 }
 
-func (q *Queries) RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) error {
-	_, err := q.db.ExecContext(ctx, removeGroupScope, arg.GroupID, arg.CategoryID, arg.TypeID)
-	return err
+func (q *Queries) RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, removeGroupScope, arg.GroupID, arg.CategoryID, arg.TypeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateGroup = `-- name: UpdateGroup :exec

@@ -70,7 +70,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
               <span className="block text-gray-400">
                 {new Date(e.created_at).toLocaleString()}
               </span>
-              <AuditDiff before={e.before} after={e.after} />
+              <AuditDiff before={e.before} after={e.after} names={e.names} />
             </li>
           ))}
         </ul>

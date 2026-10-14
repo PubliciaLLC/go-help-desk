@@ -231,7 +231,8 @@ export function OAuthClientsPage() {
 
       <ConfirmDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        onOpenChange={(open) => { if (!open) { setPendingDelete(null); deleteMutation.reset() } }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Revoke client "${pendingDelete?.name ?? ''}"?`}
         description="Any integration using this client loses access immediately, including tokens it already holds. This cannot be undone."
         confirmLabel="Revoke"

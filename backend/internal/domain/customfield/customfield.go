@@ -1,6 +1,7 @@
 package customfield
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,3 +59,8 @@ type TicketFieldValue struct {
 	Value      string    `json:"value"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }
+
+var (
+	// ErrNotFound is returned when a custom field assignment is not found.
+	ErrNotFound = errors.New("not found")
+)

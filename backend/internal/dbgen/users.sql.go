@@ -11,10 +11,11 @@ import (
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 const adminSetPassword = `-- name: AdminSetPassword :execrows
-UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
 
 type AdminSetPasswordParams struct {
@@ -446,7 +447,7 @@ func (q *Queries) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (u
 }
 
 const enableUser = `-- name: EnableUser :exec
-UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) EnableUser(ctx context.Context, id uuid.UUID) error {
@@ -604,6 +605,49 @@ func (q *Queries) GetUserBySAMLSubject(ctx context.Context, samlSubject string) 
 		&i.MfaLockedUntil,
 	)
 	return i, err
+}
+
+const getUsersByIDs = `-- name: GetUsersByIDs :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL
+`
+
+func (q *Queries) GetUsersByIDs(ctx context.Context, dollar_1 []uuid.UUID) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, getUsersByIDs, pq.Array(dollar_1))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.Disabled,
+			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listActiveAdmins = `-- name: ListActiveAdmins :many
@@ -843,6 +887,31 @@ func (q *Queries) RecordMFAFailure(ctx context.Context, arg RecordMFAFailurePara
 	return i, err
 }
 
+const rehashUserPassword = `-- name: RehashUserPassword :execrows
+UPDATE users
+SET password_hash = $3
+WHERE id = $1 AND password_hash = $2 AND deleted_at IS NULL
+`
+
+type RehashUserPasswordParams struct {
+	ID             uuid.UUID `json:"id"`
+	PasswordHash   string    `json:"password_hash"`
+	PasswordHash_2 string    `json:"password_hash_2"`
+}
+
+// Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
+// was computed from the old one's password, so it is written only while the
+// row still holds that old hash: a password changed during the ~250 ms of
+// hashing wins, and zero rows means exactly that. updated_at is left alone;
+// the account did not change.
+func (q *Queries) RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, rehashUserPassword, arg.ID, arg.PasswordHash, arg.PasswordHash_2)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const restoreUser = `-- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1
 `
@@ -1058,7 +1127,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 	return err
 }
 
-const updateUserProfile = `-- name: UpdateUserProfile :exec
+const updateUserProfile = `-- name: UpdateUserProfile :execrows
 UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
@@ -1082,7 +1151,10 @@ type UpdateUserProfileParams struct {
 //
 // A rename should rename. Everything else has its own path, and the role has
 // a guarded one.
-func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
-	_, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
-	return err
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

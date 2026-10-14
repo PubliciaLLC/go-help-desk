@@ -323,7 +323,8 @@ export function GroupsPage() {
       </div>
       <ConfirmDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        onOpenChange={(open) => { if (!open) { setPendingDelete(null); deleteMutation.reset() } }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Delete group "${pendingDelete?.name ?? ''}"?`}
         description="Members will be unassigned and tickets currently routed to this group will need to be reassigned."
         confirmLabel="Delete group"

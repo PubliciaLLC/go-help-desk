@@ -9,17 +9,19 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
-| **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install) |
-| **v3** | Reporting, knowledge base, custom admin-defined roles |
-| **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
+| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
+| **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
+| **v3** | Knowledge base, custom admin-defined roles |
+| **v4** | Multi-tenancy / SaaS, plugin registry |
 
 Custom fields, CTI-linked group management, canned responses and full-text
 search were built ahead of the original v2 schedule and are shipped; this table
 reflects that, not the order they were planned in. Plugins went the other way:
-the admin UI lists and toggles a plugin record, but install/uninstall return
-`501` and no event ever reaches a plugin (`plugin.Registry.Dispatch` is built
-and never called from the notification chain). There is no working plugin
-system, so it sits at v2 rather than claiming v1. The part of the plugin pitch
+the admin plugin routes exist (there is no admin page for them) but nothing
+registers a plugin, so the list is always empty and enable/disable fails for
+every id; install/uninstall return `501` and no event ever reaches a plugin
+(`plugin.Registry.Dispatch` is built and never called from the notification
+chain). 1.x has no working plugin system; it is a v2 feature. The part of the plugin pitch
 worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
 webhook feature; see Notifications.
 
@@ -29,7 +31,7 @@ webhook feature; see Notifications.
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| Backend | **Go** | Single binary, small Docker image, strong concurrency, good plugin/WASM story |
+| Backend | **Go** | Single binary, small Docker image, strong concurrency, good WASM story for the planned v2 plugin system |
 | Frontend | **React (Vite SPA)** | Large ecosystem, good theming via CSS variables, Shadcn/ui component library |
 | Database | **PostgreSQL** | Row-level security for future multi-tenancy, JSONB for custom fields, native FTS, best managed hosting options |
 | Deployment | **Docker** (`docker-compose`) | Go app + Postgres. Upgrade path to Kubernetes for v4 |
@@ -81,7 +83,7 @@ SLA fields (optional feature toggle, all editions):
 
 - **SLA target** (response time and resolution time targets, configurable per Priority and/or Category)
 
-ITSM fields (v4 SaaS only):
+ITSM fields (v1.4, #135; behind an admin setting, off by default, so an install that sorts work by Category alone sees no change):
 
 - **Ticket Type** (Incident, Service Request, Problem, Change Request)
 - **Impact** (High / Medium / Low — how broadly the issue affects the organization)
@@ -95,7 +97,7 @@ Three roles: **Admin**, **Staff**, **User**
 
 | Role | Capabilities |
 |------|-------------|
-| **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
+| **Admin** | Full system access. Manage settings, users, groups, categories, tags. (Plugins are not manageable in 1.x; the plugin system is planned for v2.) Can always log in with local auth even when SAML is enabled (failsafe). |
 | **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
 | **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
 
@@ -113,6 +115,7 @@ Admins manage accounts from **Admin → Users**. The user list is clickable — 
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
 - **Groups** — view current group membership, add to groups, or remove from groups.
+- **One edit, one outcome.** A single save from the detail page can change several fields (disabled, MFA reset, role, name, email). Every field is validated, the account is confirmed to exist, and the two refusals the database would otherwise give mid-save (a change that would remove the last active administrator, and an email address another account holds) are checked, all before the first write, so a refused save changes nothing. The writes themselves stay guarded statements, so a request that loses a race with another administrator is still refused by them, possibly after earlier steps have been applied. A deleted account answers `404` to every edit and to a password reset, and the checks run in the same order for a session and an API key.
 - **Last administrator.** Disabling, deleting or demoting the last active administrator is refused (`400`): setup does not reopen, so an instance with none is orphaned for good. The count and the write are one statement that locks every active administrator row, so two parallel requests (even one administrator removing both another and themselves) cannot both pass. Removing an administrator's *ability to authenticate* is a different door the guard does not watch; see the identity provider guard and the end of Passkeys.
 - **Delete** — marks the account deleted. It stops authenticating immediately, every session is revoked, and it drops out of the admin list; the row itself stays, because the tickets and replies that reference it do. Those keep the person's display name on them: a thread that renamed its participants after the fact would not be an accurate record of what happened. There is no hard delete and no anonymisation, so this is not the tool for a request to erase somebody's data. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
 
@@ -391,6 +394,8 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 **The audit view is built not to display protected or sensitive data**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)), with one configurable exception, requester names, where `audit_mask_requester_names` leaves them shown (Actor names, below). This governs what the view displays, not what its viewer can find out: an entry's ids still lead to the records they name, under those records' own access rules. The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts (and, on a factor reset run from the command line, the operating-system user, host and `source: cli` it records), and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
 
+**Names in the diff** (#422). A diff holds ids, and an id says nothing to a reader (and a deleted status leaves one that names nothing). Each entry in both views therefore carries an optional `names` object beside `before` and `after`: it maps an id, exactly as it appears in the diff, to what it names **now**: `{"name": "In Progress"}`. The stored entry and the `before`/`after` values are unchanged, so the trail stays exact, and the response only gains a key. An id with no entry in `names` no longer resolves (a deleted status, a deleted account); the UI then shows the id, and otherwise shows the name with the id as its tooltip. Only `status_id` (a status) and `assignee_user_id` (a user) are resolved, because they are the only id fields the allow-list lets through. Category, type, item and assignee-group ids are neither written to audit entries nor allow-listed; whoever allow-lists one adds it to the resolver (`auditNameFields`, `internal/server/audit_names.go`) in the same change. The names are built from the diffs **as they are about to be sent**, after `audit.Redact`, which is what keeps every existing rule in force: a viewer who is not shown the diff (staff with the change-history setting off, a reporting user) gets no `names`; only entries on the page are looked at, so a staff member's ticket scope is untouched and no name arrives through an entry outside it; a field that is not allow-listed is not resolved. A user who would be masked as an actor is masked here: `{"name": "Requester", "masked": true}`, by the same `audit_mask_requester_names` setting for the view (`admin_log` or `ticket_log`), the same current-role rule, and the same `masked` flag, so the setting cannot be bypassed by reading an assignee out of a diff. The lookup is one batch per page: one read of the (small) statuses table and one `id = ANY(...)` query for the users, never one per entry. A lookup that fails costs the names, not the page, and is logged.
+
 **Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → General → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`, and the settings dump reports a stored value it does not recognise as `everywhere` too (see REST API → Settings dump and choice-list settings; [#366](https://github.com/PubliciaLLC/go-help-desk/issues/366)). A masked entry keeps its `actor_id`, so it stays attributable for an investigation, and carries `actor_masked: true` beside `actor_name: "Requester"`, so an account whose display name is "Requester" is not mistaken for a masked requester; the UI shows a masked actor as *Requester (name hidden)* with an eye-off icon, which a display name cannot reproduce. Whether an actor is a requester is read from their role **when the entry is viewed**, not when it was written: a staff member later changed to the user role has their earlier entries shown as "Requester", and a requester promoted to staff has theirs shown by name. **The mask is display-only.** It keeps requester names off the audit list and whatever is copied or captured from it; it does not stop identification. Anyone who can see an entry may still be able to find out who the requester is. When the masked actor is the ticket's own requester, the usual case, the ticket its `entity_id` names shows them on its page. An administrator can look up any masked actor from its `actor_id` (`GET /admin/users/{id}`). It is not an access control. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
 
 Staff are narrowed twice, independently. `entity_type` is forced to `ticket` whatever the query string asks for: every other entity type is admin-only. And with ticket scope enforcement on, only entries on tickets the staff member may see are returned.
@@ -499,6 +504,7 @@ separate value for each direction:
 - **Items do not factor into scope** — staff in-scope for a Type see all Items under it
 - Scope is derived **exclusively from group membership** (no direct Category assignment to individual staff)
 - Solo admin scenario: assign all categories to a single group
+- **Deleting a group** takes every ticket off it, open or not, and writes an `unassigned` audit entry for each one naming the administrator, in the same transaction as the delete. If any part fails, nothing is applied. The group row is locked first, so a ticket cannot be assigned to it between the unassignment and the delete.
 
 Scope does two separate jobs: it can restrict what staff see, and it routes new tickets.
 
@@ -527,9 +533,10 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 ### Local Auth (Default)
 
-- Username/password with bcrypt hashing. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
+- Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
+- **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
 
 ### Passkeys (WebAuthn)
 
@@ -1058,7 +1065,7 @@ router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
 in 1.2.0.
 
-- Toggle in admin settings
+- **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
 - Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
 - The tracking number can be referenced when following up with the help desk by phone or email
@@ -1181,6 +1188,18 @@ the exact combination that used to be invisible, including the `permissive`
 case, where uploads keep being accepted without ever being scanned and
 nothing before this said so. A deliberate `policy: off` is not shown as a
 warning: that is a choice already visible in Settings, not a hidden failure.
+
+**The one exception (#459): a policy nobody chose is warned about.** When no
+policy was ever saved (`policy_explicit` is false), no scanner address is set in
+either the setting or the environment, and the instance already holds at least
+one attachment, the response carries `stale_off: true` and the banner tells the
+administrator how to turn scanning back on. This is the state of an install that
+upgraded from a release whose Compose file ran a scanner by default: "off" there
+is an accident of what was deployed, not a position anyone holds. Explicitly
+saving "Do not scan" makes `policy_explicit` true and clears the banner for good,
+so a deliberate "off" is still never warned about. Settings → Attachments shows
+the same status (policy, configured, reachable, and the `effect` sentence) so an
+administrator can check it without waiting for an upload to fail.
 
 **Attachments are download-only. There is no previewer, and there will not be
 one.**
@@ -1884,7 +1903,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
-- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up` additionally answers `404` while guest submission is off.
+- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
 - `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
@@ -1943,6 +1962,36 @@ request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
 privilege change. Lifetime is 7 days. SAML's library cookie is not a
 session; it is spent at hand-over (see Authentication → SAML).
+
+**The generated JWT signing key is stored unencrypted in `instance_secrets`,
+on purpose (#454).** When `JWT_SECRET` is unset or under 32 bytes, the server
+generates a random 32-byte key once and keeps it in that table. Do not
+"fix" this by encrypting it:
+
+- It sits in the same database as session tokens, which are more sensitive: a
+  reader of this table could already act as any signed-in user.
+- Encrypting it with `SESSION_SECRET` would lock the key out whenever that secret
+  changed, and the key would silently regenerate. Every OAuth client would then
+  hold a token the server no longer accepts.
+
+A long `JWT_SECRET` in the environment still wins over the stored key, with
+one exception: a value that is exactly one of the example secrets this
+repository publishes (`config.IsExampleSecret`) is discarded and treated as
+unset, with one warning logged at startup. Anyone can read the example, so a
+token signed with it would prove nothing. `SESSION_SECRET` has no such fallback
+and is still flagged, not discarded. A long `JWT_SECRET` that merely looks like a
+placeholder without being an exact example is used (it is the key), so it is
+flagged in the admin warnings like `SESSION_SECRET`.
+
+**An unwritable `ATTACHMENT_DIR` disables uploads and nothing else (#458).**
+The directory is probed (a scratch file is created and removed) at startup,
+which logs a warning, and again on every upload attempt and every
+`GET /admin/security-warnings` (`attachment_storage`). It is probed rather than
+remembered so that fixing the permissions recovers on the next request with no
+restart and no timer. While it fails, the staff, requester and guest upload
+routes answer 503 `attachments_unavailable` before reading the body, the admin
+banner says why, and downloads of files already stored keep working for as long
+as the directory is readable.
 
 ### Credential Scopes
 
@@ -2113,12 +2162,13 @@ scopes and are therefore denied; they must be re-issued.
 
 ## Plugin Infrastructure (v2)
 
-Deferred from v1. The data model and an admin CRUD shell exist
-(`internal/domain/plugin/`, `handler_admin_plugins.go`) — a plugin record can be
-listed, enabled and disabled — but none of the capabilities below are wired up:
-install and uninstall return `501 not_implemented`, no WASM runtime is linked
+Deferred from v1; 1.x has no working plugin system. The data model and an
+admin routes exist (`internal/domain/plugin/`, `handler_admin_plugins.go`;
+there is no admin page), but nothing registers a plugin, so the list is always
+empty and enable/disable fails for every id. None of the capabilities below
+are wired up: install and uninstall return `501 not_implemented`, no WASM runtime is linked
 in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
-so an enabled plugin still receives no events. Treat this section as the
+so no plugin receives events. Treat this section as the
 target design for v2, not a description of what ships today.
 
 External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
@@ -2294,6 +2344,8 @@ Fields are assigned to CTI nodes (category, type, or item) from the CTI editor (
 - **Sort order**: display order within the node
 
 The fields available on a ticket are the union of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order within each level.
+
+An assignment goes with the node it is attached to. Deleting a category, type or item deletes its assignments in the same statement (a category's include those of its types and items), so a delete that is refused for tickets in use leaves them alone. `custom_field_assignments.scope_id` has no foreign key, which is why this is done in the delete itself. Assignment routes check the whole path: the item must belong to the type, the type to the category, and the assignment to the scope the path ends at; a mismatch, or a scope that does not exist, answers `404`.
 
 ### Values
 

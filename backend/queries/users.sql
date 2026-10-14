@@ -17,6 +17,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: GetUsersByIDs :many
+SELECT * FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL;
+
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
 
@@ -55,7 +58,7 @@ UPDATE users SET deleted_at = now() WHERE id = $1;
 UPDATE users SET disabled = TRUE, updated_at = now() WHERE id = $1;
 
 -- name: EnableUser :exec
-UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1;
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ListUsers :many
 SELECT * FROM users WHERE deleted_at IS NULL AND disabled = FALSE ORDER BY created_at DESC LIMIT $1 OFFSET $2;
@@ -81,6 +84,16 @@ UPDATE users
 SET password_hash = $2, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: RehashUserPassword :execrows
+-- Sign-in upgrade of a hash made at a lower bcrypt cost (#453). The new hash
+-- was computed from the old one's password, so it is written only while the
+-- row still holds that old hash: a password changed during the ~250 ms of
+-- hashing wins, and zero rows means exactly that. updated_at is left alone;
+-- the account did not change.
+UPDATE users
+SET password_hash = $3
+WHERE id = $1 AND password_hash = $2 AND deleted_at IS NULL;
+
 -- name: SetUserMFA :exec
 -- Writes only the TOTP secret and whether it is enabled. Same reason: the
 -- enrolment confirmation read the whole row, checked a code, and wrote every
@@ -102,7 +115,7 @@ UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL;
 
--- name: UpdateUserProfile :exec
+-- name: UpdateUserProfile :execrows
 -- The parts of a user an administrator edits: the address and the name.
 --
 -- Its own statement because UpdateUser writes the WHOLE row from a struct
@@ -348,7 +361,7 @@ SELECT
 -- name: AdminSetPassword :execrows
 -- :execrows, for the same reason as ClearMFA above: a nonexistent id
 -- reported success (204, no error) and still wrote an audit entry.
-UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1;
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL;
 
 -- name: ClaimMFAAttempt :one
 -- Takes one attempt off the account's TOTP budget, and reports what is left.

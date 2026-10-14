@@ -44,6 +44,11 @@ type fakeUserStore struct {
 	errGetByOIDC  error
 	errGetByEmail error
 	errGetBySAML  error
+
+	// Rehash injection, for the sign-in upgrade tests.
+	rehashCalls  int
+	errRehash    error
+	rehashCtxErr error // ctx.Err() as the last RehashPassword saw it
 }
 
 // seed inserts a user directly, without touching the call counters.
@@ -89,6 +94,16 @@ func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (user.User, err
 		return user.User{}, errors.New("not found")
 	}
 	return u, nil
+}
+
+func (f *fakeUserStore) GetByIDs(_ context.Context, ids []uuid.UUID) ([]user.User, error) {
+	var out []user.User
+	for _, id := range ids {
+		if u, ok := f.byID[id]; ok {
+			out = append(out, u)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeUserStore) GetByEmail(_ context.Context, email string) (user.User, error) {
@@ -240,6 +255,24 @@ func (f *fakeUserStore) UpdateProfile(_ context.Context, id uuid.UUID, email, di
 	f.byID[id] = u
 	f.byEmail[u.Email] = u
 	return nil
+}
+
+// RehashPassword mirrors the real statement: it applies only while the stored
+// hash is still the one the caller read.
+func (f *fakeUserStore) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {
+	f.rehashCalls++
+	f.rehashCtxErr = ctx.Err()
+	if f.errRehash != nil {
+		return false, f.errRehash
+	}
+	u, ok := f.byID[id]
+	if !ok || u.PasswordHash != oldHash {
+		return false, nil
+	}
+	u.PasswordHash = newHash
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return true, nil
 }
 
 // The narrow writes. Each touches the one thing it names and leaves the rest
@@ -565,13 +598,13 @@ func TestUserService_ConfirmMFAEnrollment(t *testing.T) {
 	require.True(t, got.MFAEnabled)
 }
 
-// TestNewService_DefaultsToDefaultCost is the guard on WithBcryptCost.
+// TestNewService_DefaultsToCost12 is the guard on WithBcryptCost.
 //
 // The option exists so the test suite can hash cheaply; the danger is that it
 // leaks into production wiring, or that someone "simplifies" the default. Both
 // would silently weaken every password in the database — nothing else in the
 // system would notice, and no test would fail. This one does.
-func TestNewService_DefaultsToDefaultCost(t *testing.T) {
+func TestNewService_DefaultsToCost12(t *testing.T) {
 	store := newFakeUserStore()
 	svc := user.NewService(store) // no options: exactly how cmd/server builds it
 
@@ -588,8 +621,8 @@ func TestNewService_DefaultsToDefaultCost(t *testing.T) {
 
 	cost, err := bcrypt.Cost([]byte(stored.PasswordHash))
 	require.NoError(t, err)
-	require.Equal(t, bcrypt.DefaultCost, cost,
-		"the default construction must hash at bcrypt.DefaultCost; lowering it weakens every stored password")
+	require.Equal(t, 12, cost,
+		"the default construction must hash at cost 12 (#453); lowering it weakens every stored password")
 }
 
 // TestWithBcryptCost_FloorsAtMinCost keeps the option from producing hashes
@@ -911,4 +944,21 @@ func TestVerifyPassword_DoesNotApplyTheMaximum(t *testing.T) {
 		"a wrong long password must not be refused with ErrPasswordTooLong")
 	require.NotErrorIs(t, err, user.ErrValidation,
 		"a wrong long password is not a validation error; it is an authentication failure")
+}
+
+// GetByIDs returns the accounts that exist and leaves out the rest, and an
+// empty request does not reach the store.
+func TestService_GetByIDs(t *testing.T) {
+	store := newFakeUserStore()
+	a := user.User{ID: uuid.New(), DisplayName: "A"}
+	store.byID[a.ID] = a
+	svc := user.NewService(store)
+
+	got, err := svc.GetByIDs(context.Background(), []uuid.UUID{a.ID, uuid.New()})
+	require.NoError(t, err)
+	require.Equal(t, []user.User{a}, got)
+
+	got, err = svc.GetByIDs(context.Background(), nil)
+	require.NoError(t, err)
+	require.Empty(t, got)
 }
