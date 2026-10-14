@@ -124,13 +124,20 @@ func TestVerifyPassword_EveryFailurePathSpendsTheSameWork(t *testing.T) {
 	off := seedWithCost(t, store, "off@example.com", "correct horse", 4)
 	off.Disabled = true
 	store.seed(off)
+	// An account that signs in only through SSO stores no password at all (the
+	// column is NOT NULL DEFAULT ''), and a damaged row is not a bcrypt hash.
+	// bcrypt refuses both before any hashing (#476).
+	store.seed(user.User{ID: uuid.New(), Email: "sso@example.com", DisplayName: "SSO", Role: user.RoleUser, OIDCSubject: "sub-1"})
+	store.seed(user.User{ID: uuid.New(), Email: "bad@example.com", DisplayName: "Bad", Role: user.RoleUser, PasswordHash: "not-a-bcrypt-hash"})
 
 	svc := user.NewService(store, user.WithBcryptCost(target))
 	var work int
 	user.SetCompareHook(svc, func(hash, plain []byte) error {
-		c, err := bcrypt.Cost(hash)
-		require.NoError(t, err)
-		work += 1 << c
+		// A hash bcrypt cannot read is refused before any key expansion, so
+		// the comparison spends no work.
+		if c, err := bcrypt.Cost(hash); err == nil {
+			work += 1 << c
+		}
 		return bcrypt.CompareHashAndPassword(hash, plain)
 	})
 
@@ -139,6 +146,8 @@ func TestVerifyPassword_EveryFailurePathSpendsTheSameWork(t *testing.T) {
 		"old@example.com",    // wrong password, hash below target
 		"new@example.com",    // wrong password, hash at target
 		"off@example.com",    // disabled account
+		"sso@example.com",    // SSO-only account, no password hash
+		"bad@example.com",    // hash bcrypt cannot read
 	} {
 		work = 0
 		_, err := svc.VerifyPassword(context.Background(), email, "wrong guess")
