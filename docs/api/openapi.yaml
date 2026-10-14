@@ -727,15 +727,16 @@ paths:
       operationId: authProviders
       summary: List the sign-in methods this server offers.
       description: >-
-        Lists the sign-in methods and whether each is switched on. local is
-        always true, even when the saml_enabled setting limits password sign-in
-        to administrators. saml is true when the saml_enabled setting is on and a
-        metadata URL, certificate and private key are stored; GET
-        /auth/saml/login works whenever SAML loaded, whatever this says. oidc
-        reflects only the oidc_enabled setting, so it can be true while GET
-        /auth/oidc/login answers 503 because the identity provider could not be
-        loaded. The body is JSON but is sent without a Content-Type header, so it
-        is served as text/plain; charset=utf-8. Parse it as JSON regardless.
+        Lists the sign-in methods and whether each can be used right now. local
+        is always true, even when the saml_enabled setting limits password
+        sign-in to administrators; local_admin_only says so (true exactly when
+        saml_enabled is on, which is the test local login applies). saml is true
+        when the SAML middleware is loaded, whatever saml_enabled says, because
+        GET /auth/saml/login works whenever it loaded. oidc is true when the OIDC
+        provider is loaded, so it is false when the identity provider could not
+        be reached, where GET /auth/oidc/login would answer 503. Before 1.3.0
+        the body was sent without a Content-Type header and oidc echoed the
+        oidc_enabled setting.
       tags: ['Authentication']
       x-ghd-handler: handleAuthProviders
       security: []
@@ -743,10 +744,10 @@ paths:
         '200':
           description: The sign-in methods.
           content:
-            text/plain:
+            application/json:
               schema:
                 type: object
-                required: [providers]
+                required: [providers, local_admin_only]
                 properties:
                   providers:
                     type: array
@@ -758,6 +759,11 @@ paths:
                           type: string
                           enum: [local, saml, oidc]
                         enabled: {type: boolean}
+                  local_admin_only:
+                    type: boolean
+                    description: >-
+                      True when password sign-in is limited to administrators
+                      (saml_enabled is on). Non-administrators then get 403 saml_required.
   /api/v1/auth/saml/acs:
     post:
       operationId: samlAcs
