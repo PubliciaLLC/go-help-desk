@@ -69,6 +69,8 @@ type choiceSetting struct {
 	fallback string
 
 	// code and message are the 400 a PATCH gets for a value valid refuses.
+	// code is also what null and a wrong type answer; message is only for a
+	// string valid refuses.
 	code, message string
 
 	// strict means decode with unmarshalSetting (rejects null as an error);
@@ -119,7 +121,8 @@ var choiceSettings = map[string]choiceSetting{
 }
 
 // refuseChoice writes the 400 for a choice-list key in body that the setting
-// refuses, and reports whether it did. It is called at the position each
+// refuses, and reports whether it did. Whatever is wrong with the value (null,
+// a wrong type, empty, unknown) the code is the setting's own. It is called at the position each
 // check always had in handleUpdateSettings, not in a loop over the table: a
 // request with two bad values names whichever is checked first, and that
 // order is part of what clients see.
@@ -131,14 +134,16 @@ func refuseChoice(w http.ResponseWriter, body map[string]json.RawMessage, key st
 	c := choiceSettings[key]
 	var v string
 	if c.strict {
+		// Null and a wrong type are refused under the setting's own code, like
+		// every other refusal of it (#420); only the message differs.
 		if err := unmarshalSetting(raw, key, &v); err != nil {
-			handleError(w, err)
+			Error(w, http.StatusBadRequest, c.code, err.Error())
 			return true
 		}
 	} else if err := json.Unmarshal(raw, &v); err != nil {
 		// Bare Unmarshal: null is no error here, it decodes to "" and gets
 		// the setting's own refusal below.
-		Error(w, http.StatusBadRequest, "bad_request", c.wrongType)
+		Error(w, http.StatusBadRequest, c.code, c.wrongType)
 		return true
 	}
 	if !c.valid(v) {

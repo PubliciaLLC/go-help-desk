@@ -4205,12 +4205,13 @@ paths:
         as sent, without a type check:
         - closed_reopen_policy, audit_mask_requester_names, attachment_scan_policy,
           attachment_infected_handling, attachment_mismatch_handling and
-          attachment_reputation_refresh take only the listed values. A string
-          outside the list is refused with the setting's own code
-          (invalid_closed_reopen_policy and so on). For closed_reopen_policy and
-          audit_mask_requester_names, null and a non-string are refused with
-          bad_request. For the other four, a non-string is refused with
-          bad_request and null with the setting's own code.
+          attachment_reputation_refresh take only the listed values. Every
+          refusal (null, a non-string, an empty string, or a string outside the
+          list) carries the setting's own code (invalid_closed_reopen_policy,
+          invalid_audit_mask_requester_names, invalid_scan_policy,
+          invalid_infected_handling, invalid_mismatch_handling,
+          invalid_reputation_refresh). Before v1.3.0, null and a non-string were
+          refused with bad_request for some of these.
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
