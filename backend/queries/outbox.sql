@@ -1,5 +1,9 @@
 -- name: EnqueueNotification :exec
-INSERT INTO notification_outbox (id, channel, event) VALUES ($1, $2, $3);
+-- A repeat of an id is ignored, so the webhook fan-out, whose row ids derive
+-- from the fan-out row, can be re-run after a crash without queueing a hook
+-- twice (#448).
+INSERT INTO notification_outbox (id, channel, event) VALUES ($1, $2, $3)
+ON CONFLICT (id) DO NOTHING;
 
 -- name: ClaimNotifications :many
 -- Takes up to page_limit due rows for this worker. SKIP LOCKED lets several
@@ -33,6 +37,12 @@ WHERE id = $1;
 UPDATE notification_outbox
 SET failed_at = now(), last_error = $2, claimed_until = NULL
 WHERE id = $1;
+
+-- name: RewriteNotificationEvent :exec
+-- Replaces a row's event. The webhook dispatcher clears the content of a row
+-- whose delivery has finally failed, so it does not sit for the 30 days failed
+-- rows are kept (#448).
+UPDATE notification_outbox SET event = $2 WHERE id = $1;
 
 -- name: DeleteFailedNotificationsBefore :execrows
 DELETE FROM notification_outbox WHERE failed_at < $1;

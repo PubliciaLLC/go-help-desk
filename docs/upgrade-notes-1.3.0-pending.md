@@ -53,6 +53,14 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 - **Description**: How long a login waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
 - **Impact**: A legitimate user who exhausts the budget still succeeds — their correct password is always honoured, just after the delay.
 
+## MCP: Requests From Another Origin Are Refused (#460)
+
+Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mcp/`) now answers `403 origin_not_allowed` when the request carries an `Origin` header that is not your `BASE_URL`'s origin, before authentication is looked at. Requests with no `Origin` header, which is what SDKs, editors and `curl` send, are unaffected.
+
+- A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
+- 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in user's session cookie. Upgrade if you expose MCP over SSE.
+- A `BASE_URL` with a non-ASCII host stops the server from starting (passkeys refuse it); write it in punycode.
+
 ## JWT Secret (`JWT_SECRET`)
 
 `JWT_SECRET` is now **optional**:
@@ -110,3 +118,29 @@ Changes a script or integration may notice:
 - `PATCH /admin/settings` now refuses JSON `null` (`400`) for `attachment_scan_address`, `attachment_allowed_types` and the four `attachment_reputation_*_enabled` toggles. Before, `null` was stored and read as "unset" or "off". To clear the scanner address, send an empty string. To restore the default allowed types, send the list you want.
 - The six choice settings in `PATCH /admin/settings` (`closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling`, `attachment_reputation_refresh`) now answer their own error code for every refusal: `invalid_closed_reopen_policy`, `invalid_audit_mask_requester_names`, `invalid_scan_policy`, `invalid_infected_handling`, `invalid_mismatch_handling`, `invalid_reputation_refresh`. Before, `null` and a value of the wrong type (a number, a boolean) answered `bad_request` for most of them. The status is still `400`, and the messages are unchanged. A script that matched on `bad_request` for these needs to match the specific code instead.
 - Every route under `/tickets/{id}` now accepts a tracking number (for example `GHD-2026-000001`) as well as a UUID. Before, only `GET /tickets/{id}` did; the others answered `400` with `bad_request` or `invalid_id` ("invalid ticket ID"). Those two `400`s no longer exist. A UUID works exactly as before.
+
+## Webhooks: retries, delivery ids, history and notes (#448)
+
+Several changes for anyone who receives webhooks. Two of them can break a receiver.
+
+### Breaking: the raw payload is now ids only
+
+A hook with payload format **Raw JSON** is sent only the event name (`Type`), `TicketID`, `ActorID`, `OccurredAt` and, where the event has them, a `Payload` with `new_status_id` or `target_id`. These are gone from the payload: `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `reporter_email`, `ReplyBody`, and the `internal` and `link_type` fields. A receiver that reads any of them must fetch the ticket through the REST API using `TicketID`. Whether something is a reply or a note is now the event name (below).
+
+Slack, Teams, Discord and Jira Automation hooks are not affected: their messages still carry the subject, tracking number, status and public reply text, and never an address or a note's text.
+
+### Breaking: internal notes are their own event
+
+`ticket.replied` is now sent for customer-visible replies only. Internal notes are sent as the new `ticket.note_added`. A hook subscribed to `ticket.replied` stops receiving notes; add `ticket.note_added` (or choose all events) to keep them.
+
+### Failed deliveries are retried, so a receiver may see an event twice
+
+A delivery that fails with a connection error, DNS or TLS failure, timeout, 5xx or 429 is tried again, 30 seconds doubling to an hour, 8 attempts in all. A `Retry-After` header from the receiver is honoured up to an hour. A blocked (internal) address and any other status, such as 400 or 404, are not retried. If you change a hook's URL, deliveries still waiting for the old address are dropped, and so are deliveries waiting for an event the hook no longer lists.
+
+Every delivery now carries two headers: `X-GHD-Delivery`, a UUID that stays the same across the retries of one delivery (use it to drop a repeat), and `X-GHD-Event`, the event name. The signature headers are unchanged.
+
+### New: delivery history and Redeliver
+
+Admin, Webhooks has a History button per hook: its last 25 deliveries with the outcome, status, attempts and time. No payloads and no error text are kept. Redeliver sends a delivery's event again as a new delivery. A Slack, Teams, Discord or Jira message is rebuilt from the ticket as it is now, so it can differ from the original; a reply's text is sent only if the reply still exists and is public. Raw hooks get the same ids-only body again.
+
+This adds a database table through a migration that runs at start-up.

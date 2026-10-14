@@ -1980,8 +1980,10 @@ Everything else under `/api/v1` requires a session, API key or OAuth token, and 
 
 ### MCP Interface
 
-Exposes help desk operations as an MCP server for AI tool integration, served
-over SSE at `/mcp/`.
+Exposes help desk operations as an MCP server for AI tool integration, over two transports behind one authentication chain:
+
+- **Streamable HTTP at `/mcp`**, the current MCP transport. `/mcp/` answers the same, because the 1.2 documentation gave that URL. It is **stateless**: no `Mcp-Session-Id` is issued, every POST is one complete JSON-RPC exchange answered with `application/json`, `GET` answers `405` because the server never sends anything unprompted, and `DELETE` answers `405` because there is no session to end (mcp-go would otherwise unregister whatever session id it is given, an SSE stream's included). Stateless is deliberate. mcp-go's session-issuing mode keeps every initialized session in memory until the client deletes it, and its stateless GET stream shares one session between all callers. Nothing in this tool set needs a session.
+- **HTTP+SSE at `/mcp/sse` (stream) and `/mcp/message` (posts)**, the transport MCP deprecated in its 2025-03-26 revision. It is kept so existing client configurations keep working.
 
 **Tools**
 
@@ -1997,8 +1999,8 @@ over SSE at `/mcp/`.
 | `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
-**Authorization.** `/mcp/` runs behind the same middleware chain as `/api/`, so
-every call is authenticated. Beyond that, the transport does not decide what a
+**Authorization.** `/mcp` and everything under `/mcp/` run behind the same middleware chain as `/api/`, so
+every call is authenticated. On both transports the acting identity is taken from each HTTP request, never from a stream or session: an SSE stream opened by one credential does not make later messages act as it, and a Streamable HTTP request acts as the credential it carries. Beyond that, the transport does not decide what a
 caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
@@ -2014,6 +2016,27 @@ was a breaking change to the REST API's published contract, made deliberately
 in this beta's bug-fix branch rather than deferred to a major version — see
 `ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
 
+**Origin.** The MCP specification asks servers to validate the `Origin` header against DNS rebinding, and so does every MCP route: `/mcp`, `/mcp/`, `/mcp/sse` and `/mcp/message`. mcp-go does not, so `ProtectMCP` does it.
+
+- A request with **no `Origin` header** passes. Only browsers send one on a cross-origin request, and MCP clients that are not browsers (SDKs, editors, `curl`) send none.
+- A request with an `Origin` must carry exactly one, and it must be the origin of `BASE_URL`: scheme, host and port, compared without regard to case and with the default ports (80 for `http`, 443 for `https`) filled in. Anything else, `null` included, is refused with `403` and the error code `origin_not_allowed`.
+- The comparison is strict. An `Origin` with a path, a trailing slash, userinfo, a percent-escape or any byte outside printable ASCII (browsers send hosts as punycode) is refused, as is a repeated header, because a browser sends none of those.
+- The check runs **before authentication**. The refusal is the same for every caller, so it does not reveal whether a key is valid, whether a session owes MFA, or what role it has. A caller with no `Origin` never meets it and sees the responses it always saw.
+- If `BASE_URL` has no usable origin, every request that carries an `Origin` is refused (fail closed). The server does not start without a usable host in `BASE_URL` (passkeys refuse it), but it does start on other unusable values, such as a scheme other than `http`/`https` or a port out of range, and those get this. A host written with non-ASCII characters is not one of them: passkeys refuse it too (the host is the relying-party ID, and go-webauthn rejects a non-ASCII one), so the server does not start. Write `BASE_URL` with the punycode host, which is also what a browser sends in `Origin`.
+- The check applies to **every** request that reaches `ProtectMCP`: `/mcp`, `/mcp/`, and the older SSE transport (`/mcp/sse`, `/mcp/message`), and an unknown path under `/mcp/` as well, so a route added later is covered without anyone remembering to list it. The SSE transport is deprecated but not harmless: a browser page can open its stream and post to its message endpoint exactly as it can reach `/mcp`, and a DNS-rebound page reaches both alike, so leaving it open would leave the very hole the check closes on the other routes. An earlier draft of this release exempted SSE to keep existing configurations working; that was reversed (#460) because no legitimate client is affected: SDKs, editors and `curl` send no `Origin`, and a browser client served from `BASE_URL` itself sends the right one. `TestMCPOrigin_SSEIsChecked` pins it.
+
+On the SSE transport a message `POST` takes its actor from the `POST` itself (its cookie or key), while its reply goes to whichever stream owns the `sessionId`; nothing binds the `sessionId` to the actor that opened the stream. Binding it is tracked as issue #495.
+
+A browser-based MCP client served from an origin other than `BASE_URL` cannot use any MCP route. It could not before either: the MCP routes grant no CORS preflight, so the browser never sent the request.
+
+The Origin check refuses any request that carries an `Origin` that is not `BASE_URL`'s, the stream `GET` included: a cross-origin `GET /mcp/sse` made with `EventSource` or a CORS-mode `fetch` carries one and is refused (`TestMCPOrigin_SSEIsChecked`). What it cannot stop is a stream `GET` that carries no `Origin`: a same-origin `GET` after DNS rebinding, or a no-cors or navigation `GET`. The other barriers do not all apply to every route.
+
+- On `/mcp` the check is one of several independent barriers. A non-JSON `POST` is refused before anything runs, and a JSON `POST` needs a CORS preflight that `/mcp` never grants. Those two hold **only for `/mcp`**.
+- On `/mcp/message` a `text/plain` `POST` runs, and it is a "simple" request, so no preflight is sent. For a page on the same site as the help desk (a sibling subdomain, say) the `SameSite=Lax` session cookie is sent with it, so **the Origin check is the only barrier there**. `TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt` pins that case.
+- The stream `GET` (`/mcp/sse`) that carries no `Origin` is protected by authentication and by what the page can do with the answer. A no-cors `GET` from a sibling-site page carries the `SameSite=Lax` cookie and passes authentication, and is harmless only because the response is opaque to that page. A DNS-rebound page holds no credential: it gets no help-desk cookie and has no API key.
+
+Tests: `TestOriginPolicy_Allows` (the comparison), `TestMCPOrigin_*` (the check behind `ProtectMCP`) and `TestMCPStreamable_NoCrossSiteSurface`, plus the cookie attributes in `backend/internal/database/sessionstore/cookie_attributes_test.go`.
+
 ### Authentication Methods
 
 | Consumer | Auth Method | Details |
@@ -2021,7 +2044,7 @@ in this beta's bug-fix branch rather than deferred to a major version — see
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
 | Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Served at `/mcp/` behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
+| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
@@ -2209,10 +2232,12 @@ so they are not removed as dead weight:
   deliberately *not* address-checked — a self-hosted identity provider on a
   private network is a normal topology — and are restricted by who may set them
   instead.
-- **Webhook payloads omit the body of an internal note** and carry an
-  `internal` flag, so a subscriber can tell a staff-only note from a public
-  reply. Before, it received the text of every internal note and could not tell
-  them apart.
+- **Webhook payloads never carry the text of an internal note.** A staff-only
+  note is its own event, `ticket.note_added`
+  ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)), so a hook
+  subscribed to `ticket.replied` is never sent one and the event name says
+  which it is. Before, it received the text of every internal note and could
+  not tell them apart.
 - **Chat/ITSM payload formats escape mentions and never carry an internal
   note body.** Slack escapes `&`, `<` and `>` in user-chosen text, so a
   subject of `<!channel>` cannot page a channel; Discord always sends
@@ -2286,9 +2311,28 @@ on the existing webhook feature instead of as plugins.
 
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
-- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
-  do carry the full event payload, subject and reply body included: a webhook
-  target is registered by an administrator, not chosen by a reporter.
+- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
+  `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
+  `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
+  staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` and
+  `ticket.linked`.
+  **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
+  (null for a system event), `OccurredAt` and a `Payload` holding only the ids
+  `new_status_id` (status changed) and `target_id` (linked), where the event
+  has them. Every other event has no payload. Whether an event is a reply or a
+  note is its name, so there is no `internal` flag, and no link type is sent.
+  No address, subject, tracking number, priority, status name or reply text is
+  sent, and none is stored with it. The keys are an allow list, so a key added
+  to an event later stays off the wire until someone decides a receiver should
+  have it. A receiver that needs the ticket reads it through the REST API using
+  `TicketID`. **This changed from earlier 1.3 betas**, which also sent
+  `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `ReplyBody` and
+  `reporter_email` in `Payload`. The Slack, Teams, Discord and JIRA formats are
+  not affected: they are built from the event as the server holds it, not from
+  the raw body, and keep their subject, tracking number, status and reply
+  text (never a note's text, and never an address), including for
+  `ticket.note_added`.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
   events, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
@@ -2298,7 +2342,31 @@ on the existing webhook feature instead of as plugins.
   `connection`, `other`). No error text is stored, because a URL can carry a
   token and a response body can carry anything; the details are in the server
   log. The latest-started attempt wins, and changing a hook's URL clears its
-  result. There is no delivery history.
+  result.
+  **Headers.** Every delivery carries `X-GHD-Delivery`, a UUID that is the same
+  on every retry of that delivery, and `X-GHD-Event`, the event name. Receivers
+  can see an event more than once (below), and de-duplicate on the first.
+  **History and Redeliver.** Each hook keeps its last 25 deliveries: the event
+  name, when the first and latest attempts started, the HTTP status, a result
+  (`ok` or a class), the number of attempts and whether another is pending.
+  No payload and no error text is shown or returned. The event is kept beside
+  each entry only so **Redeliver** can queue it again, as a new delivery with a
+  new `X-GHD-Delivery`. What is kept is ids only: the ids of a raw body plus
+  the link type and the id of the reply the event announced. No address,
+  subject, tracking number or text. For a raw hook the replay is identical to
+  the original. For a Slack, Teams, Discord or JIRA hook the message is
+  **rebuilt from the ticket as it is now**: its current subject, tracking
+  number and status name, and, for a reply, the reply text only if that reply
+  still exists and is public (visibility is read at that moment; an internal or
+  deleted reply is never sent, and a note never has text). If the ticket is
+  gone the message is its headline only. So a replayed message can differ from
+  the original, and a status-change message names the status the ticket has
+  now. Redeliver is refused with
+  `409 webhook_disabled` for a disabled hook and
+  `409 webhook_not_subscribed` when the hook no longer lists that event.
+  Changing a hook's URL clears its history, and deleting the hook deletes it.
+  (`GET /admin/webhooks/{id}/deliveries`,
+  `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
 - **Delivery is queued, not done on the request**
   ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
   that triggers a notification writes it to `notification_outbox`, one row per
@@ -2326,10 +2394,35 @@ on the existing webhook feature instead of as plugins.
   about three times that on a slower server, per attempt; that is accepted
   (#389). Delivery is at least once: a
   worker that dies between sending and settling sends again after the lease.
-  Webhooks are not retried on any failure. The webhook row covers every
-  subscribed hook and is settled as soon as each delivery has started. Each
-  delivery runs in the background and records its result on the hook (above),
-  not on the outbox row.
+  **Webhooks are retried per hook** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The `webhook` row an event queues is a fan-out: the worker turns it into one
+  row per subscribed hook and settles it. The row ids derive from the fan-out
+  row, so a repeat after a crash reuses the same delivery ids: a row still
+  waiting is not queued twice, and one already sent and deleted is queued again
+  with the same `X-GHD-Delivery`, which a receiver can drop. A row holds no
+  address; a raw hook's holds ids only, and a chat hook's keeps the text its
+  message is built from until it is sent. When a chat hook's delivery finally
+  fails (the eighth attempt) the worker keeps the failed row for the usual
+  thirty days, but its event is first rewritten to ids only, so no subject or
+  text lingers; a delivery that fails for good on the first try is deleted like
+  any settled row. It holds a SHA-256 of the hook's URL,
+  never the URL, which can carry a token. Each per-hook row
+  is then delivered and retried on its own, on the schedule above: 30 seconds
+  doubling to an hour, eight attempts in all, so a failing hook never causes
+  another to be sent twice. The row's id is the `X-GHD-Delivery`. Connection
+  errors, DNS and TLS failures, timeouts, 5xx and 429 are retried; a
+  `Retry-After` from the receiver (seconds or a date) postpones the next attempt
+  when it is longer than the schedule, to at most an hour. A refused address
+  (`blocked_address`), any other status and a request that cannot be built are
+  final: asking again gets the same answer. A hook disabled or deleted between
+  queueing and sending is skipped, not failed, and so is one that no longer
+  lists the event or whose URL no longer matches the stored hash (a queued
+  retry for the old address is dropped rather than sent to the new one). This
+  is checked on every attempt, so it also stops retries already waiting. The
+  secret is read at send time, so a rotated secret signs the retry. Each attempt updates the hook's
+  latest result and its history (above), not the outbox row, whose `last_error`
+  holds only a class and a status. Delivery is at least once, so a receiver can
+  see the same event twice.
 - **Signup verification email goes through the outbox too**
   ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
   `verification` channel. Signup answers the same 202 whether or not the
