@@ -19,7 +19,7 @@ Passkeys are bound to a domain name, so they work only when the host in `BASE_UR
 
 - `GET /api/v1/me/passkeys`, `POST /api/v1/me/passkeys/register/*` and `POST /api/v1/auth/local/passkey/*` answer `503 passkeys_unavailable`.
 - `GET /api/v1/auth/providers` gains `passkeys` (`false` here) and `GET /api/v1/admin/security-warnings` gains `passkeys: {available, reason}`.
-- People who already registered a passkey sign in with their password and then enrol an authenticator app (TOTP) when asked; their passkeys are kept and work again if `BASE_URL` becomes a domain name that matches where they were registered. Nobody is locked out, because a passkey is only a second step after the password.
+- An account whose only second factor is a passkey **cannot sign in** while passkeys are off: sign-in answers `403 passkey_unavailable` and tells the person to ask an administrator to reset their sign-in factors. An administrator's Reset MFA clears the passkey, after which the person signs in and enrols an authenticator app (TOTP). Accounts with TOTP are unaffected. This includes the last administrator: run `docker compose exec app go-help-desk reset-factors <email>` on the server to clear their factors. Passkeys registered under a domain `BASE_URL` that is later fixed work again if the domain matches.
 
 What to check: if your instance is on an IP or single-word host and you want passkeys, give it a DNS name and set `BASE_URL` to it. Changing the domain invalidates passkeys registered under the old one.
 

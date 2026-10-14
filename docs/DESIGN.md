@@ -663,8 +663,7 @@ no route learned a new idea.
 **The password step answers with three booleans:** `mfa_needed` (a TOTP
 enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
 passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
-role is enforced; also an account whose only factor is a passkey while passkeys
-are unavailable, see above). All false means no factor is owed. Each is also conditional
+role is enforced). All false means no factor is owed. Each is also conditional
 on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
 passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
 `u.MFAEnabled`, which is the TOTP column and not "this account has a second
@@ -774,18 +773,26 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
   `POST /auth/local/passkey/start|finish` answer `503 passkeys_unavailable`
   (the `requirePasskeys` middleware, so no handler can reach the nil service).
   `DELETE /me/passkeys/{id}` still works: it never uses the service.
-- **Nobody is locked out.** A passkey is only ever a second step after the
-  password (there is no passwordless sign-in), so the password stays a way in.
-  An unusable key is not counted as a factor: sign-in does not ask for it
-  (`passkey_needed` false), and an account whose only second factor was a
-  passkey gets `mfa_enrollment_needed` true, enforced role or not, so it ends
-  up with password plus TOTP instead of silently dropping to the password
-  alone. The "already has a factor" guard on TOTP enrolment
-  (`alreadyProtected`) ignores passkeys for the same reason, or that account
-  would be told to enrol and refused. Consequence to know: while passkeys are
-  off, a password alone can enrol TOTP on a passkey-only account, because the
-  passkey cannot be checked. Fixing `BASE_URL` brings the old keys back,
-  provided the domain is the one they were registered on.
+- **A passkey-only account is refused, not let in on its password alone.** A
+  passkey is only ever a second step after the password (there is no
+  passwordless sign-in). While passkeys are off, a key cannot be checked, and
+  accepting the password alone would let a stolen password take over exactly
+  the accounts that chose a stronger factor. So when the instance's MFA is on
+  and an account's only second factor is a passkey, `POST /auth/local/login`
+  answers `403 passkey_unavailable` ("Your passkey can't be used on this server
+  right now. Ask an administrator to reset your sign-in factors."), creates no
+  session and does not count as a failed attempt. An administrator's **Reset
+  MFA** (which clears the passkeys too, see above) unblocks the account; it
+  then signs in and enrols TOTP as usual. An account with a passkey **and**
+  TOTP uses TOTP as always. `passkey_needed` is never sent while passkeys are
+  off.
+- **There is no exception for the last administrator.** They are refused too,
+  and `alreadyProtected` still counts passkeys, so a password alone cannot
+  enrol TOTP on any passkey-only account. Recovery is on the server:
+  `docker compose exec app go-help-desk reset-factors <email>` (clears every
+  factor, including passkeys), or an administrator's Reset MFA for anyone else.
+  Fixing `BASE_URL` also brings old keys back, provided the domain is the one
+  they were registered on.
 
 **Not built**, written down so it is not rediscovered as a gap: passwordless
 sign-in; attestation verification against a metadata service; a per-role

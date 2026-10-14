@@ -162,12 +162,9 @@ func (s *Server) alreadyProtected(r *http.Request, id uuid.UUID) (bool, error) {
 	if u.MFAEnabled {
 		return true, nil
 	}
-	// A passkey the server cannot check protects nothing, and counting it
-	// would refuse TOTP enrolment to the very account that sign-in is
-	// telling to enrol, leaving it unable to get in (#494).
-	if !s.passkeysAvailable() {
-		return false, nil
-	}
+	// Counted even while passkeys are unavailable (#494): the key cannot be
+	// checked, but ignoring it would let a password alone enrol TOTP on an
+	// account that chose a stronger factor.
 	n, err := s.passkeyStore.CountForUser(r.Context(), id)
 	if err != nil {
 		return false, err

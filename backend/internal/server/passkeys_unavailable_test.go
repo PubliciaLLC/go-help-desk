@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // #494: when BASE_URL cannot be a relying-party id, main.go starts the server
@@ -107,35 +109,128 @@ func TestPasskeysUnavailable_RoutesAnswer503(t *testing.T) {
 	require.Contains(t, []int{http.StatusUnauthorized, http.StatusServiceUnavailable}, res.StatusCode)
 }
 
-// The lockout check. A passkey here is only ever a second factor after the
-// password; there is no passwordless sign-in, so the password remains a way
-// in. What must not happen is an account the server keeps asking for a key it
-// cannot check. It is asked to enrol TOTP instead, and enrolment must accept
-// it even though the account "already has a passkey".
-func TestPasskeysUnavailable_PasskeyOnlyAccountFallsBackToTOTP(t *testing.T) {
-	h, cleanup := newHarnessPasskeysOff(t)
-	defer cleanup()
-	ctx := context.Background()
+// While passkeys are off, an account whose ONLY second factor is a passkey
+// cannot be checked, so it must not get in on its password alone: that would
+// let a stolen password take over exactly the accounts that chose a stronger
+// factor. The one exception is the last active administrator, who is let in to
+// enrol TOTP because setup does not reopen and the instance would otherwise
+// have no way in. Nobody else may enrol TOTP with only a password either.
 
+func enforceMFA(t *testing.T, h *harness) {
+	t.Helper()
 	setup := loggedInAdmin(t, h)
-	// Not an enforced role: the account volunteered the passkey, and losing
-	// that protection silently would be the other way to get this wrong.
 	res, body := setup.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
 		"mfa_enabled": true,
 	})
 	require.Equal(t, http.StatusNoContent, res.StatusCode, "%s", body)
-	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "stranded")))
+}
 
+func signIn(t *testing.T, h *harness, email string) (*session, *http.Response, map[string]any) {
+	t.Helper()
 	s := &session{h: h}
-	res, body = s.send(t, http.MethodPost, "/api/v1/auth/local/login",
-		map[string]any{"email": "user@test.local", "password": "password"})
-	require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(body, &got))
-	require.Equal(t, false, got["passkey_needed"], "asked for a key the server cannot check")
-	require.Equal(t, true, got["mfa_enrollment_needed"], "the account was not offered a way forward")
+	res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/login",
+		map[string]any{"email": email, "password": "password"})
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(body, &out), string(body))
+	return s, res, out
+}
 
-	res, body = s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
-	require.Equal(t, http.StatusOK, res.StatusCode,
-		"enrolment refused an account whose passkey cannot be used, so it can never sign in: %s", body)
+func requireRefusedPasskeyUnavailable(t *testing.T, s *session, res *http.Response, out map[string]any) {
+	t.Helper()
+	require.Equal(t, http.StatusForbidden, res.StatusCode, "%v", out)
+	errBody, _ := out["error"].(map[string]any)
+	require.Equal(t, "passkey_unavailable", errBody["code"])
+	require.Contains(t, errBody["message"], "reset your sign-in factors")
+	// No session was created.
+	me, _ := s.send(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusUnauthorized, me.StatusCode)
+	// And enrolling TOTP with nothing but the password is not possible.
+	enrol, _ := s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusUnauthorized, enrol.StatusCode)
+}
+
+func TestPasskeysUnavailable_PasskeyOnlyNonAdminIsRefused(t *testing.T) {
+	h, cleanup := newHarnessPasskeysOff(t)
+	defer cleanup()
+	enforceMFA(t, h)
+	require.NoError(t, h.passkeyStore.Create(context.Background(), passkeyFor(h.userID, "stranded")))
+
+	s, res, out := signIn(t, h, "user@test.local")
+	requireRefusedPasskeyUnavailable(t, s, res, out)
+}
+
+// A correct password that is refused for this reason is not a failed guess.
+func TestPasskeysUnavailable_RefusalIsNotACountedFailure(t *testing.T) {
+	h, cleanup := newHarnessPasskeys(t, 1, "", nil, false)
+	defer cleanup()
+	enforceMFA(t, h)
+	require.NoError(t, h.passkeyStore.Create(context.Background(), passkeyFor(h.userID, "stranded")))
+
+	for i := 0; i < 3; i++ {
+		_, res, _ := signIn(t, h, "user@test.local")
+		require.Equal(t, http.StatusForbidden, res.StatusCode, "attempt %d was counted as a failure", i+1)
+	}
+}
+
+// The last administrator is refused too. Recovery is an administrator's MFA
+// reset or reset-factors on the server, not a password-only way in.
+func TestPasskeysUnavailable_PasskeyOnlyLastAdminIsRefusedToo(t *testing.T) {
+	h, cleanup := newHarnessPasskeysOff(t)
+	defer cleanup()
+	requireSoleAdministrator(t, h)
+	enforceMFA(t, h)
+	require.NoError(t, h.passkeyStore.Create(context.Background(), passkeyFor(h.adminID, "admin-key")))
+
+	s, res, out := signIn(t, h, "admin@test.local")
+	requireRefusedPasskeyUnavailable(t, s, res, out)
+}
+
+func TestPasskeysUnavailable_PasskeyOnlyAdminWhoIsNotLastIsRefused(t *testing.T) {
+	h, cleanup := newHarnessPasskeysOff(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, err := h.userSvc.Create(ctx, user.CreateUserInput{
+		Email: "admin2@test.local", DisplayName: "Admin Two", Role: user.RoleAdmin, Password: "password",
+	})
+	require.NoError(t, err)
+	enforceMFA(t, h)
+	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.adminID, "admin-key")))
+
+	s, res, out := signIn(t, h, "admin@test.local")
+	requireRefusedPasskeyUnavailable(t, s, res, out)
+}
+
+func TestPasskeysUnavailable_AfterAnAdminResetTheUserCanProceed(t *testing.T) {
+	h, cleanup := newHarnessPasskeysOff(t)
+	defer cleanup()
+	ctx := context.Background()
+	enforceMFA(t, h)
+	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "stranded")))
+	_, res, _ := signIn(t, h, "user@test.local")
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
+
+	admin := loggedInAdmin(t, h)
+	r, body := admin.send(t, http.MethodPatch, "/api/v1/admin/users/"+h.userID.String(),
+		map[string]any{"reset_mfa": true})
+	require.Equal(t, http.StatusOK, r.StatusCode, "%s", body)
+
+	s, res, out := signIn(t, h, "user@test.local")
+	require.Equal(t, http.StatusOK, res.StatusCode, "%v", out)
+	require.Equal(t, false, out["passkey_needed"])
+	enrol, body := s.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, enrol.StatusCode, "%s", body)
+}
+
+func TestPasskeysUnavailable_PasskeyPlusTOTPUsesTOTP(t *testing.T) {
+	h, cleanup := newHarnessPasskeysOff(t)
+	defer cleanup()
+	ctx := context.Background()
+	enforceMFA(t, h)
+	require.NoError(t, h.passkeyStore.Create(ctx, passkeyFor(h.userID, "key")))
+	require.NoError(t, h.userStore.SetMFA(ctx, h.userID, "ATOTPSECRET", true))
+
+	_, res, out := signIn(t, h, "user@test.local")
+	require.Equal(t, http.StatusOK, res.StatusCode, "%v", out)
+	require.Equal(t, true, out["mfa_needed"])
+	require.Equal(t, false, out["passkey_needed"])
 }

@@ -430,7 +430,11 @@ paths:
         '403':
           description: >-
             Local sign-in is disabled for this account because SAML is enabled
-            (saml_required). Sent as application/json.
+            (saml_required), or the account's only second factor is a passkey
+            and passkeys are unavailable on this instance (passkey_unavailable;
+            an administrator's MFA reset clears it). No session is created and
+            the refusal does not count as a failed attempt. Applies to every
+            such account, administrators included. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}

@@ -122,15 +122,22 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	mfaNeeded := mfaEnabled && u.MFAEnabled
 	//
 	// Passkeys unavailable (#494): a key the server cannot check is not a
-	// factor, so it is neither asked for nor counted. An account whose only
-	// factor was a key is told to enrol TOTP, whether or not its role is
-	// enforced: it chose a second factor, and dropping to the password alone
-	// would quietly remove that. The password is still a way in (a passkey is
-	// only ever a second step here), so nobody is locked out.
-	stranded := passkeys > 0 && !s.passkeysAvailable()
-	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !stranded
-	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled &&
-		((passkeys == 0 && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))) || stranded)
+	// factor, so it is never asked for. An account whose ONLY second factor is
+	// such a key is refused rather than let in on its password alone, or a
+	// stolen password would take over exactly the accounts that chose a
+	// stronger factor. That includes the last administrator: the way back is
+	// an administrator's MFA reset, or reset-factors on the server. The
+	// refusal comes after loginLimiter.Reset, so it never counts as a failed
+	// attempt, and before any session is written.
+	stranded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !s.passkeysAvailable()
+	if stranded {
+		Error(w, http.StatusForbidden, "passkey_unavailable",
+			"Your passkey can't be used on this server right now. Ask an administrator to reset your sign-in factors.")
+		return
+	}
+	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
+	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
+		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
 	sd := auth.SessionData{
