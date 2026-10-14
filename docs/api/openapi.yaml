@@ -1028,9 +1028,10 @@ paths:
         token. The token is consumed only by POST /auth/verify-email. A missing,
         malformed, unknown or already used token is refused with 422
         token_invalid, and an expired one with 422 token_expired. An address that
-        has gained an account since the link was sent is not detected here: this
-        answers 200, and POST /auth/verify-email then refuses the token with 422
-        token_invalid. Public.
+        has gained an account since the link was sent is refused with 422
+        token_invalid, the same answer POST /auth/verify-email gives (before
+        1.3.0 this answered 200). A fault while checking the address is a 500, not
+        a 422. Public.
       tags: ['Signup']
       x-ghd-handler: handleLookupVerification
       security: []
