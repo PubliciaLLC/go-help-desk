@@ -4102,7 +4102,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning, attachment_storage, passkeys]
+                required: [insecure_secrets, attachment_scanning, attachment_storage, passkeys, email]
                 properties:
                   passkeys:
                     type: object
@@ -4180,6 +4180,50 @@ paths:
                       problem:
                         type: string
                         description: The operating system's reason, without the path. Empty when writable.
+                  email:
+                    type: object
+                    required: [enabled, missing, signup_without_email, guest_submission_without_email, failing, failing_count, last_error]
+                    description: |
+                      Whether email can be sent and whether it is being
+                      delivered. Never carries a credential or an address.
+                    properties:
+                      enabled:
+                        type: boolean
+                        description: False until both SMTP_HOST and SMTP_FROM are set.
+                      missing:
+                        type: array
+                        description: The unset variables, SMTP_HOST and SMTP_FROM, while enabled is false. Empty otherwise.
+                        items:
+                          type: string
+                          enum: [SMTP_HOST, SMTP_FROM]
+                      signup_without_email:
+                        type: boolean
+                        description: |
+                          True when self_signup_enabled is on although email is not
+                          configured. Turning it on in that state is refused
+                          (email_required); an install that already had it on is
+                          reported here and left as it was.
+                      guest_submission_without_email:
+                        type: boolean
+                        description: The same, for guest_submission_enabled.
+                      failing:
+                        type: boolean
+                        description: |
+                          True while email rows (including signup verification mail) in the notification outbox are
+                          retrying after an error, or gave up within the last 24
+                          hours. A row is delivered and removed, so a working
+                          mailer reports false.
+                      failing_count:
+                        type: integer
+                        description: How many such rows there are. Zero when failing is false.
+                      last_error:
+                        type: string
+                        description: |
+                          The newest error text, with email addresses replaced by
+                          [address]. For example "SMTP server does not offer AUTH
+                          but SMTP_USER is set" or "SMTP server does not offer
+                          STARTTLS, and SMTP_PASSWORD is set: refusing to send
+                          the password unencrypted". Empty when failing is false.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4285,6 +4329,15 @@ paths:
           keeps entries forever.
         - guest_submission_enabled and staff_can_view_ticket_change_history must be
           JSON booleans. null is refused.
+        - guest_submission_enabled and self_signup_enabled cannot be turned from
+          off to on while email is not configured (SMTP_HOST and SMTP_FROM): 400
+          email_required, and nothing in the body is stored. Both send an email
+          the person needs (the guest's ticket link, the signup verification
+          link). Only a change from off to on is refused, judged against the
+          stored value, so a settings page that sends the whole object back with
+          one of them already on is not refused. An install that already has
+          either on with email off keeps it and is warned in
+          getSecurityWarnings. Turning either off is always allowed.
         - attachment_scan_address is empty, tcp://host:port or unix:///path
           (invalid_scanner_address). null is refused (bad_request). An empty string leaves it unset.
         - attachment_allowed_types is an array of extensions that each match the

@@ -96,6 +96,31 @@ func (q *Queries) DeleteNotification(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const emailOutboxHealth = `-- name: EmailOutboxHealth :one
+SELECT count(*)::bigint AS failing,
+       COALESCE((array_agg(last_error ORDER BY COALESCE(failed_at, created_at) DESC))[1], '')::text AS last_error
+FROM notification_outbox
+WHERE channel IN ('email', 'verification')
+  AND last_error IS NOT NULL
+  AND (failed_at IS NULL OR failed_at > now() - interval '24 hours')
+`
+
+type EmailOutboxHealthRow struct {
+	Failing   int64  `json:"failing"`
+	LastError string `json:"last_error"`
+}
+
+// What the admin email warning reads (#456): email and signup-verification rows that are retrying after
+// an error, or gave up in the last day, and the newest of their error texts.
+// Delivered rows are deleted, so a healthy mailer leaves nothing to count, and
+// a failed row older than a day no longer says anything about now.
+func (q *Queries) EmailOutboxHealth(ctx context.Context) (EmailOutboxHealthRow, error) {
+	row := q.db.QueryRowContext(ctx, emailOutboxHealth)
+	var i EmailOutboxHealthRow
+	err := row.Scan(&i.Failing, &i.LastError)
+	return i, err
+}
+
 const enqueueNotification = `-- name: EnqueueNotification :exec
 INSERT INTO notification_outbox (id, channel, event) VALUES ($1, $2, $3)
 ON CONFLICT (id) DO NOTHING

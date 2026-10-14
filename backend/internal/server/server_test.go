@@ -342,6 +342,7 @@ func newHarnessPasskeys(t *testing.T, authRateLimit int, clamAVAddr string, muta
 	webhookDisp := notify.NewWebhookDispatcher(authSt, "https://help.example.com", nil).
 		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srvOpts = append(srvOpts, server.WithWebhookRedeliverer(webhookDisp))
+	srvOpts = append(srvOpts, server.WithEmailHealth(outboxstore.New(q)))
 	srv := server.New(
 		cfg,
 		sessionStore,

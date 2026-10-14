@@ -26,6 +26,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -249,6 +250,10 @@ type Server struct {
 	// auditStore backs the admin-wide audit view (#129). See WithAuditStore.
 	auditStore audit.Store
 
+	// emailHealth backs the email entry in the admin security warnings
+	// (#456). Nil reports configuration only. See WithEmailHealth.
+	emailHealth notification.HealthReader
+
 	// webhookRedeliverer queues a past webhook delivery again (#448). See
 	// WithWebhookRedeliverer.
 	webhookRedeliverer WebhookRedeliverer
@@ -300,6 +305,14 @@ func WithPasskeysUnavailable(reason string) Option {
 func WithAuditStore(store audit.Store) Option {
 	return func(s *Server) {
 		s.auditStore = store
+	}
+}
+
+// WithEmailHealth lets the admin security warnings say whether email is being
+// delivered (#456). Without it the warning reports configuration only.
+func WithEmailHealth(r notification.HealthReader) Option {
+	return func(s *Server) {
+		s.emailHealth = r
 	}
 }
 
