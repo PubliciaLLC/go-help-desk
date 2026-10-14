@@ -133,7 +133,7 @@
 <p class="docs-page-sub">A feature release. Most of it is new ground; a handful of changes touch something an existing install or integration relies on. Read this before you upgrade, not after.</p>
 
 <div class="callout callout-warn">
-  <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Administrators see an amber <em>Attachments are not being scanned</em> banner that says so. To keep scanning, add <code>COMPOSE_PROFILES=antivirus</code> (and <code>CLAMAV_ADDR=tcp://clamav:3310</code>) to <code>docker/.env</code> and run <code>docker compose up -d</code>. See <a href="#clamav">ClamAV is opt-in</a>.</p>
+  <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Once the instance holds an attachment, administrators see an amber <em>Attachments are not being scanned</em> banner that says so. To keep scanning, add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code> and run <code>docker compose up -d</code>. See <a href="#clamav">ClamAV is opt-in</a>.</p>
 </div>
 
 <div class="callout callout-note">
@@ -200,7 +200,7 @@
 
 <p>Docker Compose used to start the bundled ClamAV scanner and set <code>CLAMAV_ADDR</code> for you. From 1.3.0 it is opt-in (#297). An install that relied on that, and whose <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line, stops scanning attachments on upgrade. Nothing else changes.</p>
 
-<p>Administrators are told. When no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>) and the instance already holds at least one attachment, every admin page shows an amber banner:</p>
+<p>Administrators are told. When no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>) and the instance already holds at least one attachment, administrators see an amber banner at the top of every page:</p>
 
 <div class="callout callout-warn">
   <p><strong>Attachments are not being scanned.</strong> To turn scanning back on, add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under Settings → Attachments. To keep scanning off, choose "Do not scan" there.</p>
