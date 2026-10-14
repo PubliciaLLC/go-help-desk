@@ -32,10 +32,14 @@ type adminUserSummary struct {
 	DisplayName string    `json:"display_name"`
 	Role        user.Role `json:"role"`
 	Disabled    bool      `json:"disabled"`
-	AuthType    string    `json:"auth_type"` // "local", "saml", "oidc", "both" (local+saml), or "+"-joined ("local+oidc", "saml+oidc", "local+saml+oidc")
-	MFAEnabled  bool      `json:"mfa_enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	AuthType    string    `json:"auth_type"` // "local", "saml", "oidc", "both" (local+saml), or "+"-joined ("local+oidc", "saml+oidc", "local+saml+oidc"); "service" for a service account
+	// ServiceAccount: the identity an OAuth client acts as. Listed here so an
+	// administrator can rename it, give it groups and switch it off, and
+	// badged "Service" because it can never sign in.
+	ServiceAccount bool      `json:"service_account"`
+	MFAEnabled     bool      `json:"mfa_enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // adminUserDetail extends the summary with group memberships.
@@ -55,6 +59,11 @@ type adminUserDetail struct {
 // keeps the meaning it has always had. An account with nothing yet reads
 // "local", as before.
 func authTypeOf(u user.User) string {
+	// First, before anything is read off the row: a service account is none of
+	// the sign-in methods below and never signs in (#420).
+	if u.ServiceAccount {
+		return "service"
+	}
 	var methods []string
 	if u.PasswordHash != "" {
 		methods = append(methods, "local")
@@ -77,15 +86,16 @@ func authTypeOf(u user.User) string {
 
 func toAdminSummary(u user.User) adminUserSummary {
 	return adminUserSummary{
-		ID:          u.ID,
-		Email:       u.Email,
-		DisplayName: u.DisplayName,
-		Role:        u.Role,
-		Disabled:    u.Disabled,
-		AuthType:    authTypeOf(u),
-		MFAEnabled:  u.MFAEnabled,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:             u.ID,
+		Email:          u.Email,
+		DisplayName:    u.DisplayName,
+		Role:           u.Role,
+		Disabled:       u.Disabled,
+		AuthType:       authTypeOf(u),
+		ServiceAccount: u.ServiceAccount,
+		MFAEnabled:     u.MFAEnabled,
+		CreatedAt:      u.CreatedAt,
+		UpdatedAt:      u.UpdatedAt,
 	}
 }
 
@@ -590,6 +600,16 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
+		return
+	}
+	// A service user is deleted by deleting its OAuth client. Deleting it alone
+	// would leave the client listed and permanently dead, so say so, naming it.
+	if u, err := s.users.GetByIDAdmin(r.Context(), id); err == nil && u.ServiceAccount {
+		msg := "This is the service account for an OAuth client. Delete the client instead."
+		if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
+			msg = "This is the service account for OAuth client " + name + ". Delete the client instead."
+		}
+		Error(w, http.StatusConflict, "service_account", msg)
 		return
 	}
 	// SoftDelete refuses the last active administrator itself: setup does not

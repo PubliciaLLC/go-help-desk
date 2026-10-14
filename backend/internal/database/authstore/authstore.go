@@ -11,9 +11,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.
@@ -129,6 +131,7 @@ func (s *Store) CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 		Name:         c.Name,
 		Scopes:       c.Scopes,
 		CreatedAt:    c.CreatedAt,
+		UserID:       c.UserID,
 	})
 }
 
@@ -144,7 +147,66 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 		Name:         r.Name,
 		Scopes:       r.Scopes,
 		CreatedAt:    r.CreatedAt,
+		UserID:       r.UserID,
 	}, nil
+}
+
+// OAuthClientNameForUser returns the name of the client a service user belongs
+// to, or auth.ErrNotFound when no client holds it.
+func (s *Store) OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error) {
+	name, err := s.q.GetOAuthClientNameByUser(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("no OAuth client for user %s: %w", userID, auth.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting OAuth client for user %s: %w", userID, err)
+	}
+	return name, nil
+}
+
+// ListOAuthClientGroups returns the groups of every client's service user,
+// keyed by the client row's id, each list ordered by group name.
+func (s *Store) ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error) {
+	rows, err := s.q.ListOAuthClientGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing OAuth client groups: %w", err)
+	}
+	out := make(map[uuid.UUID][]auth.ClientGroup)
+	for _, r := range rows {
+		out[r.ClientRowID] = append(out[r.ClientRowID], auth.ClientGroup{ID: r.GroupID, Name: r.GroupName})
+	}
+	return out, nil
+}
+
+// ListOAuthClientsWithoutGroups names the clients that are switched on and
+// whose service user is in no group.
+func (s *Store) ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error) {
+	names, err := s.q.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing OAuth clients without groups: %w", err)
+	}
+	return names, nil
+}
+
+// GetWithUser returns the client and the service user it acts as, in one query:
+// it runs on every OAuth-authenticated request. A deleted client has no row, so
+// its outstanding tokens stop working; the user's own state (disabled, deleted)
+// is returned for the caller to judge.
+func (s *Store) GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+	r, err := s.q.GetOAuthClientWithUser(ctx, clientID)
+	if err != nil {
+		return auth.OAuthClient{}, user.User{}, fmt.Errorf("getting OAuth client %q: %w", clientID, err)
+	}
+	c := r.OauthClient
+	return auth.OAuthClient{
+		ID:           c.ID,
+		ClientID:     c.ClientID,
+		HashedSecret: c.HashedSecret,
+		Name:         c.Name,
+		Scopes:       c.Scopes,
+		CreatedAt:    c.CreatedAt,
+		UserID:       c.UserID,
+	}, userstore.FromRow(r.User), nil
 }
 
 func (s *Store) DeleteOAuthClient(ctx context.Context, id uuid.UUID) error {
@@ -172,6 +234,7 @@ func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error
 			Name:         r.Name,
 			Scopes:       r.Scopes,
 			CreatedAt:    r.CreatedAt,
+			UserID:       r.UserID,
 		}
 	}
 	return out, nil

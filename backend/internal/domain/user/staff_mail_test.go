@@ -27,6 +27,10 @@ func TestUser_CanReceiveStaffMail(t *testing.T) {
 		{"disabled", func(u *user.User) { u.Disabled = true }, false},
 		{"deleted", func(u *user.User) { u.DeletedAt = &now }, false},
 		{"no address", func(u *user.User) { u.Email = "" }, false},
+		// The identity an OAuth client acts as (#434, #490) has no inbox and
+		// must never be mailed, whatever role or address it carries.
+		{"a service account", func(u *user.User) { u.ServiceAccount = true }, false},
+		{"a service account with a real-looking address", func(u *user.User) { u.ServiceAccount = true; u.Email = "bot@example.com" }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

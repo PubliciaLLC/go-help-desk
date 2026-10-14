@@ -34,7 +34,7 @@ export type EmailPreferencesPatch = Partial<
   Pick<User, 'email_notify_assigned' | 'email_notify_activity' | 'email_notify_group'>
 >
 
-export type AuthType = 'local' | 'saml' | 'both'// How an account signs in, from the credentials it holds. 'both' is local plus
+// How an account signs in, from the credentials it holds. 'both' is local plus
 // SAML; combinations that include OIDC are joined with '+'.
 export type AuthType =
   | 'local'

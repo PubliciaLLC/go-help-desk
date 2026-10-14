@@ -181,3 +181,34 @@ func TestStaffEmail_AStaffMembersReplyOnTheirOwnTicketIsARequesterReply(t *testi
 
 	require.Equal(t, []string{"admin@test.local"}, m.recipients(t))
 }
+
+// A service user (the identity an OAuth client acts as, #490) can end up in a
+// group. It has no inbox: it must get no group mail, however the ticket reaches
+// the group.
+func TestStaffEmail_AServiceUserInAGroupIsNeverMailed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	bot := uuid.New()
+	_, err := h.tx.ExecContext(ctx, `INSERT INTO users (id, email, display_name, role, service_account)
+		VALUES ($1, 'oauth-bot@service-account.invalid', 'Bot', 'staff', TRUE)`, bot)
+	require.NoError(t, err)
+	g, err := h.groupSvc.Create(ctx, "Desk", "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.AddMember(ctx, g.ID, h.staffID))
+	require.NoError(t, h.groupSvc.AddMember(ctx, g.ID, bot))
+	m := wireStaffMail(t, h)
+
+	// Assigned to the group.
+	tk := newStaffTicket(t, h)
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{"assignee_group_id": g.ID})
+	res.Body.Close()
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Equal(t, []string{"staff@test.local"}, m.recipients(t))
+
+	// A requester replies on it.
+	res = h.doAsUser(t, http.MethodPost, fmt.Sprintf("/api/v1/tickets/%s/replies", tk.ID), map[string]any{"body": "hello"})
+	res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Equal(t, []string{"staff@test.local"}, m.recipients(t))
+}

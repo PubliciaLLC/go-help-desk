@@ -31,7 +31,8 @@ type StaffUsers interface {
 
 // StaffGroups is the part of the group service staff mail reads.
 type StaffGroups interface {
-	ListMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// ListMailableMembers, not ListMembers: the people staff email can go to.
+	ListMailableMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
 }
 
 // StaffFanout wraps the dispatcher requests use.
@@ -127,7 +128,7 @@ func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, r
 	if ev.AssigneeGroupID == nil {
 		return nil
 	}
-	members, err := f.groups.ListMembers(ctx, *ev.AssigneeGroupID)
+	members, err := f.groups.ListMailableMembers(ctx, *ev.AssigneeGroupID)
 	if err != nil {
 		f.log.ErrorContext(ctx, "staff email: could not list the group's members",
 			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)

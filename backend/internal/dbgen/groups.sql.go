@@ -263,6 +263,46 @@ func (q *Queries) ListGroupsInScope(ctx context.Context, arg ListGroupsInScopePa
 	return items, nil
 }
 
+const listMailableGroupMembers = `-- name: ListMailableGroupMembers :many
+SELECT gm.user_id
+FROM group_members gm
+JOIN users u ON u.id = gm.user_id
+WHERE gm.group_id = $1
+  AND u.deleted_at IS NULL
+  AND NOT u.disabled
+  AND NOT u.service_account
+  AND u.role IN ('staff', 'admin')
+ORDER BY gm.user_id
+`
+
+// The members of a group that staff email can go to (#441): active staff and
+// administrators, never a service account (#490), a disabled or deleted
+// account, or somebody moved to a requester role. The mail path checks each
+// person again in Go (User.CanReceiveStaffMail); this keeps them from being
+// offered as candidates in the first place.
+func (q *Queries) ListMailableGroupMembers(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, listMailableGroupMembers, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var user_id uuid.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const removeGroupMember = `-- name: RemoveGroupMember :execrows
 DELETE FROM group_members WHERE group_id = $1 AND user_id = $2
 `

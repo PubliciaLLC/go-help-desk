@@ -39,7 +39,8 @@ info:
 
     - x-ghd-roles: the roles a signed-in session may have (admin, staff,
       user). A machine credential acts at a role too: an API key at its
-      owner's, an OAuth client as staff. A role outside the list is refused
+      owner's, an OAuth client at its service user's (staff or user, never
+      admin). A role outside the list is refused
       with 403 forbidden. Absent on public and guest-token operations.
     - x-ghd-mfa: true when a session must have passed its second factor;
       one that has not is refused with 403 mfa_required. API keys and OAuth
@@ -616,9 +617,11 @@ paths:
         Issues a JWT access token for an OAuth client using the client_credentials
         grant. The body must be JSON: the form encoding that RFC 6749 specifies is
         refused with 400 bad_request. The token lasts one hour and cannot be
-        refreshed. The client acts as staff, so it never reaches an
-        administrator-only operation. A wrong secret and an unknown client get the
-        same 401 invalid_client.
+        refreshed. The client acts through its service user, at that user's role
+        (staff or user, never admin), so it never reaches an administrator-only
+        operation. A wrong secret and an unknown client get the same 401
+        invalid_client. The token stops working when the client is deleted or its
+        service user is disabled or deleted.
       tags: ['Authentication']
       x-ghd-handler: handleOAuthToken
       security: []
@@ -2521,8 +2524,9 @@ paths:
       description: |
         Returns every status, active and inactive, ordered by sort order and then name. ticket_count depends on
         who asks. An administrator sees every ticket. Staff see tickets assigned to them or to one of their
-        groups. A reporting user sees tickets they reported. An OAuth client counts as staff with no account
-        and no groups, so its counts are 0. A count that cannot be computed fails the
+        groups. A reporting user sees tickets they reported. An OAuth client is counted as its service user:
+        as staff, the tickets assigned to that user or to one of that user's groups (0 until the user is in a
+        group). A count that cannot be computed fails the
         request (500 internal_error); it is never reported as 0.
       tags: ['Reference data']
       x-ghd-handler: handleListStatuses
@@ -2693,9 +2697,13 @@ paths:
           assigned to them or to any of their groups. With ticket scope
           enforcement on, staff get every ticket their scope admits instead,
           including unassigned tickets in a category their groups cover.
-        - An OAuth client acts as staff but has no user identity, so its default
-          listing is always empty. It can list a group's tickets with
-          assignee_group_id only while ticket scope enforcement is off.
+        - An OAuth client is listed as its service user. It is staff (or a
+          reporting user), so its default listing is the tickets assigned to that
+          user or to one of that user's groups, or, with ticket scope enforcement
+          on, every ticket its groups' scope admits. A client whose user is in no
+          group sees nothing then. It can list a group's tickets with
+          assignee_group_id only for a group its user belongs to while
+          enforcement is on, and for any group while it is off.
         Four parameters can change the listing. reporter_id (admin only) is
         checked first, then assignee_group_id, then scope=unassigned or
         scope=all (admin only). The first one present wins. Any other scope
@@ -2806,8 +2814,9 @@ paths:
         are not fields of this ticket's classification, are skipped without an
         error. They are written after the ticket exists, so a failure there does
         not fail the request.
-        An OAuth client acts with no person behind it, and a ticket needs a
-        reporter, so such a credential is refused with 403 user_identity_required.
+        An OAuth client creates the ticket as its service user, which becomes
+        the reporter, and needs the tickets:write scope. Nobody is mailed for a
+        service user.
       tags: ['Tickets']
       x-ghd-handler: handleCreateTicket
       security:
@@ -2872,8 +2881,9 @@ paths:
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
-            (application/json): `user_identity_required`, for an OAuth client
-            acting without a person behind it.
+            (application/json): `user_identity_required`, for a credential
+            that arrives with no user behind it. An OAuth client always has one,
+            its service user, so it is not refused this way.
           content:
             text/plain:
               schema:
@@ -3000,8 +3010,8 @@ paths:
           for every role: inactive statuses are retired. A ticket already in an
           inactive status can be moved out of it, and sending it the status it
           already holds is not a move.
-        - An OAuth client acting without a person behind it is refused with 403
-          user_identity_required.
+        - An OAuth client acts as its service user, which is recorded as the
+          actor of the change. It needs the tickets:write scope.
         For status_id, assignee_user_id, assignee_group_id, category_id, type_id
         and item_id, an absent key and a null mean the same thing. clear_assignee
         true unassigns the ticket, and wins over the two assignee fields. Sending
@@ -3085,7 +3095,8 @@ paths:
             (application/json): `forbidden` for a reporting user changing the
             status, assigning, or reclassifying, and for anyone but an
             administrator setting the status to Closed; `user_identity_required`
-            for an OAuth client.
+            for a credential with no user behind it (not an OAuth client, which
+            acts as its service user).
           content:
             text/plain:
               schema:
@@ -3215,8 +3226,8 @@ paths:
         nothing. A closed ticket is read-only to its reporter, and a reporter's
         follow-up is the way forward (see the follow-up route).
         Anyone who is not an administrator is refused with 403 forbidden, "only
-        admins can close tickets", on a ticket they can see. An OAuth client acting without a person behind it
-        is refused with 403 user_identity_required. The path id is a UUID or a tracking number.
+        admins can close tickets", on a ticket they can see. An OAuth client acts as its service user
+        (staff or user, never admin), so it is refused with that 403 forbidden. The path id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3244,8 +3255,8 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden`, "only admins can close tickets", for
-            anyone who is not an administrator; `user_identity_required` for an
-            OAuth client.
+            anyone who is not an administrator, an OAuth client included;
+            `user_identity_required` for a credential with no user behind it.
           content:
             text/plain:
               schema:
@@ -3375,8 +3386,8 @@ paths:
           follow-up keeps the original
           category and type, which must both still be active (400 otherwise).
         The ticket must be Closed (409 ticket_not_closed otherwise). The path id is a UUID
-        or a tracking number. An OAuth client acting without a person behind it is
-        refused with 403 user_identity_required.
+        or a tracking number. An OAuth client opens the follow-up as its service user,
+        and needs the tickets:write scope.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3412,8 +3423,9 @@ paths:
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
-            (application/json): `user_identity_required` for an OAuth client; or
-            `forbidden` for a reporting user who did not report the ticket.
+            (application/json): `user_identity_required` for a credential with no
+            user behind it; or `forbidden` for a reporting user who did not report
+            the ticket.
           content:
             text/plain:
               schema:
@@ -3528,8 +3540,8 @@ paths:
         the message, the same as a missing ticket. A ticket cannot link to
         itself (400 cannot_link_self). The same source, target and type a second
         time is 409 link_already_exists. A reporting user cannot link a Closed
-        ticket in either direction (409 ticket_closed). An OAuth client acting
-        without a person behind it is refused with 403 user_identity_required.
+        ticket in either direction (409 ticket_closed). An OAuth client links as its
+        service user, and needs the tickets:write scope.
         The path id is a UUID or a tracking number. target_id is required. Absent, it is the nil
         UUID, which answers 404 not_found.
         A ticket the caller may not see answers 404 not_found, the same answer as a
@@ -3590,8 +3602,9 @@ paths:
         '403':
           description: |
             Refused by the middleware (text/plain). Or, from the handler
-            (application/json): `user_identity_required` for an OAuth client, or
-            `forbidden` for a reporting user using resolve_as_duplicate.
+            (application/json): `user_identity_required` for a credential with no
+            user behind it, or `forbidden` for a reporting user using
+            resolve_as_duplicate.
           content:
             text/plain:
               schema:
@@ -3693,8 +3706,8 @@ paths:
         can allow administrators only, or staff and administrators. A reporting
         user is always refused with 403 forbidden. The ticket must be Closed,
         otherwise the answer is 409 ticket_not_closed. The path id is a UUID or a tracking number.
-        An OAuth client acting without a person behind it is refused with 403
-        user_identity_required.
+        An OAuth client reopens as its service user, which needs the role this
+        route allows.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3728,8 +3741,8 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden`, "users cannot directly reopen
-            tickets", for a reporting user; `user_identity_required` for an OAuth
-            client.
+            tickets", for a reporting user; `user_identity_required` for a
+            credential with no user behind it.
           content:
             text/plain:
               schema:
@@ -3807,8 +3820,10 @@ paths:
         reply to a Closed ticket (409 ticket_closed), or to a Resolved ticket
         after the reopen window (409 reopen_window_closed). Staff and
         administrators can still post to a Closed ticket.
-        The path id is a UUID or a tracking number. An OAuth client acting without a person behind
-        it is refused with 403 user_identity_required.
+        The path id is a UUID or a tracking number. An OAuth client posts as its service user, so
+        the reply's author is the client's user, which carries the client's name.
+        It needs the tickets:write scope. A service user is never mailed, so
+        notify_customer on a ticket it reported queues no email.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3861,7 +3876,8 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden`, "only staff can post internal notes",
-            for a reporting user; `user_identity_required` for an OAuth client.
+            for a reporting user; `user_identity_required` for a credential with
+            no user behind it.
           content:
             text/plain:
               schema:
@@ -3895,8 +3911,7 @@ paths:
         is left as it was. Resolving a Closed ticket is a way out
         of Closed, so it answers 409 ticket_closed unless closed_reopen_policy
         allows the caller's role. The path id is a UUID or a tracking number. An OAuth client
-        acting without a person behind it is refused with 403
-        user_identity_required.
+        acts as its service user.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -3941,7 +3956,7 @@ paths:
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden` for a reporting user (message "you do
             not have permission to perform this action"); `user_identity_required`
-            for an OAuth client.
+            for a credential with no user behind it.
           content:
             text/plain:
               schema:
@@ -4159,8 +4174,17 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning, attachment_storage, passkeys, email, reopen_target]
+                required: [insecure_secrets, attachment_scanning, attachment_storage, oauth_clients_without_groups, passkeys, email, reopen_target]
                 properties:
+                  oauth_clients_without_groups:
+                    type: array
+                    items: {type: string}
+                    description: |
+                      Names of the switched-on OAuth clients that see no tickets
+                      because ticket scope enforcement is on and the client's
+                      service user is in no group. Always an array, and empty
+                      while enforcement is off. It stays until each client has
+                      a group or is disabled.
                   passkeys:
                     type: object
                     required: [available, reason]
@@ -4399,8 +4423,7 @@ paths:
           refused with bad_request for some of these.
         - staff_email_assigned_override, staff_email_activity_override and
           staff_email_group_override take user, on or off; a string outside the list
-          is refused with invalid_staff_email_override, a non-string with bad_request,
-          and null with invalid_staff_email_override.
+          is refused with invalid_staff_email_override, as are null and a non-string.
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
@@ -4475,8 +4498,11 @@ paths:
       responses:
         '200':
           description: |
-            The write was applied, but it leaves some administrators unable to sign
-            in. The warning names them.
+            The write was applied, with a warning. It is one or both of: the write
+            leaves some administrators unable to sign in (the warning names them),
+            or it turned ticket_scope_enforced from off to on while some
+            OAuth clients have a service user in no group (the warning names the
+            clients, which will see no tickets). Nothing is refused for either.
           content:
             application/json:
               schema:
@@ -5975,7 +6001,10 @@ paths:
         Administrators only (second factor required).
         Returns every OAuth client, ordered by name. The client secret is kept only
         as a hash and is never returned. Use id to delete a client, and client_id
-        as the value a caller presents to the token endpoint.
+        as the value a caller presents to the token endpoint. user_id is the
+        client's service user, the identity it acts as, and groups are that
+        user's groups (an empty array when it has none), which are the client's
+        ticket scope.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleListOAuthClients
       security:
@@ -6002,11 +6031,18 @@ paths:
       description: >-
         Administrators only (second factor required).
         Creates a client that can obtain bearer tokens from POST
-        /api/v1/auth/oauth/token. The client acts as staff, so it never reaches an
-        administrator-only route. The client_secret is returned once. The response
-        carries the record id (the one DELETE uses), client_id and the secret. scopes is required and must be
-        a non-empty list of valid resource:action values. An API key can grant
-        only scopes it holds itself.
+        /api/v1/auth/oauth/token. Creating the client also creates its service
+        user, in the same statement, named after the client: staff role, no
+        password, no second factor, no SSO identity, never able to sign in. The
+        client acts as that user, so it never reaches an administrator-only
+        route. The user is listed on GET /api/v1/admin/users with service_account
+        true, where an administrator can rename it, change its role between
+        staff and user, give it groups, and disable it (which stops the client).
+        The client_secret is returned once. The response carries the record id
+        (the one DELETE uses), client_id, the secret and the service user's
+        user_id. scopes is required
+        and must be a non-empty list of valid resource:action values. An API key
+        can grant only scopes it holds itself.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleCreateOAuthClient
       security:
@@ -6040,8 +6076,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [id, client_id, client_secret, name]
+                required: [id, client_id, client_secret, name, user_id]
                 properties:
+                  user_id:
+                    $ref: '#/components/schemas/Uuid'
                   id:
                     $ref: '#/components/schemas/Uuid'
                     description: The record id, as the list and DELETE use it.
@@ -6091,8 +6129,10 @@ paths:
       summary: Delete an OAuth client.
       description: >-
         Administrators only (second factor required).
-        Deletes the client. Its tokens stop being accepted on the next request,
-        because the client is looked up again on every request. An unknown id
+        Deletes the client and soft-deletes its service user in the same
+        statement. Its tokens stop being accepted on the next request, because
+        the client is looked up again on every request. The user row is kept, so
+        tickets and replies it wrote keep their author's name. An unknown id
         answers 404 not_found.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteOAuthClient
@@ -6623,7 +6663,11 @@ paths:
         '409':
           description: >-
             email_taken, when the new address belongs to another account, deleted accounts
-            included.
+            included. service_account, when the account is a service account and the
+            change would give it a way to sign in: reset_mfa, or a role of admin. A
+            service account can be renamed, set to staff or user, given groups, and
+            disabled. Renaming it (display_name) also renames its OAuth client, in
+            the same statement. It cannot be deleted here (DELETE answers 409).
           content:
             application/json:
               schema:
@@ -6677,6 +6721,18 @@ paths:
         '404':
           description: >-
             not_found, when no live account has this id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            service_account, when the account is a service account (the identity
+            an OAuth client acts as). It is deleted only by deleting its client
+            (DELETE /api/v1/admin/oauth-clients/{id}). The message is exactly
+            "This is the service account for OAuth client <name>. Delete the
+            client instead." and an interface should show it as written. Nothing
+            is changed.
           content:
             application/json:
               schema:
@@ -6752,6 +6808,14 @@ paths:
           description: >-
             not_found, when no account has this id, or the account is soft-deleted.
             Reached only after the password has passed validation, whoever the caller is.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: >-
+            service_account, when the account is a service account (the identity
+            an OAuth client acts as). It never has a password.
           content:
             application/json:
               schema:
@@ -8932,8 +8996,8 @@ components:
         POST /api/v1/auth/oauth/token. Declared as http bearer rather than an
         oauth2 clientCredentials flow because that endpoint takes a JSON body,
         not the form encoding RFC 6749 section 4.4 specifies, so a generic
-        OAuth client would be refused. The client acts as staff, so it never
-        reaches an admin-only operation. Deleting the client revokes its
+        OAuth client would be refused. The client acts as its service user (staff
+        or user, never admin), so it never reaches an admin-only operation. Deleting the client revokes its
         tokens on the next request. Scope values as for apiKey.
     guestToken:
       type: apiKey
@@ -9847,12 +9911,26 @@ components:
           format: date-time
     OAuthClient:
       description: >-
-        An OAuth client. The secret hash is never returned,
+        An OAuth client as the list returns it. The secret hash is never returned,
         and the record id is not returned by create.
       type: object
-      required: [id, client_id, name, scopes, created_at]
+      required: [id, client_id, name, scopes, created_at, user_id, groups]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
+        user_id:
+          $ref: '#/components/schemas/Uuid'
+        groups:
+          type: array
+          description: >-
+            The groups the client's service user belongs to, by name. They are the
+            client's ticket scope once ticket scope enforcement is on. An empty
+            array when there are none.
+          items:
+            type: object
+            required: [id, name]
+            properties:
+              id: {$ref: '#/components/schemas/Uuid'}
+              name: {type: string}
         client_id:
           type: string
           description: 16 lowercase hexadecimal characters. Sent as client_id to the token endpoint.
@@ -10047,16 +10125,26 @@ components:
         An account as the administrator list shows it. Password hash, MFA
         secret, SSO subjects and deletion time are never returned.
       type: object
-      required: [id, email, display_name, role, disabled, auth_type, mfa_enabled, created_at, updated_at]
+      required: [id, email, display_name, role, disabled, auth_type, service_account, mfa_enabled, created_at, updated_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
         display_name: {type: string}
         role: {$ref: '#/components/schemas/Role'}
         disabled: {type: boolean}
+        service_account:
+          type: boolean
+          description: >-
+            True for the identity an OAuth client acts as. It is made with the
+            client, named after it, and can be renamed, given groups, set to staff
+            or user, and disabled (which stops the client). It can never be an
+            administrator and can never sign in: no password, second factor,
+            passkey or SSO identity. It is not counted as an administrator by the
+            last-administrator guard, and it is left out of assignee pickers and
+            round-robin. It is never mailed.
         auth_type:
           type: string
-          enum: [local, saml, oidc, both, local+oidc, saml+oidc, local+saml+oidc]
+          enum: [local, saml, oidc, both, local+oidc, saml+oidc, local+saml+oidc, service]
           description: >-
             How the account signs in, derived from what it holds: a password, a SAML
             subject, an OIDC subject. local is a password and nothing else; an account
@@ -10064,7 +10152,8 @@ components:
             are that subject alone. both is a password plus SAML, and keeps that
             meaning. The other combinations are joined with +, always in the order
             local, saml, oidc. Before 1.3 an account that signed in only through OIDC,
-            or a password plus OIDC, read local.
+            or a password plus OIDC, read local. service is a service account (the
+            identity an OAuth client acts as), which never signs in.
         mfa_enabled:
           type: boolean
           description: The TOTP flag only. A passkey-only account reads false here.

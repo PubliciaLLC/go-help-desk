@@ -22,6 +22,22 @@ DELETE FROM group_members WHERE group_id = $1 AND user_id = $2;
 -- name: ListGroupMembers :many
 SELECT user_id FROM group_members WHERE group_id = $1;
 
+-- name: ListMailableGroupMembers :many
+-- The members of a group that staff email can go to (#441): active staff and
+-- administrators, never a service account (#490), a disabled or deleted
+-- account, or somebody moved to a requester role. The mail path checks each
+-- person again in Go (User.CanReceiveStaffMail); this keeps them from being
+-- offered as candidates in the first place.
+SELECT gm.user_id
+FROM group_members gm
+JOIN users u ON u.id = gm.user_id
+WHERE gm.group_id = $1
+  AND u.deleted_at IS NULL
+  AND NOT u.disabled
+  AND NOT u.service_account
+  AND u.role IN ('staff', 'admin')
+ORDER BY gm.user_id;
+
 -- name: ListGroupsForUser :many
 SELECT g.* FROM groups g
 JOIN group_members gm ON g.id = gm.group_id

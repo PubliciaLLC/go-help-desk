@@ -45,7 +45,7 @@ func (f *fakeStaffUsers) GetByIDs(_ context.Context, ids []uuid.UUID) ([]user.Us
 
 type fakeStaffGroups map[uuid.UUID][]uuid.UUID
 
-func (f fakeStaffGroups) ListMembers(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+func (f fakeStaffGroups) ListMailableMembers(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {
 	return f[id], nil
 }
 
@@ -257,6 +257,33 @@ func TestStaffFanout_OnlyPeopleWhoCanReceiveStaffMail(t *testing.T) {
 	require.NoError(t, f.Dispatch(context.Background(), assignedEvent(nil, nil, &g)))
 
 	require.Equal(t, []uuid.UUID{ok.ID}, recipientsOf(next))
+}
+
+// A service account (an OAuth client's identity, #490) is never mailed, as a
+// group member or as the assignee.
+func TestStaffFanout_ServiceAccountsAreNeverMailed(t *testing.T) {
+	human, bot := staffUser("human"), staffUser("bot")
+	bot.ServiceAccount = true
+	g := uuid.New()
+
+	t.Run("as a member of the group", func(t *testing.T) {
+		next := &recorder{}
+		f := newFanout(next, newFakeStaffUsers(human, bot), fakeStaffGroups{g: {human.ID, bot.ID}})
+		require.NoError(t, f.Dispatch(context.Background(), requesterReply(nil, &g)))
+		require.Equal(t, []uuid.UUID{human.ID}, recipientsOf(next))
+	})
+	t.Run("as the assignee", func(t *testing.T) {
+		next := &recorder{}
+		f := newFanout(next, newFakeStaffUsers(bot), fakeStaffGroups{})
+		require.NoError(t, f.Dispatch(context.Background(), assignedEvent(nil, &bot.ID, nil)))
+		require.Empty(t, recipientsOf(next))
+	})
+	t.Run("and a row queued before the account became one is dropped at send time", func(t *testing.T) {
+		next := &recorder{}
+		d := NewStaffMailDispatcher(next, newFakeStaffUsers(bot), &fakeStaffAccess{ok: true})
+		require.NoError(t, d.Dispatch(context.Background(), staffEvent(bot.ID)))
+		require.Empty(t, next.got)
+	})
 }
 
 func TestStaffFanout_UnassigningMailsNobody(t *testing.T) {
