@@ -10,6 +10,8 @@ describe('authTypeLabel', () => {
     ['local+oidc', 'Local + SSO', 'Local + SSO'],
     ['saml+oidc', 'SSO', 'SSO (SAML + OIDC)'],
     ['local+saml+oidc', 'Local + SSO', 'Local + SSO'],
+    // An OAuth client's service user (#420): not a kind of sign-in at all.
+    ['service', 'Never signs in', 'Never signs in'],
   ])('%s reads %s in the list and %s on the detail page', (type, short, long) => {
     expect(authTypeLabel(type)).toBe(short)
     expect(authTypeLabel(type, true)).toBe(long)

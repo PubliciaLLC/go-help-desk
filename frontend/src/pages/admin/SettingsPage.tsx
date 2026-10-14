@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
 import { extractError, extractErrorCode } from '@/api/client'
@@ -1904,6 +1905,10 @@ export function SettingsPage() {
   const [local, setLocal] = useState<Record<string, unknown>>({})
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
+  // What the server said about a save that went through (the PATCH answers 200
+  // with a warning instead of 204). Kept until the next save, not timed out:
+  // it is something to act on, such as OAuth clients left seeing no tickets.
+  const [saveWarning, setSaveWarning] = useState<{ text: string; aboutClients: boolean } | null>(null)
 
   /* The reputation API keys are write-only, so none of them is ever in `local`
      and none travels with an ordinary save. One is sent only when the operator
@@ -1936,7 +1941,7 @@ export function SettingsPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       /* The dump's "<key>_set" entries are the server describing secrets it
          will not send, not settings. Sending one back writes a settings row by
          that name which nothing ever reads. */
@@ -1958,11 +1963,15 @@ export function SettingsPage() {
           patch[p.keySetting] = apiKeys[p.keySetting].trim()
         }
       }
-      return updateSettings(patch)
+      const res = await updateSettings(patch)
+      // The save that turned ticket scope on is the one whose warning is about
+      // OAuth clients; an SSO warning shares the field and gets no such link.
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
+      setSaveWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
       // Only on success: a refused save leaves every edit where it was,
       // including a key typed but not yet accepted.
       setApiKeys({})
@@ -2052,6 +2061,20 @@ export function SettingsPage() {
             ))}
           </nav>
         </div>
+
+        {saveWarning && (
+          <div role="status" className="max-w-2xl rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p>{saveWarning.text}</p>
+            {saveWarning.aboutClients && (
+              <p className="mt-1">
+                <Link to="/admin/oauth-clients" className="font-medium underline">
+                  Open OAuth clients
+                </Link>{' '}
+                to see which clients have no groups.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Active panel */}
         <div className="max-w-2xl">

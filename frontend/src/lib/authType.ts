@@ -4,6 +4,7 @@
 // Anything unrecognised reads as Local, which is what every unknown value did
 // before OIDC was reported.
 export function authTypeLabel(authType: string, detailed = false): string {
+  if (authType === 'service') return 'Never signs in'
   const parts = authType === 'both' ? ['local', 'saml'] : authType.split('+')
   const local = parts.includes('local')
   const sso = parts.filter((p) => p === 'saml' || p === 'oidc')

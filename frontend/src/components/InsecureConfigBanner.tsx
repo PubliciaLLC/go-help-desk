@@ -27,7 +27,12 @@ interface InsecureConfigBannerProps {
  * who deliberately turned scanning off already sees that choice in Settings
  * and does not need a standing alarm about it.
  *
- * Both shown to admins only. The backend deliberately keeps this off the
+ * The OAuth clients warning (#420): with ticket scope enforcement on, a client
+ * whose service user is in no group sees no tickets, and nothing else says so.
+ * Its link is a plain anchor, not the router's Link: the banner's tests render
+ * it with no router, and the full page load costs nothing here.
+ *
+ * All shown to admins only. The backend deliberately keeps this off the
  * public /api/v1/site payload: announcing to anonymous visitors that sessions
  * are signed with a known key, or that uploads are going unscanned, is an
  * invitation rather than a warning. The query is gated on the same condition
@@ -50,6 +55,10 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storage = data?.attachment_storage
   const storageBroken = !!storage && !storage.writable
 
+  // #420: OAuth clients that see nothing. Names only; the page they link to
+  // shows each client's groups and its service user.
+  const blindClients = data?.oauth_clients_without_groups ?? []
+
   const reopenTarget = data?.reopen_target
   const reopenInactive = !!reopenTarget?.inactive
 
@@ -66,7 +75,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
 
   if (
     insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !reopenInactive &&
-    !passkeysOff && !emailOff && !emailFailing
+    !passkeysOff && !emailOff && !emailFailing && blindClients.length === 0
   ) {
     return null
   }
@@ -148,6 +157,22 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
           <p className="mt-1 text-sm text-red-50">
             {email.failing_count} {email.failing_count === 1 ? 'message has' : 'messages have'} failed or are being
             retried. Latest error: {email.last_error}
+          </p>
+        </div>
+      )}
+      {blindClients.length > 0 && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">
+            {blindClients.length === 1 ? 'An OAuth client sees' : 'OAuth clients see'} no tickets
+          </p>
+          <p className="mt-1 text-sm">
+            Ticket scope is on, and {blindClients.join(', ')}{' '}
+            {blindClients.length === 1 ? 'acts as a service user' : 'act as service users'} in no group.{' '}
+            <a className="font-medium underline" href="/admin/oauth-clients">
+              Open OAuth clients
+            </a>{' '}
+            to add {blindClients.length === 1 ? 'it' : 'each'} to a group, or disable{' '}
+            {blindClients.length === 1 ? 'it' : 'them'}. This stays until you do.
           </p>
         </div>
       )}

@@ -17,6 +17,8 @@ import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
 
+type Show = 'all' | 'people' | 'service'
+
 function roleBadge(role: Role) {
   if (role === 'admin') return 'destructive'
   if (role === 'staff') return 'default'
@@ -32,6 +34,7 @@ export function UsersPage() {
   const [role, setRole] = useState<Role>('user')
   const [password, setPassword] = useState('')
   const [formError, setFormError] = useState('')
+  const [show, setShow] = useState<Show>('all')
 
   // The box is a draft until submitted, so each keystroke is not a request.
   const [searchDraft, setSearchDraft] = useState('')
@@ -40,8 +43,12 @@ export function UsersPage() {
   const [page, setPage] = useState(1)
 
   const { data, isLoading } = useQuery({
-    queryKey: ['admin', 'users', { page, search, roleFilter }],
-    queryFn: () => listUsersPage(page, { q: search, role: roleFilter }),
+    queryKey: ['admin', 'users', { page, search, roleFilter, show }],
+    queryFn: () => listUsersPage(page, {
+      q: search,
+      role: roleFilter,
+      serviceAccount: show === 'all' ? undefined : show === 'service',
+    }),
     // Keep the old rows on screen while the next page loads rather than
     // flashing a spinner between every click.
     placeholderData: keepPreviousData,
@@ -73,10 +80,25 @@ export function UsersPage() {
             <h1 className="text-2xl font-bold text-gray-900">Users</h1>
             <p className="mt-1 text-sm text-gray-500">Click a user to edit their profile, groups, and account settings.</p>
           </div>
-          <Button onClick={() => setShowCreate(!showCreate)}>
-            <PlusIcon className="mr-2 h-4 w-4" />
-            Add User
-          </Button>
+          <div className="flex items-center gap-3">
+            <Select
+              aria-label="Show"
+              value={show}
+              onChange={(e) => {
+                setShow(e.target.value as Show)
+                setPage(1)
+              }}
+              className="w-44"
+            >
+              <option value="all">All accounts</option>
+              <option value="people">People</option>
+              <option value="service">Service accounts</option>
+            </Select>
+            <Button onClick={() => setShowCreate(!showCreate)}>
+              <PlusIcon className="mr-2 h-4 w-4" />
+              Add User
+            </Button>
+          </div>
         </div>
 
         {showCreate && (
@@ -174,6 +196,9 @@ export function UsersPage() {
                   >
                     <td className="px-4 py-3">
                       <span className="font-medium text-gray-900">{u.display_name}</span>
+                      {u.service_account && (
+                        <Badge variant="secondary" className="ml-2 text-[10px]">Service</Badge>
+                      )}
                       {u.disabled && (
                         <Badge variant="secondary" className="ml-2 text-[10px]">Disabled</Badge>
                       )}
