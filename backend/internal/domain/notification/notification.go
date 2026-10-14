@@ -83,6 +83,12 @@ type Event struct {
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
 
+	// Attrs is the classification of the ticket this event describes, as it
+	// was when the event was raised, for webhook filters (#413). Excluded from
+	// JSON like Subject: the raw body does not change. Nil means "not known":
+	// an event queued before #413, or one that names no ticket.
+	Attrs *TicketAttrs `json:"-"`
+
 	// TargetWebhook, when set, makes the event a delivery to that one hook
 	// instead of an announcement to all of them: the webhook channel's queued
 	// row is first fanned out into one row per subscribed hook, so each hook
@@ -94,6 +100,14 @@ type Event struct {
 	// it and never the URL; at send time a row whose hash no longer matches the
 	// hook's URL is dropped (#448). Never part of the wire body.
 	TargetURLHash string `json:"-"`
+}
+
+// TicketAttrs is the part of a ticket a webhook filter can test. Priority is
+// ticket.Priority as a string: ticket imports notification, not the reverse.
+type TicketAttrs struct {
+	CategoryID      uuid.UUID  `json:"category_id"`
+	Priority        string     `json:"priority"`
+	AssigneeGroupID *uuid.UUID `json:"assignee_group_id,omitempty"` // nil = no group
 }
 
 // RetryAfterError asks the outbox worker to wait at least After before the

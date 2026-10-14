@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
@@ -32,7 +33,8 @@ func (s webhookEventSource) TicketFacts(ctx context.Context, id uuid.UUID) (noti
 	if err != nil {
 		return notify.TicketFacts{}, false, fmt.Errorf("listing statuses: %w", err)
 	}
-	facts := notify.TicketFacts{Subject: t.Subject, TrackingNumber: string(t.TrackingNumber), Priority: string(t.Priority)}
+	facts := notify.TicketFacts{Subject: t.Subject, TrackingNumber: string(t.TrackingNumber), Priority: string(t.Priority),
+		Attrs: &notification.TicketAttrs{CategoryID: t.CategoryID, Priority: string(t.Priority), AssigneeGroupID: t.AssigneeGroupID}}
 	for _, st := range statuses {
 		if st.ID == t.StatusID {
 			facts.StatusName = st.Name

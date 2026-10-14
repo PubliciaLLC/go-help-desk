@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/publiciallc/go-help-desk/backend/internal/server"
@@ -35,6 +36,10 @@ func TestWebhookEventSource_ReadsTheTicketAsItIsNow(t *testing.T) {
 	require.Equal(t, tk.Subject, facts.Subject)
 	require.Equal(t, string(tk.TrackingNumber), facts.TrackingNumber)
 	require.NotEmpty(t, facts.StatusName, "the status is named, not an id")
+	// What a webhook filter tests (#413), read from the ticket as it is now.
+	require.Equal(t, &notification.TicketAttrs{
+		CategoryID: tk.CategoryID, Priority: string(tk.Priority), AssigneeGroupID: tk.AssigneeGroupID,
+	}, facts.Attrs)
 
 	body, ok, err := src.PublicReplyBody(ctx, tk.ID, pub.ID)
 	require.NoError(t, err)

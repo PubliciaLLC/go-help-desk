@@ -938,3 +938,142 @@ func TestDeliveryErrors_MatchTheList(t *testing.T) {
 	// loses the result, and a class only the CHECK allows is free text's way back in.
 	require.ElementsMatch(t, append([]string{""}, DeliveryErrors...), allowed)
 }
+
+// ── Ticket filter (#413) ─────────────────────────────────────────────────────
+
+// delivery is one request an httptest hook received.
+type delivery struct {
+	path string
+	body []byte
+}
+
+// newDeliveryRecorder serves a hook that records every delivery it receives.
+func newDeliveryRecorder(t *testing.T) (*httptest.Server, chan delivery) {
+	t.Helper()
+	ch := make(chan delivery, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		ch <- delivery{path: r.URL.Path, body: b}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, ch
+}
+
+// A filtered-out hook is never sent to, and a filtered-in one is. Only /all and
+// /match are expected: /miss names another priority, and /rest is the inverse
+// of the critical filter, so it refuses a critical ticket.
+func TestDispatch_FilteredHooksReceiveOnlyMatchingTickets(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	store := fakeWebhookStore{
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/all"},
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/match",
+			Filter: notification.WebhookFilter{Priorities: []string{"critical"}}},
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/miss",
+			Filter: notification.WebhookFilter{Priorities: []string{"low"}}},
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/rest",
+			Filter: notification.WebhookFilter{Priorities: []string{"critical"}, Invert: true}},
+	}
+	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	ev := fixtureReplyEvent(false)
+	ev.Attrs = &notification.TicketAttrs{Priority: "critical"}
+	require.NoError(t, disp.Dispatch(context.Background(), ev))
+
+	got := map[string]bool{}
+	window := time.After(300 * time.Millisecond)
+	for collecting := true; collecting; {
+		select {
+		case d := <-deliveries:
+			got[d.path] = true
+		case <-window:
+			collecting = false
+		}
+	}
+	require.Equal(t, map[string]bool{"/all": true, "/match": true}, got)
+}
+
+// A filter changes whether a hook fires, never what it is sent: the body a
+// filtered hook receives is the same bytes an unfiltered one does, and those
+// are the ids-only raw body, with nothing of the event's attrs in it. The
+// expected bytes are a literal, not rawBody's output, so the code under test is
+// not its own oracle.
+func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	store := fakeWebhookStore{
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/plain"},
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/filtered",
+			Filter: notification.WebhookFilter{Priorities: []string{"critical"}}},
+	}
+	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
+		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	const want = `{"Type":"ticket.replied","TicketID":"11111111-2222-3333-4444-555555555555",` +
+		`"ActorID":"22222222-3333-4444-5555-666666666666","Payload":null,"OccurredAt":"2026-09-25T12:00:00Z"}`
+	ev := fixtureReplyEvent(false)
+	ev.Attrs = &notification.TicketAttrs{Priority: "critical", CategoryID: uuid.New()}
+	require.NoError(t, disp.Dispatch(context.Background(), ev))
+
+	got := map[string][]byte{}
+	for range 2 {
+		select {
+		case d := <-deliveries:
+			got[d.path] = d.body
+		case <-time.After(2 * time.Second):
+			t.Fatal("both hooks should receive the event")
+		}
+	}
+	for path, body := range got {
+		require.Equal(t, want, string(body), path)
+		require.NotContains(t, string(body), ev.Attrs.CategoryID.String(), path+": the category id leaked")
+		require.NotContains(t, string(body), "critical", path+": the priority leaked")
+	}
+	require.Len(t, got, 2)
+}
+
+// An event without attrs (one queued before #413) is delivered to a filtered
+// hook, and the fact is logged with the hook it concerns: fail open.
+func TestDispatch_UnknownAttrsDeliverAndLog(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	hookID := uuid.New()
+	store := fakeWebhookStore{
+		{ID: hookID, PayloadFormat: "raw", URL: srv.URL + "/filtered",
+			Filter: notification.WebhookFilter{Priorities: []string{"critical"}}},
+	}
+	var buf bytes.Buffer
+	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
+		log: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+
+	ev := fixtureReplyEvent(false) // Attrs is nil
+	require.NoError(t, disp.Dispatch(context.Background(), ev))
+
+	select {
+	case <-deliveries:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an event with unknown attrs must still reach a filtered hook")
+	}
+	require.Contains(t, buf.String(), "webhook filter not evaluated")
+	require.Contains(t, buf.String(), hookID.String())
+}
+
+// With no filter, unknown attrs are nothing to log: the hook gets the event and
+// the log says nothing about a filter.
+func TestDispatch_UnfilteredHookLogsNothingForUnknownAttrs(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	store := fakeWebhookStore{
+		{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/plain"},
+	}
+	var buf bytes.Buffer
+	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
+		log: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+
+	require.NoError(t, disp.Dispatch(context.Background(), fixtureReplyEvent(false)))
+
+	select {
+	case <-deliveries:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the unfiltered hook must receive the event")
+	}
+	require.NotContains(t, buf.String(), "filter")
+}
