@@ -6481,8 +6481,10 @@ paths:
                   type: boolean
                   description: Defaults to true. A hook can be saved disabled before its receiver is ready.
                 filter:
-                  $ref: '#/components/schemas/WebhookFilter'
                   description: Optional. Absent, null or {} means every ticket.
+                  anyOf:
+                    - $ref: '#/components/schemas/WebhookFilter'
+                    - type: 'null'
       responses:
         '201':
           description: The created subscription. last_delivery is null, and the secret is not returned.
