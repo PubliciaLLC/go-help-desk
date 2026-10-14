@@ -18,17 +18,26 @@ import (
 // over equivalent tickets and compare what each one queues, so the two cannot
 // drift apart again.
 
-// replyEvent returns the single reply event a door queued.
-func replyEvent(t *testing.T, h *harness) notification.Event {
+// replyEvent returns the single event of the given type a door queued.
+func replyEvent(t *testing.T, h *harness, typ notification.EventType) notification.Event {
 	t.Helper()
 	var got []notification.Event
 	for _, ev := range h.dispatcher.queued {
-		if ev.Type == notification.EventTicketReplied {
+		if ev.Type == typ {
 			got = append(got, ev)
 		}
 	}
-	require.Len(t, got, 1, "expected exactly one reply event")
+	require.Len(t, got, 1, "expected exactly one %s event", typ)
 	return got[0]
+}
+
+// A public reply queues ticket.replied; an internal note queues
+// ticket.note_added (#469's split).
+func eventFor(internal bool) notification.EventType {
+	if internal {
+		return notification.EventTicketNoteAdded
+	}
+	return notification.EventTicketReplied
 }
 
 func replyViaREST(t *testing.T, h *harness, id uuid.UUID, internal bool) notification.Event {
@@ -38,7 +47,7 @@ func replyViaREST(t *testing.T, h *harness, id uuid.UUID, internal bool) notific
 		map[string]any{"body": "we are on it", "internal": internal})
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
-	return replyEvent(t, h)
+	return replyEvent(t, h, eventFor(internal))
 }
 
 func replyViaMCP(t *testing.T, h *harness, id uuid.UUID, internal bool) notification.Event {
@@ -48,7 +57,7 @@ func replyViaMCP(t *testing.T, h *harness, id uuid.UUID, internal bool) notifica
 	defer c.closeBody()
 	got := c.call(t, "add_reply", map[string]any{"ticket_id": id.String(), "body": "we are on it", "internal": internal})
 	require.NotContains(t, got, `"isError":true`, got)
-	return replyEvent(t, h)
+	return replyEvent(t, h, eventFor(internal))
 }
 
 // What matters to the requester's mail: who it goes to, whether it carries a
@@ -155,7 +164,7 @@ func TestReplyRecipient_ARequesterRepliesOnTheirOwnTicketAndIsStillMailed(t *tes
 		map[string]any{"body": "still broken"})
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
-	require.Equal(t, "user@test.local", replyEvent(t, h).Recipient)
+	require.Equal(t, "user@test.local", replyEvent(t, h, notification.EventTicketReplied).Recipient)
 }
 
 // An administrator is held to the same rule as staff.
@@ -173,7 +182,7 @@ func TestReplyRecipient_AnAdminReplyingOnTheirOwnTicketIsNotMailed(t *testing.T)
 		map[string]any{"body": "noted"})
 	res.Body.Close()
 	require.Equal(t, http.StatusCreated, res.StatusCode)
-	require.Empty(t, replyEvent(t, h).Recipient)
+	require.Empty(t, replyEvent(t, h, notification.EventTicketReplied).Recipient)
 }
 
 func TestReplyRecipient_AnMCPInternalNoteMailsNobody(t *testing.T) {
