@@ -265,7 +265,8 @@ func TestWebhookUpdate_OtherFieldsAreNotGatedOnTheFilter(t *testing.T) {
 	require.NoError(t, err)
 	stored.Filter = notification.WebhookFilter{GroupIDs: []uuid.UUID{grp.ID}}
 	require.NoError(t, h.authStore.UpdateWebhook(ctx, stored))
-	require.NoError(t, h.groupSvc.Delete(ctx, grp.ID))
+	_, err = h.ticketSvc.DeleteGroup(ctx, nil, grp.ID)
+	require.NoError(t, err)
 
 	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
 		map[string]any{"enabled": false})
@@ -335,7 +336,8 @@ func TestWebhookUpdate_RefusesAFilterNamingADeletedCategoryOrGroup(t *testing.T)
 	require.NoError(t, h.categorySvc.DeleteCategory(ctx, cat.ID))
 	grp, err := h.groupSvc.Create(ctx, "Gone", "")
 	require.NoError(t, err)
-	require.NoError(t, h.groupSvc.Delete(ctx, grp.ID))
+	_, err = h.ticketSvc.DeleteGroup(ctx, nil, grp.ID)
+	require.NoError(t, err)
 
 	for _, tc := range []struct {
 		filter map[string]any
