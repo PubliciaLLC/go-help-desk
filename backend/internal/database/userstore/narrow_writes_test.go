@@ -72,6 +72,30 @@ func TestNarrowWrites_TouchOnlyWhatTheyName(t *testing.T) {
 		require.Equal(t, u.MFAEnabled, got.MFAEnabled)
 	})
 
+	// The sign-in rehash (#453) is computed from the hash it read. It applies
+	// only while that hash is still the stored one, so a password changed in
+	// the meantime is never overwritten by the upgrade of the old one.
+	t.Run("RehashPassword applies only to the hash it read", func(t *testing.T) {
+		u := seed(t)
+
+		applied, err := store.RehashPassword(ctx, u.ID, "$2a$10$stale-not-the-stored-hash", "$2a$12$upgraded")
+		require.NoError(t, err)
+		require.False(t, applied, "a stale old hash must not match")
+		got, err := store.GetByIDAdmin(ctx, u.ID)
+		require.NoError(t, err)
+		require.Equal(t, u.PasswordHash, got.PasswordHash)
+
+		applied, err = store.RehashPassword(ctx, u.ID, u.PasswordHash, "$2a$12$upgraded")
+		require.NoError(t, err)
+		require.True(t, applied)
+		got, err = store.GetByIDAdmin(ctx, u.ID)
+		require.NoError(t, err)
+		require.Equal(t, "$2a$12$upgraded", got.PasswordHash)
+		require.Equal(t, u.Role, got.Role, "it wrote the role as well")
+		require.Equal(t, u.MFASecret, got.MFASecret, "it wrote the MFA secret as well")
+		require.Equal(t, u.Email, got.Email)
+	})
+
 	t.Run("SetMFA", func(t *testing.T) {
 		u := seed(t)
 		require.NoError(t, store.SetMFA(ctx, u.ID, "NEWSECRET", false))

@@ -1,11 +1,14 @@
 package server_test
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/config"
 )
 
 // The harness configures SESSION_SECRET as "test-session-secret-32-bytes-long!",
@@ -43,6 +46,26 @@ func TestGetSecurityWarnings_CleanInstanceReportsNothing(t *testing.T) {
 	decodeJSON(t, resp, &body)
 	require.Empty(t, body.InsecureSecrets,
 		"the harness secret is not a placeholder, so nothing should be flagged")
+}
+
+// A long placeholder JWT_SECRET that is not an exact published example is used
+// as the signing key, so the endpoint must name it (and only name it).
+func TestGetSecurityWarnings_NamesALongPlaceholderJWTSecret(t *testing.T) {
+	const placeholder = "replace-with-your-own-jwt-secret-changeme"
+	h, cleanup := newHarnessCfg(t, 0, "", func(c *config.Config) { c.JWTSecret = placeholder })
+	defer cleanup()
+
+	resp := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/security-warnings", nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var body struct {
+		InsecureSecrets []string `json:"insecure_secrets"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &body))
+	require.Equal(t, []string{"JWT_SECRET"}, body.InsecureSecrets)
+	require.NotContains(t, string(raw), placeholder)
 }
 
 // TestGetSecurityWarnings_NeverReturnsSecretValues is the assertion that

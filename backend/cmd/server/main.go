@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -144,6 +145,20 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})))
 
+	// APP_ENV is set but has no effect; the message helps developers understand that.
+	_, appEnvSet := os.LookupEnv("APP_ENV")
+	if msg, shouldLog := appEnvNotice(appEnvSet); shouldLog {
+		slog.Info(msg)
+	}
+
+	// Uploads are refused (503) while this directory cannot be written, and
+	// the admin panel says so; everything else runs. The check repeats on
+	// every upload, so fixing the directory needs no restart.
+	if err := server.CheckAttachmentDir(cfg.AttachmentDir); err != nil {
+		slog.Warn("ATTACHMENT_DIR is not writable: attachment uploads are disabled until it is fixed",
+			"dir", cfg.AttachmentDir, "error", err)
+	}
+
 	// A copied .env.example starts cleanly and is entirely forgeable: the
 	// example SESSION_SECRET is 47 characters, so the 32-character minimum
 	// does not catch it. Refusing to boot would be hostile to anyone kicking
@@ -171,6 +186,24 @@ func run() error {
 	// sqlc requires a database/sql-compatible interface; wrap the pgxpool.
 	sqlDB := stdlib.OpenDBFromPool(pool)
 	q := dbgen.New(sqlDB)
+
+	// ── JWT Secret ─────────────────────────────────────────────────────────────
+	// Resolve the JWT signing key. If cfg.JWTSecret is 32+ bytes, use it as-is.
+	// Otherwise, generate a random 32-byte key, store it in the database
+	// (insert-if-absent), and use that. After resolution, cfg.JWTSecret holds
+	// the effective key.
+	secretStore := database.NewSecretStore(q)
+	jwtSecret, source, discarded, err := resolveJWTSecret(ctx, cfg.JWTSecret, secretStore, rand.Reader)
+	if err != nil {
+		return fmt.Errorf("resolving jwt signing key: %w", err)
+	}
+	if discarded {
+		slog.Warn("JWT_SECRET is an example value from the repository and was ignored; using a generated key instead")
+	}
+	cfg.JWTSecret = jwtSecret
+	if source == "database" {
+		slog.Info("jwt signing key: using generated key stored in the database (JWT_SECRET unset or under 32 bytes)")
+	}
 
 	// ── Stores ────────────────────────────────────────────────────────────────
 	uStore := userstore.New(q)
@@ -579,4 +612,18 @@ func emitScanWarning(log *slog.Logger, envAddr, settingAddr string) {
 			"scanner", addr,
 			"why", "clamav/clamav is published for linux/amd64 only")
 	}
+}
+
+// appEnvNotice returns a message and a flag indicating whether to log it.
+// The message is returned whenever APP_ENV is present in the environment,
+// whatever its value. Setting APP_ENV is harmless
+// but has no effect; the message helps developers understand that.
+func appEnvNotice(set bool) (string, bool) {
+	// Takes whether the variable is present in the environment, not the
+	// config value: Config.AppEnv defaults to "production", so the value
+	// cannot tell "unset" from "set to production".
+	if !set {
+		return "", false
+	}
+	return "APP_ENV is set but has no effect; it is ignored", true
 }

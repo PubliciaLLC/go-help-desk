@@ -40,6 +40,10 @@ type Store interface {
 	// while it was thinking — and for a password change, the thinking is a
 	// bcrypt hash the account holder chose the moment of.
 	SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error
+	// RehashPassword replaces oldHash with newHash only while oldHash is still
+	// the stored hash, and reports whether it did. False means the password
+	// changed meanwhile, which is not an error (#453).
+	RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error)
 	SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error
 	// SetFirstMFA adopts secret only if the account has no TOTP when the row
 	// is written, and reports whether it did (#338).
