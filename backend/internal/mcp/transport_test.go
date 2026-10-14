@@ -70,6 +70,10 @@ func TestHandler_RoutesBothTransports(t *testing.T) {
 	s := New(nil, nil, nil, nil)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
+	// Bounded, because the body is read before the status is checked: if GET
+	// /mcp ever becomes an event stream again, this must fail, not hang until
+	// the package timeout.
+	client := &http.Client{Timeout: 5 * time.Second}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -79,7 +83,7 @@ func TestHandler_RoutesBothTransports(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Accept", "application/json, text/event-stream")
 			}
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := client.Do(req)
 			require.NoError(t, err)
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
