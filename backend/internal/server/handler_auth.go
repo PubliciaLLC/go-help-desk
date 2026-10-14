@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -17,7 +16,6 @@ import (
 	"github.com/crewjam/saml/samlsp"
 	"github.com/google/uuid"
 	"github.com/gorilla/sessions"
-	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -79,7 +77,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
 		if !s.loginLimiter.Allow(loginKey) {
-			tooManyAttempts(w, time.Minute)
+			tooManyAttempts(w, s.loginLimiter.Remaining())
 			return
 		}
 		Error(w, http.StatusUnauthorized, "invalid_credentials", "invalid email or password")
@@ -122,6 +120,21 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	// authenticator they already have. The passkey route is still reachable
 	// directly for anyone who prefers it.
 	mfaNeeded := mfaEnabled && u.MFAEnabled
+	//
+	// Passkeys unavailable (#494): a key the server cannot check is not a
+	// factor, so it is never asked for. An account whose ONLY second factor is
+	// such a key is refused rather than let in on its password alone, or a
+	// stolen password would take over exactly the accounts that chose a
+	// stronger factor. That includes the last administrator: the way back is
+	// an administrator's MFA reset, or reset-factors on the server. The
+	// refusal comes after loginLimiter.Reset, so it never counts as a failed
+	// attempt, and before any session is written.
+	stranded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !s.passkeysAvailable()
+	if stranded {
+		Error(w, http.StatusForbidden, "passkey_unavailable",
+			"Your passkey can't be used on this server right now. Ask an administrator to reset your sign-in factors.")
+		return
+	}
 	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
 	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
 		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
@@ -550,40 +563,37 @@ func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, sd auth.Se
 	return session.Save(r, w)
 }
 
-// handleAuthProviders returns available authentication providers.
+// handleAuthProviders returns the sign-in methods the login page can use now.
+//
+// "Now" is the point (#421). oidc and saml are true when the provider is
+// loaded and a sign-in can start, which is what the login routes themselves
+// test; they used to echo the settings, so a provider whose identity server
+// never answered still got a button that led to a 503. local is always true,
+// as before, because the page still shows the password form; local_admin_only
+// says that form is limited to administrators (saml_enabled), the same test
+// local login applies.
 func (s *Server) handleAuthProviders(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
 	type Provider struct {
 		Name    string `json:"name"`
 		Enabled bool   `json:"enabled"`
 	}
 
-	response := struct {
-		Providers []Provider `json:"providers"`
+	JSON(w, http.StatusOK, struct {
+		Providers      []Provider `json:"providers"`
+		LocalAdminOnly bool       `json:"local_admin_only"`
+		// Passkeys is false when BASE_URL cannot be a relying-party id
+		// (#494), so the page does not offer a key it cannot check. Public
+		// on purpose: the reason is not, and only goes to administrators.
+		Passkeys bool `json:"passkeys"`
 	}{
 		Providers: []Provider{
-			{
-				Name:    "local",
-				Enabled: true,
-			},
-			{
-				Name: "saml",
-				Enabled: s.adminSvc.SAMLEnabled(ctx) &&
-					s.adminSvc.SAMLConfigured(ctx),
-			},
-			{
-				Name: "oidc",
-				Enabled: func() bool {
-					v, _ := s.adminSvc.GetBool(ctx, admin.KeyOIDCEnabled)
-					return v
-				}(),
-			},
+			{Name: "local", Enabled: true},
+			{Name: "saml", Enabled: s.samlReachableNow()},
+			{Name: "oidc", Enabled: s.oidcReachableNow()},
 		},
-	}
-
-	json.NewEncoder(w).Encode(response)
+		LocalAdminOnly: s.adminSvc.SAMLEnabled(r.Context()),
+		Passkeys:       s.passkeysAvailable(),
+	})
 }
 
 // loginRateKey derives a fixed-size rate-limit key from a submitted email.

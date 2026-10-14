@@ -1,6 +1,6 @@
-import { useId, useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { listWebhooks, createWebhook, updateWebhook, deleteWebhook } from '@/api/admin'
+import { listWebhooks, createWebhook, updateWebhook, deleteWebhook, listWebhookDeliveries, redeliverWebhook } from '@/api/admin'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react'
-import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery } from '@/api/types'
+import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery, WebhookDeliveryRecord } from '@/api/types'
 
 // What the server accepts, in the order it lists them (notify.WebhookEvents).
 // "*" is sent for "all events"; the server refuses an empty list.
@@ -20,6 +20,7 @@ const EVENTS = [
   'ticket.assigned',
   'ticket.status_changed',
   'ticket.replied',
+  'ticket.note_added',
   'ticket.resolved',
   'ticket.closed',
   'ticket.reopened',
@@ -161,7 +162,7 @@ function WebhookFields({
             ))}
           </Select>
           <p className="text-xs text-gray-500">
-            Raw sends the full event. The others reshape it for that service&apos;s incoming
+            Raw sends ids only: the event name, ticket id and timestamp, no text or addresses. The others build a message for that service&apos;s incoming
             webhook.
           </p>
         </div>
@@ -256,6 +257,91 @@ function EditRow({ hook, onClose }: { hook: WebhookConfig; onClose: () => void }
   )
 }
 
+// ── Delivery history ──────────────────────────────────────────────────────────
+
+// What a delivery's outcome is called: "ok" or a failure class, nothing more.
+// The server keeps no error text (#448).
+function outcome(d: WebhookDeliveryRecord): string {
+  if (d.result === 'ok') return `Delivered · ${d.status}`
+  const what = d.result === 'http_status' ? String(d.status) : (FAILURE_LABEL[d.result] ?? 'error')
+  return d.retrying ? `Retrying · ${what}` : `Failed · ${what}`
+}
+
+function HistoryRow({ hook }: { hook: WebhookConfig }) {
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const { data: deliveries, isLoading } = useQuery({
+    queryKey: ['admin', 'webhooks', hook.id, 'deliveries'],
+    queryFn: () => listWebhookDeliveries(hook.id),
+  })
+
+  const redeliver = useMutation({
+    mutationFn: (deliveryId: string) => redeliverWebhook(hook.id, deliveryId),
+    onSuccess: () => {
+      setError('')
+      setNotice('Queued for redelivery. It appears here once it has been sent.')
+    },
+    onError: (err) => {
+      setNotice('')
+      setError(describe(err))
+    },
+  })
+
+  return (
+    <tr>
+      <td colSpan={6} className="bg-gray-50 px-4 py-4">
+        <section aria-label="Delivery history" className="space-y-2">
+          <p className="text-xs text-gray-500">
+            The last 25 deliveries. Outcomes only: no payloads and no error text are kept.
+            Redeliver sends the event again as a new delivery; a chat message is rebuilt from the ticket as it is now.
+          </p>
+          {notice && <p role="status" className="text-sm text-green-700">{notice}</p>}
+          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+          {isLoading ? (
+            <Spinner />
+          ) : (deliveries ?? []).length === 0 ? (
+            <p className="text-sm text-gray-400">No deliveries yet.</p>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="text-left uppercase text-gray-500">
+                <tr>
+                  <th className="py-1 pr-3">Event</th>
+                  <th className="py-1 pr-3">Result</th>
+                  <th className="py-1 pr-3">Attempts</th>
+                  <th className="py-1 pr-3">Last attempt</th>
+                  <th className="py-1 text-right"><span className="sr-only">Actions</span></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {(deliveries ?? []).map((d) => (
+                  <tr key={d.id}>
+                    <td className="py-1 pr-3 font-mono">{d.event}</td>
+                    <td className="py-1 pr-3">{outcome(d)}</td>
+                    <td className="py-1 pr-3">{d.attempts}</td>
+                    <td className="py-1 pr-3">
+                      <time dateTime={d.last_attempt_at}>{new Date(d.last_attempt_at).toLocaleString()}</time>
+                    </td>
+                    <td className="py-1 text-right">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={redeliver.isPending}
+                        onClick={() => redeliver.mutate(d.id)}
+                      >
+                        Redeliver
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      </td>
+    </tr>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function WebhooksPage() {
@@ -265,6 +351,7 @@ export function WebhooksPage() {
   const [createError, setCreateError] = useState('')
   const [rowError, setRowError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [historyId, setHistoryId] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<WebhookConfig | null>(null)
 
   const { data: hooks = [], isLoading } = useQuery({
@@ -317,7 +404,7 @@ export function WebhooksPage() {
             Send ticket events to another system as an HTTP POST. Targets must be public
             addresses. When a secret is set, each delivery is signed with it in the{' '}
             <code className="font-mono text-xs">X-GHD-Signature</code> header. A secret is never
-            shown again once saved. The list shows each hook&apos;s most recent delivery. Failed deliveries are not retried.
+            shown again once saved. The list shows each hook&apos;s most recent delivery; History shows the last 25. Failed deliveries are retried for about an hour, so a receiver may see the same event more than once: use the <code className="font-mono text-xs">X-GHD-Delivery</code> header to spot a repeat.
           </p>
         </div>
 
@@ -390,7 +477,8 @@ export function WebhooksPage() {
                   editingId === h.id ? (
                     <EditRow key={h.id} hook={h} onClose={() => setEditingId(null)} />
                   ) : (
-                    <tr key={h.id}>
+                    <Fragment key={h.id}>
+                    <tr>
                       <td className="px-4 py-3 font-mono text-xs text-gray-900 break-all">{h.url}</td>
                       <td className="px-4 py-3 text-gray-700">{formatLabel(h.payload_format)}</td>
                       <td className="px-4 py-3">
@@ -433,6 +521,14 @@ export function WebhooksPage() {
                           >
                             {h.enabled ? 'Disable' : 'Enable'}
                           </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            aria-expanded={historyId === h.id}
+                            onClick={() => setHistoryId(historyId === h.id ? null : h.id)}
+                          >
+                            History
+                          </Button>
                           <Button size="sm" variant="outline" onClick={() => setEditingId(h.id)}>
                             <PencilIcon className="mr-1 h-3.5 w-3.5" />
                             Edit
@@ -449,6 +545,8 @@ export function WebhooksPage() {
                         </div>
                       </td>
                     </tr>
+                    {historyId === h.id && <HistoryRow hook={h} />}
+                    </Fragment>
                   )
                 )}
                 {hooks.length === 0 && (

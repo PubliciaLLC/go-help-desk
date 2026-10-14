@@ -71,12 +71,17 @@ type fakeUsers struct {
 	// existing is the set of addresses that already have an account, so the
 	// pre-check can be exercised.
 	existing map[string]bool
+	// takenErr makes EmailIsTaken fail, to tell a fault from a verdict.
+	takenErr error
 }
 
 // EmailIsTaken reports an existing account, which stops a signup before the
 // verification email goes out. Deleted accounts count here, as they do in the
 // real store — that is the case the first version of this missed.
 func (f *fakeUsers) EmailIsTaken(_ context.Context, email string) (bool, error) {
+	if f.takenErr != nil {
+		return false, f.takenErr
+	}
 	return f.existing[email], nil
 }
 
@@ -601,6 +606,45 @@ func TestLookup(t *testing.T) {
 			require.Equal(t, uuid.Nil, users.created.ID, "a lookup must not create an account")
 		})
 	}
+}
+
+// #421: the lookup behind the verification page also says so when the address
+// has gained an account since the link was mailed, instead of letting the page
+// show a form the POST is certain to refuse. It is the POST's own verdict
+// (ErrAlreadyRegistered), and a fault in the check is a fault, not a verdict.
+func TestLookup_RefusesAnAddressThatNowHasAnAccount(t *testing.T) {
+	live := PendingRegistration{ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(time.Hour)}
+	expired := PendingRegistration{ID: uuid.New(), Email: "alice@any.com", ExpiresAt: time.Now().Add(-time.Minute)}
+
+	t.Run("taken", func(t *testing.T) {
+		store := &fakeStore{record: live}
+		svc := NewService(store, &fakeUsers{existing: map[string]bool{"alice@any.com": true}},
+			&fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.ErrorIs(t, err, ErrAlreadyRegistered)
+		require.False(t, store.deleted, "a lookup must not use up the link")
+	})
+	t.Run("free", func(t *testing.T) {
+		svc := NewService(&fakeStore{record: live}, &fakeUsers{}, &fakeMailer{}, &recordingQueue{}, "http://localhost")
+		pr, err := svc.Lookup(context.Background(), uuid.New())
+		require.NoError(t, err)
+		require.Equal(t, "alice@any.com", pr.Email)
+	})
+	t.Run("expired wins over taken", func(t *testing.T) {
+		svc := NewService(&fakeStore{record: expired}, &fakeUsers{existing: map[string]bool{"alice@any.com": true}},
+			&fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.ErrorIs(t, err, ErrTokenExpired)
+	})
+	t.Run("a store fault is not a verdict", func(t *testing.T) {
+		svc := NewService(&fakeStore{record: live}, &fakeUsers{takenErr: errors.New("connection refused")},
+			&fakeMailer{}, &recordingQueue{}, "http://localhost")
+		_, err := svc.Lookup(context.Background(), uuid.New())
+		require.Error(t, err)
+		require.NotErrorIs(t, err, ErrAlreadyRegistered)
+		require.NotErrorIs(t, err, ErrNotFound)
+		require.NotErrorIs(t, err, ErrTokenExpired)
+	})
 }
 
 // #374: the display name is chosen at verification too, by whoever reads the

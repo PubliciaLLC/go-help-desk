@@ -467,7 +467,7 @@ export interface OAuthClient {
 
 // payload_format reshapes the same lifecycle event for a chat/ITSM service's
 // incoming-webhook endpoint before it is POSTed. 'raw' (the default) is
-// today's full event payload; the others are Slack, Teams, Discord and JIRA
+// ids-only JSON; the others are Slack, Teams, Discord and JIRA
 // Automation shapes. See docs/DESIGN.md "Notifications" and #187.
 export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
 
@@ -479,6 +479,19 @@ export interface WebhookDelivery {
   at: string
   status: number // 0 when no response came back, or one outside 100..999 did (error tells which)
   error: WebhookDeliveryError
+}
+
+// One row of a hook's history (#448): an outcome, never content. result is 'ok'
+// or a class; there is no error text.
+export interface WebhookDeliveryRecord {
+  id: string
+  event: string
+  started_at: string
+  last_attempt_at: string
+  status: number
+  result: 'ok' | Exclude<WebhookDeliveryError, ''>
+  attempts: number
+  retrying: boolean
 }
 
 export interface WebhookConfig {

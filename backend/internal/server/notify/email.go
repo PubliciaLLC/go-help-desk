@@ -6,11 +6,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"embed"
+	"errors"
 	"fmt"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
+	"net/netip"
 	"net/smtp"
 	"strings"
 	"text/template"
@@ -51,8 +54,15 @@ func sanitizeHeader(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// ErrPermanent marks a delivery error that retrying cannot fix, such as an
+// email template that does not render. The outbox worker fails the row at once
+// on it instead of retrying (#456).
+var ErrPermanent = errors.New("permanent delivery error")
+
 // Dispatch sends an email for supported event types. Unsupported events are
-// silently ignored — the dispatcher never returns an error to the caller.
+// silently ignored. A template that fails to render, or a failed send, is
+// returned: the outbox worker retries the second and fails the first at once
+// (ErrPermanent), and either shows up in the admin email-health warning.
 func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) error {
 	if !d.cfg.EmailEnabled() {
 		return nil
@@ -65,7 +75,9 @@ func (d *EmailDispatcher) Dispatch(_ context.Context, event notification.Event) 
 
 	var buf bytes.Buffer
 	if err := d.templates.ExecuteTemplate(&buf, templateName, data); err != nil {
-		return nil // template failure is non-fatal
+		// Used to be swallowed ("non-fatal"), which made the worker delete the
+		// row as delivered: a broken template lost every mail silently.
+		return fmt.Errorf("rendering %s: %w: %w", templateName, ErrPermanent, err)
 	}
 
 	return d.send(to, subject, buf.Bytes())
@@ -161,7 +173,7 @@ func (d *EmailDispatcher) SendVerificationEmail(to, token, baseURL string) error
 	if err := d.templates.ExecuteTemplate(&buf, "email_verification.tmpl", map[string]string{
 		"VerifyURL": verifyURL,
 	}); err != nil {
-		return fmt.Errorf("rendering verification email: %w", err)
+		return fmt.Errorf("rendering verification email: %w: %w", ErrPermanent, err)
 	}
 	return d.send(to, "Verify your email address", buf.Bytes())
 }
@@ -214,12 +226,9 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 		return fmt.Errorf("closing encoder: %w", err)
 	}
 
-	addr := fmt.Sprintf("%s:%d", d.cfg.SMTPHost, d.cfg.SMTPPort)
-	var auth smtp.Auth
-	if d.cfg.SMTPUser != "" {
-		auth = smtp.PlainAuth("", d.cfg.SMTPUser, d.cfg.SMTPPassword, d.cfg.SMTPHost)
-	}
-	return sendMailWithTimeout(addr, auth, fromAddr.Address, toAddr.Address, msg.Bytes(), smtpTimeout)
+	opts := smtpOptionsFor(d.cfg)
+	opts.Timeout = smtpTimeout
+	return sendMail(opts, fromAddr.Address, toAddr.Address, msg.Bytes())
 }
 
 // smtpTimeout bounds a single delivery end to end.
@@ -232,24 +241,104 @@ func (d *EmailDispatcher) send(to, subject string, body []byte) error {
 // every goroutine that touched email piled up until the relay recovered.
 const smtpTimeout = 20 * time.Second
 
-// sendMailWithTimeout is net/smtp.SendMail with a dial timeout and a deadline
-// covering the whole conversation.
-func sendMailWithTimeout(addr string, auth smtp.Auth, from, to string, msg []byte, timeout time.Duration) error {
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+// smtpOptions is everything one delivery needs to know about the server.
+type smtpOptions struct {
+	Addr     string // host:port
+	User     string
+	Password string
+	// Implicit means TLS from the first byte (port 465), not STARTTLS.
+	Implicit bool
+	Timeout  time.Duration
+
+	// Test hooks. Production leaves both nil: RootCAs nil means the system
+	// roots, and verification is never switched off, only extended.
+	RootCAs *x509.CertPool
+	dial    func(network, addr string, timeout time.Duration) (net.Conn, error)
+}
+
+// usesImplicitTLS reports whether a port is the implicit-TLS submission port.
+// Chosen by port rather than a setting: 465 speaks TLS from the first byte, so
+// a STARTTLS client waited on a banner that never came and hung until the
+// timeout. No working setup changes.
+func usesImplicitTLS(port int) bool { return port == 465 }
+
+func smtpOptionsFor(cfg *config.Config) smtpOptions {
+	return smtpOptions{
+		Addr:     fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort),
+		User:     cfg.SMTPUser,
+		Password: cfg.SMTPPassword,
+		Implicit: usesImplicitTLS(cfg.SMTPPort),
+	}
+}
+
+// isPrivateIP reports loopback, RFC 1918 (10/8, 172.16/12, 192.168/16) and
+// IPv6 unique local addresses (fc00::/7), and nothing else. Link-local and
+// carrier-grade NAT ranges are deliberately not private here.
+func isPrivateIP(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate()
+}
+
+// peerIP is the address the connection actually reached, not the one the
+// configured name resolved to some time earlier: the rule is about where the
+// bytes go.
+func peerIP(conn net.Conn) net.IP {
+	if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		return a.IP
+	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return nil
+	}
+	return net.ParseIP(host)
+}
+
+// The TLS rule, the whole of it:
+//
+//   - A password is never sent unencrypted, to any address, private or not.
+//     Implicit TLS on 465, STARTTLS everywhere else; if STARTTLS is not
+//     offered the send fails. A man in the middle stripping STARTTLS from the
+//     greeting therefore costs a failed send, not a password.
+//   - With no password, plain SMTP is allowed only to a private address
+//     (loopback, RFC 1918, fc00::/7): an internal relay. A public address
+//     still requires TLS. STARTTLS is used whenever it is offered.
+//
+// sendMail is net/smtp.SendMail with those rules, a dial timeout, and a
+// deadline covering the whole conversation.
+func sendMail(o smtpOptions, from, to string, msg []byte) error {
+	dial := o.dial
+	if dial == nil {
+		dial = net.DialTimeout
+	}
+	conn, err := dial("tcp", o.Addr, o.Timeout)
 	if err != nil {
 		return fmt.Errorf("dialing SMTP server: %w", err)
 	}
 	// One deadline for the whole exchange, so a relay that answers the dial and
 	// then stalls mid-conversation cannot hold the goroutine either.
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(o.Timeout)); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("setting SMTP deadline: %w", err)
 	}
 
-	host, _, err := net.SplitHostPort(addr)
+	host, _, err := net.SplitHostPort(o.Addr)
 	if err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("parsing SMTP address: %w", err)
+	}
+	tlsCfg := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12, RootCAs: o.RootCAs}
+
+	if o.Implicit {
+		tc := tls.Client(conn, tlsCfg)
+		if err := tc.Handshake(); err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("SMTP implicit TLS: %w", err)
+		}
+		conn = tc
 	}
 
 	c, err := smtp.NewClient(conn, host)
@@ -259,16 +348,29 @@ func sendMailWithTimeout(addr string, auth smtp.Auth, from, to string, msg []byt
 	}
 	defer func() { _ = c.Close() }()
 
-	if ok, _ := c.Extension("STARTTLS"); ok {
-		if err := c.StartTLS(&tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}); err != nil {
-			return fmt.Errorf("STARTTLS: %w", err)
+	if !o.Implicit {
+		if ok, _ := c.Extension("STARTTLS"); ok {
+			if err := c.StartTLS(tlsCfg); err != nil {
+				return fmt.Errorf("STARTTLS: %w", err)
+			}
+		} else if o.Password != "" {
+			return errors.New("SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: " +
+				"refusing to send the password unencrypted")
+		} else if !isPrivateIP(peerIP(conn)) {
+			return errors.New("SMTP server does not offer STARTTLS and is not on a private address: " +
+				"refusing to send mail unencrypted")
 		}
 	}
-	if auth != nil {
-		if ok, _ := c.Extension("AUTH"); ok {
-			if err := c.Auth(auth); err != nil {
-				return fmt.Errorf("SMTP auth: %w", err)
-			}
+
+	// After STARTTLS: AUTH is often advertised only on the encrypted session.
+	// Sending anonymously when credentials are configured would hide a broken
+	// relay behind apparent success.
+	if o.User != "" {
+		if ok, _ := c.Extension("AUTH"); !ok {
+			return errors.New("SMTP server does not offer AUTH but SMTP_USER is set")
+		}
+		if err := c.Auth(smtp.PlainAuth("", o.User, o.Password, host)); err != nil {
+			return fmt.Errorf("SMTP auth: %w", err)
 		}
 	}
 	if err := c.Mail(from); err != nil {
