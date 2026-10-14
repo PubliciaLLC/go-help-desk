@@ -695,6 +695,17 @@ func TestTicketStore_FullTextSearch(t *testing.T) {
 	})
 }
 
+func TestTicketStore_GetAttachmentByID_NotFound(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+
+	ts := ticketstore.New(q)
+	_, err := ts.GetAttachmentByID(context.Background(), uuid.New())
+	require.ErrorIs(t, err, ticket.ErrNotFound)
+}
+
 // ── Group store ──────────────────────────────────────────────────────────────
 
 func TestGroupStore(t *testing.T) {

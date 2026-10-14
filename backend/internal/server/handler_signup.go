@@ -177,11 +177,17 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	mfaEnrollmentNeeded := mfaEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
 
-	if err := s.writeSession(w, r, auth.SessionData{
+	sd := auth.SessionData{
 		UserID:    u.ID,
 		Role:      u.Role,
 		MFAPassed: !mfaEnrollmentNeeded,
-	}); err != nil {
+	}
+	// Only enrolment can be owed here: a new account has no factor yet.
+	if mfaEnrollmentNeeded {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}

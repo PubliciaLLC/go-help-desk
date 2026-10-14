@@ -8,7 +8,7 @@ SELECT * FROM api_keys WHERE hashed_token = $1;
 -- name: UpdateAPIKeyLastUsed :exec
 UPDATE api_keys SET last_used_at = $2 WHERE id = $1;
 
--- name: DeleteAPIKey :exec
+-- name: DeleteAPIKey :execrows
 DELETE FROM api_keys WHERE id = $1;
 
 -- name: ListAPIKeysByUser :many
@@ -21,7 +21,7 @@ VALUES ($1, $2, $3, $4, $5, $6);
 -- name: GetOAuthClientByClientID :one
 SELECT * FROM oauth_clients WHERE client_id = $1;
 
--- name: DeleteOAuthClient :exec
+-- name: DeleteOAuthClient :execrows
 DELETE FROM oauth_clients WHERE id = $1;
 
 -- name: ListOAuthClients :many
@@ -44,7 +44,7 @@ SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticke
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END
 WHERE id = $1;
 
--- name: DeleteWebhookConfig :exec
+-- name: DeleteWebhookConfig :execrows
 DELETE FROM webhook_configs WHERE id = $1;
 
 -- name: ListEnabledWebhookConfigs :many

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -49,3 +50,8 @@ type APIKeyStore interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]APIKey, error)
 }
+
+var (
+	// ErrNotFound is returned when an API key, OAuth client, or webhook is not found.
+	ErrNotFound = errors.New("not found")
+)
