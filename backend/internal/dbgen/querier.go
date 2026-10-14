@@ -335,7 +335,7 @@ type Querier interface {
 	// the link failed at the end with "invalid or already used token" — which is
 	// exactly the dead end that check was added to prevent.
 	EmailIsTaken(ctx context.Context, email string) (bool, error)
-	// What the admin email warning reads (#456): email rows that are retrying after
+	// What the admin email warning reads (#456): email and signup-verification rows that are retrying after
 	// an error, or gave up in the last day, and the newest of their error texts.
 	// Delivered rows are deleted, so a healthy mailer leaves nothing to count, and
 	// a failed row older than a day no longer says anything about now.

@@ -137,6 +137,24 @@ describe('the email status note', () => {
     expect(note.textContent).toMatch(/cannot be turned on/i)
   })
 
+  it('says people are not getting their mail when the feature is already on', async () => {
+    vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === '/admin/settings') return Promise.resolve({ data: { guest_submission_enabled: true } })
+      if (url === '/admin/security-warnings') {
+        return Promise.resolve({ data: { insecure_secrets: [], email: { enabled: false, missing: ['SMTP_HOST'] } } })
+      }
+      if (url === '/site') return Promise.resolve({ data: {} })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    renderWithQuery(<SettingsPage />)
+    await screen.findByRole('heading', { name: 'Settings' })
+
+    const note = await screen.findByText(/email is not set up/i)
+    expect(note.textContent).toMatch(/aren't getting their mail/i)
+    expect(note.textContent).not.toMatch(/cannot be turned on/i)
+  })
+
   it('is absent when email is set up', async () => {
     withEmail({ enabled: true, missing: [] })
     renderWithQuery(<SettingsPage />)

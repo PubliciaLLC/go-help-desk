@@ -4144,7 +4144,7 @@ paths:
                       failing:
                         type: boolean
                         description: |
-                          True while email rows in the notification outbox are
+                          True while email rows (including signup verification mail) in the notification outbox are
                           retrying after an error, or gave up within the last 24
                           hours. A row is delivered and removed, so a working
                           mailer reports false.

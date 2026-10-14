@@ -196,6 +196,23 @@ func TestEmailHealth(t *testing.T) {
 	require.Contains(t, []string{"connection refused", "SMTP server does not offer AUTH but SMTP_USER is set"}, h.LastError)
 }
 
+// Signup verification mail travels on the "verification" channel through the
+// same SMTP send, so its failures are email failures too.
+func TestEmailHealth_CountsFailedVerificationRows(t *testing.T) {
+	s, _, done := newStore(t)
+	defer done()
+	ctx := context.Background()
+
+	id := uuid.New()
+	require.NoError(t, s.Enqueue(ctx, id, "verification", []byte(`{}`)))
+	require.NoError(t, s.Fail(ctx, id, "SMTP server does not offer AUTH but SMTP_USER is set"))
+
+	h, err := s.EmailHealth(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, h.Failing)
+	require.Equal(t, "SMTP server does not offer AUTH but SMTP_USER is set", h.LastError)
+}
+
 // The newest error is the one shown, so a fix is visible as soon as the next
 // failure reads differently.
 func TestEmailHealth_LastErrorIsTheNewest(t *testing.T) {

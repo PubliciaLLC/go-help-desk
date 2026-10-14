@@ -100,7 +100,7 @@ const emailOutboxHealth = `-- name: EmailOutboxHealth :one
 SELECT count(*)::bigint AS failing,
        COALESCE((array_agg(last_error ORDER BY COALESCE(failed_at, created_at) DESC))[1], '')::text AS last_error
 FROM notification_outbox
-WHERE channel = 'email'
+WHERE channel IN ('email', 'verification')
   AND last_error IS NOT NULL
   AND (failed_at IS NULL OR failed_at > now() - interval '24 hours')
 `
@@ -110,7 +110,7 @@ type EmailOutboxHealthRow struct {
 	LastError string `json:"last_error"`
 }
 
-// What the admin email warning reads (#456): email rows that are retrying after
+// What the admin email warning reads (#456): email and signup-verification rows that are retrying after
 // an error, or gave up in the last day, and the newest of their error texts.
 // Delivered rows are deleted, so a healthy mailer leaves nothing to count, and
 // a failed row older than a day no longer says anything about now.

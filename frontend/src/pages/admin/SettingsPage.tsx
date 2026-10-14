@@ -53,14 +53,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 /** Where email stands, shown beside the settings that send mail. The banner
  *  stays quiet for an install that runs without email on purpose. */
-function EmailStatusNote() {
+function EmailStatusNote({ on }: { on: boolean }) {
   const { data } = useQuery({ queryKey: ['security-warnings'], queryFn: getSecurityWarnings, retry: false })
   const email = data?.email
   if (!email || email.enabled) return null
   return (
     <p role="note" className="px-5 pb-4 text-sm text-amber-800">
-      Email is not set up ({email.missing.join(' and ')} not set in docker/.env), so this cannot be turned on until it
-      is. Set {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
+      Email is not set up ({email.missing.join(' and ')} not set in docker/.env)
+      {on ? ": people using this aren't getting their mail." : ', so this cannot be turned on until it is.'} Set{' '}
+      {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
     </p>
   )
 }
@@ -493,7 +494,7 @@ function GeneralPanel({
         >
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
-        <EmailStatusNote />
+        <EmailStatusNote on={bool('guest_submission_enabled')} />
       </Section>
 
       <Section title="Ticket lifecycle">
@@ -862,7 +863,7 @@ function AuthPanel({
         >
           <Toggle checked={bool('self_signup_enabled')} onChange={(v) => setBool('self_signup_enabled', v)} />
         </SettingRow>
-        <EmailStatusNote />
+        <EmailStatusNote on={bool('self_signup_enabled')} />
         {bool('self_signup_enabled') && (
           <>
             <div className="border-t px-5 py-4 space-y-2">
