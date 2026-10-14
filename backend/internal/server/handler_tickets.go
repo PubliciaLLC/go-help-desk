@@ -508,6 +508,16 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// The record a priority change replaced, for the page's "SLA restarted"
+	// badge: the one-ticket read only, so a list never pays for it.
+	if views[0].SLA != nil {
+		earlier, err := s.slaPolicies.Earlier(r.Context(), t)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		views[0].SLA.Earlier = earlier
+	}
 	JSON(w, http.StatusOK, views[0])
 }
 

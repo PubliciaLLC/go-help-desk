@@ -288,6 +288,26 @@ func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now 
 	return out, nil
 }
 
+// Earlier is the record t's current one replaced, for the one-ticket read
+// (see EarlierRecord for what counts). nil, nil when there is none. The history
+// is read for one ticket only: list rows never carry it.
+func (s *Service) Earlier(ctx context.Context, t ticket.Ticket) (*EarlierView, error) {
+	history, err := s.store.ListRecordsForTicket(ctx, t.ID)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA records: %w", err)
+	}
+	e := EarlierRecord(history, t.CreatedAt)
+	if e == nil {
+		return nil, nil
+	}
+	p, err := s.store.GetPolicy(ctx, e.PolicyID)
+	if err != nil {
+		return nil, fmt.Errorf("getting SLA policy %s: %w", e.PolicyID, err)
+	}
+	e.PolicyName = p.Name
+	return e, nil
+}
+
 // ── Policy CRUD ───────────────────────────────────────────────────────────────
 
 // ErrValidation wraps a policy that fails validatePolicy, so the HTTP layer

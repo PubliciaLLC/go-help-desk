@@ -187,6 +187,16 @@ func (f *fakeSLAStore) ListRecordsByTicketIDs(_ context.Context, ticketIDs []uui
 	return out, nil
 }
 
+// ListRecordsForTicket: this fake keeps one record per ticket, so the history
+// is that record. The superseded-record cases are tested on EarlierRecord and
+// against the real store.
+func (f *fakeSLAStore) ListRecordsForTicket(_ context.Context, ticketID uuid.UUID) ([]sla.Record, error) {
+	if r, ok := f.records[ticketID]; ok {
+		return []sla.Record{r}, nil
+	}
+	return nil, nil
+}
+
 // StampBreaches applies the same COALESCE semantics the real query does:
 // only a currently-nil column is set, and nothing else on the record changes.
 func (f *fakeSLAStore) StampBreaches(_ context.Context, ticketID uuid.UUID, response, resolution *time.Time) error {
@@ -765,6 +775,9 @@ func (f *swallowProbeStore) ListBreachCandidates(context.Context, time.Time) ([]
 	return nil, nil
 }
 func (f *swallowProbeStore) ListRecordsByTicketIDs(context.Context, []uuid.UUID) ([]sla.Record, error) {
+	return nil, nil
+}
+func (f *swallowProbeStore) ListRecordsForTicket(context.Context, uuid.UUID) ([]sla.Record, error) {
 	return nil, nil
 }
 func (f *swallowProbeStore) StampBreaches(_ context.Context, _ uuid.UUID, response, resolution *time.Time) error {

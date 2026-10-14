@@ -620,9 +620,20 @@ export interface SLATargetStatus {
   met_at: string | null // set: the numbers above are frozen and color is final
 }
 
+// The SLA record a priority change replaced after the SLA had been met or
+// breached (#443). Sent on the one-ticket read only.
+export interface SLAEarlierRecord {
+  policy_id: string
+  policy_name: string
+  started_at: string
+  superseded_at: string
+  outcome: 'met' | 'breached'
+}
+
 export interface TicketSLA {
   policy_id: string
   policy_name: string
   response: SLATargetStatus
   resolution: SLATargetStatus
+  earlier?: SLAEarlierRecord
 }

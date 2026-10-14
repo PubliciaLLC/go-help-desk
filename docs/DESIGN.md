@@ -2915,6 +2915,19 @@ outcome) and `sla_restarted`. A record that started over is recognisable as one
 the indicator; the breach stays on the superseded record, and `sla_restarted`
 says when.
 
+**"SLA restarted" badge.** When a priority change replaces an SLA record whose
+SLA had already been met (a target met) or breached (a breach stamped), the
+ticket page shows an **SLA restarted** badge next to the SLA indicator (staff
+and admin; a reporting user sees no SLA). It opens a small panel with the
+earlier record's facts: its policy, when its clock started, when it was
+replaced, and whether it ended met or breached. `GET /tickets/{id}` carries it
+as `sla.earlier`; a list row never does. A record replaced while still running
+carried on in the new one and shows no badge. The outcome reads the record's
+stored stamps, so a breach the sweep has not stamped yet is not reported. Note
+that a *staff* change keeps the clock (above): the badge says a new record
+started, which for a staff change keeps the old start and facts, and for a reopen
+starts over.
+
 **The clock.** A record's clock starts at its `started_at`, or at the ticket's
 creation when that is empty (every record written before this existed, every
 record a new ticket attaches, and a record attached by a staff priority change).

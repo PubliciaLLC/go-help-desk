@@ -9362,6 +9362,36 @@ components:
           $ref: '#/components/schemas/SlaTargetStatus'
         resolution:
           $ref: '#/components/schemas/SlaTargetStatus'
+        earlier:
+          $ref: '#/components/schemas/SlaEarlierRecord'
+    SlaEarlierRecord:
+      description: |
+        The SLA record a priority change replaced, sent on getTicket only (never
+        on a list row) and only when that record's SLA had already been met or
+        breached. It is the record the "SLA restarted" badge on the ticket page
+        links to. Absent when the ticket's SLA record was never replaced, and
+        when the replaced record was still running (it carried on in the new
+        one). The outcome reads the record's stored stamps, so a breach the
+        sweep has not stamped yet is not reported.
+      type: object
+      required: [policy_id, policy_name, started_at, superseded_at, outcome]
+      properties:
+        policy_id:
+          $ref: '#/components/schemas/Uuid'
+        policy_name:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+          description: Where the record's clock started; the ticket's creation if it never restarted.
+        superseded_at:
+          type: string
+          format: date-time
+          description: When the priority change replaced it.
+        outcome:
+          type: string
+          enum: [met, breached]
+          description: breached when a breach was stamped on the record, otherwise met.
     SlaTargetStatus:
       description: |
         Where one SLA target stands. Once met_at is set the numbers

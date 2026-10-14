@@ -38,6 +38,11 @@ type Status struct {
 	PolicyName string       `json:"policy_name"`
 	Response   TargetStatus `json:"response"`
 	Resolution TargetStatus `json:"resolution"`
+
+	// Earlier is the record a priority change replaced after the SLA had been
+	// met or breached, on the one-ticket read only (Service.Earlier). Absent
+	// from list rows and from a ticket that never had one.
+	Earlier *EarlierView `json:"earlier,omitempty"`
 }
 
 // StatusFor computes a ticket's live SLA status. now is used only for a
