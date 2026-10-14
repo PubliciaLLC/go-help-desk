@@ -255,18 +255,23 @@ func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, 
 // an ILIKE pattern, so searching for "50%" finds "50%" rather than everyone.
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-func (s *Store) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]user.User, int64, error) {
+func (s *Store) SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]user.User, int64, error) {
 	pattern := likeEscaper.Replace(q)
+	svc := sql.NullBool{}
+	if serviceAccount != nil {
+		svc = sql.NullBool{Bool: *serviceAccount, Valid: true}
+	}
 	rows, err := s.q.SearchUsersAdmin(ctx, dbgen.SearchUsersAdminParams{
-		Role:       role,
-		Q:          pattern,
-		PageLimit:  int32(limit),
-		PageOffset: int32(offset),
+		Role:           role,
+		ServiceAccount: svc,
+		Q:              pattern,
+		PageLimit:      int32(limit),
+		PageOffset:     int32(offset),
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching users (admin): %w", err)
 	}
-	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern})
+	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern, ServiceAccount: svc})
 	if err != nil {
 		return nil, 0, fmt.Errorf("counting users (admin): %w", err)
 	}

@@ -221,7 +221,7 @@ func (f *fakeUserStore) ListAdmin(_ context.Context, _, _ int) ([]user.User, err
 	return out, nil
 }
 
-func (f *fakeUserStore) SearchAdmin(_ context.Context, _, _ string, _, _ int) ([]user.User, int64, error) {
+func (f *fakeUserStore) SearchAdmin(_ context.Context, _, _ string, _ *bool, _, _ int) ([]user.User, int64, error) {
 	return nil, 0, nil
 }
 

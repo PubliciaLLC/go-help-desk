@@ -6359,18 +6359,20 @@ paths:
         holds (see AdminUserSummary).
 
         Without page, the answer is the newest 200 accounts, newest first, and
-        nothing else changes it. limit, offset, q and role are ignored in that
+        nothing else changes it. limit, offset, q, role and service_account are ignored in that
         mode, as they always were, so an instance with more than 200 accounts
         shows only the first 200.
 
         With page (1-based) the list is paged: per_page accounts (default 50, at
         most 200; a larger value is clamped), newest first. q keeps accounts
         whose email or display name contains it, ignoring case; % and _ match
-        themselves. role keeps one role. The body is still a bare array, and
-        X-Total-Count holds the number of accounts that match q and role, so a
-        client can show how many pages there are. A page past the end is an empty
-        array. A page or per_page that is not a whole number of 1 or more, or a
-        role that is not admin, staff or user, is refused with 400 bad_request.
+        themselves. role keeps one role. service_account=true keeps only service
+        accounts and service_account=false only people. The body is still a bare
+        array, and X-Total-Count holds the number of accounts that match q, role
+        and service_account, so a client can show how many pages there are. A page
+        past the end is an empty array. A page or per_page that is not a whole
+        number of 1 or more, a role that is not admin, staff or user, or a
+        service_account that is not true or false, is refused with 400 bad_request.
       tags: ['Admin: Users']
       x-ghd-handler: handleListUsers
       security:
@@ -6408,6 +6410,17 @@ paths:
           schema:
             type: string
             enum: [admin, staff, user]
+        - name: service_account
+          in: query
+          required: false
+          description: >-
+            true keeps only service accounts (the identities OAuth clients act as),
+            false keeps only people, absent or empty keeps everyone. X-Total-Count
+            counts the filtered list. Any other value is refused with 400
+            bad_request. Only read when page is sent.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: >-
