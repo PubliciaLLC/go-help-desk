@@ -254,19 +254,24 @@ test.describe('#414: the ticket list toolbar stacks instead of squeezing the sea
     })
   }
 
-  test('from md up the toolbar is still one row (unchanged)', async ({ page }) => {
-    await mockApi(page)
-    await page.setViewportSize({ width: 1280, height: 800 })
-    await page.goto('/tickets')
-    const search = await page.getByPlaceholder(/^Search by tracking number/).boundingBox()
-    const jump = await page.getByRole('button', { name: 'Jump to ticket' }).boundingBox()
-    if (!search || !jump) throw new Error('toolbar not rendered')
-    expect(Math.abs(search.y + search.height / 2 - (jump.y + jump.height / 2))).toBeLessThanOrEqual(2)
-    // One row is not the whole of "unchanged": the search box still grows
-    // into the free space and stops at max-w-lg (32rem). At 1280 there is
-    // ~700px free, so a lost cap or a lost flex-1 both show here.
-    expect(search.width, 'search box no longer fills the row up to max-w-lg').toBeCloseTo(512, 0)
-  })
+  // 768 and 1024 are where the row is tight (the sidebar takes 240px): the
+  // search box must keep shrinking to fit beside the others, not take a row
+  // of its own. At 1280 there is room to spare, so it grows into the free
+  // space and stops at max-w-lg (32rem), as it did before #414.
+  for (const width of [768, 1024, 1280]) {
+    test(`from md up the toolbar is still one row (unchanged): ${width}px`, async ({ page }) => {
+      await mockApi(page)
+      await page.setViewportSize({ width, height: 800 })
+      await page.goto('/tickets')
+      const search = await page.getByPlaceholder(/^Search by tracking number/).boundingBox()
+      const jump = await page.getByRole('button', { name: 'Jump to ticket' }).boundingBox()
+      if (!search || !jump) throw new Error('toolbar not rendered')
+      expect(Math.abs(search.y + search.height / 2 - (jump.y + jump.height / 2))).toBeLessThanOrEqual(2)
+      if (width === 1280) {
+        expect(search.width, 'search box no longer fills the row up to max-w-lg').toBeCloseTo(512, 0)
+      }
+    })
+  }
 })
 
 test.describe('#414: the tracking number never breaks inside itself', () => {
