@@ -55,6 +55,13 @@ type fakeStore struct {
 	replyCreates   int
 	historyCreates int
 
+	// SLA records, in insertion order, and the policy each priority matches.
+	// The unique-current rule of the real table is enforced in StartSLARecord.
+	// slaPolicies maps a priority to the policy MatchSLAPolicy returns for it;
+	// a priority with no entry matches none.
+	slaRecords  []fakeSLARecord
+	slaPolicies map[ticket.Priority]uuid.UUID
+
 	// Injectable failures.
 	errUpdate        error
 	errDeleteGroup   error
@@ -75,6 +82,81 @@ func newFakeStore() *fakeStore {
 }
 
 func (f *fakeStore) seed(t ticket.Ticket) { f.tickets[t.ID] = t }
+
+// ── SLA records (the re-match's four store methods) ──────────────────────────
+
+// fakeSLARecord is one sla_records row as far as the re-match can see it.
+type fakeSLARecord struct {
+	id, ticketID, policyID uuid.UUID
+	startedAt              *time.Time
+	pausedBase             int64
+	facts                  ticket.SLAFacts
+	supersededAt           *time.Time
+}
+
+// errSecondCurrentSLARecord stands in for the sla_records_current_idx violation.
+var errSecondCurrentSLARecord = errors.New("duplicate key value violates unique constraint \"sla_records_current_idx\"")
+
+// seedSLARecord adds a current record for a ticket and returns its id.
+func (f *fakeStore) seedSLARecord(ticketID, policyID uuid.UUID, startedAt *time.Time, pausedBase int64, facts ticket.SLAFacts) uuid.UUID {
+	r := fakeSLARecord{id: uuid.New(), ticketID: ticketID, policyID: policyID, startedAt: startedAt, pausedBase: pausedBase, facts: facts}
+	f.slaRecords = append(f.slaRecords, r)
+	return r.id
+}
+
+// slaRows returns every record a ticket has had, oldest first.
+func (f *fakeStore) slaRows(ticketID uuid.UUID) []fakeSLARecord {
+	var out []fakeSLARecord
+	for _, r := range f.slaRecords {
+		if r.ticketID == ticketID {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func (f *fakeStore) CurrentSLARecordForUpdate(_ context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	for _, r := range f.slaRecords {
+		if r.ticketID == ticketID && r.supersededAt == nil {
+			return &ticket.SLARecordState{
+				ID: r.id, PolicyID: r.policyID, StartedAt: r.startedAt,
+				PausedSecondsAtStart: r.pausedBase, Facts: r.facts,
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) MatchSLAPolicy(_ context.Context, p ticket.Priority, _ uuid.UUID) (*uuid.UUID, error) {
+	if id, ok := f.slaPolicies[p]; ok {
+		return &id, nil
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) SupersedeSLARecord(_ context.Context, id uuid.UUID, at time.Time) error {
+	for i, r := range f.slaRecords {
+		if r.id == id && r.supersededAt == nil {
+			r.supersededAt = &at
+			f.slaRecords[i] = r
+			return nil
+		}
+	}
+	return errNotFound
+}
+
+func (f *fakeStore) StartSLARecord(_ context.Context, r ticket.SLARecordStart) error {
+	for _, existing := range f.slaRecords {
+		if existing.ticketID == r.TicketID && existing.supersededAt == nil {
+			return errSecondCurrentSLARecord
+		}
+	}
+	f.slaRecords = append(f.slaRecords, fakeSLARecord{
+		id: r.ID, ticketID: r.TicketID, policyID: r.PolicyID,
+		startedAt: r.StartedAt, pausedBase: r.PausedSecondsAtStart, facts: r.Facts,
+	})
+	return nil
+}
 
 func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 	if f.errCreate != nil {
@@ -450,9 +532,18 @@ func (f *fakeDispatcher) types() []notification.EventType {
 type fakeAuditStore struct {
 	entries []audit.Entry
 	err     error
+
+	// failOnCall, when non-zero, fails the Nth call to Create (1-based) and no
+	// other, so a test can let a first audit write succeed and fail the second.
+	failOnCall int
+	calls      int
 }
 
 func (f *fakeAuditStore) Create(_ context.Context, e audit.Entry) error {
+	f.calls++
+	if f.failOnCall != 0 && f.calls == f.failOnCall {
+		return errStoreDown
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -617,8 +708,10 @@ func (a *fakeAtomic) InTx(_ context.Context, fn func(ticket.Store, audit.Store) 
 		links[k] = append([]ticket.TicketLink(nil), v...)
 	}
 	counters := [4]int{a.store.creates, a.store.updates, a.store.replyCreates, a.store.historyCreates}
+	slaRecords := append([]fakeSLARecord(nil), a.store.slaRecords...)
 
 	if err := fn(a.store, a.audit); err != nil {
+		a.store.slaRecords = slaRecords
 		a.store.tickets = tickets
 		a.store.replies = replies
 		a.store.history = history

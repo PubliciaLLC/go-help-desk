@@ -438,13 +438,14 @@ function OIDCSection() {
 
 // ── Tab definitions ───────────────────────────────────────────────────────────
 
-type Tab = 'general' | 'branding' | 'auth' | 'features' | 'attachments'
+type Tab = 'general' | 'branding' | 'auth' | 'features' | 'email' | 'attachments'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general',     label: 'General' },
   { id: 'branding',    label: 'Branding' },
   { id: 'auth',        label: 'Authentication' },
   { id: 'features',    label: 'Features' },
+  { id: 'email',       label: 'Email' },
   { id: 'attachments', label: 'Attachments' },
 ]
 
@@ -1660,6 +1661,70 @@ function ReputationProviderRow({
   )
 }
 
+// ── Email ────────────────────────────────────────────────────────────────────
+
+// The three per-user staff-email switches live on each person's profile (#441).
+// These override them for everyone: leave it to each person (the default),
+// force it on, or force it off.
+const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
+  {
+    key: 'staff_email_assigned_override',
+    name: 'Tickets assigned to me',
+    help: 'A ticket is assigned to a person.',
+  },
+  {
+    key: 'staff_email_activity_override',
+    name: 'Activity on my tickets',
+    help: 'A requester replies on a ticket assigned to a person.',
+  },
+  {
+    key: 'staff_email_group_override',
+    name: "My groups' tickets",
+    help: 'A ticket is assigned to a group, and a requester replies on a group ticket nobody has taken yet. Goes to every member of the group.',
+  },
+]
+
+function EmailPanel({
+  str, setStr,
+  onSave, isPending, error, saved,
+}: {
+  str: (k: string) => string
+  setStr: (k: string, v: string) => void
+  onSave: () => void
+  isPending: boolean
+  error: string
+  saved: boolean
+}) {
+  return (
+    <div className="space-y-6">
+      <Section title="Staff email about tickets">
+        <div className="px-5 py-4 text-sm text-gray-500">
+          Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
+          that is theirs. Each person chooses on their profile, and all three are on by default. Nobody is emailed about
+          their own action. Use these to force a choice for everyone: "Use each person's choice" leaves it to them,
+          "On for everyone" and "Off for everyone" ignore what they chose. Only has an effect once email is set up.
+        </div>
+        {STAFF_EMAIL_SWITCHES.map(({ key, name, help }) => (
+          <SettingRow key={key} label={name} description={help}>
+            <Select
+              className="w-52"
+              aria-label={`${name}: administrator override`}
+              value={str(key) || 'user'}
+              onChange={(e) => setStr(key, e.target.value)}
+            >
+              <option value="user">Use each person's choice</option>
+              <option value="on">On for everyone</option>
+              <option value="off">Off for everyone</option>
+            </Select>
+          </SettingRow>
+        ))}
+      </Section>
+
+      <SaveBar onSave={onSave} isPending={isPending} error={error} saved={saved} />
+    </div>
+  )
+}
+
 function AttachmentsPanel({
   bool, str, strArr, has,
   setBool, setStr, setStrArr,
@@ -2107,6 +2172,7 @@ export function SettingsPage() {
           {activeTab === 'branding' && <BrandingPanel {...panelProps} />}
           {activeTab === 'auth'     && <AuthPanel     {...panelProps} />}
           {activeTab === 'features' && <FeaturesPanel {...panelProps} />}
+          {activeTab === 'email'    && <EmailPanel    {...panelProps} />}
           {activeTab === 'attachments' && <AttachmentsPanel {...panelProps} />}
         </div>
       </div>

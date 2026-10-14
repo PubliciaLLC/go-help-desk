@@ -121,7 +121,10 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	// The SPA reads location.hash and clears it. The server never learns it
 	// except as an Authorization header on the API calls that need it.
 	path := "/tickets/" + event.TicketID.String()
-	if event.GuestToken != "" {
+	// Staff sign in; a guest credential has no place in their mail, whatever
+	// the event carries.
+	isStaffMail := event.Type == notification.EventStaffAssigned || event.Type == notification.EventStaffRequesterReplied
+	if event.GuestToken != "" && !isStaffMail {
 		path = "/g#" + event.GuestToken
 	}
 	view := map[string]string{
@@ -156,6 +159,21 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 		return "ticket_resolved.tmpl", "We have resolved " + ref, event.Recipient, view, true
 	case notification.EventTicketReopened:
 		return "ticket_reopened.tmpl", "We have reopened " + ref, event.Recipient, view, true
+	// Staff mail (#441). The same no-content rule: the tracking number and a
+	// link to the ticket behind the sign-in, nothing a requester wrote.
+	//
+	// Somebody mailed because of their group is told it is their group's
+	// ticket: "assigned to you" would be false for them.
+	case notification.EventStaffAssigned:
+		if event.StaffReason == notification.SwitchGroup {
+			return "staff_assigned_group.tmpl", "A ticket is assigned to your group: " + ref, event.Recipient, view, true
+		}
+		return "staff_assigned.tmpl", "A ticket is assigned to you: " + ref, event.Recipient, view, true
+	case notification.EventStaffRequesterReplied:
+		if event.StaffReason == notification.SwitchGroup {
+			return "staff_requester_replied_group.tmpl", "The requester replied on a ticket assigned to your group: " + ref, event.Recipient, view, true
+		}
+		return "staff_requester_replied.tmpl", "The requester replied on " + ref, event.Recipient, view, true
 	case notification.EventGuestLinkResent:
 		return "guest_link.tmpl", "Your link to " + ref, event.Recipient, view, true
 	}

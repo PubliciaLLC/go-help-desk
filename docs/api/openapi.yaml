@@ -2094,6 +2094,51 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/me/email-preferences:
+    patch:
+      operationId: updateEmailPreferences
+      summary: Change which staff emails the caller gets.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        Sets the caller's three staff-email switches. Each is optional and only the ones sent change, so two
+        browser tabs cannot undo each other. All three are on for a new account and for every account that
+        existed before they were added.
+        - email_notify_assigned: a ticket is assigned to me.
+        - email_notify_activity: a requester replied on a ticket assigned to me.
+        - email_notify_group: a ticket is assigned to a group I belong to, or a requester replied on a group
+          ticket that nobody personally holds.
+        An administrator can force any of these on or off for everyone with the staff_email_*_override
+        settings; that wins over what is saved here. The answer's email_notifications says which are forced. Nobody is emailed about their own action whatever the
+        switches say. A requester account is never sent staff mail, and an API key or OAuth client has no inbox
+        of its own, so both are refused. Answers with the account as saved.
+      tags: ['Account']
+      x-ghd-handler: handleUpdateEmailPreferences
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email_notify_assigned: {type: boolean}
+                email_notify_activity: {type: boolean}
+                email_notify_group: {type: boolean}
+      responses:
+        '200':
+          description: The caller's account, with the switches as saved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v1/me/mfa/enroll:
     post:
       operationId: mfaEnrollStart
@@ -2947,20 +2992,50 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     patch:
       operationId: updateTicket
-      summary: Change a ticket's status, assignment or classification.
+      summary: Change a ticket's status, assignment, classification or priority.
       description: |
         Applies whichever of status_id, clear_assignee, assignee_user_id,
-        assignee_group_id and category_id are sent, and answers 200 with the bare
+        assignee_group_id, category_id and priority are sent, and answers 200 with the bare
         Ticket. An empty body is the same as {}: no change, and the response is
         the Ticket. Malformed JSON answers 400 bad_request. The path id is a UUID or a tracking number.
         The changes run in this order: status, then assignment, then
-        classification. Each is saved on its own, with no transaction around the
-        three. If a later one is refused, the earlier ones have already been
-        saved and the response is an error.
+        classification, then priority. Each is saved on its own, with no
+        transaction around the four, but every refusal the request can meet is
+        decided before the first of them is saved, so a refused request changes
+        nothing and writes no audit entry. Decided first: an invalid priority
+        value (400), a priority from a caller who may not change priorities
+        (403, a reporting user), a classification the caller may not make or
+        that is not valid (403, 400), a priority on a request that would leave
+        the ticket Resolved or Closed (409 ticket_closed, see below), an
+        assignment from a caller who may not assign (403), an assignee that
+        cannot be given a ticket (400) and a group that does not exist (400).
+        The status change is the first write, so its own refusals (403, 404,
+        409) also come before anything is saved. When several apply, the order
+        is the invalid value, then the priority role, then the classification,
+        then the closed state, then the assignment, then the status.
+        What this does not cover: a refusal that can only be known at the
+        moment of writing. A concurrent change between the check and the write
+        (an assignee account disabled, or the ticket closed, in those few
+        milliseconds) is refused by the write's own check, and so is a database
+        failure (500), after the changes ahead of it in the order above were
+        saved.
         Who may do what:
         - A reporting user cannot change the status (403 forbidden), cannot
-          assign (403 forbidden), and cannot reclassify (403, "only staff can
-          reclassify tickets").
+          assign (403 forbidden), cannot reclassify (403, "only staff can
+          reclassify tickets"), and cannot change the priority (403 forbidden).
+        - priority is one of critical, high, medium and low. Anything else
+          answers 400 bad_request before any change in the request is saved. A
+          Resolved or Closed ticket's priority cannot be changed: 409
+          ticket_closed, and the priority and the SLA stay as they were. The
+          whole request is refused, nothing in it saved: that covers a request
+          that moves the ticket to Resolved or Closed and sends a priority, and
+          one that assigns or unassigns a ticket that is already Resolved or
+          Closed and sends a priority. A request that moves the ticket out of
+          Resolved to an open status is not refused for its priority (moving
+          out of Closed is still decided by closed_reopen_policy, with the
+          same nothing-saved result when refused). Sending the ticket's current
+          priority on an open ticket is accepted and changes nothing: no audit
+          entry, no SLA change.
         - Only an administrator may set the status to Closed (403 forbidden for
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.
@@ -2982,6 +3057,19 @@ paths:
         category_id replaces the whole classification: type_id and item_id are
         written as sent, so an absent one clears that level. type_id and item_id
         have no effect unless category_id is sent too.
+        Changing the priority re-matches the ticket's SLA policy for the new
+        priority when SLA tracking is on, and never restarts its clock. The
+        priority, the SLA rows and the audit entry are written in one
+        transaction. A record is never rewritten: a re-match marks the old record
+        superseded and starts a new one under the new policy, which keeps the old
+        one's clock start and its facts, so elapsed time still counts and a
+        target already met stays met. A ticket with no record whose new priority
+        matches a policy gets one whose clock started at the ticket's creation,
+        which can already be breached. If no policy matches the new priority, the
+        old record is superseded and the ticket shows no SLA. The audit entry
+        priority_changed records the reason (manual), the SLA outcome and the
+        policy and record ids before and after. No notification or webhook event
+        is sent for a priority change.
         Reclassifying never moves a ticket INTO an archived category, type or item:
         a level that is archived and different from the ticket's current one answers
         400 bad_request ("type_id is not an active type"), for staff and
@@ -3032,6 +3120,12 @@ paths:
                 item_id:
                   description: The item to set with category_id. Absent clears it.
                   $ref: '#/components/schemas/Uuid'
+                priority:
+                  description: |
+                    Sets the priority and re-matches the ticket's SLA policy for it,
+                    keeping the SLA clock. Staff and administrators only. Absent
+                    leaves it unchanged.
+                  $ref: '#/components/schemas/Priority'
       responses:
         '200':
           description: The ticket after the changes, as the bare Ticket.
@@ -3042,11 +3136,12 @@ paths:
         '400':
           description: |
             `bad_request`: invalid JSON; an assignee that is not a user on this
-            help desk, deleted, disabled or a reporting user; or a classification
+            help desk, deleted, disabled or a reporting user; a classification
             the domain refuses (category_id is not a category on this help desk,
             type_id and item_id do not belong to the category and to each
             other, or a newly chosen category_id, type_id or item_id is archived:
-            "... is not an active ...").
+            "... is not an active ..."); or a priority that is not one of
+            critical, high, medium and low.
           content:
             application/json:
               schema:
@@ -3057,10 +3152,10 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden` for a reporting user changing the
-            status, assigning, or reclassifying, and for anyone but an
-            administrator setting the status to Closed; `user_identity_required`
-            for a credential with no user behind it (not an OAuth client, which
-            acts as its service user).
+            status, assigning, reclassifying or changing the priority, and for
+            anyone but an administrator setting the status to Closed;
+            `user_identity_required` for a credential with no user behind it (not
+            an OAuth client, which acts as its service user).
           content:
             text/plain:
               schema:
@@ -3073,7 +3168,8 @@ paths:
         '409':
           description: >-
             `ticket_closed`: the ticket is Closed and the caller's role may not move it
-            out of Closed. `status_inactive`: status_id names an inactive status.
+            out of Closed, or a priority change was sent for a Resolved or Closed
+            ticket. `status_inactive`: status_id names an inactive status.
           content:
             application/json:
               schema:
@@ -4385,6 +4481,9 @@ paths:
           invalid_infected_handling, invalid_mismatch_handling,
           invalid_reputation_refresh). Before v1.3.0, null and a non-string were
           refused with bad_request for some of these.
+        - staff_email_assigned_override, staff_email_activity_override and
+          staff_email_group_override take user, on or off; a string outside the list
+          is refused with invalid_staff_email_override, as are null and a non-string.
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
@@ -4489,7 +4588,7 @@ paths:
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
             invalid_ticket_prefix, invalid_scanner_address, invalid_allowed_types,
-            invalid_reputation_config.
+            invalid_reputation_config, invalid_staff_email_override.
           content:
             application/json:
               schema:
@@ -9057,7 +9156,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, created_at, updated_at]
+      required: [id, email, display_name, role, mfa_enabled, disabled, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -9067,6 +9166,28 @@ components:
         disabled: {type: boolean}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
+        email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me. On by default.'}
+        email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
+        email_notifications:
+          type: object
+          description: |
+            What the three email switches amount to for this person, which is not always what they chose: an
+            administrator can force a switch on or off for everyone (the staff_email_*_override settings).
+            enabled is whether they get that mail; forced is true when the administrator decided it, so their
+            own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
+            and only for staff and administrators.
+          required: [assigned, activity, group]
+          properties:
+            assigned: {$ref: '#/components/schemas/EmailSwitchState'}
+            activity: {$ref: '#/components/schemas/EmailSwitchState'}
+            group: {$ref: '#/components/schemas/EmailSwitchState'}
+    EmailSwitchState:
+      type: object
+      required: [enabled, forced]
+      properties:
+        enabled: {type: boolean}
+        forced: {type: boolean}
     Category:
       description: A top-level category of the Category / Type / Item tree. active is false once the category is archived.
       type: object
@@ -9264,6 +9385,38 @@ components:
           $ref: '#/components/schemas/SlaTargetStatus'
         resolution:
           $ref: '#/components/schemas/SlaTargetStatus'
+        earlier:
+          $ref: '#/components/schemas/SlaEarlierRecord'
+    SlaEarlierRecord:
+      description: |
+        The SLA record a restart replaced, sent on getTicket only (never on a list
+        row). A restart is a reopen: staff and admin priority changes re-match the
+        SLA and keep its clock, and never produce this. It is the record the "SLA
+        restarted" badge on the ticket page links to. Absent when the clock never
+        restarted, and when the replaced record had nothing met or breached (no
+        outcome to report). Not reachable on this build: the reopen that restarts
+        the clock arrives with #464, so no ticket has one yet. The outcome reads
+        the record's stored stamps, so a breach the sweep has not stamped yet is
+        not reported.
+      type: object
+      required: [policy_id, policy_name, started_at, superseded_at, outcome]
+      properties:
+        policy_id:
+          $ref: '#/components/schemas/Uuid'
+        policy_name:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+          description: Where the record's clock started; the ticket's creation if it never restarted.
+        superseded_at:
+          type: string
+          format: date-time
+          description: When the restart replaced it.
+        outcome:
+          type: string
+          enum: [met, breached]
+          description: breached when a breach was stamped on the record, otherwise met.
     SlaTargetStatus:
       description: |
         Where one SLA target stands. Once met_at is set the numbers
@@ -9377,7 +9530,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted (written when a reopen restarts the SLA clocks; nothing writes it until #464) or closed.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:
@@ -9740,6 +9893,18 @@ components:
           type: string
           enum: [refuse, wrap]
           description: What happens to a file whose content contradicts its name, when its type is not allowed. Anything unrecognised reads as refuse. Session only.
+        staff_email_assigned_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: Whether every staff member is emailed when a ticket is assigned to them, whatever they chose on their profile. user (the default) leaves it to each person. Anything unrecognised reads as user.
+        staff_email_activity_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: The same for a requester's reply on a ticket assigned to them.
+        staff_email_group_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: The same for a group's tickets, for every member of the group.
         audit_retention_days:
           type: integer
           maximum: 36525

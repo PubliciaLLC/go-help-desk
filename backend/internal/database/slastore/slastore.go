@@ -214,8 +214,21 @@ func (s *Store) ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUI
 	return out, nil
 }
 
+func (s *Store) ListRecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]sla.Record, error) {
+	rows, err := s.q.ListSLARecordsForTicket(ctx, ticketID)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA records for ticket %s: %w", ticketID, err)
+	}
+	out := make([]sla.Record, len(rows))
+	for i, r := range rows {
+		out[i] = recordFromRow(r)
+	}
+	return out, nil
+}
+
 func recordFromRow(r dbgen.SlaRecord) sla.Record {
 	return sla.Record{
+		ID:                            r.ID,
 		TicketID:                      r.TicketID,
 		PolicyID:                      r.PolicyID,
 		FirstResponseAt:               database.TimePtr(r.FirstResponseAt),
@@ -224,6 +237,9 @@ func recordFromRow(r dbgen.SlaRecord) sla.Record {
 		ResolutionBreachedAt:          database.TimePtr(r.ResolutionBreachedAt),
 		ResponseElapsedAtMetSeconds:   database.Int64Ptr(r.ResponseElapsedAtMetSeconds),
 		ResolutionElapsedAtMetSeconds: database.Int64Ptr(r.ResolutionElapsedAtMetSeconds),
+		StartedAt:                     database.TimePtr(r.StartedAt),
+		PausedSecondsAtStart:          r.PausedSecondsAtStart,
+		SupersededAt:                  database.TimePtr(r.SupersededAt),
 	}
 }
 

@@ -31,6 +31,16 @@ var choiceKeys = []struct {
 		func(h *harness, ctx context.Context) string { return h.adminSvc.MismatchHandling(ctx) }},
 	{admin.KeyAttachmentReputationRefresh, []string{"weekly", "biweekly", "monthly", "quarterly", "never"},
 		func(h *harness, ctx context.Context) string { return h.adminSvc.ReputationRefresh(ctx) }},
+	{admin.KeyStaffEmailAssignedOverride, []string{"user", "on", "off"},
+		func(h *harness, ctx context.Context) string {
+			return string(h.adminSvc.StaffEmailOverrides(ctx).Assigned)
+		}},
+	{admin.KeyStaffEmailActivityOverride, []string{"user", "on", "off"},
+		func(h *harness, ctx context.Context) string {
+			return string(h.adminSvc.StaffEmailOverrides(ctx).Activity)
+		}},
+	{admin.KeyStaffEmailGroupOverride, []string{"user", "on", "off"},
+		func(h *harness, ctx context.Context) string { return string(h.adminSvc.StaffEmailOverrides(ctx).Group) }},
 }
 
 // Stored values the PATCH refuses. Only a direct database edit puts one there.

@@ -508,6 +508,17 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	// The record a restart replaced, for the page's "SLA restarted" badge: the
+	// one-ticket read only, so a list never pays for it. Nothing restarts a
+	// clock on this build (#464 adds the reopen), so it is absent for now.
+	if views[0].SLA != nil {
+		earlier, err := s.slaPolicies.Earlier(r.Context(), t)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		views[0].SLA.Earlier = earlier
+	}
 	JSON(w, http.StatusOK, views[0])
 }
 
@@ -529,6 +540,11 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		CategoryID    *uuid.UUID `json:"category_id"`
 		TypeID        *uuid.UUID `json:"type_id"`
 		ItemID        *uuid.UUID `json:"item_id"`
+		// Priority is staff and admin only, and re-matches the ticket's SLA
+		// policy, keeping its clock (#443). A string, not ticket.Priority,
+		// so a value that is not a priority reaches the service and answers
+		// 400 there instead of being dropped.
+		Priority *string `json:"priority"`
 	}
 	// No body at all is {}: nothing to change. Only here, not in DecodeJSON,
 	// which every other route relies on to refuse an empty body.
@@ -541,6 +557,23 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
+
+	// A value that is not a priority is a malformed request, answered before
+	// anything else in it is saved. (ChangePriority checks it too, for every
+	// other caller.)
+	if body.Priority != nil && !ticket.Priority(*body.Priority).Valid() {
+		Error(w, http.StatusBadRequest, "bad_request", "priority must be one of critical, high, medium, low")
+		return
+	}
+	// Whether the caller may change a priority at all is a role question and
+	// does not depend on the ticket, so it is answered here, before any other
+	// change in the request is saved. (ChangePriority applies the same rule.)
+	if body.Priority != nil {
+		if err := ticket.CanChangePriority(actor.Role); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 
 	// A refused classification must leave the whole request unapplied, so it is
 	// checked before the status or the assignee is touched (#421). The write
@@ -556,22 +589,62 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if body.StatusID != nil {
-		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
+	// A Resolved or Closed ticket's priority cannot change, and a request that
+	// would leave the ticket in either state is refused whole: ChangePriority
+	// runs last, so without this the status or assignment ahead of it would be
+	// saved and then answered with a 409. After the 400 and the 403s above, so
+	// those win when several things are wrong.
+	if body.Priority != nil {
+		if err := s.tickets.ValidatePriorityChange(r.Context(), id, body.StatusID); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
-	// Covers both branches below: clear_assignee is a separate path from
-	// assignee_user_id, and guarding only one would leave a reporter able to
-	// unassign the staff member working their ticket.
+
+	// Who the ticket may be given to is decided before the status is saved,
+	// for the same reason (#468): UpdateStatus runs first, so a 400 or 403 from
+	// the assignment after it left the status changed and an audit row
+	// written. Assign checks the same things again on the locked row.
+	//
+	// The role check covers both branches below: clear_assignee is a separate
+	// path from assignee_user_id, and guarding only one would leave a reporter
+	// able to unassign the staff member working their ticket.
 	if body.ClearAssignee || body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
 		if err := ticket.CanAssign(actor.Role); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
+	// The assignee is checked here, and not only by the column's foreign key,
+	// because a foreign key can only answer 500.
+	//
+	// Four things got through: an unknown id (a typo, answered with "an
+	// internal error occurred"), a deleted account (which puts the ticket
+	// straight back into the limbo that deleting a user was just fixed to
+	// avoid — it shows as unassigned and is missing from the unassigned
+	// queue), a disabled account, and a reporting user, who is not
+	// somebody work can be assigned to.
+	if !body.ClearAssignee {
+		if body.AssigneeUserID != nil {
+			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
+				Error(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+		}
+		if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+			if err := s.tickets.ValidateAssignment(r.Context(), body.AssigneeUserID, body.AssigneeGroupID); err != nil {
+				handleError(w, err)
+				return
+			}
+		}
+	}
 
+	if body.StatusID != nil {
+		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 	if body.ClearAssignee {
 		// Explicitly to nobody. Previously unreachable: the UI sent both
 		// fields as undefined, which serialised to {} and skipped this branch
@@ -581,22 +654,6 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
-		// Checked before the write, because the column's foreign key is the
-		// only thing that was checking it — and a foreign key can only
-		// answer 500.
-		//
-		// Four things got through: an unknown id (a typo, answered with "an
-		// internal error occurred"), a deleted account (which puts the ticket
-		// straight back into the limbo that deleting a user was just fixed to
-		// avoid — it shows as unassigned and is missing from the unassigned
-		// queue), a disabled account, and a reporting user, who is not
-		// somebody work can be assigned to.
-		if body.AssigneeUserID != nil {
-			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
-				Error(w, http.StatusBadRequest, "bad_request", err.Error())
-				return
-			}
-		}
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
 			handleError(w, err)
 			return
@@ -608,6 +665,14 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := s.tickets.UpdateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	// After the reclassification above, so a category change in the same
+	// request is the one the new priority's SLA policy is matched against.
+	if body.Priority != nil {
+		if _, err := s.tickets.ChangePriority(r.Context(), id, ticket.Priority(*body.Priority), actor); err != nil {
 			handleError(w, err)
 			return
 		}

@@ -139,6 +139,26 @@ type Store interface {
 	// Status history
 	CreateStatusHistoryEntry(ctx context.Context, e StatusHistoryEntry) error
 	ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error)
+
+	// SLA re-match (#443b). A priority change re-matches the ticket's SLA in
+	// the ticket's own transaction, so its writes are reached through this
+	// Store: ticket.Atomic hands out only a Store and an audit.Store, and the
+	// sla package imports ticket, not the other way round. The sla package
+	// keeps everything about elapsed time and colour; these only say which row
+	// is current and where its clock starts.
+
+	// CurrentSLARecordForUpdate returns the ticket's current record, locked
+	// until the transaction ends. nil, nil means the ticket has none.
+	CurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
+	// MatchSLAPolicy returns the policy that governs a ticket with this
+	// priority and category. nil, nil means none does.
+	MatchSLAPolicy(ctx context.Context, p Priority, categoryID uuid.UUID) (*uuid.UUID, error)
+	// SupersedeSLARecord marks a record as replaced, writing superseded_at and
+	// nothing else. Called before StartSLARecord: a ticket has one current
+	// record at most.
+	SupersedeSLARecord(ctx context.Context, id uuid.UUID, at time.Time) error
+	// StartSLARecord inserts the record a re-match starts.
+	StartSLARecord(ctx context.Context, r SLARecordStart) error
 }
 
 // StatusStore manages ticket statuses. Method names use a "Status" suffix to

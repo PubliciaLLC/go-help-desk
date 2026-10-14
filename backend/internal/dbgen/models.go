@@ -215,6 +215,10 @@ type SlaRecord struct {
 	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
 	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
 	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
+	ID                            uuid.UUID     `json:"id"`
+	StartedAt                     sql.NullTime  `json:"started_at"`
+	PausedSecondsAtStart          int64         `json:"paused_seconds_at_start"`
+	SupersededAt                  sql.NullTime  `json:"superseded_at"`
 }
 
 type SpentSamlHandover struct {
@@ -310,22 +314,25 @@ type Type struct {
 }
 
 type User struct {
-	ID                uuid.UUID    `json:"id"`
-	Email             string       `json:"email"`
-	DisplayName       string       `json:"display_name"`
-	Role              string       `json:"role"`
-	PasswordHash      string       `json:"password_hash"`
-	MfaSecret         string       `json:"mfa_secret"`
-	MfaEnabled        bool         `json:"mfa_enabled"`
-	SamlSubject       string       `json:"saml_subject"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
-	DeletedAt         sql.NullTime `json:"deleted_at"`
-	Disabled          bool         `json:"disabled"`
-	OidcSubject       string       `json:"oidc_subject"`
-	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
-	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
-	ServiceAccount    bool         `json:"service_account"`
+	ID                  uuid.UUID    `json:"id"`
+	Email               string       `json:"email"`
+	DisplayName         string       `json:"display_name"`
+	Role                string       `json:"role"`
+	PasswordHash        string       `json:"password_hash"`
+	MfaSecret           string       `json:"mfa_secret"`
+	MfaEnabled          bool         `json:"mfa_enabled"`
+	SamlSubject         string       `json:"saml_subject"`
+	CreatedAt           time.Time    `json:"created_at"`
+	UpdatedAt           time.Time    `json:"updated_at"`
+	DeletedAt           sql.NullTime `json:"deleted_at"`
+	Disabled            bool         `json:"disabled"`
+	OidcSubject         string       `json:"oidc_subject"`
+	MfaFailedAttempts   int32        `json:"mfa_failed_attempts"`
+	MfaLockedUntil      sql.NullTime `json:"mfa_locked_until"`
+	ServiceAccount      bool         `json:"service_account"`
+	EmailNotifyAssigned bool         `json:"email_notify_assigned"`
+	EmailNotifyActivity bool         `json:"email_notify_activity"`
+	EmailNotifyGroup    bool         `json:"email_notify_group"`
 }
 
 type WebauthnCredential struct {

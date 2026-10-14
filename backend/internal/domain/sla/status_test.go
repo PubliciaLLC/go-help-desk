@@ -214,3 +214,22 @@ func TestColorFor_OddTargetBoundary(t *testing.T) {
 		})
 	}
 }
+
+// A restarted record's indicator counts from the restart: one minute into a
+// 100-minute target is green on a ticket created ten hours ago.
+func TestStatusFor_RestartedRecordCountsFromItsOwnStart(t *testing.T) {
+	now := statusCreated.Add(10 * time.Hour)
+	start := now.Add(-1 * time.Minute)
+	tk := ticket.Ticket{CreatedAt: statusCreated}
+
+	got := sla.StatusFor(sla.Record{StartedAt: &start}, statusPolicy, tk, now)
+	require.Equal(t, sla.Green, got.Response.Color)
+	require.Equal(t, 1, got.Response.ElapsedMin)
+	require.Equal(t, sla.Green, got.Resolution.Color)
+
+	// The met-without-a-frozen-number fallback is a live recompute too.
+	metAt := now
+	got = sla.StatusFor(sla.Record{StartedAt: &start, FirstResponseAt: &metAt}, statusPolicy, tk, now.Add(time.Hour))
+	require.Equal(t, sla.Green, got.Response.Color)
+	require.Equal(t, 1, got.Response.ElapsedMin)
+}

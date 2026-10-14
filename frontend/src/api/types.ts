@@ -10,7 +10,29 @@ export interface User {
   mfa_enabled: boolean
   created_at: string
   updated_at: string
+  /** Staff-email switches (#441). Optional so a profile from before they
+   *  existed reads as on, which is also what the server defaults them to. */
+  email_notify_assigned?: boolean
+  email_notify_activity?: boolean
+  email_notify_group?: boolean
+  /** What the switches amount to for this person, with whether an administrator
+   *  forced each one (#441). Only on /me and the preferences answer, and only
+   *  for staff and administrators. */
+  email_notifications?: {
+    assigned: EmailSwitchState
+    activity: EmailSwitchState
+    group: EmailSwitchState
+  }
 }
+
+export interface EmailSwitchState {
+  enabled: boolean
+  forced: boolean
+}
+
+export type EmailPreferencesPatch = Partial<
+  Pick<User, 'email_notify_assigned' | 'email_notify_activity' | 'email_notify_group'>
+>
 
 // How an account signs in, from the credentials it holds. 'both' is local plus
 // SAML; combinations that include OIDC are joined with '+'. 'service' is an
@@ -598,9 +620,21 @@ export interface SLATargetStatus {
   met_at: string | null // set: the numbers above are frozen and color is final
 }
 
+// The SLA record a restart replaced (#443): the clock restarted when the ticket
+// was reopened, and this is the record it replaced. Never sent after a staff or
+// admin priority change, which keeps the clock. One-ticket read only.
+export interface SLAEarlierRecord {
+  policy_id: string
+  policy_name: string
+  started_at: string
+  superseded_at: string
+  outcome: 'met' | 'breached'
+}
+
 export interface TicketSLA {
   policy_id: string
   policy_name: string
   response: SLATargetStatus
   resolution: SLATargetStatus
+  earlier?: SLAEarlierRecord
 }
