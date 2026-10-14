@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
@@ -898,13 +897,6 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		if err := st.Update(ctx, t); err != nil {
 			return fmt.Errorf("assigning ticket: %w", err)
 		}
-		// Reassigned away from somebody: their follow goes with the
-		// assignment (#441). The same person again changes nothing.
-		if previous != nil && (assigneeUserID == nil || *assigneeUserID != *previous) {
-			if err := dropAssigneeFollow(ctx, st, au, t.ID, *previous, actor.UserID, assigneeUserID); err != nil {
-				return err
-			}
-		}
 		// "unassigned" when the new assignee is nobody, "assigned" otherwise
 		// — mirroring how UnassignForUser already distinguishes the two.
 		// Writing "assigned" unconditionally here made PATCH
@@ -916,6 +908,15 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		}
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", t.ID, action, before, ticketMap(t))); err != nil {
 			return fmt.Errorf("auditing assignment: %w", err)
+		}
+		// Reassigned away from somebody: their follow goes with the
+		// assignment (#441), written after the assignment's own entry so the
+		// feed reads the reassignment first. The same person again changes
+		// nothing.
+		if previous != nil && (assigneeUserID == nil || *assigneeUserID != *previous) {
+			if err := dropAssigneeFollow(ctx, st, au, t.ID, *previous, actor.UserID, assigneeUserID); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {
@@ -1872,22 +1873,6 @@ func (s *Service) ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]
 // a limit anyone is expected to hit. The admin-wide audit view (#129) needs
 // real pagination; one ticket does not.
 const ticketAuditCap = 500
-
-// ListAuditEntries returns everything recorded against one ticket, oldest
-// first — the same ordering ListStatusHistory uses, so the two feeds a
-// ticket's detail page shows side by side read the same direction.
-//
-// ListByEntity's own query is newest-first, shared with the (not yet built)
-// admin-wide view where that ordering suits pagination; reversed here rather
-// than changing the shared query underneath it.
-func (s *Service) ListAuditEntries(ctx context.Context, ticketID uuid.UUID) ([]audit.Entry, error) {
-	entries, err := s.auditStore.ListByEntity(ctx, "ticket", ticketID, ticketAuditCap, 0)
-	if err != nil {
-		return nil, fmt.Errorf("listing audit entries: %w", err)
-	}
-	slices.Reverse(entries)
-	return entries, nil
-}
 
 // AddLink creates a directed link between two tickets.
 func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt LinkType, actor Actor) error {

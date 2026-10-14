@@ -12,11 +12,11 @@ import (
 )
 
 // #129: a per-ticket activity feed, so "who changed this and when" is
-// answerable without database access. ListAuditEntries is a thin filter over
+// answerable without database access. ListAuditFeed is a thin filter over
 // the shared audit store — this pins its two real responsibilities: scoping
 // to one ticket, and reading oldest-first regardless of how the store itself
 // orders things.
-func TestListAuditEntries_ScopesToOneTicketAndReadsOldestFirst(t *testing.T) {
+func TestListAuditFeed_ScopesToOneTicketAndReadsOldestFirst(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
@@ -36,7 +36,7 @@ func TestListAuditEntries_ScopesToOneTicketAndReadsOldestFirst(t *testing.T) {
 		{ID: uuid.New(), EntityType: "ticket", EntityID: ticketA, Action: "assigned", CreatedAt: base.Add(10 * time.Minute)},
 	}
 
-	got, err := h.svc.ListAuditEntries(ctx, ticketA)
+	got, err := h.svc.ListAuditFeed(ctx, ticketA, true)
 	require.NoError(t, err)
 	require.Len(t, got, 3, "ticket B's entry and the user-entity entry must not leak in")
 
@@ -47,10 +47,10 @@ func TestListAuditEntries_ScopesToOneTicketAndReadsOldestFirst(t *testing.T) {
 
 // A ticket with nothing recorded against it yet (freshly seeded, no lifecycle
 // events) gets an empty feed, not an error.
-func TestListAuditEntries_NoEntriesIsEmptyNotAnError(t *testing.T) {
+func TestListAuditFeed_NoEntriesIsEmptyNotAnError(t *testing.T) {
 	h := newHarness(t)
 
-	got, err := h.svc.ListAuditEntries(context.Background(), uuid.New())
+	got, err := h.svc.ListAuditFeed(context.Background(), uuid.New(), true)
 
 	require.NoError(t, err)
 	require.Empty(t, got)

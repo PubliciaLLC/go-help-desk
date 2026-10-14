@@ -1040,7 +1040,12 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	diffs := make([]map[string]any, 0, 2*len(entries))
 	for i, e := range entries {
 		v := ticketAuditEntryView{ID: e.ID, Action: e.Action, ActorID: e.ActorID, CreatedAt: e.CreatedAt}
-		if showDiff {
+		// A viewer who may see follow entries always gets their before and
+		// after, redacted like any diff: an unfollowed entry written when a
+		// ticket was reassigned has the reassigning actor as its actor, and
+		// without the diff it would read as that person stopping, not as
+		// whose follow it was.
+		if showDiff || (showFollow && ticket.IsFollowAuditAction(e.Action)) {
 			v.Before, v.After = audit.Redact(e.Before, e.After)
 			diffs = append(diffs, v.Before, v.After)
 		}
@@ -1071,7 +1076,7 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 		views[i] = v
 	}
 	// See handleListAdminAudit: resolved from the diffs as sent, in one batch.
-	if showDiff {
+	if len(diffs) > 0 {
 		resolved := s.resolveAuditNames(r.Context(), maskRequesters, diffs...)
 		for i := range views {
 			views[i].Names = resolved.forEntry(views[i].Before, views[i].After)

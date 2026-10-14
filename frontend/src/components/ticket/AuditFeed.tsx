@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { listTicketAudit } from '@/api/tickets'
+import type { TicketAuditEntry } from '@/api/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuditDiff } from '@/components/AuditDiff'
 import { EyeOffIcon } from 'lucide-react'
@@ -31,6 +32,17 @@ function labelFor(action: string): string {
   )
 }
 
+// An unfollowed entry written when a ticket is reassigned has the person who
+// reassigned it as its actor, so "Stopped following by <admin>" would name the
+// wrong person. It carries whose follow it was in before.assignee_user_id.
+function labelForEntry(e: TicketAuditEntry): string {
+  const who = e.action === 'unfollowed' ? e.before?.assignee_user_id : undefined
+  if (typeof who === 'string') {
+    return `Follow removed on reassignment (${e.names?.[who]?.name ?? who})`
+  }
+  return labelFor(e.action)
+}
+
 // #129: the per-ticket activity feed, next to the status timeline —
 // answers "who changed this and when" without database access. It inherits
 // the ticket's own visibility gate; the one action-specific exception
@@ -60,7 +72,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
         <ul className="space-y-2">
           {entries.map((e) => (
             <li key={e.id} className="text-xs text-gray-700">
-              <span className="font-medium">{labelFor(e.action)}</span>
+              <span className="font-medium">{labelForEntry(e)}</span>
               {e.actor_name && (
                 <>
                   {' by '}
@@ -72,7 +84,10 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
               <span className="block text-gray-400">
                 {new Date(e.created_at).toLocaleString()}
               </span>
-              <AuditDiff before={e.before} after={e.after} names={e.names} />
+              {/* A follow entry's diff only repeats what its label says. */}
+              {e.action !== 'unfollowed' && e.action !== 'followed' && (
+                <AuditDiff before={e.before} after={e.after} names={e.names} />
+              )}
             </li>
           ))}
         </ul>

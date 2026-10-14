@@ -114,7 +114,9 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (no
 			cands = append(cands, candidate{*ev.AssigneeUserID, notification.SwitchAssigned})
 		}
 		cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
-		cands = append(cands, f.followerCandidates(ctx, ev)...)
+		// An assignment mails the assigned group, so its members are left out
+		// of follower mail.
+		cands = append(cands, f.followerCandidates(ctx, ev, true)...)
 		return notification.EventStaffAssigned, cands, true
 
 	case ev.Type == notification.EventTicketReplied && ev.FromRequester:
@@ -130,37 +132,41 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) (no
 		} else {
 			cands = append(cands, f.groupMembers(ctx, ev, notification.SwitchGroup)...)
 		}
-		cands = append(cands, f.followerCandidates(ctx, ev)...)
+		// The group is mailed only while nobody holds the ticket.
+		cands = append(cands, f.followerCandidates(ctx, ev, ev.AssigneeUserID == nil)...)
 		return notification.EventStaffRequesterReplied, cands, true
 	}
 	return "", nil, false
 }
 
-// followerCandidates are the ticket's followers, except the assignee and the
-// members of the assigned group. Those people "follow" the ticket from a
-// practical point of view (Erik, 2026-10-14): their own switches decide
-// whether they hear about it, and following on top must not bring the mail
-// back after they turned it off. A lookup that fails costs the followers their
-// mail and nothing else: the people already found are still mailed.
-func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event) []candidate {
+// followerCandidates are the ticket's followers, except the assignee always,
+// and the assigned group's members when the group itself is mailed for this
+// event (groupMailed: an assignment, or a reply on a ticket nobody holds).
+// Those people are told through their own switches (Erik, 2026-10-14), and
+// following on top must not bring back mail they turned off. When the group is
+// not mailed (a reply while somebody holds the ticket) a member's follow
+// counts, so a member who follows hears about it. A lookup that fails costs
+// the followers their mail and nothing else: the people already found are
+// still mailed.
+func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Event, groupMailed bool) []candidate {
 	ids, err := f.followers.ListMailableFollowerIDs(ctx, ev.TicketID)
 	if err != nil {
 		f.log.ErrorContext(ctx, "staff email: could not list the ticket's followers",
 			"event", ev.Type, "ticket_id", ev.TicketID, "error", err)
 		return nil
 	}
-	holders := map[uuid.UUID]bool{}
+	left := map[uuid.UUID]bool{}
 	if ev.AssigneeUserID != nil {
-		holders[*ev.AssigneeUserID] = true
+		left[*ev.AssigneeUserID] = true
 	}
-	// Read the group again even where the reply path did not need it (a held
-	// ticket does not mail its group): a member is a holder either way.
-	for _, m := range f.groupMembers(ctx, ev, notification.SwitchGroup) {
-		holders[m.id] = true
+	if groupMailed {
+		for _, m := range f.groupMembers(ctx, ev, notification.SwitchGroup) {
+			left[m.id] = true
+		}
 	}
 	out := make([]candidate, 0, len(ids))
 	for _, id := range ids {
-		if !holders[id] {
+		if !left[id] {
 			out = append(out, candidate{id, notification.SwitchFollow})
 		}
 	}

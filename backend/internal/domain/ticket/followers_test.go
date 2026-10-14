@@ -72,7 +72,13 @@ func (f *fakeAuditStore) ListByEntityActions(_ context.Context, entityType strin
 		}
 		matched = append(matched, e)
 	}
-	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	// created_at DESC, id DESC: the real query's total order.
+	sort.Slice(matched, func(i, j int) bool {
+		if !matched[i].CreatedAt.Equal(matched[j].CreatedAt) {
+			return matched[i].CreatedAt.After(matched[j].CreatedAt)
+		}
+		return matched[i].ID.String() > matched[j].ID.String()
+	})
 	if offset >= len(matched) {
 		return nil, nil
 	}

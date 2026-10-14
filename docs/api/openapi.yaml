@@ -3143,7 +3143,11 @@ paths:
         - followed and unfollowed entries (someone started or stopped following
           the ticket) go to administrators, and to staff when the staff
           follow-history setting (staff_can_view_follow_audit) is on. A reporting
-          user never gets them.
+          user never gets them. A viewer who gets them also gets their before and
+          after (redacted), whether or not they get the diff of other entries:
+          an unfollowed entry written by a reassignment has the reassigning actor
+          as its actor and carries the assignee whose follow ended in
+          before.assignee_user_id (named in names).
         The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be

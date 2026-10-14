@@ -94,3 +94,44 @@ func TestFollowers_AGroupMemberWithTheGroupSwitchOffGetsNothingByFollowing(t *te
 	requesterReplies(t, h, tk)
 	require.Empty(t, m.recipients(t), "reply")
 }
+
+// Mail queued to a follower is not dropped because the ticket was then
+// assigned to that same person: they still hear of the reply that was queued
+// before.
+func TestFollowers_BeingAssignedBeforeTheSendDoesNotLoseTheQueuedReplyMail(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	tk := newStaffTicket(t, h) // nobody holds it
+	followAs(t, h, h.session(t, asStaff), tk)
+	m := wireStaffMail(t, h)
+
+	requesterReplies(t, h, tk) // follower mail queued
+	_, err := h.ticketSvc.Assign(context.Background(), tk.ID, &h.staffID, nil, adminActor(h))
+	require.NoError(t, err)
+
+	// The assignment mail and the reply mail.
+	require.Equal(t, []string{"staff@test.local", "staff@test.local"}, m.recipients(t))
+}
+
+// Mia is in the group that holds the ticket with Ann, and follows it. The
+// group is not mailed for a reply while Ann holds it, so Mia's follow counts.
+func TestFollowers_AGroupMemberWhoFollowsIsMailedWhileAnotherMemberHoldsTheTicket(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	ann := seedStaffMember(t, h, "ann")
+	g, err := h.groupSvc.Create(ctx, "Desk", "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.AddMember(ctx, g.ID, ann.ID))
+	require.NoError(t, h.groupSvc.AddMember(ctx, g.ID, h.staffID)) // Mia
+	tk := newStaffTicket(t, h)
+	_, err = h.ticketSvc.Assign(ctx, tk.ID, &ann.ID, &g.ID, adminActor(h))
+	require.NoError(t, err)
+	followAs(t, h, h.session(t, asStaff), tk)
+	setPrefs(t, h, user.EmailPreferencesPatch{Group: flag(false)})
+	m := wireStaffMail(t, h)
+
+	requesterReplies(t, h, tk)
+
+	require.ElementsMatch(t, []string{"ann@test.local", "staff@test.local"}, m.recipients(t))
+}

@@ -419,17 +419,17 @@ func TestStaffFanout_OneEmailPerPersonAcrossAssigneeGroupAndFollower(t *testing.
 	require.Equal(t, notification.SwitchFollow, reasons[plain.ID])
 }
 
-// Erik, 2026-10-14: the assignee and the assigned group "follow" the ticket
-// from a practical point of view, so they get no follower mail. Their own
-// switches decide, and turning one off does not bring the follower mail back.
-func TestStaffFanout_TheAssigneeAndTheGroupNeverGetFollowerMail(t *testing.T) {
+// Erik, 2026-10-14: the assignee always, and the assigned group's members when
+// the group itself is mailed for the event (an assignment, or a reply on a
+// ticket nobody holds), get no follower mail. Their own switches decide, and
+// following on top does not bring back what they turned off.
+func TestStaffFanout_TheAssigneeAndAMailedGroupNeverGetFollowerMail(t *testing.T) {
 	assignee, member := staffUser("assignee"), staffUser("member")
 	assignee.EmailNotifyAssigned, assignee.EmailNotifyActivity = false, false
 	member.EmailNotifyGroup = false
 	g := uuid.New()
 	for name, ev := range map[string]notification.Event{
 		"assignment":                assignedEvent(nil, &assignee.ID, &g),
-		"reply on a held ticket":    requesterReply(&assignee.ID, &g),
 		"reply on a group's ticket": requesterReply(nil, &g),
 		"assignment to the group":   assignedEvent(nil, nil, &g),
 	} {
@@ -443,6 +443,55 @@ func TestStaffFanout_TheAssigneeAndTheGroupNeverGetFollowerMail(t *testing.T) {
 			require.Empty(t, recipientsOf(next))
 		})
 	}
+}
+
+// Ann holds a ticket in group G. Mia is in G and follows it. The group is not
+// mailed for a reply while Ann holds the ticket, so Mia's follow counts.
+func TestStaffFanout_AGroupMemberWhoFollowsAHeldTicketIsMailedOnAReply(t *testing.T) {
+	ann, mia := staffUser("ann"), staffUser("mia")
+	mia.EmailNotifyGroup = false // irrelevant: this is not a group mail
+	g := uuid.New()
+	ev := requesterReply(&ann.ID, &g)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(ann, mia), fakeStaffGroups{g: {ann.ID, mia.ID}},
+		fakeStaffFollowers{ev.TicketID: {ann.ID, mia.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{ann.ID, mia.ID}, recipientsOf(next), "Ann as the assignee, Mia as a follower, once each")
+	require.Equal(t, notification.SwitchFollow, next.got[len(next.got)-1].StaffReason)
+}
+
+// The group was mailed for an assignment, so a member's own group switch
+// decides, whether or not they follow.
+func TestStaffFanout_AGroupMemberWithTheSwitchOffGetsNothingOnAnAssignment(t *testing.T) {
+	member := staffUser("member")
+	member.EmailNotifyGroup = false
+	g := uuid.New()
+	ev := assignedEvent(nil, nil, &g)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(member), fakeStaffGroups{g: {member.ID}},
+		fakeStaffFollowers{ev.TicketID: {member.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Empty(t, recipientsOf(next))
+}
+
+// A ticket nobody holds is mailed to its group on a reply; a member who also
+// follows it is mailed once, under the group.
+func TestStaffFanout_AGroupMemberFollowingAnUnheldTicketIsMailedOnceOnAReply(t *testing.T) {
+	member := staffUser("member")
+	g := uuid.New()
+	ev := requesterReply(nil, &g)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(member), fakeStaffGroups{g: {member.ID}},
+		fakeStaffFollowers{ev.TicketID: {member.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{member.ID}, recipientsOf(next))
+	require.Equal(t, notification.SwitchGroup, next.got[1].StaffReason)
 }
 
 // Never mail the person who made the change, even though they follow.
