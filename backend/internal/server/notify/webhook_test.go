@@ -995,8 +995,10 @@ func TestDispatch_FilteredHooksReceiveOnlyMatchingTickets(t *testing.T) {
 }
 
 // A filter changes whether a hook fires, never what it is sent: the body a
-// filtered hook receives is the same bytes an unfiltered one does, and both
-// are the bytes of the same event without attrs.
+// filtered hook receives is the same bytes an unfiltered one does, and those
+// are the ids-only raw body, with nothing of the event's attrs in it. The
+// expected bytes are a literal, not rawBody's output, so the code under test is
+// not its own oracle.
 func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	srv, deliveries := newDeliveryRecorder(t)
 	store := fakeWebhookStore{
@@ -1007,12 +1009,9 @@ func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
-	// want is the body of the event with no attrs: the bytes every receiver got
-	// before filters existed. Since #448 that is the ids-only raw body
-	// (rawBody), not json.Marshal of the whole event.
+	const want = `{"Type":"ticket.replied","TicketID":"11111111-2222-3333-4444-555555555555",` +
+		`"ActorID":"22222222-3333-4444-5555-666666666666","Payload":null,"OccurredAt":"2026-09-25T12:00:00Z"}`
 	ev := fixtureReplyEvent(false)
-	want, err := rawBody(ev)
-	require.NoError(t, err)
 	ev.Attrs = &notification.TicketAttrs{Priority: "critical", CategoryID: uuid.New()}
 	require.NoError(t, disp.Dispatch(context.Background(), ev))
 
@@ -1025,8 +1024,12 @@ func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 			t.Fatal("both hooks should receive the event")
 		}
 	}
-	require.Equal(t, want, got["/plain"])
-	require.Equal(t, want, got["/filtered"])
+	for path, body := range got {
+		require.Equal(t, want, string(body), path)
+		require.NotContains(t, string(body), ev.Attrs.CategoryID.String(), path+": the category id leaked")
+		require.NotContains(t, string(body), "critical", path+": the priority leaked")
+	}
+	require.Len(t, got, 2)
 }
 
 // An event without attrs (one queued before #413) is delivered to a filtered
