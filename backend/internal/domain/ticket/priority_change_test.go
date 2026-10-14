@@ -184,6 +184,20 @@ func TestChangePriority_SamePriorityIsANoOp(t *testing.T) {
 	require.Nil(t, h.store.slaRows(seeded.ID)[0].supersededAt)
 }
 
+// The same priority is not a trigger for a re-match either: a ticket with no
+// record, under a priority a policy now covers, does not get one from a
+// double-submit.
+func TestChangePriority_SamePriorityDoesNotReMatchTheSLA(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium() // no record; a policy exists for medium
+
+	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityMedium, priorityStaff)
+
+	require.NoError(t, err)
+	require.Empty(t, h.store.slaRows(seeded.ID))
+	require.Empty(t, h.auditStore.entries)
+}
+
 // A priority change announces nothing: there is no event for it (decided on
 // #468, Q9), and #413's priority filter must never see one.
 func TestChangePriority_DispatchesNoNotification(t *testing.T) {
