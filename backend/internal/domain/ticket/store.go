@@ -64,6 +64,10 @@ type Store interface {
 	// the type — the pairings the foreign keys only enforce at the INSERT,
 	// which is after the tracking number has been taken.
 	CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error)
+	// ArchivedCTINode names the first archived level among the ids given
+	// ("category", "type" or "item"), or "" when none is; a nil id is not
+	// checked. It is how "nobody newly picks an archived node" is decided.
+	ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error)
 	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
 	// ListResolvedBefore lists tickets resolved before the given time.
 	// resolvedStatusID must be the Resolved status's id: without it, a row

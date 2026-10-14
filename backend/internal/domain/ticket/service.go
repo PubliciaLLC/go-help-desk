@@ -413,6 +413,16 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
 	}
 
+	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
+	// copies the closed ticket's classification, which may have been retired
+	// since, and that is not a new pick. A requester's follow-up is held to
+	// the active-only rule by its own caller (see CreateRequesterFollowUp).
+	if followUpOf == nil {
+		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
+			return Ticket{}, err
+		}
+	}
+
 	// A supplied reporter, checked for the same reason the priority above is:
 	// everything after this takes a tracking number first, so an id the
 	// foreign key refuses costs a 500 and a permanent gap in the sequence.
@@ -1869,9 +1879,64 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// refuseArchivedPick is ErrValidation when a classification being picked
+// includes an archived category, type or item. It is the one place the rule
+// lives, so REST, MCP and the guest form all obey it, and it holds for every
+// role: a retired node is out of circulation for staff and administrators too
+// (#421).
+//
+// current is the ticket's existing classification when this is a reclassify,
+// nil for a new ticket. A level that is unchanged is not a new pick and is not
+// checked, so a ticket already sitting in an archived node keeps it through any
+// edit that leaves that level alone.
+func (s *Service) refuseArchivedPick(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, current *Ticket) error {
+	var cat *uuid.UUID
+	if current == nil || current.CategoryID != categoryID {
+		cat = &categoryID
+	}
+	if current != nil {
+		if sameID(typeID, current.TypeID) {
+			typeID = nil
+		}
+		if sameID(itemID, current.ItemID) {
+			itemID = nil
+		}
+	}
+	level, err := s.store.ArchivedCTINode(ctx, cat, typeID, itemID)
+	if err != nil {
+		return err
+	}
+	if level != "" {
+		return fmt.Errorf("%w: %s_id is not an active %s", ErrValidation, level, level)
+	}
+	return nil
+}
+
+func sameID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // UpdateCTI changes the category/type/item classification of a ticket.
 // Only staff and admin may call this; enforcement is at the handler layer.
+// Moving INTO an archived node is refused for them too (refuseArchivedPick).
 func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (Ticket, error) {
+	if err := s.ValidateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, err
+	}
+	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	}
+	return s.store.GetByID(ctx, id)
+}
+
+// ValidateCTI runs every check UpdateCTI makes, without writing. A caller that
+// applies other changes in the same request (the PATCH handler) calls it first,
+// so a refused classification leaves the whole request unapplied rather than
+// half done.
+func (s *Service) ValidateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error {
 	// The same checks Create makes, because reclassifying is creating a
 	// classification.
 	//
@@ -1882,21 +1947,21 @@ func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeI
 	// exist. An unknown id answered 500 from the foreign key rather than
 	// saying which id was wrong.
 	if ok, err := s.store.CategoryExists(ctx, categoryID); err != nil {
-		return Ticket{}, err
+		return err
 	} else if !ok {
-		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+		return fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
 	}
 	if ok, err := s.store.CTIIsCoherent(ctx, categoryID, typeID, itemID); err != nil {
-		return Ticket{}, err
+		return err
 	} else if !ok {
-		return Ticket{}, fmt.Errorf(
+		return fmt.Errorf(
 			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
 	}
-
-	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
-		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	current, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return err
 	}
-	return s.store.GetByID(ctx, id)
+	return s.refuseArchivedPick(ctx, categoryID, typeID, itemID, &current)
 }
 
 // GetByTrackingNumber returns the ticket with the given tracking number.

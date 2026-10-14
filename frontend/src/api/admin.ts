@@ -157,7 +157,7 @@ export async function createType(categoryId: string, input: { name: string; sort
   return res.data
 }
 
-export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number }): Promise<TicketType> {
+export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
   const res = await api.patch<TicketType>(`/admin/categories/${categoryId}/types/${typeId}`, patch)
   return res.data
 }
@@ -183,7 +183,7 @@ export async function createItem(
   return res.data
 }
 
-export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number }): Promise<TicketItem> {
+export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
   const res = await api.patch<TicketItem>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`, patch)
   return res.data
 }
