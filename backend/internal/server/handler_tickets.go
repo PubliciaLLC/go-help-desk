@@ -554,6 +554,15 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "priority must be one of critical, high, medium, low")
 		return
 	}
+	// Whether the caller may change a priority at all is a role question and
+	// does not depend on the ticket, so it is answered here, before any other
+	// change in the request is saved. (ChangePriority applies the same rule.)
+	if body.Priority != nil {
+		if err := ticket.CanChangePriority(actor.Role); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 
 	// A refused classification must leave the whole request unapplied, so it is
 	// checked before the status or the assignee is touched (#421). The write
@@ -564,6 +573,18 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.tickets.ValidateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
+	// A Resolved or Closed ticket's priority cannot change, and a request that
+	// would leave the ticket in either state is refused whole: ChangePriority
+	// runs last, so without this the status or assignment ahead of it would be
+	// saved and then answered with a 409. After the 400 and the 403s above, so
+	// those win when several things are wrong.
+	if body.Priority != nil {
+		if err := s.tickets.ValidatePriorityChange(r.Context(), id, body.StatusID); err != nil {
 			handleError(w, err)
 			return
 		}

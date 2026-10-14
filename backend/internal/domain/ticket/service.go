@@ -969,10 +969,10 @@ func (s *Service) ChangePriority(ctx context.Context, ticketID uuid.UUID, p Prio
 		// another one must not stamp the record it supersedes with a time from
 		// before that record existed. superseded_at orders a ticket's history.
 		now := time.Now()
-		if actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin {
-			return ErrForbidden
+		if err := CanChangePriority(actor.Role); err != nil {
+			return err
 		}
-		if t.StatusID == s.sys.closedID || t.StatusID == s.sys.resolvedID {
+		if s.isFinished(t.StatusID) {
 			return ErrClosed
 		}
 		out, err = s.changePriorityInTx(ctx, st, au, t, p, PriorityChangeManual, actor, now)
@@ -981,6 +981,38 @@ func (s *Service) ChangePriority(ctx context.Context, ticketID uuid.UUID, p Prio
 		return Ticket{}, err
 	}
 	return out, nil
+}
+
+// isFinished reports whether a status is Resolved or Closed: the two states in
+// which a ticket's priority is frozen (#443).
+func (s *Service) isFinished(statusID uuid.UUID) bool {
+	return statusID == s.sys.closedID || statusID == s.sys.resolvedID
+}
+
+// ValidatePriorityChange is the closed-state check ChangePriority makes, without
+// writing, for a caller that will apply other changes first. statusAfter is the
+// status the same request moves the ticket to, or nil when it leaves the status
+// alone. The priority is refused (ErrClosed) when the ticket would end up
+// Resolved or Closed: either the request moves it there, or it is already there
+// and the request does not move it out. A move out of Closed that the reopen
+// policy refuses is UpdateStatus's refusal to give; here it counts as moving
+// out. ChangePriority still checks on the locked row, so this is the early
+// answer, not the guarantee.
+func (s *Service) ValidatePriorityChange(ctx context.Context, ticketID uuid.UUID, statusAfter *uuid.UUID) error {
+	if statusAfter != nil {
+		if s.isFinished(*statusAfter) {
+			return ErrClosed
+		}
+		return nil
+	}
+	t, err := s.store.GetByID(ctx, ticketID)
+	if err != nil {
+		return err
+	}
+	if s.isFinished(t.StatusID) {
+		return ErrClosed
+	}
+	return nil
 }
 
 // changePriorityInTx is ChangePriority's body for a caller that already holds

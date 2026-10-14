@@ -2993,8 +2993,14 @@ paths:
         classification, then priority. Each is saved on its own, with no
         transaction around the four. If a later one is refused, the earlier ones
         have already been saved and the response is an error. The exceptions
-        are a refused classification and an invalid priority value, which are
-        checked before anything is saved.
+        are checked before anything is saved: a refused classification, an
+        invalid priority value (400), a priority from a caller who may not
+        change priorities (403, a reporting user), and a priority on a request
+        that would leave the ticket Resolved or Closed (409 ticket_closed, see
+        below). When several apply, the order is the invalid value, then the
+        priority role, then the classification, then the closed state. A
+        reporting user's status, assignment and classification are each
+        refused before any write too.
         Who may do what:
         - A reporting user cannot change the status (403 forbidden), cannot
           assign (403 forbidden), cannot reclassify (403, "only staff can
@@ -3002,12 +3008,16 @@ paths:
         - priority is one of critical, high, medium and low. Anything else
           answers 400 bad_request before any change in the request is saved. A
           Resolved or Closed ticket's priority cannot be changed: 409
-          ticket_closed, and the priority and the SLA stay as they were (a
-          status change earlier in the same request has already been saved, so
-          a request that resolves a ticket and changes its priority saves the
-          resolution and answers 409). Sending the ticket's current priority on
-          an open ticket is accepted and changes nothing: no audit entry, no SLA
-          change.
+          ticket_closed, and the priority and the SLA stay as they were. The
+          whole request is refused, nothing in it saved: that covers a request
+          that moves the ticket to Resolved or Closed and sends a priority, and
+          one that assigns or unassigns a ticket that is already Resolved or
+          Closed and sends a priority. A request that moves the ticket out of
+          Resolved to an open status is not refused for its priority (moving
+          out of Closed is still decided by closed_reopen_policy, with the
+          same nothing-saved result when refused). Sending the ticket's current
+          priority on an open ticket is accepted and changes nothing: no audit
+          entry, no SLA change.
         - Only an administrator may set the status to Closed (403 forbidden for
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.

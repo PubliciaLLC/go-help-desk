@@ -239,7 +239,10 @@ change what state the ticket is in, and removing them is not what was decided.
 (A staff reply on a closed ticket still mails the guest a read-only link, below.)
 **Priority is the exception:** it cannot be changed on a Resolved or Closed
 ticket (`409 ticket_closed`), because a finished ticket's priority is part of
-what its SLA was measured against (#443).
+what its SLA was measured against (#443). A `PATCH /tickets/{id}` that sends a
+priority and would leave the ticket Resolved or Closed (or that touches one
+already there) is refused whole with that `409`: the status or assignment in the
+same request is not saved first.
 Over MCP `update_ticket_status` answers a move out of Closed with the closed
 refusal and names the follow-up instead.
 
@@ -2874,7 +2877,9 @@ below).
 **Resolved and Closed tickets are refused.** A priority change on either answers
 `409 ticket_closed`, the same refusal every other write to a closed ticket gets,
 and changes nothing: not the priority, not the SLA. The check is made on the
-locked row.
+locked row. `PATCH /tickets/{id}` also asks it before it saves anything else in the request
+(role first, then the closed state), so a status or assignment sent with the
+priority is not left behind by the refusal.
 
 **A record's facts are never rewritten.** A ticket can have a history of SLA
 records, of which at most one is *current*. A re-match does not edit the current
