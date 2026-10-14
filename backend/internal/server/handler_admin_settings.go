@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
@@ -636,6 +637,9 @@ type reopenTargetStatus struct {
 // deactivated status. A name that matches nothing is not reported here: it
 // already falls back to New and nobody picked a retired status.
 func (s *Server) reopenTargetInactive(ctx context.Context) (reopenTargetStatus, error) {
+	if s.reopenTargetCheck != nil {
+		return s.reopenTargetCheck(ctx)
+	}
 	statuses, err := s.tickets.ListStatuses(ctx)
 	if err != nil {
 		return reopenTargetStatus{}, err
@@ -699,10 +703,12 @@ type scanStatus struct {
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
 	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
+	// An unreadable status list must not hide the other warnings: log it and
+	// report no problem with the reopen target.
 	reopen, err := s.reopenTargetInactive(r.Context())
 	if err != nil {
-		handleError(w, err)
-		return
+		slog.ErrorContext(r.Context(), "checking the reopen target for the security warnings failed", "error", err)
+		reopen = reopenTargetStatus{}
 	}
 	JSON(w, http.StatusOK, securityWarnings{
 		ReopenTarget:       reopen,

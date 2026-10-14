@@ -18,3 +18,12 @@ func (failingSpend) SpendSAMLHandover(context.Context, string) (bool, error) {
 // shared transaction, so every later query would fail too and a handler that
 // wrongly ignored the error would still end in a 500.
 func (s *Server) FailSAMLSpendForTest() { s.sessions = failingSpend{s.sessions} }
+
+// FailReopenTargetCheckForTest makes the reopen-target check fail, as a status
+// list that cannot be read would. Injected, not provoked: breaking the table
+// aborts the harness's shared transaction and the status save before it.
+func (s *Server) FailReopenTargetCheckForTest() {
+	s.reopenTargetCheck = func(context.Context) (reopenTargetStatus, error) {
+		return reopenTargetStatus{}, errors.New("injected status list failure")
+	}
+}

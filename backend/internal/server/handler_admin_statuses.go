@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -189,12 +190,14 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	// Deactivating the status reopened tickets are sent to leaves them going
 	// to New. Say so now, while the administrator is looking at it.
+	// The status is already saved, so a failure here is logged and the saved
+	// row is returned without the warning: never a 500 for a change that
+	// happened.
 	reopen, err := s.reopenTargetInactive(r.Context())
 	if err != nil {
-		handleError(w, err)
-		return
+		slog.ErrorContext(r.Context(), "checking the reopen target after a status change failed", "error", err)
 	}
-	if reopen.Inactive && reopen.Name == saved.Name {
+	if err == nil && reopen.Inactive && reopen.Name == saved.Name {
 		JSON(w, http.StatusOK, struct {
 			ticket.Status
 			Warning string `json:"warning"`

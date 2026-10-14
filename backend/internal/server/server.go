@@ -187,6 +187,11 @@ type Server struct {
 	router   *chi.Mux
 	sessions SessionStore
 
+	// reopenTargetCheck replaces reopenTargetInactive. Nil in production; a
+	// test sets it to make the check fail after a status has been saved,
+	// which cannot be done by breaking a table (see export_test.go).
+	reopenTargetCheck func(context.Context) (reopenTargetStatus, error)
+
 	users        *user.Service
 	tickets      *ticket.Service
 	registration *registration.Service

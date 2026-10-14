@@ -1153,6 +1153,7 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	inactive := false
 	for _, st := range statuses {
 		if st.Name != want {
 			continue
@@ -1163,16 +1164,21 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		// unresolvable name, until an administrator picks another. The admin
 		// security warnings say so.
 		if !st.Active {
-			slog.WarnContext(ctx, "configured reopen target status is inactive; falling back to New",
-				"configured", want)
+			inactive = true
 			break
 		}
 		return st.ID, nil
 	}
 	for _, st := range statuses {
 		if st.Name == ticket.StatusNameNew {
-			slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
-				"configured", want)
+			// One message, for the one condition that applies.
+			if inactive {
+				slog.WarnContext(ctx, "configured reopen target status is inactive; falling back to New",
+					"configured", want)
+			} else {
+				slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
+					"configured", want)
+			}
 			return st.ID, nil
 		}
 	}
