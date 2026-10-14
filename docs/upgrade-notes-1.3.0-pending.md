@@ -45,6 +45,14 @@ The following variables are now honoured when set in `docker/.env`. They are aut
 - **Description**: How long a login waits before checking the password, for accounts that have spent their failed-attempt budget. Bounds online guessing to the server's bcrypt throughput (roughly 10–15 guesses/second/core). Must be a positive duration (e.g., `1s`, `500ms`, `1m`); cannot be zero at startup.
 - **Impact**: A legitimate user who exhausts the budget still succeeds — their correct password is always honoured, just after the delay.
 
+## MCP: Requests From Another Origin Are Refused (#460)
+
+Every MCP route (`/mcp`, `/mcp/sse`, `/mcp/message` and anything else under `/mcp/`) now answers `403 origin_not_allowed` when the request carries an `Origin` header that is not your `BASE_URL`'s origin, before authentication is looked at. Requests with no `Origin` header, which is what SDKs, editors and `curl` send, are unaffected.
+
+- A browser-based MCP client served from a different origin, or a reverse proxy that injects an `Origin` header, is now refused. Serve the client from `BASE_URL`'s origin or stop the proxy adding the header.
+- 1.2.x accepted these requests on the SSE routes. This closes a path by which a web page on a sibling site could act through a signed-in staff member's session cookie. Upgrade if you expose MCP over SSE.
+- A `BASE_URL` with a non-ASCII host has no usable origin and refuses everything that sends an `Origin`; write it in punycode.
+
 ## JWT Secret (`JWT_SECRET`)
 
 `JWT_SECRET` is now **optional**:
