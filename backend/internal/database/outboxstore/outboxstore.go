@@ -65,6 +65,14 @@ func (s *Store) Fail(ctx context.Context, id uuid.UUID, lastErr string) error {
 	return nil
 }
 
+// RewriteEvent replaces a row's event. See notify.EventRewriter.
+func (s *Store) RewriteEvent(ctx context.Context, id uuid.UUID, event []byte) error {
+	if err := s.q.RewriteNotificationEvent(ctx, dbgen.RewriteNotificationEventParams{ID: id, Event: event}); err != nil {
+		return fmt.Errorf("rewriting notification event: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) DeleteFailedBefore(ctx context.Context, cutoff time.Time) (int64, error) {
 	n, err := s.q.DeleteFailedNotificationsBefore(ctx, sql.NullTime{Time: cutoff, Valid: true})
 	if err != nil {
@@ -73,4 +81,15 @@ func (s *Store) DeleteFailedBefore(ctx context.Context, cutoff time.Time) (int64
 	return n, nil
 }
 
-var _ notification.Outbox = (*Store)(nil)
+func (s *Store) EmailHealth(ctx context.Context) (notification.EmailHealth, error) {
+	r, err := s.q.EmailOutboxHealth(ctx)
+	if err != nil {
+		return notification.EmailHealth{}, fmt.Errorf("reading email outbox health: %w", err)
+	}
+	return notification.EmailHealth{Failing: int(r.Failing), LastError: r.LastError}, nil
+}
+
+var (
+	_ notification.Outbox       = (*Store)(nil)
+	_ notification.HealthReader = (*Store)(nil)
+)

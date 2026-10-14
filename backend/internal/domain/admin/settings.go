@@ -1,6 +1,9 @@
 package admin
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // Well-known setting keys. The settings table uses JSONB values so any
 // JSON-serialisable type can be stored.
@@ -298,6 +301,39 @@ type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
 	Set(ctx context.Context, key string, value []byte) error
 	List(ctx context.Context) (map[string][]byte, error)
+}
+
+// KnownKeys is every setting PATCH /admin/settings accepts: each Key constant
+// above. A key outside it is refused rather than stored (#421), because a typo
+// such as "mfa_enabld" used to answer 204 and leave a row nothing reads while
+// the real setting stayed as it was. A test requires this list and the
+// constants to agree, so adding a constant without listing it fails the build.
+func KnownKeys() []string {
+	return []string{
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
+		KeyGuestSubmissionEnabled, KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyReopenWindowDays, KeyReopenTargetStatusName,
+		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
+		KeySiteName, KeySiteLogoURL,
+		KeyClosedReopenPolicy, KeyAuditMaskRequesterNames,
+		KeyAttachmentAllowedTypes, KeyAttachmentInfectedHandling, KeyAttachmentMismatchHandling,
+		KeyAttachmentVTLookup, KeyAttachmentVTAPIKey,
+		KeyAttachmentReputationProvider, KeyAttachmentReputationAPIKey,
+		KeyAttachmentReputationVirusTotalEnabled, KeyAttachmentReputationVirusTotalKey,
+		KeyAttachmentReputationMetaDefenderEnabled, KeyAttachmentReputationMetaDefenderKey,
+		KeyAttachmentReputationPolySwarmEnabled, KeyAttachmentReputationPolySwarmKey,
+		KeyAttachmentReputationCIRCLEnabled, KeyAttachmentReputationRefresh,
+		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+		KeyTicketPrefix, KeyTicketScopeEnforced,
+		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
+		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays,
+	}
+}
+
+// IsKnownKey reports whether key is one KnownKeys lists.
+func IsKnownKey(key string) bool {
+	return slices.Contains(KnownKeys(), key)
 }
 
 // AuthCriticalKeys are the settings that decide who may authenticate and how.

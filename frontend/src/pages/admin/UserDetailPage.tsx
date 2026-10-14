@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { authTypeLabel } from '@/lib/authType'
 import { useParams, useNavigate, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -188,13 +189,6 @@ export function UserDetailPage() {
   const memberGroupIds = new Set(user.groups.map((g) => g.id))
   const availableGroups = allGroups.filter((g) => !memberGroupIds.has(g.id))
 
-  function authTypeLabel(t: string) {
-    if (t === 'saml') return 'SSO (SAML)'
-    if (t === 'both') return 'Local + SSO'
-    if (t === 'service') return 'Never signs in'
-    return 'Local'
-  }
-
   return (
     <Layout>
       <div className="space-y-6">
@@ -288,7 +282,7 @@ export function UserDetailPage() {
               </div>
               <div>
                 <p className="text-xs text-gray-400 mb-0.5">Login type</p>
-                <p className="font-medium text-gray-800">{authTypeLabel(user.auth_type)}</p>
+                <p className="font-medium text-gray-800">{authTypeLabel(user.auth_type, true)}</p>
               </div>
               {!isService && (
               <div>

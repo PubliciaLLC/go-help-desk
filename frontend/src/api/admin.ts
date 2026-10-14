@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { api, extractErrorCode } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
 
 // DELETE where a not_found 404 means the row is already gone (#418). That is the
@@ -37,6 +37,25 @@ export async function getSiteConfig(): Promise<SiteConfig> {
 export async function listUsers(limit = 200, offset = 0): Promise<AdminUser[]> {
   const res = await api.get<AdminUser[]>('/admin/users', { params: { limit, offset } })
   return res.data
+}
+
+export const USERS_PER_PAGE = 50
+
+/**
+ * One page of the admin user list (#449). Sending `page` is what switches the
+ * server into paged mode; without it the endpoint answers the first 200 and
+ * ignores everything else. The total is in X-Total-Count, not the body.
+ */
+export async function listUsersPage(
+  page: number,
+  filters: { q?: string; role?: Role | '' } = {},
+): Promise<{ users: AdminUser[]; total: number }> {
+  const params: Record<string, string | number> = { page, per_page: USERS_PER_PAGE }
+  if (filters.q) params.q = filters.q
+  if (filters.role) params.role = filters.role
+  const res = await api.get<AdminUser[]>('/admin/users', { params })
+  const total = Number(res.headers?.['x-total-count'])
+  return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }
 }
 
 export async function getUser(id: string): Promise<AdminUser> {
@@ -157,7 +176,7 @@ export async function createType(categoryId: string, input: { name: string; sort
   return res.data
 }
 
-export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number }): Promise<TicketType> {
+export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
   const res = await api.patch<TicketType>(`/admin/categories/${categoryId}/types/${typeId}`, patch)
   return res.data
 }
@@ -183,7 +202,7 @@ export async function createItem(
   return res.data
 }
 
-export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number }): Promise<TicketItem> {
+export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
   const res = await api.patch<TicketItem>(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`, patch)
   return res.data
 }
@@ -411,6 +430,7 @@ export async function createWebhook(input: {
   secret?: string
   payload_format?: WebhookPayloadFormat
   enabled?: boolean
+  filter?: WebhookFilter
 }): Promise<WebhookConfig> {
   const res = await api.post<WebhookConfig>('/admin/webhooks', input)
   return res.data
@@ -418,7 +438,7 @@ export async function createWebhook(input: {
 
 export async function updateWebhook(
   id: string,
-  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format'>> & {
+  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format' | 'filter'>> & {
     // Write-only: sent to replace the stored secret, never returned.
     secret?: string
   }
@@ -429,6 +449,16 @@ export async function updateWebhook(
 
 export async function deleteWebhook(id: string): Promise<void> {
   await api.delete(`/admin/webhooks/${id}`)
+}
+
+export async function listWebhookDeliveries(id: string): Promise<WebhookDeliveryRecord[]> {
+  const res = await api.get<WebhookDeliveryRecord[]>(`/admin/webhooks/${id}/deliveries`)
+  return res.data
+}
+
+// Queues the delivery's event again as a new delivery; the server answers 202.
+export async function redeliverWebhook(id: string, deliveryId: string): Promise<void> {
+  await api.post(`/admin/webhooks/${id}/deliveries/${deliveryId}/redeliver`)
 }
 
 // ── Custom field definitions ──────────────────────────────────────────────────
@@ -628,6 +658,40 @@ export interface SecurityWarnings {
    * predates it reads as none.
    */
   oauth_clients_without_groups?: string[]
+
+  /**
+   * The configured reopen target status has been deactivated, so reopened
+   * tickets go to New instead. Optional so an older server reads as healthy.
+   */
+  reopen_target?: { inactive: boolean; name?: string }
+
+  /**
+   * Whether passkeys can be used (#494). They cannot when BASE_URL is an IP
+   * address, a single-label host or non-ASCII. Optional so a server that
+   * predates the field reads as fine.
+   */
+  passkeys?: { available: boolean; reason: string }
+
+  /**
+   * Whether email can be sent and is being delivered (#455, #456). Optional so
+   * older fixtures and a server that predates it read as healthy.
+   */
+  email?: EmailWarning
+}
+
+export interface EmailWarning {
+  /** False until both SMTP_HOST and SMTP_FROM are set. */
+  enabled: boolean
+  /** Which of SMTP_HOST and SMTP_FROM is unset. */
+  missing: string[]
+  /** A feature that emails the person is on although email is off. */
+  signup_without_email: boolean
+  guest_submission_without_email: boolean
+  /** Email is retrying after an error, or failed within the last day. */
+  failing: boolean
+  failing_count: number
+  /** Newest error, email addresses already replaced by [address]. */
+  last_error: string
 }
 
 export interface AttachmentScanningWarning {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -24,41 +25,61 @@ func (s *Server) handleListStatuses(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
+	count, err := s.statusCounter(r)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	for i := range statuses {
+		// A count that failed fails the request. It used to leave 0 in place,
+		// which the admin page reads as "no tickets, safe to hard-delete".
+		if statuses[i].TicketCount, err = count(statuses[i].ID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	JSON(w, http.StatusOK, statuses)
+}
 
-	// Ticket counts are scoped to the caller:
-	//   - admin: every ticket (also drives the admin statuses page hard-delete check)
-	//   - staff: tickets assigned to them or any of their groups
-	//   - user:  tickets they reported
+// statusCounter returns the ticket count for a status as the caller may see it:
+//   - admin: every ticket (also drives the admin statuses page hard-delete check)
+//   - staff: tickets assigned to them or any of their groups
+//   - user:  tickets they reported
+func (s *Server) statusCounter(r *http.Request) (func(uuid.UUID) (int64, error), error) {
+	ctx := r.Context()
 	a := authmw.GetActor(r)
 	var groupIDs []uuid.UUID
 	if a != nil && a.Role == user.RoleStaff {
 		groups, err := s.groups.ListGroupsForUser(ctx, a.UserID)
 		if err != nil {
-			handleError(w, err)
-			return
+			return nil, err
 		}
 		groupIDs = make([]uuid.UUID, len(groups))
 		for i, g := range groups {
 			groupIDs[i] = g.ID
 		}
 	}
-
-	for i := range statuses {
-		var count int64
-		var cerr error
+	return func(statusID uuid.UUID) (int64, error) {
 		switch {
 		case a == nil || a.Role == user.RoleAdmin:
-			count, cerr = s.tickets.CountByStatus(ctx, statuses[i].ID)
+			return s.tickets.CountByStatus(ctx, statusID)
 		case a.Role == user.RoleStaff:
-			count, cerr = s.tickets.CountByStatusForAssignee(ctx, statuses[i].ID, a.UserID, groupIDs)
+			return s.tickets.CountByStatusForAssignee(ctx, statusID, a.UserID, groupIDs)
 		default:
-			count, cerr = s.tickets.CountByStatusForReporter(ctx, statuses[i].ID, a.UserID)
+			return s.tickets.CountByStatusForReporter(ctx, statusID, a.UserID)
 		}
-		if cerr == nil {
-			statuses[i].TicketCount = count
-		}
+	}, nil
+}
+
+// statusWithCount fills in the count for the one status a POST or PATCH
+// answers with, so the response has the shape the list has.
+func (s *Server) statusWithCount(r *http.Request, st ticket.Status) (ticket.Status, error) {
+	count, err := s.statusCounter(r)
+	if err != nil {
+		return st, err
 	}
-	JSON(w, http.StatusOK, statuses)
+	st.TicketCount, err = count(st.ID)
+	return st, err
 }
 
 func (s *Server) handleCreateStatus(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +101,10 @@ func (s *Server) handleCreateStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	saved, err := s.tickets.AddStatus(r.Context(), st)
 	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if saved, err = s.statusWithCount(r, saved); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -157,6 +182,26 @@ func (s *Server) handleUpdateStatus(w http.ResponseWriter, r *http.Request) {
 	saved, err := s.tickets.SaveStatus(r.Context(), st)
 	if err != nil {
 		handleError(w, err)
+		return
+	}
+	if saved, err = s.statusWithCount(r, saved); err != nil {
+		handleError(w, err)
+		return
+	}
+	// Deactivating the status reopened tickets are sent to leaves them going
+	// to New. Say so now, while the administrator is looking at it.
+	// The status is already saved, so a failure here is logged and the saved
+	// row is returned without the warning: never a 500 for a change that
+	// happened.
+	reopen, err := s.reopenTargetInactive(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "checking the reopen target after a status change failed", "error", err)
+	}
+	if err == nil && reopen.Inactive && reopen.Name == saved.Name {
+		JSON(w, http.StatusOK, struct {
+			ticket.Status
+			Warning string `json:"warning"`
+		}{saved, reopenTargetWarning(saved.Name)})
 		return
 	}
 	JSON(w, http.StatusOK, saved)

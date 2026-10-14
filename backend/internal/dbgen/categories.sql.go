@@ -116,9 +116,21 @@ func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
 }
 
 const deleteCategory = `-- name: DeleteCategory :execrows
-DELETE FROM categories WHERE id = $1
+WITH gone AS (
+    DELETE FROM custom_field_assignments
+    WHERE (scope_type = 'category' AND scope_id = $1)
+       OR (scope_type = 'type' AND scope_id IN (SELECT t.id FROM types t WHERE t.category_id = $1))
+       OR (scope_type = 'item' AND scope_id IN (
+            SELECT i.id FROM items i JOIN types t ON t.id = i.type_id WHERE t.category_id = $1))
+)
+DELETE FROM categories WHERE categories.id = $1
 `
 
+// Takes the custom-field assignments of the category, of its types and of
+// their items with it (#419). custom_field_assignments.scope_id has no foreign
+// key, so they were left pointing at nothing. One statement, so the assignments
+// and the node go together or not at all: if the delete is refused (a ticket
+// arrived meanwhile), the assignments stay.
 func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteCategory, id)
 	if err != nil {
@@ -128,9 +140,13 @@ func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) (int64, erro
 }
 
 const deleteItem = `-- name: DeleteItem :execrows
-DELETE FROM items WHERE id = $1
+WITH gone AS (
+    DELETE FROM custom_field_assignments WHERE scope_type = 'item' AND scope_id = $1
+)
+DELETE FROM items WHERE items.id = $1
 `
 
+// As DeleteCategory: the item's field assignments go in the same statement.
 func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteItem, id)
 	if err != nil {
@@ -140,9 +156,16 @@ func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) (int64, error) {
 }
 
 const deleteType = `-- name: DeleteType :execrows
-DELETE FROM types WHERE id = $1
+WITH gone AS (
+    DELETE FROM custom_field_assignments
+    WHERE (scope_type = 'type' AND scope_id = $1)
+       OR (scope_type = 'item' AND scope_id IN (SELECT i.id FROM items i WHERE i.type_id = $1))
+)
+DELETE FROM types WHERE types.id = $1
 `
 
+// As DeleteCategory: the type's own and its items' field assignments go in the
+// same statement.
 func (q *Queries) DeleteType(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.ExecContext(ctx, deleteType, id)
 	if err != nil {

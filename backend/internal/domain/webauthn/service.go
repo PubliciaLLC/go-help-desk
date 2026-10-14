@@ -46,9 +46,19 @@ type Service struct {
 // baseURL is what the browser sees, so it decides the relying-party id and
 // the acceptable origin. A credential is bound to that origin: change the
 // instance's domain and every registered credential stops working and every
-// user re-registers. That makes BASE_URL part of whether authentication works
-// rather than only how links are built, which is why a wrong one is refused
-// here rather than defaulted.
+// user re-registers. That makes BASE_URL part of whether passkeys work rather
+// than only how links are built, which is why a wrong one is refused here
+// rather than defaulted: a default would produce credentials that silently
+// never verify.
+//
+// Refused does NOT mean the process stops. This used to be fatal at startup,
+// and that was reversed on purpose (#494): go-webauthn rejects an IP address
+// and a single-label host (localhost is accepted, 127.0.0.1 is not) and a
+// non-ASCII host, which is exactly what many LAN installs upgraded from 1.2
+// use as BASE_URL. Passkeys are an optional second factor, so the caller
+// (cmd/server) runs without them and tells administrators why, rather than
+// taking the whole help desk down. Nothing here changes: the error is still
+// returned and nothing is defaulted.
 func NewService(baseURL, siteName string, log *slog.Logger) (*Service, error) {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Hostname() == "" {

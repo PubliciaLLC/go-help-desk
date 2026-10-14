@@ -103,4 +103,16 @@ describe('service users on Admin -> Users', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
     expect(screen.getByText('No users found.')).toBeTruthy()
   })
+
+  // Users are paged on the server and it has no service-account filter, so the
+  // filter only sees the loaded page. The page must say so.
+  it('warns that the filter covers only the current page when there are more', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(api, 'get').mockResolvedValue({ data: [PERSON, SERVICE], headers: { 'x-total-count': '120' } })
+    renderWithQuery(<UsersPage />)
+    await screen.findByText('JIRA sync')
+    expect(screen.queryByText(/this page only/i)).toBeNull()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Show' }), 'service')
+    expect(screen.getByText(/2 accounts on this page only/i)).toBeTruthy()
+  })
 })

@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { authTypeLabel } from '@/lib/authType'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { listUsers, createUser } from '@/api/admin'
+import { listUsersPage, createUser, USERS_PER_PAGE } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -11,7 +12,7 @@ import { Select } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { PlusIcon } from 'lucide-react'
+import { PlusIcon, SearchIcon } from 'lucide-react'
 import type { Role } from '@/api/types'
 
 const ROLES: Role[] = ['admin', 'staff', 'user']
@@ -35,14 +36,27 @@ export function UsersPage() {
   const [formError, setFormError] = useState('')
   const [show, setShow] = useState<Show>('all')
 
-  const { data: users = [], isLoading } = useQuery({
-    queryKey: ['admin', 'users'],
-    queryFn: () => listUsers(),
-  })
+  // The box is a draft until submitted, so each keystroke is not a request.
+  const [searchDraft, setSearchDraft] = useState('')
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState<Role | ''>('')
+  const [page, setPage] = useState(1)
 
-  // Client-side: GET /admin/users takes limit/offset only, so this filters the
-  // page that was loaded. When paging (#467) lands this needs a server-side
-  // parameter, or a service user past the first page is invisible to it.
+  const { data, isLoading } = useQuery({
+    queryKey: ['admin', 'users', { page, search, roleFilter }],
+    queryFn: () => listUsersPage(page, { q: search, role: roleFilter }),
+    // Keep the old rows on screen while the next page loads rather than
+    // flashing a spinner between every click.
+    placeholderData: keepPreviousData,
+  })
+  const users = data?.users ?? []
+  const total = data?.total ?? 0
+  const firstShown = (page - 1) * USERS_PER_PAGE + 1
+  const lastShown = (page - 1) * USERS_PER_PAGE + users.length
+
+  // Client-side: GET /admin/users pages on the server (q and role are its only
+  // filters; there is none for service accounts), so this filters the page that
+  // was loaded. The hint below says so; a server-side parameter would fix it.
   const shown = users.filter((u) =>
     show === 'all' ? true : show === 'service' ? !!u.service_account : !u.service_account,
   )
@@ -124,6 +138,41 @@ export function UsersPage() {
           </Card>
         )}
 
+        <form
+          role="search"
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setSearch(searchDraft.trim())
+            setPage(1)
+          }}
+        >
+          <Input
+            type="search"
+            aria-label="Search users"
+            placeholder="Search name or email"
+            value={searchDraft}
+            onChange={(e) => setSearchDraft(e.target.value)}
+            className="max-w-xs"
+          />
+          <Button type="submit" variant="outline">
+            <SearchIcon className="mr-2 h-4 w-4" />
+            Search
+          </Button>
+          <Select
+            aria-label="Filter by role"
+            value={roleFilter}
+            onChange={(e) => {
+              setRoleFilter(e.target.value as Role | '')
+              setPage(1)
+            }}
+            className="w-40"
+          >
+            <option value="">All roles</option>
+            {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </Select>
+        </form>
+
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
@@ -159,9 +208,7 @@ export function UsersPage() {
                       <Badge variant={roleBadge(u.role) as never}>{u.role}</Badge>
                     </td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
-                      {u.service_account
-                        ? 'Never signs in'
-                        : u.auth_type === 'saml' ? 'SSO' : u.auth_type === 'both' ? 'Local + SSO' : 'Local'}
+                      {authTypeLabel(u.auth_type)}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                   </tr>
@@ -171,6 +218,22 @@ export function UsersPage() {
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {show !== 'all' && total > users.length && (
+          <p className="text-xs text-amber-700">
+            This filter applies to the {users.length} accounts on this page only; use Next to look further.
+          </p>
+        )}
+
+        {total > 0 && (
+          <div className="flex items-center justify-between text-sm text-gray-600">
+            <span>Showing {firstShown}-{lastShown} of {total}</span>
+            <div className="flex gap-2">
+              <Button variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>Previous</Button>
+              <Button variant="outline" disabled={lastShown >= total} onClick={() => setPage(page + 1)}>Next</Button>
+            </div>
           </div>
         )}
       </div>

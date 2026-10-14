@@ -25,6 +25,14 @@ type APIKey struct {
 	CreatedAt   time.Time  `json:"created_at"`
 }
 
+// APIKeyWithOwner is a key with the account it belongs to, for the admin list.
+// The embedded key flattens into the same JSON object.
+type APIKeyWithOwner struct {
+	APIKey
+	OwnerEmail string `json:"owner_email"`
+	OwnerName  string `json:"owner_name"`
+}
+
 // HashToken returns the SHA-256 hex digest of a raw token.
 func HashToken(rawToken string) string {
 	sum := sha256.Sum256([]byte(rawToken))

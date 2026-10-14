@@ -14,6 +14,15 @@ DELETE FROM api_keys WHERE id = $1;
 -- name: ListAPIKeysByUser :many
 SELECT * FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC;
 
+-- name: ListAPIKeysWithOwner :many
+-- key_id NULL lists every key; a value lists that one key. The owner comes
+-- from the same row set so the admin page can show whose each key is.
+SELECT k.*, u.email AS owner_email, u.display_name AS owner_name
+FROM api_keys k
+JOIN users u ON u.id = k.user_id
+WHERE (sqlc.narg(key_id)::uuid IS NULL OR k.id = sqlc.narg(key_id)::uuid)
+ORDER BY k.created_at DESC;
+
 -- name: CreateOAuthClient :exec
 -- Creates the client AND its service user (#420) as one statement, so a
 -- failure on either leaves neither: a client with no user cannot act, and a
@@ -88,8 +97,8 @@ WHERE u.deleted_at IS NULL
 ORDER BY c.name;
 
 -- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetWebhookConfig :one
 SELECT * FROM webhook_configs WHERE id = $1;
@@ -98,7 +107,7 @@ SELECT * FROM webhook_configs WHERE id = $1;
 -- A new URL clears the last delivery result: it described a different target.
 -- (On the right-hand side of SET, "url" is the OLD value.)
 UPDATE webhook_configs
-SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6,
+SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticket_filter = $7,
     last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
     last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END

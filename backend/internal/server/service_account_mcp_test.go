@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/mcp"
 )
 
@@ -119,6 +120,33 @@ func (s *mcpSession) tool(name string, args map[string]any) (text string, isErro
 	text, _ = first["text"].(string)
 	isError, _ = res["isError"].(bool)
 	return text, isError
+}
+
+// A public reply over MCP on a ticket a service user reported queues no mail:
+// ReplyRecipient is the one rule for REST and MCP, and it must not hand a
+// made-up .invalid address to the mailer (#420, #442).
+func TestServiceAccount_NeverMailedOverMCP(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	h.dispatcher.record = true
+
+	reporter := h.newServiceClient(t, "Nagios", "tickets:read")
+	replier := h.newServiceClient(t, "Zapier", "tickets:read", "tickets:write")
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Filed by a client", Description: "x", CategoryID: h.catID,
+		Priority: ticket.PriorityLow, ReporterUserID: &reporter.UserID,
+	})
+	require.NoError(t, err)
+	h.dispatcher.queued = nil
+
+	text, isErr := newMCPSession(t, h, replier.Token).tool("add_reply", map[string]any{
+		"ticket_id": tk.ID.String(), "body": "We are on it.",
+	})
+	require.False(t, isErr, "add_reply: %s", text)
+	require.NotEmpty(t, h.dispatcher.queued)
+	for _, ev := range h.dispatcher.queued {
+		require.Empty(t, ev.Recipient, "event %s must carry no recipient address", ev.Type)
+	}
 }
 
 // A bearer client reaches MCP and acts as its service user, under its scopes.

@@ -69,9 +69,14 @@ function refusal(code: string, message: string, status = 400) {
   } as never)
 }
 
-async function renderPage(hooks: unknown[] = HOOKS) {
+async function renderPage(
+  hooks: unknown[] = HOOKS,
+  lists: { categories?: unknown[]; groups?: unknown[] } = {},
+) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/webhooks') return Promise.resolve({ data: hooks })
+    if (url === '/admin/categories') return Promise.resolve({ data: lists.categories ?? [] })
+    if (url === '/admin/groups') return Promise.resolve({ data: lists.groups ?? [] })
     if (url === '/site') return Promise.resolve({ data: {} })
     return Promise.resolve({ data: [] })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -524,5 +529,209 @@ describe('deleting a webhook', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
     expect(del).not.toHaveBeenCalled()
+  })
+})
+
+// ── Ticket filters (#413) ─────────────────────────────────────────────────────
+
+// Categories as the admin list returns them, inactive ones included.
+const CATS = [
+  { id: 'c-net', name: 'Network', sort_order: 0, active: true },
+  { id: 'c-old', name: 'Legacy', sort_order: 1, active: false },
+]
+const GROUPS = [{ id: 'g-t2', name: 'Tier 2', description: '' }]
+const LISTS = { categories: CATS, groups: GROUPS }
+const EMPTY_FILTER = { category_ids: [], priorities: [], group_ids: [], invert: false }
+
+describe('ticket filters', () => {
+  const scoped = {
+    ...HOOKS[0],
+    filter: { category_ids: ['c-net'], priorities: ['critical'], group_ids: ['g-t2'], invert: false },
+  }
+
+  it('shows "All tickets" for a hook with no filter, and has a Tickets column', async () => {
+    await renderPage([HOOKS[0], { ...HOOKS[1], filter: EMPTY_FILTER }], LISTS)
+    expect(within(await row(HOOKS[0].url)).getByText('All tickets')).toBeTruthy()
+    expect(within(await row(HOOKS[1].url)).getByText('All tickets')).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Tickets' })).toBeTruthy()
+  })
+
+  it('names the conditions in the list', async () => {
+    await renderPage([scoped], LISTS)
+    const r = await row(scoped.url)
+    expect(await within(r).findByText('Category: Network')).toBeTruthy()
+    expect(within(r).getByText('Priority: critical')).toBeTruthy()
+    expect(within(r).getByText('Group: Tier 2')).toBeTruthy()
+  })
+
+  it('marks an inverted filter as everything except, ahead of the conditions', async () => {
+    await renderPage([{ ...scoped, filter: { ...scoped.filter, invert: true } }], LISTS)
+    const r = await row(scoped.url)
+    const except = within(r).getByText('All except')
+    const condition = within(r).getByText('Priority: critical')
+    expect(except.compareDocumentPosition(condition) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('names a condition whose category or group is gone', async () => {
+    await renderPage([{
+      ...HOOKS[0],
+      filter: { category_ids: ['c-gone'], priorities: [], group_ids: ['g-gone'], invert: false },
+    }], LISTS)
+    const r = await row(HOOKS[0].url)
+    expect(await within(r).findByText(/Deleted category/)).toBeTruthy()
+    expect(within(r).getByText(/Deleted group/)).toBeTruthy()
+  })
+
+  it('sends the ticked conditions when creating', async () => {
+    const { post } = await renderPage(HOOKS, LISTS)
+    const form = within(createForm())
+
+    await userEvent.type(form.getByLabelText('Webhook URL'), 'https://example.com/hook')
+    await userEvent.click(form.getByRole('checkbox', { name: 'All events' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'Network' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'critical' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'Tier 2' }))
+    await userEvent.selectOptions(form.getByLabelText('Send for'), 'All other tickets')
+    await userEvent.click(form.getByRole('button', { name: /create/i }))
+
+    await waitFor(() => expect(post).toHaveBeenCalledTimes(1))
+    expect(post).toHaveBeenCalledWith('/admin/webhooks', {
+      url: 'https://example.com/hook',
+      payload_format: 'raw',
+      events: ['*'],
+      filter: { category_ids: ['c-net'], priorities: ['critical'], group_ids: ['g-t2'], invert: true },
+    })
+  })
+
+  it('sends no filter key when nothing is ticked on an unfiltered hook', async () => {
+    const { patch } = await renderPage(HOOKS, LISTS)
+    const r = await row(HOOKS[0].url)
+    await userEvent.click(within(r).getByRole('button', { name: 'Edit' }))
+    const form = within(screen.getByRole('form', { name: 'Edit webhook' }))
+    await userEvent.click(form.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch.mock.calls[0][1]).not.toHaveProperty('filter')
+  })
+
+  it('Send for is disabled until a condition is ticked', async () => {
+    await renderPage(HOOKS, LISTS)
+    const form = within(createForm())
+    const send = form.getByLabelText('Send for') as HTMLSelectElement
+    expect(send.disabled).toBe(true)
+
+    await userEvent.click(form.getByRole('checkbox', { name: 'critical' }))
+    expect(send.disabled).toBe(false)
+    expect(Array.from(send.options).map((o) => o.textContent)).toEqual([
+      'Tickets that match',
+      'All other tickets',
+    ])
+  })
+
+  it('Send for shows what will be sent once every condition is unticked', async () => {
+    await renderPage(HOOKS, LISTS)
+    const form = within(createForm())
+    const send = form.getByLabelText('Send for') as HTMLSelectElement
+
+    await userEvent.click(form.getByRole('checkbox', { name: 'critical' }))
+    await userEvent.selectOptions(send, 'All other tickets')
+    await userEvent.click(form.getByRole('checkbox', { name: 'critical' }))
+
+    // Nothing is ticked, so the hook sends for every ticket: the disabled
+    // select must not still read "All other tickets".
+    expect(send.disabled).toBe(true)
+    expect(send.value).toBe('false')
+  })
+
+  it('shows a deleted category or group in the edit form, ticked, so it can be unticked', async () => {
+    const { patch } = await renderPage([{
+      ...HOOKS[0],
+      filter: { category_ids: ['c-gone'], priorities: ['critical'], group_ids: ['g-gone'], invert: false },
+    }], LISTS)
+    const r = await row(HOOKS[0].url)
+    await userEvent.click(within(r).getByRole('button', { name: 'Edit' }))
+    const form = within(screen.getByRole('form', { name: 'Edit webhook' }))
+
+    const cat = form.getByRole('checkbox', { name: 'Deleted category' }) as HTMLInputElement
+    const grp = form.getByRole('checkbox', { name: 'Deleted group' }) as HTMLInputElement
+    expect(cat.checked).toBe(true)
+    expect(grp.checked).toBe(true)
+    await userEvent.click(cat)
+    await userEvent.click(grp)
+    await userEvent.click(form.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch.mock.calls[0][1]).toMatchObject({
+      filter: { category_ids: [], priorities: ['critical'], group_ids: [], invert: false },
+    })
+  })
+
+  it('offers inactive categories, marked inactive', async () => {
+    await renderPage(HOOKS, LISTS)
+    expect(await within(createForm()).findByRole('checkbox', { name: 'Legacy (inactive)' })).toBeTruthy()
+  })
+
+  it('editing starts from the stored filter and sends it back', async () => {
+    const stored = { category_ids: ['c-net'], priorities: ['critical'], group_ids: ['g-t2'], invert: true }
+    const { patch } = await renderPage([{ ...HOOKS[0], filter: stored }], LISTS)
+    const r = await row(HOOKS[0].url)
+    await userEvent.click(within(r).getByRole('button', { name: 'Edit' }))
+    const form = within(screen.getByRole('form', { name: 'Edit webhook' }))
+
+    expect((form.getByRole('checkbox', { name: 'Network' }) as HTMLInputElement).checked).toBe(true)
+    expect((form.getByRole('checkbox', { name: 'critical' }) as HTMLInputElement).checked).toBe(true)
+    expect((form.getByRole('checkbox', { name: 'Tier 2' }) as HTMLInputElement).checked).toBe(true)
+    expect((form.getByLabelText('Send for') as HTMLSelectElement).value).toBe('true')
+
+    await userEvent.click(form.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch.mock.calls[0][1]).toMatchObject({ filter: stored })
+  })
+
+  it('clearing every condition on edit sends the empty filter', async () => {
+    const { patch } = await renderPage([{
+      ...HOOKS[0],
+      filter: { category_ids: ['c-net'], priorities: [], group_ids: [], invert: false },
+    }], LISTS)
+    const r = await row(HOOKS[0].url)
+    await userEvent.click(within(r).getByRole('button', { name: 'Edit' }))
+    const form = within(screen.getByRole('form', { name: 'Edit webhook' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'Network' }))
+    await userEvent.click(form.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch.mock.calls[0][1]).toMatchObject({ filter: EMPTY_FILTER })
+  })
+
+  it('clearing every condition on an inverted hook does not send an inverted empty filter', async () => {
+    const { patch } = await renderPage([{
+      ...HOOKS[0],
+      filter: { category_ids: ['c-net'], priorities: [], group_ids: [], invert: true },
+    }], LISTS)
+    const r = await row(HOOKS[0].url)
+    await userEvent.click(within(r).getByRole('button', { name: 'Edit' }))
+    const form = within(screen.getByRole('form', { name: 'Edit webhook' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'Network' }))
+    await userEvent.click(form.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch.mock.calls[0][1]).toMatchObject({ filter: EMPTY_FILTER })
+  })
+
+  it('shows a filter refusal as the server worded it', async () => {
+    const { post } = await renderPage(HOOKS, LISTS)
+    post.mockRejectedValue(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      refusal('unknown_filter_category', 'no category c-gone') as any
+    )
+    const form = within(createForm())
+
+    await userEvent.type(form.getByLabelText('Webhook URL'), 'https://example.com/hook')
+    await userEvent.click(form.getByRole('checkbox', { name: 'All events' }))
+    await userEvent.click(form.getByRole('checkbox', { name: 'Network' }))
+    await userEvent.click(form.getByRole('button', { name: /create/i }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('no category c-gone')
   })
 })

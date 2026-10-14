@@ -25,9 +25,12 @@ const (
 // auditNameFields are the diff keys whose ids are resolved, and what each
 // names. Deliberately a short list, not "any key ending in _id": a key is
 // resolved only once it is also on audit.Redact's allow-list, because a name
-// says more than its id does. assignee_group_id, category_id and the like are
-// neither written to audit entries nor allow-listed today; they join here in
-// the change that allow-lists them.
+// says more than its id does. assignee_group_id is allow-listed but has no
+// lookup on purpose: only a group delete writes it, and the group is gone by
+// the time anyone reads the entry, so a lookup could never find a name and the
+// raw id is all there is to show. category_id and the like are neither written
+// to audit entries nor allow-listed today; they join here in the change that
+// allow-lists them.
 var auditNameFields = map[string]auditNameKind{
 	"status_id":        auditNameStatus,
 	"assignee_user_id": auditNameUser,

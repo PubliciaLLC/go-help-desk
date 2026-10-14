@@ -57,6 +57,44 @@ type Service struct {
 	// off. The domain does not import the settings package; the server wires
 	// this (see SetClosedReopenPolicy).
 	closedReopenPolicy func(context.Context) string
+
+	// userEmail finds an account holder's address. A function because the
+	// domain does not import the user package's store; the server wires it.
+	// Nil means no account address can be found.
+	userEmail func(context.Context, uuid.UUID) (string, error)
+}
+
+// SetUserEmailLookup wires the lookup ReplyRecipient uses for tickets filed by
+// an account. Called once at start-up, before the service takes requests.
+func (s *Service) SetUserEmailLookup(find func(context.Context, uuid.UUID) (string, error)) {
+	s.userEmail = find
+}
+
+// ReplyRecipient is the address a public reply on t is mailed to: the guest's
+// address, else the reporting account's. Empty means the requester cannot be
+// emailed (no address on record, or the account is gone or unreadable), and the
+// caller then sends the reply without mail rather than rejecting it.
+//
+// One rule for every door that accepts a reply. The REST handler had it inline
+// and MCP passed "", so a reply an AI agent wrote never reached the customer
+// (#442). A staff member or administrator is not mailed a copy of their own
+// reply, even on a ticket they filed (Erik's decision; REST used to mail them).
+// An ordinary requester replying on their own ticket still is: the copy is
+// their receipt, and nothing about that changed.
+func (s *Service) ReplyRecipient(ctx context.Context, t Ticket, author Actor) string {
+	if t.GuestEmail != nil {
+		return *t.GuestEmail
+	}
+	authorIsRequester := author.UserID != nil && t.ReporterUserID != nil && *author.UserID == *t.ReporterUserID
+	if authorIsRequester && author.Role != user.RoleUser {
+		return ""
+	}
+	if t.ReporterUserID != nil && s.userEmail != nil {
+		if email, err := s.userEmail(ctx, *t.ReporterUserID); err == nil {
+			return email
+		}
+	}
+	return ""
 }
 
 // SetClosedReopenPolicy wires the source of the closed_reopen_policy setting
@@ -413,6 +451,16 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
 	}
 
+	// Nobody newly picks an archived node (#421). A follow-up is exempt: it
+	// copies the closed ticket's classification, which may have been retired
+	// since, and that is not a new pick. A requester's follow-up is held to
+	// the active-only rule by its own caller (see CreateRequesterFollowUp).
+	if followUpOf == nil {
+		if err := s.refuseArchivedPick(ctx, in.CategoryID, in.TypeID, in.ItemID, nil); err != nil {
+			return Ticket{}, err
+		}
+	}
+
 	// A supplied reporter, checked for the same reason the priority above is:
 	// everything after this takes a tracking number first, so an id the
 	// foreign key refuses costs a 500 and a permanent gap in the sequence.
@@ -554,6 +602,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 		Recipient:      emailRecipient,
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	// Announced like any other link (AddLink), for whoever follows
 	// ticket.linked: the original is the source, the follow-up its child.
@@ -566,6 +615,7 @@ func (s *Service) create(ctx context.Context, in CreateInput, actor Actor, follo
 			OccurredAt:     now,
 			TrackingNumber: string(followUpOf.TrackingNumber),
 			Subject:        followUpOf.Subject,
+			Attrs:          attrsOf(*followUpOf),
 		})
 	}
 
@@ -694,6 +744,13 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 			}
 			forcedPolicy = p
 		}
+		// A retired status takes no new tickets, whoever asks. Decided on the
+		// locked row so "already in it" is the truth: a ticket sitting in an
+		// inactive status may be sent the status it holds (a PATCH that
+		// repeats it alongside another change), and may leave.
+		if !newStatus.Active && t.StatusID != newStatusID {
+			return fmt.Errorf("status %q: %w", newStatus.Name, ErrStatusInactive)
+		}
 		before = ticketMap(t)
 		oldStatusID = t.StatusID
 		t.StatusID = newStatusID
@@ -783,6 +840,7 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
 		StatusName:     newStatus.Name,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -863,6 +921,7 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		OccurredAt:     time.Now(),
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1140,6 +1199,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			OccurredAt:     time.Now(),
 			TrackingNumber: string(t.TrackingNumber),
 			Subject:        t.Subject,
+			Attrs:          attrsOf(t),
 		})
 	}
 
@@ -1167,8 +1227,16 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// is a row read from the store — under FOR UPDATE on the reopen path,
 	// plainly otherwise. Either way it is the record, not request text, which
 	// is the property that matters here.
+	//
+	// A staff-only note is its own event, so a webhook subscribed to
+	// ticket.replied sees customer-visible replies only (#448). It has no
+	// email: reporterEmail is blank for a note.
+	replyEvent := notification.EventTicketReplied
+	if internal {
+		replyEvent = notification.EventTicketNoteAdded
+	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:           notification.EventTicketReplied,
+		Type:           replyEvent,
 		TicketID:       t.ID,
 		ActorID:        actor.UserID,
 		TrackingNumber: string(t.TrackingNumber),
@@ -1181,6 +1249,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 				"TrackingNumber": string(t.TrackingNumber),
 				"Subject":        t.Subject,
 				"internal":       internal,
+				"reply_id":       reply.ID,
 			}
 			// An internal note's body does not go in the event.
 			//
@@ -1199,6 +1268,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 			return p
 		}(),
 		OccurredAt: time.Now(),
+		Attrs:      attrsOf(t),
 	})
 
 	return reply, nil
@@ -1340,6 +1410,7 @@ func (s *Service) Resolve(ctx context.Context, ticketID uuid.UUID, notes string,
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1476,6 +1547,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 			OccurredAt:     now,
 			TrackingNumber: string(t.TrackingNumber),
 			Subject:        t.Subject,
+			Attrs:          attrsOf(t),
 		})
 	}
 
@@ -1503,6 +1575,7 @@ func (s *Service) ResolveAsDuplicate(ctx context.Context, sourceID, targetID uui
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 
 	return t, nil
@@ -1647,6 +1720,7 @@ func (s *Service) close(ctx context.Context, ticketID uuid.UUID, actor Actor, el
 		OccurredAt:     now,
 		TrackingNumber: string(t.TrackingNumber),
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	return closed, nil
 }
@@ -1741,6 +1815,7 @@ func (s *Service) Reopen(ctx context.Context, ticketID uuid.UUID, targetStatusID
 		Recipient:      guestRecipient(t),
 		GuestLink:      guestLink,
 		Subject:        t.Subject,
+		Attrs:          attrsOf(t),
 	})
 	return t, nil
 }
@@ -1795,6 +1870,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 	}
 
 	var subject, tracking string
+	var attrs *notification.TicketAttrs
 	if err := s.atomic.InTx(ctx, func(st Store, _ audit.Store) error {
 		// Lock both ticket rows FOR UPDATE up front, in the same fixed order
 		// (lexicographically smaller id first) ResolveAsDuplicate uses, before
@@ -1828,6 +1904,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		}
 		subject = source.Subject
 		tracking = string(source.TrackingNumber)
+		attrs = attrsOf(source)
 
 		link := TicketLink{SourceTicketID: sourceID, TargetTicketID: targetID, LinkType: lt}
 		if err := st.CreateLink(ctx, link); err != nil {
@@ -1846,6 +1923,7 @@ func (s *Service) AddLink(ctx context.Context, sourceID, targetID uuid.UUID, lt 
 		OccurredAt:     time.Now(),
 		TrackingNumber: tracking,
 		Subject:        subject,
+		Attrs:          attrs,
 	})
 	return nil
 }
@@ -1860,9 +1938,64 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (Ticket, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// refuseArchivedPick is ErrValidation when a classification being picked
+// includes an archived category, type or item. It is the one place the rule
+// lives, so REST, MCP and the guest form all obey it, and it holds for every
+// role: a retired node is out of circulation for staff and administrators too
+// (#421).
+//
+// current is the ticket's existing classification when this is a reclassify,
+// nil for a new ticket. A level that is unchanged is not a new pick and is not
+// checked, so a ticket already sitting in an archived node keeps it through any
+// edit that leaves that level alone.
+func (s *Service) refuseArchivedPick(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID, current *Ticket) error {
+	var cat *uuid.UUID
+	if current == nil || current.CategoryID != categoryID {
+		cat = &categoryID
+	}
+	if current != nil {
+		if sameID(typeID, current.TypeID) {
+			typeID = nil
+		}
+		if sameID(itemID, current.ItemID) {
+			itemID = nil
+		}
+	}
+	level, err := s.store.ArchivedCTINode(ctx, cat, typeID, itemID)
+	if err != nil {
+		return err
+	}
+	if level != "" {
+		return fmt.Errorf("%w: %s_id is not an active %s", ErrValidation, level, level)
+	}
+	return nil
+}
+
+func sameID(a, b *uuid.UUID) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // UpdateCTI changes the category/type/item classification of a ticket.
 // Only staff and admin may call this; enforcement is at the handler layer.
+// Moving INTO an archived node is refused for them too (refuseArchivedPick).
 func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (Ticket, error) {
+	if err := s.ValidateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, err
+	}
+	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
+		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	}
+	return s.store.GetByID(ctx, id)
+}
+
+// ValidateCTI runs every check UpdateCTI makes, without writing. A caller that
+// applies other changes in the same request (the PATCH handler) calls it first,
+// so a refused classification leaves the whole request unapplied rather than
+// half done.
+func (s *Service) ValidateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error {
 	// The same checks Create makes, because reclassifying is creating a
 	// classification.
 	//
@@ -1873,21 +2006,21 @@ func (s *Service) UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeI
 	// exist. An unknown id answered 500 from the foreign key rather than
 	// saying which id was wrong.
 	if ok, err := s.store.CategoryExists(ctx, categoryID); err != nil {
-		return Ticket{}, err
+		return err
 	} else if !ok {
-		return Ticket{}, fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
+		return fmt.Errorf("%w: category_id is not a category on this help desk", ErrValidation)
 	}
 	if ok, err := s.store.CTIIsCoherent(ctx, categoryID, typeID, itemID); err != nil {
-		return Ticket{}, err
+		return err
 	} else if !ok {
-		return Ticket{}, fmt.Errorf(
+		return fmt.Errorf(
 			"%w: type_id and item_id must belong to the category and to each other", ErrValidation)
 	}
-
-	if err := s.store.UpdateCTI(ctx, id, categoryID, typeID, itemID); err != nil {
-		return Ticket{}, fmt.Errorf("updating ticket CTI: %w", err)
+	current, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		return err
 	}
-	return s.store.GetByID(ctx, id)
+	return s.refuseArchivedPick(ctx, categoryID, typeID, itemID, &current)
 }
 
 // GetByTrackingNumber returns the ticket with the given tracking number.
@@ -2103,6 +2236,16 @@ func (s *Service) getStatusByID(ctx context.Context, id uuid.UUID) (Status, erro
 	return Status{}, fmt.Errorf("status %s not found: %w", id, ErrStatusNotFound)
 }
 
+// attrsOf is the classification a webhook filter tests, for the ticket an
+// event describes (#413). Read at the moment the event is raised.
+func attrsOf(t Ticket) *notification.TicketAttrs {
+	return &notification.TicketAttrs{
+		CategoryID:      t.CategoryID,
+		Priority:        string(t.Priority),
+		AssigneeGroupID: t.AssigneeGroupID,
+	}
+}
+
 // auditEntry builds an audit row. Callers write it through the transaction's
 // audit store so it commits with the change it describes; it used to be written
 // separately with its error discarded, which meant the trail could lose entries
@@ -2162,6 +2305,44 @@ func (s *Service) UnassignForUser(ctx context.Context, actorID, userID uuid.UUID
 			if err := au.Create(ctx, auditEntry(&actorID, "ticket", id, "unassigned", before, after)); err != nil {
 				return fmt.Errorf("auditing unassignment: %w", err)
 			}
+		}
+		moved = len(ids)
+		return nil
+	})
+	return moved, err
+}
+
+// DeleteGroup deletes a group and returns every ticket it held to the queue,
+// reporting how many moved. actorID is nil when no person is behind the call.
+//
+// All of it in one transaction with the audit entries (#419). The database
+// clears assignee_group_id by itself when the group row goes, so the tickets
+// used to lose their group with nothing in the trail to say so: the same gap
+// UnassignForUser closed for a deleted user.
+//
+// This is the one place the ticket service deletes something that is not a
+// ticket. Atomic hands out only the ticket and audit stores, and the audit
+// entries must commit with the unassignment they describe, so the delete rides
+// along rather than running in a second transaction.
+//
+// Every ticket, not only open ones: the foreign key would clear a closed
+// ticket's group as well, and the trail should say what actually happened.
+func (s *Service) DeleteGroup(ctx context.Context, actorID *uuid.UUID, groupID uuid.UUID) (int, error) {
+	var moved int
+	err := s.atomic.InTx(ctx, func(st Store, au audit.Store) error {
+		ids, err := st.UnassignForGroup(ctx, groupID)
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			before := map[string]any{"assignee_group_id": groupID.String()}
+			after := map[string]any{"assignee_group_id": nil}
+			if err := au.Create(ctx, auditEntry(actorID, "ticket", id, "unassigned", before, after)); err != nil {
+				return fmt.Errorf("auditing unassignment: %w", err)
+			}
+		}
+		if err := st.DeleteGroup(ctx, groupID); err != nil {
+			return err
 		}
 		moved = len(ids)
 		return nil

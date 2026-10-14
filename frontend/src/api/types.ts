@@ -12,7 +12,18 @@ export interface User {
   updated_at: string
 }
 
-export type AuthType = 'local' | 'saml' | 'both' | 'service'
+// How an account signs in, from the credentials it holds. 'both' is local plus
+// SAML; combinations that include OIDC are joined with '+'. 'service' is an
+// OAuth client's service user (#420), which never signs in.
+export type AuthType =
+  | 'service'
+  | 'local'
+  | 'saml'
+  | 'oidc'
+  | 'both'
+  | 'local+oidc'
+  | 'saml+oidc'
+  | 'local+saml+oidc'
 
 export interface AdminUser {
   id: string
@@ -436,6 +447,10 @@ export interface APIKey {
   id: string
   name: string
   user_id: string
+  // Whose key it is. A signed-in administrator is sent every key, so the list
+  // has to say.
+  owner_name?: string
+  owner_email?: string
   scopes: string[]
   last_used_at?: string
   expires_at?: string
@@ -463,7 +478,7 @@ export interface OAuthClient {
 
 // payload_format reshapes the same lifecycle event for a chat/ITSM service's
 // incoming-webhook endpoint before it is POSTed. 'raw' (the default) is
-// today's full event payload; the others are Slack, Teams, Discord and JIRA
+// ids-only JSON; the others are Slack, Teams, Discord and JIRA
 // Automation shapes. See docs/DESIGN.md "Notifications" and #187.
 export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
 
@@ -477,10 +492,35 @@ export interface WebhookDelivery {
   error: WebhookDeliveryError
 }
 
+// A webhook's ticket filter (#413). Empty lists are no condition. All
+// conditions must match. invert sends for the tickets that do not.
+export interface WebhookFilter {
+  category_ids: string[]
+  priorities: Priority[]
+  group_ids: string[]
+  invert: boolean
+}
+
+// One row of a hook's history (#448): an outcome, never content. result is 'ok'
+// or a class; there is no error text.
+export interface WebhookDeliveryRecord {
+  id: string
+  event: string
+  started_at: string
+  last_attempt_at: string
+  status: number
+  result: 'ok' | Exclude<WebhookDeliveryError, ''>
+  attempts: number
+  retrying: boolean
+}
+
 export interface WebhookConfig {
   id: string
   url: string
   events: string[]
+  // Optional only because fixtures written before #413 omit it; the server
+  // always sends it.
+  filter?: WebhookFilter
   // No `secret`: it is write-only. The API accepts one on create and update
   // and never returns it, so a client has nothing to show or prefill.
   enabled: boolean

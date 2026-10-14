@@ -22,7 +22,18 @@ DELETE FROM sla_policies WHERE id = $1;
 SELECT COUNT(*) FROM sla_records WHERE policy_id = $1;
 
 -- name: ListSLAPolicies :many
-SELECT * FROM sla_policies ORDER BY priority, name;
+-- Severity order, most urgent first, the catch-all (no priority) last. Sorting
+-- the text gave critical, high, low, medium: "low" ahead of "medium", and a
+-- catch-all (NULL) wherever the database put it.
+SELECT * FROM sla_policies
+ORDER BY CASE priority
+           WHEN 'critical' THEN 1
+           WHEN 'high'     THEN 2
+           WHEN 'medium'   THEN 3
+           WHEN 'low'      THEN 4
+           ELSE 5
+         END,
+         name;
 
 -- name: FindSLAPolicy :one
 -- The four tiers DESIGN.md documents, most specific first:
