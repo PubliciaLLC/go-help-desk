@@ -1177,8 +1177,16 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 	// is a row read from the store — under FOR UPDATE on the reopen path,
 	// plainly otherwise. Either way it is the record, not request text, which
 	// is the property that matters here.
+	//
+	// A staff-only note is its own event, so a webhook subscribed to
+	// ticket.replied sees customer-visible replies only (#448). It has no
+	// email: reporterEmail is blank for a note.
+	replyEvent := notification.EventTicketReplied
+	if internal {
+		replyEvent = notification.EventTicketNoteAdded
+	}
 	_ = s.dispatcher.Dispatch(ctx, notification.Event{
-		Type:           notification.EventTicketReplied,
+		Type:           replyEvent,
 		TicketID:       t.ID,
 		ActorID:        actor.UserID,
 		TrackingNumber: string(t.TrackingNumber),
@@ -1191,6 +1199,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 				"TrackingNumber": string(t.TrackingNumber),
 				"Subject":        t.Subject,
 				"internal":       internal,
+				"reply_id":       reply.ID,
 			}
 			// An internal note's body does not go in the event.
 			//

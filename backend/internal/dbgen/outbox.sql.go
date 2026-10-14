@@ -98,6 +98,7 @@ func (q *Queries) DeleteNotification(ctx context.Context, id uuid.UUID) error {
 
 const enqueueNotification = `-- name: EnqueueNotification :exec
 INSERT INTO notification_outbox (id, channel, event) VALUES ($1, $2, $3)
+ON CONFLICT (id) DO NOTHING
 `
 
 type EnqueueNotificationParams struct {
@@ -106,6 +107,9 @@ type EnqueueNotificationParams struct {
 	Event   json.RawMessage `json:"event"`
 }
 
+// A repeat of an id is ignored, so the webhook fan-out, whose row ids derive
+// from the fan-out row, can be re-run after a crash without queueing a hook
+// twice (#448).
 func (q *Queries) EnqueueNotification(ctx context.Context, arg EnqueueNotificationParams) error {
 	_, err := q.db.ExecContext(ctx, enqueueNotification, arg.ID, arg.Channel, arg.Event)
 	return err
@@ -141,5 +145,22 @@ type RetryNotificationParams struct {
 
 func (q *Queries) RetryNotification(ctx context.Context, arg RetryNotificationParams) error {
 	_, err := q.db.ExecContext(ctx, retryNotification, arg.ID, arg.AvailableAt, arg.LastError)
+	return err
+}
+
+const rewriteNotificationEvent = `-- name: RewriteNotificationEvent :exec
+UPDATE notification_outbox SET event = $2 WHERE id = $1
+`
+
+type RewriteNotificationEventParams struct {
+	ID    uuid.UUID       `json:"id"`
+	Event json.RawMessage `json:"event"`
+}
+
+// Replaces a row's event. The webhook dispatcher clears the content of a row
+// whose delivery has finally failed, so it does not sit for the 30 days failed
+// rows are kept (#448).
+func (q *Queries) RewriteNotificationEvent(ctx context.Context, arg RewriteNotificationEventParams) error {
+	_, err := q.db.ExecContext(ctx, rewriteNotificationEvent, arg.ID, arg.Event)
 	return err
 }
