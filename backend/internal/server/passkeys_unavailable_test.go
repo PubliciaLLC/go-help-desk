@@ -112,9 +112,13 @@ func TestPasskeysUnavailable_RoutesAnswer503(t *testing.T) {
 // While passkeys are off, an account whose ONLY second factor is a passkey
 // cannot be checked, so it must not get in on its password alone: that would
 // let a stolen password take over exactly the accounts that chose a stronger
-// factor. The one exception is the last active administrator, who is let in to
-// enrol TOTP because setup does not reopen and the instance would otherwise
-// have no way in. Nobody else may enrol TOTP with only a password either.
+// factor. Every such account is refused, the last administrator included.
+// Recovery is on the server side: an administrator's Reset MFA, or
+// reset-factors / unlock on the server.
+//
+// Do not "fix" this by re-adding an exception for the last administrator (one
+// existed briefly and was removed on purpose). A password alone must never be
+// enough to enrol a second factor, and that is what an exception would allow.
 
 func enforceMFA(t *testing.T, h *harness) {
 	t.Helper()
