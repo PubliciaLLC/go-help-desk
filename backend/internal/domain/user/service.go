@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,15 +18,28 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
 
+// ProductionBcryptCost is the bcrypt cost for new hashes. Releases up to 1.2
+// used bcrypt.DefaultCost (10) while the published security page said 12
+// (#453). Hashes made at a lower cost are upgraded at the next sign-in, see
+// VerifyPassword.
+const ProductionBcryptCost = 12
+
 // Service orchestrates user-related business operations.
 type Service struct {
 	store Store
 
 	// hashCost is the bcrypt cost for password hashing. Always
-	// bcrypt.DefaultCost in production; see WithBcryptCost.
+	// ProductionBcryptCost in production; see WithBcryptCost.
 	hashCost int
 
+	// compare checks a password against a hash. bcrypt.CompareHashAndPassword
+	// outside tests, which swap it to count the work a sign-in spends.
+	compare func(hash, plain []byte) error
+
 	// dummyHash makes a miss cost the same as a hit; see compareAgainstDummyHash.
+	// Made on first use, not in NewService: at cost 12 it is a quarter of a
+	// second, which every construction would pay, tests included.
+	dummyOnce sync.Once
 	dummyHash []byte
 
 	// audit records factor- and credential-clearing actions; see WithAuditStore.
@@ -41,16 +55,9 @@ type Service struct {
 
 // NewService returns a Service backed by the given Store.
 func NewService(store Store, opts ...Option) *Service {
-	s := &Service{store: store, hashCost: bcrypt.DefaultCost, log: slog.Default()}
+	s := &Service{store: store, hashCost: ProductionBcryptCost, compare: bcrypt.CompareHashAndPassword, log: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
-	}
-	// Computed once, at the configured cost, so a failed lookup can spend the
-	// same time a real comparison would. Generated rather than hard-coded
-	// because the cost is configurable and a constant from another cost would
-	// time differently, which is the whole thing being avoided.
-	if h, err := bcrypt.GenerateFromPassword([]byte("dummy password for constant-time misses"), s.hashCost); err == nil {
-		s.dummyHash = h
 	}
 	return s
 }
@@ -62,10 +69,19 @@ func NewService(store Store, opts ...Option) *Service {
 // reliable enumeration oracle no matter how carefully the response body and
 // status code are kept identical.
 func (s *Service) compareAgainstDummyHash(plain string) {
+	// At the configured cost, so a failed lookup spends the same time a real
+	// comparison would. Generated rather than hard-coded because the cost is
+	// configurable and a constant from another cost would time differently,
+	// which is the whole thing being avoided.
+	s.dummyOnce.Do(func() {
+		if h, err := bcrypt.GenerateFromPassword([]byte("dummy password for constant-time misses"), s.hashCost); err == nil {
+			s.dummyHash = h
+		}
+	})
 	if len(s.dummyHash) == 0 {
 		return
 	}
-	_ = bcrypt.CompareHashAndPassword(s.dummyHash, []byte(plain))
+	_ = s.compare(s.dummyHash, []byte(plain))
 }
 
 // Option configures a Service at construction.
@@ -83,7 +99,7 @@ type Option func(*Service)
 // its 152 seconds hashing passwords nobody asserts anything about.
 //
 // Costs below bcrypt.MinCost are raised to it, since bcrypt rejects them.
-// cmd/server never calls this, and TestNewService_DefaultsToDefaultCost fails
+// cmd/server never calls this, and TestNewService_DefaultsToCost12 fails
 // if the default ever changes.
 func WithBcryptCost(cost int) Option {
 	return func(s *Service) {
@@ -340,10 +356,57 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 		s.compareAgainstDummyHash(plain)
 		return User{}, fmt.Errorf("user account is disabled")
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(plain)); err != nil {
+	if err := s.compare([]byte(u.PasswordHash), []byte(plain)); err != nil {
+		s.burnCostDifference(u.PasswordHash, plain)
 		return User{}, fmt.Errorf("invalid credentials")
 	}
+	s.rehashIfBelowTarget(ctx, u, plain)
 	return u, nil
+}
+
+// burnCostDifference tops a failed comparison against a hash made at a lower
+// cost up to the work a comparison at s.hashCost takes.
+//
+// Without it, while accounts are still on cost 10 and unknown addresses pay
+// cost 12 (compareAgainstDummyHash), a wrong password for a real account
+// answers about four times faster than one for an address with no account,
+// which says which addresses have accounts. bcrypt work doubles per cost
+// step, so the missing work is 2^d - 1 more comparisons of the same hash,
+// where d is the cost difference. Comparing the stored hash again needs no
+// dummy hash per stored cost, and is exact by construction.
+func (s *Service) burnCostDifference(stored, plain string) {
+	c, err := bcrypt.Cost([]byte(stored))
+	if err != nil || c >= s.hashCost {
+		return
+	}
+	for i := 1<<(s.hashCost-c) - 1; i > 0; i-- {
+		_ = s.compare([]byte(stored), []byte(plain))
+	}
+}
+
+// rehashIfBelowTarget upgrades a hash made at a lower cost, using the
+// password the person has just proved they know (#453).
+//
+// Best effort, like writeAuditEntry: a failure is logged and the sign-in
+// carries on, since the old hash still works and the next sign-in tries again.
+// The write is detached from the request so a client that disconnects right
+// after the password is accepted cannot leave the upgrade half done, and it is
+// conditional on the old hash (RehashPassword) so a password changed during
+// the hashing is not overwritten by an upgrade of the previous one.
+func (s *Service) rehashIfBelowTarget(ctx context.Context, u User, plain string) {
+	c, err := bcrypt.Cost([]byte(u.PasswordHash))
+	if err != nil || c >= s.hashCost {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
+	if err != nil {
+		s.log.ErrorContext(ctx, "rehashing password failed", "user_id", u.ID, "error", err)
+		return
+	}
+	if _, err := s.store.RehashPassword(ctx, u.ID, u.PasswordHash, string(hash)); err != nil {
+		s.log.ErrorContext(ctx, "storing rehashed password failed", "user_id", u.ID, "error", err)
+	}
 }
 
 // EnrollMFA generates a TOTP secret for the user, stores it (unenrolled until
@@ -832,6 +895,15 @@ func (s *Service) HasUsers(ctx context.Context) (bool, error) {
 // GetByID returns the user with the given ID.
 func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.store.GetByID(ctx, id)
+}
+
+// GetByIDs returns the live accounts among ids in one query; ids with no live
+// account are absent from the result.
+func (s *Service) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.store.GetByIDs(ctx, ids)
 }
 
 // List returns a paginated list of users.

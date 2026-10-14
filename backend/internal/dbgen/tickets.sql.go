@@ -13,6 +13,17 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const anyAttachmentExists = `-- name: AnyAttachmentExists :one
+SELECT EXISTS (SELECT 1 FROM attachments)
+`
+
+func (q *Queries) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	row := q.db.QueryRowContext(ctx, anyAttachmentExists)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const cTIIsCoherent = `-- name: CTIIsCoherent :one
 SELECT
     ($1::uuid IS NULL OR EXISTS (

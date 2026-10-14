@@ -152,4 +152,20 @@ describe('AuditFeed', () => {
     expect(masked.getAttribute('title')).toBeNull()
     expect(named.querySelector('svg')).toBeNull()
   })
+
+  it('shows names in the diff and keeps the id as a tooltip (#422)', async () => {
+    vi.mocked(ticketsApi.listTicketAudit).mockResolvedValue([
+      entry({
+        action: 'status_changed',
+        before: { status_id: 'id-new' },
+        after: { status_id: 'id-prog' },
+        names: { 'id-new': { name: 'New' }, 'id-prog': { name: 'In Progress' } },
+      }),
+    ])
+
+    renderWithQuery(<AuditFeed ticketId="tkt-1" />)
+
+    await waitFor(() => expect(screen.getByText('In Progress')).toBeTruthy())
+    expect(screen.getByText('New').getAttribute('title')).toBe('id-new')
+  })
 })

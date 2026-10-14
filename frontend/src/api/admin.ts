@@ -1,6 +1,21 @@
-import { api } from './client'
+import axios from 'axios'
+import { api, extractErrorCode } from './client'
 import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
+
+// DELETE where a not_found 404 means the row is already gone (#418). That is the
+// outcome the caller asked for, so it resolves. Any other failure rejects,
+// including the router's plain-text 404 for a path that is not a route, which
+// is a bug rather than a row that is gone.
+async function deleteIfPresent(url: string, config?: { data: unknown }): Promise<void> {
+  try {
+    if (config) await api.delete(url, config)
+    else await api.delete(url)
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404 && extractErrorCode(err) === 'not_found') return
+    throw err
+  }
+}
 
 // ── Site config (public) ──────────────────────────────────────────────────────
 
@@ -95,7 +110,7 @@ export async function updateGroup(id: string, patch: Partial<Pick<Group, 'name' 
 }
 
 export async function deleteGroup(id: string): Promise<void> {
-  await api.delete(`/admin/groups/${id}`)
+  await deleteIfPresent(`/admin/groups/${id}`)
 }
 
 export async function listGroupMembers(groupId: string): Promise<User[]> {
@@ -127,7 +142,7 @@ export async function addGroupScope(groupId: string, input: { category_id: strin
 }
 
 export async function removeGroupScope(groupId: string, input: { category_id: string; type_id?: string }): Promise<void> {
-  await api.delete(`/admin/groups/${groupId}/scopes`, { data: input })
+  await deleteIfPresent(`/admin/groups/${groupId}/scopes`, { data: input })
 }
 
 // ── Categories ───────────────────────────────────────────────────────────────
@@ -148,7 +163,7 @@ export async function updateCategory(id: string, patch: { name?: string; sort_or
 }
 
 export async function deleteCategory(id: string): Promise<void> {
-  await api.delete(`/admin/categories/${id}`)
+  await deleteIfPresent(`/admin/categories/${id}`)
 }
 
 export async function listTypes(categoryId: string): Promise<TicketType[]> {
@@ -167,7 +182,7 @@ export async function updateType(categoryId: string, typeId: string, patch: { na
 }
 
 export async function deleteType(categoryId: string, typeId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}`)
 }
 
 export async function listItems(categoryId: string, typeId: string): Promise<TicketItem[]> {
@@ -193,7 +208,7 @@ export async function updateItem(categoryId: string, typeId: string, itemId: str
 }
 
 export async function deleteItem(categoryId: string, typeId: string, itemId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}`)
 }
 
 // ── Statuses ─────────────────────────────────────────────────────────────────
@@ -322,7 +337,7 @@ export async function createOAuthClient(input: {
 }
 
 export async function deleteOAuthClient(id: string): Promise<void> {
-  await api.delete(`/admin/oauth-clients/${id}`)
+  await deleteIfPresent(`/admin/oauth-clients/${id}`)
 }
 
 export async function listAPIKeys(): Promise<APIKey[]> {
@@ -340,7 +355,7 @@ export async function createAPIKey(input: {
 }
 
 export async function deleteAPIKey(id: string): Promise<void> {
-  await api.delete(`/admin/api-keys/${id}`)
+  await deleteIfPresent(`/admin/api-keys/${id}`)
 }
 
 // ── Tags (admin) ──────────────────────────────────────────────────────────────
@@ -540,15 +555,15 @@ export async function updateItemAssignment(
 }
 
 export async function deleteCategoryAssignment(categoryId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/fields/${assignmentId}`)
 }
 
 export async function deleteTypeAssignment(categoryId: string, typeId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/fields/${assignmentId}`)
 }
 
 export async function deleteItemAssignment(categoryId: string, typeId: string, itemId: string, assignmentId: string): Promise<void> {
-  await api.delete(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
+  await deleteIfPresent(`/admin/categories/${categoryId}/types/${typeId}/items/${itemId}/fields/${assignmentId}`)
 }
 
 // ── CTI group scope (read from CTI perspective) ───────────────────────────────
@@ -613,6 +628,12 @@ export interface SecurityWarnings {
    * belief. See handleGetSecurityWarnings / scanStatus on the backend.
    */
   attachment_scanning: AttachmentScanningWarning
+
+  /**
+   * Whether uploads can be stored (#458). Optional only so older fixtures and
+   * a server that predates the field read as healthy.
+   */
+  attachment_storage?: { writable: boolean; problem: string }
 }
 
 export interface AttachmentScanningWarning {
@@ -624,6 +645,13 @@ export interface AttachmentScanningWarning {
   reachable: boolean
   /** Plain-English sentence for what is happening to uploads right now. */
   effect: string
+  /** An administrator saved a valid scan policy (as opposed to a derived default). */
+  policy_explicit: boolean
+  /**
+   * Scanning is off by default rather than by choice: no policy saved, no
+   * scanner address anywhere, and attachments already stored (#459).
+   */
+  stale_off: boolean
 }
 
 /** Admin-only. Not on the public /site payload, by design. */

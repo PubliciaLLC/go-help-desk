@@ -197,7 +197,7 @@ export function AdminAuditPage() {
                       </td>
                       <td className="px-4 py-3">
                         <span className="font-medium text-gray-900">{labelFor(e.action)}</span>
-                        <AuditDiff before={e.before} after={e.after} />
+                        <AuditDiff before={e.before} after={e.after} names={e.names} />
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {e.actor_masked

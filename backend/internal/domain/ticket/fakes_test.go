@@ -325,6 +325,7 @@ func (f *fakeStore) ListAttachments(context.Context, uuid.UUID) ([]ticket.Attach
 	return nil, nil
 }
 func (f *fakeStore) DeleteAttachment(context.Context, uuid.UUID) error { return nil }
+func (f *fakeStore) AnyAttachmentExists(context.Context) (bool, error) { return false, nil }
 
 // ── status store ─────────────────────────────────────────────────────────────
 

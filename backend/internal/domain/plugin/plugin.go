@@ -2,9 +2,15 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+)
+
+var (
+	// ErrNotFound is returned when a plugin is not found.
+	ErrNotFound = errors.New("not found")
 )
 
 // Runtime distinguishes first-party (compiled-in) plugins from third-party

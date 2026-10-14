@@ -115,6 +115,8 @@ type Store interface {
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
+	// AnyAttachmentExists reports whether the instance holds any attachment.
+	AnyAttachmentExists(ctx context.Context) (bool, error)
 
 	// Links
 	CreateLink(ctx context.Context, link TicketLink) error
