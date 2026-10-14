@@ -16,8 +16,10 @@ import (
 )
 
 // The ticket filter (#413) meets the per-hook queue (#448). The filter is
-// applied once, where an event is fanned out into one row per hook; after that
-// a delivery is its hook's own. These tests pin that seam.
+// applied where an event is fanned out into one row per hook, and again at
+// every attempt and every Redeliver, against the hook as it is then: an
+// administrator who tightens a filter stops what is already queued. These
+// tests pin that seam.
 
 // enqueueSpy remembers every row the webhook dispatcher queues, which the
 // fake outbox forgets once a row is delivered and deleted.
@@ -160,65 +162,214 @@ func TestQueueFilter_RetryOfAMatchingHookStaysWithThatHook(t *testing.T) {
 	require.ElementsMatch(t, []uuid.UUID{hf.ID, hh.ID}, spy.targets(t))
 }
 
-// Admitted once, it stays admitted: an administrator who edits the filter
-// while a delivery is waiting for its next attempt does not cancel it. The
-// filter judges the ticket as it was when the event was raised, and that was
-// decided at fan-out.
-func TestQueueFilter_RetryDoesNotReevaluateAnEditedFilter(t *testing.T) {
-	rc := newReceiver(t, 500, 200)
-	hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
-	rig := newQueueRig(t, rc.srv.Client(), hook)
+// The filter is read again at every attempt, as the hook's events and URL
+// are: an administrator who edits it while a delivery waits for its next try
+// changes what that try does. The row carries the ticket's attributes as they
+// were when the event was raised, and they are judged against the hook as it
+// is now. Tightened (or inverted) past the ticket, the retry is dropped;
+// widened, it still goes out.
+func TestQueueFilter_RetryRechecksTheCurrentFilter(t *testing.T) {
+	low := []string{"low"}
+	cases := []struct {
+		name   string
+		format string
+		after  notification.WebhookFilter
+		sent   bool
+	}{
+		{"tightened past the ticket", "raw", notification.WebhookFilter{Priorities: []string{"critical"}}, false},
+		{"tightened past the ticket, chat row", "slack", notification.WebhookFilter{Priorities: []string{"critical"}}, false},
+		{"inverted", "raw", notification.WebhookFilter{Priorities: low, Invert: true}, false},
+		{"widened", "raw", notification.WebhookFilter{Priorities: []string{"low", "critical"}}, true},
+		{"widened, chat row", "slack", notification.WebhookFilter{Priorities: []string{"low", "critical"}}, true},
+		{"removed", "raw", notification.WebhookFilter{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newReceiver(t, 500, 200)
+			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: low})
+			hook.PayloadFormat = tc.format
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			var buf bytes.Buffer
+			rig.disp.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
-	rig.store.makeDue()
-	_, err := rig.worker.RunOnce(context.Background()) // the fan-out
-	require.NoError(t, err)
-	rig.store.makeDue()
-	_, err = rig.worker.RunOnce(context.Background()) // the first attempt: 500
-	require.NoError(t, err)
-	require.Equal(t, 1, rc.count())
+			require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
+			rig.store.makeDue()
+			_, err := rig.worker.RunOnce(context.Background()) // the fan-out
+			require.NoError(t, err)
+			rig.store.makeDue()
+			_, err = rig.worker.RunOnce(context.Background()) // the first attempt: 500
+			require.NoError(t, err)
+			require.Equal(t, 1, rc.count())
 
-	setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
-	rig.drain(t)
+			setFilter(rig.hooks, hook.ID, tc.after)
+			rig.drain(t)
 
-	require.Equal(t, 2, rc.count(), "the retry of an admitted delivery must still be sent")
-	require.Equal(t, 200, rig.hooks.last().Result.Status)
+			if tc.sent {
+				require.Equal(t, 2, rc.count(), "the retry must still be sent")
+				require.Equal(t, 200, rig.hooks.last().Result.Status)
+				return
+			}
+			require.Equal(t, 1, rc.count(), "the retry must not be sent: the filter no longer admits the ticket")
+			require.Empty(t, rig.store.rows, "the dropped row is settled, not left to retry")
+			require.Empty(t, rig.store.failed, "settled, not failed")
+			rig.hooks.mu.Lock()
+			defer rig.hooks.mu.Unlock()
+			require.Len(t, rig.hooks.attempts, 1, "a dropped retry adds no history entry")
+			require.Contains(t, buf.String(), "filter")
+		})
+	}
 }
 
-// Redeliver sends the stored event to that hook whatever the ticket and the
-// filter say now. The kept copy has no classification, and an entry exists
-// only because the filter admitted the event; a replay is an administrator's
-// explicit request.
-func TestQueueFilter_RedeliverDoesNotReevaluateTheFilter(t *testing.T) {
+// A row queued before #413 has no attributes to judge, so a filter added since
+// cannot turn it away: it is sent, and the fact is logged. The same fail-open
+// rule as at the fan-out.
+func TestQueueFilter_RowWithoutAttrsIsDeliveredWhateverTheFilterSaysNow(t *testing.T) {
 	rc := newReceiver(t, 200)
-	other := newReceiver(t, 200)
-	hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
-	bystander := hookFor(other.srv.URL)
-	rig := newQueueRig(t, rc.srv.Client(), hook, bystander)
+	hook := hookFor(rc.srv.URL) // no filter when the row is made
+	rig := newQueueRig(t, rc.srv.Client(), hook)
+	var buf bytes.Buffer
+	rig.disp.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
+	require.NoError(t, rig.front.Dispatch(context.Background(), fixtureReplyEvent(false))) // Attrs nil
+	rig.store.makeDue()
+	_, err := rig.worker.RunOnce(context.Background()) // the fan-out only
+	require.NoError(t, err)
+	require.Equal(t, 0, rc.count())
+
+	setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
 	rig.drain(t)
-	require.Equal(t, 1, rc.count())
-	require.Equal(t, 1, other.count())
-	var original uuid.UUID
+
+	require.Equal(t, 1, rc.count(), "an extra message beats a missed one")
+	require.Contains(t, buf.String(), "not evaluated")
+	require.Contains(t, buf.String(), hook.ID.String())
+}
+
+func firstDelivery(t *testing.T, rig *queueRig, hookID uuid.UUID) uuid.UUID {
+	t.Helper()
 	rig.hooks.mu.Lock()
+	defer rig.hooks.mu.Unlock()
 	for _, a := range rig.hooks.attempts {
-		if a.HookID == hook.ID {
-			original = a.DeliveryID
+		if a.HookID == hookID {
+			return a.DeliveryID
 		}
 	}
-	rig.hooks.mu.Unlock()
+	t.Fatal("the hook has no delivery")
+	return uuid.Nil
+}
 
-	// The ticket has since been reclassified, as far as this hook's filter is
-	// concerned: neither the old value nor any current one matches it.
-	setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
-	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, original))
+// Redeliver judges the filter too, against the ticket as it is now: the kept
+// copy has no attributes by design, so they are read from the ticket, the way
+// a chat message's content is. A ticket that no longer matches is refused with
+// a reason and nothing is queued, as for a hook that dropped the event.
+func TestQueueFilter_RedeliverRechecksTheFilterAgainstTheTicketNow(t *testing.T) {
+	cases := []struct {
+		name     string
+		format   string
+		priority string // the ticket now
+		excluded bool
+	}{
+		{"raw, ticket no longer matches", "raw", "critical", true},
+		{"raw, ticket still matches", "raw", "low", false},
+		{"slack, ticket no longer matches", "slack", "critical", true},
+		{"slack, ticket still matches", "slack", "low", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+			hook.PayloadFormat = tc.format
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			src := newFakeSource()
+			rig.disp.queue.Source = src
+			ev := eventWithPriority("low")
+			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+			rig.drain(t)
+			require.Equal(t, 1, rc.count())
+			original := firstDelivery(t, rig, hook.ID)
+
+			now := &notification.TicketAttrs{CategoryID: ev.Attrs.CategoryID, Priority: tc.priority}
+			src.facts[ev.TicketID] = TicketFacts{Subject: "now", Attrs: now}
+			before := len(rig.store.order)
+			err := rig.disp.Redeliver(context.Background(), hook.ID, original)
+			rig.drain(t)
+
+			if tc.excluded {
+				require.ErrorIs(t, err, ErrWebhookFilterExcludes)
+				require.Equal(t, before, len(rig.store.order), "nothing is queued")
+				require.Equal(t, 1, rc.count())
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, 2, rc.count())
+			require.NotEqual(t, rc.header(0, "X-GHD-Delivery"), rc.header(1, "X-GHD-Delivery"))
+			require.Equal(t, "ticket.replied", rc.header(1, "X-GHD-Event"))
+		})
+	}
+}
+
+// With no ticket to read (it is gone, or no source is wired) a replay has no
+// attributes to judge. Like a row without them, it is sent and the fact logged.
+func TestQueueFilter_RedeliverWithoutTicketAttrsFailsOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  func() EventSource
+	}{
+		{"ticket gone", func() EventSource { return newFakeSource() }},
+		{"no source", func() EventSource { return nil }},
+		{"ticket without attrs", func() EventSource {
+			s := newFakeSource()
+			s.facts[fixtureTicketID] = TicketFacts{Subject: "now"}
+			return s
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
+			rig.drain(t)
+			original := firstDelivery(t, rig, hook.ID)
+			setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
+			rig.disp.queue.Source = tc.src()
+			var buf bytes.Buffer
+			rig.disp.log = slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, original))
+			rig.drain(t)
+
+			require.Equal(t, 2, rc.count(), "an extra message beats a missed one")
+			require.Contains(t, buf.String(), "not evaluated")
+		})
+	}
+}
+
+// The replay's queued row carries the ticket's attributes too, so the same
+// check can stop it at its own send if the filter is tightened in between.
+func TestQueueFilter_RedeliveredRowIsRecheckedAtSend(t *testing.T) {
+	rc := newReceiver(t, 200)
+	hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+	rig := newQueueRig(t, rc.srv.Client(), hook)
+	src := newFakeSource()
+	rig.disp.queue.Source = src
+	ev := eventWithPriority("low")
+	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
 	rig.drain(t)
+	original := firstDelivery(t, rig, hook.ID)
+	now := &notification.TicketAttrs{CategoryID: ev.Attrs.CategoryID, Priority: "low"}
+	src.facts[ev.TicketID] = TicketFacts{Attrs: now}
+	spy := spyOn(rig)
 
-	require.Equal(t, 2, rc.count(), "Redeliver must send even though the filter no longer admits the ticket")
-	require.NotEqual(t, rc.header(0, "X-GHD-Delivery"), rc.header(1, "X-GHD-Delivery"))
-	require.Equal(t, "ticket.replied", rc.header(1, "X-GHD-Event"))
-	require.Equal(t, 1, other.count(), "Redeliver goes to that hook only")
+	require.NoError(t, rig.disp.Redeliver(context.Background(), hook.ID, original))
+	spy.mu.Lock()
+	require.Len(t, spy.rows, 1)
+	queued, err := decodeEvent(spy.rows[0])
+	spy.mu.Unlock()
+	require.NoError(t, err)
+	require.Equal(t, now, queued.Attrs, "the replay's row holds the ticket's attributes")
+
+	setFilter(rig.hooks, hook.ID, notification.WebhookFilter{Priorities: []string{"critical"}})
+	rig.drain(t)
+	require.Equal(t, 1, rc.count(), "tightened after the replay was accepted: dropped at its attempt")
 }
 
 // An event queued before #413 carries no attributes. In the queued flow, as in
@@ -238,20 +389,23 @@ func TestQueueFilter_UnknownAttrsDeliverAndLog(t *testing.T) {
 	require.Contains(t, buf.String(), hook.ID.String())
 }
 
-// The attributes ride the queue to the fan-out and no further: the per-hook
-// row and the kept history copy carry none, whatever the hook's payload
-// format, so no later step can judge the filter on stale values. A raw hook's
-// row is ids only anyway; a chat or ITSM hook's row keeps its message content
-// (subject, text) but still not the attrs, so each format is its own case.
-func TestQueueFilter_PerHookRowsCarryNoAttrs(t *testing.T) {
+// The attributes stay in every queued per-hook row, whatever the hook's
+// payload format, because a retry judges the filter again and needs them. They
+// are internal: ids and a priority, never sent. Neither the bytes the receiver
+// gets nor the copy kept for Redeliver may hold them, whichever renderer built
+// the body.
+func TestQueueFilter_PerHookRowsKeepAttrsInternally(t *testing.T) {
 	for _, format := range []string{"raw", "", "slack", "teams", "discord", "jira"} {
 		t.Run("format="+format, func(t *testing.T) {
-			rc := newReceiver(t, 200)
+			rc := newReceiver(t, 500, 200)
+			bodies := capture(rc)
 			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
 			hook.PayloadFormat = format
 			rig := newQueueRig(t, rc.srv.Client(), hook)
 			spy := spyOn(rig)
 			ev := eventWithPriority("low")
+			group := uuid.New()
+			ev.Attrs.AssigneeGroupID = &group
 
 			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
 			rig.drain(t)
@@ -259,14 +413,49 @@ func TestQueueFilter_PerHookRowsCarryNoAttrs(t *testing.T) {
 			spy.mu.Lock()
 			defer spy.mu.Unlock()
 			require.Len(t, spy.rows, 1)
-			row := string(spy.rows[0])
-			require.NotContains(t, row, "attrs")
-			require.NotContains(t, row, ev.Attrs.CategoryID.String())
 			got, err := decodeEvent(spy.rows[0])
 			require.NoError(t, err)
-			require.Nil(t, got.Attrs)
+			require.Equal(t, ev.Attrs, got.Attrs, "the queued row keeps the attributes")
+
+			sent := bodies()
+			require.Len(t, sent, 2, "the first attempt failed and was retried")
+			for _, b := range sent {
+				for _, leak := range []string{"attrs", "category_id", "assignee_group_id",
+					ev.Attrs.CategoryID.String(), group.String()} {
+					require.NotContains(t, b, leak, "a sent body must not carry the filter attributes")
+				}
+			}
 			require.Eventually(t, func() bool { return rig.hooks.last().DeliveryID != uuid.Nil }, time.Second, 10*time.Millisecond)
-			require.NotContains(t, string(rig.hooks.last().Event), "attrs")
+			kept := string(rig.hooks.last().Event)
+			for _, leak := range []string{"attrs", ev.Attrs.CategoryID.String(), group.String()} {
+				require.NotContains(t, kept, leak, "the history copy keeps no attributes")
+			}
+		})
+	}
+}
+
+// The row kept for 30 days after a delivery finally fails is scrubbed of its
+// content and holds no attributes either: they are for the next attempt, and
+// there is none.
+func TestQueueFilter_FailedRowScrubKeepsNoAttrs(t *testing.T) {
+	for _, format := range []string{"raw", "slack"} {
+		t.Run("format="+format, func(t *testing.T) {
+			rc := newReceiver(t, 500)
+			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+			hook.PayloadFormat = format
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			ev := eventWithPriority("low")
+
+			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+			rig.drain(t)
+
+			require.Len(t, rig.store.failed, 1)
+			for id := range rig.store.failed {
+				kept := string(rig.store.rows[id].event)
+				require.NotContains(t, kept, "attrs")
+				require.NotContains(t, kept, ev.Attrs.CategoryID.String())
+				require.Contains(t, kept, ev.TicketID.String(), "ids stay")
+			}
 		})
 	}
 }

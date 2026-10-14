@@ -589,7 +589,7 @@ export function WebhooksPage() {
             addresses. When a secret is set, each delivery is signed with it in the{' '}
             <code className="font-mono text-xs">X-GHD-Signature</code> header. A secret is never
             shown again once saved. The list shows each hook&apos;s most recent delivery; History shows the last 25. Failed deliveries are retried for about an hour, so a receiver may see the same event more than once: use the <code className="font-mono text-xs">X-GHD-Delivery</code> header to spot a repeat.
-            A hook can be limited to tickets in chosen categories, priorities or assigned groups; an event it filters out is not a delivery, so it gets no retry and no History entry, and Redeliver sends an entry to its hook whatever the ticket is now.
+            A hook can be limited to tickets in chosen categories, priorities or assigned groups. An event it filters out is not a delivery, so it gets no History entry. The filter is checked again at every retry and at Redeliver, so tightening it also stops what is still waiting to be sent.
           </p>
         </div>
 

@@ -6927,9 +6927,11 @@ paths:
         the original. A Slack, Teams, Discord or JIRA hook gets its message rebuilt from
         the ticket as it is now: current subject, tracking number and status name, and a
         reply's text only if that reply still exists and is public (never a note's). If
-        the ticket is gone, the headline only. The hook's ticket filter is not evaluated:
-        the entry exists because the filter admitted the event, and this sends it to this
-        hook whatever the ticket's classification is now.
+        the ticket is gone, the headline only. The hook's ticket filter is evaluated as it
+        is now, against the ticket's current category, priority and assigned group (the
+        history keeps none). If the filter does not admit the ticket the request is refused
+        with 409 webhook_filter_excludes and nothing is queued. If the ticket cannot be read
+        the event is sent anyway.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleRedeliverWebhook
       security:
@@ -6973,7 +6975,9 @@ paths:
           description: >-
             webhook_disabled, when the webhook is disabled (enable it first); or
             webhook_not_subscribed, when the webhook no longer lists the delivery's event
-            (add it to the webhook's events first).
+            (add it to the webhook's events first); or webhook_filter_excludes, when the
+            webhook's ticket filter, as it is now, does not admit the ticket the delivery was
+            about (change the filter first).
           content:
             application/json:
               schema:
@@ -9635,14 +9639,20 @@ components:
       description: >-
         Which tickets the hook fires for. Each list is one condition, and an empty or absent
         list is no condition. A ticket matches a list when its value is any entry. All
-        conditions must match. invert fires for the tickets that do not match. Evaluated
-        against the ticket as it was when the event happened. category matches the ticket's
-        category, so all its types and items are included. group is the group the ticket is
-        assigned to; an unassigned ticket never matches it. Responses always carry all four keys.
-        The filter is applied once, when the event is fanned out to the hooks. An event it
-        filters out creates no delivery: no X-GHD-Delivery, no retry and no history entry.
-        A retry of a delivery it admitted, and a Redeliver of a history entry, go to that hook
-        without evaluating the filter again.
+        conditions must match. invert fires for the tickets that do not match. A queued
+        delivery is tested against the ticket as it was when the event happened; a Redeliver,
+        which has no stored classification, against the ticket as it is now. category matches
+        the ticket's category, so all its types and items are included. group is the group the
+        ticket is assigned to; an unassigned ticket never matches it. Responses always carry
+        all four keys.
+        The filter is read as it is now, not once: when the event is fanned out to the hooks,
+        at every attempt of a queued delivery (retries included) and at Redeliver. An event
+        it filters out at the fan-out creates no delivery: no X-GHD-Delivery, no retry and no
+        history entry. If an administrator tightens it, deliveries already queued that it no
+        longer admits are dropped at their next attempt, with no send and no history entry,
+        as for a disabled, unsubscribed or re-addressed hook; Redeliver of such an entry is
+        refused with 409 webhook_filter_excludes. A queued delivery with no stored
+        classification (queued before the filter existed) is sent.
       type: object
       additionalProperties: false
       properties:
