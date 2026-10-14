@@ -132,9 +132,10 @@ func (f *changePriorityFx) actions(t *testing.T) map[string]int {
 	return out
 }
 
-// A restart against real rows: the old row is equal column by column except
-// superseded_at, the new one is current under the new policy and starts now.
-func TestChangePriority_RestartAgainstRealRows(t *testing.T) {
+// A staff change against real rows: the old row is equal column by column except
+// superseded_at, and the new one is current under the new policy with the same
+// clock and the same facts. Nothing restarts.
+func TestChangePriority_RematchCarriesTheClockAndFactsAgainstRealRows(t *testing.T) {
 	f := newChangePriorityFx(t)
 	svc := f.service(t, nil)
 
@@ -143,7 +144,6 @@ func TestChangePriority_RestartAgainstRealRows(t *testing.T) {
 	require.NoError(t, f.ss.StampBreaches(f.ctx, f.tk.ID, nil, ptrTime(time.Now().UTC().Truncate(time.Millisecond))))
 	oldRow := f.records(t)[0]
 
-	before := time.Now()
 	got, err := svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityHigh, f.staff)
 	require.NoError(t, err)
 	require.Equal(t, ticket.PriorityHigh, got.Priority)
@@ -154,35 +154,75 @@ func TestChangePriority_RestartAgainstRealRows(t *testing.T) {
 
 	rows := f.records(t)
 	require.Len(t, rows, 2)
-	cur, old := rows[0], rows[1] // newest clock first
+	cur, old := rows[0], rows[1] // newest first; equal clocks tie-break on superseded_at
 	require.Equal(t, oldRow.ID, old.ID)
 	require.True(t, old.SupersededAt.Valid)
 	old.SupersededAt = sql.NullTime{}
 	require.Equal(t, oldRow, old, "the old row is equal column by column except superseded_at")
 
 	require.False(t, cur.SupersededAt.Valid)
+	require.NotEqual(t, oldRow.ID, cur.ID)
 	require.Equal(t, f.pol[ticket.PriorityHigh].ID, cur.PolicyID)
-	require.True(t, cur.StartedAt.Valid)
-	require.False(t, cur.StartedAt.Time.Before(before.Add(-time.Second)), "the new clock starts at the change")
-	require.EqualValues(t, 0, cur.PausedSecondsAtStart)
-	require.False(t, cur.FirstResponseAt.Valid || cur.ResolvedAt.Valid || cur.ResponseBreachedAt.Valid || cur.ResolutionBreachedAt.Valid,
-		"a restarted record carries none of the old facts")
+	require.Equal(t, oldRow.StartedAt, cur.StartedAt, "the clock start is kept")
+	require.Equal(t, oldRow.PausedSecondsAtStart, cur.PausedSecondsAtStart)
+	require.Equal(t, oldRow.FirstResponseAt, cur.FirstResponseAt, "a target already met stays met")
+	require.Equal(t, oldRow.ResponseElapsedAtMetSeconds, cur.ResponseElapsedAtMetSeconds)
+	require.Equal(t, oldRow.ResolutionBreachedAt, cur.ResolutionBreachedAt)
 
-	// And it reads as a live record: the current one, not yet breached.
+	// And it reads as the ticket's record.
 	rec, err := f.ss.GetRecord(f.ctx, f.tk.ID)
 	require.NoError(t, err)
 	require.Equal(t, cur.ID, rec.ID)
-	require.False(t, sla.IsResponseBreached(rec, f.pol[ticket.PriorityHigh], stored, time.Now()))
+	require.NotNil(t, rec.FirstResponseAt)
 
-	require.Equal(t, map[string]int{"priority_changed": 1, "sla_restarted": 1}, f.actions(t))
+	require.Equal(t, map[string]int{"priority_changed": 1}, f.actions(t))
 }
 
-// The audit write is part of the change. Failing the second entry, after the
-// priority, the supersede and the new record have all been written and the
-// first entry accepted, must leave the database as it was.
+// A ticket with no record yet whose new priority matches a policy gets one
+// whose clock started at the ticket's creation, not at the change (Erik, Q4).
+func TestChangePriority_NoRecordYetStartsFromTicketCreationAgainstRealRows(t *testing.T) {
+	f := newChangePriorityFx(t)
+	svc := f.service(t, nil)
+
+	_, err := svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityHigh, f.staff)
+	require.NoError(t, err)
+
+	rows := f.records(t)
+	require.Len(t, rows, 1)
+	require.Equal(t, f.pol[ticket.PriorityHigh].ID, rows[0].PolicyID)
+	require.False(t, rows[0].StartedAt.Valid, "no start: measured from ticket creation")
+
+	// The ticket is three hours old and the policy's response target 30 minutes.
+	rec, err := f.ss.GetRecord(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	stored, err := f.ts.GetByID(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	require.True(t, sla.IsResponseBreached(rec, f.pol[ticket.PriorityHigh], stored, time.Now()), "breached at once, as decided")
+}
+
+// A Resolved ticket is refused with the closed-ticket conflict, priority
+// included, against the real row lock.
+func TestChangePriority_ResolvedTicketIsRefusedAgainstRealRows(t *testing.T) {
+	f := newChangePriorityFx(t)
+	svc := f.service(t, nil)
+	_, err := svc.Resolve(f.ctx, f.tk.ID, "done", f.staff)
+	require.NoError(t, err)
+
+	_, err = svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityHigh, f.staff)
+	require.ErrorIs(t, err, ticket.ErrClosed)
+
+	stored, err := f.ts.GetByID(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	require.Equal(t, ticket.PriorityMedium, stored.Priority)
+	require.Empty(t, f.records(t))
+}
+
+// The audit write is part of the change. Failing it, after the priority, the
+// supersede and the new record have all been written, must leave the database
+// as it was.
 func TestChangePriority_AuditFailureRollsBackAgainstRealRows(t *testing.T) {
 	f := newChangePriorityFx(t)
-	svc := f.service(t, failingAuditAtomic{db: f.db.SQL, failAction: "sla_restarted"})
+	svc := f.service(t, failingAuditAtomic{db: f.db.SQL, failAction: "priority_changed"})
 
 	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
 	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))

@@ -2850,10 +2850,10 @@ paths:
           assign (403 forbidden), cannot reclassify (403, "only staff can
           reclassify tickets"), and cannot change the priority (403 forbidden).
         - priority is one of critical, high, medium and low. Anything else
-          answers 400 bad_request. Staff and administrators may change it on a
-          ticket in any status, Resolved and Closed included. Sending the
-          ticket's current priority is accepted and changes nothing: no audit
-          entry, no SLA change.
+          answers 400 bad_request. A Resolved or Closed ticket's priority cannot
+          be changed: 409 ticket_closed, and nothing is written. Sending the
+          ticket's current priority on an open ticket is accepted and changes
+          nothing: no audit entry, no SLA change.
         - Only an administrator may set the status to Closed (403 forbidden for
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.
@@ -2871,18 +2871,19 @@ paths:
         category_id replaces the whole classification: type_id and item_id are
         written as sent, so an absent one clears that level. type_id and item_id
         have no effect unless category_id is sent too.
-        Changing the priority re-matches the ticket's SLA from the moment of the
-        change, when SLA tracking is on and the ticket is not Resolved or Closed.
-        The priority, the SLA rows and the audit entries are written in one
+        Changing the priority re-matches the ticket's SLA policy for the new
+        priority when SLA tracking is on, and never restarts its clock. The
+        priority, the SLA rows and the audit entry are written in one
         transaction. A record is never rewritten: a re-match marks the old record
-        superseded and starts a new one. If the old record was still running, the
-        new one keeps its clock, so no elapsed time is lost. If it was already met
-        or breached, the new one starts a fresh clock at the change and times both
-        targets anew. A Resolved or Closed ticket changes priority and keeps its
-        SLA record as it was. The audit entry priority_changed records the reason
-        (manual), the SLA outcome and the policy and record ids before and after.
-        A restart also writes sla_restarted. No notification or webhook event is
-        sent for a priority change.
+        superseded and starts a new one under the new policy, which keeps the old
+        one's clock start and its facts, so elapsed time still counts and a
+        target already met stays met. A ticket with no record whose new priority
+        matches a policy gets one whose clock started at the ticket's creation,
+        which can already be breached. If no policy matches the new priority, the
+        old record is superseded and the ticket shows no SLA. The audit entry
+        priority_changed records the reason (manual), the SLA outcome and the
+        policy and record ids before and after. No notification or webhook event
+        is sent for a priority change.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -2970,7 +2971,7 @@ paths:
         '404':
           $ref: '#/components/responses/TicketNotFound'
         '409':
-          description: "`ticket_closed`: the ticket is Closed and the caller's role may not move it out of Closed."
+          description: "`ticket_closed`: the ticket is Closed and the caller's role may not move it out of Closed; or a priority change was sent for a Resolved or Closed ticket."
           content:
             application/json:
               schema:
@@ -8888,7 +8889,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted (written when a reopen restarts the SLA clocks) or closed.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:

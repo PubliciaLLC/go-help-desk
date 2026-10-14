@@ -252,6 +252,14 @@ WHERE id = $1 AND superseded_at IS NULL;
 -- name: InsertSLARecord :exec
 -- A record started by a re-match: its own id, an explicit clock start (NULL
 -- reads as the ticket's creation) and the ticket's pause total as of that
--- start.
-INSERT INTO sla_records (id, ticket_id, policy_id, started_at, paused_seconds_at_start)
-VALUES ($1, $2, $3, sqlc.narg(started_at)::timestamptz, $4);
+-- start. A staff re-match also carries the old record's facts onto it, so a
+-- target already met stays met; a restart passes none.
+INSERT INTO sla_records (
+    id, ticket_id, policy_id, started_at, paused_seconds_at_start,
+    first_response_at, resolved_at, response_breached_at, resolution_breached_at,
+    response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds)
+VALUES (
+    $1, $2, $3, sqlc.narg(started_at)::timestamptz, $4,
+    sqlc.narg(first_response_at)::timestamptz, sqlc.narg(resolved_at)::timestamptz,
+    sqlc.narg(response_breached_at)::timestamptz, sqlc.narg(resolution_breached_at)::timestamptz,
+    sqlc.narg(response_elapsed_at_met_seconds)::bigint, sqlc.narg(resolution_elapsed_at_met_seconds)::bigint);

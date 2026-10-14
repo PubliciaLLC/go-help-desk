@@ -491,7 +491,8 @@ type Querier interface {
 	InsertInstanceSecretIfAbsent(ctx context.Context, arg InsertInstanceSecretIfAbsentParams) error
 	// A record started by a re-match: its own id, an explicit clock start (NULL
 	// reads as the ticket's creation) and the ticket's pause total as of that
-	// start.
+	// start. A staff re-match also carries the old record's facts onto it, so a
+	// target already met stays met; a restart passes none.
 	InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.

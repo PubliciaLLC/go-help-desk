@@ -223,21 +223,35 @@ func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaReco
 }
 
 const insertSLARecord = `-- name: InsertSLARecord :exec
-INSERT INTO sla_records (id, ticket_id, policy_id, started_at, paused_seconds_at_start)
-VALUES ($1, $2, $3, $5::timestamptz, $4)
+INSERT INTO sla_records (
+    id, ticket_id, policy_id, started_at, paused_seconds_at_start,
+    first_response_at, resolved_at, response_breached_at, resolution_breached_at,
+    response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds)
+VALUES (
+    $1, $2, $3, $5::timestamptz, $4,
+    $6::timestamptz, $7::timestamptz,
+    $8::timestamptz, $9::timestamptz,
+    $10::bigint, $11::bigint)
 `
 
 type InsertSLARecordParams struct {
-	ID                   uuid.UUID    `json:"id"`
-	TicketID             uuid.UUID    `json:"ticket_id"`
-	PolicyID             uuid.UUID    `json:"policy_id"`
-	PausedSecondsAtStart int64        `json:"paused_seconds_at_start"`
-	StartedAt            sql.NullTime `json:"started_at"`
+	ID                            uuid.UUID     `json:"id"`
+	TicketID                      uuid.UUID     `json:"ticket_id"`
+	PolicyID                      uuid.UUID     `json:"policy_id"`
+	PausedSecondsAtStart          int64         `json:"paused_seconds_at_start"`
+	StartedAt                     sql.NullTime  `json:"started_at"`
+	FirstResponseAt               sql.NullTime  `json:"first_response_at"`
+	ResolvedAt                    sql.NullTime  `json:"resolved_at"`
+	ResponseBreachedAt            sql.NullTime  `json:"response_breached_at"`
+	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
+	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
+	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
 }
 
 // A record started by a re-match: its own id, an explicit clock start (NULL
 // reads as the ticket's creation) and the ticket's pause total as of that
-// start.
+// start. A staff re-match also carries the old record's facts onto it, so a
+// target already met stays met; a restart passes none.
 func (q *Queries) InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error {
 	_, err := q.db.ExecContext(ctx, insertSLARecord,
 		arg.ID,
@@ -245,6 +259,12 @@ func (q *Queries) InsertSLARecord(ctx context.Context, arg InsertSLARecordParams
 		arg.PolicyID,
 		arg.PausedSecondsAtStart,
 		arg.StartedAt,
+		arg.FirstResponseAt,
+		arg.ResolvedAt,
+		arg.ResponseBreachedAt,
+		arg.ResolutionBreachedAt,
+		arg.ResponseElapsedAtMetSeconds,
+		arg.ResolutionElapsedAtMetSeconds,
 	)
 	return err
 }

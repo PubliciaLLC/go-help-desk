@@ -14,9 +14,11 @@ import (
 )
 
 // ChangePriority (#443b): staff and admin change a ticket's priority; the SLA
-// is re-matched from the moment of the change; the change and its audit entries
-// commit together. A record is never rewritten: a re-match supersedes it and
-// starts a new one.
+// policy is re-matched, the clock keeps its start and a met target stays met; a
+// Resolved or Closed ticket is refused; the change and its audit entry commit
+// together. A record is never rewritten: a re-match supersedes it and starts a
+// new one. Only a reopen restarts a clock (changePriorityInTx, reason
+// reopened).
 
 var (
 	priorityActorID = uuid.New()
@@ -49,6 +51,16 @@ func (h *prioHarness) seedMedium() ticket.Ticket {
 	return t
 }
 
+// metFacts is a record whose response target has been met, late: the facts a
+// re-match must carry onto the record that replaces it.
+func metFacts() ticket.SLAFacts {
+	at := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
+	frozen := int64(3000)
+	return ticket.SLAFacts{
+		FirstResponseAt: &at, ResponseElapsedAtMetSeconds: &frozen, ResponseBreachedAt: &at,
+	}
+}
+
 // onlyEntry returns the single audit entry with the action, failing if there is
 // not exactly one.
 func onlyEntry(t *testing.T, entries []audit.Entry, action string) audit.Entry {
@@ -78,7 +90,7 @@ func TestChangePriority_OnlyStaffAndAdmin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPrioHarness(t)
 			seeded := h.seedMedium()
-			h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, false)
+			h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, ticket.SLAFacts{})
 			id := uuid.New()
 
 			_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh,
@@ -121,11 +133,46 @@ func TestChangePriority_UnknownTicket(t *testing.T) {
 	require.ErrorIs(t, err, errNotFound)
 }
 
+// A Resolved or Closed ticket is refused outright, priority included, with the
+// closed-ticket conflict every other write to a closed ticket gets. Even the
+// same priority is refused: the answer does not depend on what was asked for.
+func TestChangePriority_ResolvedAndClosedAreRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		seed func(h *prioHarness) ticket.Ticket
+	}{
+		{"resolved", func(h *prioHarness) ticket.Ticket { return h.seedResolved(uuid.New()) }},
+		{"closed", func(h *prioHarness) ticket.Ticket { return h.seedClosed() }},
+	}
+	for _, tc := range cases {
+		for _, p := range []ticket.Priority{ticket.PriorityHigh, ticket.PriorityMedium} {
+			t.Run(tc.name+" to "+string(p), func(t *testing.T) {
+				h := newPrioHarness(t)
+				seeded := tc.seed(h)
+				seeded.Priority = ticket.PriorityMedium
+				h.store.seed(seeded)
+				h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
+				rows := h.store.slaRows(seeded.ID)
+
+				_, err := h.svc.ChangePriority(context.Background(), seeded.ID, p, priorityStaff)
+
+				require.ErrorIs(t, err, ticket.ErrClosed)
+				stored, _ := h.store.GetByID(context.Background(), seeded.ID)
+				require.Equal(t, ticket.PriorityMedium, stored.Priority, "the priority is not changed")
+				require.Zero(t, h.store.updates)
+				require.Empty(t, h.auditStore.entries)
+				require.Equal(t, rows, h.store.slaRows(seeded.ID), "the SLA record is not touched")
+				require.Positive(t, h.store.forUpdateReads, "decided on the locked row")
+			})
+		}
+	}
+}
+
 // The same priority is a double-submit: no write, no audit entry, no re-match.
 func TestChangePriority_SamePriorityIsANoOp(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
-	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, true)
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
 
 	got, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityMedium, priorityStaff)
 
@@ -176,13 +223,13 @@ func TestChangePriority_WritesThePriorityAndOneAuditEntry(t *testing.T) {
 	require.Equal(t, ticket.SLAOff, e.After["sla_outcome"])
 }
 
-// The Q6 / design default: a re-match is gated on the SLA toggle, and a
-// toggle that was never wired reads as off.
+// A re-match is gated on the SLA toggle, and a toggle that was never wired
+// reads as off.
 func TestChangePriority_SLAOffLeavesTheRecordAlone(t *testing.T) {
 	h := newPrioHarness(t)
 	h.svc.SetSLAEnabled(func(context.Context) bool { return false })
 	seeded := h.seedMedium()
-	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, true)
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
 
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
 	require.NoError(t, err)
@@ -193,48 +240,15 @@ func TestChangePriority_SLAOffLeavesTheRecordAlone(t *testing.T) {
 	require.Equal(t, ticket.SLAOff, onlyEntry(t, h.auditStore.entries, "priority_changed").After["sla_outcome"])
 }
 
-// Resolved and Closed tickets may change priority, but the SLA is not
-// re-matched: restarting a clock on a ticket nobody is working would breach it
-// while it sits there (Q3).
-func TestChangePriority_ResolvedAndClosedKeepTheirSLA(t *testing.T) {
-	cases := []struct {
-		name string
-		seed func(h *prioHarness) ticket.Ticket
-	}{
-		{"resolved", func(h *prioHarness) ticket.Ticket { return h.seedResolved(uuid.New()) }},
-		{"closed", func(h *prioHarness) ticket.Ticket { return h.seedClosed() }},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newPrioHarness(t)
-			seeded := tc.seed(h)
-			seeded.Priority = ticket.PriorityMedium
-			h.store.seed(seeded)
-			h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, true)
-
-			got, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
-			require.NoError(t, err)
-			require.Equal(t, ticket.PriorityHigh, got.Priority)
-
-			rows := h.store.slaRows(seeded.ID)
-			require.Len(t, rows, 1, "no second record")
-			require.Nil(t, rows[0].supersededAt, "the record is not superseded")
-			require.Equal(t, h.medium, rows[0].policyID)
-			e := onlyEntry(t, h.auditStore.entries, "priority_changed")
-			require.Equal(t, ticket.SLANotOpen, e.After["sla_outcome"])
-			require.Len(t, h.auditStore.entries, 1, "no sla_restarted")
-		})
-	}
-}
-
-// A met or breached record is superseded, never rewritten, and a new one times
-// both targets from the change. sla_restarted is its own entry so the audit
-// view's action filter finds it.
-func TestChangePriority_RestartSupersedesTheSettledRecord(t *testing.T) {
+// Erik's rule: a staff change NEVER restarts a clock. A record whose targets
+// are met is superseded, never rewritten, and the new one keeps the clock start
+// and the met targets; only the policy changes.
+func TestChangePriority_StaffChangeNeverRestartsAMetRecord(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
 	oldStart := time.Now().Add(-5 * time.Hour)
-	oldID := h.store.seedSLARecord(seeded.ID, h.medium, &oldStart, 30, true)
+	facts := metFacts()
+	oldID := h.store.seedSLARecord(seeded.ID, h.medium, &oldStart, 30, facts)
 	want := h.store.slaRows(seeded.ID)[0]
 
 	before := time.Now()
@@ -253,40 +267,29 @@ func TestChangePriority_RestartSupersedesTheSettledRecord(t *testing.T) {
 	old.supersededAt = nil
 	require.Equal(t, want, old, "a superseded record's facts are byte-identical")
 
-	// The new one: current, under the new policy, and its clock starts now.
+	// The new one: current, under the new policy, the same clock, the same facts.
 	cur := rows[1]
 	require.Nil(t, cur.supersededAt)
 	require.Equal(t, h.high, cur.policyID)
 	require.NotEqual(t, oldID, cur.id)
-	require.NotNil(t, cur.startedAt, "a restart records its start")
-	require.False(t, cur.startedAt.Before(before))
-	require.False(t, cur.startedAt.After(after))
-	require.False(t, cur.settled)
+	require.NotNil(t, cur.startedAt)
+	require.True(t, cur.startedAt.Equal(oldStart), "the clock start is kept, not reset to the change")
+	require.EqualValues(t, 30, cur.pausedBase)
+	require.Equal(t, facts, cur.facts, "a target already met stays met")
 
 	pc := onlyEntry(t, h.auditStore.entries, "priority_changed")
-	require.Equal(t, ticket.SLARestarted, pc.After["sla_outcome"])
+	require.Equal(t, ticket.SLARematched, pc.After["sla_outcome"])
 	require.Equal(t, h.medium, pc.Before["sla_policy_id"])
 	require.Equal(t, oldID, pc.Before["sla_record_id"])
 	require.Equal(t, h.high, pc.After["sla_policy_id"])
 	require.Equal(t, cur.id, pc.After["sla_record_id"])
-
-	sr := onlyEntry(t, h.auditStore.entries, "sla_restarted")
-	require.Equal(t, "ticket", sr.EntityType)
-	require.Equal(t, seeded.ID, sr.EntityID)
-	require.Equal(t, &priorityActorID, sr.ActorID)
-	require.Equal(t, map[string]any{"sla_record_id": oldID, "sla_policy_id": h.medium}, sr.Before)
-	require.Equal(t, map[string]any{
-		"sla_record_id": cur.id, "sla_policy_id": h.high, "previous_sla_record_id": oldID,
-	}, sr.After)
+	require.Len(t, h.auditStore.entries, 1, "a staff change never writes sla_restarted")
 }
 
-// A running record is re-matched without losing the time it has already spent:
-// the new row inherits the old row's clock start and pause base.
-func TestChangePriority_RunningRecordKeepsItsClock(t *testing.T) {
+func TestChangePriority_RunningRecordFromCreationStaysFromCreation(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
-	oldStart := time.Now().Add(-3 * time.Hour)
-	oldID := h.store.seedSLARecord(seeded.ID, h.medium, &oldStart, 120, false)
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, ticket.SLAFacts{})
 
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
 	require.NoError(t, err)
@@ -294,38 +297,17 @@ func TestChangePriority_RunningRecordKeepsItsClock(t *testing.T) {
 	rows := h.store.slaRows(seeded.ID)
 	require.Len(t, rows, 2)
 	require.NotNil(t, rows[0].supersededAt)
-	cur := rows[1]
-	require.Nil(t, cur.supersededAt)
-	require.Equal(t, h.high, cur.policyID)
-	require.NotNil(t, cur.startedAt)
-	require.True(t, cur.startedAt.Equal(oldStart), "the clock start is inherited, not reset to now")
-	require.EqualValues(t, 120, cur.pausedBase)
-
-	pc := onlyEntry(t, h.auditStore.entries, "priority_changed")
-	require.Equal(t, ticket.SLARematched, pc.After["sla_outcome"])
-	require.Equal(t, oldID, pc.Before["sla_record_id"])
-	require.Len(t, h.auditStore.entries, 1, "only a restart writes sla_restarted")
-}
-
-func TestChangePriority_RunningRecordFromCreationStaysFromCreation(t *testing.T) {
-	h := newPrioHarness(t)
-	seeded := h.seedMedium()
-	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, false)
-
-	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
-	require.NoError(t, err)
-
-	cur := h.store.slaRows(seeded.ID)[1]
-	require.Nil(t, cur.startedAt, "no start means ticket creation; inheriting that must not invent one")
+	require.Nil(t, rows[1].startedAt, "no start means ticket creation; inheriting that must not invent one")
+	require.Equal(t, ticket.SLARematched, onlyEntry(t, h.auditStore.entries, "priority_changed").After["sla_outcome"])
 }
 
 // The new priority maps to the record's own policy: nothing about the targets
-// changed, so a restart would only clear a breach (Q2).
-func TestChangePriority_SamePolicyDoesNotRestart(t *testing.T) {
+// changed, so no new record (Q2).
+func TestChangePriority_SamePolicyIsUnchanged(t *testing.T) {
 	h := newPrioHarness(t)
 	h.store.slaPolicies[ticket.PriorityHigh] = h.medium // a catch-all
 	seeded := h.seedMedium()
-	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, true)
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
 
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
 	require.NoError(t, err)
@@ -337,21 +319,21 @@ func TestChangePriority_SamePolicyDoesNotRestart(t *testing.T) {
 	require.Len(t, h.auditStore.entries, 1)
 }
 
-// No record yet and a policy matches the new priority: the clock starts at the
-// change (Q4).
-func TestChangePriority_NoRecordYetStartsOneAtTheChange(t *testing.T) {
+// No record yet and a policy matches the new priority: the clock started when
+// the ticket was created, not when somebody changed the priority (Erik, Q4).
+// It may be breached at once.
+func TestChangePriority_NoRecordYetStartsOneFromTicketCreation(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
 
-	before := time.Now()
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
 	require.NoError(t, err)
 
 	rows := h.store.slaRows(seeded.ID)
 	require.Len(t, rows, 1)
 	require.Equal(t, h.high, rows[0].policyID)
-	require.NotNil(t, rows[0].startedAt)
-	require.False(t, rows[0].startedAt.Before(before))
+	require.Nil(t, rows[0].startedAt, "a nil start is measured from ticket creation, as every legacy record is")
+	require.Zero(t, rows[0].pausedBase)
 	require.Equal(t, ticket.SLAAttached, onlyEntry(t, h.auditStore.entries, "priority_changed").After["sla_outcome"])
 }
 
@@ -360,7 +342,7 @@ func TestChangePriority_NoRecordYetStartsOneAtTheChange(t *testing.T) {
 func TestChangePriority_NoMatchingPolicySupersedesAndStartsNothing(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
-	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, false)
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, ticket.SLAFacts{})
 
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityLow, priorityStaff)
 	require.NoError(t, err)
@@ -373,42 +355,35 @@ func TestChangePriority_NoMatchingPolicySupersedesAndStartsNothing(t *testing.T)
 	require.NotContains(t, pc.After, "sla_record_id")
 }
 
-// The change and its audit entries commit together, or not at all. The second
-// case fails the SECOND audit write, after the priority, the supersede and the
-// new record have all been written and the first entry accepted: everything
-// must be undone.
+// The change and its audit entry commit together, or not at all: failing the
+// audit write, after the priority, the supersede and the new record have been
+// written, must undo all of it.
 func TestChangePriority_AuditFailureRollsEverythingBack(t *testing.T) {
-	for _, failOn := range []int{1, 2} {
-		t.Run(map[int]string{1: "priority_changed entry", 2: "sla_restarted entry"}[failOn], func(t *testing.T) {
-			h := newPrioHarness(t)
-			seeded := h.seedMedium()
-			start := time.Now().Add(-time.Hour)
-			h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, true)
-			rowsBefore := h.store.slaRows(seeded.ID)
-			h.auditStore.failOnCall = failOn
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	start := time.Now().Add(-time.Hour)
+	h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, metFacts())
+	rowsBefore := h.store.slaRows(seeded.ID)
+	h.auditStore.failOnCall = 1
 
-			_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
+	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
 
-			require.ErrorIs(t, err, errStoreDown)
-			stored, _ := h.store.GetByID(context.Background(), seeded.ID)
-			require.Equal(t, ticket.PriorityMedium, stored.Priority, "the priority is rolled back")
-			require.Equal(t, rowsBefore, h.store.slaRows(seeded.ID), "the SLA rows are rolled back: no supersede, no new record")
-			require.Empty(t, h.auditStore.entries, "no audit entry survives")
-			require.Equal(t, 1, h.atomic.rollbacks)
-			require.Zero(t, h.atomic.commits)
-		})
-	}
+	require.ErrorIs(t, err, errStoreDown)
+	stored, _ := h.store.GetByID(context.Background(), seeded.ID)
+	require.Equal(t, ticket.PriorityMedium, stored.Priority, "the priority is rolled back")
+	require.Equal(t, rowsBefore, h.store.slaRows(seeded.ID), "the SLA rows are rolled back: no supersede, no new record")
+	require.Empty(t, h.auditStore.entries)
+	require.Equal(t, 1, h.atomic.rollbacks)
+	require.Zero(t, h.atomic.commits)
 }
 
 // A store failure while writing the SLA also rolls the priority back.
 func TestChangePriority_SLAWriteFailureRollsTheTicketBack(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
-	// A current record the fake does not know is superseded, so StartSLARecord
-	// finds the unique-current rule violated.
 	start := time.Now().Add(-time.Hour)
-	h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, true)
-	h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, true) // a second current row: impossible in Postgres
+	h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, ticket.SLAFacts{})
+	h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, ticket.SLAFacts{}) // a second current row: impossible in Postgres
 
 	_, err := h.svc.ChangePriority(context.Background(), seeded.ID, ticket.PriorityHigh, priorityStaff)
 
@@ -418,50 +393,189 @@ func TestChangePriority_SLAWriteFailureRollsTheTicketBack(t *testing.T) {
 	require.Empty(t, h.auditStore.entries)
 }
 
-// changePriorityInTx is what #464's reopen path calls from inside its own
-// transaction. It checks no role: the caller decided this change is allowed,
-// and the actor there is the requester whose reply reopened the ticket.
-func TestChangePriorityInTx_ForTheReopenPath(t *testing.T) {
-	h := newPrioHarness(t)
-	seeded := h.seedMedium()
-	start := time.Now().Add(-time.Hour)
-	h.store.seedSLARecord(seeded.ID, h.medium, &start, 0, true)
+// ── The reopen path (#464): changePriorityInTx with reason reopened ──────────
+//
+// A requester's reply reopened the ticket, and its transaction calls
+// changePriorityInTx(t.Priority.Raised(), reopened, ...) once, whatever the
+// priority is. It checks no role (the actor is the requester) and no status
+// (the caller has just moved the ticket out of Closed in this transaction), and
+// it always restarts both clocks from now.
+
+// inTx runs changePriorityInTx the way the reopen path does, inside a caller's
+// transaction, as a reporting user.
+func (h *prioHarness) reopenBump(t *testing.T, ticketID uuid.UUID, p ticket.Priority) (ticket.Actor, error) {
+	t.Helper()
 	requester := uuid.New()
 	actor := ticket.Actor{UserID: &requester, Role: user.RoleUser}
-
 	err := h.atomic.InTx(context.Background(), func(st ticket.Store, au audit.Store) error {
-		tk, err := st.GetByIDForUpdate(context.Background(), seeded.ID)
+		tk, err := st.GetByIDForUpdate(context.Background(), ticketID)
 		require.NoError(t, err)
-		_, err = h.svc.ChangePriorityInTx(context.Background(), st, au, tk, ticket.PriorityHigh,
+		_, err = h.svc.ChangePriorityInTx(context.Background(), st, au, tk, p,
 			ticket.PriorityChangeReopened, actor, time.Now())
 		return err
 	})
+	return actor, err
+}
+
+// (a) A reopen that raises the priority: the priority is written, and both
+// clocks start over from now on a new record. The old one is kept, superseded.
+func TestReopenBump_RaisingThePriorityRestartsBothClocks(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	oldStart := time.Now().Add(-5 * time.Hour)
+	oldID := h.store.seedSLARecord(seeded.ID, h.medium, &oldStart, 30, metFacts())
+	want := h.store.slaRows(seeded.ID)[0]
+
+	before := time.Now()
+	actor, err := h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
 	require.NoError(t, err)
 
 	stored, _ := h.store.GetByID(context.Background(), seeded.ID)
 	require.Equal(t, ticket.PriorityHigh, stored.Priority)
+
+	rows := h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 2)
+	old := rows[0]
+	require.NotNil(t, old.supersededAt)
+	old.supersededAt = nil
+	require.Equal(t, want, old, "the old record is kept, facts byte-identical")
+
+	cur := rows[1]
+	require.Nil(t, cur.supersededAt)
+	require.Equal(t, h.high, cur.policyID)
+	require.NotNil(t, cur.startedAt)
+	require.False(t, cur.startedAt.Before(before), "the new clock starts now")
+	require.Equal(t, ticket.SLAFacts{}, cur.facts, "both targets are timed anew")
+
 	pc := onlyEntry(t, h.auditStore.entries, "priority_changed")
 	require.Equal(t, ticket.PriorityChangeReopened, pc.After["priority_change_reason"])
-	require.Equal(t, &requester, pc.ActorID)
+	require.Equal(t, ticket.SLARestarted, pc.After["sla_outcome"])
+	require.Equal(t, actor.UserID, pc.ActorID)
+
+	sr := onlyEntry(t, h.auditStore.entries, "sla_restarted")
+	require.Equal(t, map[string]any{"sla_record_id": oldID, "sla_policy_id": h.medium}, sr.Before)
+	require.Equal(t, map[string]any{
+		"sla_record_id": cur.id, "sla_policy_id": h.high, "previous_sla_record_id": oldID,
+	}, sr.After)
+	require.Empty(t, h.dispatcher.events)
+}
+
+// (b) A reopen at the highest priority, which cannot be raised: the same call,
+// the same value. The priority does not change, so nothing is written to the
+// ticket and there is no priority_changed entry, but both clocks still start
+// over and sla_restarted says so.
+func TestReopenBump_AtTheSamePriorityStillRestartsBothClocks(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
+
+	before := time.Now()
+	_, err := h.reopenBump(t, seeded.ID, ticket.PriorityMedium)
+	require.NoError(t, err)
+
+	require.Zero(t, h.store.updates, "the ticket row is not rewritten")
+	rows := h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 2)
+	require.NotNil(t, rows[0].supersededAt)
+	require.Equal(t, h.medium, rows[1].policyID, "the same policy: restarted anyway")
+	require.NotNil(t, rows[1].startedAt)
+	require.False(t, rows[1].startedAt.Before(before))
+	require.Equal(t, ticket.SLAFacts{}, rows[1].facts)
+
+	require.Len(t, h.auditStore.entries, 1)
 	onlyEntry(t, h.auditStore.entries, "sla_restarted")
+}
+
+func TestReopenBump_RunningRecordIsRestartedToo(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	oldStart := time.Now().Add(-5 * time.Hour)
+	h.store.seedSLARecord(seeded.ID, h.medium, &oldStart, 0, ticket.SLAFacts{})
+
+	_, err := h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
+	require.NoError(t, err)
+
+	rows := h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 2)
+	require.False(t, rows[1].startedAt.Equal(oldStart), "the clock does not carry over on a reopen")
+}
+
+// The Resolved/Closed refusal and the same-priority no-op belong to a staff
+// change. A reopen has just moved the ticket out of Closed in its own
+// transaction, so it is not asked, whatever the row looks like to this call.
+func TestReopenBump_IsNotRefusedByTheClosedRule(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedClosed()
+	seeded.Priority = ticket.PriorityMedium
+	h.store.seed(seeded)
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
+
+	_, err := h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
+	require.NoError(t, err)
 	require.Len(t, h.store.slaRows(seeded.ID), 2)
 }
 
-// Raising a priority that is already as high as it goes asks for the same
-// value: a no-op in the transaction, so no SLA restart either (§2.6).
-func TestChangePriorityInTx_SamePriorityIsANoOp(t *testing.T) {
+// With the SLA switched off no record is created or superseded; the priority
+// still changes, and at an unchanged priority nothing at all is written.
+func TestReopenBump_SLAOffCreatesNoRecord(t *testing.T) {
+	h := newPrioHarness(t)
+	h.svc.SetSLAEnabled(func(context.Context) bool { return false })
+	seeded := h.seedMedium()
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
+
+	_, err := h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
+	require.NoError(t, err)
+	stored, _ := h.store.GetByID(context.Background(), seeded.ID)
+	require.Equal(t, ticket.PriorityHigh, stored.Priority)
+	require.Len(t, h.store.slaRows(seeded.ID), 1)
+	require.Nil(t, h.store.slaRows(seeded.ID)[0].supersededAt)
+	require.Equal(t, ticket.SLAOff, onlyEntry(t, h.auditStore.entries, "priority_changed").After["sla_outcome"])
+	require.Len(t, h.auditStore.entries, 1)
+
+	_, err = h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
+	require.NoError(t, err)
+	require.Len(t, h.auditStore.entries, 1, "nothing changed, nothing is written")
+	require.Len(t, h.store.slaRows(seeded.ID), 1)
+}
+
+func TestReopenBump_NoRecordStartsOneNow(t *testing.T) {
 	h := newPrioHarness(t)
 	seeded := h.seedMedium()
-	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, true)
 
-	err := h.atomic.InTx(context.Background(), func(st ticket.Store, au audit.Store) error {
-		tk, err := st.GetByIDForUpdate(context.Background(), seeded.ID)
-		require.NoError(t, err)
-		_, err = h.svc.ChangePriorityInTx(context.Background(), st, au, tk, ticket.PriorityMedium,
-			ticket.PriorityChangeReopened, ticket.SystemActor, time.Now())
-		return err
-	})
+	before := time.Now()
+	_, err := h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
 	require.NoError(t, err)
+
+	rows := h.store.slaRows(seeded.ID)
+	require.Len(t, rows, 1)
+	require.NotNil(t, rows[0].startedAt)
+	require.False(t, rows[0].startedAt.Before(before))
+	require.Equal(t, ticket.SLAAttached, onlyEntry(t, h.auditStore.entries, "priority_changed").After["sla_outcome"])
+}
+
+func TestReopenBump_RejectsAnInvalidPriority(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	_, err := h.reopenBump(t, seeded.ID, "urgent")
+	require.ErrorIs(t, err, ticket.ErrValidation)
 	require.Empty(t, h.auditStore.entries)
-	require.Len(t, h.store.slaRows(seeded.ID), 1)
+}
+
+// The reopen's SLA restart is part of its transaction: failing the second
+// audit entry, after the priority, the supersede, the new record and the first
+// entry, undoes all of it.
+func TestReopenBump_AuditFailureRollsEverythingBack(t *testing.T) {
+	h := newPrioHarness(t)
+	seeded := h.seedMedium()
+	h.store.seedSLARecord(seeded.ID, h.medium, nil, 0, metFacts())
+	rowsBefore := h.store.slaRows(seeded.ID)
+	h.auditStore.failOnCall = 2
+
+	_, err := h.reopenBump(t, seeded.ID, ticket.PriorityHigh)
+
+	require.ErrorIs(t, err, errStoreDown)
+	stored, _ := h.store.GetByID(context.Background(), seeded.ID)
+	require.Equal(t, ticket.PriorityMedium, stored.Priority)
+	require.Equal(t, rowsBefore, h.store.slaRows(seeded.ID))
+	require.Empty(t, h.auditStore.entries)
 }

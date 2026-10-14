@@ -73,7 +73,7 @@ func TestCurrentSLARecordForUpdate(t *testing.T) {
 		require.Nil(t, got)
 	})
 
-	t.Run("a running record is not settled and carries its clock", func(t *testing.T) {
+	t.Run("a running record has no facts and carries its clock", func(t *testing.T) {
 		f := newRematchStoreFx(t)
 		p := f.policy(t, "running", nil)
 		require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: p.ID}))
@@ -85,39 +85,63 @@ func TestCurrentSLARecordForUpdate(t *testing.T) {
 		require.NotEqual(t, uuid.Nil, got.ID)
 		require.Nil(t, got.StartedAt)
 		require.Zero(t, got.PausedSecondsAtStart)
-		require.False(t, got.Settled)
+		require.Equal(t, ticket.SLAFacts{}, got.Facts, "nothing recorded yet")
 	})
 
-	// Each fact column settles a record on its own.
-	settle := map[string]func(f *rematchStoreFx) error{
-		"first_response_at": func(f *rematchStoreFx) error {
-			return f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now(), 60, 1800)
+	// Every fact the record has recorded is read back, each on its own: a
+	// re-match carries them onto the record that replaces it.
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	settle := map[string]struct {
+		set  func(f *rematchStoreFx) error
+		want ticket.SLAFacts
+	}{
+		"first_response_at": {
+			set:  func(f *rematchStoreFx) error { return f.ss.SetFirstResponse(f.ctx, f.tk.ID, at, 60, 1800) },
+			want: ticket.SLAFacts{FirstResponseAt: &at, ResponseElapsedAtMetSeconds: ptr(int64(60))},
 		},
-		"resolved_at": func(f *rematchStoreFx) error {
-			return f.ss.SetResolved(f.ctx, f.tk.ID, time.Now(), 60, 7200)
+		"resolved_at": {
+			set:  func(f *rematchStoreFx) error { return f.ss.SetResolved(f.ctx, f.tk.ID, at, 90, 7200) },
+			want: ticket.SLAFacts{ResolvedAt: &at, ResolutionElapsedAtMetSeconds: ptr(int64(90))},
 		},
-		"response_breached_at": func(f *rematchStoreFx) error {
-			at := time.Now()
-			return f.ss.StampBreaches(f.ctx, f.tk.ID, &at, nil)
+		"response_breached_at": {
+			set:  func(f *rematchStoreFx) error { return f.ss.StampBreaches(f.ctx, f.tk.ID, &at, nil) },
+			want: ticket.SLAFacts{ResponseBreachedAt: &at},
 		},
-		"resolution_breached_at": func(f *rematchStoreFx) error {
-			at := time.Now()
-			return f.ss.StampBreaches(f.ctx, f.tk.ID, nil, &at)
+		"resolution_breached_at": {
+			set:  func(f *rematchStoreFx) error { return f.ss.StampBreaches(f.ctx, f.tk.ID, nil, &at) },
+			want: ticket.SLAFacts{ResolutionBreachedAt: &at},
 		},
 	}
-	for column, set := range settle {
-		t.Run("settled by "+column+" alone", func(t *testing.T) {
+	for column, tc := range settle {
+		t.Run("facts read back: "+column+" alone", func(t *testing.T) {
 			f := newRematchStoreFx(t)
-			p := f.policy(t, "settled", nil)
+			p := f.policy(t, "facts", nil)
 			require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: p.ID}))
-			require.NoError(t, set(f))
+			require.NoError(t, tc.set(f))
 
 			got, err := f.ts.CurrentSLARecordForUpdate(f.ctx, f.tk.ID)
 			require.NoError(t, err)
 			require.NotNil(t, got)
-			require.True(t, got.Settled)
+			require.Equal(t, utcFacts(tc.want), utcFacts(got.Facts))
 		})
 	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// utcFacts puts every timestamp in UTC, so facts compare by instant rather than
+// by the Location the driver happened to attach.
+func utcFacts(f ticket.SLAFacts) ticket.SLAFacts {
+	utc := func(t *time.Time) *time.Time {
+		if t == nil {
+			return nil
+		}
+		u := t.UTC()
+		return &u
+	}
+	f.FirstResponseAt, f.ResolvedAt = utc(f.FirstResponseAt), utc(f.ResolvedAt)
+	f.ResponseBreachedAt, f.ResolutionBreachedAt = utc(f.ResponseBreachedAt), utc(f.ResolutionBreachedAt)
+	return f
 }
 
 // A second current row is refused until the first is superseded: the schema
@@ -151,6 +175,7 @@ func TestSLARematchStore_SupersedeAndStartRoundTrip(t *testing.T) {
 	started := at
 	startNew := ticket.SLARecordStart{
 		ID: uuid.New(), TicketID: f.tk.ID, PolicyID: next.ID, StartedAt: &started, PausedSecondsAtStart: 90,
+		Facts: cur.Facts, // a staff re-match carries the facts onto the new record
 	}
 	require.NoError(t, f.ts.StartSLARecord(f.ctx, startNew))
 
@@ -161,7 +186,9 @@ func TestSLARematchStore_SupersedeAndStartRoundTrip(t *testing.T) {
 	require.NotNil(t, now.StartedAt)
 	require.True(t, now.StartedAt.Equal(started))
 	require.EqualValues(t, 90, now.PausedSecondsAtStart)
-	require.Nil(t, now.FirstResponseAt, "the new record has no facts of the old one")
+	require.NotNil(t, now.FirstResponseAt, "the facts were carried onto the new record")
+	require.True(t, now.FirstResponseAt.Equal(*cur.Facts.FirstResponseAt))
+	require.Equal(t, cur.Facts.ResponseElapsedAtMetSeconds, now.ResponseElapsedAtMetSeconds)
 
 	// The new record is the one in force, and the old one is gone from view.
 	again, err := f.ts.CurrentSLARecordForUpdate(f.ctx, f.tk.ID)

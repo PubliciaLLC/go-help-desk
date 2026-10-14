@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // PATCH /tickets/{id} {priority} (#443b): staff and admin change a ticket's
@@ -132,5 +133,30 @@ func TestUpdateTicket_Priority_HTTP(t *testing.T) {
 		res.Body.Close()
 		require.Equal(t, http.StatusOK, res.StatusCode)
 		require.Equal(t, ticket.PriorityLow, priority(t))
+	})
+
+	t.Run("409: a Resolved or Closed ticket is refused, priority included", func(t *testing.T) {
+		staff := ticket.Actor{UserID: &h.staffID, Role: user.RoleStaff}
+		admin := ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin}
+
+		resolved := mk(h.userID)
+		_, err := h.ticketSvc.Resolve(ctx, resolved.ID, "done", staff)
+		require.NoError(t, err)
+		closed := mk(h.userID)
+		_, err = h.ticketSvc.Resolve(ctx, closed.ID, "done", staff)
+		require.NoError(t, err)
+		require.NoError(t, h.ticketSvc.Close(ctx, closed.ID, admin))
+
+		for name, tk := range map[string]ticket.Ticket{"resolved": resolved, "closed": closed} {
+			res := h.do(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), map[string]any{"priority": "critical"})
+			b, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			require.Equal(t, http.StatusConflict, res.StatusCode, "%s: body: %s", name, b)
+			require.Contains(t, string(b), "ticket_closed")
+
+			got, err := h.ticketSvc.GetByID(ctx, tk.ID)
+			require.NoError(t, err)
+			require.Equal(t, ticket.PriorityMedium, got.Priority, "%s: nothing is written", name)
+		}
 	})
 }

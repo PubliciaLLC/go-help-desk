@@ -33,8 +33,14 @@ func (s *Store) CurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUI
 		PolicyID:             r.PolicyID,
 		StartedAt:            database.TimePtr(r.StartedAt),
 		PausedSecondsAtStart: r.PausedSecondsAtStart,
-		Settled: r.FirstResponseAt.Valid || r.ResolvedAt.Valid ||
-			r.ResponseBreachedAt.Valid || r.ResolutionBreachedAt.Valid,
+		Facts: ticket.SLAFacts{
+			FirstResponseAt:               database.TimePtr(r.FirstResponseAt),
+			ResolvedAt:                    database.TimePtr(r.ResolvedAt),
+			ResponseBreachedAt:            database.TimePtr(r.ResponseBreachedAt),
+			ResolutionBreachedAt:          database.TimePtr(r.ResolutionBreachedAt),
+			ResponseElapsedAtMetSeconds:   database.Int64Ptr(r.ResponseElapsedAtMetSeconds),
+			ResolutionElapsedAtMetSeconds: database.Int64Ptr(r.ResolutionElapsedAtMetSeconds),
+		},
 	}, nil
 }
 
@@ -77,6 +83,13 @@ func (s *Store) StartSLARecord(ctx context.Context, r ticket.SLARecordStart) err
 		PolicyID:             r.PolicyID,
 		StartedAt:            database.NullTime(r.StartedAt),
 		PausedSecondsAtStart: r.PausedSecondsAtStart,
+
+		FirstResponseAt:               database.NullTime(r.Facts.FirstResponseAt),
+		ResolvedAt:                    database.NullTime(r.Facts.ResolvedAt),
+		ResponseBreachedAt:            database.NullTime(r.Facts.ResponseBreachedAt),
+		ResolutionBreachedAt:          database.NullTime(r.Facts.ResolutionBreachedAt),
+		ResponseElapsedAtMetSeconds:   database.NullInt64(r.Facts.ResponseElapsedAtMetSeconds),
+		ResolutionElapsedAtMetSeconds: database.NullInt64(r.Facts.ResolutionElapsedAtMetSeconds),
 	}); err != nil {
 		return fmt.Errorf("starting SLA record for ticket %s: %w", r.TicketID, err)
 	}

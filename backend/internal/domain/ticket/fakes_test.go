@@ -84,14 +84,12 @@ func (f *fakeStore) seed(t ticket.Ticket) { f.tickets[t.ID] = t }
 
 // ── SLA records (the re-match's four store methods) ──────────────────────────
 
-// fakeSLARecord is one sla_records row as far as the re-match can see it. settled
-// stands for "any of the four fact columns is set"; the real store computes it
-// from the columns, and is tested against them in internal/database.
+// fakeSLARecord is one sla_records row as far as the re-match can see it.
 type fakeSLARecord struct {
 	id, ticketID, policyID uuid.UUID
 	startedAt              *time.Time
 	pausedBase             int64
-	settled                bool
+	facts                  ticket.SLAFacts
 	supersededAt           *time.Time
 }
 
@@ -99,8 +97,8 @@ type fakeSLARecord struct {
 var errSecondCurrentSLARecord = errors.New("duplicate key value violates unique constraint \"sla_records_current_idx\"")
 
 // seedSLARecord adds a current record for a ticket and returns its id.
-func (f *fakeStore) seedSLARecord(ticketID, policyID uuid.UUID, startedAt *time.Time, pausedBase int64, settled bool) uuid.UUID {
-	r := fakeSLARecord{id: uuid.New(), ticketID: ticketID, policyID: policyID, startedAt: startedAt, pausedBase: pausedBase, settled: settled}
+func (f *fakeStore) seedSLARecord(ticketID, policyID uuid.UUID, startedAt *time.Time, pausedBase int64, facts ticket.SLAFacts) uuid.UUID {
+	r := fakeSLARecord{id: uuid.New(), ticketID: ticketID, policyID: policyID, startedAt: startedAt, pausedBase: pausedBase, facts: facts}
 	f.slaRecords = append(f.slaRecords, r)
 	return r.id
 }
@@ -121,7 +119,7 @@ func (f *fakeStore) CurrentSLARecordForUpdate(_ context.Context, ticketID uuid.U
 		if r.ticketID == ticketID && r.supersededAt == nil {
 			return &ticket.SLARecordState{
 				ID: r.id, PolicyID: r.policyID, StartedAt: r.startedAt,
-				PausedSecondsAtStart: r.pausedBase, Settled: r.settled,
+				PausedSecondsAtStart: r.pausedBase, Facts: r.facts,
 			}, nil
 		}
 	}
@@ -154,7 +152,7 @@ func (f *fakeStore) StartSLARecord(_ context.Context, r ticket.SLARecordStart) e
 	}
 	f.slaRecords = append(f.slaRecords, fakeSLARecord{
 		id: r.ID, ticketID: r.TicketID, policyID: r.PolicyID,
-		startedAt: r.StartedAt, pausedBase: r.PausedSecondsAtStart,
+		startedAt: r.StartedAt, pausedBase: r.PausedSecondsAtStart, facts: r.Facts,
 	})
 	return nil
 }
