@@ -71,7 +71,7 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
 	}
 
-	elapsed := int64(Elapsed(t, at) / time.Second)
+	elapsed := int64(record.Elapsed(t, at) / time.Second)
 	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA first response: %w", err)
 	}
@@ -125,7 +125,7 @@ func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.T
 		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
 	}
 
-	elapsed := int64(Elapsed(t, at) / time.Second)
+	elapsed := int64(record.Elapsed(t, at) / time.Second)
 	if err := s.store.SetResolvedAndFirstResponse(ctx, t.ID, at, elapsed,
 		int64(policy.ResolutionTargetMin)*60, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA resolution: %w", err)
@@ -286,6 +286,26 @@ func (s *Service) StatusesFor(ctx context.Context, tickets []ticket.Ticket, now 
 		out[r.TicketID] = StatusFor(r, p, t, now)
 	}
 	return out, nil
+}
+
+// Earlier is the record a restart replaced, for the one-ticket read
+// (see EarlierRecord for what counts). nil, nil when there is none. The history
+// is read for one ticket only: list rows never carry it.
+func (s *Service) Earlier(ctx context.Context, t ticket.Ticket) (*EarlierView, error) {
+	history, err := s.store.ListRecordsForTicket(ctx, t.ID)
+	if err != nil {
+		return nil, fmt.Errorf("listing SLA records: %w", err)
+	}
+	e := EarlierRecord(history, t.CreatedAt)
+	if e == nil {
+		return nil, nil
+	}
+	p, err := s.store.GetPolicy(ctx, e.PolicyID)
+	if err != nil {
+		return nil, fmt.Errorf("getting SLA policy %s: %w", e.PolicyID, err)
+	}
+	e.PolicyName = p.Name
+	return e, nil
 }
 
 // ── Policy CRUD ───────────────────────────────────────────────────────────────

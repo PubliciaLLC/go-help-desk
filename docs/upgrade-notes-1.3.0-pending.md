@@ -261,3 +261,14 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 - **A blank webhook `secret` on `PATCH` still clears it**, by design and for administrators only; now documented in the API spec and DESIGN.md.
 
 **Ordering.** This change adds migration **000040**, which follows 000039 (#432).
+
+## Old Password Hashes Must Be Reset After 30 Days (#453)
+
+1.3.0 hashes passwords at bcrypt cost 12 (earlier releases used 10). An account is upgraded automatically the next time its owner signs in. **Accounts that have not signed in within 30 days of the first start of 1.3.0 must reset their password:** a correct password on an old hash is refused with 403 `password_reset_required` and the message "Your password was saved in an older, weaker form and must be reset before you can sign in." until it is reset.
+
+- **Clock:** starts when 1.3.0 first runs against the database (migration 000044 records it once).
+- **N:** Settings → Authentication → Passwords, default 30, 1 to 365. Changing it moves the deadline for everyone.
+- **Exempt:** all administrators, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML restricts password sign-in to administrators, others get the SAML refusal instead.
+- **How people reset:** "Forgot password" on the sign-in page once password reset by email lands (#451), or an administrator sets a new password for them. Until then only the administrator route works.
+- **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
+- **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.

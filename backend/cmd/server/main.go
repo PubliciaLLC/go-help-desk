@@ -232,11 +232,13 @@ func run() error {
 	// ── Domain services ───────────────────────────────────────────────────────
 	tagStore := tagstore.New(q)
 
-	userSvc := user.NewService(uStore, user.WithAuditStore(auStore))
+	// adminSvc supplies the deadline after which an old password hash is
+	// refused at sign-in (#453).
+	adminSvc := admin.NewService(aStore)
+	userSvc := user.NewService(uStore, user.WithAuditStore(auStore), user.WithPasswordExpiry(adminSvc))
 	categorySvc := category.NewService(cStore)
 	groupSvc := group.NewService(gStore)
 	tagSvc := tag.NewService(tagStore)
-	adminSvc := admin.NewService(aStore)
 
 	// Say so when attachments are not being scanned.
 	//
@@ -349,6 +351,9 @@ func run() error {
 	// above has no use for it and keeps the plain dispatcher.
 	ticketDispatcher := notify.NewStaffFanout(dispatcher, userSvc, groupSvc, adminSvc.StaffEmailOverrides, slog.Default())
 	ticketSvc := ticket.NewService(tStore, tStore, ticketDispatcher, auStore, txRunner, slaSvc)
+	// The SLA re-match a priority change makes is gated on the same live
+	// toggle as AttachPolicy (#443).
+	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
 	// The ticket service needs the dispatcher and the dispatcher's redelivery
 	// needs the ticket service: this closes the loop.
 	webhookDisp.SetSource(server.NewWebhookEventSource(ticketSvc))

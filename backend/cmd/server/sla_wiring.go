@@ -144,3 +144,22 @@ func (g *gatedSLA) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at 
 func (g *gatedSLA) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
 	return g.inner.RecordResolved(ctx, t, at)
 }
+
+// slaToggle returns the reader ticket.Service.SetSLAEnabled takes: the same
+// live admin-settings read gatedSLA does, for the SLA re-match a priority
+// change makes (#443b). A failed read counts as off, as in
+// gatedSLA.AttachPolicy, and is logged here because domain code does not log.
+func slaToggle(admin slaEnabler, log *slog.Logger) func(context.Context) bool {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(ctx context.Context) bool {
+		enabled, err := admin.SLAEnabled(ctx)
+		if err != nil {
+			log.WarnContext(ctx, "reading SLA enabled setting failed; treating SLA as disabled for this priority change",
+				"error", err)
+			return false
+		}
+		return enabled
+	}
+}
