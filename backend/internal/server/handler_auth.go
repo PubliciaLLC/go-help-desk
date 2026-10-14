@@ -72,7 +72,25 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		s.loginLimiter.Tarpit(r.Context(), loginKey, s.loginThrottleDelay)
 	}
 
-	u, err := s.users.VerifyPassword(r.Context(), body.Email, body.Password)
+	u, err := s.users.VerifyPasswordForSignIn(r.Context(), body.Email, body.Password)
+	if errors.Is(err, user.ErrPasswordResetRequired) {
+		// The SAML restriction first: a non-administrator under SAML cannot use a
+		// password at all, so telling them to reset one would be wrong.
+		if !user.IsLocalAuthAllowed(u, s.adminSvc.SAMLEnabled(r.Context())) {
+			Error(w, http.StatusForbidden, "saml_required", "local login is disabled; use SAML")
+			return
+		}
+		// The password was right, so this is not a failed guess: it is not
+		// counted, and it does not reset the counter either. It costs the same
+		// as a wrong password (see VerifyPasswordForSignIn).
+		//
+		// Part D (#451) hooks in here: once "Forgot password" exists, send the
+		// person a reset link at this point and change the message to say so.
+		Error(w, http.StatusForbidden, "password_reset_required",
+			"Your password was saved in an older, weaker form and must be reset before you can sign in. "+
+				"Use \"Forgot password\" on the sign-in page, or ask an administrator to reset it for you.")
+		return
+	}
 	if err != nil {
 		// Only failures are counted, and the refusal happens here rather than
 		// before the check, so a legitimate user is never held out.
