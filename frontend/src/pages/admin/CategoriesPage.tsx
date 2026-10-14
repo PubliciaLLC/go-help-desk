@@ -155,6 +155,7 @@ function GroupsSubsection({
     mutationFn: (groupId: string) => removeGroupScope(groupId, { category_id: categoryId, type_id: typeId }),
     onSuccess: () => qc.invalidateQueries({ queryKey }),
   })
+  const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const assignedIds = new Set(assignedGroups.map((g) => g.id))
   const available = allGroups.filter((g) => !assignedIds.has(g.id))
@@ -165,6 +166,7 @@ function GroupsSubsection({
         <UsersRoundIcon className="h-3 w-3 text-gray-400" />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Groups</span>
       </div>
+      {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
       <div className="flex flex-wrap gap-1.5">
         {assignedGroups.map((g) => (
           <span
@@ -291,6 +293,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
     mutationFn: (assignmentId: string) => removeAssignment(assignmentId),
     onSuccess: () => qc.invalidateQueries({ queryKey }),
   })
+  const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: { visible_on_new?: boolean; required_on_new?: boolean } }) =>
@@ -321,6 +324,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
         <SlidersIcon className="h-3 w-3 text-gray-400" />
         <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Fields</span>
       </div>
+      {removeError && <p role="alert" className="mb-2 text-xs text-red-600">{removeError}</p>}
       <div className="space-y-1">
         {(assignments as Assignment[]).map((a) => (
           <div key={a.id} className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 text-xs">
@@ -469,7 +473,8 @@ function SortableItemRow({
       )}
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Delete item "${item.name}"?`}
         description="Tickets already classified with this item keep their classification but it can no longer be selected for new tickets."
         confirmLabel="Delete item"
@@ -577,7 +582,8 @@ function SortableTypeRow({
       </div>
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Delete type "${type.name}"?`}
         description="All items under this type will also be removed. Tickets already classified under them keep their classification."
         confirmLabel="Delete type"
@@ -726,7 +732,8 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       </div>
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Delete category "${cat.name}"?`}
         description="All types and items under this category will also be removed. Tickets already classified keep their classification."
         confirmLabel="Delete category"

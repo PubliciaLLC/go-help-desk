@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -61,6 +63,16 @@ type SessionData struct {
 	// OIDCCodeVerifier is the PKCE code_verifier whose challenge was sent with
 	// the authorization request. It is presented at token exchange.
 	OIDCCodeVerifier string
+
+	// PendingUntil is the moment a half-signed-in session stops being usable.
+	// It is a deadline rather than a start time so the limit is decided once,
+	// where the session is born (PendingDeadline), and nothing downstream has to
+	// know which kind of pending session it is looking at.
+	//
+	// Not refreshed on later saves. Zero when MFAPassed is true or the session
+	// is pre-login (UserID is nil); zero on a pending session means it was
+	// saved before this field existed, and PendingExpired treats that as expired.
+	PendingUntil time.Time
 }
 
 // SessionName is the session cookie's name.
@@ -89,3 +101,33 @@ const SessionDataKey = "session"
 // nothing. ExpireLegacySession only ever deletes — it never reads or trusts the
 // value — which is what makes carrying a legacy name here safe.
 const LegacySessionName = "ohd_session"
+
+const (
+	// MFACodeWindow is how long a person has to enter a code from a factor
+	// they already have, after the password step.
+	MFACodeWindow = 5 * time.Minute
+	// MFAEnrolWindow is longer because first-time enrolment means installing
+	// an app and scanning a code.
+	MFAEnrolWindow = 15 * time.Minute
+)
+
+// PendingDeadline is the PendingUntil for a session created now that has
+// passed the password but owes a second factor. enrolment is true when the
+// factor is yet to be set up rather than entered.
+func PendingDeadline(now time.Time, enrolment bool) time.Time {
+	if enrolment {
+		return now.Add(MFAEnrolWindow)
+	}
+	return now.Add(MFACodeWindow)
+}
+
+// PendingExpired reports whether this is a half-signed-in session (password
+// passed, MFA not) whose deadline has passed. A pending session with no
+// deadline was saved before PendingUntil existed; with no way to tell how old
+// it is, it counts as expired, and its holder signs in again.
+func (s SessionData) PendingExpired(now time.Time) bool {
+	if s.MFAPassed || s.UserID == uuid.Nil {
+		return false
+	}
+	return s.PendingUntil.IsZero() || now.After(s.PendingUntil)
+}

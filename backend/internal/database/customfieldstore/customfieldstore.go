@@ -150,7 +150,14 @@ func (s *Store) UpdateAssignment(ctx context.Context, a customfield.Assignment) 
 }
 
 func (s *Store) DeleteAssignment(ctx context.Context, id uuid.UUID) error {
-	return s.q.DeleteCustomFieldAssignment(ctx, id)
+	n, err := s.q.DeleteCustomFieldAssignment(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting field assignment %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("field assignment %s: %w", id, customfield.ErrNotFound)
+	}
+	return nil
 }
 
 // ── Values ────────────────────────────────────────────────────────────────────

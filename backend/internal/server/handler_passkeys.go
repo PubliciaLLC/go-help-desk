@@ -337,6 +337,7 @@ func (s *Server) handlePasskeyLoginStart(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusUnauthorized, "unauthorized", "sign in with your password first")
 		return
 	}
+
 	acct, err := s.accountFor(r, a.UserID)
 	if err != nil {
 		handleError(w, err)
@@ -361,6 +362,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		Error(w, http.StatusUnauthorized, "unauthorized", "sign in with your password first")
 		return
 	}
+
 	staged, sd, err := s.takePasskeyChallenge(w, r)
 	if err != nil {
 		Error(w, http.StatusBadRequest, "no_challenge", err.Error())
