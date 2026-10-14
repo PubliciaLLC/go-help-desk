@@ -206,7 +206,12 @@ type Server struct {
 	// they produce. Two fields because the ceremony service owns no storage —
 	// it is handed an account and returns a credential, and the caller decides
 	// what to keep.
+	//
+	// passkeys is nil when BASE_URL cannot be a relying-party id (#494);
+	// passkeysAvailable is the only way to ask, and every route that would
+	// reach the service sits behind requirePasskeys.
 	passkeys        *webauthn.Service
+	passkeysReason  string
 	passkeyStore    webauthn.Store
 	groups          *group.Service
 	tags            *tag.Service
@@ -275,6 +280,16 @@ func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Opt
 	return func(s *Server) {
 		s.repStore = store
 		s.repOpts = providerOpts
+	}
+}
+
+// WithPasskeysUnavailable records why New was given no passkey service, for
+// the administrator's security warnings (#494). It does not switch anything
+// off: a nil service is what does that. An empty reason is ignored, so main
+// can pass whatever configuring passkeys returned.
+func WithPasskeysUnavailable(reason string) Option {
+	return func(s *Server) {
+		s.passkeysReason = reason
 	}
 }
 

@@ -646,6 +646,13 @@ export interface SecurityWarnings {
   attachment_storage?: { writable: boolean; problem: string }
 
   /**
+   * Whether passkeys can be used (#494). They cannot when BASE_URL is an IP
+   * address, a single-label host or non-ASCII. Optional so a server that
+   * predates the field reads as fine.
+   */
+  passkeys?: { available: boolean; reason: string }
+
+  /**
    * Whether email can be sent and is being delivered (#455, #456). Optional so
    * older fixtures and a server that predates it read as healthy.
    */
