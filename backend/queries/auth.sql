@@ -88,8 +88,8 @@ WHERE u.deleted_at IS NULL
 ORDER BY c.name;
 
 -- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format)
-VALUES ($1, $2, $3, $4, $5, $6, $7);
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: GetWebhookConfig :one
 SELECT * FROM webhook_configs WHERE id = $1;
@@ -98,7 +98,7 @@ SELECT * FROM webhook_configs WHERE id = $1;
 -- A new URL clears the last delivery result: it described a different target.
 -- (On the right-hand side of SET, "url" is the OLD value.)
 UPDATE webhook_configs
-SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6,
+SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticket_filter = $7,
     last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
     last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END

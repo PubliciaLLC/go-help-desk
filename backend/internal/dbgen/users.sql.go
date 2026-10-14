@@ -15,7 +15,7 @@ import (
 )
 
 const adminSetPassword = `-- name: AdminSetPassword :execrows
-UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
 
 type AdminSetPasswordParams struct {
@@ -264,6 +264,27 @@ func (q *Queries) CountOtherActiveAdmins(ctx context.Context, id uuid.UUID) (int
 	return count, err
 }
 
+const countSearchUsersAdmin = `-- name: CountSearchUsersAdmin :one
+SELECT count(*) FROM users
+WHERE deleted_at IS NULL
+  AND ($1::text = '' OR role = $1::text)
+  AND ($2::text = ''
+       OR email ILIKE '%' || $2::text || '%'
+       OR display_name ILIKE '%' || $2::text || '%')
+`
+
+type CountSearchUsersAdminParams struct {
+	Role string `json:"role"`
+	Q    string `json:"q"`
+}
+
+func (q *Queries) CountSearchUsersAdmin(ctx context.Context, arg CountSearchUsersAdminParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countSearchUsersAdmin, arg.Role, arg.Q)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countUsers = `-- name: CountUsers :one
 SELECT COUNT(*) FROM users WHERE deleted_at IS NULL AND disabled = FALSE AND NOT service_account
 `
@@ -448,7 +469,7 @@ func (q *Queries) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (u
 }
 
 const enableUser = `-- name: EnableUser :exec
-UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) EnableUser(ctx context.Context, id uuid.UUID) error {
@@ -943,6 +964,74 @@ func (q *Queries) RestoreUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const searchUsersAdmin = `-- name: SearchUsersAdmin :many
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account FROM users
+WHERE deleted_at IS NULL
+  AND ($1::text = '' OR role = $1::text)
+  AND ($2::text = ''
+       OR email ILIKE '%' || $2::text || '%'
+       OR display_name ILIKE '%' || $2::text || '%')
+ORDER BY created_at DESC, id
+LIMIT $4 OFFSET $3
+`
+
+type SearchUsersAdminParams struct {
+	Role       string `json:"role"`
+	Q          string `json:"q"`
+	PageOffset int32  `json:"page_offset"`
+	PageLimit  int32  `json:"page_limit"`
+}
+
+// The paged admin list (#449). role = ” means any role; q is already
+// LIKE-escaped by the caller (backslash is the escape character), and an empty
+// q matches everyone. id breaks created_at ties so a page boundary never
+// repeats or drops an account. ListUsersAdmin, above, is the unpaged list and
+// is left alone.
+func (q *Queries) SearchUsersAdmin(ctx context.Context, arg SearchUsersAdminParams) ([]User, error) {
+	rows, err := q.db.QueryContext(ctx, searchUsersAdmin,
+		arg.Role,
+		arg.Q,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []User
+	for rows.Next() {
+		var i User
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.DisplayName,
+			&i.Role,
+			&i.PasswordHash,
+			&i.MfaSecret,
+			&i.MfaEnabled,
+			&i.SamlSubject,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.Disabled,
+			&i.OidcSubject,
+			&i.MfaFailedAttempts,
+			&i.MfaLockedUntil,
+			&i.ServiceAccount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setFirstUserMFA = `-- name: SetFirstUserMFA :execrows
 UPDATE users
 SET mfa_secret = $2, mfa_enabled = true, updated_at = now()
@@ -1153,7 +1242,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 	return err
 }
 
-const updateUserProfile = `-- name: UpdateUserProfile :exec
+const updateUserProfile = `-- name: UpdateUserProfile :execrows
 WITH renamed AS (
     UPDATE oauth_clients SET name = $3 WHERE user_id = $1
 )
@@ -1184,7 +1273,10 @@ type UpdateUserProfileParams struct {
 // Renaming a service user (#420) renames its OAuth client in the same
 // statement, so the two names cannot drift. For anyone else no client has
 // user_id = $1 and the first part touches nothing.
-func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
-	_, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
-	return err
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

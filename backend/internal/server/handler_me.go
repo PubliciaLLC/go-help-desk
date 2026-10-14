@@ -228,7 +228,13 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 					"or ask an administrator to reset it.")
 			return
 		}
-		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+		// What the person got wrong is a 400; a storage fault is the server's
+		// and used to land here too, telling them their code was bad (#421).
+		if errors.Is(err, user.ErrMFANotStarted) || errors.Is(err, user.ErrMFAInvalidCode) {
+			Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+			return
+		}
+		handleError(w, err)
 		return
 	}
 	if err := s.users.ClearMFAFailures(r.Context(), a.UserID); err != nil {

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -457,6 +458,20 @@ func (s *Store) CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID,
 	return ok.Bool, nil
 }
 
+// ArchivedCTINode names the first archived level among the ids given
+// ("category", "type" or "item"), or "" when none is. A nil id is not checked.
+func (s *Store) ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error) {
+	level, err := s.q.ArchivedCTINode(ctx, dbgen.ArchivedCTINodeParams{
+		CategoryID: database.NullUUID(categoryID),
+		TypeID:     database.NullUUID(typeID),
+		ItemID:     database.NullUUID(itemID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("checking for archived classification: %w", err)
+	}
+	return level, nil
+}
+
 // CategoryExists reports whether a category id is real.
 func (s *Store) CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error) {
 	ok, err := s.q.CategoryExists(ctx, categoryID)
@@ -495,6 +510,36 @@ func (s *Store) UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.U
 		return nil, fmt.Errorf("unassigning tickets: %w", err)
 	}
 	return ids, nil
+}
+
+// UnassignForGroup takes every ticket off a group, and returns their ids.
+// The group row is locked first (LockGroup), so the unassign and the delete
+// that follows in the same transaction see the same set of tickets.
+func (s *Store) UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	if _, err := s.q.LockGroup(ctx, groupID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("group %s: %w", groupID, group.ErrNotFound)
+		}
+		return nil, fmt.Errorf("locking group %s: %w", groupID, err)
+	}
+	ids, err := s.q.UnassignTicketsForGroup(ctx, database.NullUUID(&groupID))
+	if err != nil {
+		return nil, fmt.Errorf("unassigning tickets from group %s: %w", groupID, err)
+	}
+	return ids, nil
+}
+
+// DeleteGroup removes the group row. See ticket.Service.DeleteGroup for why a
+// group is deleted from the ticket store.
+func (s *Store) DeleteGroup(ctx context.Context, groupID uuid.UUID) error {
+	n, err := s.q.DeleteGroup(ctx, groupID)
+	if err != nil {
+		return fmt.Errorf("deleting group %s: %w", groupID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("group %s: %w", groupID, group.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListReplies(ctx context.Context, ticketID uuid.UUID) ([]ticket.Reply, error) {

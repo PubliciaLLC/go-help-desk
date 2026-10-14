@@ -24,6 +24,40 @@ func (q *Queries) AnyAttachmentExists(ctx context.Context) (bool, error) {
 	return exists, err
 }
 
+const archivedCTINode = `-- name: ArchivedCTINode :one
+SELECT (CASE
+    WHEN $1::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM categories WHERE id = $1 AND NOT active) THEN 'category'
+    WHEN $2::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM types WHERE id = $2 AND NOT active) THEN 'type'
+    WHEN $3::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM items WHERE id = $3 AND NOT active) THEN 'item'
+    ELSE ''
+END)::text AS archived_level
+`
+
+type ArchivedCTINodeParams struct {
+	CategoryID uuid.NullUUID `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// Which level of a classification being NEWLY picked is archived: 'category',
+// 'type', 'item', or ” when none is. Highest level first, so a ticket aimed at
+// an archived category is told about the category, not the type under it.
+//
+// A NULL argument means "not being picked" and is skipped; the caller passes
+// only the levels that differ from what the ticket already holds, because a
+// ticket already sitting in an archived node keeps it (#421). An id that does
+// not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+// those.
+func (q *Queries) ArchivedCTINode(ctx context.Context, arg ArchivedCTINodeParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, archivedCTINode, arg.CategoryID, arg.TypeID, arg.ItemID)
+	var archived_level string
+	err := row.Scan(&archived_level)
+	return archived_level, err
+}
+
 const cTIIsCoherent = `-- name: CTIIsCoherent :one
 SELECT
     ($1::uuid IS NULL OR EXISTS (
@@ -1469,6 +1503,22 @@ func (q *Queries) ListUnassignedTickets(ctx context.Context, arg ListUnassignedT
 	return items, nil
 }
 
+const lockGroup = `-- name: LockGroup :one
+SELECT id FROM groups WHERE id = $1 FOR UPDATE
+`
+
+// Locks the group row so nothing can be assigned to it until the transaction
+// ends. A ticket's assignee_group_id takes a share lock on the group it names,
+// and this conflicts with that. Without it a ticket assigned between
+// UnassignTicketsForGroup and the delete would lose its group silently, which
+// is the gap this exists to close.
+func (q *Queries) LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, lockGroup, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const nextTicketSeq = `-- name: NextTicketSeq :one
 SELECT nextval('ticket_seq')::bigint
 `
@@ -2067,6 +2117,39 @@ func (q *Queries) SearchUnassignedTickets(ctx context.Context, arg SearchUnassig
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const unassignTicketsForGroup = `-- name: UnassignTicketsForGroup :many
+UPDATE tickets
+SET assignee_group_id = NULL, updated_at = now()
+WHERE assignee_group_id = $1
+RETURNING id
+`
+
+// Takes every ticket off a group that is about to be deleted, and says which.
+// All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+// would clear those anyway, and the audit trail should record it.
+func (q *Queries) UnassignTicketsForGroup(ctx context.Context, assigneeGroupID uuid.NullUUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, unassignTicketsForGroup, assigneeGroupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
