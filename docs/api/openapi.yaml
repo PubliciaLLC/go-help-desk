@@ -21,8 +21,8 @@ info:
       served as text/plain; charset=utf-8.
     - Any operation may answer 500 internal_error ("an internal error
       occurred"); it is listed only where a handler has a 5xx of its own. A
-      handler that panics is answered 500 with an empty body, not the
-      envelope.
+      handler that panics is answered the same way (the panic is logged, never
+      sent), unless the response had already begun.
     - An unknown path is 404 with the plain-text body "404 page not found",
       and a known path with the wrong method is 405, but only for a caller
       that the enclosing group of routes admits. Under /api/v1/admin,
