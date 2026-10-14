@@ -789,7 +789,7 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
 - **There is no exception for the last administrator.** They are refused too,
   and `alreadyProtected` still counts passkeys, so a password alone cannot
   enrol TOTP on any passkey-only account. Recovery is on the server:
-  `docker compose exec app go-help-desk reset-factors <email>` (clears every
+  `docker compose exec app /app/server reset-factors <email>` (from the `docker/` directory; clears every
   factor, including passkeys), or an administrator's Reset MFA for anyone else.
   Fixing `BASE_URL` also brings old keys back, provided the domain is the one
   they were registered on.
