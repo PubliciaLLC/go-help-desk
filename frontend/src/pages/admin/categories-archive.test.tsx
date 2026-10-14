@@ -79,8 +79,11 @@ describe('archiving', () => {
 
     await userEvent.click(within(await rowOf('Hardware')).getByRole('button', { name: 'Archive category' }))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText(/hidden from requesters/i)).toBeTruthy()
-    expect(within(dialog).getByText(/nobody can file new tickets/i)).toBeTruthy()
+    expect(
+      within(dialog).getByText(
+        'Requesters will no longer see it or be able to file new tickets under it. Tickets already filed keep it. You can restore it at any time.',
+      ),
+    ).toBeTruthy()
     expect(patch).not.toHaveBeenCalled()
 
     await userEvent.click(within(dialog).getByRole('button', { name: 'Archive category' }))
@@ -126,6 +129,10 @@ describe('archived entries', () => {
       const row = await rowOf(name)
       expect(row.getAttribute('data-archived')).toBe('true')
       expect(within(row).getByText('Archived')).toBeTruthy()
+      // The name is what fades; the row and its label stay at full strength.
+      expect(within(row).getByText(name).parentElement?.className).toContain('opacity-60')
+      expect(row.className).not.toContain('opacity-60')
+      expect(within(row).getByText('Archived').className).not.toContain('opacity-60')
       expect(within(row).getByRole('button', { name: `Restore ${kind}` })).toBeTruthy()
       expect(within(row).queryByRole('button', { name: `Archive ${kind}` })).toBeNull()
     }
@@ -137,6 +144,7 @@ describe('archived entries', () => {
 
     const row = await rowOf('Hardware')
     expect(row.getAttribute('data-archived')).toBe('false')
+    expect(within(row).getByText('Hardware').parentElement?.className).not.toContain('opacity-60')
     expect(within(row).queryByText('Archived')).toBeNull()
   })
 
@@ -161,6 +169,43 @@ describe('archived entries', () => {
     await waitFor(() =>
       expect(patch).toHaveBeenCalledWith('/admin/categories/c-1/types/t-1/items/i-1', { active: true }),
     )
+  })
+})
+
+describe('a failed restore', () => {
+  it('shows the server message inline', async () => {
+    const { patch } = mockApi({ cat: { active: false } })
+    patch.mockRejectedValue(refusal(500, 'internal_error', 'database unavailable'))
+    renderWithQuery(<CategoriesPage />)
+
+    const row = await rowOf('Hardware')
+    await userEvent.click(within(row).getByRole('button', { name: 'Restore category' }))
+
+    expect((await within(row).findByRole('alert')).textContent).toBe('database unavailable')
+  })
+})
+
+describe('keyboard access', () => {
+  it('archive, restore and delete buttons are focusable and show on focus', async () => {
+    mockApi({ type: { active: false } })
+    renderWithQuery(<CategoriesPage />)
+    await expandAll()
+
+    const buttons = [
+      within(await rowOf('Hardware')).getByRole('button', { name: 'Archive category' }),
+      within(await rowOf('Hardware')).getByRole('button', { name: 'Delete category' }),
+      within(await rowOf('Laptop')).getByRole('button', { name: 'Restore type' }),
+      within(await rowOf('Laptop')).getByRole('button', { name: 'Delete type' }),
+      within(await rowOf('Battery')).getByRole('button', { name: 'Archive item' }),
+      within(await rowOf('Battery')).getByRole('button', { name: 'Delete item' }),
+    ]
+    for (const b of buttons) {
+      // visibility:hidden would take the button out of the tab order.
+      expect(b.className).not.toMatch(/(^|\s)invisible(\s|$)/)
+      expect(b.className).toContain('focus-visible:opacity-100')
+      b.focus()
+      expect(document.activeElement).toBe(b)
+    }
   })
 })
 

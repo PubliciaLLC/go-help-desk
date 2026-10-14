@@ -104,7 +104,7 @@ function InlineName({
       <span>{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
-        className="invisible text-gray-300 hover:text-gray-600 group-hover/name:visible"
+        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-gray-600 group-hover/name:visible"
         title="Rename"
       >
         <PencilIcon className="h-3 w-3" />
@@ -149,14 +149,17 @@ function ArchiveControl({
 
   if (archived) {
     return (
+      <>
+        {mutation.isError && <span role="alert" className="text-xs text-red-600">{extractError(mutation.error)}</span>}
       <button
         onClick={() => mutation.mutate(true)}
         disabled={mutation.isPending}
-        className="invisible text-gray-300 hover:text-green-600 group-hover:visible"
+        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-green-600"
         title={`Restore ${kind}`}
       >
         <ArchiveRestoreIcon className={iconClass} />
       </button>
+      </>
     )
   }
 
@@ -164,7 +167,7 @@ function ArchiveControl({
     <>
       <button
         onClick={() => setConfirmOpen(true)}
-        className="invisible text-gray-300 hover:text-amber-600 group-hover:visible"
+        className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-amber-600"
         title={`Archive ${kind}`}
       >
         <ArchiveIcon className={iconClass} />
@@ -174,7 +177,7 @@ function ArchiveControl({
         onOpenChange={(open) => { setConfirmOpen(open); if (!open) mutation.reset() }}
         error={mutation.isError ? extractError(mutation.error) : undefined}
         title={`Archive ${kind} "${name}"?`}
-        description="It will be hidden from requesters, and nobody can file new tickets under it. Tickets already filed keep it. You can restore it at any time."
+        description="Requesters will no longer see it or be able to file new tickets under it. Tickets already filed keep it. You can restore it at any time."
         confirmLabel={`Archive ${kind}`}
         destructive={false}
         isPending={mutation.isPending}
@@ -185,7 +188,7 @@ function ArchiveControl({
 }
 
 function ArchivedBadge() {
-  return <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-600">Archived</span>
+  return <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-800">Archived</span>
 }
 
 // ── Groups subsection ─────────────────────────────────────────────────────────
@@ -428,7 +431,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
             </label>
             <button
               onClick={() => removeMutation.mutate(a.id)}
-              className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+              className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
               title="Remove assignment"
             >
               <XIcon className="h-3.5 w-3.5" />
@@ -512,7 +515,7 @@ function SortableItemRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div data-archived={!item.active} className={`group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50 ${item.active ? '' : 'opacity-60'}`}>
+      <div data-archived={!item.active} className={`group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -532,7 +535,7 @@ function SortableItemRow({
         <InlineName
           value={item.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm text-gray-700"
+          className={`text-sm text-gray-700 ${item.active ? '' : 'opacity-60'}`}
         />
         {!item.active && <ArchivedBadge />}
         <ArchiveControl
@@ -546,7 +549,7 @@ function SortableItemRow({
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
           title="Delete item"
         >
           <TrashIcon className="h-3.5 w-3.5" />
@@ -637,7 +640,7 @@ function SortableTypeRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div data-archived={!type.active} className={`group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50 ${type.active ? '' : 'opacity-60'}`}>
+      <div data-archived={!type.active} className={`group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -656,7 +659,7 @@ function SortableTypeRow({
         <InlineName
           value={type.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-medium text-gray-800"
+          className={`text-sm font-medium text-gray-800 ${type.active ? '' : 'opacity-60'}`}
         />
         {!type.active && <ArchivedBadge />}
         <ArchiveControl
@@ -670,7 +673,7 @@ function SortableTypeRow({
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
           title="Delete type"
         >
           <TrashIcon className="h-3.5 w-3.5" />
@@ -794,7 +797,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   return (
     <div ref={setNodeRef} style={style} className={`border-b last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}>
-      <div data-archived={!cat.active} className={`group flex items-center gap-2 px-4 py-3 hover:bg-gray-50 ${cat.active ? '' : 'opacity-60'}`}>
+      <div data-archived={!cat.active} className={`group flex items-center gap-2 px-4 py-3 hover:bg-gray-50`}>
         <button
           {...attributes}
           {...listeners}
@@ -813,7 +816,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
         <InlineName
           value={cat.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-semibold text-gray-900"
+          className={`text-sm font-semibold text-gray-900 ${cat.active ? '' : 'opacity-60'}`}
         />
         {!cat.active && <ArchivedBadge />}
         <ArchiveControl
@@ -827,7 +830,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
         <button
           onClick={() => setConfirmOpen(true)}
           disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+          className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 hover:text-red-500"
           title="Delete category"
         >
           <TrashIcon className="h-4 w-4" />
