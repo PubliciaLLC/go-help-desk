@@ -13,7 +13,7 @@ type PriorityChangeReason string
 
 const (
 	PriorityChangeManual   PriorityChangeReason = "manual"   // REST PATCH (and any later caller acting for a person)
-	PriorityChangeReopened PriorityChangeReason = "reopened" // #464's first-reopen bump: restarts both clocks
+	PriorityChangeReopened PriorityChangeReason = "reopened" // #464: every reopen (the first also raises the priority); restarts both clocks
 )
 
 // SLAOutcome is what a priority change did to the ticket's SLA. It is recorded

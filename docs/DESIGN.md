@@ -99,7 +99,7 @@ Three roles: **Admin**, **Staff**, **User**
 |------|-------------|
 | **Admin** | Full system access. Manage settings, users, groups, categories, tags. (Plugins are not manageable in 1.x; the plugin system is planned for v2.) Can always log in with local auth even when SAML is enabled (failsafe). |
 | **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
-| **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+| **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"); the ticket is flagged, raised one priority level the first time, and its SLA starts over (see the Ticket Lifecycle). |
 
 **Admin → Roles** is a read-mostly page: it shows the three roles with a one-line description each and, under each, the users who hold it, with a dropdown that changes a user's role (`PATCH /admin/users/{id}`, the same call the user page makes). It does not define permissions; the roles are fixed. The dropdown is disabled on administrator rows (demote an administrator from their user page) and it shows the first 200 accounts only: it calls `GET /admin/users` without `page`, which returns at most 200 (the paged mode below is what lifts that cap, and this page does not use it yet).
 
@@ -136,6 +136,12 @@ admins, or staff and admins, to force-reopen; requesters never can.
 - **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and a requester can never reopen it. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
 - **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status. It is stored by name, so it can be deactivated after it was picked. An inactive status is retired, so every reopen (forced reopen, a requester's reply on a Resolved ticket, a guest's reply) goes to New instead, administrators see a banner from `GET /admin/security-warnings` (`reopen_target`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target carries a `warning` in its response.
 - **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
+- **A reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)) is any move from Resolved or Closed back to an open status. Every way of doing it is the same reopen: a requester's reply on a Resolved ticket inside the window (an account holder, or a guest through their link); a status change by staff or an administrator (`PATCH /tickets/{id}` with `status_id`, and MCP `update_ticket_status`); and `POST /tickets/{id}/reopen`. Leaving Closed still needs `closed_reopen_policy` to allow the caller's role, and a refused request changes nothing. Resolved to Closed and Closed to Resolved are not reopens. A reopen does five things, in the same transaction as the status change (`ticket.Atomic`), so none of them happens without the others:
+  - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
+  - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason. A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
+  - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching.
+  - **It writes `reopened`** to the audit log (and `priority_changed` and `sla_restarted` as above). A status change out of Resolved or Closed now writes `reopened` beside its `status_changed`; before, only the reply and `POST /reopen` did.
+  - **It emails staff and fires `ticket.reopened`**, after the commit: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before.
 - **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
 
   **Auto-close scheduling.** This transition is driven by a periodic background
@@ -428,7 +434,7 @@ Staff and administrators can **follow** a ticket to hear about its activity with
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written when a reopen starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it. Nothing writes it on this build: the reopen that does arrives with #464). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by every reopen that starts the SLA clocks over, with the id of the record it replaced; a staff priority change never writes it). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -2091,7 +2097,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
-| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. |
+| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
 | `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
 **Authorization.** `/mcp` and everything under `/mcp/` run behind the same middleware chain as `/api/`, so
@@ -2419,8 +2425,9 @@ on the existing webhook feature instead of as plugins.
   requesters about theirs. Two events: a ticket is **assigned**, and the
   **requester replies** (the public reply of whoever filed the ticket: an
   account holder, a guest, or a staff member replying on a ticket they filed
-  themselves; any other staff reply, or an internal note, is not one). A reopen by a requester's reply
-  is not part of this yet.
+  themselves; any other staff reply, or an internal note, is not one). A third,
+  a **reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)),
+  is described below.
 
   Three per-user switches, all **on by default** (columns on `users`, set
   from **Your account → Email about tickets**, `PATCH /me/email-preferences`):
@@ -2428,8 +2435,8 @@ on the existing webhook feature instead of as plugins.
   | Switch | Mailed when |
   | --- | --- |
   | Tickets assigned to me | a ticket is assigned to me |
-  | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, and a ticket I **follow** is assigned or gets a requester's reply |
-  | My groups' tickets | a ticket is assigned to a group I belong to, and a requester replies on a group ticket that **nobody personally holds** |
+  | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, a ticket assigned to me is **reopened**, and a ticket I **follow** is assigned, gets a requester's reply or is reopened |
+  | My groups' tickets | a ticket is assigned to a group I belong to, a requester replies on a group ticket that **nobody personally holds**, and a ticket assigned to my group is **reopened** |
 
   A requester's reply on a ticket that has both an assignee and a group goes
   to the assignee only: the group's members would otherwise get mail for every
@@ -2450,6 +2457,22 @@ on the existing webhook feature instead of as plugins.
   already queued, and mail queued to a follower is not lost if they are then
   assigned the ticket.
 
+  **A reopen** (any door: Ticket Lifecycle) mails the assignee, the assigned
+  group's members and the followers, once each (Erik, 2026-10-13/14). The
+  assignee's mail sits under the *requester replied* switch (the second one), as
+  does a follower's; the group's under the third. Unlike a reply, the group is
+  mailed even while somebody holds the ticket, so its members are always left
+  out of follower mail for a reopen, and the assignee is too. Whoever did the
+  reopening is not mailed, whether a requester (who is no staff candidate
+  anyway), the assignee, a group member or a follower. The mail is built from
+  the `ticket.reopened` event, which carries who holds the ticket and who acted;
+  the reply that caused a requester's reopen does not also ask for the reply
+  mail, so nobody is mailed twice for one reply. At send time the same checks run
+  as for every staff mail: the person must still hold the ticket, still be in
+  the group, or still follow it and be able to see it. The requester's own mail
+  is unchanged: a force-reopen mails the guest, and a status change mails the
+  guest through its own event.
+
   An administrator can **override each switch for everyone**
   (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
   `staff_email_activity_override`, `staff_email_group_override`): `user`
@@ -2464,6 +2487,7 @@ on the existing webhook feature instead of as plugins.
     assignment is skipped even when an override forces the switch on.
   - **One email per person per event.** Someone who is both the assignee and
     a member of the assigned group gets one, if either switch lets it through.
+    That holds for a reopen too.
     A follower who is neither is mailed as a follower.
   - **Only people who can receive it**: an active staff member or
     administrator with an address. A requester account is never sent staff
@@ -2499,7 +2523,7 @@ on the existing webhook feature instead of as plugins.
 - **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
   `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
   `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
-  staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` and
+  staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
   `ticket.linked`.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
@@ -2918,8 +2942,8 @@ When a ticket is created, the system selects an SLA policy by specificity:
 A ticket can change priority after it is created (staff and admin,
 `PATCH /tickets/{id}`, #443). The SLA policy is then matched again, by the same
 four tiers, against the new priority and the ticket's category, and the change
-is audited. **A staff change never restarts a clock.** Only a reopen does, and nothing
-calls that path yet: see **A reopen restarts both clocks** below.
+is audited. **A staff change never restarts a clock.** Only a reopen does: see
+**A reopen restarts both clocks** below.
 
 **Resolved and Closed tickets are refused.** A priority change on either answers
 `409 ticket_closed`, the same refusal every other write to a closed ticket gets,
@@ -2947,34 +2971,33 @@ What a staff change does, decided in this order:
 | Another policy matches | `rematched` | replaces the old record under the new policy, **keeping its clock** (so elapsed time still counts) and **its facts** (so a target already met stays met) |
 | A record exists, no policy matches | `removed` | none; the record is superseded and the ticket shows no SLA |
 
-**A reopen restarts both clocks.** *Not live on this build.* What exists is the
-service function, `changePriorityInTx` with the reason `reopened`, and its tests;
-the reopen that calls it arrives with the reopen change (#464), so today a
-reopened ticket's SLA is not restarted, no `sla_restarted` entry is written and
-the badge below cannot appear. This is how it will work. When a requester's reply
-reopens a ticket (#464), the reopen's own transaction calls the same primitive
-with the reason `reopened`. That reason always starts both clocks over from the reopen: the
-current record is superseded and kept, and a new one starts at the reopen with
-no facts, so both targets are timed anew. It does so even when the priority does
-not change (a ticket already at the highest priority cannot be raised) and even
-when the new priority maps to the same policy. It is not refused for being
-Resolved or Closed, because the reopen has just moved the ticket out of Closed
-in that same transaction. With SLA tracking switched off no record is created.
-The audit feed carries `priority_changed` (when the priority changed, with the
-outcome) and `sla_restarted`. A record that started over is recognisable as one
-(`started_at` is set), and because it is a clean clock it can clear a breach from
-the indicator; the breach stays on the superseded record, and `sla_restarted`
-says when.
+**A reopen restarts both clocks** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)).
+Whenever a ticket is reopened (a requester's reply, a status change out of
+Resolved or Closed, or `POST /reopen`: Ticket Lifecycle), the reopen's own
+transaction calls the same primitive with the reason `reopened`, after the status
+change. That reason always starts both clocks over from the reopen: the current
+record is superseded and kept, and a new one starts at the reopen with no facts,
+so both targets are timed anew. It does so on **every** reopen, not only the
+first (the priority bump is first-only; the restart is not), even when the
+priority does not change (a ticket already at the highest priority cannot be
+raised, and a later reopen does not raise it) and even when the new priority maps
+to the same policy. It is not refused for being Resolved or Closed, because the
+reopen has just moved the ticket out of it in that same transaction. With SLA
+tracking switched off no record is created. The audit feed carries
+`priority_changed` (when the priority changed, with the outcome) and
+`sla_restarted`. A record that started over is recognisable as one (`started_at`
+is set), and because it is a clean clock it can clear a breach from the
+indicator; the breach stays on the superseded record, and `sla_restarted` says
+when.
 
 **"SLA restarted" badge.** When the clock really restarted, the ticket page
 shows an **SLA restarted** badge next to the SLA indicator (staff and admin; a
 reporting user sees no SLA). That is a reopen and nothing else: **never after a
 staff or admin priority change**, which re-matches the SLA and keeps its clock,
-whatever the old record had already met or breached. **On this build the badge
-cannot appear**, because the reopen caller arrives with #464 and nothing else
-writes a restarted record; the field and the page are in place and are tested
-with a restarted record. Its tooltip reads "The SLA clock restarted when this
-ticket was reopened. The earlier record is kept; select to see it." Selecting it
+whatever the old record had already met or breached. It appears on a reopened
+ticket whose earlier record had something met or breached. Its tooltip reads
+"The SLA clock restarted when this ticket was reopened. The earlier record is
+kept; select to see it." Selecting it
 opens a small panel (Escape closes it) with the earlier record's facts: its
 policy, when its clock started, when it was replaced, and whether it ended met or
 breached. `GET /tickets/{id}` carries it as `sla.earlier`; a list row never does.
@@ -3065,8 +3088,9 @@ accumulates across possibly several Pending intervals, not a single flag:
   formula above is irrelevant to it — only breaches still open at that
   moment continue to accrue pause time.
 - Re-entering Pending after a reopen (see Ticket Lifecycle) resumes
-  accumulating against the same policy and the same accumulated pause
-  duration; a reopened ticket is not treated as a new SLA clock.
+  accumulating against the same accumulated pause total; the pause time before
+  a reopen does not count toward the restarted record (its base is the pause
+  total as of the reopen), so a reopen's new record is a new SLA clock.
 
 ### Breach Evaluation
 

@@ -125,6 +125,7 @@ func (s *Store) Update(ctx context.Context, t ticket.Ticket) error {
 		UpdatedAt:        time.Now(),
 		PendingSince:     database.NullTime(t.PendingSince),
 		SlaPausedSeconds: t.SLAPausedSeconds,
+		ReopenCount:      int32(t.ReopenCount),
 	})
 }
 
@@ -891,6 +892,7 @@ type ticketRow struct {
 	GuestPhone       string
 	PendingSince     sql.NullTime
 	SlaPausedSeconds int64
+	ReopenCount      int32
 }
 
 func fromRow(r ticketRow) ticket.Ticket {
@@ -917,6 +919,7 @@ func fromRow(r ticketRow) ticket.Ticket {
 		UpdatedAt:        r.UpdatedAt,
 		PendingSince:     database.TimePtr(r.PendingSince),
 		SLAPausedSeconds: r.SlaPausedSeconds,
+		ReopenCount:      int(r.ReopenCount),
 	}
 }
 

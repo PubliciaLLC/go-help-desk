@@ -266,6 +266,7 @@ type Ticket struct {
 	SearchVector     interface{}    `json:"search_vector"`
 	PendingSince     sql.NullTime   `json:"pending_since"`
 	SlaPausedSeconds int64          `json:"sla_paused_seconds"`
+	ReopenCount      int32          `json:"reopen_count"`
 }
 
 type TicketCustomFieldValue struct {

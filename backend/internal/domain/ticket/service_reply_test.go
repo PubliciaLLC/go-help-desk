@@ -84,6 +84,7 @@ func (h *harness) seedResolved(reporterID uuid.UUID) ticket.Ticket {
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000001",
 		Subject:        "Printer offline",
+		Priority:       ticket.PriorityMedium, // a real ticket always has one; a reopen raises it
 		ReporterUserID: &reporterID,
 		StatusID:       h.resolvedStatus.ID,
 		ResolvedAt:     &resolvedAt,
@@ -203,9 +204,19 @@ func TestAddReply_SucceedsAndReopens(t *testing.T) {
 	require.Equal(t, 1, h.store.historyCreates, "exactly one history entry")
 	require.Contains(t, h.dispatcher.types(), notification.EventTicketReopened)
 
-	require.Len(t, h.auditStore.entries, 1,
+	// Since #464 the reopen also writes priority_changed (the first-reopen
+	// bump); that is pinned in reopen_test.go. What this test is about is that
+	// the reopen itself is audited, once, and first.
+	require.NotEmpty(t, h.auditStore.entries)
+	require.Equal(t, "reopened", h.auditStore.entries[0].Action,
 		"a reply-triggered reopen must write an audit entry, the same as an explicit reopen does")
-	require.Equal(t, "reopened", h.auditStore.entries[0].Action)
+	n := 0
+	for _, e := range h.auditStore.entries {
+		if e.Action == "reopened" {
+			n++
+		}
+	}
+	require.Equal(t, 1, n)
 }
 
 // TestAddReply_InternalNoteNeverNotifiesCustomer pins an existing rule that the
@@ -255,6 +266,7 @@ func (h *harness) seedOpen() ticket.Ticket {
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000100",
 		Subject:        "Open ticket",
+		Priority:       ticket.PriorityMedium, // a real ticket always has one; a reopen raises it
 		ReporterUserID: &reporter,
 		StatusID:       h.newStatus.ID,
 		CreatedAt:      time.Now().Add(-2 * time.Hour),
@@ -272,6 +284,7 @@ func (h *harness) seedClosed() ticket.Ticket {
 		ID:             uuid.New(),
 		TrackingNumber: "HD-000101",
 		Subject:        "Closed ticket",
+		Priority:       ticket.PriorityMedium, // a real ticket always has one; a reopen raises it
 		ReporterUserID: &reporter,
 		StatusID:       h.closedStatus.ID,
 		ResolvedAt:     &closedAt,

@@ -31,6 +31,20 @@ func (p Priority) Valid() bool {
 	return false
 }
 
+// Raised is the next level up, and the highest level raised is itself. Used by
+// the first-reopen bump (#464).
+func (p Priority) Raised() Priority {
+	switch p {
+	case PriorityLow:
+		return PriorityMedium
+	case PriorityMedium:
+		return PriorityHigh
+	case PriorityHigh, PriorityCritical:
+		return PriorityCritical
+	}
+	return p
+}
+
 // StatusKind distinguishes the three system statuses from admin-defined ones.
 // Resolved and Closed have hardcoded lifecycle semantics; New is the starting
 // point. Everything else is Custom.
@@ -148,6 +162,11 @@ type Ticket struct {
 	// applyStatusTimestamps and read by sla.Elapsed; nothing else writes them.
 	PendingSince     *time.Time `json:"pending_since,omitempty"`
 	SLAPausedSeconds int64      `json:"sla_paused_seconds"`
+
+	// ReopenCount is how many times the ticket has been moved from Resolved or
+	// Closed back to an open status (#464). It is never reset: the badge reads
+	// "> 0 and open", and the priority bump applies only when it was 0.
+	ReopenCount int `json:"reopen_count"`
 }
 
 // Reply is a message on a ticket thread, from either a staff member or the
