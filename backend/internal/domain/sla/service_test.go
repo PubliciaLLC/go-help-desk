@@ -1318,3 +1318,38 @@ func TestSLAService_StatusesFor(t *testing.T) {
 }
 
 func prio(p ticket.Priority) *ticket.Priority { return &p }
+
+// A restarted record freezes the time since its own start, not since the
+// ticket's creation (#443b).
+func TestRecord_RestartedRecordFreezesFromItsOwnStart(t *testing.T) {
+	now := time.Date(2026, 9, 13, 20, 0, 0, 0, time.UTC)
+	start := now.Add(-1 * time.Minute)
+	tk := ticket.Ticket{CreatedAt: now.Add(-10 * time.Hour)}
+
+	setup := func() (*fakeSLAStore, *sla.Service) {
+		store := newFakeSLAStore()
+		policyID, ticketID := uuid.New(), uuid.New()
+		store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 5, ResolutionTargetMin: 5}
+		store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID, StartedAt: &start}
+		tk.ID = ticketID
+		return store, sla.NewService(store)
+	}
+
+	t.Run("first response", func(t *testing.T) {
+		store, svc := setup()
+		require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, now))
+		rec := store.records[tk.ID]
+		require.Equal(t, int64(60), *rec.ResponseElapsedAtMetSeconds)
+		require.Nil(t, rec.ResponseBreachedAt, "one minute into a five-minute target is not late")
+	})
+
+	t.Run("resolved", func(t *testing.T) {
+		store, svc := setup()
+		require.NoError(t, svc.RecordResolved(context.Background(), tk, now))
+		rec := store.records[tk.ID]
+		require.Equal(t, int64(60), *rec.ResolutionElapsedAtMetSeconds)
+		require.Equal(t, int64(60), *rec.ResponseElapsedAtMetSeconds)
+		require.Nil(t, rec.ResolutionBreachedAt)
+		require.Nil(t, rec.ResponseBreachedAt)
+	})
+}

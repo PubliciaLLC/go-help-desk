@@ -55,8 +55,8 @@ func StatusFor(rec Record, p Policy, t ticket.Ticket, now time.Time) Status {
 	return Status{
 		PolicyID:   p.ID,
 		PolicyName: p.Name,
-		Response:   targetStatus(rec.FirstResponseAt, rec.ResponseElapsedAtMetSeconds, p.ResponseTargetMin, t, now),
-		Resolution: targetStatus(rec.ResolvedAt, rec.ResolutionElapsedAtMetSeconds, p.ResolutionTargetMin, t, now),
+		Response:   targetStatus(rec, rec.FirstResponseAt, rec.ResponseElapsedAtMetSeconds, p.ResponseTargetMin, t, now),
+		Resolution: targetStatus(rec, rec.ResolvedAt, rec.ResolutionElapsedAtMetSeconds, p.ResolutionTargetMin, t, now),
 	}
 }
 
@@ -75,17 +75,17 @@ func StatusFor(rec Record, p Policy, t ticket.Ticket, now time.Time) Status {
 // recompute, which is wrong in exactly the way this function exists to fix,
 // but only for rows a one-time migration backfill did not reach or could not
 // exactly place.
-func targetStatus(metAt *time.Time, frozenSeconds *int64, targetMin int, t ticket.Ticket, now time.Time) TargetStatus {
+func targetStatus(rec Record, metAt *time.Time, frozenSeconds *int64, targetMin int, t ticket.Ticket, now time.Time) TargetStatus {
 	target := time.Duration(targetMin) * time.Minute
 
 	var elapsed time.Duration
 	switch {
 	case metAt == nil:
-		elapsed = Elapsed(t, now)
+		elapsed = rec.Elapsed(t, now)
 	case frozenSeconds != nil:
 		elapsed = time.Duration(*frozenSeconds) * time.Second
 	default:
-		elapsed = Elapsed(t, *metAt)
+		elapsed = rec.Elapsed(t, *metAt)
 	}
 
 	return TargetStatus{

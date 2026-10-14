@@ -428,3 +428,29 @@ func TestRecord_Elapsed(t *testing.T) {
 		require.Equal(t, 30*min, r.Elapsed(tk, at))
 	})
 }
+
+// A restarted record is measured from its own start, not from the ticket's
+// creation. Without this the record a priority change starts on a ten-hour-old
+// ticket would breach at once.
+func TestIsBreached_RestartedRecordMeasuresFromItsOwnStart(t *testing.T) {
+	now := pendingCreated.Add(10 * time.Hour)
+	start := now.Add(-1 * time.Minute)
+	tk := ticket.Ticket{CreatedAt: pendingCreated}
+	p := sla.Policy{ResponseTargetMin: 5, ResolutionTargetMin: 5}
+
+	restarted := sla.Record{StartedAt: &start}
+	original := sla.Record{}
+
+	require.False(t, sla.IsResponseBreached(restarted, p, tk, now))
+	require.False(t, sla.IsResolutionBreached(restarted, p, tk, now))
+
+	// The same ticket under a record that starts at creation is long breached.
+	require.True(t, sla.IsResponseBreached(original, p, tk, now))
+	require.True(t, sla.IsResolutionBreached(original, p, tk, now))
+
+	// A resolved record with no frozen number falls back to a live recompute,
+	// which must also use the record's own start.
+	resolvedAt := now
+	restarted.ResolvedAt = &resolvedAt
+	require.False(t, sla.IsResolutionBreached(restarted, p, tk, now.Add(time.Hour)))
+}

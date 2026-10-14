@@ -71,7 +71,7 @@ func (s *Service) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at t
 		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
 	}
 
-	elapsed := int64(Elapsed(t, at) / time.Second)
+	elapsed := int64(record.Elapsed(t, at) / time.Second)
 	if err := s.store.SetFirstResponse(ctx, t.ID, at, elapsed, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA first response: %w", err)
 	}
@@ -125,7 +125,7 @@ func (s *Service) RecordResolved(ctx context.Context, t ticket.Ticket, at time.T
 		return fmt.Errorf("getting SLA policy for ticket %s: %w", t.ID, err)
 	}
 
-	elapsed := int64(Elapsed(t, at) / time.Second)
+	elapsed := int64(record.Elapsed(t, at) / time.Second)
 	if err := s.store.SetResolvedAndFirstResponse(ctx, t.ID, at, elapsed,
 		int64(policy.ResolutionTargetMin)*60, int64(policy.ResponseTargetMin)*60); err != nil {
 		return fmt.Errorf("recording SLA resolution: %w", err)

@@ -117,7 +117,7 @@ func IsResponseBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bool
 	if r.FirstResponseAt != nil {
 		return false // already responded
 	}
-	return Elapsed(t, now) > time.Duration(p.ResponseTargetMin)*time.Minute
+	return r.Elapsed(t, now) > time.Duration(p.ResponseTargetMin)*time.Minute
 }
 
 // IsResolutionBreached returns true when the resolution target has elapsed and
@@ -145,7 +145,7 @@ func IsResolutionBreached(r Record, p Policy, t ticket.Ticket, now time.Time) bo
 		if r.ResolutionElapsedAtMetSeconds != nil {
 			return time.Duration(*r.ResolutionElapsedAtMetSeconds)*time.Second > target
 		}
-		return Elapsed(t, *r.ResolvedAt) > target
+		return r.Elapsed(t, *r.ResolvedAt) > target
 	}
-	return Elapsed(t, now) > target
+	return r.Elapsed(t, now) > target
 }
