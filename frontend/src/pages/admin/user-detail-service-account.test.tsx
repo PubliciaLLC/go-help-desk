@@ -27,9 +27,12 @@ const SERVICE = {
   display_name: 'JIRA sync',
   role: 'staff',
   disabled: false,
-  mfa_enabled: false,
-  has_password: false,
-  passkey_count: 0,
+  // Defensive: the database forbids a service user from holding any of these,
+  // but the page must hide the controls because it IS a service user, not
+  // because the flags happen to be empty.
+  has_password: true,
+  mfa_enabled: true,
+  passkey_count: 1,
   auth_type: 'service',
   service_account: true,
   groups: [],
@@ -89,6 +92,15 @@ describe('a service user on the user page', () => {
     expect(screen.queryByText('Reset password')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Reset MFA' })).toBeNull()
     expect(screen.queryByText('MFA')).toBeNull()
+    expect(screen.queryByText('Not enrolled')).toBeNull()
+    expect(screen.queryByText('Enrolled')).toBeNull()
+  })
+
+  it('hides the email field, which the system made', async () => {
+    renderWithQuery(<UserDetailPage />)
+    await screen.findByRole('heading', { name: 'JIRA sync' })
+    expect(screen.queryByDisplayValue(SERVICE.email)).toBeNull()
+    expect(screen.getAllByRole('textbox')).toHaveLength(1) // display name only
   })
 
   it('can be set to staff or user, never admin', async () => {
@@ -114,6 +126,37 @@ describe('a service user on the user page', () => {
     renderWithQuery(<UserDetailPage />)
     await screen.findByRole('heading', { name: 'JIRA sync' })
     expect(screen.getByRole('button', { name: 'Disable' })).toBeTruthy()
+    expect(
+      screen.getByText('Stops the OAuth client: its requests are refused until this is enabled again.'),
+    ).toBeTruthy()
+  })
+
+  it('says enabling restores the client when it is disabled', async () => {
+    mockDetail({ ...SERVICE, disabled: true })
+    renderWithQuery(<UserDetailPage />)
+    await screen.findByRole('heading', { name: 'JIRA sync' })
+    expect(screen.getByText('Let the OAuth client work again.')).toBeTruthy()
+  })
+
+  it('refreshes the security warnings when a group is added, so the banner clears', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === '/admin/users/u-2') return Promise.resolve({ data: SERVICE })
+      if (url === '/admin/groups') return Promise.resolve({ data: [{ id: 'g-1', name: 'Service Desk' }] })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    vi.spyOn(api, 'post').mockResolvedValue({ data: {} })
+    const { queryClient } = renderWithQuery(<UserDetailPage />)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await screen.findByRole('heading', { name: 'JIRA sync' })
+
+    await user.selectOptions(await screen.findByRole('option', { name: 'Service Desk' }).then((o) => o.parentElement as HTMLSelectElement), 'g-1')
+    await user.click(screen.getByRole('button', { name: 'Add' }))
+
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['security-warnings'] }),
+    )
   })
 
   it('shows the 409 message on delete, with a link to the OAuth clients page', async () => {

@@ -103,6 +103,10 @@ export function UserDetailPage() {
   function invalidate() {
     qc.invalidateQueries({ queryKey: ['admin', 'users', id] })
     qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+    // A group added to (or a disable of) a service user is what clears the
+    // "OAuth clients see no tickets" banner; without this it stays up to five
+    // minutes after the fix.
+    qc.invalidateQueries({ queryKey: ['security-warnings'] })
   }
 
   // ── Profile mutation ────────────────────────────────────────────────────────

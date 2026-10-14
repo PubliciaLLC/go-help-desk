@@ -37,16 +37,22 @@ beforeEach(() => {
   }) as any)
 })
 
-async function turnScopeOnAndSave(patchBody: unknown) {
+async function saveWith(patchBody: unknown, change: () => Promise<void>) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: patchBody } as any)
   renderWithQuery(<SettingsPage />)
   await screen.findByRole('heading', { name: 'Settings' })
-  const row = screen.getByText('Limit staff to their group scope').parentElement!.parentElement!
-  await userEvent.click(within(row).getByRole('switch'))
+  await change()
   await userEvent.click(screen.getByRole('button', { name: /save changes/i }))
   await waitFor(() => expect(patch).toHaveBeenCalled())
   return patch
+}
+
+async function turnScopeOnAndSave(patchBody: unknown) {
+  return saveWith(patchBody, async () => {
+    const row = screen.getByText('Limit staff to their group scope').parentElement!.parentElement!
+    await userEvent.click(within(row).getByRole('switch'))
+  })
 }
 
 describe('the scope enforcement save warning', () => {
@@ -60,6 +66,17 @@ describe('the scope enforcement save warning', () => {
     expect(within(box).getByRole('link', { name: /OAuth clients/i }).getAttribute('href')).toBe(
       '/admin/oauth-clients',
     )
+  })
+
+  // An SSO warning shares the field. It must not send the administrator to the
+  // OAuth clients page.
+  it('links to OAuth clients only on the save that turned scope on', async () => {
+    await saveWith({ warning: 'SSO would lock everyone out.' }, async () => {
+      await userEvent.click(screen.getByRole('switch', { name: 'Staff can view ticket change history' }))
+    })
+    const note = await screen.findByText('SSO would lock everyone out.')
+    const box = note.closest('[role="status"]') as HTMLElement
+    expect(within(box).queryByRole('link')).toBeNull()
   })
 
   it('says nothing extra when the server returns no warning', async () => {
