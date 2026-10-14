@@ -17,7 +17,8 @@ import (
 )
 
 // Drives the REAL registered MCP tools over the REAL Streamable HTTP transport
-// at /mcp, behind ProtectMCP. protect_mcp_scope_test.go does the same for SSE.
+// at /mcp, behind ProtectMCP. protect_mcp_scope_test.go does the same for SSE,
+// and runs its scope assertions over both transports.
 //
 // The Streamable HTTP endpoint is stateless on purpose (docs/DESIGN.md, "MCP
 // Interface"): every POST is one complete JSON-RPC exchange answered with
@@ -277,55 +278,6 @@ func TestMCPStreamable_ReportingUserCannotWrite(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal([]byte(reply), &res))
 	require.False(t, res.Result.IsError, reply)
-}
-
-// Same assertions as TestMCP_RestrictedKeyIsRefusedOverTheRealTransport, over
-// the Streamable HTTP transport: both transports reach the same tools under
-// the same scopes.
-func TestMCPStreamable_RestrictedKeyIsRefused(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-
-	t.Run("no scopes reaches no tool", func(t *testing.T) {
-		c := openStream(t, h, mintLegacyKey(t, h))
-		for _, tc := range mcpTools(h) {
-			t.Run(tc.tool, func(t *testing.T) {
-				got := c.call(t, tc.tool, tc.args)
-				require.Contains(t, got, "scope",
-					"%s must refuse a credential with no scopes; got %s", tc.tool, got)
-			})
-		}
-	})
-
-	t.Run("read scope cannot write", func(t *testing.T) {
-		c := openStream(t, h, mintKey(t, h, []string{"tickets:read"}))
-		for _, tc := range mcpTools(h) {
-			t.Run(tc.tool, func(t *testing.T) {
-				got := c.call(t, tc.tool, tc.args)
-				if tc.write {
-					require.Contains(t, got, "scope",
-						"tickets:read must not reach the write tool %s; got %s", tc.tool, got)
-					return
-				}
-				require.NotContains(t, got, "does not carry",
-					"tickets:read must reach the read tool %s; got %s", tc.tool, got)
-			})
-		}
-	})
-
-	t.Run("write scope reaches the write tools", func(t *testing.T) {
-		c := openStream(t, h, mintKey(t, h, []string{"tickets:write"}))
-		for _, tc := range mcpTools(h) {
-			if !tc.write {
-				continue
-			}
-			t.Run(tc.tool, func(t *testing.T) {
-				got := c.call(t, tc.tool, tc.args)
-				require.NotContains(t, got, "does not carry",
-					"tickets:write must reach %s; got %s", tc.tool, got)
-			})
-		}
-	})
 }
 
 // The acting identity is taken from each HTTP request, never from an earlier
