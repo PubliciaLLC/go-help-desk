@@ -375,7 +375,7 @@
 <p><code>/track</code> takes the tracking number and the email address and mails a fresh link. On an open ticket it replaces the previous one; on a closed ticket it is added beside it, read-only. It <strong>always</strong> answers the same way, whether or not those details matched a ticket, so it cannot be used to discover which tickets exist. It works for open and closed tickets. One request per ticket every five minutes.</p>
 
 <h3>Rate limiting</h3>
-<p>Guest submission and link re-requests share the sign-in rate limiter: <code>AUTH_RATE_LIMIT_PER_MINUTE</code> a minute (10 by default), keyed on the client address. The shipped <code>docker-compose.yml</code> does not pass that variable to the app, so under Compose it stays at 10 unless you add it to the <code>app</code> service's <code>environment:</code> block.</p>
+<p>Guest submission and link re-requests share the sign-in rate limiter: <code>AUTH_RATE_LIMIT_PER_MINUTE</code> a minute (10 by default), keyed on the client address. The shipped <code>docker-compose.yml</code> passes that variable to the app, so under Compose you set it in <code>.env</code>.</p>
 
 <div class="callout callout-warn">
   <p><strong>Behind a reverse proxy, that key is the proxy.</strong> The limiter reads the connection's remote address and deliberately does not trust a forwarded-for header, so every visitor arriving through one proxy shares one bucket. Rate-limit guest endpoints at your proxy if you need a per-visitor limit.</p>

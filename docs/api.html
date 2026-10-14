@@ -305,7 +305,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <p>Every other list returns its whole result as a bare JSON array.</p>
 
 <h3>Rate limiting</h3>
-<p>The application applies these limits itself. The budget is <code>AUTH_RATE_LIMIT_PER_MINUTE</code> (default 10 a minute). Docker Compose does not pass it to the app, so with the shipped Compose file the default applies.</p>
+<p>The application applies these limits itself. The budget is <code>AUTH_RATE_LIMIT_PER_MINUTE</code> (default 10 a minute). The shipped Docker Compose file passes it to the app, so under Compose you set it in <code>.env</code>. The wait that follows an exhausted budget is <code>AUTH_THROTTLE_DELAY</code> (default 1 second), passed the same way.</p>
 <ul>
   <li><strong>Password sign-in</strong> is limited per submitted email address. Only failed attempts count. Past the budget, further attempts answer <code>429 rate_limited</code> with <code>Retry-After</code>. Each login for an account over its budget is also held for about a second before the password is checked, so a guesser is slowed down while a correct password still works.</li>
   <li><strong>Signup</strong> is limited per source address.</li>
