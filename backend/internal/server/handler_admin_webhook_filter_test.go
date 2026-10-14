@@ -303,3 +303,94 @@ func TestWebhookList_ShowsTheFilter(t *testing.T) {
 	}
 	require.True(t, found, "the seeded webhook is not in the list")
 }
+
+// An inactive category still has tickets, so a filter may name it (#413).
+func TestWebhookCreate_AcceptsAnInactiveCategory(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	cat, err := h.categorySvc.CreateCategory(ctx, "Legacy", 99)
+	require.NoError(t, err)
+	cat.Active = false
+	require.NoError(t, h.categorySvc.UpdateCategory(ctx, cat))
+
+	res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks", map[string]any{
+		"url": "https://example.com/hook", "events": []string{"*"},
+		"filter": map[string]any{"category_ids": []uuid.UUID{cat.ID}},
+	})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+}
+
+// A category or group that existed and was deleted is unknown: a filter still
+// naming it is refused on save, so it has to be unticked first.
+func TestWebhookUpdate_RefusesAFilterNamingADeletedCategoryOrGroup(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	id := seedWebhook(t, h)
+
+	cat, err := h.categorySvc.CreateCategory(ctx, "Gone", 99)
+	require.NoError(t, err)
+	require.NoError(t, h.categorySvc.DeleteCategory(ctx, cat.ID))
+	grp, err := h.groupSvc.Create(ctx, "Gone", "")
+	require.NoError(t, err)
+	require.NoError(t, h.groupSvc.Delete(ctx, grp.ID))
+
+	for _, tc := range []struct {
+		filter map[string]any
+		code   string
+	}{
+		{map[string]any{"category_ids": []uuid.UUID{cat.ID}}, "unknown_filter_category"},
+		{map[string]any{"group_ids": []uuid.UUID{grp.ID}}, "unknown_filter_group"},
+	} {
+		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
+			map[string]any{"filter": tc.filter})
+		require.Equal(t, http.StatusBadRequest, res.StatusCode)
+		require.Equal(t, tc.code, filterRefusalCode(t, res))
+		res.Body.Close()
+	}
+}
+
+// Within a filter the first failure wins, in the documented order: shape,
+// priority, category, group. Each case breaks two checks and expects the
+// earlier one.
+func TestWebhookFilter_RefusalOrder(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	unknown := []uuid.UUID{uuid.New()}
+
+	for _, tc := range []struct {
+		name   string
+		filter map[string]any
+		code   string
+	}{
+		{"shape before priority", map[string]any{"priorities": []string{"urgent"}, "type_ids": unknown}, "invalid_filter"},
+		{"priority before category", map[string]any{"priorities": []string{"urgent"}, "category_ids": unknown}, "invalid_filter_priority"},
+		{"category before group", map[string]any{"category_ids": unknown, "group_ids": unknown}, "unknown_filter_category"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/webhooks", map[string]any{
+				"url": "https://example.com/hook", "events": []string{"*"}, "filter": tc.filter,
+			})
+			defer res.Body.Close()
+			require.Equal(t, http.StatusBadRequest, res.StatusCode)
+			require.Equal(t, tc.code, filterRefusalCode(t, res))
+		})
+	}
+}
+
+// On update too the filter is checked after the fields before it: a bad URL
+// and a bad filter report the URL.
+func TestWebhookUpdate_FilterIsCheckedAfterTheOtherFields(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	id := seedWebhook(t, h)
+
+	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(), map[string]any{
+		"url": "not a url", "filter": map[string]any{"priorities": []string{"urgent"}},
+	})
+	defer res.Body.Close()
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	require.Equal(t, "invalid_url", filterRefusalCode(t, res))
+}
