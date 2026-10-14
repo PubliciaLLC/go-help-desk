@@ -274,6 +274,80 @@ test.describe('#414: the tracking number never breaks inside itself', () => {
     expect(await lineCount(number), `${TICKET_DETAIL.tracking_number} wraps onto more than one line`).toBe(1)
     await noHorizontalScroll(page)
   })
+
+  // The test above never squeezes the number: at 390 its column is wider
+  // than it, and a flex-wrap row gives an item that fits its full width
+  // whether or not the item may break. The case that needs the number to be
+  // unbreakable is a column narrower than the number, which the widest action
+  // group a phone shows (staff on a closed ticket: Reopen + Create follow-up)
+  // produces. The width is derived, not hard-coded, so it holds whatever font
+  // system-ui resolves to: the column ends up half a header gap narrower than
+  // the number, so a whole number still clears the buttons (around 375px with
+  // DejaVu Sans). Narrower than that the number runs under "Reopen" instead;
+  // that is the header's action group squeezing its column, not this.
+  test('stays whole when the header actions leave its column narrower than it', async ({ page }) => {
+    await mockApi(page)
+    await page.route(`**/api/v1/tickets/${TICKET_DETAIL.id}`, (route) =>
+      route.fulfill({ json: { ...TICKET_DETAIL, status_id: 'st-closed', can_reopen: true } }),
+    )
+    // 767: the widest viewport below md, so the phone layout with room to spare.
+    await page.setViewportSize({ width: 767, height: 844 })
+    await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+    const number = page.getByText(TICKET_DETAIL.tracking_number, { exact: true })
+    const title = page.getByRole('heading', { level: 1 }) // a block: as wide as the column
+    const reopen = page.getByRole('button', { name: 'Reopen' })
+    await expect(number).toBeVisible()
+    await expect(reopen).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Create follow-up' })).toBeVisible()
+
+    const wide = { number: await number.boundingBox(), title: await title.boundingBox(), reopen: await reopen.boundingBox() }
+    if (!wide.number || !wide.title || !wide.reopen) throw new Error('header not rendered')
+    const gap = wide.reopen.x - (wide.title.x + wide.title.width)
+    // Below md the column loses exactly what the viewport loses.
+    const width = Math.round(767 - wide.title.width + wide.number.width - gap / 2)
+    await page.setViewportSize({ width, height: 844 })
+
+    const title2 = await title.boundingBox()
+    const number2 = await number.boundingBox()
+    const reopen2 = await reopen.boundingBox()
+    if (!title2 || !number2 || !reopen2) throw new Error('header not rendered')
+    expect(title2.width, 'the column is not narrower than the number: nothing is being tested').toBeLessThan(
+      wide.number.width,
+    )
+    expect(await lineCount(number), `${TICKET_DETAIL.tracking_number} broke at ${width}px`).toBe(1)
+    expect(number2.x + number2.width, 'the number runs under the action buttons').toBeLessThanOrEqual(reopen2.x)
+    await noHorizontalScroll(page)
+  })
+})
+
+test.describe('#414: "Opened …" moves below the number instead of being crushed beside it', () => {
+  // Staff on a New ticket: "Mark Resolved" sits in the header, so the meta
+  // row has the number, "·" and "Opened <date>" to fit into what is left.
+  // A row that does not wrap squeezes "Opened <date>" into a column of one
+  // word per line beside the number. Two lines is the most it should take: at
+  // 390 the column can be a few pixels short of the whole phrase.
+  for (const width of [390, 320]) {
+    test(`${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 844 })
+      await mockApi(page)
+      await page.goto(`/tickets/${TICKET_DETAIL.id}`)
+      const number = page.getByText(TICKET_DETAIL.tracking_number, { exact: true })
+      const opened = page.getByText(/^Opened \d/)
+      await expect(opened).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Mark Resolved' })).toBeVisible()
+
+      const lines = await lineCount(opened)
+      expect(lines, 'no line boxes measured').toBeGreaterThan(0)
+      expect(lines, '"Opened …" crushed into a narrow column beside the number').toBeLessThanOrEqual(2)
+      // When it wraps onto the next row it follows straight on, with no
+      // extra row gap (gap-x-2, not gap-2).
+      const n = await number.boundingBox()
+      const o = await opened.boundingBox()
+      if (!n || !o) throw new Error('meta row not rendered')
+      expect(o.y - (n.y + n.height), 'a row gap opened up between the wrapped lines').toBeLessThan(4)
+      await noHorizontalScroll(page)
+    })
+  }
 })
 
 test.describe('#426: prose wraps at word boundaries; an unbroken URL still wraps', () => {
