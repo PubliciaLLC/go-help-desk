@@ -423,6 +423,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// And the follow-entries toggle (#441).
+	if raw, ok := body[admin.KeyStaffCanViewFollowAudit]; ok {
+		var on bool
+		if err := unmarshalSetting(raw, "staff_can_view_follow_audit", &on); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Same reasoning as the prefix above: a value that is accepted and then
 	// ignored is worse than a refusal, and here the ignored value is a
 	// security control. An unrecognised policy falls back to "required", so a

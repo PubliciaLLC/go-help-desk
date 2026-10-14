@@ -18,6 +18,7 @@ import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
 import { AuditFeed } from '@/components/ticket/AuditFeed'
+import { FollowersPanel } from '@/components/ticket/FollowersPanel'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
@@ -774,6 +775,9 @@ export function TicketDetailPage() {
             </Card>
 
             {isStaffOrAdmin && <LinkedTicketsPanel ticketId={id} />}
+
+            {/* Staff always see who follows (#441); the API refuses a requester. */}
+            {isStaffOrAdmin && <FollowersPanel ticketId={id} />}
 
             {/* Staff-only display, not the only guard: the API gates on the
                 ticket's own visibility (#129), same as /history, but also

@@ -271,6 +271,12 @@ type TicketCustomFieldValue struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+type TicketFollower struct {
+	TicketID  uuid.UUID `json:"ticket_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type TicketLink struct {
 	SourceTicketID uuid.UUID `json:"source_ticket_id"`
 	TargetTicketID uuid.UUID `json:"target_ticket_id"`

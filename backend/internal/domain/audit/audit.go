@@ -88,6 +88,13 @@ type Filter struct {
 	To         *time.Time // inclusive
 	Q          string     // case-insensitive substring against entity_type and action
 
+	// ExcludeActions leaves out every entry whose action is listed, in the
+	// page and in the count alike. It is how a view withholds a kind of entry
+	// from a viewer (follow and unfollow, from staff, #441) without filtering
+	// the page afterwards, which would leave the count and the offset
+	// describing a different sequence from the one the caller reads.
+	ExcludeActions []string
+
 	// ScopedTo, when set, restricts the result to ticket entries on tickets
 	// that staff member may see under the DESIGN.md staff scope: tickets they
 	// reported, are assigned, their groups are assigned, or that fall in a

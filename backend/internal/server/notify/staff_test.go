@@ -49,6 +49,20 @@ func (f fakeStaffGroups) ListMailableMembers(_ context.Context, id uuid.UUID) ([
 	return f[id], nil
 }
 
+// fakeStaffFollowers maps a ticket to the followers the store would return as
+// mailable. err, when set, is returned for every ticket.
+type fakeStaffFollowers map[uuid.UUID][]uuid.UUID
+
+func (f fakeStaffFollowers) ListMailableFollowerIDs(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+	return f[id], nil
+}
+
+type failingStaffFollowers struct{}
+
+func (failingStaffFollowers) ListMailableFollowerIDs(context.Context, uuid.UUID) ([]uuid.UUID, error) {
+	return nil, errors.New("database down")
+}
+
 // fakeStaffAccess stands in for the send-time check that the person is still
 // entitled to hear about the ticket.
 type fakeStaffAccess struct {
@@ -82,7 +96,7 @@ func recipientsOf(r *recorder) []uuid.UUID {
 func noOverrides(context.Context) notification.StaffOverrides { return notification.StaffOverrides{} }
 
 func newFanout(next notification.Dispatcher, users StaffUsers, groups StaffGroups) *StaffFanout {
-	return NewStaffFanout(next, users, groups, noOverrides, quietLog())
+	return NewStaffFanout(next, users, groups, fakeStaffFollowers{}, noOverrides, quietLog())
 }
 
 func assignedEvent(actor *uuid.UUID, assignee, group *uuid.UUID) notification.Event {
@@ -222,7 +236,7 @@ func TestStaffFanout_AdminOverrideForcesASwitchForEveryone(t *testing.T) {
 
 	run := func(ov notification.StaffOverrides, ev notification.Event) []uuid.UUID {
 		next := &recorder{}
-		f := NewStaffFanout(next, newFakeStaffUsers(quiet, loud), fakeStaffGroups{g: {quiet.ID, loud.ID}},
+		f := NewStaffFanout(next, newFakeStaffUsers(quiet, loud), fakeStaffGroups{g: {quiet.ID, loud.ID}}, fakeStaffFollowers{},
 			func(context.Context) notification.StaffOverrides { return ov }, quietLog())
 		require.NoError(t, f.Dispatch(context.Background(), ev))
 		return recipientsOf(next)
@@ -337,6 +351,169 @@ func TestStaffFanout_StaffRepliesAndOtherEventsMailNobody(t *testing.T) {
 			next := &recorder{}
 			require.NoError(t, newFanout(next, newFakeStaffUsers(a), fakeStaffGroups{}).Dispatch(context.Background(), ev))
 			require.Len(t, next.got, 1)
+		})
+	}
+}
+
+// ── fan-out: followers (#441) ────────────────────────────────────────────────
+
+func fanoutWithFollowers(next notification.Dispatcher, users StaffUsers, groups StaffGroups, fol StaffFollowers) *StaffFanout {
+	return NewStaffFanout(next, users, groups, fol, noOverrides, quietLog())
+}
+
+// A follower gets the same two events as the person who holds the ticket, under
+// the activity switch, and is told it is a ticket they follow.
+func TestStaffFanout_FollowersAreMailedForAssignmentAndRequesterReplies(t *testing.T) {
+	assignee, follower := staffUser("assignee"), staffUser("follower")
+	for name, ev := range map[string]notification.Event{
+		"assignment":      assignedEvent(nil, &assignee.ID, nil),
+		"requester reply": requesterReply(&assignee.ID, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			next := &recorder{}
+			f := fanoutWithFollowers(next, newFakeStaffUsers(assignee, follower), fakeStaffGroups{},
+				fakeStaffFollowers{ev.TicketID: {follower.ID}})
+
+			require.NoError(t, f.Dispatch(context.Background(), ev))
+
+			require.Equal(t, []uuid.UUID{assignee.ID, follower.ID}, recipientsOf(next))
+			last := next.got[len(next.got)-1]
+			require.Equal(t, notification.SwitchFollow, last.StaffReason)
+		})
+	}
+}
+
+func TestStaffFanout_FollowersAreMailedOnATicketNobodyHolds(t *testing.T) {
+	follower := staffUser("follower")
+	ev := requesterReply(nil, nil)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(follower), fakeStaffGroups{}, fakeStaffFollowers{ev.TicketID: {follower.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{follower.ID}, recipientsOf(next))
+}
+
+// One email per person per event across the three roles: the assignee who also
+// follows, the group member who also follows, and a follower in both.
+func TestStaffFanout_OneEmailPerPersonAcrossAssigneeGroupAndFollower(t *testing.T) {
+	assignee, member, both, plain := staffUser("assignee"), staffUser("member"), staffUser("both"), staffUser("plain")
+	g := uuid.New()
+	ev := assignedEvent(nil, &assignee.ID, &g)
+	next := &recorder{}
+	f := fanoutWithFollowers(next,
+		newFakeStaffUsers(assignee, member, both, plain),
+		fakeStaffGroups{g: {member.ID, both.ID}},
+		fakeStaffFollowers{ev.TicketID: {assignee.ID, member.ID, both.ID, plain.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{assignee.ID, member.ID, both.ID, plain.ID}, recipientsOf(next), "each exactly once")
+	reasons := map[uuid.UUID]notification.StaffSwitch{}
+	for _, e := range next.got[1:] {
+		reasons[*e.StaffUserID] = e.StaffReason
+	}
+	require.Equal(t, notification.SwitchAssigned, reasons[assignee.ID], "holding it wins")
+	require.Equal(t, notification.SwitchGroup, reasons[member.ID])
+	require.Equal(t, notification.SwitchGroup, reasons[both.ID])
+	require.Equal(t, notification.SwitchFollow, reasons[plain.ID])
+}
+
+// Turning one reason off does not lose the person's other reason.
+func TestStaffFanout_AFollowerWhoTurnedOffTheirGroupSwitchIsStillMailedAsAFollower(t *testing.T) {
+	m := staffUser("m")
+	m.EmailNotifyGroup = false
+	g := uuid.New()
+	ev := requesterReply(nil, &g)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(m), fakeStaffGroups{g: {m.ID}}, fakeStaffFollowers{ev.TicketID: {m.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{m.ID}, recipientsOf(next))
+	require.Equal(t, notification.SwitchFollow, next.got[1].StaffReason)
+}
+
+// Never mail the person who made the change, even though they follow.
+func TestStaffFanout_ASelfFollowingActorIsNotMailed(t *testing.T) {
+	actor, other := staffUser("actor"), staffUser("other")
+	ev := assignedEvent(&actor.ID, &other.ID, nil)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(actor, other), fakeStaffGroups{}, fakeStaffFollowers{ev.TicketID: {actor.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{other.ID}, recipientsOf(next))
+}
+
+// Followers answer to the "activity" switch and to the administrator's
+// override of it, not to the assignment switch.
+func TestStaffFanout_FollowersAnswerToTheActivitySwitchAndItsOverride(t *testing.T) {
+	quiet, loud := staffUser("quiet"), staffUser("loud")
+	quiet.EmailNotifyActivity = false
+	ev := requesterReply(nil, nil)
+
+	run := func(ov notification.StaffOverrides) []uuid.UUID {
+		next := &recorder{}
+		f := NewStaffFanout(next, newFakeStaffUsers(quiet, loud), fakeStaffGroups{}, fakeStaffFollowers{ev.TicketID: {quiet.ID, loud.ID}},
+			func(context.Context) notification.StaffOverrides { return ov }, quietLog())
+		require.NoError(t, f.Dispatch(context.Background(), ev))
+		return recipientsOf(next)
+	}
+
+	require.Equal(t, []uuid.UUID{loud.ID}, run(notification.StaffOverrides{}))
+	require.ElementsMatch(t, []uuid.UUID{quiet.ID, loud.ID}, run(notification.StaffOverrides{Activity: notification.OverrideOn}))
+	require.Empty(t, run(notification.StaffOverrides{Activity: notification.OverrideOff}))
+	// The assignment switch is not the one a follower is gated by.
+	require.Equal(t, []uuid.UUID{quiet.ID, loud.ID}, run(notification.StaffOverrides{Assigned: notification.OverrideOff, Activity: notification.OverrideOn}))
+}
+
+func TestStaffFanout_FollowersWhoCannotReceiveStaffMailAreSkipped(t *testing.T) {
+	ok, bot, disabled, requester := staffUser("ok"), staffUser("bot"), staffUser("disabled"), staffUser("requester")
+	bot.ServiceAccount = true
+	disabled.Disabled = true
+	requester.Role = user.RoleUser
+	ev := requesterReply(nil, nil)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(ok, bot, disabled, requester), fakeStaffGroups{},
+		fakeStaffFollowers{ev.TicketID: {ok.ID, bot.ID, disabled.ID, requester.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{ok.ID}, recipientsOf(next))
+}
+
+// Not being able to list followers costs the followers their mail and nobody
+// else theirs.
+func TestStaffFanout_AFollowerLookupFailureStillMailsTheAssignee(t *testing.T) {
+	assignee := staffUser("assignee")
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(assignee), fakeStaffGroups{}, failingStaffFollowers{})
+
+	require.NoError(t, f.Dispatch(context.Background(), requesterReply(&assignee.ID, nil)))
+
+	require.Equal(t, []uuid.UUID{assignee.ID}, recipientsOf(next))
+}
+
+func TestEventToEmail_FollowersAreToldItIsATicketTheyFollow(t *testing.T) {
+	d := &EmailDispatcher{cfg: &config.Config{BaseURL: "https://help.example.com"}}
+	for _, tc := range []struct {
+		typ      notification.EventType
+		template string
+		subject  string
+	}{
+		{notification.EventStaffAssigned, "staff_assigned_follow.tmpl", "A ticket you follow is assigned: [GHD-2026-000007]"},
+		{notification.EventStaffRequesterReplied, "staff_requester_replied_follow.tmpl", "The requester replied on a ticket you follow: [GHD-2026-000007]"},
+	} {
+		t.Run(string(tc.typ), func(t *testing.T) {
+			name, subject, _, data, ok := d.eventToEmail(notification.Event{
+				Type: tc.typ, TicketID: uuid.New(), TrackingNumber: "GHD-2026-000007",
+				Recipient: "staff@example.com", StaffReason: notification.SwitchFollow,
+			})
+			require.True(t, ok)
+			require.Equal(t, tc.template, name)
+			require.Equal(t, tc.subject, subject)
+			require.Len(t, data, 2, "still only the tracking number and a link")
 		})
 	}
 }
@@ -499,7 +676,7 @@ func TestEventToEmail_GroupMembersAreToldItIsTheirGroupsTicket(t *testing.T) {
 func TestStaffTemplates_Render(t *testing.T) {
 	d, err := NewEmailDispatcher(&config.Config{SMTPHost: "smtp.example.com", SMTPFrom: "desk@example.com", BaseURL: "https://help.example.com"})
 	require.NoError(t, err)
-	for _, name := range []string{"staff_assigned.tmpl", "staff_requester_replied.tmpl", "staff_assigned_group.tmpl", "staff_requester_replied_group.tmpl"} {
+	for _, name := range []string{"staff_assigned.tmpl", "staff_requester_replied.tmpl", "staff_assigned_group.tmpl", "staff_requester_replied_group.tmpl", "staff_assigned_follow.tmpl", "staff_requester_replied_follow.tmpl"} {
 		var b strings.Builder
 		require.NoError(t, d.templates.ExecuteTemplate(&b, name, map[string]string{
 			"TrackingNumber": "GHD-2026-000007", "TicketURL": "https://help.example.com/tickets/x",

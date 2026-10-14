@@ -163,15 +163,22 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	// link to the ticket behind the sign-in, nothing a requester wrote.
 	//
 	// Somebody mailed because of their group is told it is their group's
-	// ticket: "assigned to you" would be false for them.
+	// ticket, and a follower that it is one they follow: "assigned to you"
+	// would be false for them.
 	case notification.EventStaffAssigned:
 		if event.StaffReason == notification.SwitchGroup {
 			return "staff_assigned_group.tmpl", "A ticket is assigned to your group: " + ref, event.Recipient, view, true
+		}
+		if event.StaffReason == notification.SwitchFollow {
+			return "staff_assigned_follow.tmpl", "A ticket you follow is assigned: " + ref, event.Recipient, view, true
 		}
 		return "staff_assigned.tmpl", "A ticket is assigned to you: " + ref, event.Recipient, view, true
 	case notification.EventStaffRequesterReplied:
 		if event.StaffReason == notification.SwitchGroup {
 			return "staff_requester_replied_group.tmpl", "The requester replied on a ticket assigned to your group: " + ref, event.Recipient, view, true
+		}
+		if event.StaffReason == notification.SwitchFollow {
+			return "staff_requester_replied_follow.tmpl", "The requester replied on a ticket you follow: " + ref, event.Recipient, view, true
 		}
 		return "staff_requester_replied.tmpl", "The requester replied on " + ref, event.Recipient, view, true
 	case notification.EventGuestLinkResent:

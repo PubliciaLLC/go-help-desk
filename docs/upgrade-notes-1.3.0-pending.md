@@ -109,12 +109,23 @@ Before this, an unwritable directory showed up as a failed upload partway throug
 Staff are now emailed about their tickets, which 1.2 never did. **Once email is configured (`SMTP_HOST` and `SMTP_FROM`), every existing staff member and administrator starts receiving it, because all three switches are on by default.** Nothing is sent while email is not configured.
 
 - **When:** a ticket is assigned to you, a ticket is assigned to a group you belong to, and a requester (an account holder or a guest) replies on a ticket assigned to you. A requester's reply on a group ticket that nobody personally holds goes to the group's members.
-- **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. Reopening by a requester's reply and ticket followers come later in 1.3.0.
-- **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on my tickets* and *My groups' tickets*.
+- **Not when:** you did it yourself, a colleague replies, or someone adds an internal note. A staff member who filed a ticket and replies on it counts as the requester. Reopening by a requester's reply comes later in 1.3.0.
+- **Your choice:** three switches under **Your account → Email about tickets**: *Tickets assigned to me*, *Activity on tickets I'm assigned to or follow* and *My groups' tickets*. The middle switch was called *Activity on my tickets* before followers existed; it is the same setting (`email_notify_activity`) with a new label.
 - **Administrators can force a switch on or off for everyone** under **Settings → Email** (`staff_email_assigned_override`, `staff_email_activity_override`, `staff_email_group_override`: `user`, `on` or `off`, `user` by default). To keep your staff's inboxes as they were, set all three to **Off for everyone** before turning email on.
 - OAuth clients' service users are never emailed, even when they are members of a group.
 - The emails carry only the ticket's tracking number and a link, like every other email from the help desk.
 - Database migration `000042` adds three columns to `users`. It is safe to apply on a running instance.
+
+## Ticket Followers (#441)
+
+Staff and administrators can now **follow a ticket** (a Follow button on the ticket page, or `PUT` and `DELETE /api/v1/tickets/{id}/follow`) and are emailed about its activity: a ticket they follow being assigned, and its requester replying. This is new behaviour, not a change to anything that existed.
+
+- **Followers are emailed under the *Activity on tickets I'm assigned to or follow* switch**, and the administrator's override of it (`staff_email_activity_override`) applies to them. Nobody is emailed about their own change, and nobody is emailed twice for one event whatever mix of assignee, group member and follower they are.
+- **People only.** An API key, an OAuth client or a service user cannot follow or unfollow: `403 session_required`. Reading the list, `GET /api/v1/tickets/{id}/followers`, works for staff and administrators, and for a key with `tickets:read`.
+- **Staff always see who follows a ticket.** There is no setting to hide the list.
+- **Following is audited** (`followed`, `unfollowed`). Administrators see those entries on the ticket's Activity feed and in the admin-wide audit view. **Staff do not, until an administrator turns on the new setting `staff_can_view_follow_audit`** (Settings → General → Audit log: *Staff can view follow history*; off by default, session only). Requesters never see them.
+- A follower who can no longer see the ticket (ticket scope was turned on, or their groups changed) is skipped when the mail is sent, and **keeps following**, so they are mailed again if they can see it again.
+- Database migration `000046` adds the `ticket_followers` table. It is safe to apply on a running instance. **Merge order:** migrations `000043`, `000044` and `000045` are reserved by other open pull requests (#468, #493, #498); this one is `000046` and leaves those numbers free, so the order they merge in does not matter to it. The upgrade applies all of them in number order.
 
 ## Admin API: data left behind, half-applied edits and path checks (#419)
 

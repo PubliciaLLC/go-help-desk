@@ -225,6 +225,14 @@ const (
 	// separately as a fact about the reporter's own visibility, not staff's.
 	KeyStaffCanViewTicketChangeHistory = "staff_can_view_ticket_change_history" // bool
 
+	// Whether staff may see the "followed" and "unfollowed" entries (#441).
+	// Administrators always do, and a requester never does. Off by default for
+	// the reason the setting above is: following is new, and what it records
+	// about a colleague is not something to start showing during an upgrade.
+	// Staff always see the current list of followers on the ticket; this is
+	// only about the history of who followed and unfollowed when.
+	KeyStaffCanViewFollowAudit = "staff_can_view_follow_audit" // bool
+
 	// How many days an audit entry is kept before the retention sweep hard-
 	// deletes it. Unset, zero or negative means forever — see
 	// admin.Service.AuditRetentionDays for why the fallback points that way.
@@ -335,7 +343,7 @@ func KnownKeys() []string {
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
 		KeyTicketPrefix, KeyTicketScopeEnforced,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
-		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays,
+		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
 	}
 }
@@ -402,6 +410,9 @@ func AuthCriticalKeys() []string {
 		// as the attachment type list: lower stakes, same rule.
 		KeyAuditRetentionDays,
 		KeyStaffCanViewTicketChangeHistory,
+		// And the same for the follow entries (#441): a disclosure-widening
+		// toggle of the same family.
+		KeyStaffCanViewFollowAudit,
 		// And whether a file whose content contradicts its name is refused or
 		// stored wrapped. Same reasoning again: it decides what this instance
 		// will hold, and a leaked API key must not be able to switch an

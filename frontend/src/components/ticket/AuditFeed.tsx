@@ -20,6 +20,8 @@ const ACTION_LABELS: Record<string, string> = {
   resolved: 'Resolved',
   closed: 'Closed',
   reopened: 'Reopened',
+  followed: 'Started following',
+  unfollowed: 'Stopped following',
 }
 
 function labelFor(action: string): string {

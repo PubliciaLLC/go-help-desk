@@ -2604,6 +2604,10 @@ paths:
         tickets inside the caller's scope are returned. The page, the offset and
         the total all come from the same filtered sequence. Administrators see
         every entity.
+        Staff do not get followed and unfollowed entries unless the staff
+        follow-history setting (staff_can_view_follow_audit) is on; they are left
+        out of the page and the total, and asking for them by action returns
+        nothing.
         The field-level before and after diff is returned to administrators
         always, and to staff only when the staff change-history setting is on.
         It is redacted by the same rule as the per-ticket feed. Every other
@@ -3136,6 +3140,10 @@ paths:
           applies, a requester is the label Requester there too.
         - Where requester-name masking applies, actor_name is the label
           Requester and actor_masked is true.
+        - followed and unfollowed entries (someone started or stopped following
+          the ticket) go to administrators, and to staff when the staff
+          follow-history setting (staff_can_view_follow_audit) is on. A reporting
+          user never gets them.
         The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -3160,6 +3168,123 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketAuditEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+  /api/v1/tickets/{id}/follow:
+    parameters:
+      - $ref: '#/components/parameters/TicketRef'
+    put:
+      operationId: followTicket
+      summary: Follow a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required). The caller
+        starts following the ticket and is emailed about its activity, the same
+        email the assignee gets, under their "activity on tickets I'm assigned
+        to or follow" switch and the administrator's override of it. The person
+        who made a change is never emailed about it.
+
+        People only: a signed-in session. An API key or OAuth client is refused
+        with 403 session_required, because following is a personal choice and a
+        script acting for someone is not them. A service user cannot follow
+        either.
+
+        Following a ticket already followed answers 204 and changes nothing. A
+        first follow is audited as followed. The caller must be able to see the
+        ticket. Whether they still can is checked again each time an email is
+        sent; one they can no longer see is skipped and the follow is kept.
+        The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleFollowTicket
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+    delete:
+      operationId: unfollowTicket
+      summary: Stop following a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        As for following, an API key or OAuth client is refused. Answers 204 whether or
+        not the caller was following. Stopping is audited as unfollowed when it changed
+        something. The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleUnfollowTicket
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+  /api/v1/tickets/{id}/followers:
+    parameters:
+      - $ref: '#/components/parameters/TicketRef'
+    get:
+      operationId: listTicketFollowers
+      summary: List who follows a ticket.
+      description: |
+        Staff and administrators only (second factor required). Staff always
+        see the current followers of a ticket they can see; no setting hides
+        them. Oldest follow first. An account that has been deleted is left
+        out. A reporting user gets 403 forbidden on a ticket they can see, and
+        404 on one they cannot. The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleListFollowers
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The followers, as a bare array (never null).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketFollower'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4427,8 +4552,8 @@ paths:
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
           keeps entries forever.
-        - guest_submission_enabled and staff_can_view_ticket_change_history must be
-          JSON booleans. null is refused.
+        - guest_submission_enabled, staff_can_view_ticket_change_history and
+          staff_can_view_follow_audit must be JSON booleans. null is refused.
         - guest_submission_enabled and self_signup_enabled cannot be turned from
           off to on while email is not configured (SMTP_HOST and SMTP_FROM): 400
           email_required, and nothing in the body is stored. Both send an email
@@ -4476,7 +4601,7 @@ paths:
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
-        attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
+        staff_can_view_follow_audit, attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
         attachment_reputation_api_key, attachment_reputation_virustotal_enabled,
         attachment_reputation_virustotal_key, attachment_reputation_metadefender_enabled,
         attachment_reputation_metadefender_key, attachment_reputation_polyswarm_enabled,
@@ -9422,6 +9547,19 @@ components:
         created_at:
           type: string
           format: date-time
+    TicketFollower:
+      description: Someone following a ticket.
+      type: object
+      required: [user_id, display_name, created_at]
+      properties:
+        user_id:
+          $ref: '#/components/schemas/Uuid'
+        display_name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+          description: When they started following.
     TicketAuditEntry:
       description: |
         One row of
@@ -9815,6 +9953,13 @@ components:
         staff_can_view_ticket_change_history:
           type: boolean
           description: Whether staff may see the field-level change history of tickets. Session only.
+        staff_can_view_follow_audit:
+          type: boolean
+          description: >-
+            Whether staff may see the followed and unfollowed entries in a
+            ticket's audit trail and in the admin-wide audit view.
+            Administrators always can and requesters never can. Off by default.
+            Session only.
         site_name:
           type: string
           description: The site name shown in the interface.

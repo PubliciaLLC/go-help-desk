@@ -336,7 +336,7 @@ func run() error {
 	// Staff email (#441) is queued beside the events that call for it, so the
 	// ticket service dispatches through the fan-out. The registration service
 	// above has no use for it and keeps the plain dispatcher.
-	ticketDispatcher := notify.NewStaffFanout(dispatcher, userSvc, groupSvc, adminSvc.StaffEmailOverrides, slog.Default())
+	ticketDispatcher := notify.NewStaffFanout(dispatcher, userSvc, groupSvc, tStore, adminSvc.StaffEmailOverrides, slog.Default())
 	ticketSvc := ticket.NewService(tStore, tStore, ticketDispatcher, auStore, txRunner, slaSvc)
 	// The ticket service needs the dispatcher and the dispatcher's redelivery
 	// needs the ticket service: this closes the loop.

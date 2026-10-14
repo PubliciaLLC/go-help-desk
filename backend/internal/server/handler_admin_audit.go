@@ -115,6 +115,13 @@ func (s *Server) handleListAdminAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Follow and unfollow entries (#441) are an administrator's to see unless
+	// the setting lets staff. Left out by the query itself, so the page, the
+	// offset and the total describe one sequence.
+	if role == user.RoleStaff && !s.adminSvc.StaffCanViewFollowAudit(ctx) {
+		f.ExcludeActions = ticket.FollowAuditActions()
+	}
+
 	page, err := s.auditStore.Search(ctx, f, limit, offset)
 	if err != nil {
 		handleError(w, err)

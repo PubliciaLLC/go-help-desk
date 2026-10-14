@@ -136,6 +136,20 @@ type Store interface {
 	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) error
 	ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLink, error)
 
+	// Followers (#441). On Store because following is audited, and the audit
+	// entry must commit with the row it describes, which InTx hands out only
+	// through a Store.
+	//
+	// AddFollower and RemoveFollower report whether they changed anything, so
+	// a repeat is not audited twice.
+	AddFollower(ctx context.Context, ticketID, userID uuid.UUID) (bool, error)
+	RemoveFollower(ctx context.Context, ticketID, userID uuid.UUID) (bool, error)
+	ListFollowers(ctx context.Context, ticketID uuid.UUID) ([]Follower, error)
+	// ListMailableFollowerIDs: followers staff email can go to (active staff
+	// or admin, never a service account). Whether they can still see the
+	// ticket is the send-time check's question, not this one's.
+	ListMailableFollowerIDs(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
+
 	// Status history
 	CreateStatusHistoryEntry(ctx context.Context, e StatusHistoryEntry) error
 	ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error)

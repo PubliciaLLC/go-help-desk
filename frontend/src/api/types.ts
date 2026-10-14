@@ -147,6 +147,13 @@ export interface AdminAuditListResponse {
   has_more: boolean
 }
 
+// Someone following a ticket (#441), as GET /tickets/{id}/followers lists them.
+export interface TicketFollower {
+  user_id: string
+  display_name: string
+  created_at: string
+}
+
 export interface TicketAuditEntry {
   id: string
   action: string

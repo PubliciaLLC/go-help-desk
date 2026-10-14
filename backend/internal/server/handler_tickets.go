@@ -1024,6 +1024,15 @@ func (s *Server) handleListTicketAudit(w http.ResponseWriter, r *http.Request) {
 	showDiff := role == user.RoleAdmin ||
 		(role == user.RoleStaff && s.adminSvc.StaffCanViewTicketChangeHistory(r.Context()))
 
+	// Follow and unfollow entries (#441): administrators always, staff only
+	// when the administrator allows it, a requester never. Dropped here, in a
+	// feed that is not paged, so there is no count to disagree with.
+	showFollow := role == user.RoleAdmin ||
+		(role == user.RoleStaff && s.adminSvc.StaffCanViewFollowAudit(r.Context()))
+	if !showFollow {
+		entries = slices.DeleteFunc(entries, func(e audit.Entry) bool { return ticket.IsFollowAuditAction(e.Action) })
+	}
+
 	views := make([]ticketAuditEntryView, len(entries))
 	// Cached per request: the same actor (an assignee working a long
 	// thread, say) can appear on many entries, and a lookup miss (the
