@@ -41,7 +41,7 @@ func (s *Server) handleCreateFieldDef(w http.ResponseWriter, r *http.Request) {
 	}
 	def, err := s.customFields.CreateFieldDef(r.Context(), body.Name, body.FieldType, body.Options, body.SortOrder)
 	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		handleError(w, err)
 		return
 	}
 	JSON(w, http.StatusCreated, def)
@@ -85,10 +85,16 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 		existing.Active = *body.Active
 	}
 	if err := s.customFields.UpdateFieldDef(r.Context(), existing); err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name is trimmed on the way in.
+	saved, err := s.customFields.GetFieldDef(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 // ── Admin: CTI field assignments ──────────────────────────────────────────────
@@ -119,16 +125,24 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		FieldDefID    uuid.UUID `json:"field_def_id"`
 		SortOrder     int       `json:"sort_order"`
-		VisibleOnNew  bool      `json:"visible_on_new"`
+		VisibleOnNew  *bool     `json:"visible_on_new"`
 		RequiredOnNew bool      `json:"required_on_new"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	a, err := s.customFields.CreateAssignment(r.Context(), body.FieldDefID, scopeType, scopeID, body.SortOrder, body.VisibleOnNew, body.RequiredOnNew)
+	// Omitted means false, which is what this API always did. A pointer so the
+	// default is written here rather than being whatever the zero value of the
+	// field type happens to be; the column default (migration 000040) says the
+	// same thing to anything that inserts without going through here.
+	visibleOnNew := false
+	if body.VisibleOnNew != nil {
+		visibleOnNew = *body.VisibleOnNew
+	}
+	a, err := s.customFields.CreateAssignment(r.Context(), body.FieldDefID, scopeType, scopeID, body.SortOrder, visibleOnNew, body.RequiredOnNew)
 	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		handleError(w, err)
 		return
 	}
 	JSON(w, http.StatusCreated, a)
@@ -276,7 +290,7 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		if err := s.customFields.SetValue(r.Context(), ticketID, fieldDefID, value); err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			handleError(w, err)
 			return
 		}
 	}

@@ -12,7 +12,16 @@ export interface User {
   updated_at: string
 }
 
-export type AuthType = 'local' | 'saml' | 'both'
+// How an account signs in, from the credentials it holds. 'both' is local plus
+// SAML; combinations that include OIDC are joined with '+'.
+export type AuthType =
+  | 'local'
+  | 'saml'
+  | 'oidc'
+  | 'both'
+  | 'local+oidc'
+  | 'saml+oidc'
+  | 'local+saml+oidc'
 
 export interface AdminUser {
   id: string
@@ -432,6 +441,10 @@ export interface APIKey {
   id: string
   name: string
   user_id: string
+  // Whose key it is. A signed-in administrator is sent every key, so the list
+  // has to say.
+  owner_name?: string
+  owner_email?: string
   scopes: string[]
   last_used_at?: string
   expires_at?: string

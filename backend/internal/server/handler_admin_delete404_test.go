@@ -1,7 +1,9 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -189,11 +191,23 @@ func TestAdminDelete_ExistingIs204ThenSecondDeleteIs404(t *testing.T) {
 			defer cleanup()
 			path, body := tc.existing(t, h)
 
-			first := h.doAsAdmin(t, http.MethodDelete, path, body)
+			// An API key can revoke only itself, so removing some other key
+			// takes a signed-in administrator.
+			do := h.doAsAdmin
+			if tc.name == "api key" {
+				sess := adminSession(t, h)
+				do = func(t *testing.T, method, path string, body any) *http.Response {
+					res, raw := sess.send(t, method, path, body)
+					res.Body = io.NopCloser(bytes.NewReader(raw)) // send has read it
+					return res
+				}
+			}
+
+			first := do(t, http.MethodDelete, path, body)
 			first.Body.Close()
 			require.Equal(t, http.StatusNoContent, first.StatusCode)
 
-			second := h.doAsAdmin(t, http.MethodDelete, path, body)
+			second := do(t, http.MethodDelete, path, body)
 			defer second.Body.Close()
 			require.Equal(t, http.StatusNotFound, second.StatusCode)
 			require.Equal(t, "not_found", errorCode(t, second))

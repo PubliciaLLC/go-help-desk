@@ -97,13 +97,14 @@ func TestCreateAPIKey_HonoursTheExpiryItWasGiven(t *testing.T) {
 		require.WithinDuration(t, want, created.ExpiresAt.UTC(), time.Second)
 
 		// And it is on the row, not only in the reply.
-		listed := h.doAsAdmin(t, http.MethodGet, "/api/v1/admin/api-keys", nil)
-		defer listed.Body.Close()
+		// Listed by a signed-in administrator: an API key sees only itself.
+		listed, raw := adminSession(t, h).send(t, http.MethodGet, "/api/v1/admin/api-keys", nil)
+		require.Equal(t, http.StatusOK, listed.StatusCode)
 		var keys []struct {
 			ID        string     `json:"id"`
 			ExpiresAt *time.Time `json:"expires_at"`
 		}
-		require.NoError(t, json.NewDecoder(listed.Body).Decode(&keys))
+		require.NoError(t, json.Unmarshal(raw, &keys))
 		var found bool
 		for _, k := range keys {
 			if k.ID == created.ID {

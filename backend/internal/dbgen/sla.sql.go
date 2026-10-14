@@ -247,9 +247,20 @@ func (q *Queries) ListSLABreachCandidates(ctx context.Context, now time.Time) ([
 }
 
 const listSLAPolicies = `-- name: ListSLAPolicies :many
-SELECT id, name, priority, category_id, response_target_min, resolution_target_min FROM sla_policies ORDER BY priority, name
+SELECT id, name, priority, category_id, response_target_min, resolution_target_min FROM sla_policies
+ORDER BY CASE priority
+           WHEN 'critical' THEN 1
+           WHEN 'high'     THEN 2
+           WHEN 'medium'   THEN 3
+           WHEN 'low'      THEN 4
+           ELSE 5
+         END,
+         name
 `
 
+// Severity order, most urgent first, the catch-all (no priority) last. Sorting
+// the text gave critical, high, low, medium: "low" ahead of "medium", and a
+// catch-all (NULL) wherever the database put it.
 func (q *Queries) ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error) {
 	rows, err := q.db.QueryContext(ctx, listSLAPolicies)
 	if err != nil {

@@ -174,7 +174,13 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name is trimmed on the way in.
+	saved, err := s.categories.GetCategory(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
@@ -258,7 +264,13 @@ func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name is trimmed on the way in.
+	saved, err := s.categories.GetType(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteType(w http.ResponseWriter, r *http.Request) {
@@ -339,7 +351,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name is trimmed on the way in.
+	saved, err := s.categories.GetItem(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {

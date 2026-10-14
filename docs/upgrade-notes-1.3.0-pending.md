@@ -216,3 +216,28 @@ It works together with the retries and history above, as follows. An event a hoo
 `ticket.created` is raised before auto-assignment, so a group condition never matches it; subscribe to `ticket.assigned` to hear about tickets landing in a group.
 
 This adds a column to `webhook_configs` through a migration that runs at start-up.
+
+## Admin API: wrong or stale response bodies, and three decided rules (#419, response half)
+
+Scripts and API keys that call the admin API can see these changes. Migration 000040 is new.
+
+**Breaking**
+
+- **Inactive statuses are retired for everyone.** `PATCH /tickets/{id}` with a `status_id` that names an inactive status now answers `409 status_inactive`, for staff, administrators and API keys alike; before, the move was accepted. Tickets already in an inactive status stay there and can move out, and sending a ticket the status it already holds is not a move. The ticket status picker no longer lists inactive statuses (the ticket's own status stays listed). If you deactivated `Pending` expecting SLA pausing to carry on, it now stops for new tickets; see the SLA section of DESIGN.md. If the configured reopen target status is inactive, every reopen (forced reopen, a requester's or guest's reply on a Resolved ticket) goes to New instead, administrators see a banner (`reopen_target` in `GET /admin/security-warnings`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target returns a `warning`.
+- **API keys: who lists and revokes which.** (Security: goes in the release notes under Security, PR 8.) An API key could delete another administrator's key if it knew the id; that has been possible since 1.0.0 (1.0.0 to 1.2.0 are affected) and is revoke-only. Now an API key lists and revokes **only itself**: not its owner's other keys and not anyone else's (any other id answers `404`). An administrator signed in through the browser lists and revokes **every** key, so `GET /admin/api-keys` for a browser session now returns all keys instead of the caller's own, and each entry carries `owner_name` and `owner_email`. A script that used one key to list or revoke the others now needs a browser session.
+- **Custom-field errors have their own codes.** A name already in use (create or PATCH of a definition) and a field assigned twice to one place now answer `409 conflict` (they were `400 bad_request` with the database's own text). A `field_def_id` that names no field answers `400 invalid_reference`. A database failure on these routes is a `500 internal_error`, not a `400`. Validation errors stay `400 bad_request` with the same messages. No response carries database text any more.
+- **A failed ticket count fails the request.** `GET /admin/statuses` and `GET /statuses` answer `500` when a count cannot be read; before, the status was reported with `ticket_count: 0`, and the admin page treats 0 as safe to hard-delete.
+- **Category, type and item names are trimmed on `PATCH`**, as they are on create. A name sent with spaces around it is stored without them, and the response is the saved row. Names already stored are not changed.
+
+**Additive or corrected**
+
+- **`auth_type` reports OIDC.** New values: `oidc`, `local+oidc`, `saml+oidc` and `local+saml+oidc`. `local`, `saml` and `both` (password plus SAML) keep their meaning for accounts without OIDC. Accounts that change value: an account that signs in only through OIDC, or has a password and OIDC, used to read `local`; an account with SAML and OIDC used to read `saml`; and one with a password, SAML and OIDC used to read `both`. A client that switches on `auth_type` with a fixed list of values needs to handle the new ones.
+- **`visible_on_new` on a new field assignment:** the API default is still false when omitted. The database column default (it was true) is now false too (migration 000040); existing rows are untouched.
+- **`GET /admin/sla/policies` is ordered by severity** (critical, high, medium, low, then policies with no priority), then by name. It was ordered by the priority text, which put `low` before `medium`.
+- **`POST /admin/oauth-clients` returns `id`** (the record id that `DELETE` takes), beside `client_id` and `client_secret`.
+- **`PATCH /admin/users/{id}` returns the real `passkey_count`**; it always said 0.
+- **`PATCH /admin/webhooks/{id}` returns the saved row.** After a URL change `last_delivery` is `null`; it showed the old receiver's result.
+- **`PATCH /admin/custom-fields/{id}` returns the saved, trimmed row.** `POST` and `PATCH /admin/statuses` return the status's real `ticket_count`; they said 0.
+- **A blank webhook `secret` on `PATCH` still clears it**, by design and for administrators only; now documented in the API spec and DESIGN.md.
+
+**Ordering.** This change adds migration **000040**, which follows 000039 (#432).

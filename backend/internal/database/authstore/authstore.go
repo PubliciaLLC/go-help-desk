@@ -94,6 +94,33 @@ func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey
 	return out, nil
 }
 
+// ListWithOwner lists every key when keyID is nil, or just that key, newest
+// first, each with its owner's address and name.
+func (s *Store) ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error) {
+	rows, err := s.q.ListAPIKeysWithOwner(ctx, database.NullUUID(keyID))
+	if err != nil {
+		return nil, fmt.Errorf("listing API keys with owners: %w", err)
+	}
+	out := make([]auth.APIKeyWithOwner, len(rows))
+	for i, r := range rows {
+		out[i] = auth.APIKeyWithOwner{
+			APIKey: auth.APIKey{
+				ID:          r.ID,
+				Name:        r.Name,
+				HashedToken: r.HashedToken,
+				UserID:      r.UserID,
+				Scopes:      r.Scopes,
+				LastUsedAt:  database.TimePtr(r.LastUsedAt),
+				ExpiresAt:   database.TimePtr(r.ExpiresAt),
+				CreatedAt:   r.CreatedAt,
+			},
+			OwnerEmail: r.OwnerEmail,
+			OwnerName:  r.OwnerName,
+		}
+	}
+	return out, nil
+}
+
 // ── OAuthClientStore ─────────────────────────────────────────────────────────
 
 func (s *Store) CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error {

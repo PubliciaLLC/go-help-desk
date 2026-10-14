@@ -647,6 +647,12 @@ export interface SecurityWarnings {
   attachment_storage?: { writable: boolean; problem: string }
 
   /**
+   * The configured reopen target status has been deactivated, so reopened
+   * tickets go to New instead. Optional so an older server reads as healthy.
+   */
+  reopen_target?: { inactive: boolean; name?: string }
+
+  /**
    * Whether passkeys can be used (#494). They cannot when BASE_URL is an IP
    * address, a single-label host or non-ASCII. Optional so a server that
    * predates the field reads as fine.
