@@ -137,7 +137,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [enabled, issuer_url, client_id, client_secret, redirect_url, configured]
+                required: [enabled, issuer_url, client_id, client_secret, redirect_url, configured, live]
                 properties:
                   enabled: {type: boolean}
                   issuer_url: {type: string}
@@ -157,6 +157,13 @@ paths:
                       True when an issuer URL, a client ID and a client secret are all stored.
                       It does not say whether OIDC is enabled or whether the identity provider
                       could be reached.
+                  live:
+                    type: boolean
+                    description: >-
+                      True when the OIDC provider is loaded in the running server, so a sign-in
+                      can start now. False when nothing is saved, OIDC is off, or the identity
+                      provider did not answer when the settings were last loaded or saved.
+                      "configured" true with "live" false is "saved, not working".
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -259,7 +266,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, metadata_url, cert_pem, sp_metadata_url]
+                required: [configured, live, metadata_url, cert_pem, sp_metadata_url]
                 properties:
                   configured:
                     type: boolean
@@ -267,6 +274,12 @@ paths:
                       True when a metadata URL, a certificate and a private key are all stored.
                       It does not say whether SAML sign-in is in use or whether the identity
                       provider's metadata could be loaded.
+                  live:
+                    type: boolean
+                    description: >-
+                      True when the SAML middleware is loaded in the running server, so a sign-in
+                      can start now. False when its metadata could not be loaded. "configured"
+                      true with "live" false is "saved, not working".
                   metadata_url:
                     type: string
                     description: The identity provider's metadata URL. Empty when unset.
