@@ -74,6 +74,13 @@
       <li><a href="#compose-database">Postgres is on loopback</a></li>
       <li><a href="#quoted-email">Quoted addresses are refused</a></li>
       <li><a href="#password-length">Passwords up to 72 bytes</a></li>
+      <li><a href="#guest-links-off">Guest links and the setting</a></li>
+      <li><a href="#pending-session">Half-signed-in sessions</a></li>
+      <li><a href="#bcrypt-cost">bcrypt cost 12</a></li>
+      <li><a href="#jwt-secret">JWT_SECRET is optional</a></li>
+      <li><a href="#compose-vars">Compose passes two more</a></li>
+      <li><a href="#startup-checks">Startup checks</a></li>
+      <li><a href="#client-errors">4xx, and 404 on DELETE</a></li>
       <li><a href="#known-gaps">Not in 1.3.0</a></li>
       <li><a href="#steps">Doing the upgrade</a></li>
     </ul>
@@ -126,7 +133,7 @@
 <p class="docs-page-sub">A feature release. Most of it is new ground; a handful of changes touch something an existing install or integration relies on. Read this before you upgrade, not after.</p>
 
 <div class="callout callout-warn">
-  <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Add two lines to <code>docker/.env</code> to keep it. See <a href="#clamav">ClamAV is opt-in</a>.</p>
+  <p><strong>If your Docker Compose install scans attachments with the bundled ClamAV, scanning stops on upgrade</strong> when your <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line. Administrators see an amber <em>Attachments are not being scanned</em> banner that says so. To keep scanning, add <code>COMPOSE_PROFILES=antivirus</code> (and <code>CLAMAV_ADDR=tcp://clamav:3310</code>) to <code>docker/.env</code> and run <code>docker compose up -d</code>. See <a href="#clamav">ClamAV is opt-in</a>.</p>
 </div>
 
 <div class="callout callout-note">
@@ -152,6 +159,13 @@
     <tr><td>Compose publishes Postgres on loopback only</td><td>Anything that reached the database from another host, such as backups or reporting tools</td></tr>
     <tr><td>Quoted email local parts are refused</td><td>Anyone signing up with such an address, and single sign-on users whose provider sends one</td></tr>
     <tr><td>Passwords over 72 bytes are refused</td><td>Anyone setting a password, and API clients that set one</td></tr>
+    <tr><td>Guest links stop working while guest submission is off</td><td>Guests holding a link, and administrators who switch the setting off</td></tr>
+    <tr><td>A half-signed-in session expires after 5 minutes</td><td>Users who take longer at the second-factor step, and API clients that sign in in two requests</td></tr>
+    <tr><td>Passwords are hashed at bcrypt cost 12</td><td>Everyone who signs in; servers that take many sign-ins at once</td></tr>
+    <tr><td><code>JWT_SECRET</code> is optional</td><td>Operators; OAuth clients, once, if the signing key changes</td></tr>
+    <tr><td>Compose passes <code>AUTH_RATE_LIMIT_PER_MINUTE</code> and <code>AUTH_THROTTLE_DELAY</code>, and <code>AUTH_THROTTLE_DELAY=0</code> is refused</td><td>Installs that set either in <code>.env</code> or set the delay to 0</td></tr>
+    <tr><td><code>ATTACHMENT_DIR</code> is checked at startup</td><td>Installs whose attachment directory cannot be written</td></tr>
+    <tr><td>Client mistakes answer 4xx, and DELETE of an unknown id answers 404</td><td>API clients and scripts that call admin routes</td></tr>
     <tr><td>Compose <code>test</code> profile removed</td><td>Contributors who ran <code>docker compose --profile test</code>. Use <code>scripts/test-db.sh test</code> instead.</td></tr>
   </tbody>
 </table>
@@ -179,17 +193,30 @@
   <li><strong>Webhooks with chat formats.</strong> An Admin → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
   <li><strong>Attachment security.</strong> Content detection, mismatch handling, quarantine, download-only files, and optional scanning and reputation lookups. <a href="attachment-security.html">Attachment Security</a></li>
   <li><strong>Published images.</strong> Multi-architecture images for amd64 and arm64, published to GHCR. Building from source is still supported. <a href="getting-started.html#quick-start">Quick start</a></li>
-  <li><strong>Loud configuration warnings.</strong> Example secrets are reported at startup and in a red banner for administrators; "scanning is off" is reported at startup and by <code>GET /api/v1/admin/security-warnings</code>.</li>
+  <li><strong>Loud configuration warnings.</strong> Example secrets are reported at startup and in a red banner for administrators. "Scanning is off" is reported at startup, by <code>GET /api/v1/admin/security-warnings</code> and, on an instance that holds attachments but never chose a scan policy, in an amber banner. An attachment directory that cannot be written is reported at startup and in a red banner. <em>Admin → Settings → Attachments → Malware scanning</em> shows the scanner's status.</li>
 </ul>
 
 <h2 id="clamav">ClamAV is opt-in</h2>
 
 <p>Docker Compose used to start the bundled ClamAV scanner and set <code>CLAMAV_ADDR</code> for you. From 1.3.0 it is opt-in (#297). An install that relied on that, and whose <code>docker/.env</code> has no <code>CLAMAV_ADDR</code> line, stops scanning attachments on upgrade. Nothing else changes.</p>
 
-<p>Nothing in the admin interface says so: with no scanner address the scan policy is off, and the warning banner only appears when a configured scanner is unreachable. The server logs <code>attachment scanning is OFF: no scanner address is configured</code> at startup (#303), and <code>GET /api/v1/admin/security-warnings</code> reports <em>Attachments are not scanned. Uploads are accepted without being checked.</em> Check <strong>Admin → Settings → Attachments → Malware scanning</strong>. Nothing stops the upgrade, so check for it. To keep scanning on, uncomment the two lines in the "Virus scanning" section of <code>docker/.env.example</code> in your own <code>docker/.env</code>, then restart:</p>
+<p>Administrators are told. When no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>) and the instance already holds at least one attachment, every admin page shows an amber banner:</p>
 
-<pre><code>CLAMAV_ADDR=tcp://clamav:3310
-COMPOSE_PROFILES=antivirus</code></pre>
+<div class="callout callout-warn">
+  <p><strong>Attachments are not being scanned.</strong> To turn scanning back on, add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under Settings → Attachments. To keep scanning off, choose "Do not scan" there.</p>
+</div>
+
+<p>The server also logs <code>attachment scanning is OFF: no scanner address is configured</code> at startup (#303), and <code>GET /api/v1/admin/security-warnings</code> reports <em>Attachments are not scanned. Uploads are accepted without being checked.</em> <strong>Admin → Settings → Attachments → Malware scanning</strong> now starts with a status block: the policy, whether an address is configured, whether the scanner answers, and what that means for uploads. Nothing stops the upgrade, but the banner will be there when you sign in. To keep scanning on, do what it says:</p>
+
+<ol>
+  <li>Add the two lines to your own <code>docker/.env</code> (they are commented out in the "Virus scanning" section of <code>docker/.env.example</code>):
+<pre><code>COMPOSE_PROFILES=antivirus
+CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
+  <li>Run <code>docker compose up -d</code> in <code>docker/</code>.</li>
+  <li>Confirm the scanner address under <strong>Admin → Settings → Attachments → Malware scanning</strong>. A value saved there takes precedence over <code>CLAMAV_ADDR</code>. The status block shows <em>Reachable: Yes</em> once ClamAV has finished downloading its signatures.</li>
+</ol>
+
+<p>The banner goes away when a scanner address is set, or when you choose a scan policy there, <em>Do not scan</em> included. Choose that to keep scanning off on purpose; the banner does not return.</p>
 
 <p><code>clamav/clamav</code> is published for <code>linux/amd64</code> only. On Apple Silicon the scanner runs under emulation rather than failing to pull.</p>
 
@@ -297,6 +324,96 @@ COMPOSE_PROFILES=antivirus</code></pre>
 
 <p>A password must be 8 to 72 bytes. The limit is bcrypt's: bcrypt reads only the first 72 bytes and will not hash more. Bytes are counted, not characters, so an accented letter takes two bytes and most other non-Latin characters take three or four. A longer password is refused with a <code>400</code> that names the limit. Before 1.3.0, most paths that set a password answered with a server error (<code>500</code>). Sign-in applies no maximum.</p>
 
+<h2 id="guest-links-off">Switching guest submission off suspends guest links</h2>
+
+<p><strong>Who notices:</strong> guests holding a link, and administrators who switch <em>Guest submission</em> off.</p>
+
+<p>Before 1.3.0, turning <code>guest_submission_enabled</code> off stopped new guest tickets and link re-requests, but a link already emailed kept reading, replying and uploading. Now it stops those too. While the setting is off, every guest route answers <code>404 not_found</code>: submit, resend, and the four routes that take a link (read, reply, upload and follow-up). The answer is identical to the one for a link that never existed, so a guest cannot tell the two apart. The links are suspended, not revoked. Switch the setting back on and every link that has not expired works again. A guest who is partway through a conversation when you switch it off cannot read or reply until you switch it back on.</p>
+
+<p>The switch under <strong>Admin → Settings → General → Submissions → Guest submission</strong> now says so. See <a href="tickets.html#tickets-create">Guest ticket submission</a> and <a href="api.html#api-guest">REST API: Guest access</a>.</p>
+
+<h2 id="pending-session">A half-signed-in session expires after 5 minutes</h2>
+
+<p><strong>Who notices:</strong> users who take longer than that at the second-factor step, and API clients that sign in in two requests.</p>
+
+<p>When a password is accepted but a second factor is still owed, the session now has a deadline: <strong>5 minutes</strong> to enter a code or confirm with a passkey, and <strong>15 minutes</strong> when the user must first set up their factor, because that means installing an app and scanning a code. The deadline is fixed when the password is accepted. Nothing extends it. Past it, the session is deleted and the next request is refused with <code>401</code>, so the user signs in with their password again. Code entry after the deadline is not checked, so it does not use up one of the five attempts. A session that has passed the second factor is not affected.</p>
+
+<p>Until 1.3.0 a half-signed-in session lived as long as any other session, up to 7 days. Anyone who is partway through signing in at the moment you upgrade signs in once more. An administrator with no second factor can still recover by signing in with the password and enrolling, as before.</p>
+
+<p>See <a href="authentication.html#auth-mfa">Authentication: Second factor</a>.</p>
+
+<h2 id="bcrypt-cost">Passwords are hashed at bcrypt cost 12</h2>
+
+<p><strong>Who notices:</strong> everyone who signs in with a password, once; and servers that take many sign-ins at the same moment.</p>
+
+<p>New passwords are hashed with bcrypt at cost 12. Releases up to 1.2 used cost 10, although earlier security pages said 12. An existing hash keeps working and is replaced with a cost-12 hash the next time its owner signs in with the correct password, so nobody has to reset anything. The replacement is best effort: if it fails, the failure is logged and the sign-in still succeeds, and the next sign-in tries again. It never overwrites a password that was changed in the meantime. An account that does not sign in keeps its cost-10 hash.</p>
+
+<p>Each cost step doubles the work, so a password check takes about four times the server time it did. If many people sign in at once, check <code>AUTH_THROTTLE_DELAY</code> and <code>AUTH_RATE_LIMIT_PER_MINUTE</code>. While accounts are still on cost 10, a wrong password for an existing account is made to cost as much as one for an address that has no account, so the response time does not show which addresses have accounts.</p>
+
+<h2 id="jwt-secret"><code>JWT_SECRET</code> is optional</h2>
+
+<p><strong>Who notices:</strong> operators; and OAuth clients, once, if the signing key changes.</p>
+
+<p><code>JWT_SECRET</code> signs the OAuth2 access tokens. It no longer has to be set, and Docker Compose no longer refuses to start without it.</p>
+
+<ul>
+  <li>If it is unset, or shorter than 32 bytes, the server generates a random 32-byte key the first time it needs one, stores it in the database, logs one line (<code>jwt signing key: using generated key stored in the database</code>) and uses it. Every instance that shares the database uses the same key.</li>
+  <li>If it is 32 bytes or more, your value is used, exactly as before.</li>
+  <li>If it is exactly one of the example secrets this project has published (for example <code>change-me-in-production</code> or <code>dev-jwt-secret-change-me</code>), it is ignored, a generated key is used, and the server logs a warning. A longer value that merely looks like a placeholder is still used, and administrators see the red insecure-configuration banner for it.</li>
+</ul>
+
+<p><strong>Upgrade effect.</strong> If your <code>JWT_SECRET</code> is 32 bytes or more, nothing changes. If it was unset or short, the key in use changes at the first start, and every OAuth client fetches a new access token once. Nobody is signed out: sessions use <code>SESSION_SECRET</code>, not this key.</p>
+
+<p>The generated key is stored in the database without encryption, so a database backup contains the key that signs OAuth2 tokens, and a restore onto another instance carries it along. To rotate it, delete the <code>jwt_signing</code> row from the <code>instance_secrets</code> table and restart; every OAuth2 access token issued before that stops working.</p>
+
+<p>See <a href="getting-started.html#config-jwt">Getting Started: JWT signing key</a>.</p>
+
+<h2 id="compose-vars">Compose passes two more variables, and a throttle of 0 is refused</h2>
+
+<p><strong>Who notices:</strong> installs that set <code>AUTH_RATE_LIMIT_PER_MINUTE</code> or <code>AUTH_THROTTLE_DELAY</code> in <code>docker/.env</code>, and anyone who set the delay to 0.</p>
+
+<p>The shipped <code>docker-compose.yml</code> now passes these to the app. Until now it did not, so a value in <code>.env</code> did nothing:</p>
+
+<ul>
+  <li><code>AUTH_RATE_LIMIT_PER_MINUTE</code>: default <code>10</code>. Failed password attempts per account per minute before the server answers <code>429</code>. <code>0</code> turns the limit off.</li>
+  <li><code>AUTH_THROTTLE_DELAY</code>: default <code>1s</code>. How long a login for an account that has used up its budget waits before the password is checked.</li>
+</ul>
+
+<p>If you already had either in <code>.env</code>, it takes effect now. Every other variable on the <a href="getting-started.html#configuration">configuration reference</a> reaches the app, except <code>DATABASE_URL</code>, <code>HTTP_PORT</code> and <code>ATTACHMENT_DIR</code>, which stay fixed in the file.</p>
+
+<p><code>AUTH_THROTTLE_DELAY</code> is now a supported setting, and a delay of 0 (or less) is refused: the server does not start, on any kind of install, and says the delay must be a positive duration such as <code>1s</code>. Without the delay, an account that has used its budget could be guessed at much faster.</p>
+
+<h2 id="startup-checks">Startup checks: <code>ATTACHMENT_DIR</code> and <code>APP_ENV</code></h2>
+
+<p><strong>Who notices:</strong> installs whose attachment directory cannot be written.</p>
+
+<p>At startup the server checks that <code>ATTACHMENT_DIR</code> (default <code>/data/attachments</code>, fixed to the <code>attachments</code> volume under Compose) exists, creating it if it is missing, and that a file can be written there. If not:</p>
+
+<ul>
+  <li>the server logs a warning, and administrators see a red <em>Attachment uploads are disabled</em> banner with the reason;</li>
+  <li>every upload, from staff, requesters and guests, is refused with <code>503 attachments_unavailable</code> until the directory is fixed. Everything else runs, and stored attachments can still be downloaded while the directory is readable;</li>
+  <li>the check repeats on each upload, so fixing the permissions needs no restart.</li>
+</ul>
+
+<p>Before this, an unwritable directory showed up as a failed upload partway through, as a <code>500</code>.</p>
+
+<p><code>APP_ENV</code> does nothing. If it is set in your environment, whatever its value, the server logs one line saying it is set and ignored. Use <code>LOG_LEVEL</code> for verbose logs.</p>
+
+<h2 id="client-errors">Client mistakes answer 4xx, and DELETE of an unknown id answers 404</h2>
+
+<p><strong>Who notices:</strong> API clients and scripts that call the admin routes. This is a breaking change to the REST API.</p>
+
+<p>Several ordinary mistakes by the caller used to be answered with <code>500 internal_error</code>, and a DELETE of something that was not there answered <code>204</code>. Now:</p>
+
+<ul>
+  <li><strong>DELETE of an unknown id answers <code>404 not_found</code></strong> for groups, group members, group scopes, API keys, OAuth clients, webhooks, categories, types, items, custom-field assignments and SLA policies. A script that deletes the same thing twice gets <code>404</code> the second time. Deleting a status already did.</li>
+  <li><strong>An unknown group, category, type, item, plugin, webhook or attachment answers <code>404</code></strong> where the route names it. Listing the members or scopes of an unknown group answers <code>404</code> instead of an empty array.</li>
+  <li><strong>A blank group, category, type or item name, and a zero or missing <code>user_id</code> or <code>category_id</code>, answer <code>400</code>.</strong> An id in a body that names nothing answers <code>400 invalid_reference</code>.</li>
+  <li><strong>A group name that is already taken answers <code>409 group_name_taken</code>.</strong> Deleting a category, type or item that is still in use answers <code>409 category_in_use</code>, <code>type_in_use</code> or <code>item_in_use</code>.</li>
+</ul>
+
+<p>Treat a <code>404</code> on DELETE as "already gone" if your script needs to be idempotent. See <a href="api.html#api-client-errors">REST API: Errors</a>.</p>
+
 <h2 id="known-gaps">What is not in 1.3.0</h2>
 
 <p>Earlier versions of these pages described or implied some things that the product does not do. Each is tracked as an issue. These are gaps in the product, not changes in 1.3.0. The pages now say what the product does.</p>
@@ -315,14 +432,8 @@ COMPOSE_PROFILES=antivirus</code></pre>
   <tr><td>Users list</td><td>Admin → Users shows only the first 200 accounts.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/449" target="_blank" rel="noopener">#449</a></td></tr>
   <tr><td>API keys</td><td>Only administrators can create them.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/450" target="_blank" rel="noopener">#450</a></td></tr>
   <tr><td>Password reset</td><td>No reset by email.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/451" target="_blank" rel="noopener">#451</a></td></tr>
-  <tr><td>Pending sessions</td><td>A session past the password but not the second factor lives for 7 days.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/452" target="_blank" rel="noopener">#452</a></td></tr>
-  <tr><td>bcrypt cost</td><td>The cost is 10. Earlier security pages said 12.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/453" target="_blank" rel="noopener">#453</a></td></tr>
-  <tr><td>JWT secret</td><td><code>JWT_SECRET</code> has no minimum length.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/454" target="_blank" rel="noopener">#454</a></td></tr>
   <tr><td>SMTP</td><td>No implicit TLS, STARTTLS is optional and downgradable, and credentials are skipped when AUTH is not offered.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/455" target="_blank" rel="noopener">#455</a></td></tr>
   <tr><td>Email off</td><td>Email can be disabled without anyone being told.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/456" target="_blank" rel="noopener">#456</a></td></tr>
-  <tr><td>Compose</td><td><code>docker-compose.yml</code> does not pass <code>AUTH_RATE_LIMIT_PER_MINUTE</code>, <code>AUTH_THROTTLE_DELAY</code> or <code>ATTACHMENT_DIR</code> to the app.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/457" target="_blank" rel="noopener">#457</a></td></tr>
-  <tr><td>Startup config</td><td><code>APP_ENV</code> has no effect and <code>ATTACHMENT_DIR</code> is not checked until the first upload.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/458" target="_blank" rel="noopener">#458</a></td></tr>
-  <tr><td>Scanning status</td><td>A Compose upgrade turns attachment scanning off, and no admin screen shows scanning state.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/459" target="_blank" rel="noopener">#459</a></td></tr>
   <tr><td>MCP transport</td><td>Only the HTTP+SSE transport is served, not Streamable HTTP.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/460" target="_blank" rel="noopener">#460</a></td></tr>
   <tr><td>SAML</td><td>Pasted IdP metadata XML is not accepted, and the attribute names earlier pages told admins to send are not read.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/461" target="_blank" rel="noopener">#461</a></td></tr>
   <tr><td>Plugins</td><td>Earlier pages promised a plugin system. It is not in 1.3.0.</td><td><a href="https://github.com/PubliciaLLC/go-help-desk/issues/462" target="_blank" rel="noopener">#462</a></td></tr>
@@ -333,7 +444,7 @@ COMPOSE_PROFILES=antivirus</code></pre>
 
 <ol>
   <li><strong>Take a database backup.</strong> Migrations are forward-only; there is no automatic rollback.</li>
-  <li><strong>If you scan attachments with the bundled ClamAV,</strong> add the two lines to <code>docker/.env</code>. See <a href="#clamav">ClamAV is opt-in</a>.</li>
+  <li><strong>If you scan attachments with the bundled ClamAV,</strong> add the two lines to <code>docker/.env</code> and run <code>docker compose up -d</code>. The amber <em>Attachments are not being scanned</em> banner tells you if you need to. See <a href="#clamav">ClamAV is opt-in</a>.</li>
   <li><strong>Update and restart.</strong>
     <pre><code>cd go-help-desk
 git pull
@@ -342,8 +453,9 @@ docker compose pull
 docker compose up -d</code></pre>
     If you checked out a tag earlier (for example <code>v1.2.0</code>), run <code>git checkout main</code> before <code>git pull</code>. If you build from source, run the build command from <a href="getting-started.html#build-from-source">Building from source</a> instead of the two <code>docker compose</code> commands. Migrations run automatically on startup, before the server accepts traffic.
   </li>
-  <li><strong>Sign in as an administrator.</strong> Look for the red insecure-configuration banner, and check the scanning setup under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
+  <li><strong>Sign in as an administrator.</strong> Look for the red insecure-configuration banner, the red <em>Attachment uploads are disabled</em> banner and the amber scanning banner, and check the scanning status under <strong>Admin → Settings → Attachments → Malware scanning</strong>. Decide <code>audit_retention_days</code> and whether staff should see the field-level change history (<code>staff_can_view_ticket_change_history</code>).</li>
   <li><strong>If you have API clients that drive signup,</strong> update them for <a href="#signup">the new verification request</a>.</li>
+  <li><strong>If you have scripts that call admin DELETE routes,</strong> or that drive sign-in in two requests, or that fetch OAuth tokens, see <a href="#client-errors">the 404 and 4xx changes</a>, <a href="#pending-session">the 5-minute session</a> and <a href="#jwt-secret">the JWT key</a>.</li>
 </ol>
 
 <p>For the general mechanics, including zero-downtime upgrades, see <a href="getting-started.html#upgrading">Getting Started → Upgrading</a>.</p>
