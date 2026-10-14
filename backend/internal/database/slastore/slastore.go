@@ -76,11 +76,15 @@ func (s *Store) DeletePolicy(ctx context.Context, id uuid.UUID) error {
 	if n > 0 {
 		return fmt.Errorf("%w: it is attached to %d ticket(s), whose SLA history is measured against it", sla.ErrPolicyInUse, n)
 	}
-	if err := s.q.DeleteSLAPolicy(ctx, id); err != nil {
+	deleted, err := s.q.DeleteSLAPolicy(ctx, id)
+	if err != nil {
 		if isPolicyInUseViolation(err) {
 			return fmt.Errorf("%w: a ticket was attached to it while it was being deleted", sla.ErrPolicyInUse)
 		}
 		return fmt.Errorf("deleting SLA policy %s: %w", id, err)
+	}
+	if deleted == 0 {
+		return fmt.Errorf("SLA policy %s: %w", id, sla.ErrNotFound)
 	}
 	return nil
 }
