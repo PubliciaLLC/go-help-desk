@@ -221,6 +221,30 @@ const (
 	// deletes it. Unset, zero or negative means forever — see
 	// admin.Service.AuditRetentionDays for why the fallback points that way.
 	KeyAuditRetentionDays = "audit_retention_days" // int
+
+	// How many days an account may stay on a password hash made below the
+	// current bcrypt cost before sign-in is refused and the person must reset
+	// their password (#453). Counted from KeyPasswordRehashStartedAt.
+	// Settings → Security; default PasswordRehashGraceDefault.
+	KeyPasswordRehashGraceDays = "password_rehash_grace_days" // int
+
+	// When 1.3.0 first ran against this database (an RFC 3339 string); the N
+	// days above are counted from it. Migration 000044 writes it, once, and
+	// nothing else does: PATCH /admin/settings refuses it as read-only and the
+	// settings dump leaves it out, so the clock cannot be restarted from the API.
+	//
+	// A settings row rather than instance_secrets: that table holds secrets (its
+	// name column is a CHECK allowlist and its value must be at least 32 bytes),
+	// and a date is neither. Listed in KnownKeys because the migration seeds it
+	// (see TestUpdateSettings_EveryMigrationSeededKeyIsKnown).
+	KeyPasswordRehashStartedAt = "password_rehash_started_at"
+)
+
+// The N in "after N days" for password_rehash_grace_days.
+const (
+	PasswordRehashGraceDefault = 30
+	PasswordRehashGraceMin     = 1
+	PasswordRehashGraceMax     = 365
 )
 
 // AuditRetentionForever is what AuditRetentionDays returns when the audit log
@@ -328,6 +352,7 @@ func KnownKeys() []string {
 		KeyTicketPrefix, KeyTicketScopeEnforced,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays,
+		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 	}
 }
 
@@ -393,6 +418,10 @@ func AuthCriticalKeys() []string {
 		// as the attachment type list: lower stakes, same rule.
 		KeyAuditRetentionDays,
 		KeyStaffCanViewTicketChangeHistory,
+		// How long an old password hash keeps working. Pushing it out is a
+		// way to keep a weak hash alive, so it is not a call for a leaked key.
+		KeyPasswordRehashGraceDays,
+		KeyPasswordRehashStartedAt,
 		// And whether a file whose content contradicts its name is refused or
 		// stored wrapped. Same reasoning again: it decides what this instance
 		// will hold, and a leaked API key must not be able to switch an

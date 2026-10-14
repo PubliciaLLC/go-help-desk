@@ -42,6 +42,10 @@ type Service struct {
 	dummyOnce sync.Once
 	dummyHash []byte
 
+	// expiry says when a hash below hashCost stops being upgraded and starts
+	// being refused at sign-in (#453). Nil means never; see WithPasswordExpiry.
+	expiry PasswordExpiry
+
 	// audit records factor- and credential-clearing actions; see WithAuditStore.
 	// Nil in most test harnesses, which is fine — writeAuditEntry no-ops without it.
 	audit audit.Store
@@ -87,6 +91,25 @@ func (s *Service) compareAgainstDummyHash(plain string) {
 		return
 	}
 	_ = s.compare(s.dummyHash, []byte(plain))
+}
+
+// ErrPasswordResetRequired is what VerifyPasswordForSignIn returns for a
+// correct password on a hash made below the current cost, once the grace
+// period has ended (#453). The caller tells the person to reset their password.
+var ErrPasswordResetRequired = errors.New("password reset required")
+
+// PasswordExpiry supplies the date after which an old hash is refused. The
+// admin settings service implements it; this package cannot import that one.
+type PasswordExpiry interface {
+	// PasswordRehashDeadline reports the end of the grace period, or false
+	// when none is recorded, in which case nothing is refused.
+	PasswordRehashDeadline(ctx context.Context) (time.Time, bool)
+}
+
+// WithPasswordExpiry makes VerifyPasswordForSignIn refuse hashes below the
+// current cost once the policy's deadline has passed.
+func WithPasswordExpiry(p PasswordExpiry) Option {
+	return func(s *Service) { s.expiry = p }
 }
 
 // Option configures a Service at construction.
@@ -347,7 +370,21 @@ func (s *Service) GetByEmail(ctx context.Context, email string) (User, error) {
 }
 
 // VerifyPassword looks up a user by email and checks the plain-text password.
+// It never refuses on the age of the hash: it is also how a signed-in person
+// proves their current password while changing it, and changing it is the cure.
 func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User, error) {
+	return s.verifyPassword(ctx, email, plain, false)
+}
+
+// VerifyPasswordForSignIn is VerifyPassword for the sign-in form. After the
+// grace period a correct password on a hash below the current cost returns
+// ErrPasswordResetRequired instead of upgrading the hash (#453), unless the
+// account is the last active administrator.
+func (s *Service) VerifyPasswordForSignIn(ctx context.Context, email, plain string) (User, error) {
+	return s.verifyPassword(ctx, email, plain, true)
+}
+
+func (s *Service) verifyPassword(ctx context.Context, email, plain string, enforceExpiry bool) (User, error) {
 	u, err := s.store.GetByEmail(ctx, strings.ToLower(strings.TrimSpace(email)))
 	if err != nil {
 		// Spend the same work on a miss as on a hit. Returning here without
@@ -365,8 +402,53 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 		s.burnCostDifference(u.PasswordHash, plain)
 		return User{}, fmt.Errorf("invalid credentials")
 	}
+	if enforceExpiry && s.resetRequired(ctx, u) {
+		// Only reached with the right password, so it tells nobody anything
+		// they could not already do. It still spends what a wrong password on
+		// this hash spends, in place of the rehash it replaces, so the
+		// outcomes on an old hash cost the same (#475).
+		s.burnCostDifference(u.PasswordHash, plain)
+		return User{}, ErrPasswordResetRequired
+	}
 	s.rehashIfBelowTarget(ctx, u, plain)
 	return u, nil
+}
+
+// resetRequired reports whether u's hash is old enough to refuse.
+//
+// The last active administrator is exempt, as it is from disable, demote and
+// delete: setup does not reopen, and with email off there may be no reset
+// link to follow. Rehash at sign-in still applies to it. If the count cannot
+// be read the account is treated as exempt, because locking out the one
+// account that can fix things is the worse mistake; the next sign-in asks again.
+func (s *Service) resetRequired(ctx context.Context, u User) bool {
+	if s.expiry == nil {
+		return false
+	}
+	c, err := bcrypt.Cost([]byte(u.PasswordHash))
+	if err != nil || c >= s.hashCost {
+		return false
+	}
+	deadline, ok := s.expiry.PasswordRehashDeadline(ctx)
+	if !ok || !time.Now().After(deadline) {
+		return false
+	}
+	if u.Role == RoleAdmin {
+		admins, err := s.store.ListActiveAdmins(ctx)
+		if err != nil {
+			return false
+		}
+		others := 0
+		for _, a := range admins {
+			if a.ID != u.ID {
+				others++
+			}
+		}
+		if others == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // burnCostDifference tops a failed comparison against a hash made at a lower
