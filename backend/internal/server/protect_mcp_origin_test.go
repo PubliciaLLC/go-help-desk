@@ -471,14 +471,16 @@ func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, res.StatusCode)
 
-	// The stream is opened by the user's own tab: session cookie, no Origin.
+	// The attacker opens their own stream with any account they hold (here the
+	// reporting-role user's API key), so they can read its sessionId. The
+	// victim's tab never has to open one. A message POST takes its actor from
+	// the POST itself (the victim's cookie), while mcp-go delivers the result to
+	// whichever stream owns the sessionId.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mcp/sse", nil)
 	require.NoError(t, err)
-	for _, c := range s.jar {
-		req.AddCookie(c)
-	}
+	req.Header.Set("Authorization", "ApiKey "+h.userKey)
 	stream, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.Body.Close() })
@@ -494,7 +496,7 @@ func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
 	}
 	require.Contains(t, endpoint, "sessionId=")
 
-	// waitFor reads the stream until a data line contains want.
+	// waitFor reads the attacker's stream until a data line contains want.
 	waitFor := func(t *testing.T, want string) {
 		t.Helper()
 		for {
@@ -507,7 +509,8 @@ func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
 	}
 
 	// post sends a text/plain body (what a cross-origin page can send without
-	// a preflight) to the message endpoint with the user's session cookie.
+	// a preflight) to the attacker's message endpoint with the victim's
+	// (staff) session cookie.
 	post := func(t *testing.T, origin string, payload map[string]any) *http.Response {
 		t.Helper()
 		body, err := json.Marshal(payload)
@@ -548,8 +551,11 @@ func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
 		mid := latestTicketNumber(t, h)
 		requireOriginRefused(t, post(t, "https://sibling.example.test", createTicket(102, "from a sibling page")))
 
-		// Anything the refused POST had started would be on the stream ahead
-		// of this ping's reply, or would already hold a ticket number.
+		// mcp-go runs each message in its own goroutine, so a reply is not
+		// ordered against the ping's. The ping's reply therefore proves
+		// nothing about the refused POST; the counter does: it must not have
+		// moved by anything beyond the probe, read after the ping has been
+		// answered.
 		resp := post(t, "", map[string]any{"jsonrpc": "2.0", "id": 103, "method": "ping"})
 		require.Equal(t, http.StatusAccepted, resp.StatusCode, readBody(t, resp))
 		waitFor(t, `"id":103`)
