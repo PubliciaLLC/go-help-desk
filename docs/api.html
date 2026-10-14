@@ -277,6 +277,7 @@ Cache-Control: private, max-age=3600</code></pre>
   <thead><tr><th>Code</th><th>Status</th><th>When</th></tr></thead>
   <tbody>
     <tr><td><code>bad_request</code>, <code>invalid_id</code></td><td>400</td><td>A field is missing or invalid, or a path id is malformed. The message says which.</td></tr>
+    <tr><td><code>invalid_reference</code></td><td>400</td><td>An id in the request body names something that does not exist, such as a user or category added to a group.</td></tr>
     <tr><td><code>scopes_required</code>, <code>invalid_scope</code></td><td>400</td><td>A credential was created with no scopes, or with one that does not exist.</td></tr>
     <tr><td><code>unauthorized</code></td><td>401</td><td>No valid session, API key or OAuth token.</td></tr>
     <tr><td><code>forbidden</code></td><td>403</td><td>The caller is known but the role does not allow this.</td></tr>
@@ -285,6 +286,7 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>session_required</code></td><td>403</td><td>A setting or account action that only a signed-in session may perform.</td></tr>
     <tr><td><code>not_downloadable</code></td><td>403</td><td>An attachment request whose <code>Sec-Fetch-Dest</code> says it will be rendered.</td></tr>
     <tr><td><code>not_found</code></td><td>404</td><td>The resource does not exist, or you may not see it.</td></tr>
+    <tr><td><code>group_name_taken</code>, <code>category_in_use</code>, <code>type_in_use</code>, <code>item_in_use</code></td><td>409</td><td>A group name that already exists, or a category, type or item that tickets (or, for a category, SLA records of its policies) still refer to and so cannot be deleted.</td></tr>
     <tr><td><code>ticket_closed</code></td><td>409</td><td>The ticket is closed and the caller may not change it.</td></tr>
     <tr><td><code>ticket_not_closed</code>, <code>follow_up_exists</code></td><td>409</td><td>A follow-up was asked for a ticket that is open, or a requester asked for a second one.</td></tr>
     <tr><td><code>reopen_window_closed</code></td><td>409</td><td>A requester's reply to a Resolved ticket after the reopen window.</td></tr>
@@ -294,6 +296,16 @@ Cache-Control: private, max-age=3600</code></pre>
 </table>
 
 <p>Other codes are listed in the reference, on the operation that returns them.</p>
+
+<h3 id="api-client-errors">Client mistakes answer 4xx, and DELETE of an unknown id answers 404 <span class="badge-new">Changed in 1.3.0</span></h3>
+<p>The admin routes used to answer <code>500 internal_error</code> for several ordinary mistakes by the caller, and answered <code>204</code> when asked to delete something that was not there. As of 1.3.0:</p>
+<ul>
+  <li><strong>DELETE of an id that does not exist answers <code>404 not_found</code>, not <code>204</code>,</strong> on every route that deletes one of: a group, a group member, a group scope, an API key, an OAuth client, a webhook, a category, a type, an item, a custom-field assignment or an SLA policy. A script that deletes the same thing twice now gets <code>404</code> the second time. This is a breaking change. Deleting a status already answered <code>404</code>.</li>
+  <li><strong>An unknown parent answers <code>404 not_found</code>:</strong> reading, changing, or listing or adding the members and scopes of a group that does not exist (listing used to return an empty array), creating a type or item under a parent that does not exist, and changing a plugin or webhook that does not exist. Downloading, or asking for a reputation re-check of, an attachment that does not exist answers <code>404</code> too.</li>
+  <li><strong>An invalid value answers <code>400</code>:</strong> a blank group name, a blank category, type or item name, and a zero or missing <code>user_id</code> or <code>category_id</code> in a body (<code>bad_request</code>), or an id in a body that names nothing (<code>invalid_reference</code>).</li>
+  <li><strong>A conflict answers <code>409</code>:</strong> a group name that is already taken (<code>group_name_taken</code>), and deleting a category, type or item that is still in use (<code>category_in_use</code>, <code>type_in_use</code>, <code>item_in_use</code>). A category is also in use while an SLA record, left by a ticket that has since moved elsewhere, still belongs to one of its SLA policies.</li>
+</ul>
+<p>A client that treated <code>204</code> on a repeated DELETE as success, or retried on <code>500</code>, needs to handle these codes. See <a href="upgrading-1.3.0.html#client-errors">Upgrading to 1.3.0</a>.</p>
 
 <h3>Pagination</h3>
 <p>Two list endpoints are paged, <code>GET /api/v1/tickets</code> and <code>GET /api/v1/admin/audit</code>. Both take <code>limit</code> (default 100, maximum 200) and <code>offset</code>. A <code>limit</code> above the maximum is clamped rather than rejected, and a non-numeric or non-positive value is ignored, so the default applies.</p>

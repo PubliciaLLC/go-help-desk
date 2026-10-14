@@ -199,7 +199,7 @@ Facilities
   <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
   <li><strong>Add Item</strong> — click <em>Add Item</em> next to a Type.</li>
   <li><strong>Reorder</strong> — drag-and-drop entries to change the order they appear in the ticket form dropdowns.</li>
-  <li><strong>Delete</strong>: Categories and Types with existing tickets cannot be deleted.</li>
+  <li><strong>Delete</strong>: Categories, Types and Items with existing tickets cannot be deleted; the API refuses with <code>409</code>. A Category is also kept while an SLA record of one of its SLA policies still exists.</li>
 </ul>
 
 <h3>Groups in the CTI editor</h3>
