@@ -379,7 +379,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><code>AUTH_THROTTLE_DELAY</code>: default <code>1s</code>. How long a login for an account that has used up its budget waits before the password is checked.</li>
 </ul>
 
-<p>If you already had either in <code>.env</code>, it takes effect now. Every other variable on the <a href="getting-started.html#configuration">configuration reference</a> reaches the app, except <code>DATABASE_URL</code>, <code>HTTP_PORT</code> and <code>ATTACHMENT_DIR</code>, which stay fixed in the file.</p>
+<p>If you already had either in <code>.env</code>, it takes effect now. Every other variable on the <a href="getting-started.html#configuration">configuration reference</a> reaches the app, except <code>DATABASE_URL</code> and <code>HTTP_PORT</code>, which stay fixed in the file, and <code>ATTACHMENT_DIR</code>, which is not passed, so the app keeps its default <code>/data/attachments</code>, where Compose mounts the attachments directory.</p>
 
 <p><code>AUTH_THROTTLE_DELAY</code> is now a supported setting, and a delay of 0 (or less) is refused: the server does not start, on any kind of install, and says the delay must be a positive duration such as <code>1s</code>. Without the delay, an account that has used its budget could be guessed at much faster.</p>
 
@@ -387,7 +387,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p><strong>Who notices:</strong> installs whose attachment directory cannot be written.</p>
 
-<p>At startup the server checks that <code>ATTACHMENT_DIR</code> (default <code>/data/attachments</code>, fixed to the <code>attachments</code> volume under Compose) exists, creating it if it is missing, and that a file can be written there. If not:</p>
+<p>At startup the server checks that <code>ATTACHMENT_DIR</code> (default <code>/data/attachments</code>, which under Compose is the mounted <code>docker/data/attachments</code>) exists, creating it if it is missing, and that a file can be written there. If not:</p>
 
 <ul>
   <li>the server logs a warning, and administrators see a red <em>Attachment uploads are disabled</em> banner with the reason;</li>
