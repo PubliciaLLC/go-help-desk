@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -236,6 +237,32 @@ func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, 
 		out[i] = fromRow(r)
 	}
 	return out, nil
+}
+
+// likeEscaper makes %, _ and the escape character itself match literally in
+// an ILIKE pattern, so searching for "50%" finds "50%" rather than everyone.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (s *Store) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]user.User, int64, error) {
+	pattern := likeEscaper.Replace(q)
+	rows, err := s.q.SearchUsersAdmin(ctx, dbgen.SearchUsersAdminParams{
+		Role:       role,
+		Q:          pattern,
+		PageLimit:  int32(limit),
+		PageOffset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("searching users (admin): %w", err)
+	}
+	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern})
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting users (admin): %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, total, nil
 }
 
 func (s *Store) Count(ctx context.Context) (int64, error) {
