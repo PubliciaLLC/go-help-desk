@@ -906,6 +906,15 @@ func (s *Service) GetByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return s.store.GetByID(ctx, id)
 }
 
+// GetByIDs returns the live accounts among ids in one query; ids with no live
+// account are absent from the result.
+func (s *Service) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return s.store.GetByIDs(ctx, ids)
+}
+
 // List returns a paginated list of users.
 func (s *Service) List(ctx context.Context, limit, offset int) ([]User, error) {
 	return s.store.List(ctx, limit, offset)

@@ -46,6 +46,18 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (user.User, error) {
 	return fromRow(row), nil
 }
 
+func (s *Store) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]user.User, error) {
+	rows, err := s.q.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting users by id: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
+}
+
 func (s *Store) GetByEmail(ctx context.Context, email string) (user.User, error) {
 	row, err := s.q.GetUserByEmail(ctx, email)
 	if err != nil {

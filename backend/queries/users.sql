@@ -17,6 +17,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: GetUsersByIDs :many
+SELECT * FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL;
+
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
 

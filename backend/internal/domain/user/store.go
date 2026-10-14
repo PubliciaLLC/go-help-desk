@@ -75,6 +75,9 @@ type Store interface {
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)
+	// GetByIDs is GetByID for many ids in one statement. An id with no live
+	// account is left out of the result, not an error.
+	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]User, error)
 	GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetByEmail(ctx context.Context, email string) (User, error)
 	GetBySAMLSubject(ctx context.Context, subject string) (User, error)
