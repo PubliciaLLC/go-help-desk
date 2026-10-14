@@ -172,7 +172,9 @@ const redactedPlaceholder = "[redacted]"
 
 // shownKeys is every Before/After key the audit view may show, normalised
 // (normaliseKey). Each is an id, a status, a flag or a count, written by
-// ticketMap and the ticket audit paths, UnassignForUser, DeleteGroup, user.ResetMFA and
+// ticketMap and the ticket audit paths (including the priority change's
+// reason, SLA outcome and record ids), UnassignForUser, DeleteGroup,
+// user.ResetMFA and
 // cmd/server/resetfactors.go (whose os_user and host say who ran it, as
 // actor_name does for everyone else).
 //
@@ -189,6 +191,11 @@ var shownKeys = map[string]bool{
 	"forcedreopen": true, "closedreopenpolicy": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
 	"osuser": true, "host": true, "source": true,
+	// The priority change and SLA re-match (#443b): why the priority changed
+	// and what happened to the SLA (fixed enums), and the policy and record
+	// ids before and after.
+	"prioritychangereason": true, "slaoutcome": true,
+	"slapolicyid": true, "slarecordid": true, "previousslarecordid": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

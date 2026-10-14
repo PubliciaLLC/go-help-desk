@@ -152,6 +152,31 @@ func (q *Queries) FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (S
 	return i, err
 }
 
+const getCurrentSLARecordForUpdate = `-- name: GetCurrentSLARecordForUpdate :one
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL FOR UPDATE
+`
+
+// The ticket's current record, locked for the duration of a re-match.
+func (q *Queries) GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error) {
+	row := q.db.QueryRowContext(ctx, getCurrentSLARecordForUpdate, ticketID)
+	var i SlaRecord
+	err := row.Scan(
+		&i.TicketID,
+		&i.PolicyID,
+		&i.FirstResponseAt,
+		&i.ResolvedAt,
+		&i.ResponseBreachedAt,
+		&i.ResolutionBreachedAt,
+		&i.ResponseElapsedAtMetSeconds,
+		&i.ResolutionElapsedAtMetSeconds,
+		&i.ID,
+		&i.StartedAt,
+		&i.PausedSecondsAtStart,
+		&i.SupersededAt,
+	)
+	return i, err
+}
+
 const getSLAPolicy = `-- name: GetSLAPolicy :one
 SELECT id, name, priority, category_id, response_target_min, resolution_target_min FROM sla_policies WHERE id = $1
 `
@@ -171,9 +196,12 @@ func (q *Queries) GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, er
 }
 
 const getSLARecord = `-- name: GetSLARecord :one
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds FROM sla_records WHERE ticket_id = $1
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
+// The CURRENT record: a superseded row (000043) is history and is never read
+// as "the ticket's SLA". Every statement below that addresses a ticket's
+// record carries the same filter.
 func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error) {
 	row := q.db.QueryRowContext(ctx, getSLARecord, ticketID)
 	var i SlaRecord
@@ -186,8 +214,59 @@ func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaReco
 		&i.ResolutionBreachedAt,
 		&i.ResponseElapsedAtMetSeconds,
 		&i.ResolutionElapsedAtMetSeconds,
+		&i.ID,
+		&i.StartedAt,
+		&i.PausedSecondsAtStart,
+		&i.SupersededAt,
 	)
 	return i, err
+}
+
+const insertSLARecord = `-- name: InsertSLARecord :exec
+INSERT INTO sla_records (
+    id, ticket_id, policy_id, started_at, paused_seconds_at_start,
+    first_response_at, resolved_at, response_breached_at, resolution_breached_at,
+    response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds)
+VALUES (
+    $1, $2, $3, $5::timestamptz, $4,
+    $6::timestamptz, $7::timestamptz,
+    $8::timestamptz, $9::timestamptz,
+    $10::bigint, $11::bigint)
+`
+
+type InsertSLARecordParams struct {
+	ID                            uuid.UUID     `json:"id"`
+	TicketID                      uuid.UUID     `json:"ticket_id"`
+	PolicyID                      uuid.UUID     `json:"policy_id"`
+	PausedSecondsAtStart          int64         `json:"paused_seconds_at_start"`
+	StartedAt                     sql.NullTime  `json:"started_at"`
+	FirstResponseAt               sql.NullTime  `json:"first_response_at"`
+	ResolvedAt                    sql.NullTime  `json:"resolved_at"`
+	ResponseBreachedAt            sql.NullTime  `json:"response_breached_at"`
+	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
+	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
+	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
+}
+
+// A record started by a re-match: its own id, an explicit clock start (NULL
+// reads as the ticket's creation) and the ticket's pause total as of that
+// start. A staff re-match also carries the old record's facts onto it, so a
+// target already met stays met; a restart passes none.
+func (q *Queries) InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error {
+	_, err := q.db.ExecContext(ctx, insertSLARecord,
+		arg.ID,
+		arg.TicketID,
+		arg.PolicyID,
+		arg.PausedSecondsAtStart,
+		arg.StartedAt,
+		arg.FirstResponseAt,
+		arg.ResolvedAt,
+		arg.ResponseBreachedAt,
+		arg.ResolutionBreachedAt,
+		arg.ResponseElapsedAtMetSeconds,
+		arg.ResolutionElapsedAtMetSeconds,
+	)
+	return err
 }
 
 const listSLABreachCandidates = `-- name: ListSLABreachCandidates :many
@@ -196,15 +275,16 @@ FROM sla_records r
 JOIN tickets      t ON t.id = r.ticket_id
 JOIN sla_policies p ON p.id = r.policy_id
 WHERE t.closed_at IS NULL
+  AND r.superseded_at IS NULL
   AND (
        (r.first_response_at IS NULL AND r.response_breached_at IS NULL
-          AND t.created_at
-              + make_interval(secs => t.sla_paused_seconds::double precision)
+          AND COALESCE(r.started_at, t.created_at)
+              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)
               + make_interval(mins => p.response_target_min)
               <= LEAST(COALESCE(t.pending_since, $1::timestamptz), $1::timestamptz))
     OR (r.resolved_at IS NULL AND r.resolution_breached_at IS NULL
-          AND t.created_at
-              + make_interval(secs => t.sla_paused_seconds::double precision)
+          AND COALESCE(r.started_at, t.created_at)
+              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)
               + make_interval(mins => p.resolution_target_min)
               <= LEAST(COALESCE(t.pending_since, $1::timestamptz), $1::timestamptz))
   )
@@ -213,8 +293,11 @@ ORDER BY t.created_at
 
 // Tickets the breach sweep must evaluate: open, under a policy, with at least
 // one target that is neither met nor already stamped, using the same
-// pause-aware elapsed time as sla.Elapsed (see that function's doc comment;
-// the two must change together). LEAST(COALESCE(pending_since, now), now) is
+// pause-aware elapsed time as sla.Record.Elapsed (see sla.ElapsedFrom's doc
+// comment; the two must change together). The clock starts at the record's
+// started_at (the ticket's creation when NULL) and counts the ticket's pause
+// total from the record's paused_seconds_at_start. Superseded records are
+// history and are never evaluated. LEAST(COALESCE(pending_since, now), now) is
 // the instant the SLA clock stopped: pending_since while the ticket is
 // currently Pending, clipped to now the same way Elapsed clips with
 // at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
@@ -292,7 +375,8 @@ func (q *Queries) ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error) {
 }
 
 const listSLARecordsByTicketIDs = `-- name: ListSLARecordsByTicketIDs :many
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds FROM sla_records WHERE ticket_id = ANY($1::uuid[])
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records
+WHERE ticket_id = ANY($1::uuid[]) AND superseded_at IS NULL
 `
 
 // Batch lookup for the per-ticket SLA status embedded on GET /tickets and
@@ -318,6 +402,57 @@ func (q *Queries) ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uui
 			&i.ResolutionBreachedAt,
 			&i.ResponseElapsedAtMetSeconds,
 			&i.ResolutionElapsedAtMetSeconds,
+			&i.ID,
+			&i.StartedAt,
+			&i.PausedSecondsAtStart,
+			&i.SupersededAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSLARecordsForTicket = `-- name: ListSLARecordsForTicket :many
+SELECT r.ticket_id, r.policy_id, r.first_response_at, r.resolved_at, r.response_breached_at, r.resolution_breached_at, r.response_elapsed_at_met_seconds, r.resolution_elapsed_at_met_seconds, r.id, r.started_at, r.paused_seconds_at_start, r.superseded_at FROM sla_records r
+JOIN tickets t ON t.id = r.ticket_id
+WHERE r.ticket_id = $1
+ORDER BY COALESCE(r.started_at, t.created_at) DESC, r.superseded_at DESC NULLS FIRST
+`
+
+// Every record a ticket has had, current and superseded, newest clock first.
+// A record that a re-match replaced while it was running inherits its
+// predecessor's started_at, so ties are broken by superseded_at, current row
+// first. A NULL started_at is the ticket's creation.
+func (q *Queries) ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]SlaRecord, error) {
+	rows, err := q.db.QueryContext(ctx, listSLARecordsForTicket, ticketID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SlaRecord
+	for rows.Next() {
+		var i SlaRecord
+		if err := rows.Scan(
+			&i.TicketID,
+			&i.PolicyID,
+			&i.FirstResponseAt,
+			&i.ResolvedAt,
+			&i.ResponseBreachedAt,
+			&i.ResolutionBreachedAt,
+			&i.ResponseElapsedAtMetSeconds,
+			&i.ResolutionElapsedAtMetSeconds,
+			&i.ID,
+			&i.StartedAt,
+			&i.PausedSecondsAtStart,
+			&i.SupersededAt,
 		); err != nil {
 			return nil, err
 		}
@@ -342,7 +477,7 @@ SET first_response_at = COALESCE(first_response_at, $2::timestamptz),
             THEN COALESCE(response_breached_at, $2::timestamptz)
         ELSE response_breached_at
     END
-WHERE ticket_id = $1
+WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
 type SetSLAFirstResponseParams struct {
@@ -403,7 +538,7 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
             THEN COALESCE(resolution_breached_at, $2::timestamptz)
         ELSE resolution_breached_at
     END
-WHERE ticket_id = $1
+WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
 type SetSLAResolvedParams struct {
@@ -444,7 +579,7 @@ SET resolved_at = COALESCE(resolved_at, $2::timestamptz),
             THEN COALESCE(response_breached_at, $2::timestamptz)
         ELSE response_breached_at
     END
-WHERE ticket_id = $1
+WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
 type SetSLAResolvedAndFirstResponseParams struct {
@@ -494,7 +629,7 @@ const stampSLABreaches = `-- name: StampSLABreaches :exec
 UPDATE sla_records
 SET response_breached_at   = COALESCE(response_breached_at,   $2::timestamptz),
     resolution_breached_at = COALESCE(resolution_breached_at, $3::timestamptz)
-WHERE ticket_id = $1
+WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
 type StampSLABreachesParams struct {
@@ -510,6 +645,27 @@ type StampSLABreachesParams struct {
 func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) error {
 	_, err := q.db.ExecContext(ctx, stampSLABreaches, arg.TicketID, arg.ResponseBreachedAt, arg.ResolutionBreachedAt)
 	return err
+}
+
+const supersedeSLARecord = `-- name: SupersedeSLARecord :execrows
+UPDATE sla_records
+SET superseded_at = $2::timestamptz
+WHERE id = $1 AND superseded_at IS NULL
+`
+
+type SupersedeSLARecordParams struct {
+	ID           uuid.UUID `json:"id"`
+	SupersededAt time.Time `json:"superseded_at"`
+}
+
+// The only write a re-match ever makes to an existing record. Every fact on
+// the row stays as it was; the row simply stops being current.
+func (q *Queries) SupersedeSLARecord(ctx context.Context, arg SupersedeSLARecordParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, supersedeSLARecord, arg.ID, arg.SupersededAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const updateSLAPolicy = `-- name: UpdateSLAPolicy :exec
@@ -544,7 +700,7 @@ const updateSLARecord = `-- name: UpdateSLARecord :exec
 UPDATE sla_records
 SET first_response_at = $2, resolved_at = $3,
     response_breached_at = $4, resolution_breached_at = $5
-WHERE ticket_id = $1
+WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
 type UpdateSLARecordParams struct {

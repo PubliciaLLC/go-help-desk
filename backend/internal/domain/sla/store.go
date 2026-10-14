@@ -111,6 +111,12 @@ type Store interface {
 	// Service.StatusesFor).
 	ListRecordsByTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]Record, error)
 
+	// ListRecordsForTicket returns every record a ticket has had, current and
+	// superseded, newest clock first, the current one ahead of any it replaced
+	// that started at the same moment. It is the one reader that sees history;
+	// every other query here reads the current record only.
+	ListRecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]Record, error)
+
 	// ListBreachCandidates returns the ids of tickets the breach sweep must
 	// evaluate: open, under a policy, with at least one target that is
 	// neither met nor already stamped. The prefilter uses the same
