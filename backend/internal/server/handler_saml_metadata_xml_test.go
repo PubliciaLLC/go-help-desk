@@ -2,15 +2,25 @@ package server_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/crewjam/saml"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -400,4 +410,146 @@ func TestSAMLSignIn_EndToEndWithPastedMetadataXML(t *testing.T) {
 	me := h.doUnauthWithCookie(t, http.MethodGet, "/api/v1/me", app)
 	me.Body.Close()
 	require.Equal(t, http.StatusOK, me.StatusCode)
+}
+
+// samlSignInWithClaims runs a SAML sign-in against idp (configured from pasted
+// metadata) whose assertion carries exactly attrs, each keyed by its Name with
+// no FriendlyName, the way Entra ID, Google and Okta send them. It returns the
+// ACS answer and, when the ACS accepted, the /complete answer.
+func samlSignInWithClaims(t *testing.T, h *harness, idp *fakeIdP, nameID string, attrs map[string]string) (acs *httptest.ResponseRecorder, complete *http.Response) {
+	t.Helper()
+	res := h.rawGet(t, "/api/v1/auth/saml/login", nil)
+	res.Body.Close()
+	require.Equal(t, http.StatusFound, res.StatusCode)
+	var tracking *http.Cookie
+	for _, c := range res.Cookies() {
+		if strings.HasPrefix(c.Name, "saml_") {
+			tracking = c
+		}
+	}
+	require.NotNil(t, tracking)
+
+	req, err := saml.NewIdpAuthnRequest(idp.idp, httptest.NewRequest(http.MethodGet, res.Header.Get("Location"), nil))
+	require.NoError(t, err)
+	require.NoError(t, req.Validate())
+	require.NoError(t, saml.DefaultAssertionMaker{}.MakeAssertion(req, &saml.Session{ID: "s1", NameID: nameID}))
+	var stmt saml.AttributeStatement
+	for name, v := range attrs {
+		stmt.Attributes = append(stmt.Attributes, saml.Attribute{
+			Name:       name,
+			NameFormat: "urn:oasis:names:tc:SAML:2.0:attrname-format:uri",
+			Values:     []saml.AttributeValue{{Type: "xs:string", Value: v}},
+		})
+	}
+	req.Assertion.AttributeStatements = []saml.AttributeStatement{stmt}
+	form, err := req.PostBinding()
+	require.NoError(t, err)
+
+	post := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs",
+		strings.NewReader(url.Values{"SAMLResponse": {form.SAMLResponse}, "RelayState": {form.RelayState}}.Encode()))
+	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	post.AddCookie(tracking)
+	acs = httptest.NewRecorder()
+	h.srv.ServeHTTP(acs, post)
+	if acs.Code != http.StatusFound {
+		return acs, nil
+	}
+	for _, c := range acs.Result().Cookies() {
+		if c.Name == "token" && c.Value != "" {
+			complete = h.rawGet(t, "/api/v1/auth/saml/complete", []*http.Cookie{c})
+			complete.Body.Close()
+		}
+	}
+	require.NotNil(t, complete, "the ACS accepted but issued no hand-over token")
+	return acs, complete
+}
+
+// configurePastedIdP stores md as pasted metadata and loads SAML from it.
+func configurePastedIdP(t *testing.T, h *harness, md *saml.EntityDescriptor) {
+	t.Helper()
+	ctx := context.Background()
+	b, err := xml.Marshal(md)
+	require.NoError(t, err)
+	require.NoError(t, h.adminSvc.SetSAMLConfig(ctx, "", validSAMLCert, validSAMLKey))
+	require.NoError(t, h.adminSvc.SetSAMLMetadataXML(ctx, string(b)))
+	h.srv.InitSAML(ctx)
+}
+
+// The sign-in handler takes the account's email and name from samlIdentity
+// (#461). TestSAMLIdentity pins the precedence; this pins the wiring, and that
+// the library really keys a claim with no FriendlyName by its full URI.
+func TestSAMLSignIn_StoresTheNameAndEmailTheClaimsGive(t *testing.T) {
+	const e = "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/"
+	cases := []struct {
+		name      string
+		nameID    string
+		attrs     map[string]string
+		wantEmail string
+		wantName  string
+	}{
+		{"Entra ID default claims", "ada@contoso.onmicrosoft.com",
+			map[string]string{e + "emailaddress": "ada@contoso.test", e + "givenname": "Ada", e + "surname": "Lovelace", e + "name": "ada@contoso.onmicrosoft.com"},
+			"ada@contoso.test", "Ada Lovelace"},
+		{"firstName and lastName (1.2 docs)", "sub-ada",
+			map[string]string{"email": "ada@okta.test", "firstName": "Ada", "lastName": "Lovelace"},
+			"ada@okta.test", "Ada Lovelace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
+			configurePastedIdP(t, h, idp.idp.Metadata())
+
+			acs, complete := samlSignInWithClaims(t, h, idp, tc.nameID, tc.attrs)
+			require.Equal(t, http.StatusFound, acs.Code, "ACS body: %s", acs.Body.String())
+			require.Equal(t, http.StatusSeeOther, complete.StatusCode)
+			require.Equal(t, "/", complete.Header.Get("Location"))
+
+			u, err := h.userSvc.GetByEmail(context.Background(), tc.wantEmail)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantName, u.DisplayName)
+			require.Equal(t, tc.nameID, u.SAMLSubject)
+		})
+	}
+}
+
+// Pasted metadata is the trust anchor: an assertion signed by any key other
+// than the one its signing certificate names is refused, and nobody is
+// signed in or provisioned.
+func TestSAMLSignIn_PastedMetadataRefusesAnotherKey(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
+
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	tpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "not the signing IdP"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &other.PublicKey, other)
+	require.NoError(t, err)
+	md := idp.idp.Metadata()
+	replaced := 0
+	for i := range md.IDPSSODescriptors {
+		for j := range md.IDPSSODescriptors[i].KeyDescriptors {
+			certs := md.IDPSSODescriptors[i].KeyDescriptors[j].KeyInfo.X509Data.X509Certificates
+			for k := range certs {
+				certs[k].Data = base64.StdEncoding.EncodeToString(der)
+				replaced++
+			}
+		}
+	}
+	require.NotZero(t, replaced)
+	configurePastedIdP(t, h, md)
+
+	acs, complete := samlSignInWithClaims(t, h, idp, "intruder-sub", map[string]string{"email": "intruder@test.local"})
+	require.Equal(t, http.StatusForbidden, acs.Code, "ACS body: %s", acs.Body.String())
+	require.Nil(t, complete)
+	for _, c := range acs.Result().Cookies() {
+		require.NotEqual(t, "token", c.Name, "no hand-over token for an assertion signed by another key")
+	}
+	_, err = h.userSvc.GetByEmail(context.Background(), "intruder@test.local")
+	require.ErrorIs(t, err, user.ErrNotFound, "nobody is provisioned")
 }
