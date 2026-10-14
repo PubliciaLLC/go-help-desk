@@ -8,20 +8,24 @@ import { Select } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import type { Category, TicketType, TicketItem } from '@/api/types'
 
-// selectable is the options list for one tier: everything still in
-// circulation, plus the row this ticket already carries even if it has since
-// been archived.
+// options renders one tier's <option>s: every row, so staff still SEE archived
+// ones, but an archived row is labelled "(archived)" and disabled. The exception
+// is the row this ticket already carries: it stays enabled, so the ticket can
+// keep where it is.
 //
-// Two questions were being answered by one filter. "What may staff classify
-// NEW work under" is active only, and a test pins that. "May this ticket keep
-// the classification it already has" is a different question, and the answer
-// has to be yes — otherwise a ticket filed under a category that was retired
-// afterwards could be moved OUT of it but never left where it was, and
-// editing its Type alone would quietly strip its Category. Only the row the
-// ticket already carries is kept: the server refuses to move ANY ticket into an
-// archived node (#421), but a level that is unchanged is not re-checked.
-function selectable<T extends { id: string; active: boolean }>(rows: T[], current?: string | null): T[] {
-  return rows.filter((r) => r.active || r.id === current)
+// Two questions were being answered by one filter. "What may staff classify NEW
+// work under" is active only (the server refuses anything else, #421). "May
+// this ticket keep the classification it already has" is a different question,
+// and the answer has to be yes: otherwise a ticket filed under a category that
+// was retired afterwards could be moved OUT of it but never left where it was,
+// and editing its Type alone would quietly strip its Category. A level that is
+// unchanged is not re-checked by the server.
+function options<T extends { id: string; name: string; active: boolean }>(rows: T[], current?: string | null) {
+  return rows.map((r) => (
+    <option key={r.id} value={r.id} disabled={!r.active && r.id !== current}>
+      {r.active ? r.name : `${r.name} (archived)`}
+    </option>
+  ))
 }
 
 export interface ClassificationPanelProps {
@@ -144,9 +148,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                 onChange={(e) => { setDraftCategory(e.target.value); setDraftType(''); setDraftItem('') }}
               >
                 <option value="">— select —</option>
-                {selectable(categories, categoryId).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
+                {options(categories, categoryId)}
               </Select>
             </div>
             {types.length > 0 && (
@@ -159,9 +161,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                   onChange={(e) => { setDraftType(e.target.value); setDraftItem('') }}
                 >
                   <option value="">— none —</option>
-                  {selectable(types, typeId).map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
+                  {options(types, typeId)}
                 </Select>
               </div>
             )}
@@ -175,9 +175,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                   onChange={(e) => setDraftItem(e.target.value)}
                 >
                   <option value="">— none —</option>
-                  {selectable(items, itemId).map((i) => (
-                    <option key={i.id} value={i.id}>{i.name}</option>
-                  ))}
+                  {options(items, itemId)}
                 </Select>
               </div>
             )}

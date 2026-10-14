@@ -534,6 +534,20 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	actor := ticket.Actor{UserID: &a.UserID, Role: a.Role}
 
+	// A refused classification must leave the whole request unapplied, so it is
+	// checked before the status or the assignee is touched (#421). The write
+	// itself stays where it was, after those.
+	if body.CategoryID != nil {
+		if a.Role == user.RoleUser {
+			Error(w, http.StatusForbidden, "forbidden", "only staff can reclassify tickets")
+			return
+		}
+		if err := s.tickets.ValidateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	if body.StatusID != nil {
 		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
 			handleError(w, err)

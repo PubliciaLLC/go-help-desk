@@ -437,3 +437,34 @@ func TestArchivedRule_StaffStillSeeArchivedRows(t *testing.T) {
 		})
 	}
 }
+
+// A PATCH that carries a refused classification must change NOTHING. The
+// assignee and status used to be applied first, so the caller got a 400 for a
+// request that had half happened. The classification is validated before any
+// of it is applied.
+func TestArchivedRule_ARefusedPatchChangesNothing(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tree := buildArchivedTree(t, h)
+	tree.archive(t, h)
+
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+		Subject: "Untouched", Description: "x", CategoryID: tree.catOpen, ReporterUserID: &h.userID,
+	})
+	require.NoError(t, err)
+
+	body := map[string]any{
+		"assignee_user_id": h.staffID.String(),
+		"status_id":        h.resolvedStatusID(t).String(),
+		"category_id":      tree.catArchived.String(),
+	}
+	status, resp := readStatusBody(t, h.do(t, http.MethodPatch, "/api/v1/tickets/"+tk.ID.String(), body))
+	require.Equal(t, http.StatusBadRequest, status, resp)
+
+	after, err := h.ticketSvc.GetByID(ctx, tk.ID)
+	require.NoError(t, err)
+	require.Nil(t, after.AssigneeUserID, "the assignment was applied although the request was refused")
+	require.Equal(t, tk.StatusID, after.StatusID, "the status was changed although the request was refused")
+	require.Equal(t, tree.catOpen, after.CategoryID)
+}
