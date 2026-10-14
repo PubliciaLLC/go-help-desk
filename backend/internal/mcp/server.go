@@ -145,13 +145,17 @@ func assignArgumentProblem(args map[string]any) (string, bool) {
 // hasUserIdentity reports whether this caller is somebody, rather than merely
 // something.
 //
-// An OAuth client actor carries no user id. Every write tool records who
-// acted — a ticket's reporter, a reply's author, an audit entry, a
-// status-history row — and all of those are foreign keys to users, so a nil
-// id reached the insert and came back as a constraint violation: the caller
-// was told "create ticket failed" and the operator's log filled with table
-// and column names. create_ticket also took a tracking number from the
-// sequence first, so every attempt left a hole in the numbering.
+// Every write tool records who acted — a ticket's reporter, a reply's author,
+// an audit entry, a status-history row — and all of those are foreign keys to
+// users, so an actor with a nil id reached the insert and came back as a
+// constraint violation: the caller was told "create ticket failed" and the
+// operator's log filled with table and column names. create_ticket also took a
+// tracking number from the sequence first, so every attempt left a hole in the
+// numbering.
+//
+// An OAuth client used to be that actor. Since #420 it acts as its service
+// user and carries that user's id, so this passes for it; it stays as the
+// refusal for any credential that still arrives without one.
 //
 // The REST API refuses the same thing plainly. This is that rule on the other
 // surface, which is the point of there being one rule — the transport does not

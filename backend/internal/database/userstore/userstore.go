@@ -465,6 +465,10 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 	return s.q.CountAllUsers(ctx)
 }
 
+// FromRow is fromRow for a store that reads a user row as part of a larger
+// query (authstore's client-with-user lookup) and must not copy the mapping.
+func FromRow(r dbgen.User) user.User { return fromRow(r) }
+
 // fromRow converts a dbgen.User to domain user.User.
 func fromRow(r dbgen.User) user.User {
 	return user.User{

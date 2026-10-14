@@ -104,7 +104,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
-	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID)(chain)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
@@ -127,9 +127,11 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	return securityHeaders(chimw.RequestID(chimw.Recoverer(requestLogger(chain))))
 }
 
-// OAuthClientLookup fetches an OAuth client by client ID.
+// OAuthClientLookup fetches an OAuth client by client ID. GetWithUser also
+// returns the service user it acts as, in one query, for BearerAuth.
 type OAuthClientLookup interface {
 	GetByClientID(ctx context.Context, clientID string) (auth.OAuthClient, error)
+	GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 }
 
 // AuthStoreIface is the server-facing interface for auth key management.
@@ -447,7 +449,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
 	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
-	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID))
+	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser))
 
 	// Health check — no auth required.
 	r.Get("/health", s.handleHealth)

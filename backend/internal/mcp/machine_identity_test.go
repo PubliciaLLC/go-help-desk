@@ -14,13 +14,16 @@ import (
 // A credential with nobody behind it is refused by the write tools, not
 // handed a database error.
 //
-// MCP admits OAuth bearer tokens, and an OAuth client actor carries no user
-// id. Every write tool records who acted — a ticket's reporter, a reply's
-// author, an audit entry, a status-history row — so a nil id reached the
-// insert and came back as a foreign-key violation: the caller was told
-// "create ticket failed" and the operator's log filled with table and column
-// names. create_ticket took a tracking number from the sequence first, so
-// every attempt also left a hole in the numbering.
+// Every write tool records who acted — a ticket's reporter, a reply's
+// author, an audit entry, a status-history row — so an actor with a nil id
+// reached the insert and came back as a foreign-key violation: the caller was
+// told "create ticket failed" and the operator's log filled with table and
+// column names. create_ticket took a tracking number from the sequence first,
+// so every attempt also left a hole in the numbering.
+//
+// An OAuth client used to be such an actor. Since #420 it acts as its service
+// user and carries that user's id, so these tests build the actor by hand: the
+// rule still has to hold for any credential that arrives without one.
 //
 // The REST API was fixed for this two rounds ago and MCP was not, which is
 // the failure mode a second surface always has: one rule, implemented twice.
@@ -42,8 +45,8 @@ func TestWriteTools_RefuseACredentialWithNoUserIdentity(t *testing.T) {
 }
 
 // create_follow_up records the acting member of staff in the new ticket's
-// history and audit entry (#349), so it is held to the same rule: an OAuth
-// client with no user behind it is refused before anything is looked up. A nil
+// history and audit entry (#349), so it is held to the same rule: a credential
+// with no user behind it is refused before anything is looked up. A nil
 // ticket service makes a missed check a panic rather than a passing test.
 func TestCreateFollowUp_RefusesACredentialWithNoUserIdentity(t *testing.T) {
 	s := &Server{}

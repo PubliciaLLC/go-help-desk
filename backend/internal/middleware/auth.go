@@ -110,11 +110,12 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 // It returns the key and the owning user. Return a non-nil error to reject.
 type APIKeyAuthFunc func(ctx context.Context, hashed string) (auth.APIKey, user.User, error)
 
-// OAuthClientLookupFunc resolves an OAuth client by its client ID. BearerAuth
-// calls it on every request so that deleting a client revokes its outstanding
-// tokens; without it a token stays valid for its full hour no matter what the
+// OAuthClientLookupFunc resolves an OAuth client by its client ID, together
+// with the service user it acts as, in one round trip. BearerAuth calls it on
+// every request so that deleting a client revokes its outstanding tokens;
+// without it a token stays valid for its full hour no matter what the
 // administrator does, which is not a revocation mechanism at all.
-type OAuthClientLookupFunc func(ctx context.Context, clientID string) (auth.OAuthClient, error)
+type OAuthClientLookupFunc func(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 
 // APIKeyMarkUsedFunc is called asynchronously to update last_used_at.
 type APIKeyMarkUsedFunc func(ctx context.Context, id uuid.UUID, at time.Time) error
@@ -170,7 +171,7 @@ func APIKeyAuth(lookup APIKeyAuthFunc) func(http.Handler) http.Handler {
 //
 // It runs AFTER RequireRole, and that order is the whole design: a scope
 // narrows, it never grants. An API key acts at its owner's role and an OAuth
-// client acts as staff, so `users:write` on a key owned by a reporting user
+// client acts at its service user's role, so `users:write` on a key owned by a reporting user
 // still reaches nothing — RequireRole has already refused.
 //
 // Session-authenticated requests carry no scopes and are not scoped. A browser
@@ -261,7 +262,10 @@ func RequireResource(resource string) func(http.Handler) http.Handler {
 }
 
 // BearerAuth reads "Authorization: Bearer <jwt>", verifies it as an OAuth2
-// client credentials token, and attaches a synthetic actor.
+// client credentials token, and attaches an actor for the client's service
+// user. Machine stays true, so scopes are enforced and the routes that change
+// how an account authenticates stay closed to it even though it now has a
+// user id.
 func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -288,12 +292,29 @@ func BearerAuth(jwtSecret string, lookup OAuthClientLookupFunc) func(http.Handle
 				next.ServeHTTP(w, r)
 				return
 			}
-			if _, err := lookup(r.Context(), claims.ClientID); err != nil {
+			_, u, err := lookup(r.Context(), claims.ClientID)
+			if err != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// The client acts as its service user (#420): the actor carries that
+			// user's id and its stored role, so ticket visibility, authorship
+			// and the audit trail work exactly as they do for a person.
+			//
+			// Disabled or deleted means the client is switched off, the same as
+			// a disabled API key owner — which is how an administrator stops a
+			// client from the Users page.
+			//
+			// And it must BE a service user. Nothing in the schema stops an
+			// oauth_clients row pointing at a person, and that would hand the
+			// client a person's identity and role.
+			if !u.IsActive() || !u.ServiceAccount {
 				next.ServeHTTP(w, r)
 				return
 			}
 			next.ServeHTTP(w, setActor(r, &Actor{
-				Role:      user.RoleStaff, // OAuth clients act at staff level
+				UserID:    u.ID,
+				Role:      u.Role,
 				MFAPassed: true,
 				ClientID:  claims.ClientID,
 				Scopes:    claims.Scopes,

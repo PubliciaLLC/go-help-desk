@@ -14,35 +14,37 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
-// A credential with nobody behind it is told so, not handed a 500.
+// An OAuth client acts as its service user (#420, decisions on #434).
 //
-// An OAuth client actor carries no user id. Creating a ticket or a reply then
-// passed uuid.Nil to the insert, which failed on a foreign key: the caller
-// got "an internal error occurred", the log got a constraint name, and the
-// create path had already taken a tracking number from the sequence — so
-// every attempt left a hole in the numbering. The scope catalogue advertises
-// tickets:write to OAuth clients, so this is a capability the API offers and
-// cannot deliver.
+// This test used to be TestOAuthClient_CannotBeTheReporterOrAuthor and pinned
+// the opposite. A client's actor then carried no user id, so creating a ticket
+// or a reply passed uuid.Nil to the insert, which failed on a foreign key; the
+// caller was handed a 500 and every attempt burned a tracking number. The fix
+// at the time was to refuse plainly (403 user_identity_required), because the
+// credential "was not a person".
 //
-// Refusing plainly is the honest answer: the request is not malformed and the
-// server is not broken, the credential simply is not a person.
-func TestOAuthClient_CannotBeTheReporterOrAuthor(t *testing.T) {
+// That refusal is replaced on purpose: every client now has a user of its own,
+// so a client holding tickets:write creates tickets and replies as that user,
+// and the audit trail shows the client's name. The scope catalogue always
+// advertised tickets:write to clients; this makes it true.
+func TestOAuthClient_ActsAsItsServiceUser(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 
-	created := h.doAsAdmin(t, http.MethodPost, "/api/v1/admin/oauth-clients", map[string]any{
-		"name": "integration", "scopes": []string{"tickets:read", "tickets:write"},
-	})
-	require.Equal(t, http.StatusCreated, created.StatusCode)
-	var client struct {
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
-	}
-	require.NoError(t, json.NewDecoder(created.Body).Decode(&client))
-	created.Body.Close()
+	c := h.newServiceClient(t, "integration", "tickets:read", "tickets:write")
 
-	token := h.oauthToken(t, client.ClientID, client.ClientSecret)
+	t.Run("creating a ticket", func(t *testing.T) {
+		res := postBearer(t, h, c.Token, "/api/v1/tickets", map[string]any{
+			"subject": "From a robot", "description": "x", "category_id": h.catID.String(),
+		})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusCreated, res.StatusCode)
+		var created ticket.Ticket
+		require.NoError(t, json.NewDecoder(res.Body).Decode(&created))
+		require.NotNil(t, created.ReporterUserID)
+		require.Equal(t, c.UserID, *created.ReporterUserID, "the client's service user is the reporter")
+	})
 
 	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
 		Subject: "Existing", Description: "x", CategoryID: h.catID,
@@ -50,28 +52,21 @@ func TestOAuthClient_CannotBeTheReporterOrAuthor(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	before := latestTicketNumber(t, h)
-
-	t.Run("creating a ticket", func(t *testing.T) {
-		res := postBearer(t, h, token, "/api/v1/tickets", map[string]any{
-			"subject": "From a robot", "description": "x", "category_id": h.catID.String(),
-		})
-		defer res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode,
-			"a credential with no user identity should be refused, not answered with an internal error")
-	})
-
 	t.Run("adding a reply", func(t *testing.T) {
-		res := postBearer(t, h, token,
+		res := postBearer(t, h, c.Token,
 			"/api/v1/tickets/"+tk.ID.String()+"/replies", map[string]any{"body": "beep"})
 		defer res.Body.Close()
-		require.Equal(t, http.StatusForbidden, res.StatusCode)
+		require.Equal(t, http.StatusCreated, res.StatusCode)
+		var reply ticket.Reply
+		require.NoError(t, json.NewDecoder(res.Body).Decode(&reply))
+		require.NotNil(t, reply.AuthorID)
+		require.Equal(t, c.UserID, *reply.AuthorID, "the client's service user is the author")
 	})
 
-	// Every other route that records who acted. Round two fixed create and
-	// reply and left these four, each of which wrote an audit entry or a
-	// status-history row keyed on the actor — so each answered 500 with a
-	// foreign-key constraint name in the log.
+	// Every other route that records who acted used to answer 403 for a client.
+	// They now run as the client's user, under the role and scopes it has. None
+	// may answer 403 user_identity_required, and none may answer 500: the
+	// foreign-key failures that refusal replaced must not come back.
 	t.Run("the rest of the write routes", func(t *testing.T) {
 		cases := []struct {
 			name, method, path string
@@ -82,27 +77,32 @@ func TestOAuthClient_CannotBeTheReporterOrAuthor(t *testing.T) {
 			{"changing the status", http.MethodPatch, "/api/v1/tickets/" + tk.ID.String(),
 				map[string]any{"status_id": h.resolvedStatusID(t).String()}},
 			{"resolving", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/resolve", map[string]any{}},
-			// Reopening a closed ticket (behind closed_reopen_policy, #349) and
-			// the follow-up both record the actor in a history row and an audit
-			// entry, so both are held to the same rule.
 			{"reopening", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/reopen", map[string]any{}},
 			{"opening a follow-up", http.MethodPost, "/api/v1/tickets/" + tk.ID.String() + "/follow-up", map[string]any{}},
 		}
 		for _, tc := range cases {
 			t.Run(tc.name, func(t *testing.T) {
-				res := bearerRequest(t, h, token, tc.method, tc.path, tc.body)
+				res := bearerRequest(t, h, c.Token, tc.method, tc.path, tc.body)
 				defer res.Body.Close()
-				require.Equal(t, http.StatusForbidden, res.StatusCode,
-					"answered %d; an internal error is the wrong thing to tell a caller "+
-						"whose credential simply is not a person", res.StatusCode)
+				require.Less(t, res.StatusCode, 500, "an internal error is never the right answer")
+				if res.StatusCode == http.StatusForbidden {
+					require.NotEqual(t, "user_identity_required", errorCode(t, res),
+						"a client has a user identity now")
+				}
 			})
 		}
 	})
 
-	// And the refused create did not spend a tracking number.
-	after := createTicketAsUser(t, h, "After the refusal")
-	require.Equal(t, before+1, trackingSeq(t, after.TrackingNumber),
-		"a refused create consumed a tracking number")
+	// Still gated by scope: a client that was only given read cannot write.
+	t.Run("a read-only client cannot write", func(t *testing.T) {
+		ro := h.newServiceClient(t, "reader", "tickets:read")
+		res := postBearer(t, h, ro.Token, "/api/v1/tickets", map[string]any{
+			"subject": "Nope", "description": "x", "category_id": h.catID.String(),
+		})
+		defer res.Body.Close()
+		require.Equal(t, http.StatusForbidden, res.StatusCode)
+		require.Equal(t, "insufficient_scope", errorCode(t, res))
+	})
 }
 
 // postBearer sends a JSON POST authenticated with an OAuth access token.

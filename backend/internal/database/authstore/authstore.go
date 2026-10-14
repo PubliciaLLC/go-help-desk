@@ -10,8 +10,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.
@@ -118,6 +120,27 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 		CreatedAt:    r.CreatedAt,
 		UserID:       r.UserID,
 	}, nil
+}
+
+// GetWithUser returns the client and the service user it acts as, in one query:
+// it runs on every OAuth-authenticated request. A deleted client has no row, so
+// its outstanding tokens stop working; the user's own state (disabled, deleted)
+// is returned for the caller to judge.
+func (s *Store) GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+	r, err := s.q.GetOAuthClientWithUser(ctx, clientID)
+	if err != nil {
+		return auth.OAuthClient{}, user.User{}, fmt.Errorf("getting OAuth client %q: %w", clientID, err)
+	}
+	c := r.OauthClient
+	return auth.OAuthClient{
+		ID:           c.ID,
+		ClientID:     c.ClientID,
+		HashedSecret: c.HashedSecret,
+		Name:         c.Name,
+		Scopes:       c.Scopes,
+		CreatedAt:    c.CreatedAt,
+		UserID:       c.UserID,
+	}, userstore.FromRow(r.User), nil
 }
 
 func (s *Store) DeleteOAuthClient(ctx context.Context, id uuid.UUID) error {
