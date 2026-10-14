@@ -1943,14 +1943,14 @@ was a breaking change to the REST API's published contract, made deliberately
 in this beta's bug-fix branch rather than deferred to a major version — see
 `ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
 
-**Origin.** The MCP specification asks servers to validate the `Origin` header against DNS rebinding, and the Streamable HTTP endpoint (`/mcp` and `/mcp/`) does. mcp-go does not, so `ProtectMCP` does it.
+**Origin.** The MCP specification asks servers to validate the `Origin` header against DNS rebinding, and so does every MCP route: `/mcp`, `/mcp/`, `/mcp/sse` and `/mcp/message`. mcp-go does not, so `ProtectMCP` does it.
 
 - A request with **no `Origin` header** passes. Only browsers send one on a cross-origin request, and MCP clients that are not browsers (SDKs, editors, `curl`) send none.
 - A request with an `Origin` must carry exactly one, and it must be the origin of `BASE_URL`: scheme, host and port, compared without regard to case and with the default ports (80 for `http`, 443 for `https`) filled in. Anything else, `null` included, is refused with `403` and the error code `origin_not_allowed`.
 - The comparison is strict. An `Origin` with a path, a trailing slash, userinfo, a percent-escape or any byte outside printable ASCII (browsers send hosts as punycode) is refused, as is a repeated header, because a browser sends none of those.
 - The check runs **before authentication**. The refusal is the same for every caller, so it does not reveal whether a key is valid, whether a session owes MFA, or what role it has. A caller with no `Origin` never meets it and sees the responses it always saw.
 - If `BASE_URL` has no usable origin, every request that carries an `Origin` is refused (fail closed). The server does not start without a host in `BASE_URL` (passkeys refuse it), but it does start on other unusable values, such as a scheme other than `http`/`https` or a port out of range, and those get this.
-- The check applies to `/mcp` and `/mcp/` only. The older SSE transport (`/mcp/sse`, `/mcp/message`) is deliberately **not** checked in this release: it is deprecated and kept unchanged so existing client configurations keep working, and `TestMCPOrigin_SSEIsNotChecked` pins that. Applying the check there too is a decision to make on its own, not a missing piece.
+- The check applies to **every** request that reaches `ProtectMCP`: `/mcp`, `/mcp/`, and the older SSE transport (`/mcp/sse`, `/mcp/message`), and an unknown path under `/mcp/` as well, so a route added later is covered without anyone remembering to list it. The SSE transport is deprecated but not harmless: a browser page can open its stream and post to its message endpoint exactly as it can reach `/mcp`, and a DNS-rebound page reaches both alike, so leaving it open would leave the very hole the check closes on the other routes. An earlier draft of this release exempted SSE to keep existing configurations working; that was reversed (#460) because no legitimate client is affected: SDKs, editors and `curl` send no `Origin`, and a browser client served from `BASE_URL` itself sends the right one. `TestMCPOrigin_SSEIsChecked` pins it.
 
 A browser-based MCP client served from an origin other than `BASE_URL` cannot use `/mcp`. It could not before either: the endpoint grants no CORS preflight, so the browser never sent the request.
 
