@@ -17,9 +17,11 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -57,7 +59,7 @@ const unlockAlphabet = "23456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXY
 func unlock(ctx context.Context, email string, out io.Writer) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
-		return fmt.Errorf("usage: go-help-desk unlock <email>")
+		return fmt.Errorf("usage: /app/server unlock <email>")
 	}
 
 	cfg, err := config.Load()
@@ -74,10 +76,15 @@ func unlock(ctx context.Context, email string, out io.Writer) error {
 
 	// GetByEmail hides deleted accounts and matches exactly, which is the
 	// refusal wanted: an unknown or deleted address is an error, not a guess.
-	u, err := userstore.New(dbgen.New(sqlDB)).GetByEmail(ctx, email)
+	base := dbgen.New(sqlDB)
+	u, err := userstore.New(base).GetByEmail(ctx, email)
 	if err != nil {
 		return fmt.Errorf("no account with the address %q: %w", email, err)
 	}
+	// Read now so the operator can be told, below, that the password will not
+	// get this account in. The unlock still goes ahead: it is still a reset of
+	// everything else.
+	localAllowed := user.IsLocalAuthAllowed(u, admin.NewService(adminstore.New(base)).SAMLEnabled(ctx))
 	// TODO(#490): refuse an OAuth service account here ("service accounts have
 	// no password to unlock") once that field exists on this branch's base.
 
@@ -162,6 +169,11 @@ func unlock(ctx context.Context, email string, out io.Writer) error {
 			"This is shown once and is not stored anywhere in readable form. They must\n"+
 			"change it when they sign in; until they do, it is all the account can do.\n",
 		u.Email, u.DisplayName, removed, password)
+	if !localAllowed {
+		fmt.Fprintf(out,
+			"\nNote: SAML sign-in is required on this instance, so this account cannot sign in\n"+
+				"with a password; only administrators can. The password above will not get them in.\n")
+	}
 	return nil
 }
 

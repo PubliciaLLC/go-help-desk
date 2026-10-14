@@ -265,7 +265,7 @@ describe('the authenticator app section', () => {
     expect(within(totp).getByText('Set up')).toBeTruthy()
     // A button here would be a button that cannot work. Stripping a second
     // factor is deliberately not something a session can do to its own
-    // account; an administrator runs `go-help-desk reset-factors`.
+    // account; an administrator runs `/app/server reset-factors`.
     expect(within(totp).queryByRole('button', { name: /remove|disable|turn off/i })).toBeNull()
     expect(within(totp).getByText(/ask an administrator to reset your second factor/i)).toBeTruthy()
   })

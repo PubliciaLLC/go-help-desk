@@ -32,8 +32,10 @@ type Actor struct {
 	// and still holds the password it was handed (#497). Set only from a
 	// session; a machine credential is not signed in with a password.
 	MustChangePassword bool
-	ClientID           string // non-empty for OAuth2 bearer token requests
-	Scopes             []string
+	// PasswordChangeNeedsNoFactor: see auth.SessionData.
+	PasswordChangeNeedsNoFactor bool
+	ClientID                    string // non-empty for OAuth2 bearer token requests
+	Scopes                      []string
 	// Machine marks an API key or OAuth client — a credential acting on a
 	// person's behalf rather than the person themselves.
 	//
@@ -106,7 +108,8 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				MFAPassed:      sd.MFAPassed,
 				FactorVerified: sd.FactorVerified,
 
-				MustChangePassword: sd.MustChangePassword,
+				MustChangePassword:          sd.MustChangePassword,
+				PasswordChangeNeedsNoFactor: sd.PasswordChangeNeedsNoFactor,
 			}))
 		})
 	}
@@ -354,14 +357,18 @@ func RequirePasswordCurrent(next http.Handler) http.Handler {
 //
 // Without that, an administrator whose role must enrol MFA is deadlocked:
 // RequireMFA holds them at "enrol first" while the flag holds them at "change
-// the password first", and the account cannot sign in. The flag is only ever
-// set by the console command, which clears every factor first, so there is no
-// second factor here for a password alone to bypass; and the handler still
-// demands the current password.
+// the password first", and the account cannot sign in.
+//
+// It reads PasswordChangeNeedsNoFactor, never the raw flag. The flag is set by
+// the console command, which clears every factor, but it stays set until the
+// password is changed and an SSO sign-in can enrol a factor in the meantime.
+// Login decides, with the factors in front of it, whether this session owes
+// none; a session that owes one verifies it first and then changes the
+// password with MFAPassed. The handler still demands the current password.
 func RequireMFAOrPasswordChange(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := GetActor(r)
-		if a == nil || !(a.MFAPassed || a.MustChangePassword) {
+		if a == nil || !(a.MFAPassed || a.PasswordChangeNeedsNoFactor) {
 			http.Error(w, `{"error":{"code":"mfa_required","message":"MFA verification required"}}`, http.StatusForbidden)
 			return
 		}

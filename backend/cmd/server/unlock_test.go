@@ -15,10 +15,12 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/adminstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/webauthnstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 )
@@ -204,6 +206,32 @@ func TestUnlock_RefusesWhatItCannotUnlock(t *testing.T) {
 	require.False(t, got.MustChangePassword)
 	// TODO(#490): refuse an OAuth service account here once that field is on
 	// this branch's base, and test it.
+}
+
+// While SAML is on, only administrators may sign in with a password
+// (user.IsLocalAuthAllowed). The unlock still happens, but the operator is told
+// the password cannot be used, rather than left to find out at the login page.
+func TestUnlock_SaysSoWhenThePasswordCannotSignThisAccountIn(t *testing.T) {
+	f := newUnlockFixture(t)
+	ctx := context.Background()
+	require.NoError(t, admin.NewService(adminstore.New(f.q)).SetSAMLEnabled(ctx, true))
+
+	staff := user.User{ID: uuid.New(), Email: "staff-" + uuid.NewString() + "@test.local",
+		DisplayName: "Staff", Role: user.RoleStaff, PasswordHash: "$2a$10$x"}
+	require.NoError(t, f.users.Create(ctx, staff))
+	adm := user.User{ID: uuid.New(), Email: "adm-" + uuid.NewString() + "@test.local",
+		DisplayName: "Adm", Role: user.RoleAdmin, PasswordHash: "$2a$10$x"}
+	require.NoError(t, f.users.Create(ctx, adm))
+
+	var out bytes.Buffer
+	require.NoError(t, unlock(ctx, staff.Email, &out))
+	require.Contains(t, out.String(), "SAML")
+	require.Contains(t, out.String(), "The password above will not get them in")
+	require.NotEmpty(t, printedPassword(t, out.String()))
+
+	out.Reset()
+	require.NoError(t, unlock(ctx, adm.Email, &out))
+	require.NotContains(t, out.String(), "The password above will not get them in")
 }
 
 // All or nothing, and nothing printed: a password the database never stored

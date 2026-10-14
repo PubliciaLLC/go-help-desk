@@ -131,6 +131,8 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		MFAPassed: mfaPassed,
 
 		MustChangePassword: u.MustChangePassword,
+		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
+		PasswordChangeNeedsNoFactor: u.MustChangePassword && !mfaNeeded && !passkeyNeeded,
 	}
 	// The limit is chosen here, where we know which factor is owed: five
 	// minutes to type a code, fifteen to install an app and enrol.

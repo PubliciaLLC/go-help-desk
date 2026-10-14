@@ -703,7 +703,7 @@ re-enrolment for a TOTP-protected account since the re-enrolment fix.
 a second factor required up front:
 
 ```
-go-help-desk reset-factors <email>
+/app/server reset-factors <email>
 ```
 
 It clears the account's TOTP enrolment, removes its registered passkeys and ends
@@ -720,7 +720,7 @@ worth stealing, the property passkeys exist to remove) would.
 **`unlock` is the complete version** (#497):
 
 ```
-go-help-desk unlock <email>
+/app/server unlock <email>
 ```
 
 (In the published image the binary is `/app/server`:
@@ -750,10 +750,14 @@ last-administrator rule applied to a new gate: it gates nothing at login, and
 the password change is reachable without having passed MFA. Otherwise an
 administrator whose role must enrol MFA would be held at "enrol first" by
 `RequireMFA` and at "change the password first" by the flag, with a way out of
-neither. Having no factor at that moment is what makes that safe: `unlock`
-cleared them, and enrolment is refused until the password is changed, so there is
-no second factor for a password alone to bypass
-(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment`).
+neither. That exemption is for a session that owed no factor when the password was
+checked (the login decides, into `PasswordChangeNeedsNoFactor`), never for the raw
+flag: the flag outlives the cleared factors, and a single sign-on session, which
+ignores it, can enrol a new one, after which a password alone must not be enough
+to change the password (`TestMustChangePassword_DoesNotLetAPasswordOnlySessionSkipAnEnrolledFactor`).
+An account with a factor verifies it first and then changes the password
+(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment` covers the
+other case).
 Single sign-on and passkey sign-ins do not read the flag; it is about the
 password, and a federated administrator who never uses it simply keeps it set.
 
@@ -972,7 +976,7 @@ infrequent action from the settings page, not a path an unauthenticated attacker
 can drive, and closing it would need a transaction spanning the users and
 settings tables.
 
-**The complete way back is `go-help-desk unlock <email>`** (#497, #300's option
+**The complete way back is `/app/server unlock <email>`** (#497, #300's option
 4), so a locked-out federated administrator has more than a warning that would
 have stopped them getting here: it sets a password. See Passkeys, "The way back
 in", for what it does. `reset-factors` remains and clears factors only.
