@@ -330,6 +330,16 @@ func (s *Store) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) 
 	return nil
 }
 
+// RehashPassword swaps oldHash for newHash only while oldHash is still stored,
+// and reports whether it did. See the RehashUserPassword query.
+func (s *Store) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHash string) (bool, error) {
+	n, err := s.q.RehashUserPassword(ctx, dbgen.RehashUserPasswordParams{ID: id, PasswordHash: oldHash, PasswordHash_2: newHash})
+	if err != nil {
+		return false, fmt.Errorf("rehashing password: %w", err)
+	}
+	return n == 1, nil
+}
+
 func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
 	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
 		return fmt.Errorf("setting MFA: %w", err)

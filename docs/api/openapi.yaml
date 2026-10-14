@@ -361,8 +361,13 @@ paths:
         the person must do next: mfa_needed means a TOTP code is owed
         (POST /auth/local/mfa/verify), passkey_needed means a passkey is owed
         (POST /auth/local/passkey/start), and mfa_enrollment_needed means the
-        role must enrol a second factor before it is fully signed in. When SAML
-        is enabled, only administrators may use this operation.
+        role must enrol a second factor before it is fully signed in. Until that
+        step is done the session is only half signed in, and it expires: after
+        5 minutes when a code or passkey is owed, after 15 minutes when the
+        person must enrol. After that, every route answers 401 as if there were
+        no session (the session is deleted), and the person signs in again with
+        their password. When SAML is enabled, only administrators may use this
+        operation.
       tags: ['Authentication']
       x-ghd-handler: handleLocalLogin
       security: []
@@ -1804,8 +1809,8 @@ paths:
         A reply to a Resolved ticket inside the reopen window reopens the ticket to the configured reopen
         status. If no valid reopen status is configured, that reply is refused with 400 bad_request. A closed
         ticket answers 404, the same as a bad token. A Resolved ticket past its reopen window answers 409
-        reopen_window_closed. This route is not gated by the guest submission setting, so a
-        conversation already in progress continues when submission is switched off.
+        reopen_window_closed. Answers 404 when guest submission is disabled, suspending all guest links until
+        the setting is enabled again.
       tags: ['Guest']
       x-ghd-handler: handleGuestAddReply
       security:
@@ -1887,6 +1892,8 @@ paths:
         from_you is true for the guest's own replies.
         A closed ticket can still be read. Closing stops links being rotated but does not revoke them, so
         the last link sent reads the archive until that link expires.
+
+        Answers 404 when guest submission is disabled, suspending all guest links until the setting is enabled again.
       tags: ['Guest']
       x-ghd-handler: handleGuestGetTicket
       security:
@@ -4039,7 +4046,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [insecure_secrets, attachment_scanning]
+                required: [insecure_secrets, attachment_scanning, attachment_storage]
                 properties:
                   insecure_secrets:
                     type: [array, 'null']
@@ -4052,7 +4059,7 @@ paths:
                       enum: [SESSION_SECRET, JWT_SECRET]
                   attachment_scanning:
                     type: object
-                    required: [policy, configured, reachable, effect]
+                    required: [policy, configured, reachable, effect, policy_explicit, stale_off]
                     properties:
                       policy:
                         type: string
@@ -4070,6 +4077,38 @@ paths:
                       effect:
                         type: string
                         description: One sentence, in plain words, saying what happens to uploads right now.
+                      policy_explicit:
+                        type: boolean
+                        description: |
+                          True when an administrator has saved a valid
+                          attachment_scan_policy. False when the policy shown is
+                          only a default derived from whether a scanner address
+                          is set. Saving "off" explicitly makes this true.
+                      stale_off:
+                        type: boolean
+                        description: |
+                          True when scanning is off by default rather than by
+                          choice: the effective policy is off, policy_explicit is
+                          false, no scanner address is set in the setting or the
+                          environment, and at least one attachment is stored.
+                          The admin UI shows a banner with the fix while this is
+                          true.
+                  attachment_storage:
+                    type: object
+                    required: [writable, problem]
+                    description: |
+                      Whether uploads can be stored. Probed on every request (a
+                      scratch file is written and removed in ATTACHMENT_DIR), so
+                      it clears as soon as the directory is fixed. While
+                      writable is false, every upload route answers 503
+                      attachments_unavailable; downloads of stored files are not
+                      affected.
+                    properties:
+                      writable:
+                        type: boolean
+                      problem:
+                        type: string
+                        description: The operating system's reason, without the path. Empty when writable.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -4369,8 +4408,8 @@ paths:
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
         and the same 25 MB cap. Two things are specific to guests. Submission
-        being switched off does not stop a guest who already holds a working
-        link. A Closed ticket answers 404 not_found, the same as a bad link, where
+        being switched off suspends guest links and answers 404 until the setting
+        is enabled again. A Closed ticket answers 404 not_found, the same as a bad link, where
         uploadAttachment answers 409. As there, a Resolved ticket past its reopen
         window answers 409 reopen_window_closed.
         The response is the stored attachment. Its reputation block is null, since
@@ -4447,8 +4486,10 @@ paths:
                 $ref: '#/components/schemas/Error'
         '503':
           description: |
-            The scanner is unavailable and the scan policy is required, so the file
-            is refused until the scanner returns (scanner_unavailable).
+            Uploads cannot be taken right now. Either the attachment directory
+            cannot be written to (attachments_unavailable), or the scanner is
+            unavailable and the scan policy is required, so the file is refused
+            until the scanner returns (scanner_unavailable).
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'
@@ -4632,7 +4673,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '503':
-          description: The scanner is unavailable and the scan policy is required (scanner_unavailable).
+          description: |
+            Uploads cannot be taken right now: the attachment directory cannot be written to
+            (attachments_unavailable), or the scanner is unavailable and the scan policy is
+            required (scanner_unavailable).
           headers:
             Retry-After:
               $ref: '#/components/headers/RetryAfter'

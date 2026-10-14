@@ -491,6 +491,7 @@ start_server() {
     export ATTACHMENT_DIR="$work/attachments"
     export CLAMAV_ADDR="tcp://127.0.0.1:$clamd_port"
     export AUTH_RATE_LIMIT_PER_MINUTE=0
+    export GHD_ALLOW_ZERO_AUTH_THROTTLE=1
     export AUTH_THROTTLE_DELAY=0
     export LOG_LEVEL=info
     exec "$work/ghd-server"
