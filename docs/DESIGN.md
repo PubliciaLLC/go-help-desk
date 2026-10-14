@@ -70,7 +70,7 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA from the moment of the change (see SLA Tracking → Re-matching when priority changes, #443)
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
 - **Assignee** (staff member or group)
 - **Attachments** (file uploads)
@@ -227,11 +227,11 @@ closed ticket, so a clear `409 ticket_closed` for *their own* ticket tells them
 nothing they cannot already read. It never becomes an existence oracle: a ticket
 the caller may not see answers the not-found refusal first (see Authorization),
 for replies, field edits and links alike. Writes that were already refused by
-role (status, assignment, reclassification, resolve, close, tags) keep their
+role (status, assignment, reclassification, priority, resolve, close, tags) keep their
 `403`; the closed state does not change which refusal a role gets.
 
 **Staff and admin: the minimal reading.** Only *leaving* Closed is removed.
-Replying (including internal notes), assignment, reclassification, tags,
+Replying (including internal notes), assignment, reclassification, priority, tags,
 linking and attachments are unchanged on a closed ticket, because they do not
 change what state the ticket is in, and removing them is not what was decided.
 (A staff reply on a closed ticket still mails the guest a read-only link, below.)
@@ -381,7 +381,7 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
 
 `GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline, staff and admin only — a UI choice, not a new permission: the route inherits `requireTicketAccess` like every other route under `/tickets/{id}`.
 
-This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"). CTI reclassification and custom-field edits are not recorded, and priority is set at creation and not changed afterwards. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed` and `reopened` (a requester's reply that reopens a Resolved ticket, and `POST /reopen`, which is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443: written beside `priority_changed` when the change started a new SLA clock over a record that was already met or breached, with the id of the record it replaced). CTI reclassification and custom-field edits are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
 
 That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
 
@@ -2445,8 +2445,10 @@ staff reply keeps that reply as its first response.
 
 **Deleting a policy.** A policy that any ticket has been tracked against
 cannot be deleted: those tickets' targets and breach stamps are measured
-against it. The API refuses with 409, naming how many tickets depend on
-it. A policy that has never matched a ticket can be deleted freely.
+against it, and that includes a record a priority change has since superseded
+(see Re-matching when priority changes). The API refuses with 409, naming how
+many tickets depend on it. A policy that has never matched a ticket can be
+deleted freely.
 
 ### Policy Matching
 
@@ -2457,6 +2459,76 @@ When a ticket is created, the system selects an SLA policy by specificity:
 3. Category only
 4. A catch-all (no Priority, no Category)
 5. No SLA — if no policy matches
+
+#### Re-matching when priority changes
+
+A ticket can change priority after it is created (staff and admin,
+`PATCH /tickets/{id}`, #443). The SLA is then matched again, by the same four
+tiers, against the new priority and the ticket's category, **from the moment of
+the change**, and the change is audited.
+
+**A record's facts are never rewritten.** A ticket can have a history of SLA
+records, of which at most one is *current*. A re-match does not edit the current
+record: it marks it **superseded** (`sla_records.superseded_at`, the only column
+ever written on it again) and inserts a new record. Everything that addresses
+"the ticket's SLA" (the indicator, the breach sweep, the recording of a first
+response or a resolution) reads the current record only. A superseded record is
+history: it is never evaluated, and its breach stamps stay as they were.
+
+What the re-match does, decided in this order:
+
+| The ticket and its current record | Outcome | The new record |
+|---|---|---|
+| SLA tracking is switched off | `sla_off` | none; nothing is re-matched |
+| Resolved or Closed | `not_open` | none; the record is left as it was |
+| No record, no policy matches | `none` | none |
+| No record, a policy matches | `attached` | starts at the change |
+| The new priority matches the record's own policy | `unchanged` | none; nothing about the targets changed, so a breach is not cleared |
+| Record **running** (neither target met or breached), another policy matches | `rematched` | keeps the old record's clock, so the time already spent still counts |
+| Record **met or breached** (any of the four facts is set), another policy matches | `restarted` | a new clock from the change; both targets are timed anew |
+| A record exists, no policy matches | `removed` | none; the record is superseded and the ticket shows no SLA |
+
+A restarted record times **both** targets anew: the next public staff reply is
+its first response, and a resolution resolves it. That is also why a ticket
+that has had both met can be given something to time again. The restart is
+visible and audited, never silent: the audit feed carries `priority_changed`
+(with the outcome) and, for a restart, `sla_restarted`, and a record that started
+over is recognisable as one (`started_at` is set). Because a restart starts a
+clean clock, it can clear a breach from the indicator. The breach itself stays on
+the superseded record, and the `sla_restarted` entry says who did it.
+
+**The clock.** A record's clock starts at its `started_at`, or at the ticket's
+creation when that is empty (every record written before this existed, and every
+record a new ticket attaches). A record also stores `paused_seconds_at_start`:
+the ticket's pause total plus the part of an open Pending interval already
+elapsed, as of its start, so pause time before a restart does not count toward
+the new record. A Resolved or Closed ticket is left alone because restarting a
+clock on a ticket nobody is working would breach it while it sits there.
+
+**Atomic.** The priority, the SLA rows and both audit entries are written in
+one transaction, like the ticket service's other composite writes: an audit
+entry committed apart from the change it describes is not an audit trail. (A new
+ticket's SLA record, by contrast, is attached after the ticket commits and is
+best-effort.) A second change made at the same moment waits for the first, and
+the schema allows one current record per ticket.
+
+**Gated on the toggle.** A re-match creates records, so, like attaching a policy
+to a new ticket, it happens only while SLA tracking is on. Recording a first
+response or a resolution onto an existing record is not gated.
+
+**No event.** A priority change sends no notification and no webhook event.
+
+**Known limit.** Recording a first response or a resolution
+(`RecordFirstResponse`, `RecordResolved`) runs after the reply's own commit and
+outside the ticket's row lock. If a re-match commits between that code's read of
+the record and its write, the write finds no current row to land on (the old one
+is superseded, and the new one is invisible to a statement that started earlier),
+so that one response is not recorded on the new record. For a restart that is
+correct, because the reply came before the new clock. For a re-match of a running
+record the new record keeps waiting for a response it should have had. The window
+is milliseconds. Closing it would need the write to report rows affected and the
+recording code to retry once, which changes the store signatures; it is left
+until there is a real report.
 
 ### Timer Mechanics (pause / resume)
 
@@ -2480,7 +2552,10 @@ accumulates across possibly several Pending intervals, not a single flag:
   interval closes and its length is added to the ticket's accumulated
   `tickets.sla_paused_seconds`.
 - **Elapsed-toward-target**, at any instant, is `now - created_at -
-  sla_paused_seconds`, with one adjustment: if the ticket is *currently*
+  sla_paused_seconds` (for a record a priority change has started over, from
+  the record's own start and pause base instead: `now - started_at -
+  (sla_paused_seconds - paused_seconds_at_start)`; see Re-matching when
+  priority changes), with one adjustment: if the ticket is *currently*
   Pending, the still-open interval's length (from its start to now) is added
   on top, so a ticket does not appear to be making progress toward breach
   while it is actively paused.
@@ -2503,7 +2578,10 @@ target still outstanding, and stamps `response_breached_at` /
 `resolution_breached_at` the first time elapsed-toward-target exceeds the
 policy's minutes for that target. The stamp, once set, does not clear itself
 if a ticket is later reopened or its policy changes — a breach that happened
-is a fact about what happened, not a live status.
+is a fact about what happened, not a live status. A priority change that
+re-matches the SLA does not clear it either: the breach stays on the superseded
+record, which is never evaluated again, and the sweep looks only at the current
+one.
 
 The sweep runs every minute from a goroutine started in
 `cmd/server/main.go` and calls `sla.Service.SweepBreaches`. That selects

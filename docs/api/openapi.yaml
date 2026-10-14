@@ -2834,21 +2834,26 @@ paths:
           $ref: '#/components/responses/TicketNotFound'
     patch:
       operationId: updateTicket
-      summary: Change a ticket's status, assignment or classification.
+      summary: Change a ticket's status, assignment, classification or priority.
       description: |
         Applies whichever of status_id, clear_assignee, assignee_user_id,
-        assignee_group_id and category_id are sent, and answers 200 with the bare
+        assignee_group_id, category_id and priority are sent, and answers 200 with the bare
         Ticket. The body is required: send {} for no change, since an empty body
         is refused as invalid JSON. The path id must be a UUID. A tracking number
         that the caller can see answers 400 bad_request, "invalid ticket ID".
         The changes run in this order: status, then assignment, then
-        classification. Each is saved on its own, with no transaction around the
-        three. If a later one is refused, the earlier ones have already been
-        saved and the response is an error.
+        classification, then priority. Each is saved on its own, with no
+        transaction around the four. If a later one is refused, the earlier ones
+        have already been saved and the response is an error.
         Who may do what:
         - A reporting user cannot change the status (403 forbidden), cannot
-          assign (403 forbidden), and cannot reclassify (403, "only staff can
-          reclassify tickets").
+          assign (403 forbidden), cannot reclassify (403, "only staff can
+          reclassify tickets"), and cannot change the priority (403 forbidden).
+        - priority is one of critical, high, medium and low. Anything else
+          answers 400 bad_request. Staff and administrators may change it on a
+          ticket in any status, Resolved and Closed included. Sending the
+          ticket's current priority is accepted and changes nothing: no audit
+          entry, no SLA change.
         - Only an administrator may set the status to Closed (403 forbidden for
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.
@@ -2866,6 +2871,18 @@ paths:
         category_id replaces the whole classification: type_id and item_id are
         written as sent, so an absent one clears that level. type_id and item_id
         have no effect unless category_id is sent too.
+        Changing the priority re-matches the ticket's SLA from the moment of the
+        change, when SLA tracking is on and the ticket is not Resolved or Closed.
+        The priority, the SLA rows and the audit entries are written in one
+        transaction. A record is never rewritten: a re-match marks the old record
+        superseded and starts a new one. If the old record was still running, the
+        new one keeps its clock, so no elapsed time is lost. If it was already met
+        or breached, the new one starts a fresh clock at the change and times both
+        targets anew. A Resolved or Closed ticket changes priority and keeps its
+        SLA record as it was. The audit entry priority_changed records the reason
+        (manual), the SLA outcome and the policy and record ids before and after.
+        A restart also writes sla_restarted. No notification or webhook event is
+        sent for a priority change.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
         probed. A 403 from the handler (application/json) means the ticket is
@@ -2908,6 +2925,12 @@ paths:
                 item_id:
                   description: The item to set with category_id. Absent clears it.
                   $ref: '#/components/schemas/Uuid'
+                priority:
+                  description: |
+                    Sets the priority and re-matches the ticket's SLA from the moment
+                    of the change. Staff and administrators only. Absent leaves it
+                    unchanged.
+                  $ref: '#/components/schemas/Priority'
       responses:
         '200':
           description: The ticket after the changes, as the bare Ticket.
@@ -2919,10 +2942,11 @@ paths:
           description: |
             `bad_request`: invalid JSON; invalid ticket ID (the path id is the
             tracking number of a ticket you can see; send its UUID); an assignee that is not a user on this
-            help desk, deleted, disabled or a reporting user; or a classification
+            help desk, deleted, disabled or a reporting user; a classification
             the domain refuses (category_id is not a category on this help desk,
             or type_id and item_id do not belong to the category and to each
-            other).
+            other); or a priority that is not one of critical, high, medium and
+            low.
           content:
             application/json:
               schema:
@@ -2933,9 +2957,9 @@ paths:
           description: |
             Refused by the middleware (text/plain). Or, from the handler
             (application/json): `forbidden` for a reporting user changing the
-            status, assigning, or reclassifying, and for anyone but an
-            administrator setting the status to Closed; `user_identity_required`
-            for an OAuth client.
+            status, assigning, reclassifying or changing the priority, and for
+            anyone but an administrator setting the status to Closed;
+            `user_identity_required` for an OAuth client.
           content:
             text/plain:
               schema:
@@ -8864,7 +8888,7 @@ components:
           $ref: '#/components/schemas/Uuid'
         action:
           type: string
-          description: The action name, for example created, assigned, unassigned or closed.
+          description: The action name, for example created, assigned, unassigned, priority_changed, sla_restarted or closed.
         actor_id:
           description: The actor's account, or null when there is none (or when a reporting user is shown an assignment).
           anyOf:
