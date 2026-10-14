@@ -48,11 +48,13 @@ export const USERS_PER_PAGE = 50
  */
 export async function listUsersPage(
   page: number,
-  filters: { q?: string; role?: Role | '' } = {},
+  filters: { q?: string; role?: Role | ''; serviceAccount?: boolean } = {},
 ): Promise<{ users: AdminUser[]; total: number }> {
-  const params: Record<string, string | number> = { page, per_page: USERS_PER_PAGE }
+  const params: Record<string, string | number | boolean> = { page, per_page: USERS_PER_PAGE }
   if (filters.q) params.q = filters.q
   if (filters.role) params.role = filters.role
+  // true is only service accounts, false only people; absent is everyone (#420).
+  if (filters.serviceAccount !== undefined) params.service_account = filters.serviceAccount
   const res = await api.get<AdminUser[]>('/admin/users', { params })
   const total = Number(res.headers?.['x-total-count'])
   return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }
@@ -309,8 +311,14 @@ export async function getSettings(): Promise<Record<string, unknown>> {
   return res.data
 }
 
-export async function updateSettings(patch: Record<string, unknown>): Promise<void> {
-  await api.patch('/admin/settings', patch)
+/**
+ * A save can succeed with something the administrator should read: the server
+ * answers 200 {"warning"} instead of 204 (an SSO setting that locks people out,
+ * or ticket scope turned on while an OAuth client has no group, #420).
+ */
+export async function updateSettings(patch: Record<string, unknown>): Promise<{ warning?: string }> {
+  const res = await api.patch<{ warning?: string } | undefined>('/admin/settings', patch)
+  return { warning: res.data?.warning }
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
@@ -645,6 +653,13 @@ export interface SecurityWarnings {
    * a server that predates the field read as healthy.
    */
   attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * Names of OAuth clients that see no tickets because ticket scope is on and
+   * their service user is in no group (#420). Optional so a server that
+   * predates it reads as none.
+   */
+  oauth_clients_without_groups?: string[]
 
   /**
    * The configured reopen target status has been deactivated, so reopened
