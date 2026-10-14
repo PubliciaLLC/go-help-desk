@@ -2391,7 +2391,8 @@ paths:
         Returns every status, active and inactive, ordered by sort order and then name. ticket_count depends on
         who asks. An administrator sees every ticket. Staff see tickets assigned to them or to one of their
         groups. A reporting user sees tickets they reported. An OAuth client counts as staff with no account
-        and no groups, so its counts are 0. A count that cannot be computed is reported as 0.
+        and no groups, so its counts are 0. A count that cannot be computed fails the
+        request (500 internal_error); it is never reported as 0.
       tags: ['Reference data']
       x-ghd-handler: handleListStatuses
       security:
@@ -2858,6 +2859,10 @@ paths:
           must exist (400 bad_request).
         - An unknown status_id answers 404 not_found, "status not found". This is
           not the ticket 404 documented here.
+        - A status_id that names an inactive status answers 409 status_inactive,
+          for every role: inactive statuses are retired. A ticket already in an
+          inactive status can be moved out of it, and sending it the status it
+          already holds is not a move.
         - An OAuth client acting without a person behind it is refused with 403
           user_identity_required.
         For status_id, assignee_user_id, assignee_group_id, category_id, type_id
@@ -2946,7 +2951,9 @@ paths:
         '404':
           $ref: '#/components/responses/TicketNotFound'
         '409':
-          description: "`ticket_closed`: the ticket is Closed and the caller's role may not move it out of Closed."
+          description: >-
+            `ticket_closed`: the ticket is Closed and the caller's role may not move it
+            out of Closed. `status_inactive`: status_id names an inactive status.
           content:
             application/json:
               schema:
@@ -4963,14 +4970,14 @@ paths:
   /api/v1/admin/api-keys:
     get:
       operationId: listAPIKeys
-      summary: List the caller's API keys.
+      summary: List API keys.
       description: >-
         Administrators only (second factor required).
-        Returns the API keys owned by the caller, newest first. The caller is the
-        signed-in administrator or, for an API key, the administrator who owns that
-        key. Keys owned by other administrators are not listed. The token and its
-        hash are never returned, so a key's secret cannot be read back after
-        creation.
+        An administrator signed in through the browser gets every API key, newest
+        first, each with its owner (owner_name, owner_email). An API key gets only the
+        keys of its own owner. The token and its hash are never returned, so a key's
+        secret cannot be read back after creation. Before 1.3 a signed-in administrator
+        was shown only their own keys.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleListAPIKeys
       security:
@@ -4980,7 +4987,7 @@ paths:
       x-ghd-mfa: true
       responses:
         '200':
-          description: The caller's keys, newest first. An empty array when there are none.
+          description: The keys the caller may see, newest first. An empty array when there are none.
           content:
             application/json:
               schema:
@@ -5098,8 +5105,11 @@ paths:
       summary: Delete an API key.
       description: >-
         Administrators only (second factor required).
-        Deletes the key with this id, whoever owns it, so the key stops working on
-        the next request. An unknown id answers 404 not_found.
+        An administrator signed in through the browser deletes any key, whoever owns
+        it. An API key deletes only keys of its own owner; a key that belongs to
+        someone else answers 404 not_found, the same as an id that does not exist.
+        Either way the deleted key stops working on the next request. Before 1.3 an
+        API key could delete another administrator's key if it knew the id.
       tags: ['Admin: Credentials']
       x-ghd-handler: handleDeleteAPIKey
       security:
@@ -5123,7 +5133,7 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           description: >-
-            not_found, for an id that names no API key.
+            not_found, for an id that names no API key the caller may delete.
           content:
             application/json:
               schema:
@@ -5811,8 +5821,7 @@ paths:
         Creates a client that can obtain bearer tokens from POST
         /api/v1/auth/oauth/token. The client acts as staff, so it never reaches an
         administrator-only route. The client_secret is returned once. The response
-        carries client_id and the secret but not the record id, so read the id from
-        the list when you need to delete the client. scopes is required and must be
+        carries the record id (the one DELETE uses), client_id and the secret. scopes is required and must be
         a non-empty list of valid resource:action values. An API key can grant
         only scopes it holds itself.
       tags: ['Admin: Credentials']
@@ -5848,8 +5857,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [client_id, client_secret, name]
+                required: [id, client_id, client_secret, name]
                 properties:
+                  id:
+                    $ref: '#/components/schemas/Uuid'
+                    description: The record id, as the list and DELETE use it.
                   client_id:
                     type: string
                     description: 16 lowercase hexadecimal characters.
@@ -6122,8 +6134,8 @@ paths:
         Returns up to 200 accounts, newest first. Disabled accounts are included and
         soft-deleted accounts are left out. There are no paging parameters, so an
         instance with more than 200 accounts shows only the first 200 here, as the
-        admin page does. auth_type says how an account signs in. An account that
-        signs in only through OIDC is reported as local.
+        admin page does. auth_type says how an account signs in, read off the
+        credentials it holds (see AdminUserSummary).
       tags: ['Admin: Users']
       x-ghd-handler: handleListUsers
       security:
@@ -6300,7 +6312,7 @@ paths:
         active administrator cannot be disabled or demoted. An
         API key cannot change an administrator's account or promote a user to
         administrator; that answers 403 session_required, after the body checks. The
-        response always carries passkey_count as 0, so read GET for the real count.
+        response is the same detail view GET returns, passkey_count included.
       tags: ['Admin: Users']
       x-ghd-handler: handleUpdateUser
       security:
@@ -6627,9 +6639,12 @@ paths:
         last_delivery in the database, because the old result described a different
         target. events, when sent, must be non-empty and valid. secret: absent or null keeps
         the stored secret, but an empty string clears it, and deliveries then stop being
-        signed. payload_format: an empty string means raw. The response is built from the
-        record read before the update, so its last_delivery can still show the result for
-        the previous url. An unknown id answers 404 not_found.
+        signed. Clearing the secret this way is a deliberate choice, not an oversight:
+        the route is administrator-only (the administrator role and a second factor are
+        required, and an OAuth client carries the staff role, so it cannot reach it).
+        payload_format: an empty string means raw. The response is the record read back
+        after the update, so after a url change last_delivery is null. An unknown id
+        answers 404 not_found.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleUpdateWebhook
       security:
@@ -6656,7 +6671,8 @@ paths:
                   type: [string, 'null']
                   description: >-
                     Write-only. Absent or null keeps the stored secret. An empty string
-                    clears it.
+                    clears it, and deliveries then stop being signed. Deliberate, and
+                    administrator-only.
                 enabled:
                   type: boolean
                   description: Omit to keep the current state.
@@ -6665,8 +6681,8 @@ paths:
       responses:
         '200':
           description: >-
-            The subscription after the change. last_delivery here is the value read before
-            the update, even when the url changed and the stored result was cleared.
+            The subscription as stored after the change. When the url changed,
+            last_delivery is null: the old result described a different target.
           content:
             application/json:
               schema:
@@ -6847,8 +6863,9 @@ paths:
         Partial update. An absent field is unchanged. Setting active to false
         archives the category: the catalogue that guests and reporting users see
         stops listing it, and tickets that already use it keep it. The name is
-        stored as sent, not trimmed. An empty or whitespace-only name is refused with
-        400 bad_request, and an unknown id with 404 not_found.
+        trimmed, as on create, and the response is the saved row. An empty or
+        whitespace-only name is refused with 400 bad_request, and an unknown id with
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateCategory
       security:
@@ -6865,7 +6882,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                  description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -6984,9 +7001,11 @@ paths:
         Assigns the field definition field_def_id to this category, identified by
         {id}, and answers 201 with the new assignment. A category that does not exist
         answers 404 not_found. visible_on_new and required_on_new default to false when omitted.
-        The field definition must exist, and the same field cannot be
-        assigned to the same category twice. Either refusal is 400 bad_request, with
-        the database message as the text.
+        The field definition must exist (400 invalid_reference otherwise), and the same
+        field cannot be assigned to the same category twice (409 conflict). The messages
+        are written for the caller and never carry database text. visible_on_new is
+        decoded as an optional boolean, so absent and false are the same, and the
+        database column defaults to false to match (migration 000040).
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -7025,6 +7044,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: this field is already assigned to this category."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/fields/{assignmentId}:
@@ -7225,7 +7249,8 @@ paths:
         Partial update of the type identified by typeId. An absent field is unchanged,
         and active set to false archives the type. The category of a type cannot be
         changed here, so a category_id in the body is ignored. A type that is not in
-        the category named by {id} answers 404 not_found. The name is stored as sent, not trimmed. An empty or whitespace-only
+        the category named by {id} answers 404 not_found. The name is trimmed, as on
+        create, and the response is the saved row. An empty or whitespace-only
         name is refused with 400 bad_request, and an unknown type answers 404
         not_found.
       tags: ['Admin: Catalogue']
@@ -7244,7 +7269,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                  description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -7366,9 +7391,9 @@ paths:
         Assigns the field definition field_def_id to this type, identified by {typeId},
         and answers 201 with the new assignment. A type that does not exist, or is not
         in the category named by {id}, answers 404 not_found. visible_on_new and required_on_new default
-        to false when omitted. The field definition must exist, and the same field cannot be assigned
-        to the same type twice. Either refusal is 400 bad_request, with the database
-        message as the text.
+        to false when omitted. The field definition must exist (400 invalid_reference otherwise), and the same
+        field cannot be assigned to the same type twice (409 conflict). The messages are
+        written for the caller and never carry database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -7407,6 +7432,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: this field is already assigned to this type."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/fields/{assignmentId}:
@@ -7629,9 +7659,9 @@ paths:
         and active set to false archives the item. The type of an item cannot be
         changed here, so a type_id in the body is ignored. An item that is not in the
         type named by {typeId}, or a type that is not in the category named by {id},
-        answers 404 not_found. The name is stored as sent, not trimmed. An empty or
-        whitespace-only name is refused with 400 bad_request, and an unknown item
-        answers 404 not_found.
+        answers 404 not_found. The name is trimmed, as on create, and the response is
+        the saved row. An empty or whitespace-only name is refused with 400
+        bad_request, and an unknown item answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateItem
       security:
@@ -7648,7 +7678,7 @@ paths:
               properties:
                 name:
                   type: string
-                  description: New name, stored as sent (not trimmed). Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                  description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -7776,9 +7806,9 @@ paths:
         Assigns the field definition field_def_id to this item, identified by {itemId},
         and answers 201 with the new assignment. An item that does not exist, or whose
         type or category does not match the path, answers 404 not_found. visible_on_new and
-        required_on_new default to false when omitted. The field definition must exist, and the same field cannot be assigned
-        to the same item twice. Either refusal is 400 bad_request, with the database
-        message as the text.
+        required_on_new default to false when omitted. The field definition must exist (400 invalid_reference otherwise), and the same
+        field cannot be assigned to the same item twice (409 conflict). The messages are
+        written for the caller and never carry database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateAssignment
       security:
@@ -7817,6 +7847,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: this field is already assigned to this item."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}:
@@ -7958,9 +7993,9 @@ paths:
         must be unique across definitions. field_type is one of text, textarea, number
         or select. A select field needs at least one option. options are stored as
         sent for any field type, and only select fields use them. sort_order defaults
-        to 0. Every refusal, whether from the validation or from the database, is
-        400 bad_request, with the error text as the message. A duplicate name is
-        therefore a 400, not a 409.
+        to 0. A value the validation refuses is 400 bad_request, with the reason as the
+        message. A name already in use is 409 conflict. Any other failure is a 500
+        internal_error. No message carries database text.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateFieldDef
       security:
@@ -8001,6 +8036,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: a field with this name already exists."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/admin/custom-fields/{id}:
     parameters:
       - name: id
@@ -8019,7 +8059,8 @@ paths:
         whole list, and an empty list is refused for a select field. Setting active to
         false deactivates the definition. It is never deleted, and its existing ticket
         values are kept. A refused value is 400 bad_request with the reason as the
-        message. An unknown id is 404 not_found.
+        message, a name already in use is 409 conflict, and an unknown id is 404
+        not_found. The response is the saved row.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateFieldDef
       security:
@@ -8054,8 +8095,8 @@ paths:
       responses:
         '200':
           description: >-
-            The definition after the update. name is echoed as sent; it is stored
-            trimmed, so a padded name reads back trimmed from the list.
+            The definition as stored after the update, so name is the trimmed value
+            and created_at is the original.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CustomFieldDef'}
@@ -8065,6 +8106,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          description: "conflict: another field already has this name."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
         '404':
           $ref: '#/components/responses/NotFound'
   /api/v1/admin/sla/policies:
@@ -8073,9 +8119,8 @@ paths:
       summary: List SLA policies.
       description: >-
         Administrators only (second factor required).
-        Lists every SLA policy as a bare array, ordered by priority compared as text
-        (critical, high, low, medium), with policies that have no priority last,
-        then by name.
+        Lists every SLA policy as a bare array, ordered by severity (critical, high,
+        medium, low), with policies that have no priority last, then by name.
       tags: ['Admin: SLA']
       x-ghd-handler: handleListSLAPolicies
       security:
@@ -8263,8 +8308,8 @@ paths:
         Administrators only (second factor required).
         Lists every ticket status, system and custom, as a bare array. ticket_count is
         the number of tickets in each status across all tickets, because the caller is
-        an administrator. A count that cannot be read is reported as 0 rather than
-        failing the request. Staff and reporting users get the same list through
+        an administrator. A count that cannot be read fails the request (500
+        internal_error); it is never reported as 0. Staff and reporting users get the same list through
         GET /api/v1/statuses, with counts scoped to what they can see.
       tags: ['Admin: Statuses']
       x-ghd-handler: handleListStatuses
@@ -8293,8 +8338,8 @@ paths:
         Creates an active custom status. The name is trimmed and must not be empty, and
         it must be unique: a name already in use is 409 status_name_taken. color is free
         text, stored as sent, and the server does not check that it is a colour.
-        sort_order defaults to 0. The response carries ticket_count 0, because counts
-        are computed only when statuses are listed.
+        sort_order defaults to 0. The response carries ticket_count, which is 0 for a
+        status that was just created.
       tags: ['Admin: Statuses']
       x-ghd-handler: handleCreateStatus
       security:
@@ -8357,8 +8402,8 @@ paths:
         status its current name is not a rename and is allowed. The name is trimmed. An
         empty name is 400 bad_request, and a name in use is 409 status_name_taken. An
         unknown id is 404 not_found. color and sort_order are stored as sent. The
-        response carries ticket_count 0, because counts are computed only when
-        statuses are listed.
+        response carries the status's ticket_count, computed for the caller as in the
+        list.
       tags: ['Admin: Statuses']
       x-ghd-handler: handleUpdateStatus
       security:
@@ -8385,10 +8430,12 @@ paths:
                 active:
                   type: boolean
                   description: >-
-                    Stored flag. The server does not act on it: an inactive status is
-                    still listed by GET /api/v1/statuses and is still accepted when a
-                    ticket's status is changed. Refused for a system status when
-                    sent as true or false; null is treated as absent.
+                    False retires the status for every role: it is still listed by
+                    GET /api/v1/statuses (with active false), but the server refuses
+                    a move of a ticket into it (409 status_inactive), and the ticket
+                    status picker does not offer it. Tickets already in it stay and can
+                    be moved out. Refused for a system status when sent as true or
+                    false; null is treated as absent.
       responses:
         '200':
           description: The status as stored after the update.
@@ -8616,7 +8663,7 @@ components:
         sort_order: {type: integer}
         active: {type: boolean}
     Status:
-      description: A ticket status. kind system marks the built-in statuses, custom the ones an administrator added. ticket_count is computed only by the two status list operations and is 0 in create and update responses.
+      description: A ticket status. kind system marks the built-in statuses, custom the ones an administrator added. ticket_count is computed for the caller by the two status list operations and by the create and update responses.
       type: object
       required: [id, name, kind, sort_order, color, active, ticket_count]
       properties:
@@ -9344,13 +9391,19 @@ components:
         key that has never been used omits last_used_at, and a key with no expiry omits
         expires_at.
       type: object
-      required: [id, name, user_id, scopes, created_at]
+      required: [id, name, user_id, owner_name, owner_email, scopes, created_at]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
         user_id:
           $ref: '#/components/schemas/Uuid'
           description: The owning administrator.
+        owner_name:
+          type: string
+          description: The owner's display name.
+        owner_email:
+          type: string
+          description: The owner's email address.
         scopes:
           type: array
           items:
@@ -9499,12 +9552,15 @@ components:
         disabled: {type: boolean}
         auth_type:
           type: string
-          enum: [local, saml, both]
+          enum: [local, saml, oidc, both, local+oidc, saml+oidc, local+saml+oidc]
           description: >-
-            How the account signs in. local means the account has no SAML subject: a
-            password account, an account that signs in only through OIDC, and an account
-            with no credential yet (has_password false) all read local. saml is SAML
-            only. both is a password plus SAML.
+            How the account signs in, derived from what it holds: a password, a SAML
+            subject, an OIDC subject. local is a password and nothing else; an account
+            with no credential yet (has_password false) also reads local. saml and oidc
+            are that subject alone. both is a password plus SAML, and keeps that
+            meaning. The other combinations are joined with +, always in the order
+            local, saml, oidc. Before 1.3 an account that signed in only through OIDC,
+            or a password plus OIDC, read local.
         mfa_enabled:
           type: boolean
           description: The TOTP flag only. A passkey-only account reads false here.
@@ -9529,7 +9585,7 @@ components:
             passkey_count:
               type: integer
               minimum: 0
-              description: The number of registered passkeys. PATCH /api/v1/admin/users/{id} always answers 0 here.
+              description: The number of registered passkeys. The same on GET and PATCH.
             groups:
               type: array
               items:

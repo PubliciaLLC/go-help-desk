@@ -110,7 +110,7 @@ Three roles: **Admin**, **Staff**, **User**
 Admins manage accounts from **Admin → Users**. The user list is clickable — clicking a user opens a detail page with:
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
-- **Account info** — member since date, login type (Local / SSO (SAML) / Local + SSO), MFA enrollment status. The login type looks at the SAML subject only: an account bound to an OIDC identity is reported as Local.
+- **Account info** — member since date, login type (Local / SSO (SAML) / SSO (OIDC) / Local + SSO), MFA enrollment status. The login type is read off what the account holds: a password, a SAML subject, an OIDC subject. The API reports it as `auth_type`: `local`, `saml`, `oidc`, `both` (password and SAML), or a `+`-joined combination that includes `oidc` (`local+oidc`, `saml+oidc`, `local+saml+oidc`).
 - **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
 - **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
@@ -373,7 +373,12 @@ ticket's own guest columns, and `follow_up_of` says what it continues.
   one (403), just as it refuses to deactivate one. Color and sort order
   remain editable.
 - Custom statuses can be **deactivated** (hidden from new-ticket flows) and
-  **reactivated**. They can only be **deleted** when no ticket is in that
+  **reactivated**. Inactive means retired, for every role: the ticket status
+  picker does not list it, and the server refuses a move into it with
+  `409 status_inactive`, whoever asks (staff, administrators and API keys alike).
+  A ticket already in an inactive status stays there and can be moved out. The
+  reopen target status (see Ticket Lifecycle) is chosen from active statuses but is stored by
+  name, and is not re-checked if that status is deactivated later. They can only be **deleted** when no ticket is in that
   status and no status-history entry references it; otherwise deactivate
   it. System statuses can never be renamed, deactivated or deleted.
 - Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
@@ -2100,6 +2105,23 @@ its owner, so any scope reaching those routes reaches account takeover.
 `GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
 picker from it so the two cannot drift.
 
+**Who lists and revokes which API keys** ([#419](https://github.com/PubliciaLLC/go-help-desk/issues/419),
+[#466](https://github.com/PubliciaLLC/go-help-desk/pull/466)). An administrator
+signed in through the browser lists and revokes every key, with its owner
+shown (`owner_name`, `owner_email`). An API key lists and revokes only the keys
+of its own owner; a key that belongs to someone else answers `404`, as if it did
+not exist. The rule follows the credential, not the role, so a leaked key held
+by an administrator cannot revoke the keys that would let the owner recover.
+Before 1.3, revoking ignored the owner while listing did not, so any admin
+credential that knew a key id could revoke another administrator's key.
+
+**A blank webhook `secret` clears it, by design.** `PATCH /api/v1/admin/webhooks/{id}`
+with `"secret": ""` removes the stored secret, and deliveries to that hook are
+no longer signed; an absent or `null` secret keeps it. This is a deliberate
+choice and stays admin-only: the admin router needs the administrator role and
+a second factor, and an OAuth client carries the staff role, so no credential
+below an administrator can reach it. It is revisited if that stops being true.
+
 ### Other protections
 
 Things the code does that are not obvious from the feature list, recorded here
@@ -2474,9 +2496,11 @@ accumulates across possibly several Pending intervals, not a single flag:
   per-status "pauses the SLA" flag in v1. Renaming the status away from
   `Pending` stops tickets from pausing from then on. A ticket already in it
   stays paused until it leaves, since leaving closes the interval whatever the
-  status is called. Deactivating it does not stop it pausing: the
-  ticket-detail status picker still lists inactive statuses and the
-  transition is accepted. Deleting it removes the only way to pause. Whatever
+  status is called. Deactivating it stops tickets entering it: the
+  server refuses a move into an inactive status for every role and the
+  ticket-detail status picker no longer lists it. A ticket already in it stays
+  paused until it leaves, and a ticket reopened to it by the reopen-target
+  setting still enters it. Deleting it removes the only way to pause. Whatever
   status is later named `Pending`, renamed back or newly created, becomes the
   pause status.
 - Each time a ticket enters Pending, that timestamp is recorded as the start

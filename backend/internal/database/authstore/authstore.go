@@ -90,6 +90,46 @@ func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey
 	return out, nil
 }
 
+// DeleteForUser deletes a key only if userID owns it. A key that exists but
+// belongs to someone else is reported exactly like one that does not exist.
+func (s *Store) DeleteForUser(ctx context.Context, id, userID uuid.UUID) error {
+	n, err := s.q.DeleteAPIKeyForUser(ctx, dbgen.DeleteAPIKeyForUserParams{ID: id, UserID: userID})
+	if err != nil {
+		return fmt.Errorf("deleting API key %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("API key %s: %w", id, auth.ErrNotFound)
+	}
+	return nil
+}
+
+// ListWithOwner lists every key when userID is nil, or one user's keys,
+// newest first, each with its owner's address and name.
+func (s *Store) ListWithOwner(ctx context.Context, userID *uuid.UUID) ([]auth.APIKeyWithOwner, error) {
+	rows, err := s.q.ListAPIKeysWithOwner(ctx, database.NullUUID(userID))
+	if err != nil {
+		return nil, fmt.Errorf("listing API keys with owners: %w", err)
+	}
+	out := make([]auth.APIKeyWithOwner, len(rows))
+	for i, r := range rows {
+		out[i] = auth.APIKeyWithOwner{
+			APIKey: auth.APIKey{
+				ID:          r.ID,
+				Name:        r.Name,
+				HashedToken: r.HashedToken,
+				UserID:      r.UserID,
+				Scopes:      r.Scopes,
+				LastUsedAt:  database.TimePtr(r.LastUsedAt),
+				ExpiresAt:   database.TimePtr(r.ExpiresAt),
+				CreatedAt:   r.CreatedAt,
+			},
+			OwnerEmail: r.OwnerEmail,
+			OwnerName:  r.OwnerName,
+		}
+	}
+	return out, nil
+}
+
 // ── OAuthClientStore ─────────────────────────────────────────────────────────
 
 func (s *Store) CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error {

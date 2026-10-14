@@ -743,7 +743,10 @@ export function TicketDetailPage() {
                     onChange={(e) => statusMutation.mutate(e.target.value)}
                     disabled={statusMutation.isPending}
                   >
-                    {statuses.map((s) => (
+                    {/* An inactive status is retired: the server refuses a move
+                        into it, so it is not offered. The ticket's own status
+                        stays listed or the select would show the wrong one. */}
+                    {statuses.filter((s) => s.active || s.id === ticket.status_id).map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </Select>

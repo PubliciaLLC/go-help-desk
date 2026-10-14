@@ -32,7 +32,10 @@ func (s *Service) CreateCategory(ctx context.Context, name string, sortOrder int
 }
 
 func (s *Service) UpdateCategory(ctx context.Context, c Category) error {
-	if strings.TrimSpace(c.Name) == "" {
+	// Trimmed on update as on create, so the stored name is the one the
+	// handler reads back.
+	c.Name = strings.TrimSpace(c.Name)
+	if c.Name == "" {
 		return fmt.Errorf("category name: %w", ErrValidation)
 	}
 	return s.store.UpdateCategory(ctx, c)
@@ -72,7 +75,10 @@ func (s *Service) CreateType(ctx context.Context, categoryID uuid.UUID, name str
 }
 
 func (s *Service) UpdateType(ctx context.Context, tp Type) error {
-	if strings.TrimSpace(tp.Name) == "" {
+	// Trimmed on update as on create, so the stored name is the one the
+	// handler reads back.
+	tp.Name = strings.TrimSpace(tp.Name)
+	if tp.Name == "" {
 		return fmt.Errorf("type name: %w", ErrValidation)
 	}
 	return s.store.UpdateType(ctx, tp)
@@ -111,7 +117,10 @@ func (s *Service) CreateItem(ctx context.Context, typeID uuid.UUID, name string,
 }
 
 func (s *Service) UpdateItem(ctx context.Context, it Item) error {
-	if strings.TrimSpace(it.Name) == "" {
+	// Trimmed on update as on create, so the stored name is the one the
+	// handler reads back.
+	it.Name = strings.TrimSpace(it.Name)
+	if it.Name == "" {
 		return fmt.Errorf("item name: %w", ErrValidation)
 	}
 	return s.store.UpdateItem(ctx, it)

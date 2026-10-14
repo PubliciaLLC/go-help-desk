@@ -575,6 +575,11 @@ var (
 	// ErrLinkAlreadyExists (#195) and sla.ErrPolicyInUse, wrapped for the same
 	// reason. See #278.
 	ErrStatusNameTaken = errors.New("a status with this name already exists")
+	// ErrStatusInactive is returned by UpdateStatus for a move into a status an
+	// administrator has deactivated. Inactive means retired, for every role:
+	// tickets already in it stay and can move out. 409, like ErrStatusInUse:
+	// the status's state refuses, not the caller's permissions.
+	ErrStatusInactive = errors.New("status is inactive")
 	// ErrInvalidStatusName is returned by AddStatus and SaveStatus when the
 	// name is empty (after trimming). NOT NULL alone doesn't reject "", so an
 	// empty name was silently accepted before this check existed. See #278.

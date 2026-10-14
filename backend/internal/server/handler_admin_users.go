@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -29,7 +30,7 @@ type adminUserSummary struct {
 	DisplayName string    `json:"display_name"`
 	Role        user.Role `json:"role"`
 	Disabled    bool      `json:"disabled"`
-	AuthType    string    `json:"auth_type"` // "local", "saml", "both"
+	AuthType    string    `json:"auth_type"` // "local", "saml", "oidc", "both" (local+saml), or "+"-joined ("local+oidc", "saml+oidc", "local+saml+oidc")
 	MFAEnabled  bool      `json:"mfa_enabled"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -46,16 +47,29 @@ type adminUserDetail struct {
 	Groups       []group.Group `json:"groups"`
 }
 
+// authTypeOf names the ways an account can sign in, read off what it holds: a
+// password hash, a SAML subject, an OIDC subject. One method is its own name;
+// several are joined with "+" in that order. "both" is local plus SAML and
+// keeps the meaning it has always had. An account with nothing yet reads
+// "local", as before.
 func authTypeOf(u user.User) string {
-	hasLocal := u.PasswordHash != ""
-	hasSAML := u.SAMLSubject != ""
-	switch {
-	case hasLocal && hasSAML:
-		return "both"
-	case hasSAML:
-		return "saml"
-	default:
+	var methods []string
+	if u.PasswordHash != "" {
+		methods = append(methods, "local")
+	}
+	if u.SAMLSubject != "" {
+		methods = append(methods, "saml")
+	}
+	if u.OIDCSubject != "" {
+		methods = append(methods, "oidc")
+	}
+	switch got := strings.Join(methods, "+"); got {
+	case "":
 		return "local"
+	case "local+saml":
+		return "both"
+	default:
+		return got
 	}
 }
 
@@ -125,23 +139,32 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	groups, err := s.groups.ListGroupsForUser(r.Context(), id)
+	detail, err := s.adminUserDetailFor(r.Context(), u)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	passkeys, err := s.passkeyStore.CountForUser(r.Context(), id)
+	JSON(w, http.StatusOK, detail)
+}
+
+// adminUserDetailFor is the one place the detail view is built, so GET and
+// PATCH cannot disagree about what it carries (PATCH once answered
+// passkey_count: 0 for every account).
+func (s *Server) adminUserDetailFor(ctx context.Context, u user.User) (adminUserDetail, error) {
+	groups, err := s.groups.ListGroupsForUser(ctx, u.ID)
 	if err != nil {
-		handleError(w, err)
-		return
+		return adminUserDetail{}, err
 	}
-	detail := adminUserDetail{
+	passkeys, err := s.passkeyStore.CountForUser(ctx, u.ID)
+	if err != nil {
+		return adminUserDetail{}, err
+	}
+	return adminUserDetail{
 		adminUserSummary: toAdminSummary(u),
 		HasPassword:      u.PasswordHash != "",
 		PasskeyCount:     int(passkeys),
 		Groups:           groups,
-	}
-	JSON(w, http.StatusOK, detail)
+	}, nil
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -396,15 +419,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	groups, err := s.groups.ListGroupsForUser(r.Context(), id)
+	detail, err := s.adminUserDetailFor(r.Context(), u)
 	if err != nil {
 		handleError(w, err)
 		return
-	}
-	detail := adminUserDetail{
-		adminUserSummary: toAdminSummary(u),
-		HasPassword:      u.PasswordHash != "",
-		Groups:           groups,
 	}
 	JSON(w, http.StatusOK, detail)
 }

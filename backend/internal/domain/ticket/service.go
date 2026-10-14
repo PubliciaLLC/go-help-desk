@@ -694,6 +694,13 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 			}
 			forcedPolicy = p
 		}
+		// A retired status takes no new tickets, whoever asks. Decided on the
+		// locked row so "already in it" is the truth: a ticket sitting in an
+		// inactive status may be sent the status it holds (a PATCH that
+		// repeats it alongside another change), and may leave.
+		if !newStatus.Active && t.StatusID != newStatusID {
+			return fmt.Errorf("status %q: %w", newStatus.Name, ErrStatusInactive)
+		}
 		before = ticketMap(t)
 		oldStatusID = t.StatusID
 		t.StatusID = newStatusID

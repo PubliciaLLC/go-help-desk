@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { authTypeLabel } from '@/lib/authType'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { listUsers, createUser } from '@/api/admin'
@@ -134,7 +135,7 @@ export function UsersPage() {
                       <Badge variant={roleBadge(u.role) as never}>{u.role}</Badge>
                     </td>
                     <td className="px-4 py-3 text-gray-500 text-xs">
-                      {u.auth_type === 'saml' ? 'SSO' : u.auth_type === 'both' ? 'Local + SSO' : 'Local'}
+                      {authTypeLabel(u.auth_type)}
                     </td>
                     <td className="px-4 py-3 text-gray-500">{new Date(u.created_at).toLocaleDateString()}</td>
                   </tr>
