@@ -458,6 +458,11 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Read back, so the response carries whoever the routing assigned, as
+	// handleCreateFollowUp does. A failed read keeps the ticket as created.
+	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
+		t = fresh
+	}
 	JSON(w, http.StatusCreated, t)
 }
 
