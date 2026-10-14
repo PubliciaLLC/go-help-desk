@@ -31,16 +31,17 @@ var ErrRawGuestToken = errors.New("refusing to queue a raw guest token")
 // GuestToken is absent on purpose. TestOutboxRecord_CoversEveryEventField
 // fails when a field is added to Event without a decision here.
 type outboxRecord struct {
-	Type           notification.EventType `json:"type"`
-	TicketID       uuid.UUID              `json:"ticket_id"`
-	ActorID        *uuid.UUID             `json:"actor_id,omitempty"`
-	Payload        map[string]any         `json:"payload,omitempty"`
-	OccurredAt     time.Time              `json:"occurred_at"`
-	TrackingNumber string                 `json:"tracking_number,omitempty"`
-	Recipient      string                 `json:"recipient,omitempty"`
-	Subject        string                 `json:"subject,omitempty"`
-	StatusName     string                 `json:"status_name,omitempty"`
-	GuestLink      bool                   `json:"guest_link,omitempty"`
+	Type           notification.EventType    `json:"type"`
+	TicketID       uuid.UUID                 `json:"ticket_id"`
+	ActorID        *uuid.UUID                `json:"actor_id,omitempty"`
+	Payload        map[string]any            `json:"payload,omitempty"`
+	OccurredAt     time.Time                 `json:"occurred_at"`
+	TrackingNumber string                    `json:"tracking_number,omitempty"`
+	Recipient      string                    `json:"recipient,omitempty"`
+	Subject        string                    `json:"subject,omitempty"`
+	StatusName     string                    `json:"status_name,omitempty"`
+	GuestLink      bool                      `json:"guest_link,omitempty"`
+	Attrs          *notification.TicketAttrs `json:"attrs,omitempty"`
 	// TargetWebhook is set on the per-hook rows the webhook fan-out queues (#448).
 	TargetWebhook uuid.UUID `json:"webhook_id,omitzero"`
 	TargetURLHash string    `json:"webhook_url_sha256,omitempty"`
@@ -54,6 +55,7 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
 		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
 		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
+		Attrs:         ev.Attrs,
 		TargetWebhook: ev.TargetWebhook,
 		TargetURLHash: ev.TargetURLHash,
 	})
@@ -68,6 +70,7 @@ func decodeEvent(b []byte) (notification.Event, error) {
 		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
 		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
 		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
+		Attrs:         r.Attrs,
 		TargetWebhook: r.TargetWebhook,
 		TargetURLHash: r.TargetURLHash,
 	}, nil
@@ -347,7 +350,10 @@ func (w *Worker) deliver(ctx context.Context, row notification.OutboxRow) {
 	}
 	// fail redacts the raw error itself, so it is redacted exactly once on
 	// either path (redaction is not idempotent; see TestWorker_RedactsTheRawErrorExactlyOnce).
-	if row.Attempts >= w.MaxAttempts {
+	//
+	// A permanent error (a template that will not render) gets no retries:
+	// the eighth attempt would fail exactly as the first did, an hour later.
+	if errors.Is(err, ErrPermanent) || row.Attempts >= w.MaxAttempts {
 		w.fail(settle, row, err.Error())
 		return
 	}

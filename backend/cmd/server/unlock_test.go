@@ -204,8 +204,31 @@ func TestUnlock_RefusesWhatItCannotUnlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "$2a$10$keep", got.PasswordHash, "a deleted account had its password set")
 	require.False(t, got.MustChangePassword)
-	// TODO(#490): refuse an OAuth service account here once that field is on
-	// this branch's base, and test it.
+}
+
+// The identity an OAuth client acts as has no password to unlock and the
+// database would refuse one; say so, by name, and change nothing.
+func TestUnlock_RefusesAnOAuthClientsServiceAccount(t *testing.T) {
+	f := newUnlockFixture(t)
+	ctx := context.Background()
+	svc := user.User{ID: uuid.New(), Email: "oauth-" + uuid.NewString() + "@service-account.invalid",
+		DisplayName: "Nightly Export", Role: user.RoleStaff, ServiceAccount: true}
+	require.NoError(t, f.users.Create(ctx, svc))
+	// Create does not write the flag; set it as the OAuth client path does.
+	_, err := f.sqlDB.ExecContext(ctx, `UPDATE users SET service_account = true WHERE id = $1`, svc.ID)
+	require.NoError(t, err)
+
+	var out bytes.Buffer
+	err = unlock(ctx, svc.Email, &out)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "service account for OAuth client")
+	require.Contains(t, err.Error(), "Nightly Export")
+	require.Empty(t, out.String())
+
+	got, err := f.users.GetByIDAdmin(ctx, svc.ID)
+	require.NoError(t, err)
+	require.Empty(t, got.PasswordHash)
+	require.False(t, got.MustChangePassword)
 }
 
 // While SAML is on, only administrators may sign in with a password

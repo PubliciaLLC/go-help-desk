@@ -157,6 +157,7 @@ type OauthClient struct {
 	Name         string    `json:"name"`
 	Scopes       []string  `json:"scopes"`
 	CreatedAt    time.Time `json:"created_at"`
+	UserID       uuid.UUID `json:"user_id"`
 }
 
 type PendingRegistration struct {
@@ -324,6 +325,7 @@ type User struct {
 	OidcSubject        string       `json:"oidc_subject"`
 	MfaFailedAttempts  int32        `json:"mfa_failed_attempts"`
 	MfaLockedUntil     sql.NullTime `json:"mfa_locked_until"`
+	ServiceAccount     bool         `json:"service_account"`
 	MustChangePassword bool         `json:"must_change_password"`
 }
 
@@ -343,16 +345,17 @@ type WebauthnCredential struct {
 }
 
 type WebhookConfig struct {
-	ID                 uuid.UUID    `json:"id"`
-	Url                string       `json:"url"`
-	Events             []string     `json:"events"`
-	Secret             string       `json:"secret"`
-	Enabled            bool         `json:"enabled"`
-	CreatedAt          time.Time    `json:"created_at"`
-	PayloadFormat      string       `json:"payload_format"`
-	LastDeliveryAt     sql.NullTime `json:"last_delivery_at"`
-	LastDeliveryStatus int32        `json:"last_delivery_status"`
-	LastDeliveryError  string       `json:"last_delivery_error"`
+	ID                 uuid.UUID       `json:"id"`
+	Url                string          `json:"url"`
+	Events             []string        `json:"events"`
+	Secret             string          `json:"secret"`
+	Enabled            bool            `json:"enabled"`
+	CreatedAt          time.Time       `json:"created_at"`
+	PayloadFormat      string          `json:"payload_format"`
+	LastDeliveryAt     sql.NullTime    `json:"last_delivery_at"`
+	LastDeliveryStatus int32           `json:"last_delivery_status"`
+	LastDeliveryError  string          `json:"last_delivery_error"`
+	TicketFilter       json.RawMessage `json:"ticket_filter"`
 }
 
 type WebhookDelivery struct {

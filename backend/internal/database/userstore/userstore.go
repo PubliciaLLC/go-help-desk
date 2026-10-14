@@ -67,6 +67,17 @@ func (s *Store) GetByEmail(ctx context.Context, email string) (user.User, error)
 	return fromRow(row), nil
 }
 
+// ServiceAccountName returns the display name (the OAuth client's name) of the
+// service account with this address, or ErrNotFound. GetByEmail never finds one;
+// this exists so go-help-desk unlock can refuse it by name (#497).
+func (s *Store) ServiceAccountName(ctx context.Context, email string) (string, error) {
+	name, err := s.q.GetServiceAccountNameByEmail(ctx, email)
+	if err != nil {
+		return "", wrapNotFound(err, "service account by email", email)
+	}
+	return name, nil
+}
+
 func (s *Store) GetBySAMLSubject(ctx context.Context, subject string) (user.User, error) {
 	row, err := s.q.GetUserBySAMLSubject(ctx, subject)
 	if err != nil {
@@ -87,7 +98,7 @@ func (s *Store) GetByOIDCSubject(ctx context.Context, subject string) (user.User
 }
 
 func (s *Store) Update(ctx context.Context, u user.User) error {
-	return s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
+	err := s.q.UpdateUser(ctx, dbgen.UpdateUserParams{
 		ID:           u.ID,
 		Email:        u.Email,
 		DisplayName:  u.DisplayName,
@@ -99,6 +110,18 @@ func (s *Store) Update(ctx context.Context, u user.User) error {
 		OidcSubject:  u.OIDCSubject,
 		UpdatedAt:    time.Now(),
 	})
+	return inertViolation(err)
+}
+
+// inertViolation turns the database's refusal to give a service account a way
+// to sign in (users_service_account_inert) into user.ErrServiceAccount, so a
+// caller can answer it. Any other error, and nil, come back unchanged.
+func inertViolation(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23514" && pgErr.ConstraintName == "users_service_account_inert" {
+		return user.ErrServiceAccount
+	}
+	return err
 }
 
 func (s *Store) GetByIDAdmin(ctx context.Context, id uuid.UUID) (user.User, error) {
@@ -201,7 +224,7 @@ func (s *Store) GetMFALock(ctx context.Context, id uuid.UUID) (int, *time.Time, 
 func (s *Store) AdminSetPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	n, err := s.q.AdminSetPassword(ctx, dbgen.AdminSetPasswordParams{ID: id, PasswordHash: hash})
 	if err != nil {
-		return fmt.Errorf("setting password for user %s: %w", id, err)
+		return fmt.Errorf("setting password for user %s: %w", id, inertViolation(err))
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: user %s", ErrNotFound, id)
@@ -243,18 +266,23 @@ func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, 
 // an ILIKE pattern, so searching for "50%" finds "50%" rather than everyone.
 var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 
-func (s *Store) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]user.User, int64, error) {
+func (s *Store) SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]user.User, int64, error) {
 	pattern := likeEscaper.Replace(q)
+	svc := sql.NullBool{}
+	if serviceAccount != nil {
+		svc = sql.NullBool{Bool: *serviceAccount, Valid: true}
+	}
 	rows, err := s.q.SearchUsersAdmin(ctx, dbgen.SearchUsersAdminParams{
-		Role:       role,
-		Q:          pattern,
-		PageLimit:  int32(limit),
-		PageOffset: int32(offset),
+		Role:           role,
+		ServiceAccount: svc,
+		Q:              pattern,
+		PageLimit:      int32(limit),
+		PageOffset:     int32(offset),
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("searching users (admin): %w", err)
 	}
-	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern})
+	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern, ServiceAccount: svc})
 	if err != nil {
 		return nil, 0, fmt.Errorf("counting users (admin): %w", err)
 	}
@@ -320,7 +348,7 @@ func (s *Store) guardedWrite(write func() (uuid.UUID, error)) (bool, error) {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil
 	}
-	return false, fmt.Errorf("guarded write: %w", err)
+	return false, fmt.Errorf("guarded write: %w", inertViolation(err))
 }
 
 // isDeadlock reports whether Postgres killed this statement to break a lock
@@ -364,7 +392,7 @@ func (s *Store) EmailIsTaken(ctx context.Context, email string) (bool, error) {
 // name, so a slow caller cannot write a stale copy of everything else back.
 func (s *Store) SetPasswordHash(ctx context.Context, id uuid.UUID, hash string) error {
 	if err := s.q.SetUserPasswordHash(ctx, dbgen.SetUserPasswordHashParams{ID: id, PasswordHash: hash}); err != nil {
-		return fmt.Errorf("setting password: %w", err)
+		return fmt.Errorf("setting password: %w", inertViolation(err))
 	}
 	return nil
 }
@@ -381,7 +409,7 @@ func (s *Store) RehashPassword(ctx context.Context, id uuid.UUID, oldHash, newHa
 
 func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled bool) error {
 	if err := s.q.SetUserMFA(ctx, dbgen.SetUserMFAParams{ID: id, MfaSecret: secret, MfaEnabled: enabled}); err != nil {
-		return fmt.Errorf("setting MFA: %w", err)
+		return fmt.Errorf("setting MFA: %w", inertViolation(err))
 	}
 	return nil
 }
@@ -389,7 +417,7 @@ func (s *Store) SetMFA(ctx context.Context, id uuid.UUID, secret string, enabled
 func (s *Store) SetFirstMFA(ctx context.Context, id uuid.UUID, secret string) (bool, error) {
 	n, err := s.q.SetFirstUserMFA(ctx, dbgen.SetFirstUserMFAParams{ID: id, MfaSecret: secret})
 	if err != nil {
-		return false, fmt.Errorf("setting first MFA: %w", err)
+		return false, fmt.Errorf("setting first MFA: %w", inertViolation(err))
 	}
 	return n == 1, nil
 }
@@ -448,7 +476,7 @@ func (s *Store) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (boo
 
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
-	err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
+	n, err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
 		ID: id, Email: email, DisplayName: displayName,
 	})
 	if err != nil {
@@ -457,6 +485,11 @@ func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayN
 			return user.ErrEmailTaken
 		}
 		return fmt.Errorf("updating profile: %w", err)
+	}
+	// The statement skips deleted accounts, so no row means the account is
+	// gone or never existed, not that the write succeeded (#419).
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
 	}
 	return nil
 }
@@ -480,6 +513,10 @@ func (s *Store) CountAll(ctx context.Context) (int64, error) {
 	return s.q.CountAllUsers(ctx)
 }
 
+// FromRow is fromRow for a store that reads a user row as part of a larger
+// query (authstore's client-with-user lookup) and must not copy the mapping.
+func FromRow(r dbgen.User) user.User { return fromRow(r) }
+
 // fromRow converts a dbgen.User to domain user.User.
 // Unlock re-enables the account, clears its MFA lockout and installs hash as
 // its password, marked to be changed at the next sign-in. It is the account
@@ -498,17 +535,17 @@ func (s *Store) Unlock(ctx context.Context, id uuid.UUID, hash string) error {
 
 func fromRow(r dbgen.User) user.User {
 	return user.User{
-		ID:           r.ID,
-		Email:        r.Email,
-		DisplayName:  r.DisplayName,
-		Role:         user.Role(r.Role),
-		PasswordHash: r.PasswordHash,
-		MFASecret:    r.MfaSecret,
-		MFAEnabled:   r.MfaEnabled,
-		SAMLSubject:  r.SamlSubject,
-		OIDCSubject:  r.OidcSubject,
-		Disabled:     r.Disabled,
-
+		ID:                 r.ID,
+		Email:              r.Email,
+		DisplayName:        r.DisplayName,
+		Role:               user.Role(r.Role),
+		PasswordHash:       r.PasswordHash,
+		MFASecret:          r.MfaSecret,
+		MFAEnabled:         r.MfaEnabled,
+		SAMLSubject:        r.SamlSubject,
+		OIDCSubject:        r.OidcSubject,
+		Disabled:           r.Disabled,
+		ServiceAccount:     r.ServiceAccount,
 		MustChangePassword: r.MustChangePassword,
 		CreatedAt:          r.CreatedAt,
 		UpdatedAt:          r.UpdatedAt,

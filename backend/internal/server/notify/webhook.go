@@ -95,6 +95,9 @@ type TicketFacts struct {
 	TrackingNumber string
 	StatusName     string // the ticket's current status
 	Priority       string
+	// Attrs is what a webhook filter tests, as the ticket is now (#413). Nil
+	// when the source cannot say.
+	Attrs *notification.TicketAttrs
 }
 
 // EventSource reads the ticket fresh, so Redeliver can rebuild a chat message
@@ -135,6 +138,12 @@ var (
 
 	// ErrWebhookNotSubscribed: the hook no longer lists the delivery's event.
 	ErrWebhookNotSubscribed = errors.New("webhook is not subscribed to this event")
+	// ErrWebhookFilterExcludes: the hook's ticket filter, as it is now, does not
+	// admit the ticket the delivery was about (#413).
+	ErrWebhookFilterExcludes = errors.New("webhook filter does not admit this ticket")
+	// ErrWebhookFilterUnverifiable: the hook has a ticket filter and the ticket
+	// cannot be read (it was deleted), so the filter cannot be checked (#499).
+	ErrWebhookFilterUnverifiable = errors.New("webhook filter cannot be checked: the ticket cannot be read")
 )
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
@@ -231,6 +240,13 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		if !hookSubscribes(hook, event.Type) {
 			continue
 		}
+		// The ticket filter (#413) decides whether this hook fires for this
+		// event, and nothing else: the body below is built the same way for
+		// every hook. A filtered-out event is not a delivery, so nothing is
+		// recorded for the hook.
+		if !d.admits(ctx, hook, event) {
+			continue
+		}
 		body, err := bodyFor(hook, event, payload, d.baseURL)
 		if err != nil {
 			// Unknown payload_format: skip this hook rather than falling
@@ -249,6 +265,18 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		}(hook, body)
 	}
 	return nil
+}
+
+// admits reports whether the hook's ticket filter lets the event through. An
+// event with no attrs (queued before #413) is let through and logged: an extra
+// message beats a missed one.
+func (d *WebhookDispatcher) admits(ctx context.Context, hook authstore.WebhookConfig, ev notification.Event) bool {
+	admit, known := hook.Filter.Admits(ev.Attrs)
+	if !known {
+		d.log.WarnContext(ctx, "webhook filter not evaluated: event carries no ticket attributes; delivering",
+			"webhook_id", hook.ID, "event", ev.Type, "ticket_id", ev.TicketID)
+	}
+	return admit
 }
 
 // fanOut turns the webhook channel's one row for an event into one row per
@@ -275,6 +303,13 @@ func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) e
 	var first error
 	for _, hook := range hooks {
 		if !hookSubscribes(hook, ev.Type) {
+			continue
+		}
+		// The ticket filter (#413) is applied here first: a hook it turns away
+		// gets no row, so no delivery id, no retry and no history entry. A row
+		// that was queued is judged again at every attempt (deliverQueued) and
+		// by Redeliver, against the filter as it is then.
+		if !d.admits(ctx, hook, ev) {
 			continue
 		}
 		perHook := rowFor(ev, hook)
@@ -324,6 +359,17 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	}
 	if ev.TargetURLHash != urlHash(hook.URL) {
 		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's URL changed since it was queued",
+			"webhook_id", hook.ID, "event", ev.Type)
+		return nil
+	}
+	// The ticket filter as it is now (#413), against the attributes the row
+	// took from the ticket when the event was raised. An administrator who
+	// tightened the filter has stopped what is still queued, retries included.
+	// Settled exactly like a URL change above: no history entry, no failure. A
+	// row with no attributes (queued before #413) cannot be judged and is sent;
+	// admits logs that.
+	if !d.admits(ctx, hook, ev) {
+		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's filter no longer admits the ticket",
 			"webhook_id", hook.ID, "event", ev.Type)
 		return nil
 	}
@@ -431,10 +477,36 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	if !hookSubscribes(hook, ev.Type) {
 		return ErrWebhookNotSubscribed
 	}
+	// The ticket as it is now, when something needs it: the filter, for its
+	// attributes (the kept copy has none by design), and a chat or ITSM message,
+	// for its content. A raw hook with no filter reads nothing. A hook with a
+	// filter whose ticket cannot be read (gone, or no source wired) is refused:
+	// the filter cannot be checked, and a replay is something an administrator
+	// asked for just now, so it is told why (#499). A ticket that is read but
+	// carries no attributes (a source that cannot say) still fails open in
+	// admits, like a queued row without them; the production source always
+	// fills them. An unfiltered hook is replayed whether or not the ticket
+	// exists.
+	var facts TicketFacts
+	var found bool
+	if (!hook.Filter.IsEmpty() || !isRaw(hook)) && d.queue.Source != nil {
+		if facts, found, err = d.queue.Source.TicketFacts(ctx, ev.TicketID); err != nil {
+			return fmt.Errorf("reading ticket for redelivery: %w", err)
+		}
+	}
+	if !found && !hook.Filter.IsEmpty() {
+		return ErrWebhookFilterUnverifiable
+	}
+	if found {
+		ev.Attrs = facts.Attrs // also what the queued row is re-checked with
+	}
+	if !d.admits(ctx, hook, ev) {
+		return ErrWebhookFilterExcludes
+	}
 	// A chat or ITSM message is rebuilt from the ticket as it is now, because the
 	// kept copy has no content. A raw hook gets the kept copy as it is.
-	if !isRaw(hook) {
-		if ev, err = d.rebuild(ctx, ev); err != nil {
+	if !isRaw(hook) && found {
+		if ev, err = d.rebuild(ctx, ev, facts); err != nil {
 			return err
 		}
 	}
@@ -453,22 +525,13 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	return nil
 }
 
-// rebuild fills a kept event with the ticket as it is now: the current subject,
-// tracking number and status name, the priority of a creation, and the text of
-// the reply it announced only if that reply still exists and is public. A note
-// never gets text, and its reply is not even looked up. A ticket that is gone
-// leaves the event as it is, so the message is its headline only.
-func (d *WebhookDispatcher) rebuild(ctx context.Context, ev notification.Event) (notification.Event, error) {
-	if d.queue.Source == nil {
-		return ev, nil
-	}
-	facts, found, err := d.queue.Source.TicketFacts(ctx, ev.TicketID)
-	if err != nil {
-		return ev, fmt.Errorf("reading ticket for redelivery: %w", err)
-	}
-	if !found {
-		return ev, nil
-	}
+// rebuild fills a kept event with the ticket as it is now (facts): the current
+// subject, tracking number and status name, the priority of a creation, and the
+// text of the reply it announced only if that reply still exists and is public.
+// A note never gets text, and its reply is not even looked up. A ticket that is
+// gone is not rebuilt (the caller skips this), so the message is its headline
+// only.
+func (d *WebhookDispatcher) rebuild(ctx context.Context, ev notification.Event, facts TicketFacts) (notification.Event, error) {
 	ev.Subject, ev.TrackingNumber, ev.StatusName = facts.Subject, facts.TrackingNumber, facts.StatusName
 	ev.Payload = maps.Clone(ev.Payload)
 	if ev.Payload == nil {

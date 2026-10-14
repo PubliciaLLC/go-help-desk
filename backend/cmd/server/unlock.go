@@ -77,16 +77,21 @@ func unlock(ctx context.Context, email string, out io.Writer) error {
 	// GetByEmail hides deleted accounts and matches exactly, which is the
 	// refusal wanted: an unknown or deleted address is an error, not a guess.
 	base := dbgen.New(sqlDB)
-	u, err := userstore.New(base).GetByEmail(ctx, email)
+	lookup := userstore.New(base)
+	u, err := lookup.GetByEmail(ctx, email)
 	if err != nil {
+		// GetByEmail hides an OAuth client's service account (#490), so a
+		// miss may be one. It has no password to unlock and the database
+		// would refuse one, so say what it is rather than "no such account".
+		if name, svcErr := lookup.ServiceAccountName(ctx, email); svcErr == nil {
+			return fmt.Errorf("this is the service account for OAuth client %q; manage it through the client", name)
+		}
 		return fmt.Errorf("no account with the address %q: %w", email, err)
 	}
 	// Read now so the operator can be told, below, that the password will not
 	// get this account in. The unlock still goes ahead: it is still a reset of
 	// everything else.
 	localAllowed := user.IsLocalAuthAllowed(u, admin.NewService(adminstore.New(base)).SAMLEnabled(ctx))
-	// TODO(#490): refuse an OAuth service account here ("service accounts have
-	// no password to unlock") once that field exists on this branch's base.
 
 	password, err := generatePassword()
 	if err != nil {

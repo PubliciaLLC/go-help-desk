@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
@@ -308,6 +309,38 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Signup and guest submission both end in an email: the verification link,
+	// the guest's ticket link. With email off they look like they work and
+	// deliver nothing, so turning either ON is refused (#456).
+	//
+	// Compared against the stored value, not just the incoming one: the
+	// settings page PATCHes the whole object, so an install that already has
+	// either on with email off would otherwise get a 400 on every unrelated
+	// save. Those installs are warned (security-warnings), not switched off.
+	if !s.cfg.EmailEnabled() {
+		for _, key := range []string{admin.KeySelfSignupEnabled, admin.KeyGuestSubmissionEnabled} {
+			raw, ok := body[key]
+			if !ok {
+				continue
+			}
+			// Anything that is not a boolean is not "turning it on"; it keeps
+			// whatever treatment it had before (guest_submission_enabled is
+			// already refused above, self_signup_enabled is stored as sent).
+			var want bool
+			if json.Unmarshal(raw, &want) != nil {
+				continue
+			}
+			if want {
+				if already, _ := s.adminSvc.GetBool(r.Context(), key); !already {
+					Error(w, http.StatusBadRequest, "email_required",
+						key+" cannot be turned on while email is not configured: "+
+							"it sends an email the person needs. Set SMTP_HOST and SMTP_FROM first")
+					return
+				}
+			}
+		}
+	}
+
 	// Validate before writing anything. ticket.go documents the prefix as
 	// "enforced where the setting is saved rather than where a ticket is
 	// created" — nothing enforced it, so an invalid prefix was accepted with a
@@ -512,6 +545,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Turning ticket scope on shows what it will do to OAuth clients (#420).
+	// A client sees what its service user's groups cover, so one whose user is
+	// in no group goes from seeing what it saw before to seeing nothing, and
+	// nothing else would say so. It warns and does not refuse: the setting is
+	// the administrator's to turn on. The Security warnings banner keeps
+	// saying it until every client has a group or is switched off.
+	scopeWarning, err := s.scopeEnforcementWarning(r.Context(), body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	warning = joinWarnings(warning, scopeWarning)
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
@@ -524,6 +570,47 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// scopeEnforcementWarning names the OAuth clients that will see no tickets once
+// this PATCH has turned ticket scope enforcement on. Empty unless the body
+// switches it from off to on: turning it on again repeats nothing, and turning
+// it off warns of nothing.
+func (s *Server) scopeEnforcementWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
+	raw, ok := body[admin.KeyTicketScopeEnforced]
+	if !ok {
+		return "", nil
+	}
+	var on bool
+	if err := json.Unmarshal(raw, &on); err != nil || !on || s.adminSvc.TicketScopeEnforced(ctx) {
+		return "", nil
+	}
+	names, err := s.authStore.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return "", err
+	}
+	return scopeWarningFor(names), nil
+}
+
+// scopeWarningFor is the sentence for a list of client names; empty for none.
+// Shared with the Security warnings banner's wording so they cannot drift.
+func scopeWarningFor(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return "Ticket scope is now enforced. These OAuth clients will see no tickets until their " +
+		"service user is added to a group: " + strings.Join(names, ", ") + "."
+}
+
+// joinWarnings puts two warnings in one message; either may be empty.
+func joinWarnings(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + " " + b
 }
 
 // autoAssignRefusal is a verdict on the request: the id is wrong, or names
@@ -580,6 +667,11 @@ func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.Ra
 			}
 			if err != nil {
 				return fmt.Errorf("checking auto_assign_user_ids: %w", err)
+			}
+			if u.ServiceAccount {
+				// Assignment refuses a service user, so round-robin would skip it
+				// forever (#420).
+				return refusef("auto_assign_user_ids: %s is a service account, not a staff member", u.DisplayName)
 			}
 			if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
 				return refusef("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
@@ -748,6 +840,85 @@ type securityWarnings struct {
 	// each read, not remembered from startup, so it clears the moment the
 	// directory is fixed.
 	AttachmentStorage storageStatus `json:"attachment_storage"`
+
+	// OAuthClientsWithoutGroups names the switched-on OAuth clients that see no
+	// tickets because ticket scope is enforced and their service user is in no
+	// group (#420). Always an array, empty when scope is not enforced. It stays
+	// until every such client has a group or is disabled, which is why it is a
+	// banner and not only the sentence on the save that turned scope on.
+	OAuthClientsWithoutGroups []string `json:"oauth_clients_without_groups"`
+
+	// ReopenTarget says whether the configured reopen target status has been
+	// deactivated. Reopened tickets go to New meanwhile.
+	ReopenTarget reopenTargetStatus `json:"reopen_target"`
+
+	// Passkeys says whether passkeys can be used on this instance (#494).
+	// They cannot when BASE_URL is an IP address, a single-label host or
+	// non-ASCII, because a passkey is bound to a domain name.
+	Passkeys passkeyStatus `json:"passkeys"`
+
+	// Email says whether mail can be sent and whether it is being delivered
+	// (#455, #456). Additive.
+	Email emailStatus `json:"email"`
+}
+
+type reopenTargetStatus struct {
+	// Inactive is true when the setting names an existing, deactivated status.
+	Inactive bool `json:"inactive"`
+	// Name is the configured status name, set whenever Inactive is.
+	Name string `json:"name,omitempty"`
+}
+
+// reopenTargetInactive reports the configured reopen target when it names a
+// deactivated status. A name that matches nothing is not reported here: it
+// already falls back to New and nobody picked a retired status.
+func (s *Server) reopenTargetInactive(ctx context.Context) (reopenTargetStatus, error) {
+	if s.reopenTargetCheck != nil {
+		return s.reopenTargetCheck(ctx)
+	}
+	statuses, err := s.tickets.ListStatuses(ctx)
+	if err != nil {
+		return reopenTargetStatus{}, err
+	}
+	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	for _, st := range statuses {
+		if st.Name == want && !st.Active {
+			return reopenTargetStatus{Inactive: true, Name: want}, nil
+		}
+	}
+	return reopenTargetStatus{}, nil
+}
+
+// reopenTargetWarning is the sentence for an inactive target, shared by the
+// security warnings banner and the status response.
+func reopenTargetWarning(name string) string {
+	return "The reopen target status \"" + name + "\" is inactive, so reopened tickets are going to \"New\" instead. " +
+		"Pick an active status under Settings, Ticket lifecycle, Reopen target status."
+}
+
+type passkeyStatus struct {
+	Available bool `json:"available"`
+	// Reason is why not, in the library's words. Empty when Available.
+	Reason string `json:"reason"`
+}
+
+// emailStatus never carries a credential or an address: names of unset
+// variables, two flags, and the worker's already-redacted error text.
+type emailStatus struct {
+	// Enabled is false until both SMTP_HOST and SMTP_FROM are set.
+	Enabled bool `json:"enabled"`
+	// Missing names the unset variables while Enabled is false.
+	Missing []string `json:"missing"`
+	// SignupWithoutEmail and GuestSubmissionWithoutEmail say a feature that
+	// sends email is on although email is not configured. Refused when
+	// turning it on; reported for installs that already had it on.
+	SignupWithoutEmail          bool `json:"signup_without_email"`
+	GuestSubmissionWithoutEmail bool `json:"guest_submission_without_email"`
+	// Failing is true while email rows are retrying after an error or gave up
+	// in the last day; LastError is the newest error text.
+	Failing      bool   `json:"failing"`
+	FailingCount int    `json:"failing_count"`
+	LastError    string `json:"last_error"`
 }
 
 type storageStatus struct {
@@ -793,11 +964,66 @@ type scanStatus struct {
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
 	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
+	unscoped := []string{}
+	if s.adminSvc.TicketScopeEnforced(r.Context()) {
+		names, err := s.authStore.ListOAuthClientsWithoutGroups(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if names != nil {
+			unscoped = names
+		}
+	}
+	// An unreadable status list must not hide the other warnings: log it and
+	// report no problem with the reopen target.
+	reopen, err := s.reopenTargetInactive(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "checking the reopen target for the security warnings failed", "error", err)
+		reopen = reopenTargetStatus{}
+	}
 	JSON(w, http.StatusOK, securityWarnings{
-		InsecureSecrets:    s.cfg.InsecureSecrets(),
-		AttachmentScanning: s.scanStatus(r.Context()),
-		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
+		ReopenTarget:              reopen,
+		InsecureSecrets:           s.cfg.InsecureSecrets(),
+		AttachmentScanning:        s.scanStatus(r.Context()),
+		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
+		OAuthClientsWithoutGroups: unscoped,
+		Passkeys:                  s.passkeyStatus(),
+		Email:                     s.emailStatus(r.Context()),
 	})
+}
+
+func (s *Server) passkeyStatus() passkeyStatus {
+	if s.passkeysAvailable() {
+		return passkeyStatus{Available: true}
+	}
+	reason := s.passkeysReason
+	if reason == "" {
+		reason = "BASE_URL cannot be used as a passkey domain"
+	}
+	return passkeyStatus{Reason: reason}
+}
+
+func (s *Server) emailStatus(ctx context.Context) emailStatus {
+	st := emailStatus{Enabled: s.cfg.EmailEnabled(), Missing: []string{}}
+	if s.cfg.SMTPHost == "" {
+		st.Missing = append(st.Missing, "SMTP_HOST")
+	}
+	if s.cfg.SMTPFrom == "" {
+		st.Missing = append(st.Missing, "SMTP_FROM")
+	}
+	if !st.Enabled {
+		st.SignupWithoutEmail = s.adminSvc.SelfSignupEnabled(ctx)
+		st.GuestSubmissionWithoutEmail = s.adminSvc.GuestSubmissionEnabled(ctx)
+	}
+	if s.emailHealth != nil {
+		// A failed read reports nothing wrong: a warning that fires on a
+		// database hiccup is worse than one that stays quiet.
+		if h, err := s.emailHealth.EmailHealth(ctx); err == nil && h.Failing > 0 {
+			st.Failing, st.FailingCount, st.LastError = true, h.Failing, h.LastError
+		}
+	}
+	return st
 }
 
 // scanStatus pings the scanner rather than reporting what the settings say.

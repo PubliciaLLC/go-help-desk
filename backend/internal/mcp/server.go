@@ -148,13 +148,17 @@ func assignArgumentProblem(args map[string]any) (string, bool) {
 // hasUserIdentity reports whether this caller is somebody, rather than merely
 // something.
 //
-// An OAuth client actor carries no user id. Every write tool records who
-// acted — a ticket's reporter, a reply's author, an audit entry, a
-// status-history row — and all of those are foreign keys to users, so a nil
-// id reached the insert and came back as a constraint violation: the caller
-// was told "create ticket failed" and the operator's log filled with table
-// and column names. create_ticket also took a tracking number from the
-// sequence first, so every attempt left a hole in the numbering.
+// Every write tool records who acted — a ticket's reporter, a reply's author,
+// an audit entry, a status-history row — and all of those are foreign keys to
+// users, so an actor with a nil id reached the insert and came back as a
+// constraint violation: the caller was told "create ticket failed" and the
+// operator's log filled with table and column names. create_ticket also took a
+// tracking number from the sequence first, so every attempt left a hole in the
+// numbering.
+//
+// An OAuth client used to be that actor. Since #420 it acts as its service
+// user and carries that user's id, so this passes for it; it stays as the
+// refusal for any credential that still arrives without one.
 //
 // The REST API refuses the same thing plainly. This is that rule on the other
 // surface, which is the point of there being one rule — the transport does not
@@ -372,7 +376,7 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"add_reply",
-		mcpgo.WithDescription("Add a reply to a ticket"),
+		mcpgo.WithDescription("Add a reply to a ticket. A public reply emails the requester; an internal note does not."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("Ticket UUID")),
 		mcpgo.WithString("body", mcpgo.Required(), mcpgo.Description("Reply body")),
 		mcpgo.WithBoolean("internal", mcpgo.Description("Internal note, not visible to the reporter (default false)")),
@@ -600,13 +604,14 @@ func (s *Server) handleAddReply(ctx context.Context, req mcpgo.CallToolRequest) 
 
 	isInternal, _ := args["internal"].(bool)
 
-	const (
-		reporterEmail    = "" // no address looked up here, so no mail is sent
-		reopenWindowDays = 7
-	)
+	const reopenWindowDays = 7
 	// An internal note is a note to colleagues, so it never notifies the
-	// reporter; a public reply does.
+	// reporter; a public reply does, to the same address the REST reply uses.
 	notifyRequester := !isInternal
+	var reporterEmail string
+	if notifyRequester {
+		reporterEmail = s.tickets.ReplyRecipient(ctx, t, actor)
+	}
 
 	// reopenTargetStatusID is only consulted when a RoleUser replies to a
 	// Resolved ticket, and add_reply is staff-and-admin only — so the

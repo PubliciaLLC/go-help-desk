@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { api, extractErrorCode } from './client'
-import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
+import type { User, AdminUser, Group, Category, TicketType, TicketItem, Status, APIKey, WebhookConfig, WebhookDeliveryRecord, WebhookFilter, WebhookPayloadFormat, Tag, CannedResponse, FieldDef, Assignment, ScopeType, SLAPolicy, ScopeInfo, OAuthClient, AdminAuditListResponse } from './types'
 import type { Role } from './types'
 
 // DELETE where a not_found 404 means the row is already gone (#418). That is the
@@ -48,11 +48,13 @@ export const USERS_PER_PAGE = 50
  */
 export async function listUsersPage(
   page: number,
-  filters: { q?: string; role?: Role | '' } = {},
+  filters: { q?: string; role?: Role | ''; serviceAccount?: boolean } = {},
 ): Promise<{ users: AdminUser[]; total: number }> {
-  const params: Record<string, string | number> = { page, per_page: USERS_PER_PAGE }
+  const params: Record<string, string | number | boolean> = { page, per_page: USERS_PER_PAGE }
   if (filters.q) params.q = filters.q
   if (filters.role) params.role = filters.role
+  // true is only service accounts, false only people; absent is everyone (#420).
+  if (filters.serviceAccount !== undefined) params.service_account = filters.serviceAccount
   const res = await api.get<AdminUser[]>('/admin/users', { params })
   const total = Number(res.headers?.['x-total-count'])
   return { users: res.data, total: Number.isFinite(total) ? total : res.data.length }
@@ -309,8 +311,14 @@ export async function getSettings(): Promise<Record<string, unknown>> {
   return res.data
 }
 
-export async function updateSettings(patch: Record<string, unknown>): Promise<void> {
-  await api.patch('/admin/settings', patch)
+/**
+ * A save can succeed with something the administrator should read: the server
+ * answers 200 {"warning"} instead of 204 (an SSO setting that locks people out,
+ * or ticket scope turned on while an OAuth client has no group, #420).
+ */
+export async function updateSettings(patch: Record<string, unknown>): Promise<{ warning?: string }> {
+  const res = await api.patch<{ warning?: string } | undefined>('/admin/settings', patch)
+  return { warning: res.data?.warning }
 }
 
 // ── API Keys ─────────────────────────────────────────────────────────────────
@@ -424,6 +432,7 @@ export async function createWebhook(input: {
   secret?: string
   payload_format?: WebhookPayloadFormat
   enabled?: boolean
+  filter?: WebhookFilter
 }): Promise<WebhookConfig> {
   const res = await api.post<WebhookConfig>('/admin/webhooks', input)
   return res.data
@@ -431,7 +440,7 @@ export async function createWebhook(input: {
 
 export async function updateWebhook(
   id: string,
-  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format'>> & {
+  patch: Partial<Pick<WebhookConfig, 'url' | 'events' | 'enabled' | 'payload_format' | 'filter'>> & {
     // Write-only: sent to replace the stored secret, never returned.
     secret?: string
   }
@@ -644,6 +653,47 @@ export interface SecurityWarnings {
    * a server that predates the field read as healthy.
    */
   attachment_storage?: { writable: boolean; problem: string }
+
+  /**
+   * Names of OAuth clients that see no tickets because ticket scope is on and
+   * their service user is in no group (#420). Optional so a server that
+   * predates it reads as none.
+   */
+  oauth_clients_without_groups?: string[]
+
+  /**
+   * The configured reopen target status has been deactivated, so reopened
+   * tickets go to New instead. Optional so an older server reads as healthy.
+   */
+  reopen_target?: { inactive: boolean; name?: string }
+
+  /**
+   * Whether passkeys can be used (#494). They cannot when BASE_URL is an IP
+   * address, a single-label host or non-ASCII. Optional so a server that
+   * predates the field reads as fine.
+   */
+  passkeys?: { available: boolean; reason: string }
+
+  /**
+   * Whether email can be sent and is being delivered (#455, #456). Optional so
+   * older fixtures and a server that predates it read as healthy.
+   */
+  email?: EmailWarning
+}
+
+export interface EmailWarning {
+  /** False until both SMTP_HOST and SMTP_FROM are set. */
+  enabled: boolean
+  /** Which of SMTP_HOST and SMTP_FROM is unset. */
+  missing: string[]
+  /** A feature that emails the person is on although email is off. */
+  signup_without_email: boolean
+  guest_submission_without_email: boolean
+  /** Email is retrying after an error, or failed within the last day. */
+  failing: boolean
+  failing_count: number
+  /** Newest error, email addresses already replaced by [address]. */
+  last_error: string
 }
 
 export interface AttachmentScanningWarning {

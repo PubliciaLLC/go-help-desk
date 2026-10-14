@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/webauthn"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -28,11 +29,36 @@ import (
 // enrolment sits there, and the mechanism
 // TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor pins.
 
+// passkeysAvailable reports whether the ceremony service exists. It is nil
+// when BASE_URL cannot be a relying-party id (#494).
+func (s *Server) passkeysAvailable() bool { return s.passkeys != nil }
+
+// requirePasskeys answers 503 on every route that would use the ceremony
+// service while passkeys are unavailable, so none of them can dereference the
+// nil service. It runs before the handler's own checks on purpose: nothing
+// about the request changes what is true of the instance.
+func (s *Server) requirePasskeys(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.passkeysAvailable() {
+			Error(w, http.StatusServiceUnavailable, "passkeys_unavailable",
+				"passkeys are not available on this instance: BASE_URL must be a domain name (or localhost)")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // accountFor assembles what the ceremonies need to know about a person.
 func (s *Server) accountFor(r *http.Request, id uuid.UUID) (webauthn.Account, error) {
 	u, err := s.users.GetByID(r.Context(), id)
 	if err != nil {
 		return webauthn.Account{}, err
+	}
+	// A service account never signs in, so it never holds a passkey (#420).
+	// No session for one can exist; this keeps that from being the only
+	// thing between it and a registration.
+	if u.ServiceAccount {
+		return webauthn.Account{}, user.ErrServiceAccount
 	}
 	creds, err := s.passkeyStore.ListByUser(r.Context(), id)
 	if err != nil {
@@ -143,6 +169,9 @@ func (s *Server) alreadyProtected(r *http.Request, id uuid.UUID) (bool, error) {
 	if u.MFAEnabled {
 		return true, nil
 	}
+	// Counted even while passkeys are unavailable (#494): the key cannot be
+	// checked, but ignoring it would let a password alone enrol TOTP on an
+	// account that chose a stronger factor.
 	n, err := s.passkeyStore.CountForUser(r.Context(), id)
 	if err != nil {
 		return false, err

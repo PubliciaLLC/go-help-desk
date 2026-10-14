@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"math"
 	"net/http"
@@ -30,10 +32,14 @@ type adminUserSummary struct {
 	DisplayName string    `json:"display_name"`
 	Role        user.Role `json:"role"`
 	Disabled    bool      `json:"disabled"`
-	AuthType    string    `json:"auth_type"` // "local", "saml", "both"
-	MFAEnabled  bool      `json:"mfa_enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	AuthType    string    `json:"auth_type"` // "local", "saml", "oidc", "both" (local+saml), or "+"-joined ("local+oidc", "saml+oidc", "local+saml+oidc"); "service" for a service account
+	// ServiceAccount: the identity an OAuth client acts as. Listed here so an
+	// administrator can rename it, give it groups and switch it off, and
+	// badged "Service" because it can never sign in.
+	ServiceAccount bool      `json:"service_account"`
+	MFAEnabled     bool      `json:"mfa_enabled"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // adminUserDetail extends the summary with group memberships.
@@ -47,30 +53,49 @@ type adminUserDetail struct {
 	Groups       []group.Group `json:"groups"`
 }
 
+// authTypeOf names the ways an account can sign in, read off what it holds: a
+// password hash, a SAML subject, an OIDC subject. One method is its own name;
+// several are joined with "+" in that order. "both" is local plus SAML and
+// keeps the meaning it has always had. An account with nothing yet reads
+// "local", as before.
 func authTypeOf(u user.User) string {
-	hasLocal := u.PasswordHash != ""
-	hasSAML := u.SAMLSubject != ""
-	switch {
-	case hasLocal && hasSAML:
-		return "both"
-	case hasSAML:
-		return "saml"
-	default:
+	// First, before anything is read off the row: a service account is none of
+	// the sign-in methods below and never signs in (#420).
+	if u.ServiceAccount {
+		return "service"
+	}
+	var methods []string
+	if u.PasswordHash != "" {
+		methods = append(methods, "local")
+	}
+	if u.SAMLSubject != "" {
+		methods = append(methods, "saml")
+	}
+	if u.OIDCSubject != "" {
+		methods = append(methods, "oidc")
+	}
+	switch got := strings.Join(methods, "+"); got {
+	case "":
 		return "local"
+	case "local+saml":
+		return "both"
+	default:
+		return got
 	}
 }
 
 func toAdminSummary(u user.User) adminUserSummary {
 	return adminUserSummary{
-		ID:          u.ID,
-		Email:       u.Email,
-		DisplayName: u.DisplayName,
-		Role:        u.Role,
-		Disabled:    u.Disabled,
-		AuthType:    authTypeOf(u),
-		MFAEnabled:  u.MFAEnabled,
-		CreatedAt:   u.CreatedAt,
-		UpdatedAt:   u.UpdatedAt,
+		ID:             u.ID,
+		Email:          u.Email,
+		DisplayName:    u.DisplayName,
+		Role:           u.Role,
+		Disabled:       u.Disabled,
+		AuthType:       authTypeOf(u),
+		ServiceAccount: u.ServiceAccount,
+		MFAEnabled:     u.MFAEnabled,
+		CreatedAt:      u.CreatedAt,
+		UpdatedAt:      u.UpdatedAt,
 	}
 }
 
@@ -130,13 +155,26 @@ func (s *Server) handleListUsersPaged(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// service_account=true is only service users, false only people, absent (or
+	// empty) everyone. Paged mode only, like q and role.
+	var serviceAccount *bool
+	switch v := q.Get("service_account"); v {
+	case "":
+	case "true", "false":
+		b := v == "true"
+		serviceAccount = &b
+	default:
+		Error(w, http.StatusBadRequest, "bad_request", "service_account must be true or false")
+		return
+	}
+
 	// The store takes an int32. A page number big enough to overflow it is
 	// past the end of any table, so it gets the same empty answer.
 	offset := math.MaxInt32
 	if page-1 <= (math.MaxInt32-perPage)/perPage {
 		offset = (page - 1) * perPage
 	}
-	users, total, err := s.users.SearchAdmin(r.Context(), role, strings.TrimSpace(q.Get("q")), perPage, offset)
+	users, total, err := s.users.SearchAdmin(r.Context(), role, strings.TrimSpace(q.Get("q")), serviceAccount, perPage, offset)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -188,23 +226,32 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	groups, err := s.groups.ListGroupsForUser(r.Context(), id)
+	detail, err := s.adminUserDetailFor(r.Context(), u)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	passkeys, err := s.passkeyStore.CountForUser(r.Context(), id)
+	JSON(w, http.StatusOK, detail)
+}
+
+// adminUserDetailFor is the one place the detail view is built, so GET and
+// PATCH cannot disagree about what it carries (PATCH once answered
+// passkey_count: 0 for every account).
+func (s *Server) adminUserDetailFor(ctx context.Context, u user.User) (adminUserDetail, error) {
+	groups, err := s.groups.ListGroupsForUser(ctx, u.ID)
 	if err != nil {
-		handleError(w, err)
-		return
+		return adminUserDetail{}, err
 	}
-	detail := adminUserDetail{
+	passkeys, err := s.passkeyStore.CountForUser(ctx, u.ID)
+	if err != nil {
+		return adminUserDetail{}, err
+	}
+	return adminUserDetail{
 		adminUserSummary: toAdminSummary(u),
 		HasPassword:      u.PasswordHash != "",
 		PasskeyCount:     int(passkeys),
 		Groups:           groups,
-	}
-	JSON(w, http.StatusOK, detail)
+	}, nil
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
@@ -225,6 +272,30 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Every field is checked before the first write (#419). The steps below
+	// each commit on their own, so a request refused halfway — a disable
+	// followed by an email that does not parse — had already disabled the
+	// account and ended its sessions, and still answered 400.
+	//
+	// Before the machine check as well, so a session and an API key meet the
+	// same checks in the same order: a malformed body is a 400 to both.
+	if body.Role != nil && !user.Role(*body.Role).Valid() {
+		handleError(w, fmt.Errorf("%w: invalid role", user.ErrValidation))
+		return
+	}
+	if body.Email != nil {
+		if _, err := user.ValidateEmail(*body.Email); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	if body.DisplayName != nil {
+		if _, err := user.ValidateDisplayName(*body.DisplayName); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Administrators are managed by administrators, not by automation.
 	//
 	// Before any mutation, because the disable below used to be applied before
@@ -243,6 +314,57 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		if body.Role != nil && user.Role(*body.Role) == user.RoleAdmin {
 			denyMachineAdminTakeover(w, r, "promote a user to administrator")
 			return
+		}
+	}
+
+	// A deleted account is not there to change. Asked before the first write
+	// for the same reason as the validation above: the steps below would
+	// otherwise reach the deleted row one at a time, applying some and then
+	// answering 404 for the rest.
+	target, err := s.users.GetByIDAdmin(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if target.DeletedAt != nil {
+		handleError(w, fmt.Errorf("user %s: %w", id, user.ErrNotFound))
+		return
+	}
+
+	// The two refusals that depend on what the database holds, asked now for
+	// the same reason: an MFA reset followed by a refused demotion had already
+	// cleared the factors, and a disable followed by a taken address had
+	// already disabled the account. These are checks, not locks, so a request
+	// that loses a race still reaches the guarded statements below, which
+	// refuse on their own; this only closes the ordinary case.
+	if target.Role == user.RoleAdmin && !target.Disabled &&
+		((body.Disabled != nil && *body.Disabled) || (body.Role != nil && user.Role(*body.Role) != user.RoleAdmin)) {
+		admins, err := s.users.ListActiveAdmins(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if len(admins) <= 1 {
+			handleError(w, user.ErrLastAdmin)
+			return
+		}
+	}
+	if body.Email != nil {
+		addr, err := user.ValidateEmail(*body.Email)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if addr != strings.ToLower(target.Email) {
+			taken, err := s.users.EmailIsTaken(r.Context(), addr)
+			if err != nil {
+				handleError(w, err)
+				return
+			}
+			if taken {
+				handleError(w, user.ErrEmailTaken)
+				return
+			}
 		}
 	}
 
@@ -384,15 +506,10 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	groups, err := s.groups.ListGroupsForUser(r.Context(), id)
+	detail, err := s.adminUserDetailFor(r.Context(), u)
 	if err != nil {
 		handleError(w, err)
 		return
-	}
-	detail := adminUserDetail{
-		adminUserSummary: toAdminSummary(u),
-		HasPassword:      u.PasswordHash != "",
-		Groups:           groups,
 	}
 	JSON(w, http.StatusOK, detail)
 }
@@ -453,14 +570,22 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
 		return
 	}
-	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
-		return
-	}
 	var body struct {
 		NewPassword string `json:"new_password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	// The body is decoded and checked before the account is looked at (#419).
+	// The machine check below reads the target, so with it first an API key
+	// was told 404 or 403 before its password was ever validated, while a
+	// session reached the password check first and got a 400.
+	if err := user.CheckNewPassword(body.NewPassword); err != nil {
+		handleError(w, err)
+		return
+	}
+	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
 		return
 	}
 	actor := authmw.GetActor(r)
@@ -488,6 +613,16 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.denyMachineTargetingAdmin(w, r, id, "delete an administrator") {
+		return
+	}
+	// A service user is deleted by deleting its OAuth client. Deleting it alone
+	// would leave the client listed and permanently dead, so say so, naming it.
+	if u, err := s.users.GetByIDAdmin(r.Context(), id); err == nil && u.ServiceAccount {
+		msg := "This is the service account for an OAuth client. Delete the client instead."
+		if name, err := s.authStore.OAuthClientNameForUser(r.Context(), id); err == nil {
+			msg = "This is the service account for OAuth client " + name + ". Delete the client instead."
+		}
+		Error(w, http.StatusConflict, "service_account", msg)
 		return
 	}
 	// SoftDelete refuses the last active administrator itself: setup does not

@@ -167,7 +167,9 @@ SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL);
 
 -- name: IsAssignableUser :one
 -- Whether a user can be given a ticket: the account exists, is not deleted,
--- is not disabled, and is staff. A reporting user is not a queue.
+-- is not disabled, and is staff. A reporting user is not a queue, and neither
+-- is a service user (#420): an OAuth client's identity cannot work a ticket,
+-- which also keeps it out of round-robin without a check of its own.
 --
 -- Asked inside the assignment transaction rather than by the caller, because
 -- the caller is not the only caller. The REST handler checked this and MCP
@@ -187,6 +189,7 @@ WHERE id = $1
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role IN ('staff', 'admin')
+  AND NOT service_account
 FOR SHARE;
 
 -- name: IsAssignableGroup :one
@@ -212,6 +215,23 @@ SET assignee_user_id = NULL, updated_at = now()
 WHERE assignee_user_id = $1
   AND resolved_at IS NULL
   AND closed_at IS NULL
+RETURNING id;
+
+-- name: LockGroup :one
+-- Locks the group row so nothing can be assigned to it until the transaction
+-- ends. A ticket's assignee_group_id takes a share lock on the group it names,
+-- and this conflicts with that. Without it a ticket assigned between
+-- UnassignTicketsForGroup and the delete would lose its group silently, which
+-- is the gap this exists to close.
+SELECT id FROM groups WHERE id = $1 FOR UPDATE;
+
+-- name: UnassignTicketsForGroup :many
+-- Takes every ticket off a group that is about to be deleted, and says which.
+-- All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+-- would clear those anyway, and the audit trail should record it.
+UPDATE tickets
+SET assignee_group_id = NULL, updated_at = now()
+WHERE assignee_group_id = $1
 RETURNING id;
 
 -- name: ListUnassignedTickets :many

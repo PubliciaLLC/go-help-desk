@@ -35,6 +35,18 @@ func TestClearMFA_ReportsNotFoundForANonexistentUser(t *testing.T) {
 	require.True(t, errors.Is(err, user.ErrNotFound), "got %v, want it to wrap user.ErrNotFound", err)
 }
 
+// UpdateUserProfile skips deleted accounts, and as an :exec that looked like
+// success: PATCH on a deleted account answered 200 with the old values (#419).
+func TestUpdateProfile_ReportsNotFoundForANonexistentUser(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	store := userstore.New(dbgen.New(db.SQL))
+
+	err := store.UpdateProfile(context.Background(), uuid.New(), "new@test.local", "New")
+
+	require.True(t, errors.Is(err, user.ErrNotFound), "got %v, want it to wrap user.ErrNotFound", err)
+}
+
 func TestAdminSetPassword_ReportsNotFoundForANonexistentUser(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()

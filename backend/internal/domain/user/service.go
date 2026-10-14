@@ -213,8 +213,12 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 	if err := ValidatePassword(plain); err != nil {
 		return fmt.Errorf("%w: %w", ErrValidation, err)
 	}
-	if _, err := s.store.GetByID(ctx, userID); err != nil {
+	u, err := s.store.GetByID(ctx, userID)
+	if err != nil {
 		return err
+	}
+	if u.ServiceAccount {
+		return ErrServiceAccount
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -273,13 +277,16 @@ func (s *Service) refusalFor(ctx context.Context, id uuid.UUID) error {
 	if u.DeletedAt != nil {
 		return ErrNotFound
 	}
+	// SoftDelete refuses a service user (it goes with its OAuth client), and
+	// "this is the only administrator" would be a lie about it.
+	if u.ServiceAccount {
+		return ErrServiceAccount
+	}
 	return ErrLastAdmin
 }
 
 func (s *Service) SetRole(ctx context.Context, id uuid.UUID, role Role) error {
-	switch role {
-	case RoleAdmin, RoleStaff, RoleUser:
-	default:
+	if !role.Valid() {
 		return fmt.Errorf("%w: invalid role", ErrValidation)
 	}
 	applied, err := s.store.SetRoleUnlessLastAdmin(ctx, id, string(role))
@@ -319,11 +326,22 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 	if err != nil {
 		return err
 	}
-	name := strings.TrimSpace(displayName)
-	if name == "" {
-		return fmt.Errorf("%w: display name is required", ErrValidation)
+	name, err := ValidateDisplayName(displayName)
+	if err != nil {
+		return err
 	}
 	return s.store.UpdateProfile(ctx, id, addr, name)
+}
+
+// ValidateDisplayName is the display-name rule UpdateProfile applies, for a
+// caller that has to know the answer before it writes anything else (#419).
+// It returns the name as it would be stored.
+func ValidateDisplayName(displayName string) (string, error) {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		return "", fmt.Errorf("%w: display name is required", ErrValidation)
+	}
+	return name, nil
 }
 
 // ListAssignableStaff returns the people work can be given to.
@@ -514,6 +532,9 @@ func (s *Service) GenerateMFASecret(ctx context.Context, userID uuid.UUID, issue
 	if err != nil {
 		return "", "", err
 	}
+	if u.ServiceAccount {
+		return "", "", ErrServiceAccount
+	}
 	if u.MFAEnabled && !allowReenroll {
 		return "", "", ErrMFAAlreadyEnrolled
 	}
@@ -533,6 +554,9 @@ func (s *Service) EnrollMFA(ctx context.Context, userID uuid.UUID, issuer string
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return "", "", err
+	}
+	if u.ServiceAccount {
+		return "", "", ErrServiceAccount
 	}
 	if u.MFAEnabled && !allowReenroll {
 		return "", "", ErrMFAAlreadyEnrolled
@@ -558,6 +582,9 @@ func (s *Service) ConfirmMFAEnrollment(ctx context.Context, userID uuid.UUID, co
 	u, err := s.store.GetByID(ctx, userID)
 	if err != nil {
 		return err
+	}
+	if u.ServiceAccount {
+		return ErrServiceAccount
 	}
 	if u.MFASecret == "" {
 		return fmt.Errorf("MFA enrollment not started")
@@ -812,6 +839,8 @@ func (s *Service) UpsertOIDCUser(
 // unprivileged account that is not already federated.
 func canAdoptByEmail(u User, oidcSubject string) error {
 	switch {
+	case u.ServiceAccount:
+		return fmt.Errorf("%w: the account is a service account", ErrAccountLinkRefused)
 	case !u.IsActive():
 		return ErrUserDisabled
 	case u.Role == RoleAdmin:
@@ -983,9 +1012,10 @@ func (s *Service) GetByIDAdmin(ctx context.Context, id uuid.UUID) (User, error) 
 
 // SearchAdmin returns one page of users, disabled ones included, filtered by
 // role ("" = any) and a case-insensitive substring of email or display name,
-// plus the total number that match. The caller validates role.
-func (s *Service) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]User, int64, error) {
-	return s.store.SearchAdmin(ctx, role, q, limit, offset)
+// plus the total number that match. serviceAccount nil means both. The caller
+// validates role.
+func (s *Service) SearchAdmin(ctx context.Context, role, q string, serviceAccount *bool, limit, offset int) ([]User, int64, error) {
+	return s.store.SearchAdmin(ctx, role, q, serviceAccount, limit, offset)
 }
 
 // ListAdmin returns all users including disabled ones.
@@ -1035,6 +1065,9 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	// separately, answers the caller 500 for a reset that already happened.
 	// Same shape as handler_passkeys.go's detached Touch call.
 	ctx = context.WithoutCancel(ctx)
+	if err := s.refuseServiceAccount(ctx, id); err != nil {
+		return err
+	}
 	passkeys, err := s.store.ClearFactors(ctx, id)
 	if err != nil {
 		return err
@@ -1053,6 +1086,21 @@ func (s *Service) ResetMFA(ctx context.Context, id uuid.UUID, actorID *uuid.UUID
 	return nil
 }
 
+// refuseServiceAccount answers ErrServiceAccount when id is a service account,
+// before an administrator's reset does any work for it. The database would
+// refuse the password write anyway (users_service_account_inert); this is so
+// the caller gets a reason, and a reset of nothing is not recorded as done.
+//
+// A failed lookup is not this check's to report: the write that follows reports
+// a missing row or an outage in its own words, and a lookup that fails here
+// would have failed there.
+func (s *Service) refuseServiceAccount(ctx context.Context, id uuid.UUID) error {
+	if u, err := s.store.GetByIDAdmin(ctx, id); err == nil && u.ServiceAccount {
+		return ErrServiceAccount
+	}
+	return nil
+}
+
 // AdminSetPassword hashes and stores a new password without requiring the
 // old one, and records who did it. See ResetMFA on actorID.
 func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain string, actorID *uuid.UUID) error {
@@ -1061,13 +1109,11 @@ func (s *Service) AdminSetPassword(ctx context.Context, id uuid.UUID, plain stri
 	// 500. Validation and hashing below don't touch I/O, so detaching this
 	// early costs nothing.
 	ctx = context.WithoutCancel(ctx)
-	if strings.TrimSpace(plain) == "" {
-		return fmt.Errorf("%w: password is required", ErrValidation)
+	if err := s.refuseServiceAccount(ctx, id); err != nil {
+		return err
 	}
-	// Reset was the loosest of the four paths: it refused only a blank
-	// password, so an administrator could reset an account to "b".
-	if err := ValidatePassword(plain); err != nil {
-		return fmt.Errorf("%w: %w", ErrValidation, err)
+	if err := CheckNewPassword(plain); err != nil {
+		return err
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), s.hashCost)
 	if err != nil {
@@ -1125,6 +1171,22 @@ var (
 	ErrPasswordTooShort = fmt.Errorf("password must be at least %d characters", MinPasswordLength)
 	ErrPasswordTooLong  = fmt.Errorf("password must be at most %d bytes; accented and non-Latin characters count as 2 to 4 bytes each", MaxPasswordLength)
 )
+
+// CheckNewPassword is what an administrator's password reset requires of the
+// new password, as an error handleError answers 400 to. AdminSetPassword
+// applies it, and the handler asks it first so a bad body is refused before
+// anything else about the request is looked at (#419).
+func CheckNewPassword(plain string) error {
+	if strings.TrimSpace(plain) == "" {
+		return fmt.Errorf("%w: password is required", ErrValidation)
+	}
+	// Reset was the loosest of the four paths: it refused only a blank
+	// password, so an administrator could reset an account to "b".
+	if err := ValidatePassword(plain); err != nil {
+		return fmt.Errorf("%w: %w", ErrValidation, err)
+	}
+	return nil
+}
 
 // ValidatePassword is the length rule every path that sets a password applies.
 // One function, because the minimum alone was once four different rules.

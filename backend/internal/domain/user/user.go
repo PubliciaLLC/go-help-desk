@@ -16,6 +16,12 @@ import (
 // was answered with 500 "an internal error occurred" and logged as one.
 var ErrValidation = errors.New("invalid input")
 
+// ErrServiceAccount marks a refusal to give a service account a way to sign
+// in: a password, a second factor, an SSO identity, or the admin role. The
+// database refuses the same writes (users_service_account_inert); this is the
+// answer a caller can act on.
+var ErrServiceAccount = errors.New("a service account cannot sign in, hold a password or second factor, or be an administrator")
+
 // Role names the three access tiers. Order matters: do not change values.
 type Role string
 
@@ -24,6 +30,11 @@ const (
 	RoleStaff Role = "staff"
 	RoleUser  Role = "user"
 )
+
+// Valid reports whether r is one of the three roles.
+func (r Role) Valid() bool {
+	return r == RoleAdmin || r == RoleStaff || r == RoleUser
+}
 
 // User is the canonical representation of an identity in the system.
 // It is auth-method-agnostic: PasswordHash is empty for SAML-only accounts;
@@ -39,6 +50,10 @@ type User struct {
 	SAMLSubject  string    `json:"-"`
 	OIDCSubject  string    `json:"-"`
 	Disabled     bool      `json:"disabled"`
+	// ServiceAccount marks the identity an OAuth client acts as. It can never
+	// sign in: the database refuses a password, a second factor, an SSO
+	// identity or the admin role on such a row.
+	ServiceAccount bool `json:"service_account"`
 	// MustChangePassword is set by the server console's unlock command and
 	// cleared when the account holder sets a password of their own (#497).
 	MustChangePassword bool       `json:"must_change_password"`

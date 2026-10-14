@@ -76,6 +76,12 @@ func (s *Server) handleRedeliverWebhook(w http.ResponseWriter, r *http.Request) 
 	case errors.Is(err, notify.ErrWebhookNotSubscribed):
 		Error(w, http.StatusConflict, "webhook_not_subscribed",
 			"this webhook is no longer subscribed to that event; add it to the webhook's events to redeliver")
+	case errors.Is(err, notify.ErrWebhookFilterExcludes):
+		Error(w, http.StatusConflict, "webhook_filter_excludes",
+			"this webhook's ticket filter no longer admits that ticket; change the filter to redeliver")
+	case errors.Is(err, notify.ErrWebhookFilterUnverifiable):
+		Error(w, http.StatusConflict, "webhook_filter_unverifiable",
+			"the ticket no longer exists, so the filter can't be checked")
 	default:
 		handleError(w, err)
 	}

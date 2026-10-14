@@ -81,4 +81,15 @@ func (s *Store) DeleteFailedBefore(ctx context.Context, cutoff time.Time) (int64
 	return n, nil
 }
 
-var _ notification.Outbox = (*Store)(nil)
+func (s *Store) EmailHealth(ctx context.Context) (notification.EmailHealth, error) {
+	r, err := s.q.EmailOutboxHealth(ctx)
+	if err != nil {
+		return notification.EmailHealth{}, fmt.Errorf("reading email outbox health: %w", err)
+	}
+	return notification.EmailHealth{Failing: int(r.Failing), LastError: r.LastError}, nil
+}
+
+var (
+	_ notification.Outbox       = (*Store)(nil)
+	_ notification.HealthReader = (*Store)(nil)
+)

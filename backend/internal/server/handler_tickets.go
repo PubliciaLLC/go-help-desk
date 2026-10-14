@@ -113,8 +113,10 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		// the caller's groups — and this branch handed the same tickets over to
 		// anyone who named the group. Group ids are listed to every staff
 		// member by GET /groups, so it was a filter, not a boundary. An OAuth
-		// client acts as staff and belongs to no group at all, which made it
-		// every ticket assigned to any group.
+		// client acts as staff through its service user, and that user is in
+		// whatever groups an administrator gave it (none, until they do),
+		// which used to make a group-less client every ticket assigned to any
+		// group.
 		if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
 			scope, err := s.staffScopeFor(ctx, a)
 			if err != nil {
@@ -661,13 +663,7 @@ func (s *Server) handleAddReply(w http.ResponseWriter, r *http.Request) {
 	var reporterEmail string
 	if notifyCustomer {
 		if t, err := s.tickets.GetByID(r.Context(), id); err == nil {
-			if t.GuestEmail != nil {
-				reporterEmail = *t.GuestEmail
-			} else if t.ReporterUserID != nil {
-				if u, err := s.users.GetByID(r.Context(), *t.ReporterUserID); err == nil {
-					reporterEmail = u.Email
-				}
-			}
+			reporterEmail = s.tickets.ReplyRecipient(r.Context(), t, ticket.Actor{UserID: &a.UserID, Role: a.Role})
 		}
 	}
 
@@ -1142,15 +1138,32 @@ func (s *Server) reopenTargetStatusID(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, err
 	}
 	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	inactive := false
 	for _, st := range statuses {
-		if st.Name == want {
-			return st.ID, nil
+		if st.Name != want {
+			continue
 		}
+		// A deactivated status is retired for everyone, so nothing is reopened
+		// into it. The target is chosen by name from active statuses and can
+		// be deactivated afterwards; reopening then goes to New, like an
+		// unresolvable name, until an administrator picks another. The admin
+		// security warnings say so.
+		if !st.Active {
+			inactive = true
+			break
+		}
+		return st.ID, nil
 	}
 	for _, st := range statuses {
 		if st.Name == ticket.StatusNameNew {
-			slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
-				"configured", want)
+			// One message, for the one condition that applies.
+			if inactive {
+				slog.WarnContext(ctx, "configured reopen target status is inactive; falling back to New",
+					"configured", want)
+			} else {
+				slog.WarnContext(ctx, "configured reopen target status does not exist; falling back to New",
+					"configured", want)
+			}
 			return st.ID, nil
 		}
 	}

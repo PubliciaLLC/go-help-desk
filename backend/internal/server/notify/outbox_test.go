@@ -841,3 +841,89 @@ func TestVerificationDispatcher(t *testing.T) {
 	require.Error(t, d.Dispatch(context.Background(), notification.Event{Type: notification.EventRegistrationVerify}),
 		"a verification event with no id must fail, not vanish")
 }
+
+// The filter (#413) reads Attrs at fan-out, after the queue. Each shape must
+// come back as it went in: a group set, and no group.
+func TestOutboxRecord_RoundTripsTicketAttrs(t *testing.T) {
+	grp := uuid.New()
+	for _, attrs := range []*notification.TicketAttrs{
+		{CategoryID: uuid.New(), Priority: "critical", AssigneeGroupID: &grp},
+		{CategoryID: uuid.New(), Priority: "low", AssigneeGroupID: nil},
+	} {
+		ev := sampleEvent()
+		ev.Attrs = attrs
+		b, err := encodeEvent(ev)
+		require.NoError(t, err)
+		got, err := decodeEvent(b)
+		require.NoError(t, err)
+		require.Equal(t, attrs, got.Attrs)
+	}
+}
+
+// A row queued before #413 has no attrs. It must still decode, and it must
+// decode to nil, which the filter reads as "not known".
+func TestOutboxRecord_ARowQueuedBeforeAttrsDecodesWithoutThem(t *testing.T) {
+	old := []byte(`{"type":"ticket.created","ticket_id":"11111111-2222-3333-4444-555555555555","occurred_at":"2026-01-01T00:00:00Z"}`)
+	got, err := decodeEvent(old)
+	require.NoError(t, err)
+	require.Nil(t, got.Attrs)
+}
+
+// The filter reads Attrs after the queue (#413). The event is queued, a worker
+// delivers it, and the webhook dispatcher must see the attrs the queue carried:
+// /match is sent to, /miss is not, and nothing is logged as not evaluated. If
+// the outbox dropped Attrs, both hooks would be sent to by fail-open, and the
+// log would say so.
+func TestOutbox_WebhookFilterSeesAttrsAfterTheQueue(t *testing.T) {
+	srv, deliveries := newDeliveryRecorder(t)
+	store := newFakeOutbox()
+	ctx := context.Background()
+
+	ev := notification.Event{
+		Type:       notification.EventTicketCreated,
+		TicketID:   uuid.New(),
+		OccurredAt: time.Now().UTC().Truncate(time.Microsecond),
+		Subject:    "Printer jammed",
+		Attrs:      &notification.TicketAttrs{CategoryID: uuid.New(), Priority: "low"},
+	}
+	require.NoError(t, NewOutboxDispatcher(store, []string{"webhook"}, nil).Dispatch(ctx, ev))
+
+	var buf bytes.Buffer
+	disp := &WebhookDispatcher{
+		store: fakeWebhookStore{
+			{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/match",
+				Filter: notification.WebhookFilter{Priorities: []string{"low"}}},
+			{ID: uuid.New(), PayloadFormat: "raw", URL: srv.URL + "/miss",
+				Filter: notification.WebhookFilter{Priorities: []string{"critical"}}},
+		},
+		client:  srv.Client(),
+		baseURL: fixtureBaseURL,
+		log:     slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+	n, err := newTestWorker(store, map[string]notification.Dispatcher{"webhook": disp}).RunOnce(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, n, "the queued event should have been claimed once")
+
+	got := map[string]bool{}
+	var body []byte
+	window := time.After(300 * time.Millisecond)
+	for collecting := true; collecting; {
+		select {
+		case d := <-deliveries:
+			got[d.path] = true
+			body = d.body
+		case <-window:
+			collecting = false
+		}
+	}
+	require.Equal(t, map[string]bool{"/match": true}, got)
+	require.NotContains(t, buf.String(), "not evaluated",
+		"the queued event lost its attrs: the filter fell open")
+
+	// The queue carries the attrs, the receiver never sees them: the body is
+	// the bytes of the same event without attrs, as before #413.
+	ev.Attrs = nil
+	want, err := json.Marshal(ev)
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(body))
+}

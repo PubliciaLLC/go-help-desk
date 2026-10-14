@@ -4,14 +4,18 @@ package authstore
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Store implements both auth.APIKeyStore and auth.OAuthClientStore.
@@ -90,6 +94,33 @@ func (s *Store) ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey
 	return out, nil
 }
 
+// ListWithOwner lists every key when keyID is nil, or just that key, newest
+// first, each with its owner's address and name.
+func (s *Store) ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error) {
+	rows, err := s.q.ListAPIKeysWithOwner(ctx, database.NullUUID(keyID))
+	if err != nil {
+		return nil, fmt.Errorf("listing API keys with owners: %w", err)
+	}
+	out := make([]auth.APIKeyWithOwner, len(rows))
+	for i, r := range rows {
+		out[i] = auth.APIKeyWithOwner{
+			APIKey: auth.APIKey{
+				ID:          r.ID,
+				Name:        r.Name,
+				HashedToken: r.HashedToken,
+				UserID:      r.UserID,
+				Scopes:      r.Scopes,
+				LastUsedAt:  database.TimePtr(r.LastUsedAt),
+				ExpiresAt:   database.TimePtr(r.ExpiresAt),
+				CreatedAt:   r.CreatedAt,
+			},
+			OwnerEmail: r.OwnerEmail,
+			OwnerName:  r.OwnerName,
+		}
+	}
+	return out, nil
+}
+
 // ── OAuthClientStore ─────────────────────────────────────────────────────────
 
 func (s *Store) CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error {
@@ -100,6 +131,7 @@ func (s *Store) CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 		Name:         c.Name,
 		Scopes:       c.Scopes,
 		CreatedAt:    c.CreatedAt,
+		UserID:       c.UserID,
 	})
 }
 
@@ -115,7 +147,66 @@ func (s *Store) GetByClientID(ctx context.Context, clientID string) (auth.OAuthC
 		Name:         r.Name,
 		Scopes:       r.Scopes,
 		CreatedAt:    r.CreatedAt,
+		UserID:       r.UserID,
 	}, nil
+}
+
+// OAuthClientNameForUser returns the name of the client a service user belongs
+// to, or auth.ErrNotFound when no client holds it.
+func (s *Store) OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error) {
+	name, err := s.q.GetOAuthClientNameByUser(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("no OAuth client for user %s: %w", userID, auth.ErrNotFound)
+	}
+	if err != nil {
+		return "", fmt.Errorf("getting OAuth client for user %s: %w", userID, err)
+	}
+	return name, nil
+}
+
+// ListOAuthClientGroups returns the groups of every client's service user,
+// keyed by the client row's id, each list ordered by group name.
+func (s *Store) ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error) {
+	rows, err := s.q.ListOAuthClientGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing OAuth client groups: %w", err)
+	}
+	out := make(map[uuid.UUID][]auth.ClientGroup)
+	for _, r := range rows {
+		out[r.ClientRowID] = append(out[r.ClientRowID], auth.ClientGroup{ID: r.GroupID, Name: r.GroupName})
+	}
+	return out, nil
+}
+
+// ListOAuthClientsWithoutGroups names the clients that are switched on and
+// whose service user is in no group.
+func (s *Store) ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error) {
+	names, err := s.q.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing OAuth clients without groups: %w", err)
+	}
+	return names, nil
+}
+
+// GetWithUser returns the client and the service user it acts as, in one query:
+// it runs on every OAuth-authenticated request. A deleted client has no row, so
+// its outstanding tokens stop working; the user's own state (disabled, deleted)
+// is returned for the caller to judge.
+func (s *Store) GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error) {
+	r, err := s.q.GetOAuthClientWithUser(ctx, clientID)
+	if err != nil {
+		return auth.OAuthClient{}, user.User{}, fmt.Errorf("getting OAuth client %q: %w", clientID, err)
+	}
+	c := r.OauthClient
+	return auth.OAuthClient{
+		ID:           c.ID,
+		ClientID:     c.ClientID,
+		HashedSecret: c.HashedSecret,
+		Name:         c.Name,
+		Scopes:       c.Scopes,
+		CreatedAt:    c.CreatedAt,
+		UserID:       c.UserID,
+	}, userstore.FromRow(r.User), nil
 }
 
 func (s *Store) DeleteOAuthClient(ctx context.Context, id uuid.UUID) error {
@@ -143,6 +234,7 @@ func (s *Store) ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error
 			Name:         r.Name,
 			Scopes:       r.Scopes,
 			CreatedAt:    r.CreatedAt,
+			UserID:       r.UserID,
 		}
 	}
 	return out, nil
@@ -177,6 +269,10 @@ type WebhookConfig struct {
 	// LastDelivery is nil until a delivery has been attempted since the hook
 	// was created or its URL last changed.
 	LastDelivery *WebhookDelivery `json:"last_delivery"`
+
+	// Filter narrows which tickets the hook fires for (#413). The zero value
+	// is no filter, which is what every hook created before #413 has.
+	Filter notification.WebhookFilter `json:"filter"`
 }
 
 // defaultPayloadFormat is "raw": the column is NOT NULL with no useful
@@ -186,20 +282,40 @@ type WebhookConfig struct {
 // tests included) keeps working without having to learn about it.
 const defaultPayloadFormat = "raw"
 
-func webhookFromRow(r dbgen.WebhookConfig) WebhookConfig {
+// webhookFromRow decodes a row. The filter column is a CHECK-constrained
+// object, so an error here means a row written outside this application.
+func webhookFromRow(r dbgen.WebhookConfig) (WebhookConfig, error) {
+	var filter notification.WebhookFilter
+	if err := json.Unmarshal(r.TicketFilter, &filter); err != nil {
+		return WebhookConfig{}, fmt.Errorf("decoding filter of webhook %s: %w", r.ID, err)
+	}
 	wh := WebhookConfig{ID: r.ID, URL: r.Url, Events: r.Events, Secret: r.Secret,
-		Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat}
+		Enabled: r.Enabled, CreatedAt: r.CreatedAt, PayloadFormat: r.PayloadFormat,
+		Filter: filter}
 	if r.LastDeliveryAt.Valid {
 		wh.LastDelivery = &WebhookDelivery{At: r.LastDeliveryAt.Time.UTC(),
 			Status: int(r.LastDeliveryStatus), Error: r.LastDeliveryError}
 	}
-	return wh
+	return wh, nil
+}
+
+// encodeFilter is the stored form of a filter: a JSON object, never null.
+func encodeFilter(f notification.WebhookFilter) ([]byte, error) {
+	b, err := json.Marshal(f)
+	if err != nil {
+		return nil, fmt.Errorf("encoding ticket filter: %w", err)
+	}
+	return b, nil
 }
 
 func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 	format := wh.PayloadFormat
 	if format == "" {
 		format = defaultPayloadFormat
+	}
+	filter, err := encodeFilter(wh.Filter)
+	if err != nil {
+		return err
 	}
 	return s.q.CreateWebhookConfig(ctx, dbgen.CreateWebhookConfigParams{
 		ID:            wh.ID,
@@ -209,6 +325,7 @@ func (s *Store) CreateWebhook(ctx context.Context, wh WebhookConfig) error {
 		Enabled:       wh.Enabled,
 		CreatedAt:     wh.CreatedAt,
 		PayloadFormat: format,
+		TicketFilter:  filter,
 	})
 }
 
@@ -220,13 +337,17 @@ func (s *Store) GetWebhook(ctx context.Context, id uuid.UUID) (WebhookConfig, er
 		}
 		return WebhookConfig{}, fmt.Errorf("getting webhook %s: %w", id, err)
 	}
-	return webhookFromRow(r), nil
+	return webhookFromRow(r)
 }
 
 func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 	format := wh.PayloadFormat
 	if format == "" {
 		format = defaultPayloadFormat
+	}
+	filter, err := encodeFilter(wh.Filter)
+	if err != nil {
+		return err
 	}
 	// Delivery history describes a target, like the latest result the update
 	// query already clears when the URL changes (#448).
@@ -244,6 +365,7 @@ func (s *Store) UpdateWebhook(ctx context.Context, wh WebhookConfig) error {
 		Secret:        wh.Secret,
 		Enabled:       wh.Enabled,
 		PayloadFormat: format,
+		TicketFilter:  filter,
 	}); err != nil {
 		return err
 	}
@@ -273,7 +395,11 @@ func (s *Store) ListEnabledWebhooks(ctx context.Context) ([]WebhookConfig, error
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = webhookFromRow(r)
+		wh, err := webhookFromRow(r)
+		if err != nil {
+			return nil, fmt.Errorf("listing enabled webhooks: %w", err)
+		}
+		out[i] = wh
 	}
 	return out, nil
 }
@@ -288,7 +414,11 @@ func (s *Store) ListWebhooks(ctx context.Context) ([]WebhookConfig, error) {
 	}
 	out := make([]WebhookConfig, len(rows))
 	for i, r := range rows {
-		out[i] = webhookFromRow(r)
+		wh, err := webhookFromRow(r)
+		if err != nil {
+			return nil, fmt.Errorf("listing webhooks: %w", err)
+		}
+		out[i] = wh
 	}
 	return out, nil
 }

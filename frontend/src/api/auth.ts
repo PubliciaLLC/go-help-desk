@@ -87,6 +87,11 @@ export interface AuthProvider {
 
 export interface AuthProviders {
   providers: AuthProvider[]
+  /**
+   * False when the server has passkeys off because BASE_URL cannot be a
+   * passkey domain (#494). Absent from a server that predates it: read as on.
+   */
+  passkeys?: boolean
 }
 
 export async function getAuthProviders(): Promise<AuthProviders> {

@@ -46,3 +46,15 @@ UPDATE notification_outbox SET event = $2 WHERE id = $1;
 
 -- name: DeleteFailedNotificationsBefore :execrows
 DELETE FROM notification_outbox WHERE failed_at < $1;
+
+-- name: EmailOutboxHealth :one
+-- What the admin email warning reads (#456): email and signup-verification rows that are retrying after
+-- an error, or gave up in the last day, and the newest of their error texts.
+-- Delivered rows are deleted, so a healthy mailer leaves nothing to count, and
+-- a failed row older than a day no longer says anything about now.
+SELECT count(*)::bigint AS failing,
+       COALESCE((array_agg(last_error ORDER BY COALESCE(failed_at, created_at) DESC))[1], '')::text AS last_error
+FROM notification_outbox
+WHERE channel IN ('email', 'verification')
+  AND last_error IS NOT NULL
+  AND (failed_at IS NULL OR failed_at > now() - interval '24 hours');
