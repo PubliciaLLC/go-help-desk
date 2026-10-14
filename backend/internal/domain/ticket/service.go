@@ -859,6 +859,42 @@ func (s *Service) UpdateStatus(ctx context.Context, ticketID, newStatusID uuid.U
 	return t, nil
 }
 
+// checkAssignable is the assignment's own refusal: the user must be somebody
+// a ticket can be given to, and the group must exist. Assign asks it on the
+// locked row, where it is the guarantee; ValidateAssignment asks it ahead of
+// the first write, where it is the early answer.
+func checkAssignable(ctx context.Context, st Store, assigneeUserID, assigneeGroupID *uuid.UUID) error {
+	if assigneeUserID != nil {
+		ok, err := st.IsAssignableUser(ctx, *assigneeUserID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: that account cannot be given a ticket — it may be deleted, disabled, or not staff", ErrValidation)
+		}
+	}
+	if assigneeGroupID != nil {
+		ok, err := st.IsAssignableGroup(ctx, *assigneeGroupID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: no such group", ErrValidation)
+		}
+	}
+	return nil
+}
+
+// ValidateAssignment runs the checks Assign makes on its assignee and group,
+// without writing. A caller that applies other changes in the same request
+// (the PATCH handler) calls it first, so a refused assignment leaves the whole
+// request unapplied (#468). Assign still checks on the locked row, so this is
+// the early answer, not the guarantee: an account disabled between the two is
+// refused by Assign, after anything saved before it.
+func (s *Service) ValidateAssignment(ctx context.Context, assigneeUserID, assigneeGroupID *uuid.UUID) error {
+	return checkAssignable(ctx, s.store, assigneeUserID, assigneeGroupID)
+}
+
 // Assign sets the assignee user and/or group on a ticket.
 func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID, assigneeGroupID *uuid.UUID, actor Actor) (Ticket, error) {
 	var t Ticket
@@ -883,23 +919,8 @@ func (s *Service) Assign(ctx context.Context, ticketID uuid.UUID, assigneeUserID
 		//
 		// A check the caller makes is a check every future caller has to
 		// remember to make. This one is where the write is.
-		if assigneeUserID != nil {
-			ok, err := st.IsAssignableUser(ctx, *assigneeUserID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("%w: that account cannot be given a ticket — it may be deleted, disabled, or not staff", ErrValidation)
-			}
-		}
-		if assigneeGroupID != nil {
-			ok, err := st.IsAssignableGroup(ctx, *assigneeGroupID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("%w: no such group", ErrValidation)
-			}
+		if err := checkAssignable(ctx, st, assigneeUserID, assigneeGroupID); err != nil {
+			return err
 		}
 
 		before := ticketMap(t)

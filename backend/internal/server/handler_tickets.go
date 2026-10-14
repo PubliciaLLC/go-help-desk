@@ -600,22 +600,50 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if body.StatusID != nil {
-		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
-			handleError(w, err)
-			return
-		}
-	}
-	// Covers both branches below: clear_assignee is a separate path from
-	// assignee_user_id, and guarding only one would leave a reporter able to
-	// unassign the staff member working their ticket.
+	// Who the ticket may be given to is decided before the status is saved,
+	// for the same reason (#468): UpdateStatus runs first, so a 400 or 403 from
+	// the assignment after it left the status changed and an audit row
+	// written. Assign checks the same things again on the locked row.
+	//
+	// The role check covers both branches below: clear_assignee is a separate
+	// path from assignee_user_id, and guarding only one would leave a reporter
+	// able to unassign the staff member working their ticket.
 	if body.ClearAssignee || body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
 		if err := ticket.CanAssign(actor.Role); err != nil {
 			handleError(w, err)
 			return
 		}
 	}
+	// The assignee is checked here, and not only by the column's foreign key,
+	// because a foreign key can only answer 500.
+	//
+	// Four things got through: an unknown id (a typo, answered with "an
+	// internal error occurred"), a deleted account (which puts the ticket
+	// straight back into the limbo that deleting a user was just fixed to
+	// avoid — it shows as unassigned and is missing from the unassigned
+	// queue), a disabled account, and a reporting user, who is not
+	// somebody work can be assigned to.
+	if !body.ClearAssignee {
+		if body.AssigneeUserID != nil {
+			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
+				Error(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+		}
+		if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
+			if err := s.tickets.ValidateAssignment(r.Context(), body.AssigneeUserID, body.AssigneeGroupID); err != nil {
+				handleError(w, err)
+				return
+			}
+		}
+	}
 
+	if body.StatusID != nil {
+		if _, err := s.tickets.UpdateStatus(r.Context(), id, *body.StatusID, actor); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 	if body.ClearAssignee {
 		// Explicitly to nobody. Previously unreachable: the UI sent both
 		// fields as undefined, which serialised to {} and skipped this branch
@@ -625,22 +653,6 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if body.AssigneeUserID != nil || body.AssigneeGroupID != nil {
-		// Checked before the write, because the column's foreign key is the
-		// only thing that was checking it — and a foreign key can only
-		// answer 500.
-		//
-		// Four things got through: an unknown id (a typo, answered with "an
-		// internal error occurred"), a deleted account (which puts the ticket
-		// straight back into the limbo that deleting a user was just fixed to
-		// avoid — it shows as unassigned and is missing from the unassigned
-		// queue), a disabled account, and a reporting user, who is not
-		// somebody work can be assigned to.
-		if body.AssigneeUserID != nil {
-			if err := s.assignableUser(r.Context(), *body.AssigneeUserID); err != nil {
-				Error(w, http.StatusBadRequest, "bad_request", err.Error())
-				return
-			}
-		}
 		if _, err := s.tickets.Assign(r.Context(), id, body.AssigneeUserID, body.AssigneeGroupID, actor); err != nil {
 			handleError(w, err)
 			return

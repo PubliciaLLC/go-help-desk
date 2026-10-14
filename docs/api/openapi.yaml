@@ -2991,16 +2991,25 @@ paths:
         the Ticket. Malformed JSON answers 400 bad_request. The path id is a UUID or a tracking number.
         The changes run in this order: status, then assignment, then
         classification, then priority. Each is saved on its own, with no
-        transaction around the four. If a later one is refused, the earlier ones
-        have already been saved and the response is an error. The exceptions
-        are checked before anything is saved: a refused classification, an
-        invalid priority value (400), a priority from a caller who may not
-        change priorities (403, a reporting user), and a priority on a request
-        that would leave the ticket Resolved or Closed (409 ticket_closed, see
-        below). When several apply, the order is the invalid value, then the
-        priority role, then the classification, then the closed state. A
-        reporting user's status, assignment and classification are each
-        refused before any write too.
+        transaction around the four, but every refusal the request can meet is
+        decided before the first of them is saved, so a refused request changes
+        nothing and writes no audit entry. Decided first: an invalid priority
+        value (400), a priority from a caller who may not change priorities
+        (403, a reporting user), a classification the caller may not make or
+        that is not valid (403, 400), a priority on a request that would leave
+        the ticket Resolved or Closed (409 ticket_closed, see below), an
+        assignment from a caller who may not assign (403), an assignee that
+        cannot be given a ticket (400) and a group that does not exist (400).
+        The status change is the first write, so its own refusals (403, 404,
+        409) also come before anything is saved. When several apply, the order
+        is the invalid value, then the priority role, then the classification,
+        then the closed state, then the assignment, then the status.
+        What this does not cover: a refusal that can only be known at the
+        moment of writing. A concurrent change between the check and the write
+        (an assignee account disabled, or the ticket closed, in those few
+        milliseconds) is refused by the write's own check, and so is a database
+        failure (500), after the changes ahead of it in the order above were
+        saved.
         Who may do what:
         - A reporting user cannot change the status (403 forbidden), cannot
           assign (403 forbidden), cannot reclassify (403, "only staff can

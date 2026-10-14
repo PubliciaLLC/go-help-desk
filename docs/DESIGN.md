@@ -243,6 +243,23 @@ what its SLA was measured against (#443). A `PATCH /tickets/{id}` that sends a
 priority and would leave the ticket Resolved or Closed (or that touches one
 already there) is refused whole with that `409`: the status or assignment in the
 same request is not saved first.
+
+**One PATCH, one outcome (#468).** `PATCH /tickets/{id}` can change a ticket's
+status, assignment, classification and priority in one request, and each is
+saved on its own. Every refusal the request can meet is decided before the first
+of them is saved, so a refused request changes nothing and writes no audit
+entry: an invalid priority value, a priority or assignment or reclassification
+from a role that may not make it, an invalid classification, a priority on a
+ticket that would end up Resolved or Closed, an assignee that cannot be given a
+ticket (unknown, deleted, disabled or a reporting user), a group that does not
+exist, and the status change's own refusals (it is the first write). The service
+calls the status, assignment, classification and priority writes make still
+check the same things on the locked row, so a caller other than this handler
+(MCP, the scheduler) is held to them too. What stays possible after an earlier
+write is what only the write can know: a concurrent change in the milliseconds
+between check and write (an assignee disabled, the ticket closed) or a database
+failure. Before this, a request whose assignee was refused had already saved its
+status.
 Over MCP `update_ticket_status` answers a move out of Closed with the closed
 refusal and names the follow-up instead.
 
