@@ -509,9 +509,11 @@ paths:
         A challenge expires five minutes after it was issued. The sign count is
         recorded but not enforced. Reachable with a session only (403
         session_required for an API key or OAuth client). The body is read by
-        the WebAuthn library, not by the server's JSON decoder, so the 1 MiB cap
-        does not apply, and a body that is not JSON is not a 400: once a
-        challenge is in progress it answers 401 assertion_refused.
+        the WebAuthn library, not by the server's JSON decoder, and is capped at
+        64 KiB (413 too_large above that, before the challenge is touched). A body
+        that is not JSON is not a 400: once a challenge is in progress it answers
+        401 assertion_refused. A fault writing the session is 500 internal_error,
+        not no_challenge.
       tags: ['Authentication']
       x-ghd-handler: handlePasskeyLoginFinish
       security:
@@ -549,6 +551,11 @@ paths:
               schema: {$ref: '#/components/schemas/Error'}
         '403':
           $ref: '#/components/responses/Forbidden'
+        '413':
+          description: The body is over 64 KiB (too_large). Sent as application/json.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/auth/local/passkey/start:
     post:
       operationId: passkeyLoginStart
@@ -2179,8 +2186,10 @@ paths:
         The name query parameter labels the key. A name longer than 128 bytes is cut short on a character
         boundary, not refused. Session only. If the account already has a second factor, the session must
         have proved one, or the answer is 403 mfa_required.
-        The body is read by the WebAuthn library, not by the server's JSON decoder, so the 1 MiB cap does
-        not apply. A body that is not JSON answers 400 registration_refused once a challenge is in progress.
+        The body is read by the WebAuthn library, not by the server's JSON decoder, and is capped at 64 KiB:
+        413 too_large above that, before the challenge is touched. A body that is not JSON answers 400
+        registration_refused once a challenge is in progress. A fault writing the session is 500
+        internal_error, not no_challenge.
       tags: ['Account']
       x-ghd-handler: handlePasskeyRegisterFinish
       security:
@@ -2231,6 +2240,11 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: That authenticator is already registered (credential_exists).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '413':
+          description: The body is over 64 KiB (too_large). Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
