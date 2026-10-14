@@ -3,6 +3,7 @@ package mcp
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/require"
 )
 
@@ -128,4 +130,47 @@ func TestHandler_SSEStillAtMCPSSE(t *testing.T) {
 	line, err := bufio.NewReader(resp.Body).ReadString('\n')
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(line, "event:"), "first line %q", line)
+}
+
+// Stateless means there is no session for a client to end, so DELETE /mcp is
+// refused (the spec's 405) rather than acted on. Acted on, it is not a no-op:
+// mcp-go unregisters whatever Mcp-Session-Id it is given from the MCP server
+// both transports share, so any signed-in caller holding an SSE stream's
+// session id could unregister someone else's stream.
+func TestHandler_DeleteMCPEndsNoSession(t *testing.T) {
+	s := New(nil, nil, nil, nil)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/mcp/sse", nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	br := bufio.NewReader(resp.Body)
+	var sessionID string
+	for sessionID == "" {
+		line, err := br.ReadString('\n')
+		require.NoError(t, err)
+		if _, id, ok := strings.Cut(line, "sessionId="); ok {
+			sessionID = strings.TrimSpace(id)
+		}
+	}
+	registered := func() bool {
+		err := s.mcp.SendNotificationToSpecificClient(sessionID, "notifications/message", nil)
+		return !errors.Is(err, mcpserver.ErrSessionNotFound)
+	}
+	require.True(t, registered(), "precondition: the SSE stream is registered")
+
+	del, err := http.NewRequest(http.MethodDelete, ts.URL+"/mcp", nil)
+	require.NoError(t, err)
+	del.Header.Set("Mcp-Session-Id", sessionID)
+	delResp, err := http.DefaultClient.Do(del)
+	require.NoError(t, err)
+	_ = delResp.Body.Close()
+
+	require.Equal(t, http.StatusMethodNotAllowed, delResp.StatusCode)
+	require.True(t, registered(), "DELETE /mcp must not unregister an SSE stream")
 }

@@ -289,6 +289,18 @@ func requestActor(ctx context.Context, r *http.Request) context.Context {
 	return ctx
 }
 
+// noSessions is mcp-go's stateless session manager (no id issued, any id
+// accepted and ignored) that also refuses to terminate a session, so DELETE
+// /mcp answers 405. There is nothing to terminate, and terminating is not a
+// no-op: mcp-go unregisters the given id from the MCP server both transports
+// share, so any signed-in caller could unregister an SSE stream that is not
+// theirs (the stream stays open but stops receiving server notifications).
+type noSessions struct {
+	mcpserver.StatelessSessionIdManager
+}
+
+func (*noSessions) Terminate(string) (isNotAllowed bool, err error) { return true, nil }
+
 // Handler returns the MCP HTTP handler: Streamable HTTP at /mcp (and /mcp/,
 // the URL the 1.2 documentation gave), HTTP+SSE at /mcp/sse and /mcp/message.
 //
@@ -300,12 +312,12 @@ func requestActor(ctx context.Context, r *http.Request) context.Context {
 //
 // Streamable HTTP is stateless with its GET stream disabled. Every POST is one
 // complete JSON-RPC exchange answered with application/json, no Mcp-Session-Id
-// is issued, and GET answers 405. Nothing here needs a session: the tools are
-// request/response and the server sends nothing unprompted. mcp-go's
-// session-issuing mode keeps every initialized session in memory until the
-// client deletes it, so a caller looping on initialize would grow the heap
-// without bound; and in its stateless mode an enabled GET stream shares one
-// session between every caller. Do not add WithSessionIdleTTL or
+// is issued, and GET and DELETE answer 405 (see noSessions). Nothing here
+// needs a session: the tools are request/response and the server sends
+// nothing unprompted. mcp-go's session-issuing mode keeps every initialized
+// session in memory until the client deletes it, so a caller looping on
+// initialize would grow the heap without bound; and in its stateless mode an
+// enabled GET stream shares one session between every caller. Do not add WithSessionIdleTTL or
 // WithHeartbeatInterval either: the first starts a goroutine nothing stops,
 // the second applies to the GET stream that is off.
 func (s *Server) Handler() http.Handler {
@@ -314,7 +326,7 @@ func (s *Server) Handler() http.Handler {
 		mcpserver.WithSSEContextFunc(requestActor),
 	)
 	streamable := mcpserver.NewStreamableHTTPServer(s.mcp,
-		mcpserver.WithStateLess(true),
+		mcpserver.WithSessionIdManager(&noSessions{}),
 		mcpserver.WithDisableStreaming(true),
 		mcpserver.WithHTTPContextFunc(requestActor),
 	)
