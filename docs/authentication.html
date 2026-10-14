@@ -140,7 +140,7 @@
 
 <h2 id="auth-local">Local accounts</h2>
 
-<p>Users sign in with their email address and password. Passwords are hashed with bcrypt at its default cost.</p>
+<p>Users sign in with their email address and password. Passwords are hashed with bcrypt at cost 12. Releases up to 1.2 hashed at cost 10. An older hash keeps working, and is replaced by a cost-12 hash the next time its owner signs in with the password, so nobody has to reset anything. A sign-in takes about 250 ms of server time at cost 12, against about 60 ms at cost 10.</p>
 
 <h3>Account creation</h3>
 <p>Accounts are created in one of four ways:</p>
@@ -187,6 +187,7 @@
   <li>If they have an authenticator, they are asked for its code. If they have only passkeys, they are asked to confirm with one.</li>
   <li>Until the second step succeeds, the session can do nothing but finish signing in.</li>
 </ol>
+<p>That half-signed-in session expires: the user has <strong>5 minutes</strong> after the password to enter a code or confirm with a passkey, and <strong>15 minutes</strong> when they still have to set up their first factor, which takes longer. The clock starts at the password step and nothing restarts it, not even saving a new authenticator secret. Past the deadline the session is deleted and the next request is refused with <code>401</code>; the user signs in again with their password. A code sent after the deadline is not checked, so it does not use up one of the five attempts.</p>
 <p>Five wrong codes in a row lock the account's code entry for 15 minutes.</p>
 
 <h3>Losing every factor</h3>
