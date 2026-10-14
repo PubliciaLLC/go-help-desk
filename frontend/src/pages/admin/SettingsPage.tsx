@@ -1,7 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { SLAPolicy } from '@/api/types'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -48,6 +49,21 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h2>
       <div className="divide-y rounded-lg border bg-white">{children}</div>
     </div>
+  )
+}
+
+/** Where email stands, shown beside the settings that send mail. The banner
+ *  stays quiet for an install that runs without email on purpose. */
+function EmailStatusNote({ on }: { on: boolean }) {
+  const { data } = useQuery({ queryKey: ['security-warnings'], queryFn: getSecurityWarnings, retry: false })
+  const email = data?.email
+  if (!email || email.enabled) return null
+  return (
+    <p role="note" className="px-5 pb-4 text-sm text-amber-800">
+      Email is not set up ({email.missing.join(' and ')} not set in docker/.env)
+      {on ? ": people using this aren't getting their mail." : ', so this cannot be turned on until it is.'} Set{' '}
+      {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
+    </p>
   )
 }
 
@@ -479,6 +495,7 @@ function GeneralPanel({
         >
           <Toggle checked={bool('guest_submission_enabled')} onChange={(v) => setBool('guest_submission_enabled', v)} />
         </SettingRow>
+        <EmailStatusNote on={bool('guest_submission_enabled')} />
       </Section>
 
       <Section title="Ticket lifecycle">
@@ -847,6 +864,7 @@ function AuthPanel({
         >
           <Toggle checked={bool('self_signup_enabled')} onChange={(v) => setBool('self_signup_enabled', v)} />
         </SettingRow>
+        <EmailStatusNote on={bool('self_signup_enabled')} />
         {bool('self_signup_enabled') && (
           <>
             <div className="border-t px-5 py-4 space-y-2">
@@ -1887,6 +1905,10 @@ export function SettingsPage() {
   const [local, setLocal] = useState<Record<string, unknown>>({})
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
+  // What the server said about a save that went through (the PATCH answers 200
+  // with a warning instead of 204). Kept until the next save, not timed out:
+  // it is something to act on, such as OAuth clients left seeing no tickets.
+  const [saveWarning, setSaveWarning] = useState<{ text: string; aboutClients: boolean } | null>(null)
 
   /* The reputation API keys are write-only, so none of them is ever in `local`
      and none travels with an ordinary save. One is sent only when the operator
@@ -1919,7 +1941,7 @@ export function SettingsPage() {
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const saveMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       /* The dump's "<key>_set" entries are the server describing secrets it
          will not send, not settings. Sending one back writes a settings row by
          that name which nothing ever reads. */
@@ -1941,11 +1963,15 @@ export function SettingsPage() {
           patch[p.keySetting] = apiKeys[p.keySetting].trim()
         }
       }
-      return updateSettings(patch)
+      const res = await updateSettings(patch)
+      // The save that turned ticket scope on is the one whose warning is about
+      // OAuth clients; an SSO warning shares the field and gets no such link.
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
+      setSaveWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
       // Only on success: a refused save leaves every edit where it was,
       // including a key typed but not yet accepted.
       setApiKeys({})
@@ -1957,7 +1983,13 @@ export function SettingsPage() {
       // without this a saved "Do not scan" keeps warning for five minutes.
       qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
-    onError: (err) => setSaveError(extractError(err)),
+    onError: (err) =>
+      setSaveError(
+        // The server's text names the raw setting; say what an admin can do.
+        extractErrorCode(err) === 'email_required'
+          ? 'Email is not set up, so signup and guest submission cannot be turned on: both send an email the person needs. Set SMTP_HOST and SMTP_FROM in docker/.env, restart the server, then try again.'
+          : extractError(err),
+      ),
   })
 
   function bool(key: string) { return Boolean(local[key]) }
@@ -2029,6 +2061,20 @@ export function SettingsPage() {
             ))}
           </nav>
         </div>
+
+        {saveWarning && (
+          <div role="status" className="max-w-2xl rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <p>{saveWarning.text}</p>
+            {saveWarning.aboutClients && (
+              <p className="mt-1">
+                <Link to="/admin/oauth-clients" className="font-medium underline">
+                  Open OAuth clients
+                </Link>{' '}
+                to see which clients have no groups.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Active panel */}
         <div className="max-w-2xl">

@@ -4,17 +4,23 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/userstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/reputation"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -69,6 +75,8 @@ type choiceSetting struct {
 	fallback string
 
 	// code and message are the 400 a PATCH gets for a value valid refuses.
+	// code is also what null and a wrong type answer; message is only for a
+	// string valid refuses.
 	code, message string
 
 	// strict means decode with unmarshalSetting (rejects null as an error);
@@ -119,7 +127,8 @@ var choiceSettings = map[string]choiceSetting{
 }
 
 // refuseChoice writes the 400 for a choice-list key in body that the setting
-// refuses, and reports whether it did. It is called at the position each
+// refuses, and reports whether it did. Whatever is wrong with the value (null,
+// a wrong type, empty, unknown) the code is the setting's own. It is called at the position each
 // check always had in handleUpdateSettings, not in a loop over the table: a
 // request with two bad values names whichever is checked first, and that
 // order is part of what clients see.
@@ -131,14 +140,16 @@ func refuseChoice(w http.ResponseWriter, body map[string]json.RawMessage, key st
 	c := choiceSettings[key]
 	var v string
 	if c.strict {
+		// Null and a wrong type are refused under the setting's own code, like
+		// every other refusal of it (#420); only the message differs.
 		if err := unmarshalSetting(raw, key, &v); err != nil {
-			handleError(w, err)
+			Error(w, http.StatusBadRequest, c.code, err.Error())
 			return true
 		}
 	} else if err := json.Unmarshal(raw, &v); err != nil {
 		// Bare Unmarshal: null is no error here, it decodes to "" and gets
 		// the setting's own refusal below.
-		Error(w, http.StatusBadRequest, "bad_request", c.wrongType)
+		Error(w, http.StatusBadRequest, c.code, c.wrongType)
 		return true
 	}
 	if !c.valid(v) {
@@ -258,6 +269,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A key that is not a setting is refused, and with it the whole body (#421).
+	// It used to be stored: "mfa_enabld": true answered 204, wrote a row nothing
+	// reads and left the real setting as it was, so the operator believed a
+	// control had changed. The body is refused whole rather than the known
+	// keys written, because half a settings change is a state nobody asked
+	// for, and this runs before any validation below can write anything.
+	//
+	// Sorted, so the key named is always the same one for the same body.
+	var unknown []string
+	for k := range body {
+		if !admin.IsKnownKey(k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		Error(w, http.StatusBadRequest, "unknown_setting",
+			fmt.Sprintf("%q is not a setting; nothing was changed", unknown[0]))
+		return
+	}
+
 	// guest_submission_enabled decides whether anonymous people on the
 	// internet can file tickets into this instance, and — since the category
 	// catalogue stopped being anonymous (see requireSignedInOrGuestsEnabled
@@ -274,6 +306,38 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if err := unmarshalSetting(raw, "guest_submission_enabled", &enabled); err != nil {
 			handleError(w, err)
 			return
+		}
+	}
+
+	// Signup and guest submission both end in an email: the verification link,
+	// the guest's ticket link. With email off they look like they work and
+	// deliver nothing, so turning either ON is refused (#456).
+	//
+	// Compared against the stored value, not just the incoming one: the
+	// settings page PATCHes the whole object, so an install that already has
+	// either on with email off would otherwise get a 400 on every unrelated
+	// save. Those installs are warned (security-warnings), not switched off.
+	if !s.cfg.EmailEnabled() {
+		for _, key := range []string{admin.KeySelfSignupEnabled, admin.KeyGuestSubmissionEnabled} {
+			raw, ok := body[key]
+			if !ok {
+				continue
+			}
+			// Anything that is not a boolean is not "turning it on"; it keeps
+			// whatever treatment it had before (guest_submission_enabled is
+			// already refused above, self_signup_enabled is stored as sent).
+			var want bool
+			if json.Unmarshal(raw, &want) != nil {
+				continue
+			}
+			if want {
+				if already, _ := s.adminSvc.GetBool(r.Context(), key); !already {
+					Error(w, http.StatusBadRequest, "email_required",
+						key+" cannot be turned on while email is not configured: "+
+							"it sends an email the person needs. Set SMTP_HOST and SMTP_FROM first")
+					return
+				}
+			}
 		}
 	}
 
@@ -365,6 +429,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// What is checked is that it is a well-formed address of a scheme we can
 	// dial, so a typo fails at save time rather than at the first upload.
 	if raw, ok := body[admin.KeyAttachmentScanAddress]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentScanAddress); err != nil {
+			handleError(w, err)
+			return
+		}
 		var addr string
 		if err := json.Unmarshal(raw, &addr); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", "scanner address must be a string")
@@ -429,6 +497,10 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// list silently missing one of its entries is the same lie in a quieter
 	// form.
 	if raw, ok := body[admin.KeyAttachmentAllowedTypes]; ok {
+		if err := refuseNullSetting(raw, admin.KeyAttachmentAllowedTypes); err != nil {
+			handleError(w, err)
+			return
+		}
 		var types []string
 		if err := json.Unmarshal(raw, &types); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request",
@@ -445,6 +517,20 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Routing fallbacks (#447). These used to be saved as given and read back
+	// leniently: an id that did not parse, or named nobody, was skipped at
+	// routing time, so a typo saved cleanly and tickets quietly stayed
+	// unassigned. Refused by name instead, before anything is written.
+	if err := s.validateAutoAssign(r.Context(), body); err != nil {
+		var refusal autoAssignRefusal
+		if errors.As(err, &refusal) {
+			Error(w, http.StatusBadRequest, "invalid_auto_assign", refusal.Error())
+		} else {
+			handleError(w, err) // a failed lookup is our fault, not a bad id
+		}
+		return
+	}
+
 	// #300's guard, and the reason it lives here too rather than only on the
 	// two dedicated PUT endpoints: this generic PATCH can set oidc_enabled or
 	// blank a SAML field exactly as they would, since AuthCriticalKeys() only
@@ -459,6 +545,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Turning ticket scope on shows what it will do to OAuth clients (#420).
+	// A client sees what its service user's groups cover, so one whose user is
+	// in no group goes from seeing what it saw before to seeing nothing, and
+	// nothing else would say so. It warns and does not refuse: the setting is
+	// the administrator's to turn on. The Security warnings banner keeps
+	// saying it until every client has a group or is switched off.
+	scopeWarning, err := s.scopeEnforcementWarning(r.Context(), body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	warning = joinWarnings(warning, scopeWarning)
+
 	for k, v := range body {
 		if err := s.adminSvc.SetRaw(r.Context(), k, []byte(v)); err != nil {
 			handleError(w, err)
@@ -471,6 +570,119 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// scopeEnforcementWarning names the OAuth clients that will see no tickets once
+// this PATCH has turned ticket scope enforcement on. Empty unless the body
+// switches it from off to on: turning it on again repeats nothing, and turning
+// it off warns of nothing.
+func (s *Server) scopeEnforcementWarning(ctx context.Context, body map[string]json.RawMessage) (string, error) {
+	raw, ok := body[admin.KeyTicketScopeEnforced]
+	if !ok {
+		return "", nil
+	}
+	var on bool
+	if err := json.Unmarshal(raw, &on); err != nil || !on || s.adminSvc.TicketScopeEnforced(ctx) {
+		return "", nil
+	}
+	names, err := s.authStore.ListOAuthClientsWithoutGroups(ctx)
+	if err != nil {
+		return "", err
+	}
+	return scopeWarningFor(names), nil
+}
+
+// scopeWarningFor is the sentence for a list of client names; empty for none.
+// Shared with the Security warnings banner's wording so they cannot drift.
+func scopeWarningFor(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return "Ticket scope is now enforced. These OAuth clients will see no tickets until their " +
+		"service user is added to a group: " + strings.Join(names, ", ") + "."
+}
+
+// joinWarnings puts two warnings in one message; either may be empty.
+func joinWarnings(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + " " + b
+}
+
+// autoAssignRefusal is a verdict on the request: the id is wrong, or names
+// someone who cannot take work. Any other error from validateAutoAssign is a
+// failed lookup and is not the administrator's mistake.
+type autoAssignRefusal string
+
+func (e autoAssignRefusal) Error() string { return string(e) }
+
+func refusef(format string, a ...any) error { return autoAssignRefusal(fmt.Sprintf(format, a...)) }
+
+// validateAutoAssign checks the two routing fallbacks in a settings body.
+//
+// The group must exist. Each user must exist and be able to hold work, which
+// is staff or admin; a reporting user is refused because the assignment would
+// refuse them at routing time and the round-robin would skip them forever. A
+// disabled account is accepted: it is skipped while disabled and takes its
+// turn again when re-enabled, which is what an administrator suspending
+// someone for a week expects. Empty string, empty list and null clear a
+// setting; clearing is how an administrator turns the fallback off.
+func (s *Server) validateAutoAssign(ctx context.Context, body map[string]json.RawMessage) error {
+	if raw, ok := body[admin.KeyAutoAssignGroupID]; ok && !isJSONNull(raw) {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return autoAssignRefusal("auto_assign_group_id must be a group id, or empty to turn it off")
+		}
+		if v != "" {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_group_id %q is not a group id", v)
+			}
+			if _, err := s.groups.GetByID(ctx, id); err != nil {
+				if errors.Is(err, group.ErrNotFound) {
+					return refusef("auto_assign_group_id: no group with id %s", id)
+				}
+				return fmt.Errorf("checking auto_assign_group_id: %w", err)
+			}
+		}
+	}
+
+	if raw, ok := body[admin.KeyAutoAssignUserIDs]; ok && !isJSONNull(raw) {
+		var ids []string
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			return autoAssignRefusal("auto_assign_user_ids must be a list of user ids")
+		}
+		for _, v := range ids {
+			id, err := uuid.Parse(v)
+			if err != nil {
+				return refusef("auto_assign_user_ids: %q is not a user id", v)
+			}
+			u, err := s.users.GetByID(ctx, id)
+			if errors.Is(err, user.ErrNotFound) || errors.Is(err, userstore.ErrNotFound) {
+				return refusef("auto_assign_user_ids: no user with id %s", id)
+			}
+			if err != nil {
+				return fmt.Errorf("checking auto_assign_user_ids: %w", err)
+			}
+			if u.ServiceAccount {
+				// Assignment refuses a service user, so round-robin would skip it
+				// forever (#420).
+				return refusef("auto_assign_user_ids: %s is a service account, not a staff member", u.DisplayName)
+			}
+			if u.Role != user.RoleStaff && u.Role != user.RoleAdmin {
+				return refusef("auto_assign_user_ids: %s is not a staff member or administrator", u.DisplayName)
+			}
+		}
+	}
+	return nil
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 // ssoSettingsWarning runs #300's stranding guard against a generic
@@ -583,14 +795,23 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(metadataURL, certPEM, keyPEM), oidcFieldsLookConfigured(cfg))
 }
 
+// refuseNullSetting is unmarshalSetting's null half, for the settings whose
+// wrong-type refusal already has wording clients see and which must keep it.
+func refuseNullSetting(raw json.RawMessage, name string) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	}
+	return nil
+}
+
 // unmarshalSetting decodes a PATCH /admin/settings field into dst, refusing
 // both a JSON type mismatch and the literal null — see ssoSettingsWarning's
 // own comment for why null needs its own check: encoding/json's Unmarshal
 // treats null into a non-pointer destination as a silent no-op rather than
 // an error, so a type check alone does not catch it.
 func unmarshalSetting[T any](raw json.RawMessage, name string, dst *T) error {
-	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return fmt.Errorf("%w: %s must not be null", user.ErrValidation, name)
+	if err := refuseNullSetting(raw, name); err != nil {
+		return err
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
 		return fmt.Errorf("%w: %s has the wrong type", user.ErrValidation, name)
@@ -619,6 +840,85 @@ type securityWarnings struct {
 	// each read, not remembered from startup, so it clears the moment the
 	// directory is fixed.
 	AttachmentStorage storageStatus `json:"attachment_storage"`
+
+	// OAuthClientsWithoutGroups names the switched-on OAuth clients that see no
+	// tickets because ticket scope is enforced and their service user is in no
+	// group (#420). Always an array, empty when scope is not enforced. It stays
+	// until every such client has a group or is disabled, which is why it is a
+	// banner and not only the sentence on the save that turned scope on.
+	OAuthClientsWithoutGroups []string `json:"oauth_clients_without_groups"`
+
+	// ReopenTarget says whether the configured reopen target status has been
+	// deactivated. Reopened tickets go to New meanwhile.
+	ReopenTarget reopenTargetStatus `json:"reopen_target"`
+
+	// Passkeys says whether passkeys can be used on this instance (#494).
+	// They cannot when BASE_URL is an IP address, a single-label host or
+	// non-ASCII, because a passkey is bound to a domain name.
+	Passkeys passkeyStatus `json:"passkeys"`
+
+	// Email says whether mail can be sent and whether it is being delivered
+	// (#455, #456). Additive.
+	Email emailStatus `json:"email"`
+}
+
+type reopenTargetStatus struct {
+	// Inactive is true when the setting names an existing, deactivated status.
+	Inactive bool `json:"inactive"`
+	// Name is the configured status name, set whenever Inactive is.
+	Name string `json:"name,omitempty"`
+}
+
+// reopenTargetInactive reports the configured reopen target when it names a
+// deactivated status. A name that matches nothing is not reported here: it
+// already falls back to New and nobody picked a retired status.
+func (s *Server) reopenTargetInactive(ctx context.Context) (reopenTargetStatus, error) {
+	if s.reopenTargetCheck != nil {
+		return s.reopenTargetCheck(ctx)
+	}
+	statuses, err := s.tickets.ListStatuses(ctx)
+	if err != nil {
+		return reopenTargetStatus{}, err
+	}
+	want := s.adminSvc.ReopenTargetStatusName(ctx)
+	for _, st := range statuses {
+		if st.Name == want && !st.Active {
+			return reopenTargetStatus{Inactive: true, Name: want}, nil
+		}
+	}
+	return reopenTargetStatus{}, nil
+}
+
+// reopenTargetWarning is the sentence for an inactive target, shared by the
+// security warnings banner and the status response.
+func reopenTargetWarning(name string) string {
+	return "The reopen target status \"" + name + "\" is inactive, so reopened tickets are going to \"New\" instead. " +
+		"Pick an active status under Settings, Ticket lifecycle, Reopen target status."
+}
+
+type passkeyStatus struct {
+	Available bool `json:"available"`
+	// Reason is why not, in the library's words. Empty when Available.
+	Reason string `json:"reason"`
+}
+
+// emailStatus never carries a credential or an address: names of unset
+// variables, two flags, and the worker's already-redacted error text.
+type emailStatus struct {
+	// Enabled is false until both SMTP_HOST and SMTP_FROM are set.
+	Enabled bool `json:"enabled"`
+	// Missing names the unset variables while Enabled is false.
+	Missing []string `json:"missing"`
+	// SignupWithoutEmail and GuestSubmissionWithoutEmail say a feature that
+	// sends email is on although email is not configured. Refused when
+	// turning it on; reported for installs that already had it on.
+	SignupWithoutEmail          bool `json:"signup_without_email"`
+	GuestSubmissionWithoutEmail bool `json:"guest_submission_without_email"`
+	// Failing is true while email rows are retrying after an error or gave up
+	// in the last day; LastError is the newest error text.
+	Failing      bool   `json:"failing"`
+	FailingCount int    `json:"failing_count"`
+	LastError    string `json:"last_error"`
 }
 
 type storageStatus struct {
@@ -664,11 +964,66 @@ type scanStatus struct {
 // publicly known key is not a warning, it is an invitation.
 func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Request) {
 	problem := attachmentStorageProblem(s.cfg.AttachmentDir)
+	unscoped := []string{}
+	if s.adminSvc.TicketScopeEnforced(r.Context()) {
+		names, err := s.authStore.ListOAuthClientsWithoutGroups(r.Context())
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if names != nil {
+			unscoped = names
+		}
+	}
+	// An unreadable status list must not hide the other warnings: log it and
+	// report no problem with the reopen target.
+	reopen, err := s.reopenTargetInactive(r.Context())
+	if err != nil {
+		slog.ErrorContext(r.Context(), "checking the reopen target for the security warnings failed", "error", err)
+		reopen = reopenTargetStatus{}
+	}
 	JSON(w, http.StatusOK, securityWarnings{
-		InsecureSecrets:    s.cfg.InsecureSecrets(),
-		AttachmentScanning: s.scanStatus(r.Context()),
-		AttachmentStorage:  storageStatus{Writable: problem == "", Problem: problem},
+		ReopenTarget:              reopen,
+		InsecureSecrets:           s.cfg.InsecureSecrets(),
+		AttachmentScanning:        s.scanStatus(r.Context()),
+		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
+		OAuthClientsWithoutGroups: unscoped,
+		Passkeys:                  s.passkeyStatus(),
+		Email:                     s.emailStatus(r.Context()),
 	})
+}
+
+func (s *Server) passkeyStatus() passkeyStatus {
+	if s.passkeysAvailable() {
+		return passkeyStatus{Available: true}
+	}
+	reason := s.passkeysReason
+	if reason == "" {
+		reason = "BASE_URL cannot be used as a passkey domain"
+	}
+	return passkeyStatus{Reason: reason}
+}
+
+func (s *Server) emailStatus(ctx context.Context) emailStatus {
+	st := emailStatus{Enabled: s.cfg.EmailEnabled(), Missing: []string{}}
+	if s.cfg.SMTPHost == "" {
+		st.Missing = append(st.Missing, "SMTP_HOST")
+	}
+	if s.cfg.SMTPFrom == "" {
+		st.Missing = append(st.Missing, "SMTP_FROM")
+	}
+	if !st.Enabled {
+		st.SignupWithoutEmail = s.adminSvc.SelfSignupEnabled(ctx)
+		st.GuestSubmissionWithoutEmail = s.adminSvc.GuestSubmissionEnabled(ctx)
+	}
+	if s.emailHealth != nil {
+		// A failed read reports nothing wrong: a warning that fires on a
+		// database hiccup is worse than one that stays quiet.
+		if h, err := s.emailHealth.EmailHealth(ctx); err == nil && h.Failing > 0 {
+			st.Failing, st.FailingCount, st.LastError = true, h.Failing, h.LastError
+		}
+	}
+	return st
 }
 
 // scanStatus pings the scanner rather than reporting what the settings say.
@@ -788,6 +1143,9 @@ func validateReputationConfig(ctx context.Context, adminSvc *admin.Service, body
 
 		enabled := adminSvc.ReputationEnabled(ctx, p)
 		if raw, present := body[enabledKey]; present {
+			if err := refuseNullSetting(raw, enabledKey); err != nil {
+				return err
+			}
 			if err := json.Unmarshal(raw, &enabled); err != nil {
 				return fmt.Errorf("the %s toggle must be true or false", reputation.DisplayName(p))
 			}

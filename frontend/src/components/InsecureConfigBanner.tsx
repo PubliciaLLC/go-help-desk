@@ -27,7 +27,12 @@ interface InsecureConfigBannerProps {
  * who deliberately turned scanning off already sees that choice in Settings
  * and does not need a standing alarm about it.
  *
- * Both shown to admins only. The backend deliberately keeps this off the
+ * The OAuth clients warning (#420): with ticket scope enforcement on, a client
+ * whose service user is in no group sees no tickets, and nothing else says so.
+ * Its link is a plain anchor, not the router's Link: the banner's tests render
+ * it with no router, and the full page load costs nothing here.
+ *
+ * All shown to admins only. The backend deliberately keeps this off the
  * public /api/v1/site payload: announcing to anonymous visitors that sessions
  * are signed with a known key, or that uploads are going unscanned, is an
  * invitation rather than a warning. The query is gated on the same condition
@@ -50,7 +55,30 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   const storage = data?.attachment_storage
   const storageBroken = !!storage && !storage.writable
 
-  if (insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken) return null
+  // #420: OAuth clients that see nothing. Names only; the page they link to
+  // shows each client's groups and its service user.
+  const blindClients = data?.oauth_clients_without_groups ?? []
+
+  const reopenTarget = data?.reopen_target
+  const reopenInactive = !!reopenTarget?.inactive
+
+  // An absent field is a server that predates it, which had no way to be off.
+  const passkeys = data?.passkeys
+  const passkeysOff = !!passkeys && !passkeys.available
+
+  const email = data?.email
+  // Email off is a choice for an install that uses nothing which sends mail,
+  // so it is only a warning once signup or guest submission is on. Settings
+  // shows the plain status either way.
+  const emailOff = !!email && !email.enabled && (email.signup_without_email || email.guest_submission_without_email)
+  const emailFailing = !!email && email.failing
+
+  if (
+    insecure.length === 0 && !scannerDegraded && !staleOff && !storageBroken && !reopenInactive &&
+    !passkeysOff && !emailOff && !emailFailing && blindClients.length === 0
+  ) {
+    return null
+  }
 
   return (
     <>
@@ -82,6 +110,69 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             The server cannot write to its attachment directory ({storage.problem}). Uploads are refused until{' '}
             <code className="rounded bg-red-800/60 px-1 py-0.5 font-mono text-xs">ATTACHMENT_DIR</code> exists and the
             server can write to it. Existing attachments can still be downloaded. No restart is needed once it is fixed.
+          </p>
+        </div>
+      )}
+      {reopenInactive && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">The reopen target status is inactive</p>
+          <p className="mt-1 text-sm">
+            &quot;{reopenTarget?.name}&quot; has been deactivated, so reopened tickets are going to &quot;New&quot;
+            instead. Pick an active status under Settings → Ticket lifecycle → Reopen target status.
+          </p>
+        </div>
+      )}
+      {passkeysOff && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">Passkeys are unavailable</p>
+          <p className="mt-1 text-sm">
+            A passkey is tied to a domain name, so{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">BASE_URL</code> must be a domain
+            name (or <code className="font-mono text-xs">localhost</code>) to use them; an IP address or a single-word
+            host will not work. Everything else runs normally, but anyone whose only second factor is a passkey cannot
+            sign in while sign-in MFA is on, until an administrator resets their sign-in factors. If that is the last
+            administrator, run{' '}
+            <code className="rounded bg-amber-700/30 px-1 py-0.5 font-mono text-xs">
+              docker compose exec app /app/server reset-factors &lt;email&gt;
+            </code>{' '}
+            on the server. Reason: {passkeys.reason}
+          </p>
+        </div>
+      )}
+      {emailOff && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">Email is not set up</p>
+          <p className="mt-1 text-sm">
+            No email can be sent: {email.missing.join(' and ')} {email.missing.length === 1 ? 'is' : 'are'} not set in{' '}
+            <code className="font-mono text-xs">docker/.env</code>. Set{' '}
+            {email.missing.length === 1 ? 'it' : 'both'}, then restart the server.
+            {email.signup_without_email && ' Self-service signup is on, so nobody can finish signing up.'}
+            {email.guest_submission_without_email && ' Guest submission is on, so guests get no link to their ticket.'}
+          </p>
+        </div>
+      )}
+      {emailFailing && (
+        <div role="alert" className="border-b border-red-700 bg-red-600 px-4 py-3 text-white">
+          <p className="text-sm font-semibold">Email is not being delivered</p>
+          <p className="mt-1 text-sm text-red-50">
+            {email.failing_count} {email.failing_count === 1 ? 'message has' : 'messages have'} failed or are being
+            retried. Latest error: {email.last_error}
+          </p>
+        </div>
+      )}
+      {blindClients.length > 0 && (
+        <div role="alert" className="border-b border-amber-700 bg-amber-500 px-4 py-3 text-amber-950">
+          <p className="text-sm font-semibold">
+            {blindClients.length === 1 ? 'An OAuth client sees' : 'OAuth clients see'} no tickets
+          </p>
+          <p className="mt-1 text-sm">
+            Ticket scope is on, and {blindClients.join(', ')}{' '}
+            {blindClients.length === 1 ? 'acts as a service user' : 'act as service users'} in no group.{' '}
+            <a className="font-medium underline" href="/admin/oauth-clients">
+              Open OAuth clients
+            </a>{' '}
+            to add {blindClients.length === 1 ? 'it' : 'each'} to a group, or disable{' '}
+            {blindClients.length === 1 ? 'it' : 'them'}. This stays until you do.
           </p>
         </div>
       )}

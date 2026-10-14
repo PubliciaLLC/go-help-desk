@@ -139,6 +139,26 @@ SELECT
           AND it.type_id = sqlc.narg('type_id')
           AND t2.category_id = sqlc.arg('category_id')));
 
+-- name: ArchivedCTINode :one
+-- Which level of a classification being NEWLY picked is archived: 'category',
+-- 'type', 'item', or '' when none is. Highest level first, so a ticket aimed at
+-- an archived category is told about the category, not the type under it.
+--
+-- A NULL argument means "not being picked" and is skipped; the caller passes
+-- only the levels that differ from what the ticket already holds, because a
+-- ticket already sitting in an archived node keeps it (#421). An id that does
+-- not exist matches nothing here: CategoryExists and CTIIsCoherent refuse
+-- those.
+SELECT (CASE
+    WHEN sqlc.narg('category_id')::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM categories WHERE id = sqlc.narg('category_id') AND NOT active) THEN 'category'
+    WHEN sqlc.narg('type_id')::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM types WHERE id = sqlc.narg('type_id') AND NOT active) THEN 'type'
+    WHEN sqlc.narg('item_id')::uuid IS NOT NULL
+         AND EXISTS (SELECT 1 FROM items WHERE id = sqlc.narg('item_id') AND NOT active) THEN 'item'
+    ELSE ''
+END)::text AS archived_level;
+
 -- name: UserExists :one
 -- Whether a live account holds this id. Used for a supplied reporter, which
 -- unlike an assignee may be any role — a ticket is filed on behalf of whoever
@@ -147,7 +167,9 @@ SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL);
 
 -- name: IsAssignableUser :one
 -- Whether a user can be given a ticket: the account exists, is not deleted,
--- is not disabled, and is staff. A reporting user is not a queue.
+-- is not disabled, and is staff. A reporting user is not a queue, and neither
+-- is a service user (#420): an OAuth client's identity cannot work a ticket,
+-- which also keeps it out of round-robin without a check of its own.
 --
 -- Asked inside the assignment transaction rather than by the caller, because
 -- the caller is not the only caller. The REST handler checked this and MCP
@@ -167,6 +189,7 @@ WHERE id = $1
   AND deleted_at IS NULL
   AND disabled = FALSE
   AND role IN ('staff', 'admin')
+  AND NOT service_account
 FOR SHARE;
 
 -- name: IsAssignableGroup :one
@@ -192,6 +215,23 @@ SET assignee_user_id = NULL, updated_at = now()
 WHERE assignee_user_id = $1
   AND resolved_at IS NULL
   AND closed_at IS NULL
+RETURNING id;
+
+-- name: LockGroup :one
+-- Locks the group row so nothing can be assigned to it until the transaction
+-- ends. A ticket's assignee_group_id takes a share lock on the group it names,
+-- and this conflicts with that. Without it a ticket assigned between
+-- UnassignTicketsForGroup and the delete would lose its group silently, which
+-- is the gap this exists to close.
+SELECT id FROM groups WHERE id = $1 FOR UPDATE;
+
+-- name: UnassignTicketsForGroup :many
+-- Takes every ticket off a group that is about to be deleted, and says which.
+-- All of them, resolved and closed too: the foreign key (ON DELETE SET NULL)
+-- would clear those anyway, and the audit trail should record it.
+UPDATE tickets
+SET assignee_group_id = NULL, updated_at = now()
+WHERE assignee_group_id = $1
 RETURNING id;
 
 -- name: ListUnassignedTickets :many

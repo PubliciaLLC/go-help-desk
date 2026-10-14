@@ -64,6 +64,7 @@ type fakeStore struct {
 
 	// Injectable failures.
 	errUpdate        error
+	errDeleteGroup   error
 	errCreate        error
 	errCreateReply   error
 	errGetByID       error
@@ -310,6 +311,12 @@ func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.
 	return true, nil
 }
 
+// ArchivedCTINode: this fake has no catalogue, so nothing is archived. The real
+// rule lives in SQL and is exercised against a real database.
+func (f *fakeStore) ArchivedCTINode(context.Context, *uuid.UUID, *uuid.UUID, *uuid.UUID) (string, error) {
+	return "", nil
+}
+
 func (f *fakeStore) CategoryExists(context.Context, uuid.UUID) (bool, error) {
 	return true, nil
 }
@@ -337,6 +344,26 @@ func (f *fakeStore) UnassignForUser(_ context.Context, userID uuid.UUID) ([]uuid
 		moved = append(moved, id)
 	}
 	return moved, nil
+}
+
+// UnassignForGroup clears the group on every ticket held by it, whatever
+// state the ticket is in: the foreign key would clear them anyway.
+func (f *fakeStore) UnassignForGroup(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	var moved []uuid.UUID
+	for id, t := range f.tickets {
+		if t.AssigneeGroupID == nil || *t.AssigneeGroupID != groupID {
+			continue
+		}
+		t.AssigneeGroupID = nil
+		f.tickets[id] = t
+		moved = append(moved, id)
+	}
+	return moved, nil
+}
+
+// DeleteGroup is where a test makes the last step of a group delete fail.
+func (f *fakeStore) DeleteGroup(_ context.Context, _ uuid.UUID) error {
+	return f.errDeleteGroup
 }
 
 func (f *fakeStore) ListResolvedBefore(_ context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]ticket.Ticket, error) {

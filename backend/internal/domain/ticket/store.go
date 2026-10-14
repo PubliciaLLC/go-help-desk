@@ -50,6 +50,15 @@ type Store interface {
 	// UnassignForUser clears the assignee on every OPEN ticket held by a
 	// user, and reports how many moved. Used when an account is deleted.
 	UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// UnassignForGroup clears the group on EVERY ticket held by it, open or
+	// not, and returns their ids. It locks the group row first, so a ticket
+	// cannot be assigned to the group between this and DeleteGroup; an unknown
+	// group wraps group.ErrNotFound.
+	UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// DeleteGroup removes the group row. It lives on this store so a group can
+	// be deleted in the same transaction as the audit entries for the tickets
+	// it held (see Service.DeleteGroup).
+	DeleteGroup(ctx context.Context, groupID uuid.UUID) error
 	// IsAssignableUser and IsAssignableGroup are asked inside the assignment
 	// transaction, so every caller gets the same answer and no caller has to
 	// remember to ask.
@@ -64,6 +73,10 @@ type Store interface {
 	// the type — the pairings the foreign keys only enforce at the INSERT,
 	// which is after the tracking number has been taken.
 	CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error)
+	// ArchivedCTINode names the first archived level among the ids given
+	// ("category", "type" or "item"), or "" when none is; a nil id is not
+	// checked. It is how "nobody newly picks an archived node" is decided.
+	ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error)
 	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
 	// ListResolvedBefore lists tickets resolved before the given time.
 	// resolvedStatusID must be the Resolved status's id: without it, a row

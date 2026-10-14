@@ -173,7 +173,8 @@ const redactedPlaceholder = "[redacted]"
 // shownKeys is every Before/After key the audit view may show, normalised
 // (normaliseKey). Each is an id, a status, a flag or a count, written by
 // ticketMap and the ticket audit paths (including the priority change's
-// reason, SLA outcome and record ids), UnassignForUser, user.ResetMFA and
+// reason, SLA outcome and record ids), UnassignForUser, DeleteGroup,
+// user.ResetMFA and
 // cmd/server/resetfactors.go (whose os_user and host say who ran it, as
 // actor_name does for everyone else).
 //
@@ -186,7 +187,7 @@ const redactedPlaceholder = "[redacted]"
 // Adding a key here is a decision that its values can never carry such data.
 var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
-	"assigneeuserid": true, "followupof": true,
+	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
 	"forcedreopen": true, "closedreopenpolicy": true,
 	"passkeysremoved": true, "totpcleared": true, "sessionsrevoked": true,
 	"osuser": true, "host": true, "source": true,

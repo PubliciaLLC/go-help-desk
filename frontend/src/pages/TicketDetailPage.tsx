@@ -510,8 +510,8 @@ export function TicketDetailPage() {
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0 space-y-1">
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <span>{ticket.tracking_number}</span>
+            <div className="flex flex-wrap items-center gap-x-2 text-sm text-gray-500">
+              <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
             </div>
@@ -621,7 +621,7 @@ export function TicketDetailPage() {
                 <CardTitle className="text-sm text-gray-500">Description</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="whitespace-pre-wrap text-sm break-all">
+                <p className="whitespace-pre-wrap text-sm break-words">
                   {ticket.description || <span className="text-gray-400">No description provided.</span>}
                 </p>
               </CardContent>
@@ -743,7 +743,10 @@ export function TicketDetailPage() {
                     onChange={(e) => statusMutation.mutate(e.target.value)}
                     disabled={statusMutation.isPending}
                   >
-                    {statuses.map((s) => (
+                    {/* An inactive status is retired: the server refuses a move
+                        into it, so it is not offered. The ticket's own status
+                        stays listed or the select would show the wrong one. */}
+                    {statuses.filter((s) => s.active || s.id === ticket.status_id).map((s) => (
                       <option key={s.id} value={s.id}>{s.name}</option>
                     ))}
                   </Select>

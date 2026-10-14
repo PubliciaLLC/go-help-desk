@@ -187,6 +187,16 @@ func (probeOAuthClients) GetByClientID(_ context.Context, id string) (auth.OAuth
 	return auth.OAuthClient{ClientID: id}, nil
 }
 
+// GetWithUser is what BearerAuth calls (#420): the client and the staff-role
+// service user it acts as.
+func (p probeOAuthClients) GetWithUser(ctx context.Context, id string) (auth.OAuthClient, user.User, error) {
+	c, err := p.GetByClientID(ctx, id)
+	if err != nil {
+		return auth.OAuthClient{}, user.User{}, err
+	}
+	return c, user.User{ID: uuid.New(), DisplayName: "probe", Role: user.RoleStaff, ServiceAccount: true}, nil
+}
+
 type probeKey struct {
 	role   user.Role
 	scopes []string
@@ -902,8 +912,11 @@ type routeAuth struct {
 
 // Middleware the probe does not need to run: not authentication.
 var probeIgnored = []string{
-	"chi/v5/middleware.RequestID", "chi/v5/middleware.Recoverer",
+	"chi/v5/middleware.RequestID", "server.jsonRecoverer",
 	"server.requestLogger", "server.securityHeaders", "server.reputationDeadline",
+	// Answers 503 when the instance has no passkey service (#494); says
+	// nothing about who may call the route.
+	"Server).requirePasskeys",
 }
 
 // minimalScopes shrinks all to a smallest set that admits still accepts,

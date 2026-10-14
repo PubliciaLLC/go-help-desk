@@ -61,17 +61,6 @@ func (s *Store) Update(ctx context.Context, g group.Group) error {
 	return nil
 }
 
-func (s *Store) Delete(ctx context.Context, id uuid.UUID) error {
-	n, err := s.q.DeleteGroup(ctx, id)
-	if err != nil {
-		return fmt.Errorf("deleting group %s: %w", id, err)
-	}
-	if n == 0 {
-		return fmt.Errorf("group %s: %w", id, group.ErrNotFound)
-	}
-	return nil
-}
-
 func (s *Store) List(ctx context.Context) ([]group.Group, error) {
 	rows, err := s.q.ListGroups(ctx)
 	if err != nil {

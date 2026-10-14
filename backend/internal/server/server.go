@@ -26,6 +26,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
@@ -77,6 +78,10 @@ import (
 // author. The package comment claimed it "uses the same auth methods (API key,
 // bearer token) as the REST API", which is presumably why nobody checked.
 //
+// On every MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message) it first refuses any
+// request whose Origin header is present and is not this instance's: see
+// requireMCPOrigin.
+//
 // It authenticates; it does not authorise. Every signed-in role is admitted,
 // including RoleUser, and what a caller may then DO is decided per tool in
 // internal/mcp: write tools require staff, and reads are filtered through the
@@ -104,7 +109,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
-	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID)(chain)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
@@ -124,28 +129,44 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	// outside the chi chain, so nothing else was setting them. DESIGN.md says
 	// "security headers on every response", and /mcp/ was one of the two
 	// places that was not true.
-	return securityHeaders(chimw.RequestID(chimw.Recoverer(requestLogger(chain))))
+	//
+	// The Origin check goes outside the auth chain and inside the logger, so a
+	// refusal is logged and carries the security headers, and says the same
+	// thing whatever credential came with it. See requireMCPOrigin.
+	return securityHeaders(chimw.RequestID(jsonRecoverer(requestLogger(
+		requireMCPOrigin(s.cfg.BaseURL, chain)))))
 }
 
-// OAuthClientLookup fetches an OAuth client by client ID.
+// OAuthClientLookup fetches an OAuth client by client ID. GetWithUser also
+// returns the service user it acts as, in one query, for BearerAuth.
 type OAuthClientLookup interface {
 	GetByClientID(ctx context.Context, clientID string) (auth.OAuthClient, error)
+	GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 }
 
 // AuthStoreIface is the server-facing interface for auth key management.
 type AuthStoreIface interface {
 	CreateAPIKey(ctx context.Context, k auth.APIKey) error
 	Delete(ctx context.Context, id uuid.UUID) error
-	ListByUser(ctx context.Context, userID uuid.UUID) ([]auth.APIKey, error)
+	ListWithOwner(ctx context.Context, keyID *uuid.UUID) ([]auth.APIKeyWithOwner, error)
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
+	// OAuthClientNameForUser is the client a service user belongs to.
+	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)
+	// ListOAuthClientGroups is every client's groups (its service user's), keyed
+	// by the client row's id, in one query.
+	ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error)
+	// ListOAuthClientsWithoutGroups names the switched-on clients whose service
+	// user is in no group.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
 	CreateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]authstore.WebhookDeliveryRecord, error)
 }
 
 // Server is the top-level HTTP handler.
@@ -187,6 +208,11 @@ type Server struct {
 	router   *chi.Mux
 	sessions SessionStore
 
+	// reopenTargetCheck replaces reopenTargetInactive. Nil in production; a
+	// test sets it to make the check fail after a status has been saved,
+	// which cannot be done by breaking a table (see export_test.go).
+	reopenTargetCheck func(context.Context) (reopenTargetStatus, error)
+
 	users        *user.Service
 	tickets      *ticket.Service
 	registration *registration.Service
@@ -195,7 +221,12 @@ type Server struct {
 	// they produce. Two fields because the ceremony service owns no storage —
 	// it is handed an account and returns a credential, and the caller decides
 	// what to keep.
+	//
+	// passkeys is nil when BASE_URL cannot be a relying-party id (#494);
+	// passkeysAvailable is the only way to ask, and every route that would
+	// reach the service sits behind requirePasskeys.
 	passkeys        *webauthn.Service
+	passkeysReason  string
 	passkeyStore    webauthn.Store
 	groups          *group.Service
 	tags            *tag.Service
@@ -233,6 +264,14 @@ type Server struct {
 
 	// auditStore backs the admin-wide audit view (#129). See WithAuditStore.
 	auditStore audit.Store
+
+	// emailHealth backs the email entry in the admin security warnings
+	// (#456). Nil reports configuration only. See WithEmailHealth.
+	emailHealth notification.HealthReader
+
+	// webhookRedeliverer queues a past webhook delivery again (#448). See
+	// WithWebhookRedeliverer.
+	webhookRedeliverer WebhookRedeliverer
 }
 
 // Option adjusts a Server after its collaborators are in place.
@@ -259,6 +298,16 @@ func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Opt
 	}
 }
 
+// WithPasskeysUnavailable records why New was given no passkey service, for
+// the administrator's security warnings (#494). It does not switch anything
+// off: a nil service is what does that. An empty reason is ignored, so main
+// can pass whatever configuring passkeys returned.
+func WithPasskeysUnavailable(reason string) Option {
+	return func(s *Server) {
+		s.passkeysReason = reason
+	}
+}
+
 // WithAuditStore gives the server read access to the audit log for the
 // admin-wide audit view (#129).
 //
@@ -271,6 +320,14 @@ func WithReputationLookup(store reputation.Store, providerOpts ...reputation.Opt
 func WithAuditStore(store audit.Store) Option {
 	return func(s *Server) {
 		s.auditStore = store
+	}
+}
+
+// WithEmailHealth lets the admin security warnings say whether email is being
+// delivered (#456). Without it the warning reports configuration only.
+func WithEmailHealth(r notification.HealthReader) Option {
+	return func(s *Server) {
+		s.emailHealth = r
 	}
 }
 
@@ -335,6 +392,21 @@ func New(
 	// because the server already holds both halves and every ticket route — REST
 	// and MCP, which shares this service — reaches the service through it.
 	tickets.SetClosedReopenPolicy(adminSvc.ClosedReopenPolicy)
+	// Same reasoning: REST and MCP both ask the ticket service who a reply is
+	// mailed to (#442), and it needs the user lookup the server already holds.
+	tickets.SetUserEmailLookup(func(ctx context.Context, id uuid.UUID) (string, error) {
+		u, err := users.GetByID(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		// A service user (an OAuth client's identity) is never mailed: its
+		// address is made up and cannot receive mail. No address means the
+		// reply goes out without mail, on REST and MCP alike (#420).
+		if u.ServiceAccount {
+			return "", nil
+		}
+		return u.Email, nil
+	})
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -435,7 +507,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// back with a trusted-proxy setting attached, so that getting it wrong
 	// costs a log field rather than a security control.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.Recoverer)
+	r.Use(jsonRecoverer)
 	r.Use(requestLogger)
 	r.Use(securityHeaders)
 	// Stamps the request with the instant after which no attachment
@@ -447,7 +519,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
 	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
-	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID))
+	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser))
 
 	// Health check — no auth required.
 	r.Get("/health", s.handleHealth)
@@ -529,9 +601,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 //
 // DESIGN.md's "Ticket Submission by Role" table: a guest and a reporting user
 // get active categories and types only; staff and administrators get All.
-// Staff need the archived ones because filing or reclassifying an old ticket
-// under the classification it actually belongs to is ordinary work, and that
-// classification may well have been retired since.
+// Staff need the archived ones to read the classification of tickets already
+// filed under it, and to filter and report on it; the UI shows them greyed out.
+// They are NOT for picking: nobody, staff and administrators included, may newly
+// file or reclassify into an archived node (#421; the ticket service enforces it).
 //
 // The form used to ask a different endpoint for staff — /admin/categories —
 // which is wrapped in RequireRole(admin). Staff got 403, the query failed,

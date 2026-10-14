@@ -38,10 +38,6 @@ func (s *Service) Update(ctx context.Context, g Group) error {
 	return s.store.Update(ctx, g)
 }
 
-func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
-	return s.store.Delete(ctx, id)
-}
-
 func (s *Service) List(ctx context.Context) ([]Group, error) {
 	return s.store.List(ctx)
 }
