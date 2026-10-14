@@ -200,7 +200,7 @@ export function TicketListPage() {
 
         {/* Toolbar: search + scope + closed toggle */}
         <div className="flex items-center gap-3 flex-wrap">
-          <div className="relative w-full md:w-auto md:flex-1 md:max-w-lg">
+          <div className="relative w-full md:flex-1 md:max-w-lg">
             <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
               className="pl-9"
