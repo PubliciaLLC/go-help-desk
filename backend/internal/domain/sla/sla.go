@@ -55,7 +55,7 @@ type Record struct {
 	ResolutionElapsedAtMetSeconds *int64 `json:"resolution_elapsed_at_met_seconds,omitempty"`
 
 	// StartedAt is where this record's clock starts. nil means the ticket's
-	// creation, which is every record written before migration 000041 and
+	// creation, which is every record written before migration 000043 and
 	// every record AttachPolicy writes. It is set only by a priority re-match
 	// (#443b), which supersedes a record and starts a new one rather than
 	// rewriting the old.
