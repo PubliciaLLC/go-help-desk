@@ -3,6 +3,7 @@ import { listTicketAudit } from '@/api/tickets'
 import type { TicketAuditEntry } from '@/api/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuditDiff } from '@/components/AuditDiff'
+import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
 import { EyeOffIcon } from 'lucide-react'
 
 interface AuditFeedProps {
@@ -32,15 +33,8 @@ function labelFor(action: string): string {
   )
 }
 
-// An unfollowed entry written when a ticket is reassigned has the person who
-// reassigned it as its actor, so "Stopped following by <admin>" would name the
-// wrong person. It carries whose follow it was in before.assignee_user_id.
 function labelForEntry(e: TicketAuditEntry): string {
-  const who = e.action === 'unfollowed' ? e.before?.assignee_user_id : undefined
-  if (typeof who === 'string') {
-    return `Follow removed on reassignment (${e.names?.[who]?.name ?? who})`
-  }
-  return labelFor(e.action)
+  return followRemovalLabel(e) ?? labelFor(e.action)
 }
 
 // #129: the per-ticket activity feed, next to the status timeline —
@@ -85,7 +79,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
                 {new Date(e.created_at).toLocaleString()}
               </span>
               {/* A follow entry's diff only repeats what its label says. */}
-              {e.action !== 'unfollowed' && e.action !== 'followed' && (
+              {!isFollowAction(e.action) && (
                 <AuditDiff before={e.before} after={e.after} names={e.names} />
               )}
             </li>
