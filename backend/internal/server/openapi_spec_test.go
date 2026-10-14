@@ -187,6 +187,16 @@ func (probeOAuthClients) GetByClientID(_ context.Context, id string) (auth.OAuth
 	return auth.OAuthClient{ClientID: id}, nil
 }
 
+// GetWithUser is what BearerAuth calls (#420): the client and the staff-role
+// service user it acts as.
+func (p probeOAuthClients) GetWithUser(ctx context.Context, id string) (auth.OAuthClient, user.User, error) {
+	c, err := p.GetByClientID(ctx, id)
+	if err != nil {
+		return auth.OAuthClient{}, user.User{}, err
+	}
+	return c, user.User{ID: uuid.New(), DisplayName: "probe", Role: user.RoleStaff, ServiceAccount: true}, nil
+}
+
 type probeKey struct {
 	role   user.Role
 	scopes []string

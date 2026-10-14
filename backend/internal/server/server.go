@@ -109,7 +109,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	chain := authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser)(
 		authmw.RequireMFA(next),
 	)
-	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID)(chain)
+	chain = authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser)(chain)
 	chain = authmw.APIKeyAuth(s.apiKeyLookup)(chain)
 	chain = authmw.SessionAuth(s.sessions)(chain)
 
@@ -137,9 +137,11 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 		requireMCPOrigin(s.cfg.BaseURL, chain)))))
 }
 
-// OAuthClientLookup fetches an OAuth client by client ID.
+// OAuthClientLookup fetches an OAuth client by client ID. GetWithUser also
+// returns the service user it acts as, in one query, for BearerAuth.
 type OAuthClientLookup interface {
 	GetByClientID(ctx context.Context, clientID string) (auth.OAuthClient, error)
+	GetWithUser(ctx context.Context, clientID string) (auth.OAuthClient, user.User, error)
 }
 
 // AuthStoreIface is the server-facing interface for auth key management.
@@ -150,6 +152,14 @@ type AuthStoreIface interface {
 	CreateOAuthClient(ctx context.Context, c auth.OAuthClient) error
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) error
 	ListOAuthClients(ctx context.Context) ([]auth.OAuthClient, error)
+	// OAuthClientNameForUser is the client a service user belongs to.
+	OAuthClientNameForUser(ctx context.Context, userID uuid.UUID) (string, error)
+	// ListOAuthClientGroups is every client's groups (its service user's), keyed
+	// by the client row's id, in one query.
+	ListOAuthClientGroups(ctx context.Context) (map[uuid.UUID][]auth.ClientGroup, error)
+	// ListOAuthClientsWithoutGroups names the switched-on clients whose service
+	// user is in no group.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
 	CreateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
 	GetWebhook(ctx context.Context, id uuid.UUID) (authstore.WebhookConfig, error)
 	UpdateWebhook(ctx context.Context, wh authstore.WebhookConfig) error
@@ -389,6 +399,12 @@ func New(
 		if err != nil {
 			return "", err
 		}
+		// A service user (an OAuth client's identity) is never mailed: its
+		// address is made up and cannot receive mail. No address means the
+		// reply goes out without mail, on REST and MCP alike (#420).
+		if u.ServiceAccount {
+			return "", nil
+		}
 		return u.Email, nil
 	})
 	for _, opt := range opts {
@@ -503,7 +519,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// Auth middleware chain: each layer runs only when no prior actor is set.
 	r.Use(authmw.SessionAuth(s.sessions))
 	r.Use(authmw.APIKeyAuth(s.apiKeyLookup))
-	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetByClientID))
+	r.Use(authmw.BearerAuth(s.cfg.JWTSecret, s.oauthClientStore.GetWithUser))
 
 	// Health check — no auth required.
 	r.Get("/health", s.handleHealth)

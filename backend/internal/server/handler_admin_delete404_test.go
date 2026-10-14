@@ -74,7 +74,7 @@ func deleteCases() []deleteCase {
 		{"oauth client",
 			func(t *testing.T, h *harness) (string, any) {
 				c := auth.OAuthClient{ID: uuid.New(), ClientID: "c-" + uuid.NewString(), HashedSecret: "x",
-					Name: "c", Scopes: allScopes(), CreatedAt: time.Now()}
+					Name: "c", Scopes: allScopes(), CreatedAt: time.Now(), UserID: uuid.New()}
 				require.NoError(t, h.authStore.CreateOAuthClient(context.Background(), c))
 				return admin + "/oauth-clients/" + c.ID.String(), nil
 			},

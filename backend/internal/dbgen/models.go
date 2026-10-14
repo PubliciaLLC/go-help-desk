@@ -157,6 +157,7 @@ type OauthClient struct {
 	Name         string    `json:"name"`
 	Scopes       []string  `json:"scopes"`
 	CreatedAt    time.Time `json:"created_at"`
+	UserID       uuid.UUID `json:"user_id"`
 }
 
 type PendingRegistration struct {
@@ -324,6 +325,7 @@ type User struct {
 	OidcSubject       string       `json:"oidc_subject"`
 	MfaFailedAttempts int32        `json:"mfa_failed_attempts"`
 	MfaLockedUntil    sql.NullTime `json:"mfa_locked_until"`
+	ServiceAccount    bool         `json:"service_account"`
 }
 
 type WebauthnCredential struct {

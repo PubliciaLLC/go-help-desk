@@ -224,6 +224,15 @@ type Querier interface {
 	CreateGroup(ctx context.Context, arg CreateGroupParams) error
 	CreateGuestAccessToken(ctx context.Context, arg CreateGuestAccessTokenParams) error
 	CreateItem(ctx context.Context, arg CreateItemParams) error
+	// Creates the client AND its service user (#420) as one statement, so a
+	// failure on either leaves neither: a client with no user cannot act, and a
+	// user with no client is an orphan nobody can see the reason for.
+	//
+	// The user is named after the client, staff, with no password, no factor and
+	// no SSO identity (the users_service_account_inert constraint insists). Its
+	// address is made from the client's id: it only has to be unique, and
+	// ".invalid" (RFC 2606) can never receive mail. The oauth_clients foreign key
+	// is checked at the end of the statement, so inserting both here is fine.
 	CreateOAuthClient(ctx context.Context, arg CreateOAuthClientParams) error
 	CreatePlugin(ctx context.Context, arg CreatePluginParams) error
 	// author_id is NULL for a reply written by a guest, who has no account. That is
@@ -270,6 +279,9 @@ type Querier interface {
 	// As DeleteCategory: the item's field assignments go in the same statement.
 	DeleteItem(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteNotification(ctx context.Context, id uuid.UUID) error
+	// Deletes the client and soft-deletes its service user in one statement, still
+	// reporting rows affected so an unknown id stays a 404 (#431). The user is
+	// kept, not removed: tickets and replies it wrote keep their author's name.
 	DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error)
 	DeletePendingRegistration(ctx context.Context, id uuid.UUID) error
 	DeletePlugin(ctx context.Context, id string) error
@@ -415,6 +427,14 @@ type Querier interface {
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	GetMFALock(ctx context.Context, id uuid.UUID) (GetMFALockRow, error)
 	GetOAuthClientByClientID(ctx context.Context, clientID string) (OauthClient, error)
+	// The client a service user belongs to, for the message that says to delete
+	// the client instead.
+	GetOAuthClientNameByUser(ctx context.Context, userID uuid.UUID) (string, error)
+	// The client and the service user it acts as, in one round trip: BearerAuth
+	// runs this on every request. A deleted client matches nothing, which is what
+	// revokes its outstanding tokens; the user's own state (disabled, deleted)
+	// comes back for the caller to judge.
+	GetOAuthClientWithUser(ctx context.Context, clientID string) (GetOAuthClientWithUserRow, error)
 	// The send-time read for a queued verification email (#348): the row is read
 	// when the mail goes out, so the token and address are the current ones and
 	// the token is never copied into the outbox.
@@ -433,6 +453,10 @@ type Querier interface {
 	// it here instead means there is no window to lose — the row simply does not
 	// load. This costs no extra round trip, since the session lookup already
 	// queries the database on every authenticated request.
+	//
+	// A service user (an OAuth client's identity, #420) never signs in, so no
+	// session for one loads either. Nothing writes such a session; this keeps the
+	// guarantee from depending on that.
 	//
 	// LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 	// PKCE verifier) into a session before anybody has authenticated, and an inner
@@ -501,6 +525,13 @@ type Querier interface {
 	// a read-only link beside the existing ones rather than rotating them.
 	GetTicketIDByTrackingAndGuestEmail(ctx context.Context, arg GetTicketIDByTrackingAndGuestEmailParams) (uuid.UUID, error)
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
+	// This is the lookup behind password login, OIDC adoption by address and
+	// password reset, so it is where a service account (an OAuth client's
+	// identity, #420) is kept from ever signing in: it simply is not found. A miss
+	// already spends the dummy bcrypt hash, so there is no timing difference to
+	// tell it from an unknown address. The two subject lookups below carry the
+	// same filter; the database already refuses a service account a subject, so
+	// that one is belt and braces.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
@@ -517,7 +548,9 @@ type Querier interface {
 	// foreign key and answer 500 for what is a caller's typo.
 	IsAssignableGroup(ctx context.Context, id uuid.UUID) (bool, error)
 	// Whether a user can be given a ticket: the account exists, is not deleted,
-	// is not disabled, and is staff. A reporting user is not a queue.
+	// is not disabled, and is staff. A reporting user is not a queue, and neither
+	// is a service user (#420): an OAuth client's identity cannot work a ticket,
+	// which also keeps it out of round-robin without a check of its own.
 	//
 	// Asked inside the assignment transaction rather than by the caller, because
 	// the caller is not the only caller. The REST handler checked this and MCP
@@ -560,6 +593,10 @@ type Querier interface {
 	// statement about somebody having left, and it was not true. Re-enabling them
 	// would have made the name reappear.
 	//
+	// Not the service users (#420): an OAuth client's identity is not a colleague
+	// and cannot be given work. Nothing can be assigned to one, so there is no
+	// assigned ticket whose name this list would have to resolve.
+	//
 	// Deliberately narrow: an id, a display name and that flag. No email, no
 	// role, no login state — that is the administrator's view.
 	ListAssignableStaff(ctx context.Context) ([]ListAssignableStaffRow, error)
@@ -579,7 +616,15 @@ type Querier interface {
 	ListGroupsForUser(ctx context.Context, userID uuid.UUID) ([]Group, error)
 	ListGroupsInScope(ctx context.Context, arg ListGroupsInScopeParams) ([]Group, error)
 	ListItems(ctx context.Context, arg ListItemsParams) ([]Item, error)
+	// Every client's groups in one query, for the client list: a client's groups
+	// are its service user's, and asking per row would be a query per client.
+	ListOAuthClientGroups(ctx context.Context) ([]ListOAuthClientGroupsRow, error)
 	ListOAuthClients(ctx context.Context) ([]OauthClient, error)
+	// The clients that will act and see nothing once ticket scope is enforced: a
+	// staff member's scope is their groups', so a client whose user is in none
+	// sees no ticket. A switched-off client is not one of them (it acts as
+	// nobody), which is what lets the warning clear by disabling it.
+	ListOAuthClientsWithoutGroups(ctx context.Context) ([]string, error)
 	ListPlugins(ctx context.Context) ([]Plugin, error)
 	// The author's display name comes back with the reply.
 	//
@@ -828,6 +873,9 @@ type Querier interface {
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) error
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 	// The same guard for deletion. See DisableUserUnlessLastAdmin.
+	//
+	// Never a service user (#420): it goes when its OAuth client does, in
+	// DeleteOAuthClient. Deleting it alone would leave the client listed and dead.
 	SoftDeleteUserUnlessLastAdmin(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// One row affected: this is the cookie's first use. Zero: it was spent before.
 	// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
@@ -903,6 +951,10 @@ type Querier interface {
 	//
 	// A rename should rename. Everything else has its own path, and the role has
 	// a guarded one.
+	//
+	// Renaming a service user (#420) renames its OAuth client in the same
+	// statement, so the two names cannot drift. For anyone else no client has
+	// user_id = $1 and the first part touches nothing.
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (int64, error)
 	// A new URL clears the last delivery result: it described a different target.
 	// (On the right-hand side of SET, "url" is the OLD value.)

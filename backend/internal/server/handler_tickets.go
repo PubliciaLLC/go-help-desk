@@ -113,8 +113,10 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		// the caller's groups — and this branch handed the same tickets over to
 		// anyone who named the group. Group ids are listed to every staff
 		// member by GET /groups, so it was a filter, not a boundary. An OAuth
-		// client acts as staff and belongs to no group at all, which made it
-		// every ticket assigned to any group.
+		// client acts as staff through its service user, and that user is in
+		// whatever groups an administrator gave it (none, until they do),
+		// which used to make a group-less client every ticket assigned to any
+		// group.
 		if a.Role == user.RoleStaff && s.adminSvc.TicketScopeEnforced(ctx) {
 			scope, err := s.staffScopeFor(ctx, a)
 			if err != nil {

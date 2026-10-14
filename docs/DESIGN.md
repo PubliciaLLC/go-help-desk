@@ -107,7 +107,7 @@ Three roles: **Admin**, **Staff**, **User**
 
 ### User Management (Admin)
 
-Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page, with a search box (a substring of the name or email, ignoring case) and a role filter, and shows "Showing 1-50 of N" with Previous and Next. `GET /admin/users?page=N` is what asks for that: it also takes `per_page` (default 50, maximum 200), `q` and `role`, answers a bare array, and puts the number of matches in `X-Total-Count`; a bad `page`, `per_page` or `role` is a 400. **Without `page` the endpoint is unchanged** — the newest 200 accounts, with `limit`, `offset`, `q` and `role` ignored, as before — so an existing client sees no difference, and the 200 cap lifts only for a client that asks for later pages. The list is clickable — clicking a user opens a detail page with:
+Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page, with a search box (a substring of the name or email, ignoring case) and a role filter, and shows "Showing 1-50 of N" with Previous and Next. `GET /admin/users?page=N` is what asks for that: it also takes `per_page` (default 50, maximum 200), `q`, `role` and `service_account` (`true` = only service accounts, `false` = only people), answers a bare array, and puts the number of matches in `X-Total-Count`; a bad `page`, `per_page`, `role` or `service_account` is a 400. **Without `page` the endpoint is unchanged** — the newest 200 accounts, with `limit`, `offset`, `q`, `role` and `service_account` ignored, as before — so an existing client sees no difference, and the 200 cap lifts only for a client that asks for later pages. The list is clickable — clicking a user opens a detail page with:
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
 - **Account info** — member since date, login type (Local / SSO (SAML) / SSO (OIDC) / Local + SSO), MFA enrollment status. The login type is read off what the account holds: a password, a SAML subject, an OIDC subject. The API reports it as `auth_type`: `local`, `saml`, `oidc`, `both` (password and SAML), or a `+`-joined combination that includes `oidc` (`local+oidc`, `saml+oidc`, `local+saml+oidc`).
@@ -117,6 +117,7 @@ Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page
 - **Groups** — view current group membership, add to groups, or remove from groups.
 - **One edit, one outcome.** A single save from the detail page can change several fields (disabled, MFA reset, role, name, email). Every field is validated, the account is confirmed to exist, and the two refusals the database would otherwise give mid-save (a change that would remove the last active administrator, and an email address another account holds) are checked, all before the first write, so a refused save changes nothing. The writes themselves stay guarded statements, so a request that loses a race with another administrator is still refused by them, possibly after earlier steps have been applied. A deleted account answers `404` to every edit and to a password reset, and the checks run in the same order for a session and an API key.
 - **Last administrator.** Disabling, deleting or demoting the last active administrator is refused (`400`): setup does not reopen, so an instance with none is orphaned for good. The count and the write are one statement that locks every active administrator row, so two parallel requests (even one administrator removing both another and themselves) cannot both pass. Removing an administrator's *ability to authenticate* is a different door the guard does not watch; see the identity provider guard and the end of Passkeys.
+- **Service users** — the account an OAuth client acts as is listed here with a "Service" badge (`service_account`, `auth_type: "service"`). Password, MFA and passkey actions on it are refused with `409 service_account` (the page hides them); renaming it, changing its role between staff and user, giving it groups and disabling it work as for anyone. See [OAuth Clients and Service Users](#oauth-clients-and-service-users).
 - **Delete** — marks the account deleted. It stops authenticating immediately, every session is revoked, and it drops out of the admin list; the row itself stays, because the tickets and replies that reference it do. Those keep the person's display name on them: a thread that renamed its participants after the fact would not be an accurate record of what happened. There is no hard delete and no anonymisation, so this is not the tool for a request to erase somebody's data. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
 
 ### Ticket Lifecycle
@@ -498,6 +499,60 @@ separate value for each direction:
   Unchecked, the link is recorded with no status change. This is the
   "optionally" in "optionally auto-resolves the duplicate" — it is a choice
   made per link, not an instance-wide setting.
+
+### OAuth Clients and Service Users
+
+Decided on [#434](https://github.com/PubliciaLLC/go-help-desk/pull/434) for
+[#420](https://github.com/PubliciaLLC/go-help-desk/issues/420). An OAuth client
+does not act as nobody, and it does not act as "staff in general". It acts as
+**its service user**: one account per client, made with the client in the same
+statement, named after it, and soft-deleted with it.
+
+A service user is an ordinary `users` row with `service_account = TRUE`, and a
+database CHECK (`users_service_account_inert`) that no code has to remember:
+it can never be an administrator and never hold a password, a TOTP secret, a
+SAML subject or an OIDC subject. `oauth_clients.user_id` is `NOT NULL UNIQUE`
+(one user per client, never shared, never a person's account). Migration 000041
+makes one for every client that already exists, with the staff role and no
+groups, so with ticket scope enforcement off an upgraded client behaves as it
+did.
+
+| | |
+|---|---|
+| **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
+| **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
+| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, set to staff or user, and disabled. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
+| **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
+| **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
+| **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
+
+**Recorded decisions** (the shapes below look wrong and are not):
+
+- **`BearerAuth` keeps `Machine = true` although the actor now has a real
+  user id.** `Machine` is what gates scopes and what closes `/me/password`,
+  `/me/mfa/*` and `/me/passkeys*` to a credential. A user id must not open
+  them, and `GET /me` for a client stays `{machine, role, scopes}`: its check is
+  on the client id, not the user id.
+- **`user_identity_required` still exists and no OAuth client can hit it.**
+  `requireUserIdentity` and the MCP `hasUserIdentity` stay as the refusal for
+  any credential that arrives with no user. The OAuth tests that pinned the
+  refusal were rewritten to pin the opposite, on purpose.
+- **The service user is created by `CreateOAuthClient`'s one statement, not by
+  `user.Service.Create`.** Two writes that can half-apply are what the one
+  statement removes; a client with no user cannot act, and a user with no
+  client is an orphan.
+- **The last-administrator guard is unchanged.** It counts `role = 'admin'`,
+  the CHECK means a service user is never one, and so it neither props the
+  guard up nor trips it. The note that a password is always a way in stays true
+  for administrators for the same reason. A service user is the first account
+  that has *no* way in, deliberately, and the CHECK is what keeps it out of the
+  guard.
+- **A client row that points at a person is refused by `BearerAuth`**
+  (`service_account` must be true), because the schema alone would let it hand
+  a client someone's identity.
+- **The Security warnings banner and the save warning are both kept.** The
+  warning on save is the moment the administrator can act; the banner is for
+  the next day, when they have forgotten.
 
 ### Groups & Scope
 
@@ -2042,7 +2097,7 @@ Tests: `TestOriginPolicy_Allows` (the comparison), `TestMCPOrigin_*` (the check 
 | Consumer | Auth Method | Details |
 |----------|------------|---------|
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
-| Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
+| Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration. The client acts as its own service user (see [OAuth Clients and Service Users](#oauth-clients-and-service-users)) |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
 | MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, `create_ticket` does not run auto-assignment). |
 
@@ -2113,7 +2168,9 @@ Four rules govern them:
 
 1. **Scopes narrow; they never grant.** The scope check runs *after* the role
    check, so `users:write` on a key owned by a reporting user reaches nothing.
-   An API key acts at its owner's role; an OAuth client acts as staff.
+   An API key acts at its owner's role; an OAuth client acts at its service
+   user's role (staff or user, never admin; see
+   [OAuth Clients and Service Users](#oauth-clients-and-service-users)).
 2. **An empty scope list denies everything.** A credential with no scopes
    reaches nothing at all.
 3. **Write implies read** on the same resource, except `audit`, which has no
