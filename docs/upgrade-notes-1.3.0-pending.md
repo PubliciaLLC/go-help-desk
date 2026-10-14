@@ -58,3 +58,14 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 - the check repeats on each upload, so fixing the permissions needs no restart.
 
 Before this, an unwritable directory showed up as a failed upload partway through.
+
+## Admin API: data left behind, half-applied edits and path checks (#419)
+
+Scripts and API keys that call the admin API can see these changes. Nothing needs doing in the admin UI.
+
+- **Deleting a category, type or item also deletes its custom-field assignments** (a category's include those of its types and items). They used to be left behind, pointing at a record that no longer existed. Assignments left over from deletes made on earlier versions are not cleaned up.
+- **Deleting a group now writes an `unassigned` audit entry for every ticket it held**, open or not, in the same transaction as the delete. Before, the tickets silently lost their group with no entry. The entry's before and after values name `assignee_group_id`, which the audit view now shows.
+- **`PATCH /admin/users/{id}` checks every field before it writes any.** `{"disabled": true, "email": "bad"}` answers 400 and leaves the account enabled; it used to disable the account, end its sessions and then answer 400.
+- **Soft-deleted accounts answer 404** to `PATCH /admin/users/{id}` (for any body, `{}` included, which used to answer 200 with the deleted record) and to `POST /admin/users/{id}/password` (which used to set the deleted account's password and answer 204).
+- **Same order of checks for a session and an API key** on the password reset and on PATCH: the body is checked first (400), then the caller (403), then the account (404). Before, an API key aimed at an administrator or a deleted account got 403 or 404 before its body was looked at.
+- **Mismatched ids in a URL answer 404.** `/categories/{id}/types/{typeId}` (PATCH, DELETE), the item routes under it, and all nine custom-field assignment routes now require every id to exist and to belong to the one before it, and an assignment to belong to the scope in the path. Before, only the deepest id was read, so a wrong parent id was ignored. Creating an assignment for a category, type or item that does not exist answers 404 (it used to store an assignment for nothing), and listing the items or assignments of an unknown type answers 404 (it used to answer an empty list).

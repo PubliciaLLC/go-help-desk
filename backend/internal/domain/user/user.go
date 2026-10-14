@@ -25,6 +25,11 @@ const (
 	RoleUser  Role = "user"
 )
 
+// Valid reports whether r is one of the three roles.
+func (r Role) Valid() bool {
+	return r == RoleAdmin || r == RoleStaff || r == RoleUser
+}
+
 // User is the canonical representation of an identity in the system.
 // It is auth-method-agnostic: PasswordHash is empty for SAML-only accounts;
 // SAMLSubject is empty for local-only accounts.

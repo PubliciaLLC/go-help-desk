@@ -5420,10 +5420,11 @@ paths:
       summary: Delete a group.
       description: >-
         Administrators only (second factor required).
-        Deletes the group together with its memberships and scopes. Tickets
-        assigned to the group lose that group assignment (their assigned user, if
-        any, is kept), and no audit entry records the change on those tickets. An
-        unknown id answers 404 not_found.
+        Deletes the group together with its memberships and scopes. Every ticket
+        assigned to the group, open or not, is taken off it (their assigned user, if
+        any, is kept) and gets an "unassigned" audit entry naming the administrator.
+        The unassignments, their audit entries and the delete are one transaction:
+        if any part fails, none is applied. An unknown id answers 404 not_found.
       tags: ['Admin: Groups']
       x-ghd-handler: handleDeleteGroup
       security:
@@ -6277,13 +6278,18 @@ paths:
         Applies the fields that are sent, in this order: disabled (disabling also
         ends the account's sessions), reset_mfa (clears the authenticator and every
         passkey, and ends sessions), role (ends sessions), then display_name and
-        email. Absent fields are unchanged. The steps are not one transaction. When a
-        later field is refused, the earlier ones are already written: disabled true
-        with an invalid email leaves the account disabled and answers 400. The last
+        email. Absent fields are unchanged. Every field is checked before the first
+        one is written, in this order: the body (an invalid role, an invalid email
+        or a blank display name answers 400), then the caller (see 403), then the
+        account (an unknown or soft-deleted id answers 404, for every body, an empty
+        one included). A refused request changes nothing: disabled true with an
+        invalid email leaves the account enabled. The writes themselves are still
+        separate steps, so a failure of the database partway through can leave the
+        earlier ones applied. The last
         active administrator cannot be disabled or demoted, and that answers 400. An
         API key cannot change an administrator's account or promote a user to
-        administrator; that answers 403 session_required. The response always
-        carries passkey_count as 0, so read GET for the real count.
+        administrator; that answers 403 session_required, after the body checks. The
+        response always carries passkey_count as 0, so read GET for the real count.
       tags: ['Admin: Users']
       x-ghd-handler: handleUpdateUser
       security:
@@ -6348,9 +6354,9 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: >-
-            not_found, when no account has this id. Every change that needs the account
-            either looks it up first or finds no row to write, so an unknown id answers 404
-            for any body that decodes.
+            not_found, when no account has this id or the account is soft-deleted. A
+            body that fails validation answers 400 first, to a session and to an API key
+            alike.
           content:
             application/json:
               schema:
@@ -6431,14 +6437,12 @@ paths:
       description: >-
         Administrators only (second factor required).
         Sets a new local password without asking for the old one, and ends all of the
-        account's sessions, since a reset usually answers a compromise. The order of
-        the checks depends on the caller. For a signed-in session the password is
-        checked before the account is looked up, so an unknown id with a short
-        password answers 400, not 404, and a soft-deleted account's password is set
-        (204). For an API key the account is looked up first, before the body is
-        read: an unknown or soft-deleted id answers 404 whatever the body holds, and
-        an administrator's account answers 403 session_required. The reset is
-        recorded in the audit log on a best-effort basis.
+        account's sessions, since a reset usually answers a compromise. The checks run
+        in the same order for a signed-in session and for an API key: the body and
+        the password first (400), then, for an API key only, whether the account is an
+        administrator (403 session_required), then the account itself. An unknown
+        or soft-deleted id answers 404; a soft-deleted account's password is not
+        set. The reset is recorded in the audit log on a best-effort basis.
       tags: ['Admin: Users']
       x-ghd-handler: handleAdminResetPassword
       security:
@@ -6487,10 +6491,8 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: >-
-            not_found, when no account has this id. For a signed-in session this is
-            reached only after the password has passed validation. For an API key it is
-            checked first, before the body is read, and also covers a soft-deleted
-            account.
+            not_found, when no account has this id, or the account is soft-deleted.
+            Reached only after the password has passed validation, whoever the caller is.
           content:
             application/json:
               schema:
@@ -6887,8 +6889,9 @@ paths:
         name it and the canned responses scoped to it. A category that a ticket uses,
         or whose type or item a ticket uses, is refused with 409 category_in_use. So is a category with an SLA policy
         that a ticket's SLA record uses. The message gives the counts.
-        Custom-field assignments made to the category or its descendants are not
-        removed, and keep pointing at the deleted record. An unknown id answers 404 not_found.
+        Custom-field assignments made to the category, its types or their items are
+        removed in the same statement, so a refused delete leaves them in place. An
+        unknown id answers 404 not_found.
         To retire a category that is in use, archive
         it with active set to false instead.
       tags: ['Admin: Catalogue']
@@ -6937,8 +6940,8 @@ paths:
         Lists the custom-field assignments whose scope is this category, identified
         by {id}. Each entry carries its field definition under field_def, filled
         with id, name, field_type, options and active only. In that embedded copy
-        sort_order is 0 and created_at is the zero time. An unknown category returns
-        an empty array.
+        sort_order is 0 and created_at is the zero time. An unknown category answers
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListAssignments
       security:
@@ -6960,14 +6963,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createCategoryFieldAssignment
       summary: Assign a custom field to a category.
       description: >-
         Administrators only (second factor required).
         Assigns the field definition field_def_id to this category, identified by
-        {id}, and answers 201 with the new assignment. The category is not confirmed
-        to exist. visible_on_new and required_on_new default to false when omitted.
+        {id}, and answers 201 with the new assignment. A category that does not exist
+        answers 404 not_found. visible_on_new and required_on_new default to false when omitted.
         The field definition must exist, and the same field cannot be
         assigned to the same category twice. Either refusal is 400 bad_request, with
         the database message as the text.
@@ -7009,18 +7014,20 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/fields/{assignmentId}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the assignment.
+        description: Category UUID. Must exist; otherwise 404 not_found.
         schema:
           type: string
       - name: assignmentId
         in: path
         required: true
-        description: Field assignment UUID. A malformed value is 400 bad_request. It identifies the assignment on its own.
+        description: Field assignment UUID. A malformed value is 400 bad_request. It must be attached to the scope the path ends at; otherwise 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7031,8 +7038,9 @@ paths:
         Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
-        assignment cannot be changed here. Only assignmentId is read; the other ids in
-        the path are not checked against it. An unknown assignment is 404 not_found.
+        assignment cannot be changed here. The ids in the path must name a real chain
+        and the assignment must belong to the scope the path ends at; an unknown
+        assignment, or one attached to a different scope, is 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateAssignment
       security:
@@ -7075,9 +7083,10 @@ paths:
       summary: Remove a custom-field assignment from a category.
       description: >-
         Administrators only (second factor required).
-        Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 404 not_found when no
-        assignment has that id. Ticket values already stored for the field are not
+        Removes one assignment, identified by assignmentId. The ids in the path must
+        name a real chain and the assignment must belong to the scope the path ends
+        at. Answers 404 not_found when no assignment has that id, or it is attached to
+        a different scope. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -7187,13 +7196,13 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so the type is reached through any category id in the path.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Parsed; a malformed value is 400 bad_request. It identifies the type on its own.
+        description: Type UUID. A malformed value is 400 bad_request. An unknown id is 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7204,8 +7213,8 @@ paths:
         Administrators only (second factor required).
         Partial update of the type identified by typeId. An absent field is unchanged,
         and active set to false archives the type. The category of a type cannot be
-        changed here, so a category_id in the body is ignored. The {id} segment is not
-        checked. The name is stored as sent, not trimmed. An empty or whitespace-only
+        changed here, so a category_id in the body is ignored. A type that is not in
+        the category named by {id} answers 404 not_found. The name is stored as sent, not trimmed. An empty or whitespace-only
         name is refused with 400 bad_request, and an unknown type answers 404
         not_found.
       tags: ['Admin: Catalogue']
@@ -7258,8 +7267,9 @@ paths:
         responses and the group scope entries scoped to the type. Deleting a type that
         a ticket uses, or whose item a ticket uses, is refused with 409
         type_in_use. Custom-field assignments made to the type or its
-        items are not removed. An unknown id answers 404 not_found. The {id} segment is not
-        checked. To retire a type that is in use, archive it instead.
+        items are removed in the same statement, so a refused delete leaves them in
+        place. An unknown id answers 404 not_found, and so does a type that is not in
+        the category named by {id}. To retire a type that is in use, archive it instead.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteType
       security:
@@ -7294,7 +7304,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the type.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
@@ -7310,10 +7320,10 @@ paths:
       description: >-
         Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this type, identified by
-        {typeId}. The {id} segment is not checked against it. Each entry carries its field definition under field_def,
+        {typeId}. Each entry carries its field definition under field_def,
         filled with id, name, field_type, options and active only. In that embedded
-        copy sort_order is 0 and created_at is the zero time. An unknown type returns
-        an empty array.
+        copy sort_order is 0 and created_at is the zero time. An unknown type, or a
+        type that is not in the category named by {id}, answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListAssignments
       security:
@@ -7335,14 +7345,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createTypeFieldAssignment
       summary: Assign a custom field to a type.
       description: >-
         Administrators only (second factor required).
         Assigns the field definition field_def_id to this type, identified by {typeId},
-        and answers 201 with the new assignment. The {id} segment is not checked, and
-        the type is not confirmed to exist. visible_on_new and required_on_new default
+        and answers 201 with the new assignment. A type that does not exist, or is not
+        in the category named by {id}, answers 404 not_found. visible_on_new and required_on_new default
         to false when omitted. The field definition must exist, and the same field cannot be assigned
         to the same type twice. Either refusal is 400 bad_request, with the database
         message as the text.
@@ -7384,24 +7396,26 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/fields/{assignmentId}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Category UUID. The path must name a real chain; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Type UUID. It must belong to the category; otherwise 404 not_found.
         schema:
           type: string
       - name: assignmentId
         in: path
         required: true
-        description: Field assignment UUID. A malformed value is 400 bad_request. It identifies the assignment on its own.
+        description: Field assignment UUID. A malformed value is 400 bad_request. It must be attached to the scope the path ends at; otherwise 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7412,8 +7426,9 @@ paths:
         Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
-        assignment cannot be changed here. Only assignmentId is read; the other ids in
-        the path are not checked against it. An unknown assignment is 404 not_found.
+        assignment cannot be changed here. The ids in the path must name a real chain
+        and the assignment must belong to the scope the path ends at; an unknown
+        assignment, or one attached to a different scope, is 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateAssignment
       security:
@@ -7456,9 +7471,10 @@ paths:
       summary: Remove a custom-field assignment from a type.
       description: >-
         Administrators only (second factor required).
-        Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 404 not_found when no
-        assignment has that id. Ticket values already stored for the field are not
+        Removes one assignment, identified by assignmentId. The ids in the path must
+        name a real chain and the assignment must belong to the scope the path ends
+        at. Answers 404 not_found when no assignment has that id, or it is attached to
+        a different scope. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment
@@ -7483,7 +7499,7 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the type.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
@@ -7498,8 +7514,9 @@ paths:
       summary: List the items of a type.
       description: >-
         Administrators only (second factor required).
-        Lists the items of this type, active and archived, as a bare array. Only
-        {typeId} is read. An unknown type returns an empty array rather than 404.
+        Lists the items of this type, active and archived, as a bare array. An
+        unknown type, or a type that is not in the category named by {id}, answers
+        404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListItems
       security:
@@ -7521,6 +7538,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createItem
       summary: Create an item under a type.
@@ -7528,8 +7547,8 @@ paths:
         Administrators only (second factor required).
         Creates an active item under this type, identified by {typeId}. The name is
         trimmed and must not be empty. An empty name is refused with 400 bad_request.
-        A type that does not exist is answered 404 not_found. The {id}
-        segment is not checked. sort_order defaults to 0.
+        A type that does not exist, or is not in the category named by {id}, is
+        answered 404 not_found. sort_order defaults to 0.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleCreateItem
       security:
@@ -7574,19 +7593,19 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so the item is reached through any category id in the path.
+        description: Category UUID. The type must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations, so the item is reached through any type id in the path.
+        description: Type UUID. The item must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: itemId
         in: path
         required: true
-        description: Item UUID. Parsed; a malformed value is 400 bad_request. It identifies the item on its own.
+        description: Item UUID. A malformed value is 400 bad_request. An unknown id is 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7597,8 +7616,9 @@ paths:
         Administrators only (second factor required).
         Partial update of the item identified by itemId. An absent field is unchanged,
         and active set to false archives the item. The type of an item cannot be
-        changed here, so a type_id in the body is ignored. The {id} and {typeId}
-        segments are not checked. The name is stored as sent, not trimmed. An empty or
+        changed here, so a type_id in the body is ignored. An item that is not in the
+        type named by {typeId}, or a type that is not in the category named by {id},
+        answers 404 not_found. The name is stored as sent, not trimmed. An empty or
         whitespace-only name is refused with 400 bad_request, and an unknown item
         answers 404 not_found.
       tags: ['Admin: Catalogue']
@@ -7649,9 +7669,10 @@ paths:
         Administrators only (second factor required).
         Hard delete of the item identified by itemId. Deleting an item that a ticket
         uses is refused with 409 item_in_use. Custom-field assignments
-        made to the item are not removed. An unknown id answers 404 not_found. The {id} and
-        {typeId} segments are not checked. To retire an item that is in use, archive it
-        instead.
+        made to the item are removed in the same statement, so a refused delete leaves
+        them in place. An unknown id answers 404 not_found, and so does an item that is
+        not in the type named by {typeId}, or a type that is not in the category named
+        by {id}. To retire an item that is in use, archive it instead.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteItem
       security:
@@ -7686,13 +7707,13 @@ paths:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations, so it is not checked against the item.
+        description: Category UUID. The path must name a real chain; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations, so it is not checked against the item.
+        description: Type UUID. The item must belong to it; otherwise 404 not_found.
         schema:
           type: string
       - name: itemId
@@ -7708,11 +7729,11 @@ paths:
       description: >-
         Administrators only (second factor required).
         Lists the custom-field assignments whose scope is this item, identified by
-        {itemId}. The {id} and {typeId} segments are not checked against it. Each
+        {itemId}. Each
         entry carries its field definition under field_def,
         filled with id, name, field_type, options and active only. In that embedded
-        copy sort_order is 0 and created_at is the zero time. An unknown item returns
-        an empty array.
+        copy sort_order is 0 and created_at is the zero time. An unknown item, or one
+        whose type or category does not match the path, answers 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleListAssignments
       security:
@@ -7734,14 +7755,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       operationId: createItemFieldAssignment
       summary: Assign a custom field to an item.
       description: >-
         Administrators only (second factor required).
         Assigns the field definition field_def_id to this item, identified by {itemId},
-        and answers 201 with the new assignment. The {id} and {typeId} segments are
-        not checked, and the item is not confirmed to exist. visible_on_new and
+        and answers 201 with the new assignment. An item that does not exist, or whose
+        type or category does not match the path, answers 404 not_found. visible_on_new and
         required_on_new default to false when omitted. The field definition must exist, and the same field cannot be assigned
         to the same item twice. Either refusal is 400 bad_request, with the database
         message as the text.
@@ -7783,30 +7806,32 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/v1/admin/categories/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}:
     parameters:
       - name: id
         in: path
         required: true
-        description: Category UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Category UUID. The path must name a real chain; otherwise 404 not_found.
         schema:
           type: string
       - name: typeId
         in: path
         required: true
-        description: Type UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Type UUID. It must belong to the category; otherwise 404 not_found.
         schema:
           type: string
       - name: itemId
         in: path
         required: true
-        description: Item UUID. Not read by these operations; the assignment is identified by assignmentId alone.
+        description: Item UUID. It must belong to the type; otherwise 404 not_found.
         schema:
           type: string
       - name: assignmentId
         in: path
         required: true
-        description: Field assignment UUID. A malformed value is 400 bad_request. It identifies the assignment on its own.
+        description: Field assignment UUID. A malformed value is 400 bad_request. It must be attached to the scope the path ends at; otherwise 404 not_found.
         schema:
           type: string
           format: uuid
@@ -7817,8 +7842,9 @@ paths:
         Administrators only (second factor required).
         Changes the sort order and the visible_on_new and required_on_new flags of one
         assignment, identified by assignmentId. The field and the scope of an
-        assignment cannot be changed here. Only assignmentId is read; the other ids in
-        the path are not checked against it. An unknown assignment is 404 not_found.
+        assignment cannot be changed here. The ids in the path must name a real chain
+        and the assignment must belong to the scope the path ends at; an unknown
+        assignment, or one attached to a different scope, is 404 not_found.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleUpdateAssignment
       security:
@@ -7861,9 +7887,10 @@ paths:
       summary: Remove a custom-field assignment from an item.
       description: >-
         Administrators only (second factor required).
-        Removes one assignment, identified by assignmentId. Only assignmentId is read.
-        The other ids in the path are not checked against it. Answers 404 not_found when no
-        assignment has that id. Ticket values already stored for the field are not
+        Removes one assignment, identified by assignmentId. The ids in the path must
+        name a real chain and the assignment must belong to the scope the path ends
+        at. Answers 404 not_found when no assignment has that id, or it is attached to
+        a different scope. Ticket values already stored for the field are not
         touched.
       tags: ['Admin: Catalogue']
       x-ghd-handler: handleDeleteAssignment

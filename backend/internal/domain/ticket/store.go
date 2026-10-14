@@ -50,6 +50,15 @@ type Store interface {
 	// UnassignForUser clears the assignee on every OPEN ticket held by a
 	// user, and reports how many moved. Used when an account is deleted.
 	UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// UnassignForGroup clears the group on EVERY ticket held by it, open or
+	// not, and returns their ids. It locks the group row first, so a ticket
+	// cannot be assigned to the group between this and DeleteGroup; an unknown
+	// group wraps group.ErrNotFound.
+	UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// DeleteGroup removes the group row. It lives on this store so a group can
+	// be deleted in the same transaction as the audit entries for the tickets
+	// it held (see Service.DeleteGroup).
+	DeleteGroup(ctx context.Context, groupID uuid.UUID) error
 	// IsAssignableUser and IsAssignableGroup are asked inside the assignment
 	// transaction, so every caller gets the same answer and no caller has to
 	// remember to ask.

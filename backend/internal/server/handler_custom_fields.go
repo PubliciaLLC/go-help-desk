@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -93,10 +94,11 @@ func (s *Server) handleUpdateFieldDef(w http.ResponseWriter, r *http.Request) {
 // ── Admin: CTI field assignments ──────────────────────────────────────────────
 
 func (s *Server) handleListAssignments(w http.ResponseWriter, r *http.Request) {
-	scopeType, scopeID, ok := parseScopeFromURL(w, r)
+	p, ok := s.resolveCTIPath(w, r)
 	if !ok {
 		return
 	}
+	scopeType, scopeID := p.scope()
 	assignments, err := s.customFields.ListAssignments(r.Context(), scopeType, scopeID)
 	if err != nil {
 		handleError(w, err)
@@ -109,10 +111,11 @@ func (s *Server) handleListAssignments(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) {
-	scopeType, scopeID, ok := parseScopeFromURL(w, r)
+	p, ok := s.resolveCTIPath(w, r)
 	if !ok {
 		return
 	}
+	scopeType, scopeID := p.scope()
 	var body struct {
 		FieldDefID    uuid.UUID `json:"field_def_id"`
 		SortOrder     int       `json:"sort_order"`
@@ -132,14 +135,8 @@ func (s *Server) handleCreateAssignment(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) {
-	assignmentID, err := uuid.Parse(chi.URLParam(r, "assignmentId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid assignment id")
-		return
-	}
-	existing, err := s.customFields.GetAssignment(r.Context(), assignmentID)
-	if err != nil {
-		handleFieldDefNotFound(w, err)
+	existing, ok := s.assignmentInURL(w, r)
+	if !ok {
 		return
 	}
 	var body struct {
@@ -168,12 +165,11 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleDeleteAssignment(w http.ResponseWriter, r *http.Request) {
-	assignmentID, err := uuid.Parse(chi.URLParam(r, "assignmentId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid assignment id")
+	existing, ok := s.assignmentInURL(w, r)
+	if !ok {
 		return
 	}
-	if err := s.customFields.DeleteAssignment(r.Context(), assignmentID); err != nil {
+	if err := s.customFields.DeleteAssignment(r.Context(), existing.ID); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -297,34 +293,31 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// parseScopeFromURL extracts scope_type and scope_id from the URL params.
-// For category-level: uses {id} as scope_id, scope_type="category".
-// For type-level: uses {typeId} as scope_id, scope_type="type".
-// For item-level: uses {itemId} as scope_id, scope_type="item".
-func parseScopeFromURL(w http.ResponseWriter, r *http.Request) (customfield.ScopeType, uuid.UUID, bool) {
-	if itemIDStr := chi.URLParam(r, "itemId"); itemIDStr != "" {
-		id, err := uuid.Parse(itemIDStr)
-		if err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", "invalid item id")
-			return "", uuid.Nil, false
-		}
-		return customfield.ItemScope, id, true
+// assignmentInURL loads the assignment a PATCH or DELETE names, and answers
+// 404 unless the path's chain is real and the assignment belongs to the scope it
+// ends at (#419). Before, only {assignmentId} was read, so
+// /categories/X/fields/Z acted on Z whatever scope Z was attached to.
+func (s *Server) assignmentInURL(w http.ResponseWriter, r *http.Request) (customfield.Assignment, bool) {
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
+		return customfield.Assignment{}, false
 	}
-	if typeIDStr := chi.URLParam(r, "typeId"); typeIDStr != "" {
-		id, err := uuid.Parse(typeIDStr)
-		if err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", "invalid type id")
-			return "", uuid.Nil, false
-		}
-		return customfield.TypeScope, id, true
-	}
-	idStr := chi.URLParam(r, "id")
-	id, err := uuid.Parse(idStr)
+	assignmentID, err := uuid.Parse(chi.URLParam(r, "assignmentId"))
 	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid category id")
-		return "", uuid.Nil, false
+		Error(w, http.StatusBadRequest, "bad_request", "invalid assignment id")
+		return customfield.Assignment{}, false
 	}
-	return customfield.CategoryScope, id, true
+	a, err := s.customFields.GetAssignment(r.Context(), assignmentID)
+	if err != nil {
+		handleFieldDefNotFound(w, err)
+		return customfield.Assignment{}, false
+	}
+	scopeType, scopeID := p.scope()
+	if a.ScopeType != scopeType || a.ScopeID != scopeID {
+		handleError(w, fmt.Errorf("assignment %s is not on this %s: %w", a.ID, scopeType, customfield.ErrNotFound))
+		return customfield.Assignment{}, false
+	}
+	return a, true
 }
 
 func handleFieldDefNotFound(w http.ResponseWriter, err error) {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -161,6 +162,30 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Every field is checked before the first write (#419). The steps below
+	// each commit on their own, so a request refused halfway — a disable
+	// followed by an email that does not parse — had already disabled the
+	// account and ended its sessions, and still answered 400.
+	//
+	// Before the machine check as well, so a session and an API key meet the
+	// same checks in the same order: a malformed body is a 400 to both.
+	if body.Role != nil && !user.Role(*body.Role).Valid() {
+		handleError(w, fmt.Errorf("%w: invalid role", user.ErrValidation))
+		return
+	}
+	if body.Email != nil {
+		if _, err := user.ValidateEmail(*body.Email); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	if body.DisplayName != nil {
+		if _, err := user.ValidateDisplayName(*body.DisplayName); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+
 	// Administrators are managed by administrators, not by automation.
 	//
 	// Before any mutation, because the disable below used to be applied before
@@ -180,6 +205,20 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			denyMachineAdminTakeover(w, r, "promote a user to administrator")
 			return
 		}
+	}
+
+	// A deleted account is not there to change. Asked before the first write
+	// for the same reason as the validation above: the steps below would
+	// otherwise reach the deleted row one at a time, applying some and then
+	// answering 404 for the rest.
+	target, err := s.users.GetByIDAdmin(r.Context(), id)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if target.DeletedAt != nil {
+		handleError(w, fmt.Errorf("user %s: %w", id, user.ErrNotFound))
+		return
 	}
 
 	// Disable/enable toggle (processed before any profile update).
@@ -389,14 +428,22 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 		Error(w, http.StatusBadRequest, "bad_request", "invalid user ID")
 		return
 	}
-	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
-		return
-	}
 	var body struct {
 		NewPassword string `json:"new_password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	// The body is decoded and checked before the account is looked at (#419).
+	// The machine check below reads the target, so with it first an API key
+	// was told 404 or 403 before its password was ever validated, while a
+	// session reached the password check first and got a 400.
+	if err := user.CheckNewPassword(body.NewPassword); err != nil {
+		handleError(w, err)
+		return
+	}
+	if s.denyMachineTargetingAdmin(w, r, id, "reset an administrator's password") {
 		return
 	}
 	actor := authmw.GetActor(r)

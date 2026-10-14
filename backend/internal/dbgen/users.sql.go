@@ -14,7 +14,7 @@ import (
 )
 
 const adminSetPassword = `-- name: AdminSetPassword :execrows
-UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1
+UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
 
 type AdminSetPasswordParams struct {
@@ -446,7 +446,7 @@ func (q *Queries) EnableMFAIfStillEnrolled(ctx context.Context, id uuid.UUID) (u
 }
 
 const enableUser = `-- name: EnableUser :exec
-UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1
+UPDATE users SET disabled = FALSE, updated_at = now() WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) EnableUser(ctx context.Context, id uuid.UUID) error {
@@ -1083,7 +1083,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) error {
 	return err
 }
 
-const updateUserProfile = `-- name: UpdateUserProfile :exec
+const updateUserProfile = `-- name: UpdateUserProfile :execrows
 UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE id = $1 AND deleted_at IS NULL
@@ -1107,7 +1107,10 @@ type UpdateUserProfileParams struct {
 //
 // A rename should rename. Everything else has its own path, and the role has
 // a guarded one.
-func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
-	_, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
-	return err
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateUserProfile, arg.ID, arg.Email, arg.DisplayName)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
