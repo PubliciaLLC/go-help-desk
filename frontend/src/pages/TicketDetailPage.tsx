@@ -62,10 +62,14 @@ interface AssigneePanelProps {
   // having left.
   haveStaffList: boolean
   groups: Group[]
+  // meId and closed drive "Assign to me": offered only on an unassigned ticket
+  // that is not Resolved or Closed.
+  meId?: string
+  closed: boolean
   onUpdated: () => void
 }
 
-function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, onUpdated }: AssigneePanelProps) {
+function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveStaffList, groups, meId, closed, onUpdated }: AssigneePanelProps) {
   const [mode, setMode] = useState<'user' | 'group'>('user')
   const [selectedId, setSelectedId] = useState('')
   const [error, setError] = useState('')
@@ -83,6 +87,20 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
       setError('')
       onUpdated()
     },
+    onError: (err) => setError(extractError(err)),
+  })
+
+  // The ticket's group is sent back with the user. The server's Assign sets
+  // both assignee fields from the request, so a user-only PATCH would clear the
+  // group; "Assign to me" keeps it (#444). The key is left out when there is no
+  // group, so the body is exactly {assignee_user_id} then.
+  const assignToMeMutation = useMutation({
+    mutationFn: () =>
+      updateTicket(ticketId, {
+        assignee_user_id: meId,
+        ...(assigneeGroupId ? { assignee_group_id: assigneeGroupId } : {}),
+      }),
+    onSuccess: () => { setError(''); onUpdated() },
     onError: (err) => setError(extractError(err)),
   })
 
@@ -132,6 +150,16 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
           <span className="text-gray-400">Unassigned</span>
         )}
       </div>
+
+      {!assigneeUserId && !closed && meId && (
+        <button
+          className="min-h-6 rounded px-1 py-1 text-xs text-blue-600 hover:underline"
+          onClick={() => assignToMeMutation.mutate()}
+          disabled={assignToMeMutation.isPending}
+        >
+          Assign to me
+        </button>
+      )}
 
       {/* Assignment controls */}
       <div className="flex gap-1 text-xs">
@@ -717,6 +745,8 @@ export function TicketDetailPage() {
                     users={allUsers}
                     haveStaffList={haveStaffList}
                     groups={groups}
+                    meId={user?.id}
+                    closed={statusName === 'Resolved' || statusName === 'Closed'}
                     onUpdated={() => {
                       qc.invalidateQueries({ queryKey: ['ticket', id] })
                       qc.invalidateQueries({ queryKey: ['ticketAudit', id] })
