@@ -262,6 +262,10 @@ test.describe('#414: the ticket list toolbar stacks instead of squeezing the sea
     const jump = await page.getByRole('button', { name: 'Jump to ticket' }).boundingBox()
     if (!search || !jump) throw new Error('toolbar not rendered')
     expect(Math.abs(search.y + search.height / 2 - (jump.y + jump.height / 2))).toBeLessThanOrEqual(2)
+    // One row is not the whole of "unchanged": the search box still grows
+    // into the free space and stops at max-w-lg (32rem). At 1280 there is
+    // ~700px free, so a lost cap or a lost flex-1 both show here.
+    expect(search.width, 'search box no longer fills the row up to max-w-lg').toBeCloseTo(512, 0)
   })
 })
 
