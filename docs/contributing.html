@@ -141,10 +141,10 @@ go mod download</code></pre>
 <pre><code>DATABASE_URL="postgres://localhost:5432/helpdesk_dev?sslmode=disable" \
 BASE_URL="http://localhost:8080" \
 SESSION_SECRET="dev-session-secret-change-me-32c" \
-JWT_SECRET="dev-jwt-secret-change-me" \
 ATTACHMENT_DIR="$HOME/ghd-attachments" \
 go run ./cmd/server</code></pre>
-<p><code>ATTACHMENT_DIR</code> defaults to <code>/data/attachments</code>, which a non-root developer cannot create. The server creates the directory on the first upload, so the parent must be writable by your user. Keep it outside the repository: <code>backend/data</code> is not gitignored.</p>
+<p><code>ATTACHMENT_DIR</code> defaults to <code>/data/attachments</code>, which a non-root developer cannot create. The server creates the directory at startup if it is missing, so the parent must be writable by your user; if it cannot be written, the server logs a warning and refuses uploads. Keep it outside the repository: <code>backend/data</code> is not gitignored.</p>
+<p><code>JWT_SECRET</code> is optional here: left unset, the server generates a key and stores it in the database. The example value <code>dev-jwt-secret-change-me</code> is ignored if you do set it.</p>
 
 <h3>Frontend</h3>
 <pre><code>cd frontend
