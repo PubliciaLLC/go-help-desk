@@ -225,7 +225,7 @@ const (
 	// How many days an account may stay on a password hash made below the
 	// current bcrypt cost before sign-in is refused and the person must reset
 	// their password (#453). Counted from KeyPasswordRehashStartedAt.
-	// Settings → Security; default PasswordRehashGraceDefault.
+	// Settings → Authentication → Passwords; default PasswordRehashGraceDefault.
 	KeyPasswordRehashGraceDays = "password_rehash_grace_days" // int
 
 	// When 1.3.0 first ran against this database (an RFC 3339 string); the N

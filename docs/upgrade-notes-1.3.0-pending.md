@@ -98,7 +98,7 @@ These affect scripts and integrations that call the API. Three can make a reques
 
 - **Clock:** starts when 1.3.0 first runs against the database (migration 000044 records it once).
 - **N:** Settings → Authentication → Passwords, default 30, 1 to 365. Changing it moves the deadline for everyone.
-- **Exempt:** the last active administrator, so an instance cannot lock itself out. It is upgraded at its next sign-in like everyone else.
+- **Exempt:** all administrators, so an instance cannot lock itself out. They are upgraded at their next sign-in like everyone else. Staff and requesters are refused. When SAML restricts password sign-in to administrators, others get the SAML refusal instead.
 - **How people reset:** "Forgot password" on the sign-in page once password reset by email lands (#451), or an administrator sets a new password for them. Until then only the administrator route works.
 - **What to check:** people who sign in rarely (seasonal staff, requesters) are the ones affected. Tell them, or have an administrator reset them, before day 30.
 - **API clients:** sign-in with an old hash after the deadline answers 403 `password_reset_required` instead of 200. New installs are unaffected.

@@ -846,7 +846,7 @@ function AuthPanel({
       <Section title="Passwords">
         <SettingRow
           label="Reset window for old passwords"
-          description="Releases before 1.3.0 saved passwords in a weaker form. An account is upgraded the next time its owner signs in. Once this many days have passed since 1.3.0 first started, anyone whose password is still in the old form must reset it before they can sign in. The last active administrator is exempt, so the instance cannot lock itself out. New installs are not affected."
+          description="Releases before 1.3.0 saved passwords in a weaker form. An account is upgraded the next time its owner signs in. Once this many days have passed since 1.3.0 first started, anyone whose password is still in the old form must reset it before they can sign in. Administrators are exempt, so the instance cannot lock itself out. New installs are not affected."
         >
           <div className="flex items-center gap-2">
             <Input

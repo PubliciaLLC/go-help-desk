@@ -379,7 +379,8 @@ func (s *Service) VerifyPassword(ctx context.Context, email, plain string) (User
 // VerifyPasswordForSignIn is VerifyPassword for the sign-in form. After the
 // grace period a correct password on a hash below the current cost returns
 // ErrPasswordResetRequired instead of upgrading the hash (#453), unless the
-// account is the last active administrator.
+// account is an administrator. The account is returned with the error so the
+// caller can apply its own sign-in rules (SAML) before telling anyone to reset.
 func (s *Service) VerifyPasswordForSignIn(ctx context.Context, email, plain string) (User, error) {
 	return s.verifyPassword(ctx, email, plain, true)
 }
@@ -408,7 +409,7 @@ func (s *Service) verifyPassword(ctx context.Context, email, plain string, enfor
 		// this hash spends, in place of the rehash it replaces, so the
 		// outcomes on an old hash cost the same (#475).
 		s.burnCostDifference(u.PasswordHash, plain)
-		return User{}, ErrPasswordResetRequired
+		return u, ErrPasswordResetRequired
 	}
 	s.rehashIfBelowTarget(ctx, u, plain)
 	return u, nil
@@ -416,11 +417,10 @@ func (s *Service) verifyPassword(ctx context.Context, email, plain string, enfor
 
 // resetRequired reports whether u's hash is old enough to refuse.
 //
-// The last active administrator is exempt, as it is from disable, demote and
-// delete: setup does not reopen, and with email off there may be no reset
-// link to follow. Rehash at sign-in still applies to it. If the count cannot
-// be read the account is treated as exempt, because locking out the one
-// account that can fix things is the worse mistake; the next sign-in asks again.
+// Every administrator is exempt (Erik's rule, after review found that exempting
+// only the last one still locked out the others): administrators are the ones
+// who can reset everyone else, and with email off there may be no reset link
+// to follow. Rehash at sign-in still applies to them.
 func (s *Service) resetRequired(ctx context.Context, u User) bool {
 	if s.expiry == nil {
 		return false
@@ -433,22 +433,7 @@ func (s *Service) resetRequired(ctx context.Context, u User) bool {
 	if !ok || !time.Now().After(deadline) {
 		return false
 	}
-	if u.Role == RoleAdmin {
-		admins, err := s.store.ListActiveAdmins(ctx)
-		if err != nil {
-			return false
-		}
-		others := 0
-		for _, a := range admins {
-			if a.ID != u.ID {
-				others++
-			}
-		}
-		if others == 0 {
-			return false
-		}
-	}
-	return true
+	return u.Role != RoleAdmin
 }
 
 // burnCostDifference tops a failed comparison against a hash made at a lower

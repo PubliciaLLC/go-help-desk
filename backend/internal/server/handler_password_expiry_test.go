@@ -88,30 +88,44 @@ func TestLogin_WrongPasswordAfterGraceIsPlainInvalidCredentials(t *testing.T) {
 	require.NotContains(t, string(body), "password_reset_required")
 }
 
-// The last active administrator keeps signing in; the second one added makes
-// both ordinary accounts again.
-func TestLogin_LastActiveAdministratorIsExemptFromTheRefusal(t *testing.T) {
+// Every administrator keeps signing in (Erik's rule, replacing the
+// last-administrator one); staff and requesters are refused.
+func TestLogin_AdministratorsAreExemptFromTheRefusal(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	requireSoleAdministrator(t, h)
 	withExpiry(t, h, 90)
 
-	res, body := signInRequest(t, h, "admin@test.local")
-	require.Equal(t, http.StatusOK, res.StatusCode, "%s", body)
-
-	// A second administrator on a cost-4 hash, created through the harness's
-	// own (cost 4) service so it is an old hash too.
+	// A second administrator on a cost-4 hash, an old hash too.
 	other := user.NewService(h.userStore, user.WithBcryptCost(bcrypt.MinCost))
 	_, err := other.Create(context.Background(), user.CreateUserInput{
 		Email: "admin2@test.local", DisplayName: "Admin Two", Role: user.RoleAdmin, Password: "password",
 	})
 	require.NoError(t, err)
 
-	// The first sign-in above rehashed the first administrator, so use the
-	// second, still old, one: it is no longer the last.
-	res, body = signInRequest(t, h, "admin2@test.local")
+	for _, email := range []string{"admin@test.local", "admin2@test.local"} {
+		res, body := signInRequest(t, h, email)
+		require.Equal(t, http.StatusOK, res.StatusCode, "%s: %s", email, body)
+	}
+
+	for _, email := range []string{"staff@test.local", "user@test.local"} {
+		res, body := signInRequest(t, h, email)
+		require.Equal(t, http.StatusForbidden, res.StatusCode, "%s: %s", email, body)
+		require.Contains(t, string(body), "password_reset_required")
+	}
+}
+
+// When SAML restricts password sign-in to administrators, a non-admin gets the
+// SAML refusal, not an instruction to reset a password they cannot use.
+func TestLogin_SAMLRefusalComesBeforePasswordReset(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	withExpiry(t, h, 90)
+	require.NoError(t, h.adminSvc.SetBool(context.Background(), admin.KeySAMLEnabled, true))
+
+	res, body := signInRequest(t, h, "user@test.local")
 	require.Equal(t, http.StatusForbidden, res.StatusCode, "%s", body)
-	require.Contains(t, string(body), "password_reset_required")
+	require.Contains(t, string(body), "saml_required")
+	require.NotContains(t, string(body), "password_reset_required")
 }
 
 func TestUpdateSettings_PasswordRehashGraceDaysIsValidated(t *testing.T) {

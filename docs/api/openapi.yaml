@@ -433,13 +433,13 @@ paths:
         '403':
           description: >-
             Either local sign-in is disabled for this account because SAML is
-            enabled (saml_required), or the password was right but is still stored
+            enabled (saml_required, checked first), or the password was right but is still stored
             in the older, weaker form (cost below 12) after the grace period
             (password_reset_required). In the second case no session is started
             and the hash is left as it is; the person must reset their password.
             The answer is only given for a correct password, so a wrong one still
-            answers 401 invalid_credentials and takes as long to refuse. The last
-            active administrator is exempt. Sent as application/json.
+            answers 401 invalid_credentials and takes as long to refuse. Administrators
+            are exempt. Sent as application/json.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
@@ -9319,7 +9319,7 @@ components:
           description: >-
             Days after 1.3.0 first ran before an account still on a password hash
             made below bcrypt cost 12 must reset its password to sign in. Unset reads
-            as 30. The last active administrator is exempt. Session only.
+            as 30. Administrators are exempt. Session only.
         site_name:
           type: string
           description: The site name shown in the interface.

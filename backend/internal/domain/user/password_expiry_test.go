@@ -50,7 +50,7 @@ func TestVerifyPasswordForSignIn_AfterDeadlineRefusesOldHash(t *testing.T) {
 
 	got, err := svc.VerifyPasswordForSignIn(context.Background(), u.Email, "correct horse")
 	require.ErrorIs(t, err, user.ErrPasswordResetRequired)
-	require.Equal(t, user.User{}, got)
+	require.Equal(t, u.ID, got.ID, "the account is returned with the refusal so the caller can apply its own sign-in rules first")
 	require.Zero(t, store.rehashCalls, "a refused sign-in must not quietly upgrade the hash")
 	require.Equal(t, 4, storedCost(t, store, u.ID))
 }
@@ -91,39 +91,34 @@ func TestVerifyPasswordForSignIn_RehashedAccountIsUnaffectedAfterDeadline(t *tes
 	require.NoError(t, err)
 }
 
-func TestVerifyPasswordForSignIn_LastActiveAdminIsExempt(t *testing.T) {
-	store := newFakeUserStore()
-	admin := seedAdminWithCost(t, store, "admin@example.com", "correct horse", 4)
-	svc := user.NewService(store, user.WithBcryptCost(6), user.WithPasswordExpiry(pastDeadline()))
-
-	_, err := svc.VerifyPasswordForSignIn(context.Background(), admin.Email, "correct horse")
-	require.NoError(t, err)
-	require.Equal(t, 6, storedCost(t, store, admin.ID), "the exempt administrator is rehashed as before")
-}
-
-// A disabled administrator is not someone else who can get in, so it does not
-// end the exemption.
-func TestVerifyPasswordForSignIn_DisabledAdminDoesNotEndTheExemption(t *testing.T) {
-	store := newFakeUserStore()
-	admin := seedAdminWithCost(t, store, "admin@example.com", "correct horse", 4)
-	gone := seedAdminWithCost(t, store, "gone@example.com", "correct horse", 4)
-	gone.Disabled = true
-	store.seed(gone)
-	svc := user.NewService(store, user.WithBcryptCost(6), user.WithPasswordExpiry(pastDeadline()))
-
-	_, err := svc.VerifyPasswordForSignIn(context.Background(), admin.Email, "correct horse")
-	require.NoError(t, err)
-}
-
-// With two active administrators neither is the last, so both are refused.
-func TestVerifyPasswordForSignIn_AdministratorIsRefusedWhenAnotherExists(t *testing.T) {
+// Erik changed the rule: every administrator is exempt, not only the last one.
+// This replaces the tests for the last-administrator rule, including
+// ...AdministratorIsRefusedWhenAnotherExists, which asserted the opposite.
+func TestVerifyPasswordForSignIn_AllAdministratorsAreExempt(t *testing.T) {
 	store := newFakeUserStore()
 	a := seedAdminWithCost(t, store, "a@example.com", "correct horse", 4)
-	seedAdminWithCost(t, store, "b@example.com", "correct horse", 4)
+	b := seedAdminWithCost(t, store, "b@example.com", "correct horse", 4)
 	svc := user.NewService(store, user.WithBcryptCost(6), user.WithPasswordExpiry(pastDeadline()))
 
-	_, err := svc.VerifyPasswordForSignIn(context.Background(), a.Email, "correct horse")
-	require.ErrorIs(t, err, user.ErrPasswordResetRequired)
+	for _, u := range []user.User{a, b} {
+		_, err := svc.VerifyPasswordForSignIn(context.Background(), u.Email, "correct horse")
+		require.NoError(t, err, u.Email)
+		require.Equal(t, 6, storedCost(t, store, u.ID), "an exempt administrator is rehashed as before")
+	}
+}
+
+// Staff and requesters are still refused, even when administrators exist.
+func TestVerifyPasswordForSignIn_StaffAndRequestersAreStillRefused(t *testing.T) {
+	store := newFakeUserStore()
+	seedAdminWithCost(t, store, "a@example.com", "correct horse", 4)
+	for _, role := range []user.Role{user.RoleStaff, user.RoleUser} {
+		u := seedWithCost(t, store, string(role)+"@example.com", "correct horse", 4)
+		u.Role = role
+		store.seed(u)
+		svc := user.NewService(store, user.WithBcryptCost(6), user.WithPasswordExpiry(pastDeadline()))
+		_, err := svc.VerifyPasswordForSignIn(context.Background(), u.Email, "correct horse")
+		require.ErrorIs(t, err, user.ErrPasswordResetRequired, string(role))
+	}
 }
 
 // No deadline recorded means no enforcement: failing closed would lock
