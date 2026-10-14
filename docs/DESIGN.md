@@ -2536,9 +2536,12 @@ response or a resolution onto an existing record is not gated.
 outside the ticket's row lock. If a re-match commits between that code's read of
 the record and its write, the write finds no current row to land on (the old one
 is superseded, and the new one is invisible to a statement that started earlier),
-so that one response is not recorded on the new record. For a restart that is
-correct, because the reply came before the new clock. For a staff re-match the
-new record keeps waiting for a response it should have had. The window is
+so that one response is not recorded on the new record. For a reopen's restart
+that is correct, because the response or resolution came before the new clock
+(it is the superseded record that misses it). For a staff re-match the new
+record keeps waiting for a response it should have had. The breach sweep has
+the same window, but it heals itself: the new record is evaluated on the next
+pass. The window is
 milliseconds. Closing it would need the write to report rows affected and the
 recording code to retry once, which changes the store signatures; it is left
 until there is a real report.
@@ -2565,8 +2568,8 @@ accumulates across possibly several Pending intervals, not a single flag:
   interval closes and its length is added to the ticket's accumulated
   `tickets.sla_paused_seconds`.
 - **Elapsed-toward-target**, at any instant, is `now - created_at -
-  sla_paused_seconds` (for a record a priority change has started over, from
-  the record's own start and pause base instead: `now - started_at -
+  sla_paused_seconds` (for a record a reopen has started over, and any record
+  that later replaced it, from the record's own start and pause base instead: `now - started_at -
   (sla_paused_seconds - paused_seconds_at_start)`; see Re-matching when
   priority changes), with one adjustment: if the ticket is *currently*
   Pending, the still-open interval's length (from its start to now) is added

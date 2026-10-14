@@ -2850,10 +2850,14 @@ paths:
           assign (403 forbidden), cannot reclassify (403, "only staff can
           reclassify tickets"), and cannot change the priority (403 forbidden).
         - priority is one of critical, high, medium and low. Anything else
-          answers 400 bad_request. A Resolved or Closed ticket's priority cannot
-          be changed: 409 ticket_closed, and nothing is written. Sending the
-          ticket's current priority on an open ticket is accepted and changes
-          nothing: no audit entry, no SLA change.
+          answers 400 bad_request before any change in the request is saved. A
+          Resolved or Closed ticket's priority cannot be changed: 409
+          ticket_closed, and the priority and the SLA stay as they were (a
+          status change earlier in the same request has already been saved, so
+          a request that resolves a ticket and changes its priority saves the
+          resolution and answers 409). Sending the ticket's current priority on
+          an open ticket is accepted and changes nothing: no audit entry, no SLA
+          change.
         - Only an administrator may set the status to Closed (403 forbidden for
           anyone else).
         - Leaving Closed needs closed_reopen_policy to allow the caller's role.
@@ -2928,9 +2932,9 @@ paths:
                   $ref: '#/components/schemas/Uuid'
                 priority:
                   description: |
-                    Sets the priority and re-matches the ticket's SLA from the moment
-                    of the change. Staff and administrators only. Absent leaves it
-                    unchanged.
+                    Sets the priority and re-matches the ticket's SLA policy for it,
+                    keeping the SLA clock. Staff and administrators only. Absent
+                    leaves it unchanged.
                   $ref: '#/components/schemas/Priority'
       responses:
         '200':
