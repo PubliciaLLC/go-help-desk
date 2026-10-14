@@ -524,6 +524,11 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		CategoryID    *uuid.UUID `json:"category_id"`
 		TypeID        *uuid.UUID `json:"type_id"`
 		ItemID        *uuid.UUID `json:"item_id"`
+		// Priority is staff and admin only, and re-matches the ticket's SLA
+		// from the moment of the change (#443). A string, not ticket.Priority,
+		// so a value that is not a priority reaches the service and answers
+		// 400 there instead of being dropped.
+		Priority *string `json:"priority"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -587,6 +592,14 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := s.tickets.UpdateCTI(r.Context(), id, *body.CategoryID, body.TypeID, body.ItemID); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	// After the reclassification above, so a category change in the same
+	// request is the one the new priority's SLA policy is matched against.
+	if body.Priority != nil {
+		if _, err := s.tickets.ChangePriority(r.Context(), id, ticket.Priority(*body.Priority), actor); err != nil {
 			handleError(w, err)
 			return
 		}
