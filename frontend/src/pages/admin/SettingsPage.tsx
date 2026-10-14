@@ -94,8 +94,11 @@ function SAMLSection() {
   const qc = useQueryClient()
   const certFileRef = useRef<HTMLInputElement>(null)
   const keyFileRef = useRef<HTMLInputElement>(null)
+  const metadataFileRef = useRef<HTMLInputElement>(null)
 
+  const [metadataSource, setMetadataSource] = useState<'url' | 'xml'>('url')
   const [metadataURL, setMetadataURL] = useState('')
+  const [metadataXML, setMetadataXML] = useState('')
   const [certPEM, setCertPEM] = useState('')
   const [keyPEM, setKeyPEM] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -118,6 +121,8 @@ function SAMLSection() {
   useEffect(() => {
     if (saml) {
       setMetadataURL(saml.metadata_url)
+      setMetadataXML(saml.metadata_xml)
+      setMetadataSource(saml.metadata_xml ? 'xml' : 'url')
       setCertPEM(saml.cert_pem)
     }
   }, [saml])
@@ -139,7 +144,10 @@ function SAMLSection() {
     // clear the working key on every ordinary save that isn't also a key
     // rotation.
     mutationFn: () => saveSAMLConfig({
-      metadata_url: metadataURL,
+      // One source or the other, never both: the server refuses a save that
+      // leaves both set, so the unchosen one is cleared explicitly.
+      metadata_url: metadataSource === 'url' ? metadataURL : '',
+      metadata_xml: metadataSource === 'xml' ? metadataXML : '',
       cert_pem: certPEM,
       ...(keyPEM ? { key_pem: keyPEM } : {}),
     }),
@@ -180,15 +188,61 @@ function SAMLSection() {
         )}
       </div>
 
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-gray-700">IdP metadata URL</label>
-        <Input
-          placeholder="https://idp.example.com/saml/metadata"
-          value={metadataURL}
-          onChange={(e) => setMetadataURL(e.target.value)}
-          className="max-w-lg font-mono text-sm"
-        />
-      </div>
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium text-gray-700">IdP metadata</legend>
+        <div className="flex items-center gap-4 text-sm text-gray-700">
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="saml-metadata-source" checked={metadataSource === 'url'}
+              onChange={() => setMetadataSource('url')} />
+            URL
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="radio" name="saml-metadata-source" checked={metadataSource === 'xml'}
+              onChange={() => setMetadataSource('xml')} />
+            XML
+          </label>
+        </div>
+        {metadataSource === 'url' ? (
+          <div className="space-y-1">
+            <label htmlFor="saml-metadata-url" className="block text-sm text-gray-600">IdP metadata URL</label>
+            <Input
+              id="saml-metadata-url"
+              placeholder="https://idp.example.com/saml/metadata"
+              value={metadataURL}
+              onChange={(e) => setMetadataURL(e.target.value)}
+              className="max-w-lg font-mono text-sm"
+            />
+          </div>
+        ) : (
+          <div className="space-y-1">
+            <label htmlFor="saml-metadata-xml" className="block text-sm text-gray-600">IdP metadata XML</label>
+            <textarea
+              id="saml-metadata-xml"
+              rows={10}
+              placeholder="<EntityDescriptor …>"
+              className="w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+              value={metadataXML}
+              onChange={(e) => setMetadataXML(e.target.value)}
+            />
+            <div>
+              <Button variant="outline" size="sm" onClick={() => metadataFileRef.current?.click()}>Upload .xml</Button>
+            </div>
+            <input ref={metadataFileRef} type="file" accept=".xml,application/xml,text/xml"
+              aria-label="IdP metadata XML file" className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) readFile(f, setMetadataXML)
+                // So the same file can be chosen again after an edit.
+                e.target.value = ''
+              }} />
+            <p className="max-w-lg text-xs text-gray-500">
+              Paste the metadata XML, or upload the file your identity provider gave you. It is checked when you save,
+              and shown here again afterwards. It is not refreshed: when your identity provider&apos;s signing
+              certificate changes, paste its new metadata.
+            </p>
+          </div>
+        )}
+      </fieldset>
 
       <div className="space-y-1">
         <label className="block text-sm font-medium text-gray-700">
