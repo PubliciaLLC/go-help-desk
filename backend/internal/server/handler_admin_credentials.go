@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"net/http"
@@ -11,6 +14,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
 )
@@ -313,13 +318,80 @@ func checkEvents(w http.ResponseWriter, events []string) bool {
 	return true
 }
 
+// checkFilter decodes and validates a webhook's ticket filter (#413). It
+// writes the refusal and returns false when the filter is not acceptable. The
+// checks run in this order and the first failure wins, so a refusal names one
+// problem. Empty or absent lists are no condition, so only the ids that are
+// present are looked up.
+func (s *Server) checkFilter(w http.ResponseWriter, ctx context.Context, raw json.RawMessage) (notification.WebhookFilter, bool) {
+	var f notification.WebhookFilter
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// An unknown key would be ignored, and an ignored key widens the hook: a
+	// filter that names a type the server does not know would fire for every
+	// ticket. Refusing it is the only honest answer.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		Error(w, http.StatusBadRequest, "invalid_filter",
+			"filter must be an object with category_ids, priorities, group_ids and invert")
+		return notification.WebhookFilter{}, false
+	}
+	for _, p := range f.Priorities {
+		if !ticket.Priority(p).Valid() {
+			Error(w, http.StatusBadRequest, "invalid_filter_priority",
+				fmt.Sprintf("unknown priority %q: priorities must be any of critical, high, medium, low", p))
+			return notification.WebhookFilter{}, false
+		}
+	}
+	// Inactive categories are accepted: a ticket in one still exists, and the
+	// hook may be meant for it (#413).
+	cats, err := s.categories.ListCategories(ctx, false)
+	if err != nil {
+		handleError(w, err)
+		return notification.WebhookFilter{}, false
+	}
+	knownCats := make(map[uuid.UUID]bool, len(cats))
+	for _, c := range cats {
+		knownCats[c.ID] = true
+	}
+	for _, id := range f.CategoryIDs {
+		if !knownCats[id] {
+			Error(w, http.StatusBadRequest, "unknown_filter_category", "no category "+id.String())
+			return notification.WebhookFilter{}, false
+		}
+	}
+	groups, err := s.groups.List(ctx)
+	if err != nil {
+		handleError(w, err)
+		return notification.WebhookFilter{}, false
+	}
+	knownGroups := make(map[uuid.UUID]bool, len(groups))
+	for _, g := range groups {
+		knownGroups[g.ID] = true
+	}
+	for _, id := range f.GroupIDs {
+		if !knownGroups[id] {
+			Error(w, http.StatusBadRequest, "unknown_filter_group", "no group "+id.String())
+			return notification.WebhookFilter{}, false
+		}
+	}
+	// Inverted with nothing to invert matches no ticket: a hook that can never
+	// fire is a mistake to refuse, not to store.
+	if f.Invert && f.IsEmpty() {
+		Error(w, http.StatusBadRequest, "empty_inverted_filter",
+			"invert needs at least one condition: an inverted empty filter matches no ticket")
+		return notification.WebhookFilter{}, false
+	}
+	return f, true
+}
+
 func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		URL           string   `json:"url"`
-		Events        []string `json:"events"`
-		Secret        string   `json:"secret"`
-		PayloadFormat string   `json:"payload_format"`
-		Enabled       *bool    `json:"enabled"`
+		URL           string          `json:"url"`
+		Events        []string        `json:"events"`
+		Secret        string          `json:"secret"`
+		PayloadFormat string          `json:"payload_format"`
+		Enabled       *bool           `json:"enabled"`
+		Filter        json.RawMessage `json:"filter"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -346,6 +418,15 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 	if payloadFormat == "" {
 		payloadFormat = string(notify.FormatRaw)
 	}
+	// Absent, null and {} all mean no filter. Checked only when sent.
+	var filter notification.WebhookFilter
+	if len(body.Filter) > 0 {
+		f, ok := s.checkFilter(w, r.Context(), body.Filter)
+		if !ok {
+			return
+		}
+		filter = f
+	}
 	// Omitted means enabled, which is what create always did. An explicit
 	// false lets an operator save a hook before its receiver is ready.
 	enabled := true
@@ -360,6 +441,7 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		Enabled:       enabled,
 		CreatedAt:     time.Now(),
 		PayloadFormat: payloadFormat,
+		Filter:        filter,
 	}
 	if err := s.authStore.CreateWebhook(r.Context(), wh); err != nil {
 		handleError(w, err)
@@ -380,11 +462,12 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		URL           *string  `json:"url"`
-		Events        []string `json:"events"`
-		Secret        *string  `json:"secret"`
-		Enabled       *bool    `json:"enabled"`
-		PayloadFormat *string  `json:"payload_format"`
+		URL           *string         `json:"url"`
+		Events        []string        `json:"events"`
+		Secret        *string         `json:"secret"`
+		Enabled       *bool           `json:"enabled"`
+		PayloadFormat *string         `json:"payload_format"`
+		Filter        json.RawMessage `json:"filter"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -429,6 +512,15 @@ func (s *Server) handleUpdateWebhook(w http.ResponseWriter, r *http.Request) {
 		if existing.PayloadFormat == "" {
 			existing.PayloadFormat = string(notify.FormatRaw)
 		}
+	}
+	if len(body.Filter) > 0 {
+		// Validated only when sent, like the fields above. An object replaces
+		// the whole filter; null or {} clears it; absent keeps the current one.
+		f, ok := s.checkFilter(w, r.Context(), body.Filter)
+		if !ok {
+			return
+		}
+		existing.Filter = f
 	}
 	if err := s.authStore.UpdateWebhook(r.Context(), existing); err != nil {
 		handleError(w, err)

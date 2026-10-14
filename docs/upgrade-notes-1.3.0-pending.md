@@ -191,6 +191,16 @@ Failed sends are retried for about an hour (a template error is not retried) and
 - **REST change, staff and administrators only:** a staff member or administrator who replies publicly on a ticket they filed themselves is no longer emailed a copy of their own reply. Before, they were. This applies over REST and MCP. Webhook subscribers see it too: the reply event's `reporter_email` is empty in that case.
 - **Unchanged for requesters:** an ordinary user replying on their own ticket still gets the email copy, as before. Replies on other people's tickets are unchanged.
 
+## Webhooks: a ticket filter (#413)
+
+A hook can now be limited to tickets in chosen categories, priorities or assigned groups (Admin, Webhooks, Ticket filter), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves exactly as before. The raw payload is not changed by a filter.
+
+It works together with the retries and history above, as follows. An event a hook's filter turns away is not a delivery for that hook: no `X-GHD-Delivery`, no retry, no History entry. The filter is read as it is now, not once. It is tested when an event is fanned out to the hooks, again at every attempt of a queued delivery, and again at Redeliver. If you tighten a filter, deliveries already waiting for a retry that it no longer admits are dropped at their next attempt, without a send or a History entry, the same way a retry is dropped when the hook is disabled, unsubscribed from the event or given a new URL. If you widen it, they still go out. A retry is tested against the ticket as it was when the event happened; a delivery queued before this upgrade has no ticket to test and is sent whatever the filter says. Redeliver tests the ticket as it is now, and is refused with `409 webhook_filter_excludes` when the filter does not admit it (if the ticket is gone it is sent). Nothing about this changes what a hook is sent: the raw payload and the chat messages are the same, and the ticket details used for the test are never put in a body or kept in the History.
+
+`ticket.created` is raised before auto-assignment, so a group condition never matches it; subscribe to `ticket.assigned` to hear about tickets landing in a group.
+
+This adds a column to `webhook_configs` through a migration that runs at start-up.
+
 ## Admin API: wrong or stale response bodies, and three decided rules (#419, response half)
 
 Scripts and API keys that call the admin API can see these changes. Migration 000040 is new.
@@ -214,4 +224,4 @@ Scripts and API keys that call the admin API can see these changes. Migration 00
 - **`PATCH /admin/custom-fields/{id}` returns the saved, trimmed row.** `POST` and `PATCH /admin/statuses` return the status's real `ticket_count`; they said 0.
 - **A blank webhook `secret` on `PATCH` still clears it**, by design and for administrators only; now documented in the API spec and DESIGN.md.
 
-**Ordering.** This change adds migration **000040**; #469 holds 000037, #440 000038 and #432 000039. It is built on #432 and must merge after it.
+**Ordering.** This change adds migration **000040**, which follows 000039 (#432).

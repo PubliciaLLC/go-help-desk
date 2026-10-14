@@ -8,6 +8,7 @@ package dbgen
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 
 	uuid "github.com/google/uuid"
@@ -69,18 +70,19 @@ func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientPa
 }
 
 const createWebhookConfig = `-- name: CreateWebhookConfig :exec
-INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO webhook_configs (id, url, events, secret, enabled, created_at, payload_format, ticket_filter)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type CreateWebhookConfigParams struct {
-	ID            uuid.UUID `json:"id"`
-	Url           string    `json:"url"`
-	Events        []string  `json:"events"`
-	Secret        string    `json:"secret"`
-	Enabled       bool      `json:"enabled"`
-	CreatedAt     time.Time `json:"created_at"`
-	PayloadFormat string    `json:"payload_format"`
+	ID            uuid.UUID       `json:"id"`
+	Url           string          `json:"url"`
+	Events        []string        `json:"events"`
+	Secret        string          `json:"secret"`
+	Enabled       bool            `json:"enabled"`
+	CreatedAt     time.Time       `json:"created_at"`
+	PayloadFormat string          `json:"payload_format"`
+	TicketFilter  json.RawMessage `json:"ticket_filter"`
 }
 
 func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConfigParams) error {
@@ -92,6 +94,7 @@ func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConf
 		arg.Enabled,
 		arg.CreatedAt,
 		arg.PayloadFormat,
+		arg.TicketFilter,
 	)
 	return err
 }
@@ -171,7 +174,7 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 }
 
 const getWebhookConfig = `-- name: GetWebhookConfig :one
-SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error FROM webhook_configs WHERE id = $1
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs WHERE id = $1
 `
 
 func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookConfig, error) {
@@ -188,6 +191,7 @@ func (q *Queries) GetWebhookConfig(ctx context.Context, id uuid.UUID) (WebhookCo
 		&i.LastDeliveryAt,
 		&i.LastDeliveryStatus,
 		&i.LastDeliveryError,
+		&i.TicketFilter,
 	)
 	return i, err
 }
@@ -286,7 +290,7 @@ func (q *Queries) ListAPIKeysWithOwner(ctx context.Context, keyID uuid.NullUUID)
 }
 
 const listEnabledWebhookConfigs = `-- name: ListEnabledWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs WHERE enabled = TRUE ORDER BY created_at
 `
 
 func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfig, error) {
@@ -309,6 +313,7 @@ func (q *Queries) ListEnabledWebhookConfigs(ctx context.Context) ([]WebhookConfi
 			&i.LastDeliveryAt,
 			&i.LastDeliveryStatus,
 			&i.LastDeliveryError,
+			&i.TicketFilter,
 		); err != nil {
 			return nil, err
 		}
@@ -358,7 +363,7 @@ func (q *Queries) ListOAuthClients(ctx context.Context) ([]OauthClient, error) {
 }
 
 const listWebhookConfigs = `-- name: ListWebhookConfigs :many
-SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error FROM webhook_configs ORDER BY created_at
+SELECT id, url, events, secret, enabled, created_at, payload_format, last_delivery_at, last_delivery_status, last_delivery_error, ticket_filter FROM webhook_configs ORDER BY created_at
 `
 
 // The admin view: every subscription, enabled or not. The dispatcher keeps
@@ -383,6 +388,7 @@ func (q *Queries) ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, erro
 			&i.LastDeliveryAt,
 			&i.LastDeliveryStatus,
 			&i.LastDeliveryError,
+			&i.TicketFilter,
 		); err != nil {
 			return nil, err
 		}
@@ -446,7 +452,7 @@ func (q *Queries) UpdateAPIKeyLastUsed(ctx context.Context, arg UpdateAPIKeyLast
 
 const updateWebhookConfig = `-- name: UpdateWebhookConfig :exec
 UPDATE webhook_configs
-SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6,
+SET url = $2, events = $3, secret = $4, enabled = $5, payload_format = $6, ticket_filter = $7,
     last_delivery_at     = CASE WHEN url = $2 THEN last_delivery_at END,
     last_delivery_status = CASE WHEN url = $2 THEN last_delivery_status ELSE 0 END,
     last_delivery_error  = CASE WHEN url = $2 THEN last_delivery_error ELSE '' END
@@ -454,12 +460,13 @@ WHERE id = $1
 `
 
 type UpdateWebhookConfigParams struct {
-	ID            uuid.UUID `json:"id"`
-	Url           string    `json:"url"`
-	Events        []string  `json:"events"`
-	Secret        string    `json:"secret"`
-	Enabled       bool      `json:"enabled"`
-	PayloadFormat string    `json:"payload_format"`
+	ID            uuid.UUID       `json:"id"`
+	Url           string          `json:"url"`
+	Events        []string        `json:"events"`
+	Secret        string          `json:"secret"`
+	Enabled       bool            `json:"enabled"`
+	PayloadFormat string          `json:"payload_format"`
+	TicketFilter  json.RawMessage `json:"ticket_filter"`
 }
 
 // A new URL clears the last delivery result: it described a different target.
@@ -472,6 +479,7 @@ func (q *Queries) UpdateWebhookConfig(ctx context.Context, arg UpdateWebhookConf
 		arg.Secret,
 		arg.Enabled,
 		arg.PayloadFormat,
+		arg.TicketFilter,
 	)
 	return err
 }

@@ -46,8 +46,9 @@ func keepOnly(ev notification.Event, keys []string) notification.Event {
 	return out
 }
 
-// historyEvent is the event as it is kept for Redeliver and in a raw hook's
-// row: ids only, plus historyPayloadKeys.
+// historyEvent is the event as it is kept for Redeliver and after a delivery
+// has finally failed: ids only, plus historyPayloadKeys. No Attrs: a replay
+// reads the ticket's attributes from the ticket as it is now.
 func historyEvent(ev notification.Event) notification.Event {
 	return keepOnly(ev, historyPayloadKeys)
 }
@@ -65,9 +66,17 @@ func rawBody(ev notification.Event) ([]byte, error) {
 // send. A chat or ITSM hook keeps the subject, tracking number, status name
 // and reply text its message is built from until the row is sent and deleted,
 // or scrubbed if the delivery finally fails (scrubFailedRow).
+//
+// Every row of either kind keeps Attrs: ids and a priority, for the next
+// attempt, which judges the hook's filter as it is then (#413). They are
+// internal. No body is built from them (rawBody and the renderers never read
+// Attrs), and the copy kept in the history and the scrubbed failed row go
+// through historyEvent, which drops them.
 func rowFor(ev notification.Event, hook authstore.WebhookConfig) notification.Event {
 	if isRaw(hook) {
-		return historyEvent(ev)
+		out := historyEvent(ev)
+		out.Attrs = ev.Attrs
+		return out
 	}
 	out := ev
 	out.Recipient, out.GuestLink = "", false

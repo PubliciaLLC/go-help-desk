@@ -481,6 +481,15 @@ export interface WebhookDelivery {
   error: WebhookDeliveryError
 }
 
+// A webhook's ticket filter (#413). Empty lists are no condition. All
+// conditions must match. invert sends for the tickets that do not.
+export interface WebhookFilter {
+  category_ids: string[]
+  priorities: Priority[]
+  group_ids: string[]
+  invert: boolean
+}
+
 // One row of a hook's history (#448): an outcome, never content. result is 'ok'
 // or a class; there is no error text.
 export interface WebhookDeliveryRecord {
@@ -498,6 +507,9 @@ export interface WebhookConfig {
   id: string
   url: string
   events: string[]
+  // Optional only because fixtures written before #413 omit it; the server
+  // always sends it.
+  filter?: WebhookFilter
   // No `secret`: it is write-only. The API accepts one on create and update
   // and never returns it, so a client has nothing to show or prefill.
   enabled: boolean
