@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -54,7 +55,9 @@ func pageParams(r *http.Request) (limit, offset int) {
 		// and Postgres answered "OFFSET must not be negative" as a 500, and
 		// 4294967296 wrapped to 0 and quietly returned page one.
 		//
-		// A negative offset is refused for the same reason it used to 500.
+		// A zero, negative or unparseable offset is not refused: it is
+		// ignored and the first page comes back. A bad limit likewise falls
+		// back to the default.
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			offset = min(n, math.MaxInt32)
 		}
@@ -703,7 +706,12 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Notes string `json:"notes"`
 	}
-	_ = DecodeJSON(r, &body)
+	// An empty body is valid (resolve with no notes); anything else that does
+	// not parse is the client's mistake, not a reason to drop its notes (#421).
+	if err := DecodeJSON(r, &body); err != nil && !errors.Is(err, io.EOF) {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
 
 	if !s.requireUserIdentity(w, r) {
 		return

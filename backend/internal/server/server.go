@@ -124,7 +124,7 @@ func (s *Server) ProtectMCP(next http.Handler) http.Handler {
 	// outside the chi chain, so nothing else was setting them. DESIGN.md says
 	// "security headers on every response", and /mcp/ was one of the two
 	// places that was not true.
-	return securityHeaders(chimw.RequestID(chimw.Recoverer(requestLogger(chain))))
+	return securityHeaders(chimw.RequestID(jsonRecoverer(requestLogger(chain))))
 }
 
 // OAuthClientLookup fetches an OAuth client by client ID.
@@ -435,7 +435,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// back with a trusted-proxy setting attached, so that getting it wrong
 	// costs a log field rather than a security control.
 	r.Use(chimw.RequestID)
-	r.Use(chimw.Recoverer)
+	r.Use(jsonRecoverer)
 	r.Use(requestLogger)
 	r.Use(securityHeaders)
 	// Stamps the request with the instant after which no attachment

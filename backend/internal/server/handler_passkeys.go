@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"unicode/utf8"
@@ -61,6 +63,17 @@ func (s *Server) stagePasskey(w http.ResponseWriter, r *http.Request, staged web
 	return s.writeSession(w, r, sd)
 }
 
+// noChallengeError is "there is nothing staged to answer": the person's
+// situation, a 400. It is a type of its own so takePasskeyChallenge can return
+// it apart from a fault in the session store, which is the server's (500) and
+// used to be reported as this (#421).
+type noChallengeError struct{ cause error }
+
+func (e noChallengeError) Error() string { return e.cause.Error() }
+func (e noChallengeError) Unwrap() error { return e.cause }
+
+// takePasskeyChallenge returns a noChallengeError when no usable challenge is
+// staged, and any other error when the session could not be written.
 func (s *Server) takePasskeyChallenge(w http.ResponseWriter, r *http.Request) (webauthn.Staged, auth.SessionData, error) {
 	session, _ := s.sessions.Get(r, auth.SessionName)
 	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
@@ -69,7 +82,44 @@ func (s *Server) takePasskeyChallenge(w http.ResponseWriter, r *http.Request) (w
 	if werr := s.writeSession(w, r, sd); werr != nil {
 		return webauthn.Staged{}, sd, werr
 	}
-	return staged, sd, err
+	if err != nil {
+		return webauthn.Staged{}, sd, noChallengeError{err}
+	}
+	return staged, sd, nil
+}
+
+// passkeyChallengeRefused answers a takePasskeyChallenge error.
+func passkeyChallengeRefused(w http.ResponseWriter, err error) {
+	var nc noChallengeError
+	if errors.As(err, &nc) {
+		Error(w, http.StatusBadRequest, "no_challenge", err.Error())
+		return
+	}
+	handleError(w, err)
+}
+
+// maxPasskeyBody bounds a finish request. A real attestation or assertion is a
+// few KiB; the library reads whatever it is handed.
+const maxPasskeyBody = 64 << 10
+
+// capPasskeyBody reads the body under maxPasskeyBody and puts it back for the
+// WebAuthn library, which takes the whole *http.Request. Reading it here, and
+// not wrapping it, is what lets an oversized body be answered 413 whatever
+// error the library would have wrapped around the short read. It reports
+// whether the request may go on.
+func capPasskeyBody(w http.ResponseWriter, r *http.Request) bool {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPasskeyBody))
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		Error(w, http.StatusRequestEntityTooLarge, "too_large", "request body is too large")
+		return false
+	}
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "could not read the request body")
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	return true
 }
 
 // alreadyProtected reports whether this account already has a working second
@@ -187,9 +237,12 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	a := authmw.GetActor(r)
+	if !capPasskeyBody(w, r) {
+		return
+	}
 	staged, sd, err := s.takePasskeyChallenge(w, r)
 	if err != nil {
-		Error(w, http.StatusBadRequest, "no_challenge", err.Error())
+		passkeyChallengeRefused(w, err)
 		return
 	}
 	acct, err := s.accountFor(r, a.UserID)
@@ -363,9 +416,12 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if !capPasskeyBody(w, r) {
+		return
+	}
 	staged, sd, err := s.takePasskeyChallenge(w, r)
 	if err != nil {
-		Error(w, http.StatusBadRequest, "no_challenge", err.Error())
+		passkeyChallengeRefused(w, err)
 		return
 	}
 	acct, err := s.accountFor(r, a.UserID)

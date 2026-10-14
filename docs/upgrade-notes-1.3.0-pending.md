@@ -58,3 +58,25 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 - the check repeats on each upload, so fixing the permissions needs no restart.
 
 Before this, an unwritable directory showed up as a failed upload partway through.
+
+## API Behaviour Changes (#421)
+
+These affect scripts and integrations that call the API. Three can make a request that used to succeed now fail; the rest change what an answer says.
+
+### Requests that now fail
+
+- **Unknown settings keys are refused.** `PATCH /api/v1/admin/settings` with a key that is not a real setting now answers `400 unknown_setting`, names the key, and writes nothing (not even the valid keys in the same request). Before, any key was stored, so a typo such as `mfa_enabld` answered 204 and changed nothing. Fix: use the exact setting names from `GET /api/v1/admin/settings` (the `_set` presence flags are still refused with `readonly_setting`).
+- **`POST /api/v1/tickets/{id}/resolve` with a body that is not valid JSON is `400`.** Before, it resolved the ticket and dropped the notes. An empty body still resolves with no notes.
+- **`GET /api/v1/auth/verify-email?token=` is `422 token_invalid` for an address that has since gained an account.** Before, it answered 200 and only the POST refused.
+
+### Answers that now say something different
+
+- **`GET /api/v1/auth/providers`** is served as `application/json` (it had no content type). `oidc` and `saml` now mean "loaded and working", not "switched on": an identity provider that did not answer shows `false`, and SAML shows `true` whenever it is loaded, whatever `saml_enabled` says. `local` is still always `true`; the new `local_admin_only` is `true` when `saml_enabled` limits password sign-in to administrators.
+- **`GET /api/v1/admin/oidc` and `/admin/saml`** gain `live`. `configured: true, live: false` means "saved, not working". `configured` is unchanged.
+- **`GET /api/v1/auth/signup/status`**: `open_registration` is now what is in force, so it reads `false` when an allowed-domains list limits signup, even with the open-registration setting on. The new `restricted_by_domain_list` says why. Who can sign up is unchanged.
+- **`Retry-After` on a `429`** from the sixty-second login, signup and guest limits is now the seconds left in the window (1 to 60) instead of always 60. The 15-minute MFA lock still says 900.
+- **A server crash inside a request** answers the JSON `500 internal_error` body instead of an empty body.
+- **Passkey sign-in and registration (`.../passkey/finish`, `.../register/finish`)** answer `500` when the server cannot write the session (they said `400 no_challenge`), and refuse a body over 64 KiB with `413 too_large`.
+- **`POST /api/v1/me/mfa/enroll/confirm`** answers `500` when the server cannot save the factor (it said `400 invalid_code`). A wrong code and an enrolment that was never started are still `400 invalid_code`.
+- **`POST /api/v1/guest/resend`** accepts an empty body (it was `400`). Malformed JSON is still `400`.
+- **`DELETE /api/v1/tickets`** is `405` as before. Its `Allow` header carries `GET` and `POST` as two header lines, which is what the server always sent; clients that read only the first line saw `GET`.
