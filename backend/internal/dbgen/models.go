@@ -354,3 +354,16 @@ type WebhookConfig struct {
 	LastDeliveryError  string          `json:"last_delivery_error"`
 	TicketFilter       json.RawMessage `json:"ticket_filter"`
 }
+
+type WebhookDelivery struct {
+	ID            uuid.UUID       `json:"id"`
+	WebhookID     uuid.UUID       `json:"webhook_id"`
+	EventType     string          `json:"event_type"`
+	Event         json.RawMessage `json:"event"`
+	CreatedAt     time.Time       `json:"created_at"`
+	LastAttemptAt time.Time       `json:"last_attempt_at"`
+	Status        int32           `json:"status"`
+	Result        string          `json:"result"`
+	Attempts      int32           `json:"attempts"`
+	Retrying      bool            `json:"retrying"`
+}

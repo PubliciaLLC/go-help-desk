@@ -68,6 +68,11 @@ export interface StatusHistoryEntry {
   created_at: string
 }
 
+// #422: what the ids in a diff's before/after name now, keyed by the id as it
+// appears there. An id with no entry no longer resolves (the row is gone) and
+// is shown as the id. `masked` is true when name is the "Requester" mask.
+export type AuditNames = Record<string, { name: string; masked?: boolean }>
+
 // The admin-wide audit view (#129) — see handleListAdminAudit. Same shape as
 // TicketAuditEntry plus the entity a per-ticket feed doesn't need to say.
 export interface AdminAuditEntry {
@@ -83,6 +88,7 @@ export interface AdminAuditEntry {
   created_at: string
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 export interface AdminAuditListResponse {
@@ -123,6 +129,7 @@ export interface TicketAuditEntry {
   // recorded"; this type cannot tell them apart.
   before?: Record<string, unknown> | null
   after?: Record<string, unknown> | null
+  names?: AuditNames
 }
 
 export interface Status {
@@ -447,7 +454,7 @@ export interface OAuthClient {
 
 // payload_format reshapes the same lifecycle event for a chat/ITSM service's
 // incoming-webhook endpoint before it is POSTed. 'raw' (the default) is
-// today's full event payload; the others are Slack, Teams, Discord and JIRA
+// ids-only JSON; the others are Slack, Teams, Discord and JIRA
 // Automation shapes. See docs/DESIGN.md "Notifications" and #187.
 export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
 
@@ -468,6 +475,19 @@ export interface WebhookFilter {
   priorities: Priority[]
   group_ids: string[]
   invert: boolean
+}
+
+// One row of a hook's history (#448): an outcome, never content. result is 'ok'
+// or a class; there is no error text.
+export interface WebhookDeliveryRecord {
+  id: string
+  event: string
+  started_at: string
+  last_attempt_at: string
+  status: number
+  result: 'ok' | Exclude<WebhookDeliveryError, ''>
+  attempts: number
+  retrying: boolean
 }
 
 export interface WebhookConfig {

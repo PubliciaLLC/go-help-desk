@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,6 +45,18 @@ func (s *Store) GetByID(ctx context.Context, id uuid.UUID) (user.User, error) {
 		return user.User{}, wrapNotFound(err, "user", id.String())
 	}
 	return fromRow(row), nil
+}
+
+func (s *Store) GetByIDs(ctx context.Context, ids []uuid.UUID) ([]user.User, error) {
+	rows, err := s.q.GetUsersByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("getting users by id: %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, nil
 }
 
 func (s *Store) GetByEmail(ctx context.Context, email string) (user.User, error) {
@@ -224,6 +237,32 @@ func (s *Store) ListAdmin(ctx context.Context, limit, offset int) ([]user.User, 
 		out[i] = fromRow(r)
 	}
 	return out, nil
+}
+
+// likeEscaper makes %, _ and the escape character itself match literally in
+// an ILIKE pattern, so searching for "50%" finds "50%" rather than everyone.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+func (s *Store) SearchAdmin(ctx context.Context, role, q string, limit, offset int) ([]user.User, int64, error) {
+	pattern := likeEscaper.Replace(q)
+	rows, err := s.q.SearchUsersAdmin(ctx, dbgen.SearchUsersAdminParams{
+		Role:       role,
+		Q:          pattern,
+		PageLimit:  int32(limit),
+		PageOffset: int32(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("searching users (admin): %w", err)
+	}
+	total, err := s.q.CountSearchUsersAdmin(ctx, dbgen.CountSearchUsersAdminParams{Role: role, Q: pattern})
+	if err != nil {
+		return nil, 0, fmt.Errorf("counting users (admin): %w", err)
+	}
+	out := make([]user.User, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(r)
+	}
+	return out, total, nil
 }
 
 func (s *Store) Count(ctx context.Context) (int64, error) {

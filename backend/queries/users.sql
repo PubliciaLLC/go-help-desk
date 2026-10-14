@@ -17,6 +17,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- name: GetUsersByIDs :many
+SELECT * FROM users WHERE id = ANY($1::uuid[]) AND deleted_at IS NULL;
+
 -- name: GetUserByEmail :one
 SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL;
 
@@ -292,6 +295,29 @@ SELECT * FROM users WHERE id = $1;
 
 -- name: ListUsersAdmin :many
 SELECT * FROM users WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT $1 OFFSET $2;
+
+-- name: SearchUsersAdmin :many
+-- The paged admin list (#449). role = '' means any role; q is already
+-- LIKE-escaped by the caller (backslash is the escape character), and an empty
+-- q matches everyone. id breaks created_at ties so a page boundary never
+-- repeats or drops an account. ListUsersAdmin, above, is the unpaged list and
+-- is left alone.
+SELECT * FROM users
+WHERE deleted_at IS NULL
+  AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
+  AND (sqlc.arg(q)::text = ''
+       OR email ILIKE '%' || sqlc.arg(q)::text || '%'
+       OR display_name ILIKE '%' || sqlc.arg(q)::text || '%')
+ORDER BY created_at DESC, id
+LIMIT sqlc.arg(page_limit) OFFSET sqlc.arg(page_offset);
+
+-- name: CountSearchUsersAdmin :one
+SELECT count(*) FROM users
+WHERE deleted_at IS NULL
+  AND (sqlc.arg(role)::text = '' OR role = sqlc.arg(role)::text)
+  AND (sqlc.arg(q)::text = ''
+       OR email ILIKE '%' || sqlc.arg(q)::text || '%'
+       OR display_name ILIKE '%' || sqlc.arg(q)::text || '%');
 
 -- name: RestoreUser :exec
 UPDATE users SET deleted_at = NULL, updated_at = now() WHERE id = $1;

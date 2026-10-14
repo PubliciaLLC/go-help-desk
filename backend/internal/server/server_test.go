@@ -24,6 +24,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/categorystore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/customfieldstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/groupstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/outboxstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
@@ -319,6 +320,10 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 	verifyNow := &lateDispatcher{}
 	registrationSvc := registration.NewService(registrationstore.New(q), userSvc, verifyMail, verifyNow, "https://help.example.com")
 	verifyNow.Dispatcher = notify.NewVerificationDispatcher(registrationSvc.SendVerification)
+	// The real webhook dispatcher over the harness transaction, so Redeliver
+	// writes a real outbox row a test can read.
+	webhookDisp := notify.NewWebhookDispatcher(authSt, "https://help.example.com", nil).
+		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srv := server.New(
 		cfg,
 		sessionStore,
@@ -338,6 +343,7 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 		authSt,
 		registrationSvc,
 		cannedResponseSvc,
+		server.WithWebhookRedeliverer(webhookDisp),
 		server.WithAuditStore(auStore),
 	)
 

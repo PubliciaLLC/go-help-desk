@@ -106,7 +106,8 @@ func TestGuestToken_RotatesOnlyOnWhatTheGuestIsTold(t *testing.T) {
 			true, false, "", staff, 7, h.newStatus.ID)
 		require.NoError(t, err)
 
-		ev := lastEventOfType(t, h, notification.EventTicketReplied)
+		// A note is ticket.note_added now (#448); same assertions.
+		ev := lastEventOfType(t, h, notification.EventTicketNoteAdded)
 		require.Empty(t, ev.GuestToken, "an internal note must mint nothing")
 		require.Empty(t, ev.Recipient, "and must reach nobody")
 

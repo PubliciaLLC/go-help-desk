@@ -45,6 +45,11 @@ jobs:
           # The guard diffs against the base branch, so it needs real history.
           fetch-depth: 0
 
+      # The guard is a script a race once made lie (#478), so it has its own
+      # test, run before it is trusted to judge the PR.
+      - name: Check the guard itself
+        run: ./scripts/check-test-coverage-test.sh
+
       - name: Check that changed code has tests
         run: |
           base="origin/${{ github.base_ref }}"

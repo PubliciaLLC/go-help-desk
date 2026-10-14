@@ -88,6 +88,15 @@ func (f *fakeOutbox) Fail(_ context.Context, id uuid.UUID, reason string) error 
 	return nil
 }
 
+func (f *fakeOutbox) RewriteEvent(_ context.Context, id uuid.UUID, ev []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r, ok := f.rows[id]; ok {
+		r.event = ev
+	}
+	return nil
+}
+
 func (f *fakeOutbox) DeleteFailedBefore(context.Context, time.Time) (int64, error) { return 0, nil }
 
 // makeDue lets a test skip a backoff.

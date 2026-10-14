@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -382,11 +381,13 @@ func TestDispatch_MarshalFailureIsLogged(t *testing.T) {
 	}
 	disp := &WebhookDispatcher{store: store, log: logger}
 
-	// A channel value in Payload cannot be marshalled to JSON.
+	// A channel value in Payload cannot be marshalled to JSON. The key is one
+	// the raw body carries (rawPayloadKeys): anything else is dropped before
+	// marshalling, so it could not fail.
 	ev := notification.Event{
 		Type:           notification.EventTicketReplied,
 		TicketID:       fixtureTicketID,
-		Payload:        map[string]any{"bad": make(chan int)},
+		Payload:        map[string]any{"new_status_id": make(chan int)},
 		OccurredAt:     fixtureOccurred,
 		TrackingNumber: "GHD-2026-000001",
 		Subject:        "Printer jammed",
@@ -1006,10 +1007,11 @@ func TestDispatch_FilterDoesNotChangeTheRawBody(t *testing.T) {
 	disp := &WebhookDispatcher{store: store, client: srv.Client(), baseURL: fixtureBaseURL,
 		log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
-	// want is the body of the event as it was before #413, with no attrs: the
-	// bytes every receiver got before filters existed.
+	// want is the body of the event with no attrs: the bytes every receiver got
+	// before filters existed. Since #448 that is the ids-only raw body
+	// (rawBody), not json.Marshal of the whole event.
 	ev := fixtureReplyEvent(false)
-	want, err := json.Marshal(ev)
+	want, err := rawBody(ev)
 	require.NoError(t, err)
 	ev.Attrs = &notification.TicketAttrs{Priority: "critical", CategoryID: uuid.New()}
 	require.NoError(t, disp.Dispatch(context.Background(), ev))
