@@ -9,9 +9,10 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 | Version | Scope |
 |---------|-------|
 | **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats), Docker deployment |
-| **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install) |
-| **v3** | Reporting, knowledge base, custom admin-defined roles |
-| **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
+| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
+| **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
+| **v3** | Knowledge base, custom admin-defined roles |
+| **v4** | Multi-tenancy / SaaS, plugin registry |
 
 Custom fields, CTI-linked group management, canned responses and full-text
 search were built ahead of the original v2 schedule and are shipped; this table
@@ -81,7 +82,7 @@ SLA fields (optional feature toggle, all editions):
 
 - **SLA target** (response time and resolution time targets, configurable per Priority and/or Category)
 
-ITSM fields (v4 SaaS only):
+ITSM fields (v1.4, #135; behind an admin setting, off by default, so an install that sorts work by Category alone sees no change):
 
 - **Ticket Type** (Incident, Service Request, Problem, Change Request)
 - **Impact** (High / Medium / Low — how broadly the issue affects the organization)
@@ -527,9 +528,10 @@ Routing is best-effort: a failure to assign leaves the ticket unassigned and doe
 
 ### Local Auth (Default)
 
-- Username/password with bcrypt hashing. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
+- Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has.
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
+- **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
 
 ### Passkeys (WebAuthn)
 
@@ -1058,7 +1060,7 @@ router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
 in 1.2.0.
 
-- Toggle in admin settings
+- **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
 - Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
 - The tracking number can be referenced when following up with the help desk by phone or email
@@ -1181,6 +1183,18 @@ the exact combination that used to be invisible, including the `permissive`
 case, where uploads keep being accepted without ever being scanned and
 nothing before this said so. A deliberate `policy: off` is not shown as a
 warning: that is a choice already visible in Settings, not a hidden failure.
+
+**The one exception (#459): a policy nobody chose is warned about.** When no
+policy was ever saved (`policy_explicit` is false), no scanner address is set in
+either the setting or the environment, and the instance already holds at least
+one attachment, the response carries `stale_off: true` and the banner tells the
+administrator how to turn scanning back on. This is the state of an install that
+upgraded from a release whose Compose file ran a scanner by default: "off" there
+is an accident of what was deployed, not a position anyone holds. Explicitly
+saving "Do not scan" makes `policy_explicit` true and clears the banner for good,
+so a deliberate "off" is still never warned about. Settings → Attachments shows
+the same status (policy, configured, reachable, and the `effect` sentence) so an
+administrator can check it without waiting for an upload to fail.
 
 **Attachments are download-only. There is no previewer, and there will not be
 one.**
@@ -1884,7 +1898,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
-- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up` additionally answers `404` while guest submission is off.
+- `/api/v1/guest/*` — `POST /tickets` (submit) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
 - `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require an authenticated caller (a session, API key or OAuth token). Active entries for a guest or a reporting user, all of them for staff and administrators.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
@@ -1943,6 +1957,36 @@ request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
 privilege change. Lifetime is 7 days. SAML's library cookie is not a
 session; it is spent at hand-over (see Authentication → SAML).
+
+**The generated JWT signing key is stored unencrypted in `instance_secrets`,
+on purpose (#454).** When `JWT_SECRET` is unset or under 32 bytes, the server
+generates a random 32-byte key once and keeps it in that table. Do not
+"fix" this by encrypting it:
+
+- It sits in the same database as session tokens, which are more sensitive: a
+  reader of this table could already act as any signed-in user.
+- Encrypting it with `SESSION_SECRET` would lock the key out whenever that secret
+  changed, and the key would silently regenerate. Every OAuth client would then
+  hold a token the server no longer accepts.
+
+A long `JWT_SECRET` in the environment still wins over the stored key, with
+one exception: a value that is exactly one of the example secrets this
+repository publishes (`config.IsExampleSecret`) is discarded and treated as
+unset, with one warning logged at startup. Anyone can read the example, so a
+token signed with it would prove nothing. `SESSION_SECRET` has no such fallback
+and is still flagged, not discarded. A long `JWT_SECRET` that merely looks like a
+placeholder without being an exact example is used (it is the key), so it is
+flagged in the admin warnings like `SESSION_SECRET`.
+
+**An unwritable `ATTACHMENT_DIR` disables uploads and nothing else (#458).**
+The directory is probed (a scratch file is created and removed) at startup,
+which logs a warning, and again on every upload attempt and every
+`GET /admin/security-warnings` (`attachment_storage`). It is probed rather than
+remembered so that fixing the permissions recovers on the next request with no
+restart and no timer. While it fails, the staff, requester and guest upload
+routes answer 503 `attachments_unavailable` before reading the body, the admin
+banner says why, and downloads of files already stored keep working for as long
+as the directory is readable.
 
 ### Credential Scopes
 
@@ -2175,22 +2219,22 @@ on the existing webhook feature instead of as plugins.
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` and
   `ticket.linked`.
   **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
-  The raw body is the event record, not a copy of the ticket: `Type`,
-  `TicketID`, `ActorID` (null for a system event), `OccurredAt` and a `Payload`
-  that depends on the event. Assigned, resolved, closed and reopened have no
-  payload; status changed has `new_status_id`; linked has `target_id` and
-  `link_type`; created has `TrackingNumber`, `Subject`, `Priority` and, for a
-  guest ticket, `guest_email`; replied has `TrackingNumber`, `Subject`,
-  `internal`, `ReplyBody` and `reporter_email` (set only when the customer is
-  being notified); a note has the same without `ReplyBody`, and `internal` is
-  always true. So it is ids for most events, plus the subject and tracking
-  number on create and reply, and the reply text on a public reply. It is not
-  the full ticket, and the tracking number is not a top-level field. A receiver
-  that needs more reads the ticket through the REST API using the id. This
-  format does not change. The Slack, Teams, Discord and JIRA formats keep their
-  own built bodies, including for `ticket.note_added`, and never carry a note's
-  text. A webhook target is registered by an administrator, not chosen by a
-  reporter, which is why the subject and reply text are sent at all.
+  The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
+  (null for a system event), `OccurredAt` and a `Payload` holding only
+  `new_status_id` (status changed), `target_id` and `link_type` (linked, the
+  latter an enum) and `internal` (replied: false, note: true), where the event
+  has them. Created, assigned, resolved, closed and reopened have no payload.
+  No address, subject, tracking number, priority, status name or reply text is
+  sent, and none is stored with it. The keys are an allow list, so a key added
+  to an event later stays off the wire until someone decides a receiver should
+  have it. A receiver that needs the ticket reads it through the REST API using
+  `TicketID`. **This changed from earlier 1.3 betas**, which also sent
+  `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `ReplyBody` and
+  `reporter_email` in `Payload`. The Slack, Teams, Discord and JIRA formats are
+  not affected: they are built from the event as the server holds it, not from
+  the raw body, and keep their subject, tracking number, status and reply
+  text (never a note's text, and never an address), including for
+  `ticket.note_added`.
   Administrators manage them under **Admin → Webhooks** (URL, payload format,
   events, enabled — also when creating — edit, delete). A secret is write-only:
   it signs deliveries and is never returned by the API or shown again, and
@@ -2207,11 +2251,17 @@ on the existing webhook feature instead of as plugins.
   **History and Redeliver.** Each hook keeps its last 25 deliveries: the event
   name, when the first and latest attempts started, the HTTP status, a result
   (`ok` or a class), the number of attempts and whether another is pending.
-  No payload and no error text is shown or returned. The queued event is kept
-  beside each entry only so **Redeliver** can queue it again, as a new delivery
-  with a new `X-GHD-Delivery`; it is the event as it was, not rebuilt from the
-  ticket now, and it holds no recipient address. Changing a hook's URL clears
-  its history, and deleting the hook deletes it.
+  No payload and no error text is shown or returned. The event is kept beside
+  each entry only so **Redeliver** can queue it again, as a new delivery with a
+  new `X-GHD-Delivery`. What is kept is ids only, the same as a raw body: no
+  address, subject, tracking number or text. So a replay is the event as it
+  was, not rebuilt from the ticket now. For a raw hook it is identical to the
+  original. For a Slack, Teams, Discord or JIRA hook the replayed message has
+  its headline and ticket link but no subject, tracking number, status name or
+  reply text, because those are not kept. Redeliver is refused with
+  `409 webhook_disabled` for a disabled hook and
+  `409 webhook_not_subscribed` when the hook no longer lists that event.
+  Changing a hook's URL clears its history, and deleting the hook deletes it.
   (`GET /admin/webhooks/{id}/deliveries`,
   `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
 - **Delivery is queued, not done on the request**
@@ -2243,8 +2293,13 @@ on the existing webhook feature instead of as plugins.
   worker that dies between sending and settling sends again after the lease.
   **Webhooks are retried per hook** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
   The `webhook` row an event queues is a fan-out: the worker turns it into one
-  row per subscribed hook (the row ids derive from the fan-out row, so a
-  repeat after a crash queues nothing new) and settles it. Each per-hook row
+  row per subscribed hook and settles it. The row ids derive from the fan-out
+  row, so a repeat after a crash reuses the same delivery ids: a row still
+  waiting is not queued twice, and one already sent and deleted is queued again
+  with the same `X-GHD-Delivery`, which a receiver can drop. A row holds no
+  address; a raw hook's holds ids only, and a chat hook's keeps the text its
+  message is built from until it is sent. It holds a SHA-256 of the hook's URL,
+  never the URL, which can carry a token. Each per-hook row
   is then delivered and retried on its own, on the schedule above: 30 seconds
   doubling to an hour, eight attempts in all, so a failing hook never causes
   another to be sent twice. The row's id is the `X-GHD-Delivery`. Connection
@@ -2253,7 +2308,11 @@ on the existing webhook feature instead of as plugins.
   when it is longer than the schedule, to at most an hour. A refused address
   (`blocked_address`), any other status and a request that cannot be built are
   final: asking again gets the same answer. A hook disabled or deleted between
-  queueing and sending is skipped, not failed. Each attempt updates the hook's
+  queueing and sending is skipped, not failed, and so is one that no longer
+  lists the event or whose URL no longer matches the stored hash (a queued
+  retry for the old address is dropped rather than sent to the new one). This
+  is checked on every attempt, so it also stops retries already waiting. The
+  secret is read at send time, so a rotated secret signs the retry. Each attempt updates the hook's
   latest result and its history (above), not the outbox row, whose `last_error`
   holds only a class and a status. Delivery is at least once, so a receiver can
   see the same event twice.

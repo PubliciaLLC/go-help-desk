@@ -611,6 +611,17 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 // that wins the race is answered (the generic 404 for a guest, 409 for a
 // signed-in reporter).
 func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request, ticketID uuid.UUID, actor ticket.Actor) {
+	// Before the body is read: a directory that cannot be written to would
+	// otherwise be discovered after the file was parsed, scanned and hashed,
+	// as a 500 (#458). Probed on every attempt, so a fixed directory works
+	// on the next upload.
+	if problem := attachmentStorageProblem(s.cfg.AttachmentDir); problem != "" {
+		slog.WarnContext(r.Context(), "attachment upload refused: storage directory is not writable", "reason", problem)
+		Error(w, http.StatusServiceUnavailable, "attachments_unavailable",
+			"attachments are temporarily unavailable: the server cannot write to its attachment storage ("+problem+"). Ask an administrator.")
+		return
+	}
+
 	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
 	}

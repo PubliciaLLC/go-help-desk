@@ -96,31 +96,40 @@ func (q *Queries) CreateWebhookConfig(ctx context.Context, arg CreateWebhookConf
 	return err
 }
 
-const deleteAPIKey = `-- name: DeleteAPIKey :exec
+const deleteAPIKey = `-- name: DeleteAPIKey :execrows
 DELETE FROM api_keys WHERE id = $1
 `
 
-func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteAPIKey, id)
-	return err
+func (q *Queries) DeleteAPIKey(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteAPIKey, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteOAuthClient = `-- name: DeleteOAuthClient :exec
+const deleteOAuthClient = `-- name: DeleteOAuthClient :execrows
 DELETE FROM oauth_clients WHERE id = $1
 `
 
-func (q *Queries) DeleteOAuthClient(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteOAuthClient, id)
-	return err
+func (q *Queries) DeleteOAuthClient(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteOAuthClient, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteWebhookConfig = `-- name: DeleteWebhookConfig :exec
+const deleteWebhookConfig = `-- name: DeleteWebhookConfig :execrows
 DELETE FROM webhook_configs WHERE id = $1
 `
 
-func (q *Queries) DeleteWebhookConfig(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteWebhookConfig, id)
-	return err
+func (q *Queries) DeleteWebhookConfig(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteWebhookConfig, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getAPIKeyByHash = `-- name: GetAPIKeyByHash :one

@@ -162,7 +162,7 @@ function WebhookFields({
             ))}
           </Select>
           <p className="text-xs text-gray-500">
-            Raw sends the full event. The others reshape it for that service&apos;s incoming
+            Raw sends ids only: the event name, ticket id and timestamp, no text or addresses. The others build a message for that service&apos;s incoming
             webhook.
           </p>
         </div>

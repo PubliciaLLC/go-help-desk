@@ -138,6 +138,28 @@ func TestWebhookRedeliver_QueuesTheEventAgain(t *testing.T) {
 	require.Equal(t, hook.ID.String(), target, "the replay is addressed to the one hook")
 }
 
+// A hook that no longer lists the delivery's event is told so, with a reason,
+// and nothing is queued.
+func TestWebhookRedeliver_RefusesAnEventTheHookDroppedWith409(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	hook := historyHook(t, h, true)
+	id := recordDelivery(t, h, hook, time.Now().UTC(), 200, "") // a ticket.replied delivery
+	hook.Events = []string{"ticket.closed"}
+	require.NoError(t, h.authStore.UpdateWebhook(context.Background(), hook))
+
+	res := h.doAsAdmin(t, http.MethodPost,
+		"/api/v1/admin/webhooks/"+hook.ID.String()+"/deliveries/"+id.String()+"/redeliver", nil)
+	defer res.Body.Close()
+	require.Equal(t, http.StatusConflict, res.StatusCode)
+	var body struct {
+		Error struct{ Code string } `json:"error"`
+	}
+	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
+	require.Equal(t, "webhook_not_subscribed", body.Error.Code)
+	require.Equal(t, 0, queuedWebhookRows(t, h))
+}
+
 func TestWebhookRedeliver_Refusals(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()

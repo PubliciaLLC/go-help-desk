@@ -88,6 +88,12 @@ type Event struct {
 	// row is first fanned out into one row per subscribed hook, so each hook
 	// is retried on its own (#448). Never part of the wire body.
 	TargetWebhook uuid.UUID `json:"-"`
+
+	// TargetURLHash is the SHA-256 (hex) of the hook's URL when the per-hook row
+	// was queued. A URL can carry a token, so the outbox holds a fingerprint of
+	// it and never the URL; at send time a row whose hash no longer matches the
+	// hook's URL is dropped (#448). Never part of the wire body.
+	TargetURLHash string `json:"-"`
 }
 
 // RetryAfterError asks the outbox worker to wait at least After before the

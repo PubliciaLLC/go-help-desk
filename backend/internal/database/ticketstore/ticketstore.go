@@ -538,7 +538,7 @@ func (s *Store) CreateAttachment(ctx context.Context, a ticket.Attachment) error
 func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Attachment, error) {
 	r, err := s.q.GetAttachmentByID(ctx, id)
 	if err != nil {
-		return ticket.Attachment{}, fmt.Errorf("getting attachment %s: %w", id, err)
+		return ticket.Attachment{}, wrapNotFound(err, "attachment", id.String())
 	}
 	return ticket.Attachment{
 		ID:          r.ID,
@@ -554,6 +554,14 @@ func (s *Store) GetAttachmentByID(ctx context.Context, id uuid.UUID) (ticket.Att
 		VirusName:       database.StringPtr(r.VirusName),
 		ContentMismatch: database.BoolPtr(r.ContentMismatch),
 	}, nil
+}
+
+func (s *Store) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	ok, err := s.q.AnyAttachmentExists(ctx)
+	if err != nil {
+		return false, fmt.Errorf("checking for attachments: %w", err)
+	}
+	return ok, nil
 }
 
 func (s *Store) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]ticket.Attachment, error) {

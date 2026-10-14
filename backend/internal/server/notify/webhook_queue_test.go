@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 )
@@ -55,7 +56,7 @@ func (s *queueStore) GetWebhook(_ context.Context, id uuid.UUID) (authstore.Webh
 	defer s.mu.Unlock()
 	h, ok := s.hooks[id]
 	if !ok {
-		return authstore.WebhookConfig{}, fmt.Errorf("getting webhook: %w", sql.ErrNoRows)
+		return authstore.WebhookConfig{}, fmt.Errorf("webhook: %w", auth.ErrNotFound)
 	}
 	return h, nil
 }
@@ -468,22 +469,23 @@ func uniq(in []uuid.UUID) []uuid.UUID {
 	return out
 }
 
-// The stored copy is replayed from, so it must not hold what a webhook never
-// carries: the recipient's address and the guest-link flag.
-func TestFanOut_StoredEventHoldsNoRecipient(t *testing.T) {
+// The copy kept for Redeliver holds ids and nothing else: no address in the
+// typed field or in Payload, and no subject, tracking number or reply text.
+func TestFanOut_StoredEventHoldsNoAddressOrContent(t *testing.T) {
 	rc := newReceiver(t, 200)
 	rig := newQueueRig(t, rc.srv.Client(), hookFor(rc.srv.URL))
-	ev := fixtureReplyEvent(false)
-	ev.Recipient = "customer@example.com"
-	ev.GuestLink = true
+	ev := contentEvent()
 
 	require.NoError(t, rig.front.Dispatch(context.Background(), ev))
 	rig.drain(t)
 
 	require.Equal(t, 1, rc.count())
 	stored := string(rig.hooks.last().Event)
-	require.NotContains(t, stored, "customer@example.com")
+	for _, leak := range contentStrings {
+		require.NotContains(t, stored, leak)
+	}
 	require.NotContains(t, stored, "guest_link")
+	require.Contains(t, stored, ev.TicketID.String(), "ids stay")
 }
 
 func TestQueue_DisabledOrDeletedHookGetsNothing(t *testing.T) {

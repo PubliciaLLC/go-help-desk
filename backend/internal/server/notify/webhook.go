@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
@@ -22,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/authstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
@@ -102,6 +102,9 @@ var (
 	ErrWebhookNotFound  = errors.New("webhook not found")
 	ErrWebhookDisabled  = errors.New("webhook is disabled")
 	ErrDeliveryNotFound = errors.New("delivery not found")
+
+	// ErrWebhookNotSubscribed: the hook no longer lists the delivery's event.
+	ErrWebhookNotSubscribed = errors.New("webhook is not subscribed to this event")
 )
 
 // WebhookDispatcher sends HTTP POST payloads to configured webhook URLs.
@@ -176,11 +179,11 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 		return nil // store failure is non-fatal
 	}
 
-	// Marshalled once, exactly as before: this is the raw wire body every
-	// "raw" (and pre-migration empty-format) subscription still receives
-	// byte-for-byte unchanged. bodyFor below reshapes a copy per format; it
-	// never touches this slice for those hooks.
-	payload, err := json.Marshal(event)
+	// Marshalled once: the raw wire body every "raw" (and empty-format)
+	// subscription receives, ids only (rawBody). bodyFor below reshapes the
+	// full event per format for the others; it never touches this slice for
+	// those hooks.
+	payload, err := rawBody(event)
 	if err != nil {
 		d.log.ErrorContext(ctx, "webhook dispatch skipped: event could not be marshalled",
 			"event", event.Type, "error", err)
@@ -218,7 +221,12 @@ func (d *WebhookDispatcher) Dispatch(ctx context.Context, event notification.Eve
 //
 // The per-hook row ids derive from the fan-out row's id, and the outbox
 // ignores a repeated id, so running this again after a crash (between queueing
-// and settling) queues nothing new.
+// and settling) reuses the same delivery ids. That stops a row still waiting
+// from being queued twice; a row already sent and deleted would be queued
+// again, with the same X-GHD-Delivery, which a receiver can drop.
+//
+// Each row holds the event as that hook needs it (rowFor): never an address,
+// and for a raw hook no content at all.
 func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) error {
 	hooks, err := d.store.ListEnabledWebhooks(ctx)
 	if err != nil {
@@ -226,18 +234,15 @@ func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) e
 		// again, where there it meant zero deliveries (#213).
 		return fmt.Errorf("listing enabled webhooks: %w", err)
 	}
-	// What a webhook never carries is dropped here, so the copy kept for
-	// Redeliver holds no recipient address.
-	ev.Recipient, ev.GuestLink = "", false
-
 	parent := RowID(ctx)
 	var first error
 	for _, hook := range hooks {
 		if !hookSubscribes(hook, ev.Type) {
 			continue
 		}
-		perHook := ev
+		perHook := rowFor(ev, hook)
 		perHook.TargetWebhook = hook.ID
+		perHook.TargetURLHash = urlHash(hook.URL)
 		row, err := encodeEvent(perHook)
 		if err != nil {
 			first = errors.Join(first, fmt.Errorf("encoding event for webhook %s: %w", hook.ID, err))
@@ -263,7 +268,7 @@ func (d *WebhookDispatcher) fanOut(ctx context.Context, ev notification.Event) e
 func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.Event) error {
 	hook, err := d.queue.Hooks.GetWebhook(ctx, ev.TargetWebhook)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, auth.ErrNotFound):
 		return nil // deleted since the event was queued
 	case err != nil:
 		return fmt.Errorf("loading webhook: %w", err)
@@ -271,7 +276,21 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	if !hook.Enabled {
 		return nil
 	}
-	raw, err := json.Marshal(ev)
+	// Settled, not failed, like a disabled or deleted hook: an administrator
+	// who removed this event from the hook, or pointed it somewhere else, did
+	// not ask for the queued copy to follow. Checked on every attempt, so it
+	// stops retries too. Only the URL is fingerprinted: the current secret is
+	// used, so a receiver that rotated its key gets the retry signed with the
+	// new one.
+	if !hookSubscribes(hook, ev.Type) {
+		return nil
+	}
+	if ev.TargetURLHash != urlHash(hook.URL) {
+		d.log.InfoContext(ctx, "webhook delivery dropped: the hook's URL changed since it was queued",
+			"webhook_id", hook.ID, "event", ev.Type)
+		return nil
+	}
+	raw, err := rawBody(ev)
 	if err != nil {
 		d.log.ErrorContext(ctx, "webhook skipped: event could not be marshalled",
 			"webhook_id", hook.ID, "event", ev.Type, "error", err)
@@ -325,11 +344,16 @@ func parseRetryAfter(v string, now time.Time) time.Duration {
 	if v == "" {
 		return 0
 	}
-	if secs, err := strconv.Atoi(v); err == nil {
+	// Capped here as well as by the worker: a count of seconds too large for a
+	// Duration would wrap to a small or negative one on multiplication.
+	if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+		if secs >= int64(maxRetryAfter/time.Second) {
+			return maxRetryAfter
+		}
 		return time.Duration(max(secs, 0)) * time.Second
 	}
 	if at, err := http.ParseTime(v); err == nil {
-		return max(at.Sub(now), 0)
+		return min(max(at.Sub(now), 0), maxRetryAfter)
 	}
 	return 0
 }
@@ -343,7 +367,7 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	}
 	hook, err := d.queue.Hooks.GetWebhook(ctx, hookID)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, auth.ErrNotFound):
 		return ErrWebhookNotFound
 	case err != nil:
 		return fmt.Errorf("loading webhook: %w", err)
@@ -362,7 +386,13 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	if err != nil {
 		return fmt.Errorf("reading stored event: %w", err)
 	}
+	// Refused up front, with a reason, rather than queued and then dropped at
+	// send time where nobody would see why.
+	if !hookSubscribes(hook, ev.Type) {
+		return ErrWebhookNotSubscribed
+	}
 	ev.TargetWebhook = hookID
+	ev.TargetURLHash = urlHash(hook.URL)
 	row, err := encodeEvent(ev)
 	if err != nil {
 		return fmt.Errorf("encoding event: %w", err)
@@ -507,7 +537,7 @@ func (d *WebhookDispatcher) record(hook authstore.WebhookConfig, r authstore.Web
 // its own short timeout, and a failure is logged and dropped.
 func (d *WebhookDispatcher) recordAttempt(hook authstore.WebhookConfig, deliveryID uuid.UUID,
 	ev notification.Event, r authstore.WebhookDelivery, retrying bool) {
-	stored, err := encodeEvent(ev)
+	stored, err := encodeEvent(idsOnly(ev))
 	if err != nil {
 		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
 		return

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"net/http"
 
@@ -36,7 +35,7 @@ func (s *Server) handleListWebhookDeliveries(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if _, err := s.authStore.GetWebhook(r.Context(), id); err != nil {
-		webhookLookupError(w, err)
+		handleError(w, err)
 		return
 	}
 	list, err := s.authStore.ListWebhookDeliveries(r.Context(), id)
@@ -74,17 +73,10 @@ func (s *Server) handleRedeliverWebhook(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusNotFound, "not_found", "no such webhook delivery")
 	case errors.Is(err, notify.ErrWebhookDisabled):
 		Error(w, http.StatusConflict, "webhook_disabled", "this webhook is disabled; enable it to redeliver")
+	case errors.Is(err, notify.ErrWebhookNotSubscribed):
+		Error(w, http.StatusConflict, "webhook_not_subscribed",
+			"this webhook is no longer subscribed to that event; add it to the webhook's events to redeliver")
 	default:
 		handleError(w, err)
 	}
-}
-
-// webhookLookupError answers a failed GetWebhook: 404 for a hook that is not
-// there, the usual mapping for anything else.
-func webhookLookupError(w http.ResponseWriter, err error) {
-	if errors.Is(err, sql.ErrNoRows) {
-		Error(w, http.StatusNotFound, "not_found", "no such webhook")
-		return
-	}
-	handleError(w, err)
 }

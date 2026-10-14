@@ -2225,6 +2225,11 @@ func (s *Service) GetAttachment(ctx context.Context, id uuid.UUID) (Attachment, 
 	return s.store.GetAttachmentByID(ctx, id)
 }
 
+// AnyAttachmentExists reports whether any attachment is stored on the instance.
+func (s *Service) AnyAttachmentExists(ctx context.Context) (bool, error) {
+	return s.store.AnyAttachmentExists(ctx)
+}
+
 // ListAttachments returns all attachments for a ticket.
 func (s *Service) ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error) {
 	return s.store.ListAttachments(ctx, ticketID)

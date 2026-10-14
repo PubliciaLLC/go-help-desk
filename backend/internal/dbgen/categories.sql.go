@@ -11,6 +11,43 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const countTicketsByCategory = `-- name: CountTicketsByCategory :one
+SELECT COUNT(*) FROM tickets WHERE category_id = $1
+`
+
+// tickets.category_id is ON DELETE RESTRICT. Counting first turns the raw
+// foreign-key 500 into a 409 that says how many tickets are in the way (#418).
+func (q *Queries) CountTicketsByCategory(ctx context.Context, categoryID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByCategory, categoryID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTicketsByItem = `-- name: CountTicketsByItem :one
+SELECT COUNT(*) FROM tickets WHERE item_id = $1
+`
+
+func (q *Queries) CountTicketsByItem(ctx context.Context, itemID uuid.NullUUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByItem, itemID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTicketsByType = `-- name: CountTicketsByType :one
+SELECT COUNT(*) FROM tickets WHERE type_id = $1
+`
+
+// A ticket that holds an item also holds that item's type, so this covers
+// the type's items too.
+func (q *Queries) CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByType, typeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCategory = `-- name: CreateCategory :exec
 INSERT INTO categories (id, name, sort_order, active) VALUES ($1, $2, $3, $4)
 `
@@ -78,31 +115,40 @@ func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
 	return err
 }
 
-const deleteCategory = `-- name: DeleteCategory :exec
+const deleteCategory = `-- name: DeleteCategory :execrows
 DELETE FROM categories WHERE id = $1
 `
 
-func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteCategory, id)
-	return err
+func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCategory, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteItem = `-- name: DeleteItem :exec
+const deleteItem = `-- name: DeleteItem :execrows
 DELETE FROM items WHERE id = $1
 `
 
-func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteItem, id)
-	return err
+func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteItem, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteType = `-- name: DeleteType :exec
+const deleteType = `-- name: DeleteType :execrows
 DELETE FROM types WHERE id = $1
 `
 
-func (q *Queries) DeleteType(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteType, id)
-	return err
+func (q *Queries) DeleteType(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteType, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getCategory = `-- name: GetCategory :one

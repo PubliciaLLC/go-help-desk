@@ -447,7 +447,7 @@ export interface OAuthClient {
 
 // payload_format reshapes the same lifecycle event for a chat/ITSM service's
 // incoming-webhook endpoint before it is POSTed. 'raw' (the default) is
-// today's full event payload; the others are Slack, Teams, Discord and JIRA
+// ids-only JSON; the others are Slack, Teams, Discord and JIRA
 // Automation shapes. See docs/DESIGN.md "Notifications" and #187.
 export type WebhookPayloadFormat = 'raw' | 'slack' | 'teams' | 'discord' | 'jira'
 

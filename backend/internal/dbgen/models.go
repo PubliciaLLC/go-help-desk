@@ -124,6 +124,12 @@ type GuestAccessToken struct {
 	LastUsedAt sql.NullTime `json:"last_used_at"`
 }
 
+type InstanceSecret struct {
+	Name      string    `json:"name"`
+	Value     []byte    `json:"value"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Item struct {
 	ID        uuid.UUID `json:"id"`
 	TypeID    uuid.UUID `json:"type_id"`

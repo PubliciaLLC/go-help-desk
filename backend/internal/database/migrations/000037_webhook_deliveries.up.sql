@@ -9,10 +9,11 @@
 -- CHECK makes storing text impossible rather than merely discouraged. Keep the
 -- list in step with notify.DeliveryErrors; 'ok' is the success value.
 --
--- event is the queued event (ids, subject, tracking number, a public reply's
--- text), kept only so Redeliver can send it again. It is never returned by the
--- API, and it holds no recipient address and no guest credential. It is deleted
--- with the row and with the hook.
+-- event is the queued event reduced to ids only (the event name, ticket and
+-- actor ids, a time, and the id and flag keys of its payload), kept so Redeliver
+-- can send it again. It holds no address, subject, tracking number or text, and
+-- no guest credential, and the API never returns it. It is deleted with the row
+-- and with the hook.
 --
 -- This number was the next free one when it was written (000036 belongs to
 -- #465); renumber if another branch has taken it by merge time.

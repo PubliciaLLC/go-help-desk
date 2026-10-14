@@ -43,6 +43,7 @@ type outboxRecord struct {
 	GuestLink      bool                   `json:"guest_link,omitempty"`
 	// TargetWebhook is set on the per-hook rows the webhook fan-out queues (#448).
 	TargetWebhook uuid.UUID `json:"webhook_id,omitzero"`
+	TargetURLHash string    `json:"webhook_url_sha256,omitempty"`
 }
 
 func encodeEvent(ev notification.Event) ([]byte, error) {
@@ -54,6 +55,7 @@ func encodeEvent(ev notification.Event) ([]byte, error) {
 		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
 		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink,
 		TargetWebhook: ev.TargetWebhook,
+		TargetURLHash: ev.TargetURLHash,
 	})
 }
 
@@ -67,6 +69,7 @@ func decodeEvent(b []byte) (notification.Event, error) {
 		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
 		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink,
 		TargetWebhook: r.TargetWebhook,
+		TargetURLHash: r.TargetURLHash,
 	}, nil
 }
 
