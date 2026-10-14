@@ -265,7 +265,7 @@ func TestWebhookUpdate_OtherFieldsAreNotGatedOnTheFilter(t *testing.T) {
 	require.NoError(t, err)
 	stored.Filter = notification.WebhookFilter{GroupIDs: []uuid.UUID{grp.ID}}
 	require.NoError(t, h.authStore.UpdateWebhook(ctx, stored))
-	_, err = h.ticketSvc.DeleteGroup(ctx, nil, grp.ID) // group.Service.Delete is gone (#432)
+	_, err = h.ticketSvc.DeleteGroup(ctx, nil, grp.ID)
 	require.NoError(t, err)
 
 	res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/webhooks/"+id.String(),
@@ -336,11 +336,8 @@ func TestWebhookUpdate_RefusesAFilterNamingADeletedCategoryOrGroup(t *testing.T)
 	require.NoError(t, h.categorySvc.DeleteCategory(ctx, cat.ID))
 	grp, err := h.groupSvc.Create(ctx, "Gone", "")
 	require.NoError(t, err)
-	// group.Service.Delete is gone (#432): deleting a group is a ticket-service
-	// operation behind the admin route, which is what an administrator uses.
-	del := h.doAsAdmin(t, http.MethodDelete, "/api/v1/admin/groups/"+grp.ID.String(), nil)
-	del.Body.Close()
-	require.Equal(t, http.StatusNoContent, del.StatusCode)
+	_, err = h.ticketSvc.DeleteGroup(ctx, nil, grp.ID)
+	require.NoError(t, err)
 
 	for _, tc := range []struct {
 		filter map[string]any
