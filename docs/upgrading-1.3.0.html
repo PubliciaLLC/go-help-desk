@@ -346,9 +346,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p><strong>Who notices:</strong> everyone who signs in with a password, once; and servers that take many sign-ins at the same moment.</p>
 
-<p>New passwords are hashed with bcrypt at cost 12. Releases up to 1.2 used cost 10, although earlier security pages said 12. An existing hash keeps working and is replaced with a cost-12 hash the next time its owner signs in with the correct password, so nobody has to reset anything. The replacement is best effort: if it fails, the failure is logged and the sign-in still succeeds, and the next sign-in tries again. It never overwrites a password that was changed in the meantime. An account that does not sign in keeps its cost-10 hash.</p>
+<p>New passwords are hashed with bcrypt at cost 12. Releases up to 1.2 used cost 10, although earlier security pages said 12. An existing hash keeps working and is replaced with a cost-12 hash the next time its owner signs in with the correct password. The replacement is best effort: if it fails, the failure is logged and the sign-in still succeeds, and the next sign-in tries again. It never overwrites a password that was changed in the meantime. An account that does not sign in keeps its cost-10 hash.</p>
 
-<p>Each cost step doubles the work, so a password check takes about four times the server time it did. If many people sign in at once, check <code>AUTH_THROTTLE_DELAY</code> and <code>AUTH_RATE_LIMIT_PER_MINUTE</code>. While accounts are still on cost 10, a wrong password for an existing account is made to cost as much as one for an address that has no account, so the response time does not show which addresses have accounts.</p>
+<p>Each cost step doubles the work, so a password check takes about four times the server time it did. If many people sign in at once, check <code>AUTH_THROTTLE_DELAY</code> and <code>AUTH_RATE_LIMIT_PER_MINUTE</code>. A wrong password for an account still on cost 10 is made to cost as much as one for an address that has no account, so the change of cost does not let the response time show which addresses have accounts.</p>
 
 <h2 id="jwt-secret"><code>JWT_SECRET</code> is optional</h2>
 

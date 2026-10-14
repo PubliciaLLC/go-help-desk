@@ -140,7 +140,7 @@
 
 <h2 id="auth-local">Local accounts</h2>
 
-<p>Users sign in with their email address and password. Passwords are hashed with bcrypt at cost 12. Releases up to 1.2 hashed at cost 10. An older hash keeps working, and is replaced by a cost-12 hash the next time its owner signs in with the password, so nobody has to reset anything. Each cost step doubles the work, so checking a password now takes about four times as much server time as at cost 10.</p>
+<p>Users sign in with their email address and password. Passwords are hashed with bcrypt at cost 12. Releases up to 1.2 hashed at cost 10. An older hash keeps working, and is replaced by a cost-12 hash the next time its owner signs in with the password. Each cost step doubles the work, so checking a password now takes about four times as much server time as at cost 10.</p>
 
 <h3>Account creation</h3>
 <p>Accounts are created in one of four ways:</p>
