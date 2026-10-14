@@ -398,7 +398,9 @@ jobs:
           # given: Go tests build their own Config, so this is the only place
           # the shipped binary's BASE_URL meets the check. Its own origin gets
           # as far as authentication (401); another page's is refused (403)
-          # before it, whatever credential it carries.
+          # before it. These requests carry no credential, so the 401s show
+          # where the own-origin ones stopped, and the 403s that the check
+          # comes first.
           check_origin() { # path, Origin, expected status, description
             actual="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Origin: $2" "http://127.0.0.1:8088$1")"
             if [ "$actual" != "$3" ]; then
@@ -415,6 +417,7 @@ jobs:
           # condition, so a route added behind ProtectMCP is covered with it.
           check_origin /mcp/sse "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication on /mcp/sse"
           check_origin /mcp/sse "https://evil.example"  403 "a foreign Origin is refused on /mcp/sse"
+          check_origin /mcp/message "http://localhost:8088" 401 "BASE_URL's own origin reaches authentication on /mcp/message"
           check_origin /mcp/message "https://evil.example" 403 "a foreign Origin is refused on /mcp/message"
 
           # The embedded SPA must be the real build, not the placeholder that
