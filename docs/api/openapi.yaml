@@ -51,9 +51,14 @@ info:
     An operation open to some roles only says so in the first sentence of its
     description.
 
-    The MCP server at /mcp/ (GET /mcp/sse, POST /mcp/message) is JSON-RPC over
-    Server-Sent Events, authenticated by the same chain as /api/; see
-    docs/DESIGN.md, "MCP Interface". It is not described here.
+    The MCP server is JSON-RPC authenticated by the same chain as /api/: the
+    Streamable HTTP transport at /mcp (POST; /mcp/ answers the same), and the
+    older HTTP+SSE transport at GET /mcp/sse and POST /mcp/message. Every
+    MCP route (/mcp, /mcp/, /mcp/sse, /mcp/message and any unknown path
+    under /mcp/) answers 403 (code origin_not_allowed) to a request whose
+    Origin header is present and is not the origin of BASE_URL; a request
+    with no Origin header is not affected. See docs/DESIGN.md, "MCP
+    Interface". It is not described here.
   license:
     name: GNU Affero General Public License v3.0
     url: https://github.com/PubliciaLLC/go-help-desk/blob/main/LICENSE
