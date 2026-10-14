@@ -7024,8 +7024,10 @@ paths:
         the ticket is gone, the headline only. The hook's ticket filter is evaluated as it
         is now, against the ticket's current category, priority and assigned group (the
         history keeps none). If the filter does not admit the ticket the request is refused
-        with 409 webhook_filter_excludes and nothing is queued. If the ticket cannot be read
-        the event is sent anyway.
+        with 409 webhook_filter_excludes and nothing is queued. If the hook has a filter and
+        the ticket cannot be read (it was deleted) the filter cannot be checked and the request is
+        refused with 409 webhook_filter_unverifiable, with nothing queued. A hook with no
+        filter is sent whether or not the ticket exists.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleRedeliverWebhook
       security:
@@ -7071,7 +7073,9 @@ paths:
             webhook_not_subscribed, when the webhook no longer lists the delivery's event
             (add it to the webhook's events first); or webhook_filter_excludes, when the
             webhook's ticket filter, as it is now, does not admit the ticket the delivery was
-            about (change the filter first).
+            about (change the filter first); or webhook_filter_unverifiable, when the webhook has a
+            ticket filter and the ticket the delivery was about no longer exists, so the filter
+            cannot be checked (a webhook with no filter is not refused for this).
           content:
             application/json:
               schema:
