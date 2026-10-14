@@ -146,6 +146,7 @@ type AuthStoreIface interface {
 	DeleteWebhook(ctx context.Context, id uuid.UUID) error
 	ListEnabledWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
 	ListWebhooks(ctx context.Context) ([]authstore.WebhookConfig, error)
+	ListWebhookDeliveries(ctx context.Context, hookID uuid.UUID) ([]authstore.WebhookDeliveryRecord, error)
 }
 
 // Server is the top-level HTTP handler.
@@ -233,6 +234,10 @@ type Server struct {
 
 	// auditStore backs the admin-wide audit view (#129). See WithAuditStore.
 	auditStore audit.Store
+
+	// webhookRedeliverer queues a past webhook delivery again (#448). See
+	// WithWebhookRedeliverer.
+	webhookRedeliverer WebhookRedeliverer
 }
 
 // Option adjusts a Server after its collaborators are in place.
