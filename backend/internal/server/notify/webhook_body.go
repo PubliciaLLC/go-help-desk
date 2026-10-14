@@ -64,13 +64,15 @@ func rawBody(ev notification.Event) ([]byte, error) {
 // raw hook that is the whole story: nothing but ids, since that is all it will
 // send. A chat or ITSM hook keeps the subject, tracking number, status name
 // and reply text its message is built from until the row is sent and deleted,
-// or scrubbed if the delivery finally fails (scrubFailedRow).
+// or scrubbed if the delivery finally fails (scrubFailedRow). No row of either
+// kind carries Attrs: the ticket filter is judged once, in the fan-out, on the
+// event the row was made from, and nothing after it reads them.
 func rowFor(ev notification.Event, hook authstore.WebhookConfig) notification.Event {
 	if isRaw(hook) {
 		return historyEvent(ev)
 	}
 	out := ev
-	out.Recipient, out.GuestLink = "", false
+	out.Recipient, out.GuestLink, out.Attrs = "", false, nil
 	if ev.Payload != nil {
 		out.Payload = maps.Clone(ev.Payload)
 		delete(out.Payload, "guest_email")

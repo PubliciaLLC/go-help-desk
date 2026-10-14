@@ -239,21 +239,34 @@ func TestQueueFilter_UnknownAttrsDeliverAndLog(t *testing.T) {
 }
 
 // The attributes ride the queue to the fan-out and no further: the per-hook
-// row and the kept history copy carry none (they are ids only), so no later
-// step can judge the filter on stale values.
+// row and the kept history copy carry none, whatever the hook's payload
+// format, so no later step can judge the filter on stale values. A raw hook's
+// row is ids only anyway; a chat or ITSM hook's row keeps its message content
+// (subject, text) but still not the attrs, so each format is its own case.
 func TestQueueFilter_PerHookRowsCarryNoAttrs(t *testing.T) {
-	rc := newReceiver(t, 200)
-	hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
-	rig := newQueueRig(t, rc.srv.Client(), hook)
-	spy := spyOn(rig)
+	for _, format := range []string{"raw", "", "slack", "teams", "discord", "jira"} {
+		t.Run("format="+format, func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			hook := filtered(hookFor(rc.srv.URL), notification.WebhookFilter{Priorities: []string{"low"}})
+			hook.PayloadFormat = format
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			spy := spyOn(rig)
+			ev := eventWithPriority("low")
 
-	require.NoError(t, rig.front.Dispatch(context.Background(), eventWithPriority("low")))
-	rig.drain(t)
+			require.NoError(t, rig.front.Dispatch(context.Background(), ev))
+			rig.drain(t)
 
-	spy.mu.Lock()
-	defer spy.mu.Unlock()
-	require.Len(t, spy.rows, 1)
-	require.NotContains(t, string(spy.rows[0]), "attrs")
-	require.Eventually(t, func() bool { return rig.hooks.last().DeliveryID != uuid.Nil }, time.Second, 10*time.Millisecond)
-	require.NotContains(t, string(rig.hooks.last().Event), "attrs")
+			spy.mu.Lock()
+			defer spy.mu.Unlock()
+			require.Len(t, spy.rows, 1)
+			row := string(spy.rows[0])
+			require.NotContains(t, row, "attrs")
+			require.NotContains(t, row, ev.Attrs.CategoryID.String())
+			got, err := decodeEvent(spy.rows[0])
+			require.NoError(t, err)
+			require.Nil(t, got.Attrs)
+			require.Eventually(t, func() bool { return rig.hooks.last().DeliveryID != uuid.Nil }, time.Second, 10*time.Millisecond)
+			require.NotContains(t, string(rig.hooks.last().Event), "attrs")
+		})
+	}
 }
