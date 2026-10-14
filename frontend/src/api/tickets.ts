@@ -1,5 +1,5 @@
 import { api } from './client'
-import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, Assignment, TicketFieldValue, CannedResponse } from './types'
+import type { Ticket, Reply, TicketLink, LinkType, Tag, Attachment, Category, TicketType, TicketItem, StatusHistoryEntry, TicketAuditEntry, Assignment, TicketFieldValue, CannedResponse, Priority } from './types'
 
 export interface CreateTicketInput {
   subject: string
@@ -51,6 +51,9 @@ export async function updateTicket(
     category_id?: string
     type_id?: string | null
     item_id?: string | null
+    // Staff and admin only; refused (409 ticket_closed) on a Resolved or
+    // Closed ticket. The server re-matches the SLA policy (#443).
+    priority?: Priority
   }
 ): Promise<Ticket> {
   const res = await api.patch<Ticket>(`/tickets/${id}`, patch)

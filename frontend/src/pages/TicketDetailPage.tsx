@@ -17,6 +17,7 @@ import {
 import { TagInput } from '@/components/TagInput'
 import { ClassificationPanel } from '@/components/ticket/ClassificationPanel'
 import { LinkedTicketsPanel } from '@/components/ticket/LinkedTicketsPanel'
+import { PriorityControl } from '@/components/ticket/PriorityControl'
 import { AuditFeed } from '@/components/ticket/AuditFeed'
 import { ReplyComposer } from '@/components/ticket/ReplyComposer'
 import { AttachmentList, QuarantineBanner } from '@/components/ticket/AttachmentList'
@@ -812,10 +813,25 @@ export function TicketDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Priority</span>
-                  <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
-                </div>
+                {isStaffOrAdmin ? (
+                  // Staff and admin change it here; the header badge stays.
+                  // Stacked rather than side by side so the select has the
+                  // card's full width at 390px. Resolved and Closed lock it:
+                  // the server answers 409 ticket_closed there.
+                  <div className="space-y-1">
+                    <span className="text-gray-500">Priority</span>
+                    <PriorityControl
+                      ticketId={id}
+                      priority={ticket.priority}
+                      locked={statusName === 'Resolved' || statusName === 'Closed'}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Priority</span>
+                    <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-500">Created</span>
                   <span className="text-right text-xs">{formatDate(ticket.created_at)}</span>
