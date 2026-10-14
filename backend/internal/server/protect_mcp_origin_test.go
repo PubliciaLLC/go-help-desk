@@ -452,6 +452,111 @@ func TestMCPOrigin_SSEIsChecked(t *testing.T) {
 	})
 }
 
+// The case that makes the Origin check on /mcp/message matter. On /mcp a
+// non-JSON POST is refused before anything runs, and a JSON POST needs a CORS
+// preflight that is never granted. /mcp/message has neither barrier: it takes
+// a text/plain body (a "simple" request, so no preflight) and runs it. A page
+// on a sibling origin of the same site (here sibling.example.test, against a
+// different BASE_URL) is same-site, so a SameSite=Lax session cookie IS sent
+// with it, and the Origin check is the only thing standing between that page
+// and the signed-in user's tools. docs/DESIGN.md, "MCP Interface" -> Origin.
+func TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	base := serveMCP(t, h)
+
+	s := &session{h: h}
+	res, _ := s.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	// The stream is opened by the user's own tab: session cookie, no Origin.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/mcp/sse", nil)
+	require.NoError(t, err)
+	for _, c := range s.jar {
+		req.AddCookie(c)
+	}
+	stream, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Body.Close() })
+	require.Equal(t, http.StatusOK, stream.StatusCode)
+	events := bufio.NewReader(stream.Body)
+	var endpoint string
+	for i := 0; i < 10 && endpoint == ""; i++ {
+		line, err := events.ReadString('\n')
+		require.NoError(t, err)
+		if strings.HasPrefix(line, "data: ") {
+			endpoint = strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		}
+	}
+	require.Contains(t, endpoint, "sessionId=")
+
+	// waitFor reads the stream until a data line contains want.
+	waitFor := func(t *testing.T, want string) {
+		t.Helper()
+		for {
+			line, err := events.ReadString('\n')
+			require.NoError(t, err, "no event containing %s", want)
+			if strings.HasPrefix(line, "data: ") && strings.Contains(line, want) {
+				return
+			}
+		}
+	}
+
+	// post sends a text/plain body (what a cross-origin page can send without
+	// a preflight) to the message endpoint with the user's session cookie.
+	post := func(t *testing.T, origin string, payload map[string]any) *http.Response {
+		t.Helper()
+		body, err := json.Marshal(payload)
+		require.NoError(t, err)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+endpoint, bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "text/plain")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		for _, c := range s.jar {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		return resp
+	}
+	createTicket := func(id int, subject string) map[string]any {
+		return map[string]any{
+			"jsonrpc": "2.0", "id": id, "method": "tools/call",
+			"params": map[string]any{"name": "create_ticket", "arguments": map[string]any{
+				"subject": subject, "category_id": h.catID.String(),
+			}},
+		}
+	}
+
+	before := latestTicketNumber(t, h)
+
+	t.Run("control: a text/plain POST with the session cookie and no Origin runs", func(t *testing.T) {
+		resp := post(t, "", createTicket(101, "control, no Origin"))
+		require.Equal(t, http.StatusAccepted, resp.StatusCode, readBody(t, resp))
+		waitFor(t, `"id":101`)
+		require.Equal(t, before+2, latestTicketNumber(t, h), "the control took a number, and so did the probe")
+	})
+
+	t.Run("a text/plain POST with a valid session cookie and a same-site foreign Origin is refused and runs nothing", func(t *testing.T) {
+		mid := latestTicketNumber(t, h)
+		requireOriginRefused(t, post(t, "https://sibling.example.test", createTicket(102, "from a sibling page")))
+
+		// Anything the refused POST had started would be on the stream ahead
+		// of this ping's reply, or would already hold a ticket number.
+		resp := post(t, "", map[string]any{"jsonrpc": "2.0", "id": 103, "method": "ping"})
+		require.Equal(t, http.StatusAccepted, resp.StatusCode, readBody(t, resp))
+		waitFor(t, `"id":103`)
+		require.Equal(t, mid+1, latestTicketNumber(t, h), "only the probe may have taken a ticket number")
+	})
+}
+
 // A Config with no BASE_URL has no origin to compare with. Startup refuses an
 // empty one, but not every unusable one (TestOriginPolicy_Allows has those), so
 // this pins the choice: a request that carries an Origin is refused, and one
