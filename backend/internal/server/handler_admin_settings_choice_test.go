@@ -47,11 +47,17 @@ func settingsDump(t *testing.T, sess *session) map[string]json.RawMessage {
 
 // Characterisation of the refusals the PATCH gives for every choice-list
 // setting (#383): status, code and message, recorded from the code before the
-// shared table replaced six hand-written blocks. Two keys decode through
-// unmarshalSetting (null and wrong type say "invalid input: ..."); the other
-// four decode bare, so null reads as "" and gets the invalid_* refusal while a
-// wrong type gets bad_request. Clients depend on each of these, so the table
-// must not unify them.
+// shared table replaced six hand-written blocks.
+//
+// Since #420 every refusal of a choice-list setting carries that setting's own
+// code, whatever was wrong with the value: null, a wrong type, an empty string
+// and an unknown value all answer invalid_<setting>. Before, a wrong
+// type answered bad_request for all six, and null did for two (the other four
+// answered the setting's code for null), so a client could not branch on one
+// code.
+// The messages are unchanged: two keys decode through unmarshalSetting (null
+// and wrong type say "invalid input: ..."), the other four say "... must be a
+// string" for a wrong type and name the allowed values for null.
 func TestSettings_ChoiceSettingsRefusalsAreUnchanged(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -62,34 +68,34 @@ func TestSettings_ChoiceSettingsRefusalsAreUnchanged(t *testing.T) {
 		value     any
 		code, msg string
 	}{
-		{"closed_reopen_policy", "null", nil, "bad_request", "invalid input: closed_reopen_policy must not be null"},
-		{"closed_reopen_policy", "number", 42, "bad_request", "invalid input: closed_reopen_policy has the wrong type"},
-		{"closed_reopen_policy", "bool", true, "bad_request", "invalid input: closed_reopen_policy has the wrong type"},
+		{"closed_reopen_policy", "null", nil, "invalid_closed_reopen_policy", "invalid input: closed_reopen_policy must not be null"},
+		{"closed_reopen_policy", "number", 42, "invalid_closed_reopen_policy", "invalid input: closed_reopen_policy has the wrong type"},
+		{"closed_reopen_policy", "bool", true, "invalid_closed_reopen_policy", "invalid input: closed_reopen_policy has the wrong type"},
 		{"closed_reopen_policy", "unknown", "bogus", "invalid_closed_reopen_policy", "closed reopen policy must be one of: off, admin, staff_admin"},
 		{"closed_reopen_policy", "empty", "", "invalid_closed_reopen_policy", "closed reopen policy must be one of: off, admin, staff_admin"},
-		{"audit_mask_requester_names", "null", nil, "bad_request", "invalid input: audit_mask_requester_names must not be null"},
-		{"audit_mask_requester_names", "number", 42, "bad_request", "invalid input: audit_mask_requester_names has the wrong type"},
-		{"audit_mask_requester_names", "bool", true, "bad_request", "invalid input: audit_mask_requester_names has the wrong type"},
+		{"audit_mask_requester_names", "null", nil, "invalid_audit_mask_requester_names", "invalid input: audit_mask_requester_names must not be null"},
+		{"audit_mask_requester_names", "number", 42, "invalid_audit_mask_requester_names", "invalid input: audit_mask_requester_names has the wrong type"},
+		{"audit_mask_requester_names", "bool", true, "invalid_audit_mask_requester_names", "invalid input: audit_mask_requester_names has the wrong type"},
 		{"audit_mask_requester_names", "unknown", "bogus", "invalid_audit_mask_requester_names", "audit_mask_requester_names must be one of: admin_log, ticket_log, everywhere"},
 		{"audit_mask_requester_names", "empty", "", "invalid_audit_mask_requester_names", "audit_mask_requester_names must be one of: admin_log, ticket_log, everywhere"},
 		{"attachment_scan_policy", "null", nil, "invalid_scan_policy", "scan policy must be one of: off, required, permissive"},
-		{"attachment_scan_policy", "number", 42, "bad_request", "scan policy must be a string"},
-		{"attachment_scan_policy", "bool", true, "bad_request", "scan policy must be a string"},
+		{"attachment_scan_policy", "number", 42, "invalid_scan_policy", "scan policy must be a string"},
+		{"attachment_scan_policy", "bool", true, "invalid_scan_policy", "scan policy must be a string"},
 		{"attachment_scan_policy", "unknown", "bogus", "invalid_scan_policy", "scan policy must be one of: off, required, permissive"},
 		{"attachment_scan_policy", "empty", "", "invalid_scan_policy", "scan policy must be one of: off, required, permissive"},
 		{"attachment_infected_handling", "null", nil, "invalid_infected_handling", "infected attachment handling must be one of: refuse, quarantine"},
-		{"attachment_infected_handling", "number", 42, "bad_request", "infected attachment handling must be a string"},
-		{"attachment_infected_handling", "bool", true, "bad_request", "infected attachment handling must be a string"},
+		{"attachment_infected_handling", "number", 42, "invalid_infected_handling", "infected attachment handling must be a string"},
+		{"attachment_infected_handling", "bool", true, "invalid_infected_handling", "infected attachment handling must be a string"},
 		{"attachment_infected_handling", "unknown", "bogus", "invalid_infected_handling", "infected attachment handling must be one of: refuse, quarantine"},
 		{"attachment_infected_handling", "empty", "", "invalid_infected_handling", "infected attachment handling must be one of: refuse, quarantine"},
 		{"attachment_mismatch_handling", "null", nil, "invalid_mismatch_handling", "mismatched attachment handling must be one of: refuse, wrap"},
-		{"attachment_mismatch_handling", "number", 42, "bad_request", "mismatched attachment handling must be a string"},
-		{"attachment_mismatch_handling", "bool", true, "bad_request", "mismatched attachment handling must be a string"},
+		{"attachment_mismatch_handling", "number", 42, "invalid_mismatch_handling", "mismatched attachment handling must be a string"},
+		{"attachment_mismatch_handling", "bool", true, "invalid_mismatch_handling", "mismatched attachment handling must be a string"},
 		{"attachment_mismatch_handling", "unknown", "bogus", "invalid_mismatch_handling", "mismatched attachment handling must be one of: refuse, wrap"},
 		{"attachment_mismatch_handling", "empty", "", "invalid_mismatch_handling", "mismatched attachment handling must be one of: refuse, wrap"},
 		{"attachment_reputation_refresh", "null", nil, "invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never"},
-		{"attachment_reputation_refresh", "number", 42, "bad_request", "reputation refresh must be a string"},
-		{"attachment_reputation_refresh", "bool", true, "bad_request", "reputation refresh must be a string"},
+		{"attachment_reputation_refresh", "number", 42, "invalid_reputation_refresh", "reputation refresh must be a string"},
+		{"attachment_reputation_refresh", "bool", true, "invalid_reputation_refresh", "reputation refresh must be a string"},
 		{"attachment_reputation_refresh", "unknown", "bogus", "invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never"},
 		{"attachment_reputation_refresh", "empty", "", "invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never"},
 	}
