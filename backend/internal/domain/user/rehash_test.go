@@ -155,3 +155,19 @@ func TestVerifyPassword_EveryFailurePathSpendsTheSameWork(t *testing.T) {
 		require.Equal(t, 1<<target, work, "%s: failure must cost one target-cost comparison", email)
 	}
 }
+
+// The dummy comparison that makes an SSO-only refusal cost the same as any
+// other (#476) uses a password that is a literal in a public repository. Its
+// result must never decide a sign-in: typing it at an account with no password
+// must not sign in as that account. A pin, not a red test: it passes before
+// the fix too, and fails if a later refactor substitutes the dummy hash for the
+// stored one.
+func TestVerifyPassword_NoPasswordAccountRefusesTheDummyPassword(t *testing.T) {
+	store := newFakeUserStore()
+	store.seed(user.User{ID: uuid.New(), Email: "sso@example.com", DisplayName: "SSO", Role: user.RoleUser, OIDCSubject: "sub-1"})
+	svc := user.NewService(store, user.WithBcryptCost(4))
+
+	got, err := svc.VerifyPassword(context.Background(), "sso@example.com", user.DummyPassword)
+	require.Error(t, err)
+	require.Equal(t, user.User{}, got)
+}

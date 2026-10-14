@@ -62,6 +62,11 @@ func NewService(store Store, opts ...Option) *Service {
 	return s
 }
 
+// dummyPassword is the plaintext behind the dummy hash. It is a literal in a
+// public repository, so no code path may let a comparison against the dummy
+// hash decide a sign-in.
+const dummyPassword = "dummy password for constant-time misses"
+
 // compareAgainstDummyHash burns the same work a real password check would.
 //
 // Without it, VerifyPassword returns in microseconds for an address with no
@@ -74,7 +79,7 @@ func (s *Service) compareAgainstDummyHash(plain string) {
 	// configurable and a constant from another cost would time differently,
 	// which is the whole thing being avoided.
 	s.dummyOnce.Do(func() {
-		if h, err := bcrypt.GenerateFromPassword([]byte("dummy password for constant-time misses"), s.hashCost); err == nil {
+		if h, err := bcrypt.GenerateFromPassword([]byte(dummyPassword), s.hashCost); err == nil {
 			s.dummyHash = h
 		}
 	})
