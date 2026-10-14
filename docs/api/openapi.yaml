@@ -2098,7 +2098,7 @@ paths:
         - email_notify_activity: a requester replied on a ticket assigned to me, or a ticket assigned to me
           was reopened; and, for a ticket I follow, it was assigned, replied to or reopened.
         - email_notify_group: a ticket is assigned to a group I belong to, a requester replied on a group
-          ticket that nobody personally holds, or a ticket assigned to my group was reopened.
+          ticket that nobody personally holds, or a group ticket that nobody personally holds was reopened.
         An administrator can force any of these on or off for everyone with the staff_email_*_override
         settings; that wins over what is saved here. The answer's email_notifications says which are forced. Nobody is emailed about their own action whatever the
         switches say. A requester account is never sent staff mail, and an API key or OAuth client has no inbox

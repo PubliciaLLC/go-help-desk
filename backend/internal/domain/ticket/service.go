@@ -1179,6 +1179,21 @@ func (s *Service) changePriorityInTx(ctx context.Context, st Store, au audit.Sto
 		plan = planSLARestart
 	}
 	outcome, start := plan(enabled, cur, matched, t, now)
+	// A staff change that gives a record to a ticket that has none: if it had
+	// one before (a priority with no policy superseded it), the clock resumes
+	// from where that one started, with its pause base and none of its facts. A
+	// restart is not lost to a trip through a priority with no policy, and the
+	// time spent there still counts. A ticket that never had a record keeps
+	// the plan's NULL start, the ticket's creation.
+	if outcome == SLAAttached && !reopen {
+		prior, err := st.LatestSupersededSLARecord(ctx, t.ID)
+		if err != nil {
+			return Ticket{}, fmt.Errorf("reading superseded SLA record: %w", err)
+		}
+		if prior != nil {
+			start.StartedAt, start.PausedSecondsAtStart = prior.StartedAt, prior.PausedSecondsAtStart
+		}
+	}
 
 	// The old record first: a ticket has one current record at most.
 	switch outcome {

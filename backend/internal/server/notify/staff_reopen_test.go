@@ -35,9 +35,10 @@ func reasonsOf(r *recorder) map[uuid.UUID]notification.StaffSwitch {
 	return out
 }
 
-// The assignee, the group and a follower are each mailed, once, each under
-// their own reason. The original event goes through first and unchanged.
-func TestStaffFanout_ReopenMailsTheAssigneeTheGroupAndTheFollowers(t *testing.T) {
+// A held ticket: the assignee and a follower are mailed, once each. The group
+// is not mailed (Erik, 2026-10-14: the reply rule), so a group member who does
+// not follow hears nothing. The original event goes through first, unchanged.
+func TestStaffFanout_ReopenOfAHeldTicketMailsTheAssigneeAndFollowersNotTheGroup(t *testing.T) {
 	assignee, member, follower := staffUser("assignee"), staffUser("member"), staffUser("follower")
 	g := uuid.New()
 	ev := reopenedEventFor(nil, &assignee.ID, &g)
@@ -48,10 +49,9 @@ func TestStaffFanout_ReopenMailsTheAssigneeTheGroupAndTheFollowers(t *testing.T)
 	require.NoError(t, f.Dispatch(context.Background(), ev))
 
 	require.Equal(t, ev, next.got[0])
-	require.Equal(t, []uuid.UUID{assignee.ID, member.ID, follower.ID}, recipientsOf(next))
+	require.Equal(t, []uuid.UUID{assignee.ID, follower.ID}, recipientsOf(next))
 	require.Equal(t, map[uuid.UUID]notification.StaffSwitch{
 		assignee.ID: notification.SwitchActivity, // under the "requester replied" switch, per Erik
-		member.ID:   notification.SwitchGroup,
 		follower.ID: notification.SwitchFollow,
 	}, reasonsOf(next))
 	for _, e := range next.got[1:] {
@@ -61,43 +61,63 @@ func TestStaffFanout_ReopenMailsTheAssigneeTheGroupAndTheFollowers(t *testing.T)
 	}
 }
 
-// One mail per person across all three roles, and the assignee and a mailed
-// group's members never get follower mail on top (#503's rule). The group is
-// mailed on every reopen of a ticket that has one, so its members are left out
-// of follower mail whoever holds the ticket.
-func TestStaffFanout_ReopenMailsEachPersonOnce(t *testing.T) {
-	assignee, member, both, plain := staffUser("assignee"), staffUser("member"), staffUser("both"), staffUser("plain")
+// A held ticket: a group member who follows it is mailed as a follower, under
+// the activity switch, whatever their group switch says (#503's rule: the group
+// is not mailed for this event, so their follow counts).
+func TestStaffFanout_ReopenOfAHeldTicketMailsAGroupMemberWhoFollows(t *testing.T) {
+	assignee, member := staffUser("assignee"), staffUser("member")
+	member.EmailNotifyGroup = false // irrelevant: this is not a group mail
 	g := uuid.New()
 	ev := reopenedEventFor(nil, &assignee.ID, &g)
 	next := &recorder{}
-	f := fanoutWithFollowers(next, newFakeStaffUsers(assignee, member, both, plain),
-		fakeStaffGroups{g: {assignee.ID, member.ID, both.ID}},
-		fakeStaffFollowers{ev.TicketID: {assignee.ID, member.ID, both.ID, plain.ID}})
+	f := fanoutWithFollowers(next, newFakeStaffUsers(assignee, member), fakeStaffGroups{g: {member.ID}},
+		fakeStaffFollowers{ev.TicketID: {member.ID}})
 
 	require.NoError(t, f.Dispatch(context.Background(), ev))
 
-	require.Equal(t, []uuid.UUID{assignee.ID, member.ID, both.ID, plain.ID}, recipientsOf(next), "each exactly once")
-	reasons := reasonsOf(next)
-	require.Equal(t, notification.SwitchActivity, reasons[assignee.ID], "holding it wins over being in the group")
-	require.Equal(t, notification.SwitchGroup, reasons[member.ID])
-	require.Equal(t, notification.SwitchGroup, reasons[both.ID])
-	require.Equal(t, notification.SwitchFollow, reasons[plain.ID])
+	require.Equal(t, []uuid.UUID{assignee.ID, member.ID}, recipientsOf(next))
+	require.Equal(t, notification.SwitchFollow, reasonsOf(next)[member.ID])
 }
 
-// Following does not bring back mail a person turned off through their own
-// switch.
+// An unheld ticket: the group is mailed, and a member who also follows gets
+// exactly one mail, as a group member. A follower who is not in the group is
+// mailed as a follower.
+func TestStaffFanout_ReopenOfAnUnheldTicketMailsTheGroupOnce(t *testing.T) {
+	member, both, plain := staffUser("member"), staffUser("both"), staffUser("plain")
+	g := uuid.New()
+	ev := reopenedEventFor(nil, nil, &g)
+	next := &recorder{}
+	f := fanoutWithFollowers(next, newFakeStaffUsers(member, both, plain), fakeStaffGroups{g: {member.ID, both.ID}},
+		fakeStaffFollowers{ev.TicketID: {both.ID, plain.ID}})
+
+	require.NoError(t, f.Dispatch(context.Background(), ev))
+
+	require.Equal(t, []uuid.UUID{member.ID, both.ID, plain.ID}, recipientsOf(next), "each exactly once")
+	require.Equal(t, map[uuid.UUID]notification.StaffSwitch{
+		member.ID: notification.SwitchGroup,
+		both.ID:   notification.SwitchGroup,
+		plain.ID:  notification.SwitchFollow,
+	}, reasonsOf(next))
+}
+
+// The assignee never gets follower mail; on an unheld ticket a member's group
+// switch decides and following does not bring back what they turned off.
 func TestStaffFanout_ReopenFollowingDoesNotOverrideTheAssigneeOrGroupSwitch(t *testing.T) {
 	assignee, member := staffUser("assignee"), staffUser("member")
 	assignee.EmailNotifyActivity = false
 	member.EmailNotifyGroup = false
 	g := uuid.New()
-	ev := reopenedEventFor(nil, &assignee.ID, &g)
+
+	held := reopenedEventFor(nil, &assignee.ID, nil)
 	next := &recorder{}
-	f := fanoutWithFollowers(next, newFakeStaffUsers(assignee, member), fakeStaffGroups{g: {member.ID}},
-		fakeStaffFollowers{ev.TicketID: {assignee.ID, member.ID}})
+	require.NoError(t, fanoutWithFollowers(next, newFakeStaffUsers(assignee), fakeStaffGroups{},
+		fakeStaffFollowers{held.TicketID: {assignee.ID}}).Dispatch(context.Background(), held))
+	require.Empty(t, recipientsOf(next), "the assignee who follows is still the assignee")
 
-	require.NoError(t, f.Dispatch(context.Background(), ev))
-
+	unheld := reopenedEventFor(nil, nil, &g)
+	next = &recorder{}
+	require.NoError(t, fanoutWithFollowers(next, newFakeStaffUsers(member), fakeStaffGroups{g: {member.ID}},
+		fakeStaffFollowers{unheld.TicketID: {member.ID}}).Dispatch(context.Background(), unheld))
 	require.Empty(t, recipientsOf(next))
 }
 

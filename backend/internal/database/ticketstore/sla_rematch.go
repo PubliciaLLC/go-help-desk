@@ -44,6 +44,24 @@ func (s *Store) CurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUI
 	}, nil
 }
 
+// LatestSupersededSLARecord returns the record the ticket most recently stopped
+// having. nil, nil means it never had one.
+func (s *Store) LatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (*ticket.SLARecordState, error) {
+	r, err := s.q.GetLatestSupersededSLARecord(ctx, ticketID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading latest superseded SLA record of ticket %s: %w", ticketID, err)
+	}
+	return &ticket.SLARecordState{
+		ID:                   r.ID,
+		PolicyID:             r.PolicyID,
+		StartedAt:            database.TimePtr(r.StartedAt),
+		PausedSecondsAtStart: r.PausedSecondsAtStart,
+	}, nil
+}
+
 // MatchSLAPolicy returns the id of the policy that governs a ticket with this
 // priority and category, by the same four tiers a new ticket is matched with.
 // nil, nil means none does.

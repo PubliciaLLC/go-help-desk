@@ -33,7 +33,7 @@ const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group'; label: str
     key: 'email_notify_group',
     state: 'group',
     label: "My groups' tickets",
-    help: 'Email me when a ticket is assigned to a group I belong to, when a requester replies on one of its tickets that nobody has taken yet, and when one of its tickets is reopened.',
+    help: 'Email me when a ticket is assigned to a group I belong to, when a requester replies on one of its tickets that nobody has taken yet, and when one of its tickets that nobody has taken yet is reopened.',
   },
 ]
 

@@ -1665,7 +1665,7 @@ const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
   {
     key: 'staff_email_group_override',
     name: "My groups' tickets",
-    help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket is reopened. Goes to every member of the group.',
+    help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket nobody has taken yet is reopened. Goes to every member of the group.',
   },
 ]
 

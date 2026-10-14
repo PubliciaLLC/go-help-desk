@@ -173,6 +173,9 @@ func TestReopen_OnlyTheFirstReopenBumpsThePriority(t *testing.T) {
 	require.Equal(t, 1, actionsOf(h, "priority_changed"))
 	require.Equal(t, 2, actionsOf(h, "reopened"))
 	require.Equal(t, 2, actionsOf(h, "sla_restarted"), "the SLA still starts over on every reopen")
+	require.Len(t, h.store.slaRows(tk.ID), 3, "a second record: the later reopen restarted the SLA too")
+	require.Nil(t, onlyCurrent(h, tk.ID).supersededAt)
+	require.Equal(t, ticket.SLAFacts{}, onlyCurrent(h, tk.ID).facts)
 
 	_, err = h.svc.Resolve(context.Background(), tk.ID, "fixed again", reopenStaff)
 	require.NoError(t, err)
@@ -396,4 +399,84 @@ func TestPriorityRaised(t *testing.T) {
 	} {
 		require.Equal(t, want, in.Raised(), string(in))
 	}
+}
+
+// ── the dance: a restart, then priorities with no policy (Erik, 2026-10-14) ──
+//
+// A ticket whose priority moves to one with no policy has no current SLA
+// record; moving it back used to start a record "from the ticket's creation",
+// which threw away a restart. The clock now resumes from the newest superseded
+// record's start and pause base, without its met or breach facts, so the time
+// spent on the no-policy priority still counts and the dance gains nothing.
+
+func TestSLADance_AfterARestartTheClockResumesFromTheRestart(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedFinished("resolved", ticket.PriorityMedium)
+	ctx := context.Background()
+	before := time.Now()
+	_, err := h.svc.UpdateStatus(ctx, tk.ID, h.inProgressStatus.ID, reopenStaff) // restart under high
+	require.NoError(t, err)
+	restart := h.store.slaRows(tk.ID)[1]
+	require.NotNil(t, restart.startedAt)
+	require.False(t, restart.startedAt.Before(before))
+	// A pause total as of the restart, so the base is something to carry.
+	h.store.slaRecords[1].pausedBase = 42
+	restart = h.store.slaRows(tk.ID)[1]
+
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityLow, reopenStaff) // no policy
+	require.NoError(t, err)
+	require.Nil(t, onlyCurrent(h, tk.ID), "no policy, no current record")
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityHigh, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur)
+	require.Equal(t, h.high, cur.policyID)
+	require.NotNil(t, cur.startedAt, "NULL would put the clock back at the ticket's creation")
+	require.True(t, restart.startedAt.Equal(*cur.startedAt), "resumes from the restart")
+	require.Equal(t, int64(42), cur.pausedBase, "and its pause base")
+	require.Equal(t, ticket.SLAFacts{}, cur.facts, "the superseded record's facts are not copied")
+	pc := h.auditStore.entries[len(h.auditStore.entries)-1]
+	require.Equal(t, ticket.SLAAttached, pc.After["sla_outcome"])
+}
+
+// A ticket that never had a record still starts from its creation.
+func TestSLADance_ATicketThatNeverHadARecordStartsFromCreation(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedMedium() // open, no record
+	_, err := h.svc.ChangePriority(context.Background(), tk.ID, ticket.PriorityHigh, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur)
+	require.Nil(t, cur.startedAt, "NULL reads as the ticket's creation")
+}
+
+// Without a restart the dance resumes the original clock, which was from
+// creation: same truth, still NULL.
+func TestSLADance_WithoutARestartTheOriginalClockResumes(t *testing.T) {
+	h := newPrioHarness(t)
+	tk := h.seedMedium()
+	h.store.seedSLARecord(tk.ID, h.medium, nil, 7, ticket.SLAFacts{})
+	ctx := context.Background()
+
+	_, err := h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityLow, reopenStaff)
+	require.NoError(t, err)
+	_, err = h.svc.ChangePriority(ctx, tk.ID, ticket.PriorityHigh, reopenStaff)
+	require.NoError(t, err)
+
+	cur := onlyCurrent(h, tk.ID)
+	require.NotNil(t, cur)
+	require.Nil(t, cur.startedAt)
+	require.Equal(t, int64(7), cur.pausedBase)
+}
+
+func onlyCurrent(h *prioHarness, id uuid.UUID) *fakeSLARecord {
+	for _, r := range h.store.slaRows(id) {
+		if r.supersededAt == nil {
+			r := r
+			return &r
+		}
+	}
+	return nil
 }

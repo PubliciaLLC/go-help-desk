@@ -2436,7 +2436,7 @@ on the existing webhook feature instead of as plugins.
   | --- | --- |
   | Tickets assigned to me | a ticket is assigned to me |
   | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, a ticket assigned to me is **reopened**, and a ticket I **follow** is assigned, gets a requester's reply or is reopened |
-  | My groups' tickets | a ticket is assigned to a group I belong to, a requester replies on a group ticket that **nobody personally holds**, and a ticket assigned to my group is **reopened** |
+  | My groups' tickets | a ticket is assigned to a group I belong to, a requester replies on a group ticket that **nobody personally holds**, and a ticket in my group that nobody personally holds is **reopened** |
 
   A requester's reply on a ticket that has both an assignee and a group goes
   to the assignee only: the group's members would otherwise get mail for every
@@ -2457,13 +2457,15 @@ on the existing webhook feature instead of as plugins.
   already queued, and mail queued to a follower is not lost if they are then
   assigned the ticket.
 
-  **A reopen** (any door: Ticket Lifecycle) mails the assignee, the assigned
-  group's members and the followers, once each (Erik, 2026-10-13/14). The
-  assignee's mail sits under the *requester replied* switch (the second one), as
-  does a follower's; the group's under the third. Unlike a reply, the group is
-  mailed even while somebody holds the ticket, so its members are always left
-  out of follower mail for a reopen, and the assignee is too. Whoever did the
-  reopening is not mailed, whether a requester (who is no staff candidate
+  **A reopen** (any door: Ticket Lifecycle) follows the reply rule (Erik,
+  2026-10-14). The assignee is mailed, under the *requester replied* switch (the
+  second one). The assigned group's members are mailed, under the third
+  switch, **only while nobody personally holds the ticket**. Followers are
+  mailed whoever holds it, under the second switch. So on a held ticket a group
+  member hears about a reopen only if they follow it, as a follower; on an
+  unheld ticket the group is mailed, a member who also follows gets exactly one
+  mail, and their own group switch decides. The assignee never gets follower
+  mail. Everyone gets one mail. Whoever did the reopening is not mailed, whether a requester (who is no staff candidate
   anyway), the assignee, a group member or a follower. The mail is built from
   the `ticket.reopened` event, which carries who holds the ticket and who acted;
   the reply that caused a requester's reopen does not also ask for the reply
@@ -2966,10 +2968,21 @@ What a staff change does, decided in this order:
 |---|---|---|
 | SLA tracking is switched off | `sla_off` | none; nothing is re-matched |
 | No record, no policy matches | `none` | none |
-| No record, a policy matches | `attached` | a record whose clock started **at the ticket's creation**, not at the change. It can already be breached when it is created |
+| No current record, a policy matches | `attached` | a record whose clock **resumes where the last one ran**: it takes the `started_at` and pause base of the ticket's most recently superseded record, and none of its met or breach facts. A ticket that never had a record starts **at its creation**, not at the change, and can already be breached when it is created |
 | The new priority matches the record's own policy | `unchanged` | none |
 | Another policy matches | `rematched` | replaces the old record under the new policy, **keeping its clock** (so elapsed time still counts) and **its facts** (so a target already met stays met) |
 | A record exists, no policy matches | `removed` | none; the record is superseded and the ticket shows no SLA |
+
+**Moving through a priority with no policy does not undo a restart** (Erik,
+2026-10-14). A priority with no matching policy supersedes the record and leaves
+the ticket with none (`removed`). When a later change gives it one back
+(`attached`), the new record resumes from the superseded record's clock instead
+of the ticket's creation, so a restart is not thrown away by a trip through a
+priority with no policy, and the time spent there still counts. It gains
+nothing, and it is not punished beyond what happened: the pause base comes with
+the start, and the record's facts (met, breached) are not copied. This applies to
+a staff change only; a reopen always starts at the reopen. The "SLA restarted"
+badge reads the same as before: the record the restart replaced.
 
 **A reopen restarts both clocks** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)).
 Whenever a ticket is reopened (a requester's reply, a status change out of
@@ -2978,7 +2991,7 @@ transaction calls the same primitive with the reason `reopened`, after the statu
 change. That reason always starts both clocks over from the reopen: the current
 record is superseded and kept, and a new one starts at the reopen with no facts,
 so both targets are timed anew. It does so on **every** reopen, not only the
-first (the priority bump is first-only; the restart is not), even when the
+first (the priority bump is first-only; the restart is not, Erik 2026-10-14), even when the
 priority does not change (a ticket already at the highest priority cannot be
 raised, and a later reopen does not raise it) and even when the new priority maps
 to the same policy. It is not refused for being Resolved or Closed, because the
@@ -3017,7 +3030,8 @@ yet is not reported.
 
 **The clock.** A record's clock starts at its `started_at`, or at the ticket's
 creation when that is empty (every record written before this existed, every
-record a new ticket attaches, and a record attached by a staff priority change).
+record a new ticket attaches, and a record a staff priority change attaches to a
+ticket that never had one).
 A record also stores `paused_seconds_at_start`: the ticket's pause total plus
 the part of an open Pending interval already elapsed, as of its start, so pause
 time before a restart does not count toward the new record. A re-match carries

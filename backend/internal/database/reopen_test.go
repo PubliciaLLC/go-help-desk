@@ -119,3 +119,77 @@ func TestReopen_CountDefaultsToZeroAndRefusesNegative(t *testing.T) {
 	_, err = f.db.SQL.Exec(`UPDATE tickets SET reopen_count = -1 WHERE id = $1`, f.tk.ID)
 	require.Error(t, err)
 }
+
+// A restart followed by a trip through a priority with no policy (Erik,
+// 2026-10-14) resumes the clock from the restart, on real rows, and the "SLA
+// restarted" badge still points at the pre-restart record.
+func TestReopen_TheDanceResumesTheRestartAndTheBadgeStillPointsBeforeIt(t *testing.T) {
+	f := newChangePriorityFx(t)
+	svc := f.service(t, nil)
+	f.resolvedWithMetSLA(t, svc)
+	preRestart := f.records(t)[0]
+
+	_, err := svc.UpdateStatus(f.ctx, f.tk.ID, f.newStatusID(t), f.staff) // reopen: high, restart
+	require.NoError(t, err)
+	restart := f.records(t)[0]
+	require.True(t, restart.StartedAt.Valid)
+
+	// low has no policy in the fixture.
+	_, err = svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityLow, f.staff)
+	require.NoError(t, err)
+	_, err = svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityHigh, f.staff)
+	require.NoError(t, err)
+
+	cur := f.records(t)[0]
+	require.False(t, cur.SupersededAt.Valid)
+	require.True(t, cur.StartedAt.Valid, "NULL would put the clock back at the ticket's creation")
+	require.True(t, restart.StartedAt.Time.Equal(cur.StartedAt.Time), "resumes from the restart")
+	require.Equal(t, restart.PausedSecondsAtStart, cur.PausedSecondsAtStart)
+	require.False(t, cur.FirstResponseAt.Valid, "no facts copied from the superseded record")
+
+	history, err := f.ss.ListRecordsForTicket(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	tk, err := f.ts.GetByID(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	earlier := sla.EarlierRecord(history, tk.CreatedAt)
+	require.NotNil(t, earlier, "the badge is still there")
+	require.Equal(t, preRestart.PolicyID, earlier.PolicyID, "and points at the pre-restart record")
+	require.Equal(t, sla.EarlierMet, earlier.Outcome)
+}
+
+// The dance on a ticket that was never reopened produces no badge, and its
+// clock stays the original one, from creation.
+func TestReopen_TheDanceAloneNeverProducesABadge(t *testing.T) {
+	f := newChangePriorityFx(t)
+	svc := f.service(t, nil)
+	require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: f.tk.ID, PolicyID: f.pol[ticket.PriorityMedium].ID}))
+	require.NoError(t, f.ss.SetFirstResponse(f.ctx, f.tk.ID, time.Now().UTC().Truncate(time.Millisecond), 600, 1800))
+
+	for _, p := range []ticket.Priority{ticket.PriorityLow, ticket.PriorityHigh, ticket.PriorityLow, ticket.PriorityMedium} {
+		_, err := svc.ChangePriority(f.ctx, f.tk.ID, p, f.staff)
+		require.NoError(t, err)
+	}
+
+	cur := f.records(t)[0]
+	require.False(t, cur.SupersededAt.Valid)
+	require.False(t, cur.StartedAt.Valid, "still the ticket's creation")
+	history, err := f.ss.ListRecordsForTicket(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	tk, err := f.ts.GetByID(f.ctx, f.tk.ID)
+	require.NoError(t, err)
+	require.Nil(t, sla.EarlierRecord(history, tk.CreatedAt))
+}
+
+// A ticket that never had a record still starts from its creation when a
+// priority change gives it one.
+func TestReopen_ATicketThatNeverHadARecordStillStartsFromCreation(t *testing.T) {
+	f := newChangePriorityFx(t)
+	svc := f.service(t, nil)
+
+	_, err := svc.ChangePriority(f.ctx, f.tk.ID, ticket.PriorityHigh, f.staff)
+	require.NoError(t, err)
+
+	rows := f.records(t)
+	require.Len(t, rows, 1)
+	require.False(t, rows[0].StartedAt.Valid)
+}
