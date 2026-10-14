@@ -396,7 +396,7 @@ type Querier interface {
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, error)
-	// The CURRENT record: a superseded row (000039) is history and is never read
+	// The CURRENT record: a superseded row (000040) is history and is never read
 	// as "the ticket's SLA". Every statement below that addresses a ticket's
 	// record carries the same filter.
 	GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error)

@@ -23,7 +23,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
 
-// ── Migration 000039: a ticket can have a superseded history of SLA records ──
+// ── Migration 000040: a ticket can have a superseded history of SLA records ──
 //
 // A priority re-match (#443b) never edits a record's facts. It sets
 // superseded_at on the old row and inserts a new one. These tests run the real
@@ -337,7 +337,7 @@ func durPtr(d time.Duration) *time.Duration { return &d }
 
 // Down then up round-trips. The down migration restores ticket_id as the
 // primary key, which it can only do by deleting the superseded history.
-func TestMigration000039_DownThenUpRoundTrips(t *testing.T) {
+func TestMigration000040_DownThenUpRoundTrips(t *testing.T) {
 	f := newRematchFx(t)
 	tk := f.ticket(t, time.Hour, nil, 0)
 	p := f.policy(t, "p", 30, 120)
@@ -377,7 +377,7 @@ func TestMigration000039_DownThenUpRoundTrips(t *testing.T) {
 	require.Equal(t, "id", pkColumn())
 	require.Equal(t, 2, count())
 
-	execMigrationFile(t, f.ctx, f.tx, "migrations/000039_sla_record_rematch.down.sql", nil)
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000040_sla_record_rematch.down.sql", nil)
 	cols := columns()
 	for _, c := range []string{"id", "started_at", "paused_seconds_at_start", "superseded_at"} {
 		require.False(t, cols[c], "down drops %s", c)
@@ -385,7 +385,7 @@ func TestMigration000039_DownThenUpRoundTrips(t *testing.T) {
 	require.Equal(t, "ticket_id", pkColumn())
 	require.Equal(t, 1, count(), "down deletes the superseded history and keeps the current row")
 
-	execMigrationFile(t, f.ctx, f.tx, "migrations/000039_sla_record_rematch.up.sql", nil)
+	execMigrationFile(t, f.ctx, f.tx, "migrations/000040_sla_record_rematch.up.sql", nil)
 	cols = columns()
 	for _, c := range []string{"id", "started_at", "paused_seconds_at_start", "superseded_at"} {
 		require.True(t, cols[c], "up adds %s", c)

@@ -410,7 +410,7 @@ func TestElapsedFrom(t *testing.T) {
 
 // Record.Elapsed reads the clock start and pause base off the record. A record
 // with no StartedAt reads exactly as the package-level Elapsed does, which is
-// what keeps every record written before 000039 behaving as it always did.
+// what keeps every record written before 000040 behaving as it always did.
 func TestRecord_Elapsed(t *testing.T) {
 	min := time.Minute
 	tk := ticket.Ticket{CreatedAt: pendingCreated, SLAPausedSeconds: int64((10 * min).Seconds())}

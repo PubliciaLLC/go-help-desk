@@ -199,7 +199,7 @@ const getSLARecord = `-- name: GetSLARecord :one
 SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
-// The CURRENT record: a superseded row (000039) is history and is never read
+// The CURRENT record: a superseded row (000040) is history and is never read
 // as "the ticket's SLA". Every statement below that addresses a ticket's
 // record carries the same filter.
 func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaRecord, error) {
