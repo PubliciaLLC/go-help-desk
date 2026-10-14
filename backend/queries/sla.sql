@@ -52,7 +52,7 @@ INSERT INTO sla_records (ticket_id, policy_id, first_response_at, resolved_at, r
 VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: GetSLARecord :one
--- The CURRENT record: a superseded row (000040) is history and is never read
+-- The CURRENT record: a superseded row (000041) is history and is never read
 -- as "the ticket's SLA". Every statement below that addresses a ticket's
 -- record carries the same filter.
 SELECT * FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL;
