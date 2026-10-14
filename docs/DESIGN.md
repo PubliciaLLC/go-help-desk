@@ -253,13 +253,17 @@ from a role that may not make it, an invalid classification, a priority on a
 ticket that would end up Resolved or Closed, an assignee that cannot be given a
 ticket (unknown, deleted, disabled or a reporting user), a group that does not
 exist, and the status change's own refusals (it is the first write). The service
-calls the status, assignment, classification and priority writes make still
-check the same things on the locked row, so a caller other than this handler
-(MCP, the scheduler) is held to them too. What stays possible after an earlier
-write is what only the write can know: a concurrent change in the milliseconds
-between check and write (an assignee disabled, the ticket closed) or a database
-failure. Before this, a request whose assignee was refused had already saved its
-status.
+writes check again, but only what each can: `Assign` re-checks the assignee and
+group on the locked row; `ChangePriority` re-checks the role and the closed state
+on the locked row; `UpdateStatus` checks the role, then re-checks the reopen
+policy and an inactive status on the locked row; `UpdateCTI` re-checks the
+classification, without a lock. The assignment and reclassification roles are not
+checked by the service: authorisation belongs to the caller, so the handler does
+it before the first write, and a caller other than this handler (MCP, the
+scheduler) must do its own. What stays possible after an earlier write is what
+only the write can know: a concurrent change in the milliseconds between check
+and write (an assignee disabled, the ticket closed) or a database failure.
+Before this, a request whose assignee was refused had already saved its status.
 Over MCP `update_ticket_status` answers a move out of Closed with the closed
 refusal and names the follow-up instead.
 

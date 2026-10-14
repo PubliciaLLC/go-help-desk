@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render } from '@testing-library/react'
 
 import { SLAIndicator } from './SLAIndicator'
@@ -159,10 +159,20 @@ describe('SLAIndicator', () => {
     })
 
     it('stops listening for Escape once it is unmounted', () => {
-      const { container, unmount } = render(<SLAIndicator sla={sla({ earlier })} />)
-      fireEvent.click(container.querySelector('[data-testid="sla-restarted"]') as HTMLElement)
-      unmount()
-      expect(() => fireEvent.keyDown(document.body, { key: 'Escape' })).not.toThrow()
+      const add = vi.spyOn(document, 'addEventListener')
+      const remove = vi.spyOn(document, 'removeEventListener')
+      try {
+        const { container, unmount } = render(<SLAIndicator sla={sla({ earlier })} />)
+        fireEvent.click(container.querySelector('[data-testid="sla-restarted"]') as HTMLElement)
+        const added = add.mock.calls.filter(([type]) => type === 'keydown')
+        expect(added.length).toBeGreaterThan(0)
+        const handler = added[added.length - 1][1]
+        unmount()
+        expect(remove).toHaveBeenCalledWith('keydown', handler)
+      } finally {
+        add.mockRestore()
+        remove.mockRestore()
+      }
     })
 
     it('shows a met outcome as met', () => {
