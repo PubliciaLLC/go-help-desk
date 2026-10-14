@@ -662,6 +662,10 @@ type Querier interface {
 	RestoreTag(ctx context.Context, id uuid.UUID) error
 	RestoreUser(ctx context.Context, id uuid.UUID) error
 	RetryNotification(ctx context.Context, arg RetryNotificationParams) error
+	// Replaces a row's event. The webhook dispatcher clears the content of a row
+	// whose delivery has finally failed, so it does not sit for the 30 days failed
+	// rows are kept (#448).
+	RewriteNotificationEvent(ctx context.Context, arg RewriteNotificationEventParams) error
 	SearchActiveTags(ctx context.Context, name string) ([]Tag, error)
 	SearchAllTickets(ctx context.Context, arg SearchAllTicketsParams) ([]SearchAllTicketsRow, error)
 	// The admin-wide audit view (#129), unscoped: an administrator, or staff while

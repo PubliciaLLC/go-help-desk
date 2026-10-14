@@ -10,7 +10,8 @@
 -- list in step with notify.DeliveryErrors; 'ok' is the success value.
 --
 -- event is the queued event reduced to ids only (the event name, ticket and
--- actor ids, a time, and the id and flag keys of its payload), kept so Redeliver
+-- actor ids, a time, and the status, link-target, link-type and reply ids of its
+-- payload), kept so Redeliver
 -- can send it again. It holds no address, subject, tracking number or text, and
 -- no guest credential, and the API never returns it. It is deleted with the row
 -- and with the hook.

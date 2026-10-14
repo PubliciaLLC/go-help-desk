@@ -1189,6 +1189,7 @@ func (s *Service) addReply(ctx context.Context, ticketID uuid.UUID, body string,
 				"TrackingNumber": string(t.TrackingNumber),
 				"Subject":        t.Subject,
 				"internal":       internal,
+				"reply_id":       reply.ID,
 			}
 			// An internal note's body does not go in the event.
 			//

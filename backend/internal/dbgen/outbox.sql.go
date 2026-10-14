@@ -147,3 +147,20 @@ func (q *Queries) RetryNotification(ctx context.Context, arg RetryNotificationPa
 	_, err := q.db.ExecContext(ctx, retryNotification, arg.ID, arg.AvailableAt, arg.LastError)
 	return err
 }
+
+const rewriteNotificationEvent = `-- name: RewriteNotificationEvent :exec
+UPDATE notification_outbox SET event = $2 WHERE id = $1
+`
+
+type RewriteNotificationEventParams struct {
+	ID    uuid.UUID       `json:"id"`
+	Event json.RawMessage `json:"event"`
+}
+
+// Replaces a row's event. The webhook dispatcher clears the content of a row
+// whose delivery has finally failed, so it does not sit for the 30 days failed
+// rows are kept (#448).
+func (q *Queries) RewriteNotificationEvent(ctx context.Context, arg RewriteNotificationEventParams) error {
+	_, err := q.db.ExecContext(ctx, rewriteNotificationEvent, arg.ID, arg.Event)
+	return err
+}

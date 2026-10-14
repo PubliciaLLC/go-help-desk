@@ -323,7 +323,7 @@ func newHarnessCfg(t *testing.T, authRateLimit int, clamAVAddr string, mutate fu
 	// The real webhook dispatcher over the harness transaction, so Redeliver
 	// writes a real outbox row a test can read.
 	webhookDisp := notify.NewWebhookDispatcher(authSt, "https://help.example.com", nil).
-		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt})
+		WithQueue(notify.WebhookQueue{Outbox: outboxstore.New(q), Hooks: authSt, History: authSt, Source: server.NewWebhookEventSource(ticketSvc)})
 	srv := server.New(
 		cfg,
 		sessionStore,

@@ -38,5 +38,11 @@ UPDATE notification_outbox
 SET failed_at = now(), last_error = $2, claimed_until = NULL
 WHERE id = $1;
 
+-- name: RewriteNotificationEvent :exec
+-- Replaces a row's event. The webhook dispatcher clears the content of a row
+-- whose delivery has finally failed, so it does not sit for the 30 days failed
+-- rows are kept (#448).
+UPDATE notification_outbox SET event = $2 WHERE id = $1;
+
 -- name: DeleteFailedNotificationsBefore :execrows
 DELETE FROM notification_outbox WHERE failed_at < $1;

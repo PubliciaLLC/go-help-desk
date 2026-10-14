@@ -293,7 +293,7 @@ function HistoryRow({ hook }: { hook: WebhookConfig }) {
         <section aria-label="Delivery history" className="space-y-2">
           <p className="text-xs text-gray-500">
             The last 25 deliveries. Outcomes only: no payloads and no error text are kept.
-            Redeliver sends the same event again as a new delivery.
+            Redeliver sends the event again as a new delivery; a chat message is rebuilt from the ticket as it is now.
           </p>
           {notice && <p role="status" className="text-sm text-green-700">{notice}</p>}
           {error && <p role="alert" className="text-sm text-red-600">{error}</p>}

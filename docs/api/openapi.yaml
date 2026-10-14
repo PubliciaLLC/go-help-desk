@@ -6543,9 +6543,9 @@ paths:
         (GET /api/v1/admin/webhooks/{id}/deliveries). Every request a receiver gets carries
         X-GHD-Delivery, a UUID that is the same on every retry of one delivery, so it can
         drop a repeat, and X-GHD-Event, the event name (for example ticket.replied). The
-        raw body is ids only: Type, TicketID, ActorID, OccurredAt and a Payload of
-        new_status_id, target_id, link_type and internal where the event has them, and
-        nothing else. The secret is write-only. When it is set, each delivery
+        raw body is ids only: Type (the event name), TicketID, ActorID, OccurredAt and,
+        where the event has them, a Payload of new_status_id and target_id, and nothing
+        else The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
         same value in X-OHD-Signature for older consumers. An empty secret means deliveries
         are not signed. enabled defaults to true.
@@ -6784,10 +6784,11 @@ paths:
         with a new X-GHD-Delivery id, so a receiver that de-duplicates by id does not
         drop it. It is sent by the background worker, not during this request, and
         retried like any delivery. It appears in the history once it has been
-        attempted. The body is the event as it was queued, not rebuilt from the
-        ticket's current state. Only ids are kept, so a raw hook gets the same body as
-        the original, and a Slack, Teams, Discord or JIRA hook gets its message without
-        the subject, tracking number, status name or reply text.
+        attempted. Only ids are kept from the original, so a raw hook gets the same body as
+        the original. A Slack, Teams, Discord or JIRA hook gets its message rebuilt from
+        the ticket as it is now: current subject, tracking number and status name, and a
+        reply's text only if that reply still exists and is public (never a note's). If
+        the ticket is gone, the headline only.
       tags: ['Admin: Webhooks']
       x-ghd-handler: handleRedeliverWebhook
       security:

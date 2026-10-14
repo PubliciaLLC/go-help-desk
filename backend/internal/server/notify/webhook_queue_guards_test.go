@@ -25,6 +25,10 @@ var contentStrings = []string{
 	"SECRET-REPLY-TEXT", "SECRET-SUBJECT", "TRK-SECRET-7", "SECRET-PRIORITY", "SECRET-STATUS",
 }
 
+// contentReplyID is the reply contentEvent names. It is an id, but not one the
+// raw body carries.
+var contentReplyID = uuid.New()
+
 // contentEvent is a public reply carrying every kind of content the domain
 // can put on an event, in the typed fields and in Payload.
 func contentEvent() notification.Event {
@@ -40,6 +44,7 @@ func contentEvent() notification.Event {
 			"TrackingNumber": "TRK-SECRET-7",
 			"Priority":       "SECRET-PRIORITY",
 			"internal":       false,
+			"reply_id":       contentReplyID,
 			"target_id":      linked,
 			"link_type":      "related",
 			"new_status_id":  uuid.New(),
@@ -93,8 +98,13 @@ func TestRawBody_CarriesOnlyIdsAndFlags(t *testing.T) {
 	for _, key := range []string{"guest_email", "reporter_email", "ReplyBody", "Subject", "TrackingNumber", "Priority"} {
 		require.NotContains(t, string(body), key)
 	}
-	for _, want := range []string{`"Type":"ticket.replied"`, ev.TicketID.String(), "target_id", "link_type", "new_status_id", `"internal":false`, "OccurredAt"} {
+	for _, want := range []string{`"Type":"ticket.replied"`, ev.TicketID.String(), "target_id", "new_status_id", "OccurredAt"} {
 		require.Contains(t, string(body), want)
+	}
+	// Ids and the event name only: not the link type, not the internal flag (the
+	// event name already says note or reply), not the reply id.
+	for _, gone := range []string{"link_type", "internal", "reply_id", contentReplyID.String()} {
+		require.NotContains(t, string(body), gone)
 	}
 }
 

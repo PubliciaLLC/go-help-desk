@@ -49,7 +49,7 @@ func renderJIRA(s summary) ([]byte, error) {
 	b := jiraBody{
 		Event:          string(s.Event),
 		TicketID:       s.TicketID.String(),
-		TrackingNumber: s.Ref,
+		TrackingNumber: s.Tracking,
 		Subject:        s.Subject,
 		URL:            s.URL,
 		OccurredAt:     s.OccurredAt.UTC().Format(time.RFC3339),

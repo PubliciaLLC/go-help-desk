@@ -328,6 +328,9 @@ func run() error {
 	// history, its audit entry — into a single transaction.
 	txRunner := txrunner.New(sqlDB)
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// The ticket service needs the dispatcher and the dispatcher's redelivery
+	// needs the ticket service: this closes the loop.
+	webhookDisp.SetSource(server.NewWebhookEventSource(ticketSvc))
 	if err := ticketSvc.LoadSystemStatuses(ctx); err != nil {
 		return fmt.Errorf("loading system statuses: %w", err)
 	}

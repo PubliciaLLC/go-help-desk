@@ -387,7 +387,7 @@ func TestDispatch_MarshalFailureIsLogged(t *testing.T) {
 	ev := notification.Event{
 		Type:           notification.EventTicketReplied,
 		TicketID:       fixtureTicketID,
-		Payload:        map[string]any{"internal": make(chan int)},
+		Payload:        map[string]any{"new_status_id": make(chan int)},
 		OccurredAt:     fixtureOccurred,
 		TrackingNumber: "GHD-2026-000001",
 		Subject:        "Printer jammed",

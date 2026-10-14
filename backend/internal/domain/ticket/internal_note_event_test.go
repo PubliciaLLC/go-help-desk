@@ -88,6 +88,28 @@ func replyEventForTest(t *testing.T, body string, internal bool) notification.Ev
 	return notification.Event{}
 }
 
+// The event names the reply it announces by id, so a redelivery can look the
+// reply up again instead of the history keeping its text (#448).
+func TestAddReply_EventNamesTheReply(t *testing.T) {
+	for _, internal := range []bool{false, true} {
+		h := newHarness(t)
+		seeded := h.seedOpen()
+		agent := uuid.New()
+		reply, err := h.svc.AddReply(context.Background(), seeded.ID, "text", internal, false,
+			"reporter@example.com",
+			ticket.Actor{UserID: &agent, Role: user.RoleStaff}, 30, h.newStatus.ID)
+		require.NoError(t, err)
+
+		var got any
+		for _, e := range h.dispatcher.events {
+			if e.Type == notification.EventTicketReplied || e.Type == notification.EventTicketNoteAdded {
+				got = e.Payload["reply_id"]
+			}
+		}
+		require.Equal(t, reply.ID, got, "internal=%v", internal)
+	}
+}
+
 // ticket.replied is customer-visible replies only: a hook subscribed to it
 // must never be handed a staff note, and a note has its own event (#448).
 func TestAddReply_SplitsNotesFromReplies(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/safehttp"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -87,6 +88,32 @@ type WebhookHistory interface {
 	GetWebhookDeliveryEvent(ctx context.Context, hookID, deliveryID uuid.UUID) ([]byte, error)
 }
 
+// TicketFacts are the values a chat or ITSM message names, read from the ticket
+// as it is now.
+type TicketFacts struct {
+	Subject        string
+	TrackingNumber string
+	StatusName     string // the ticket's current status
+	Priority       string
+}
+
+// EventSource reads the ticket fresh, so Redeliver can rebuild a chat message
+// without the history having kept any content.
+type EventSource interface {
+	// TicketFacts reports false when the ticket no longer exists.
+	TicketFacts(ctx context.Context, ticketID uuid.UUID) (TicketFacts, bool, error)
+	// PublicReplyBody returns the text of a reply that exists on that ticket and
+	// is public. It reports false for a missing, deleted or internal reply, and
+	// never returns the text of a note.
+	PublicReplyBody(ctx context.Context, ticketID, replyID uuid.UUID) (string, bool, error)
+}
+
+// EventRewriter is implemented by an outbox that can replace the event of a
+// queued row. The webhook dispatcher uses it to clear a failed row's content.
+type EventRewriter interface {
+	RewriteEvent(ctx context.Context, id uuid.UUID, event []byte) error
+}
+
 // WebhookQueue is what turns a webhook send from fire-and-forget into
 // per-hook, retried deliveries (#448). Without one a dispatcher sends at once
 // and never retries.
@@ -95,6 +122,9 @@ type WebhookQueue struct {
 	Hooks   WebhookLookup
 	History WebhookHistory
 	Wake    func() // asks the worker to look now; may be nil
+	// Source lets Redeliver rebuild a chat or ITSM message from the ticket as it
+	// is now. May be nil, in which case such a replay has its headline only.
+	Source EventSource
 }
 
 // Redeliver refusals.
@@ -114,6 +144,13 @@ type WebhookDispatcher struct {
 	baseURL string // used only to build the staff ticket link chat/ITSM formats carry
 	log     *slog.Logger
 	queue   *WebhookQueue
+}
+
+// SetSource sets the queue's EventSource after construction, for wiring where
+// the source (the ticket service) needs the dispatcher to exist first. The
+// dispatcher must have a queue.
+func (d *WebhookDispatcher) SetSource(src EventSource) {
+	d.queue.Source = src
 }
 
 // WithQueue makes the dispatcher queue one retried delivery per subscribed
@@ -315,7 +352,10 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 	retry := shouldRetry(res)
 	d.recordAttempt(hook, deliveryID, ev, res, retry && !LastAttempt(ctx))
 	if !retry {
-		return nil
+		return nil // settled: the row is deleted, nothing is kept
+	}
+	if LastAttempt(ctx) {
+		d.scrubFailedRow(ctx, ev)
 	}
 	// A class and a status, never a message: this is what lands in last_error.
 	err = fmt.Errorf("webhook delivery failed: %s (status %d)", res.Error, res.Status)
@@ -391,6 +431,13 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 	if !hookSubscribes(hook, ev.Type) {
 		return ErrWebhookNotSubscribed
 	}
+	// A chat or ITSM message is rebuilt from the ticket as it is now, because the
+	// kept copy has no content. A raw hook gets the kept copy as it is.
+	if !isRaw(hook) {
+		if ev, err = d.rebuild(ctx, ev); err != nil {
+			return err
+		}
+	}
 	ev.TargetWebhook = hookID
 	ev.TargetURLHash = urlHash(hook.URL)
 	row, err := encodeEvent(ev)
@@ -404,6 +451,69 @@ func (d *WebhookDispatcher) Redeliver(ctx context.Context, hookID, deliveryID uu
 		d.queue.Wake()
 	}
 	return nil
+}
+
+// rebuild fills a kept event with the ticket as it is now: the current subject,
+// tracking number and status name, the priority of a creation, and the text of
+// the reply it announced only if that reply still exists and is public. A note
+// never gets text, and its reply is not even looked up. A ticket that is gone
+// leaves the event as it is, so the message is its headline only.
+func (d *WebhookDispatcher) rebuild(ctx context.Context, ev notification.Event) (notification.Event, error) {
+	if d.queue.Source == nil {
+		return ev, nil
+	}
+	facts, found, err := d.queue.Source.TicketFacts(ctx, ev.TicketID)
+	if err != nil {
+		return ev, fmt.Errorf("reading ticket for redelivery: %w", err)
+	}
+	if !found {
+		return ev, nil
+	}
+	ev.Subject, ev.TrackingNumber, ev.StatusName = facts.Subject, facts.TrackingNumber, facts.StatusName
+	ev.Payload = maps.Clone(ev.Payload)
+	if ev.Payload == nil {
+		ev.Payload = map[string]any{}
+	}
+	switch ev.Type {
+	case notification.EventTicketCreated:
+		ev.Payload["Priority"] = facts.Priority
+	case notification.EventTicketReplied:
+		ev.Payload["internal"] = false
+		raw, _ := ev.Payload["reply_id"].(string)
+		replyID, perr := uuid.Parse(raw)
+		if perr != nil {
+			break
+		}
+		body, ok, err := d.queue.Source.PublicReplyBody(ctx, ev.TicketID, replyID)
+		if err != nil {
+			return ev, fmt.Errorf("reading reply for redelivery: %w", err)
+		}
+		if ok {
+			ev.Payload["ReplyBody"] = body
+		}
+	case notification.EventTicketNoteAdded:
+		ev.Payload["internal"] = true
+	}
+	return ev, nil
+}
+
+// scrubFailedRow clears a chat or ITSM row's content once its delivery has
+// finally failed. The worker keeps a failed row for 30 days, and by then the
+// message it was built for is never going to be sent. Ids stay.
+func (d *WebhookDispatcher) scrubFailedRow(ctx context.Context, ev notification.Event) {
+	rw, ok := d.queue.Outbox.(EventRewriter)
+	id := RowID(ctx)
+	if !ok || id == uuid.Nil {
+		return
+	}
+	scrubbed, err := encodeEvent(historyEvent(ev))
+	if err == nil {
+		err = rw.RewriteEvent(ctx, id, scrubbed)
+	}
+	if err != nil {
+		d.log.WarnContext(ctx, "webhook row kept with its content after the last failed attempt",
+			"webhook_id", ev.TargetWebhook, "error", err)
+	}
 }
 
 // Signature headers on outbound webhooks. Both carry the same HMAC-SHA256
@@ -537,7 +647,7 @@ func (d *WebhookDispatcher) record(hook authstore.WebhookConfig, r authstore.Web
 // its own short timeout, and a failure is logged and dropped.
 func (d *WebhookDispatcher) recordAttempt(hook authstore.WebhookConfig, deliveryID uuid.UUID,
 	ev notification.Event, r authstore.WebhookDelivery, retrying bool) {
-	stored, err := encodeEvent(idsOnly(ev))
+	stored, err := encodeEvent(historyEvent(ev))
 	if err != nil {
 		d.log.Warn("webhook delivery history not recorded", "webhook_id", hook.ID, "error", err)
 		return
