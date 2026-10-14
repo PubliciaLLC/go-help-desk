@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
@@ -23,6 +24,16 @@ type failingUserLookup struct{ user.Store }
 
 func (failingUserLookup) GetByID(context.Context, uuid.UUID) (user.User, error) {
 	return user.User{}, errors.New("injected user lookup failure")
+}
+
+// PasskeyStartHandlersForTest returns the two passkey handlers that look the
+// account up before doing anything else, so a test can drive them with an
+// actor the router never produces (a service user, whose session cannot load).
+func (s *Server) PasskeyStartHandlersForTest() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		"login start":    s.handlePasskeyLoginStart,
+		"register start": s.handlePasskeyRegisterStart,
+	}
 }
 
 // FailUserLookupForTest makes user lookups fail as a database outage would.
