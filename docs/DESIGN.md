@@ -1930,7 +1930,7 @@ was a breaking change to the REST API's published contract, made deliberately
 in this beta's bug-fix branch rather than deferred to a major version — see
 `ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
 
-**Origin.** The Streamable HTTP endpoint does not check the `Origin` header, which the MCP specification asks servers to do against DNS rebinding. Rebinding defeats servers that trust the network a request comes from. This one authenticates every request, and a rebound page gets no help-desk cookie and has no API key. A cross-site page using a signed-in browser's session is stopped three ways. The session cookie is `SameSite=Lax`. A non-JSON POST is refused before anything runs. A JSON POST needs a CORS preflight that `/mcp` never grants. Tests pin all of these (`TestMCPStreamable_NoCrossSiteSurface`, and the cookie attributes in `sessionstore/cookie_attributes_test.go`). Add an Origin check if any of them stops being true.
+**Origin.** The Streamable HTTP endpoint does not check the `Origin` header, which the MCP specification asks servers to do against DNS rebinding. Rebinding defeats servers that trust the network a request comes from. This one authenticates every request, and a rebound page gets no help-desk cookie and has no API key. A cross-site page using a signed-in browser's session is stopped three ways. The session cookie is `SameSite=Lax`. A non-JSON POST is refused before anything runs. A JSON POST needs a CORS preflight that `/mcp` never grants. Tests pin all of these (`TestMCPStreamable_NoCrossSiteSurface`, and the cookie attributes in `backend/internal/database/sessionstore/cookie_attributes_test.go`). Add an Origin check if any of them stops being true.
 
 ### Authentication Methods
 

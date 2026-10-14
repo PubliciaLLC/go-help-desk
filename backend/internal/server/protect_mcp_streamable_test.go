@@ -344,8 +344,8 @@ func TestMCPStreamable_HiddenTicketAnswersLikeSSE(t *testing.T) {
 // does not, because every request is authenticated and a cross-site page has no
 // way to make a browser send one that runs a tool:
 //
-//   - the session cookie is SameSite=Lax (sessionstore/cookie_attributes_test.go),
-//     so it is not sent on a cross-site POST;
+//   - the session cookie is SameSite=Lax, so it is not sent on a cross-site
+//     POST (internal/database/sessionstore/cookie_attributes_test.go);
 //   - a non-JSON POST, the only kind a page can send without a preflight, is
 //     refused before anything runs;
 //   - a JSON POST needs a CORS preflight, and /mcp never grants one;
